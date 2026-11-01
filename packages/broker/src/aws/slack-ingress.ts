@@ -142,7 +142,7 @@ export interface SlackIngressDependencies {
    * the task's next step. "refused" is an expected answer (the task closed, or its note limit is reached); a
    * throw means the reply could not be saved, and Slack retries it. Absent: such replies are not read.
    */
-  recordThreadNote?: (input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string }) => Promise<{ outcome: "captured" | "duplicate" | "refused" }>;
+  recordThreadNote?: (input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string }) => Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }>;
   /** A message only `user` sees in the thread (chat.postEphemeral). Absent: such acknowledgements are skipped. */
   postEphemeral?: (input: { channel: string; threadTs: string; user: string; text: string; blocks?: Array<Record<string, unknown>> }) => Promise<void>;
   /**
@@ -253,14 +253,14 @@ export async function captureFeedbackNoteThroughBroker(
 export async function recordThreadNoteThroughBroker(
   invoke: (event: Record<string, unknown>) => Promise<BrokerReply>,
   input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string },
-): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
+): Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }> {
   const reply = await invoke({ source: "agentx.slack-ingress", action: "thread-note", ...input });
   const status = reply.statusCode ?? 500;
   if (status >= 400 && status < 500) return { outcome: "refused" };
   if (status !== 200) throw new Error("broker thread note failed");
   const body = asRecord(JSON.parse(reply.body ?? "{}"));
   if (body.outcome !== "captured" && body.outcome !== "duplicate" && body.outcome !== "refused") throw new Error("broker thread note failed");
-  return { outcome: body.outcome };
+  return { outcome: body.outcome, ...(body.askOnly === true ? { askOnly: true as const } : {}) };
 }
 
 export function createSlackIngressHandler(dependencies: SlackIngressDependencies) {
@@ -638,8 +638,9 @@ async function workflowThreadReply(
     return respond(200, { ok: true });
   }
   let outcome: "captured" | "duplicate" | "refused";
+  let askOnly: boolean;
   try {
-    ({ outcome } = await dependencies.recordThreadNote({ taskId, thread, userId: mention.userId, messageTs: mention.messageTs, eventId, text: replyText }));
+    ({ outcome, askOnly = false } = await dependencies.recordThreadNote({ taskId, thread, userId: mention.userId, messageTs: mention.messageTs, eventId, text: replyText }));
   } catch (error) {
     await releaseQuietly(dependencies, log, eventId, "thread_note.release_failed");
     log("thread_note.failed", { eventId, errorName: errorName(error) });
@@ -652,7 +653,7 @@ async function workflowThreadReply(
   if (mention.kind === "mention") {
     // The note is saved. A mention that could be a question is sent to the Slack service to decide; it answers or
     // leaves the note as an instruction, so no acknowledgement is posted here unless it could not be sent.
-    if (outcome !== "refused" && await routeTaskQuestion(dependencies, log, mention, taskId, replyText)) return respond(200, { ok: true });
+    if (outcome !== "refused" && await routeTaskQuestion(dependencies, log, mention, taskId, replyText, askOnly)) return respond(200, { ok: true });
     await ephemeral(dependencies, log, thread, mention.userId, outcome === "refused" ? THREAD_NOTE_NOT_SAVED : TASK_NOTE_SAVED_TEXT);
   }
   return respond(200, { ok: true });
@@ -669,7 +670,9 @@ async function routeTaskQuestion(
   mention: Mention,
   taskId: string,
   replyText: string,
+  askOnly = false,
 ): Promise<boolean> {
+  // `askOnly`: a project viewer's message, kept already answered; it is only ever a question, so the handler never reads it as an instruction.
   if (dependencies.routeRequest === undefined) return false;
   const { thread, eventId } = mention;
   const subject = slackThreadSubject(thread);
@@ -681,7 +684,7 @@ async function routeTaskQuestion(
     await dependencies.changePending(subject, 1);
     counted = true;
     await dependencies.routeRequest(message, createHash("sha256").update(subject).digest("hex"),
-      { taskId, noteTs: mention.messageTs, chat: parseWorkflowStartRequest(replyText).kind === "chat" });
+      { taskId, noteTs: mention.messageTs, chat: askOnly || parseWorkflowStartRequest(replyText).kind === "chat" });
   } catch (error) {
     if (counted) {
       try {

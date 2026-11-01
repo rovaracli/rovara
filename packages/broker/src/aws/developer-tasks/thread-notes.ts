@@ -184,7 +184,7 @@ export async function recordWorkflowThreadNote(
     answerBy?: { developerId: string; name: string };
   },
   /** `answers: false` once the reply was found not to be an answer (the task stopped waiting), so it is saved as the note it is. */
-  options: { answers?: false } = {},
+  options: { answers?: false; /** Saved already answered (a project viewer's question when the Ask switch is on): the next step skips it, so it can never be read as input; no timeline event is written for it. */ preAnswered?: true } = {},
 ): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
   const thread = SlackThreadSchema.parse(input.thread);
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
@@ -210,12 +210,12 @@ export async function recordWorkflowThreadNote(
   // The task's session, if it has one that is really its own: the reply is told there as a `steer` event, the last item of the same transaction. Nothing
   // about the event can fail the note: no session, an unreadable one or an event that can't be built just leaves it out.
   const sessionRef = await sessionRefOfTask({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task);
-  let withEvent = sessionRef !== undefined;
+  let withEvent = sessionRef !== undefined && options.preAnswered !== true;
   for (let attempt = 1; ; attempt += 1) {
     const note: SlackNote = SlackNoteSchema.parse({
       schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId,
       teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs, messageTs,
-      eventId: input.eventId, text, truncated: text.length < trimmed.length, receivedAt, workflowRevision,
+      eventId: input.eventId, text, truncated: text.length < trimmed.length, receivedAt, workflowRevision, ...(options.preAnswered === true ? { answeredAt: receivedAt } : {}),
     });
     const event = withEvent && sessionRef !== undefined
       ? slackReplyEventItem({ tableName: deps.tableName }, sessionRef, { slackEventId: input.eventId, receivedAt: note.receivedAt, text: trimmed, actor: input.actor })

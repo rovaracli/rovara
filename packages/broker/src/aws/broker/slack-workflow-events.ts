@@ -11,7 +11,7 @@ import { getItem } from "../cancellation.js";
 import { requireCreatorStillMember } from "../../developer/creator-member.js";
 import { grantRoleOf } from "../../developer/project-roles.js";
 import { ownerActorIdOf, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { requireSessionLevel } from "../../agent-sessions/access.js";
+import { peopleOfItem, requireSessionLevel } from "../../agent-sessions/access.js";
 import { slackReplyAuthor } from "../../agent-sessions/events.js";
 import { codeIntentDependenciesOf, developerTaskRouteDependencies, type DeveloperCaller, type DeveloperRouteDependencies } from "../developer-routes.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
@@ -751,7 +751,29 @@ export async function mayAnswerFromSlack(dependencies: AwsBrokerDependencies, ta
   }
 }
 
-export async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackThreadNoteEvent): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
+/**
+ * Whether (and with which People revision) `userId` is a PROJECT-ROLE VIEWER of the task's project in the task's own org and the task's own open thread: the one person the Ask switch lets ask though they cannot comment. Everyone
+ * else the note-save step refuses stays refused: a removed, banned or other-org person (`slackCallerFor` throws), a person the task's People list denies, a person of another org than the task's.
+ */
+async function projectViewerInThread(dependencies: AwsBrokerDependencies, taskId: string, userId: string, thread: SlackThread): Promise<{ peopleRevision?: number } | undefined> {
+  try {
+    if (dependencies.developer === undefined) return undefined;
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined || task.closedAt !== undefined || task.workflow === undefined || task.share?.teamId !== thread.teamId || task.share.channelId !== thread.channelId || task.share.threadTs !== thread.threadTs) return undefined;
+    const caller = await slackCallerFor(dependencies, userId, dependencies.developer.slackTeamId ?? "");
+    if (task.orgId !== caller.orgId) return undefined;
+    const sidecar = await getItem<Record<string, unknown>>(dependencies, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
+    const people = peopleOfItem(sidecar);
+    // A list that cannot be read is not guessed at; a person the list denies is not asked about.
+    if (people === "unreadable" || (people !== undefined && people.get(caller.developerId) === "denied")) return undefined;
+    if (grantRoleOf(await getMembership(dependencies, caller.orgId, caller.developerId, task.project)) !== "viewer") return undefined;
+    return typeof sidecar?.revision === "number" ? { peopleRevision: sidecar.revision } : {};
+  } catch {
+    return undefined;
+  }
+}
+
+export async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackThreadNoteEvent): Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }> {
   if (dependencies.developer === undefined) return { outcome: "refused" };
   const thread = SlackThreadSchema.safeParse(event.thread);
   const userId = SlackRequesterSchema.shape.userId.safeParse(event.userId);
@@ -763,7 +785,16 @@ export async function recordSlackThreadNote(dependencies: AwsBrokerDependencies,
   let access: TaskAccess;
   let actor: DeveloperCaller;
   try { ({ access, caller: actor } = await slackTaskAccess(dependencies, tasks, taskId, userId.data, "comment", true)); }
-  catch { return { outcome: "refused" }; }
+  catch {
+    // Owner decision 2026-11-01, Ask switch ON only: a project viewer in the task's own thread may ask. Their message is kept already answered (so the next step never reads it) and the question goes on to
+    // the Ask route. With the switch off, or for anyone else (removed, banned, other org, denied), nothing changes: refused.
+    const viewer = dependencies.slackAsk?.ask === undefined ? undefined : await projectViewerInThread(dependencies, taskId, userId.data, thread.data);
+    if (viewer === undefined) return { outcome: "refused" };
+    const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, now: Date.now },
+      { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text, peopleAccess: { ...(viewer.peopleRevision === undefined ? {} : { peopleRevision: viewer.peopleRevision }), isOwner: false } }, { preAnswered: true });
+    // `askOnly` tells the ingress to send it on as a question only, never as a possible instruction.
+    return result.outcome === "captured" ? { ...result, askOnly: true } : result;
+  }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
   const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now }), access.task, userId.data, actor);

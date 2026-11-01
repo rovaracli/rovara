@@ -3,7 +3,7 @@
 // note the next agent step could read as an instruction. With the switch OFF the old behaviour is pinned by the unchanged fixtures of developer-task-workflow-flow.test.ts and page-comment-answers.test.ts.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ASK_RATE, orgBanKey, orgRemovedKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, orgBanKey, orgRemovedKey, projectMemberKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";
@@ -97,6 +97,100 @@ describe("a question in a task's thread with the Ask switch on", () => {
     expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
     // The task's own org is answered.
     expect(await contextOf(t)).toContain("Add a greeting");
+  });
+
+  describe("a project viewer who mentions AgentX in the task's own thread", () => {
+    const VIEWER = "U0TEAMMATE1";
+    const viewerNote = (t: Awaited<ReturnType<typeof planWaiting>>, threadTs: string, text = "what is left?") => t.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: t.taskId, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, userId: VIEWER, messageTs: "1695500002.000021", eventId: "Ev1695500002.000021", text });
+    const makeViewer = (t: Awaited<ReturnType<typeof planWaiting>>) => {
+      const id = developerIdForSlackUser(VIEWER);
+      const project = String((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { project: string }).project);
+      t.harness.db.set({ ...projectMemberKey(TEST_ORG, id, project), entityType: "MEMBERSHIP", ownerKey: id, projectName: project, grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+    };
+
+    it("switch ON: the message is kept already answered (never an instruction), is sent on as a question only, and is answered from the Slack tier with no patch text", async () => {
+      const threadTs = "1695500000.000181";
+      const readers = { diff: async () => ({ source: "pull_request" as const, files: [{ path: "src/greet.ts", additions: 4, deletions: 1 }], patches: [{ path: "src/greet.ts", patch: "@@ -1 +1 @@\n+PATCH-BODY-MARKER-9" }] }) };
+      const t = await planWaiting(threadTs, { slackAskReaders: readers });
+      makeViewer(t);
+      const note = await viewerNote(t, threadTs, "please change the retry limit to 9");
+      expect(JSON.parse(note.body)).toEqual({ outcome: "captured", askOnly: true });
+      const notes = t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatchObject({ messageTs: "1695500002.000021", answeredAt: expect.any(String) as string });
+      // No steer event: the running session is never told of it.
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("EVENT#") && JSON.stringify(item).includes("retry limit"))).toEqual([]);
+      const context = await contextOf(t, VIEWER);
+      expect(context.startsWith("This Slack thread is an AgentX task (untrusted data follows).")).toBe(true);
+      expect(context).toContain("src/greet.ts +4 -1");
+      for (const absent of ["PATCH-BODY-MARKER-9", "@@ -1 +1 @@", "diff_patch"]) expect(context, absent).not.toContain(absent);
+    });
+
+    it("switch OFF: unchanged from base, the message is refused and nothing is saved", async () => {
+      const off = await createSingleAnswerPlanBroker();
+      const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000182" };
+      seedMembership(off.db, developerIdForSlackUser("U0TEAMMATE1"));
+      const started = await off.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA_SLACK, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+      const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+      const id = developerIdForSlackUser(VIEWER);
+      const project = String((off.db.get(`DEVTASK#${taskId}`, "META") as { project: string }).project);
+      off.db.set({ ...projectMemberKey(TEST_ORG, id, project), entityType: "MEMBERSHIP", ownerKey: id, projectName: project, grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+      const note = await off.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId: VIEWER, messageTs: "1695500002.000021", eventId: "Ev1695500002.000021", text: "what is left?" });
+      expect(JSON.parse(note.body)).toEqual({ outcome: "refused" });
+      expect(off.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    });
+
+    it("switch ON: only a project VIEWER is let through the People list: a person the list denies, and a member with no viewer grant who is not on the list, are still refused", async () => {
+      const threadTs = "1695500000.000184";
+      const t = await planWaiting(threadTs);
+      seedMembership(t.harness.db, developerIdForSlackUser("U0TEAMMATE2"));
+      makeViewer(t);
+      const entry = (slack: string, role: string) => ({ developerId: developerIdForSlackUser(slack), slackUserId: slack, name: slack, role });
+      t.harness.db.set({ pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [entry(MAYA_SLACK, "owner"), entry(VIEWER, "denied")] });
+      expect(JSON.parse((await viewerNote(t, threadTs)).body)).toEqual({ outcome: "refused" });
+      const unlisted = await t.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: t.taskId, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, userId: "U0TEAMMATE2", messageTs: "1695500002.000022", eventId: "Ev1695500002.000022", text: "what is left?" });
+      expect(JSON.parse(unlisted.body)).toEqual({ outcome: "refused" });
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    });
+
+    it("switch ON: a task of another org than the viewer's is not asked about, even with a viewer grant", async () => {
+      const threadTs = "1695500000.000186";
+      const t = await planWaiting(threadTs);
+      makeViewer(t);
+      t.harness.db.set({ ...t.harness.db.get(`DEVTASK#${t.taskId}`, "META")!, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+      expect(JSON.parse((await viewerNote(t, threadTs)).body)).toEqual({ outcome: "refused" });
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    });
+
+    it("switch ON: a People list that cannot be read is not guessed at: the viewer is refused", async () => {
+      const threadTs = "1695500000.000187";
+      const t = await planWaiting(threadTs);
+      makeViewer(t);
+      t.harness.db.set({ pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 99, revision: 1, orphaned: false, people: "broken" });
+      expect(JSON.parse((await viewerNote(t, threadTs)).body)).toEqual({ outcome: "refused" });
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    });
+
+    it("switch ON: a viewer who is not on a People list (someone else is denied) is still answered", async () => {
+      const threadTs = "1695500000.000185";
+      const t = await planWaiting(threadTs);
+      makeViewer(t);
+      const entry = (slack: string, role: string) => ({ developerId: developerIdForSlackUser(slack), slackUserId: slack, name: slack, role });
+      t.harness.db.set({ pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [entry(MAYA_SLACK, "owner"), entry("U0TEAMMATE2", "denied")] });
+      expect(JSON.parse((await viewerNote(t, threadTs)).body)).toEqual({ outcome: "captured", askOnly: true });
+    });
+
+    it("switch ON: a banned viewer and a viewer in another thread are still refused", async () => {
+      const threadTs = "1695500000.000183";
+      const t = await planWaiting(threadTs);
+      makeViewer(t);
+      const wrongThread = await viewerNote(t, "1695500000.000999");
+      expect(JSON.parse(wrongThread.body)).toEqual({ outcome: "refused" });
+      const id = developerIdForSlackUser(VIEWER);
+      t.harness.db.set({ ...orgBanKey(TEST_ORG, id), orgId: TEST_ORG, developerId: id });
+      expect(JSON.parse((await viewerNote(t, threadTs)).body)).toEqual({ outcome: "refused" });
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    });
   });
 
   it("a task with no session cannot be rated, so it is answered in fixed words, not left as a note", async () => {
