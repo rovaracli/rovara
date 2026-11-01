@@ -2,6 +2,7 @@ import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, type Dynam
 import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique } from "@agentx/contracts";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
+import { REMOVE_STORED_LESSONS, storedLessonsOf } from "./outbox-lessons.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
 import { wakeAgentRun } from "./agent-run-wakeup.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, branchSyncSettleItem } from "./broker-shared.js";
@@ -63,7 +64,8 @@ export async function failOutboxOperation(
       { Update: {
         TableName: tableName,
         Key: { pk: `OUTBOX#${record.id}`, sk: "OUTBOX" },
-        UpdateExpression: "SET #status = :failed, failedAt = :now, #error = :error",
+        // A failed item has no time limit: it keeps no lessons (outbox-lessons.ts).
+        UpdateExpression: `SET #status = :failed, failedAt = :now, #error = :error${storedLessonsOf(record) ? ` ${REMOVE_STORED_LESSONS}` : ""}`,
         ...(whileOutbox === undefined ? {} : { ConditionExpression: "#status = :expected" }),
         ExpressionAttributeNames: { "#status": "status", "#error": "error" },
         ExpressionAttributeValues: {
