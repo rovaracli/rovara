@@ -70,6 +70,26 @@ describe("Suite 4: checks", () => {
     expect(cancelled.statusCode).toBe(200);
   }, 120_000);
 
+  it("refuses an archived-project retry of blocked verification: no checks run and the task does not change", async () => {
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, checkResult: () => ({ exitCode: 1, stdout: "", stderr: "1 failing" }) });
+    await atPlanReview(e2e);
+    await e2e.click("agentx_workflow_approve");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
+    const count = e2e.invocations.length;
+    const response = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/workflow/retry`, rawQueryString: "",
+      headers: { authorization: await bearerFor(SLACK_MAYA), "content-type": "application/json" },
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      body: JSON.stringify({ requestId: randomUUID(), expectedRevision: e2e.workflow().revision, instructions: "Run the checks again." }), isBase64Encoded: false });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body) as unknown).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
+    expect(e2e.invocations).toHaveLength(count);
+  }, 120_000);
+
   it.each(["PLAN", "IMPLEMENT", "REVIEW"] as const)("refuses an archived-project %s lifecycle retry without changing the task", async (mode) => {
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
     e2e.worker.failNext(`task:${mode}`, "timeout:1800000");

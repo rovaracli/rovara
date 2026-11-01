@@ -160,6 +160,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
         && canonicalJson(request.selectedProposedCheckIds) !== canonicalJson(keptProposedIds(policy)))) {
       throw agentXError("IDEMPOTENCY_CONFLICT", "this recovery cannot change the candidate or approved check selection");
     }
+    // An archived project takes no new work (f1beb9980: lifecycle restarts are refused; 48707cdb8: Rovara's own retry ends that dispatch on it): before the recovery reads or queues anything.
+    await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
     const recovery = await loadCommittedSourceRecovery(deps, access, request.expectedRevision);
     await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow: task.workflow } }, {
       requestId: request.requestId,
@@ -180,6 +182,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   if (task.workflow !== undefined && ((task.workflow.stage === "VERIFY" && task.workflow.state === "BLOCKED")
     || (workflowPublicationRetryable(task.workflow) && (task.workflow.pullRequests?.length ?? 0) === 0))) {
     const workflow = task.workflow;
+    // The checks run again as a new CHECKS run (or a native E2E round): an archived project takes no new work, whoever retries (Rovara's own retry ends that dispatch, 48707cdb8).
+    await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
     if (request.expectedRevision === undefined) {
       throw agentXError("CONFIG_INVALID", "refresh the task and include its current revision before retrying verification");
     }
