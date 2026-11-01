@@ -228,6 +228,72 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
   });
 
+  /** A chain of developers: each id merged into the next, the last a survivor. */
+  const mergeInto = (h: Harness, ids: string[]) => ids.forEach((id, index) => h.db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, ...(index < ids.length - 1 ? { mergedInto: ids[index + 1] } : {}) }));
+  const idOf = (prefix: string, n: number) => `${prefix}${String(n).padStart(2, "0")}`.padEnd(64, "0");
+  const prepared = async (h: Harness) => (await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() })).body.error as { code?: string } | undefined;
+
+  it("the hop limit and the loop check cover the merges and the link as one walk", async () => {
+    // A merge chain of four, then the link to a developer who is itself merged on: within the cap it is served, one hop over it is refused.
+    for (const [linkMerges, served] of [[3, true], [4, false]] as const) {
+      const h = await withKit();
+      const own = [guestId, idOf("a", 1), idOf("a", 2), idOf("a", 3), idOf("a", 4)];
+      mergeInto(h, own);
+      const linked = Array.from({ length: linkMerges + 1 }, (_, index) => idOf("b", index));
+      mergeInto(h, linked);
+      h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: linked[0], provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      h.db.delete(orgMemberKey(TEST_ORG, guestId));
+      if (served) expect((await prepared(h))?.code).not.toBe("FORBIDDEN");
+      else await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a relinked identity whose developer was merged elsewhere is served (within the cap), and one linked to a developer of another org is refused", async () => {
+    const h = await withKit();
+    mergeInto(h, [idOf("c", 1), idOf("c", 2)]);
+    relinkedTo(h, idOf("c", 1));
+    expect((await prepared(h))?.code).not.toBe("FORBIDDEN");
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === idOf("d", 1) ? OTHER_ORG : TEST_ORG) as never;
+    const other = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(other.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(other.db, guestId, { orgId: TEST_ORG, role: "member" });
+    seedMembership(other.db, idOf("d", 1), { orgId: OTHER_ORG, role: "member" });
+    other.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    other.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: idOf("d", 1), provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+    await refusedOnEveryRoute(other, GUEST);
+  });
+
+  /** Slack identity S reaches developer `survivor` by a merge, by an active link with its merge, or by a relink that did not restore the merge. */
+  const reaching: Array<[string, (h: Harness) => void]> = [
+    ["merged", (h) => mergedAway(h)],
+    ["linked", (h) => { mergedAway(h); h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: survivor, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" }); }],
+    ["relinked", (h) => relinkedTo(h, survivor)],
+  ];
+
+  it("a viewer grant of the developer a Slack identity reaches binds it, so the project's channel does not make it a contributor", async () => {
+    for (const [how, reach] of reaching) {
+      const h = await withKit();
+      seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+      setGrant(h.db, { ...KIT, developerId: survivor }, "viewer");
+      reach(h);
+      await refusedOnEveryRoute(h, GUEST);
+      const refused = await prepared(h);
+      expect(refused?.code, how).toBe("PROJECT_ACCESS_DENIED");
+    }
+  });
+
+  it("a contributor grant of the developer a Slack identity reaches gives it contributor (control), and the survivor's grant wins over a stale one under the Slack id", async () => {
+    for (const [how, reach] of reaching) {
+      const h = await withKit();
+      seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+      setGrant(h.db, { ...KIT, developerId: survivor }, "contributor");
+      reach(h);
+      expect((await prepared(h))?.code, how).not.toBe("PROJECT_ACCESS_DENIED");
+      setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+      expect((await prepared(h))?.code, `${how} with a stale viewer grant under the Slack id`).not.toBe("PROJECT_ACCESS_DENIED");
+    }
+  });
+
   it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
@@ -287,6 +353,33 @@ describe("Slack model access for a project viewer", () => {
       const refused = await ask(h);
       expect(refused.status, JSON.stringify(extra)).toBe(403);
       expect(h.mintKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a viewer grant of the developer the identity reaches binds it for a key too, except the read-only task answer; a contributor grant gives a key (control)", async () => {
+    const other = "9".repeat(64);
+    const reaches: Array<[string, (h: Awaited<ReturnType<typeof modelAccessInstall>>) => void]> = [
+      ["merged", (h) => h.db.set({ pk: `DEVELOPER#${viewerId}`, sk: "META", developerId: viewerId, mergedInto: other })],
+      ["relinked", (h) => h.db.set({ pk: `SIGNIN_IDENTITY#${viewerId}`, sk: "META", identityKey: viewerId, developerId: other, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" })],
+    ];
+    for (const [how, reach] of reaches) {
+      for (const grant of ["viewer", "contributor"] as const) {
+        const h = await modelAccessInstall();
+        h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+        h.db.delete(projectMemberKey(TEST_ORG, viewerId, "payments"));
+        seedMembership(h.db, other, { orgId: TEST_ORG, role: "member" });
+        setGrant(h.db, { ...KIT, developerId: other }, grant);
+        reach(h);
+        h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+        const ordinary = await ask(h);
+        expect(ordinary.status, `${how} ${grant}`).toBe(grant === "viewer" ? 403 : 200);
+        expect(h.mintKey).toHaveBeenCalledTimes(grant === "viewer" ? 0 : 1);
+        if (grant === "viewer") {
+          sharedTask(h);
+          expect((await ask(h)).status, `${how} task answer`).toBe(200);
+          expect(h.mintKey).toHaveBeenCalledTimes(1);
+        }
+      }
     }
   });
 
