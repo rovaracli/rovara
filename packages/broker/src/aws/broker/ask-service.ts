@@ -19,7 +19,7 @@ import { type AskDependencies, completeAsk, prepareAskTurn, sessionLevelPort } f
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
 import { flushDailyAskCounts } from "../../agent-sessions/ask-audit.js";
 import { createAskReaders } from "../../agent-sessions/ask-readers.js";
-import { readErasedAliases, sweepErasedAliases } from "../../agent-sessions/ask-erased-aliases.js";
+import { askAliasHashKey, readErasedAliases, scrubWithAliasHashes, sweepErasedAliases } from "../../agent-sessions/ask-erased-aliases.js";
 import { sweepExpiredAsks, type AskPerson } from "../../agent-sessions/ask-store.js";
 import { createPeekClient, lambdaPeekInvoker, type PeekClient } from "../../agent-sessions/peek-client.js";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
@@ -111,7 +111,9 @@ export function askDependenciesFor(dependencies: AwsBrokerDependencies, access: 
     store: (orgId: OrgId) => ({
       ...table, questionHashKey: questionHashKeyOf(dependencies.callbackSigningKey),
       isErased: (developerId: string) => isErasedActor(table, orgId, "rovara", { sourceId: developerId, developerId }),
-      erasedPeople: () => readErasedAliases(table, orgId, now()),
+      // The erased people are known by their label tag alone; their names and handles are kept as keyed hashes and scrubbed by hashing the text's own tokens.
+      erasedPeople: async () => (await readErasedAliases(table, orgId, now())).map((entry) => ({ developerId: `erased:${entry.tag}`, tag: entry.tag, names: [], handles: [] })),
+      scrubErased: async (text: string) => scrubWithAliasHashes(text, await readErasedAliases(table, orgId, now()), askAliasHashKey(dependencies.callbackSigningKey)),
     }),
     audit: { ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
     people: (task, askerId) => peopleOf(dependencies, task, askerId),

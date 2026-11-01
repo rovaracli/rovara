@@ -33,7 +33,7 @@ export function normaliseWords(text: string): string {
 }
 
 /** One lower-case, accent-free, look-alike-free code point for each code point of `normalised`. */
-function skeletonOf(normalised: string): string {
+export function skeletonOf(normalised: string): string {
   return Array.from(normalised, (character) => {
     const lower = Array.from(character.toLowerCase())[0] ?? character;
     const base = Array.from(lower.normalize("NFD").replace(/\p{M}/gu, ""))[0] ?? lower;

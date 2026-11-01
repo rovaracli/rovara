@@ -49,6 +49,11 @@ export interface AskStoreDependencies extends AskStoreTable {
    * aliases are kept after an erasure (privacy review): the list may be short-lived, but it must cover the window in which an answer can still be in flight.
    */
   erasedPeople(): Promise<readonly AskPerson[]>;
+  /**
+   * Scrubs the aliases of erased people that are kept only as keyed hashes (`ask-erased-aliases.ts`) from a text, by hashing the text's own tokens. Applied to the question and the answer after the names
+   * above. An answer that cannot be read refuses the write. Absent: nothing is kept that way.
+   */
+  scrubErased?(text: string): Promise<string>;
 }
 
 /** A keyed hash of the question: it only recognises the same Ask again, and cannot be looked up in a table of questions without the key. */
@@ -132,7 +137,8 @@ export async function writeAsk(deps: AskStoreDependencies, input: AskWriteInput)
   const erased = new Set<string>(known.map((alias) => alias.developerId));
   for (const person of people) if (await deps.isErased(person.developerId)) erased.add(person.developerId);
   const erasedTags = known.flatMap((alias) => (alias.tag === undefined ? [] : [alias.tag]));
-  const scrubbed = { question: scrubAskText(input.question, people, erased, erasedTags), answer: scrubAskText(input.answer, people, erased, erasedTags) };
+  const hashed = async (text: string): Promise<string> => (deps.scrubErased === undefined ? text : deps.scrubErased(text));
+  const scrubbed = { question: await hashed(scrubAskText(input.question, people, erased, erasedTags)), answer: await hashed(scrubAskText(input.answer, people, erased, erasedTags)) };
   const record = askRecordOf(input, deps.questionHashKey, scrubbed);
   const tags = mentionTagsOf(record);
   if (tags.length > ASK_MENTION_TAGS_MAX) throw new Error("an ask names too many people to index");

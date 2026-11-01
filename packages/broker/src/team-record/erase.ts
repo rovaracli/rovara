@@ -14,6 +14,7 @@ import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
 import { rememberErasedAliases } from "../agent-sessions/ask-erased-aliases.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import type { ScopeCursor } from "./store.js";
 import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
@@ -50,8 +51,8 @@ export interface ErasedPerson {
   /** Projects whose source rows may name them in an exclusion list. */
   projects?: readonly string[];
   /**
-   * The names the person was known by (display names). Kept for at most 30 days, with their source ids, so that an Ask still being answered does not write them (`ask-erased-aliases.ts`, register LI-2);
-   * then deleted. Not used anywhere else.
+   * The names the person was known by (display names). Kept for at most 30 days, with their source ids, ONLY as keyed hashes (`PurgeDependencies.askAliasKey`), so that an Ask still being answered does not write
+   * them (`ask-erased-aliases.ts`, register LI-2); then deleted. The name they chose themselves is read here too. Not used anywhere else.
    */
   names?: readonly string[];
 }
@@ -225,7 +226,9 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   async asks(context) {
     if (context.who.developerId === undefined) return true;
     // Their aliases are remembered first (30 days at most), so an answer in flight cannot write them while their Asks are being removed.
-    await rememberErasedAliases(context.deps.table, context.orgId, { developerId: context.who.developerId, names: context.who.names, handles: context.ids }, Date.parse(context.at) || Date.now());
+    // Their names come from the caller and from the name they chose themselves (the State table); everything is hashed with the install's key before it is kept, and none of it is kept raw.
+    const chosen = await readChosenName(context.deps.table.documentClient, context.deps.table.tableName, context.who.developerId).catch(() => undefined);
+    await rememberErasedAliases(context.deps.table, context.orgId, { developerId: context.who.developerId, names: [...(context.who.names ?? []), ...(chosen === undefined ? [] : [chosen])], handles: context.ids }, Date.parse(context.at) || Date.now(), context.deps.askAliasKey);
     for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
       const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) }, context.ids);
       if (result.complete) return true;

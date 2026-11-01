@@ -8,9 +8,9 @@ import { ASK_RATE, askCountKey, askErasedAliasPk, sessionRateKey, sessionAskKey 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
 
-import { handleAskServiceRoute, runAskMaintenance } from "../../packages/broker/src/aws/broker/ask-service.js";
+import { askDependenciesFor, handleAskServiceRoute, runAskMaintenance } from "../../packages/broker/src/aws/broker/ask-service.js";
 import { recordSlackAsk, takeSlackAskRates, type AskDependencies } from "../../packages/broker/src/agent-sessions/ask.js";
-import { ERASED_ALIAS_RETENTION_DAYS, readErasedAliases, rememberErasedAliases, sweepErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
+import { ERASED_ALIAS_RETENTION_DAYS, aliasHashesOf, askAliasHashKey, readErasedAliases, rememberErasedAliases, scrubWithAliasHashes, sweepErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { ASK_SWEEP_LOOKBACK_DAYS } from "../../packages/broker/src/agent-sessions/ask-store.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -167,36 +167,55 @@ describe("the Slack question: the same rates, record and audit", () => {
   });
 });
 
-describe("erased people's kept aliases (LI-2): at most 30 days, then deleted", () => {
+describe("erased people's kept aliases (LI-2): hashes only, at most 30 days, then deleted", () => {
   const table = (w: ReturnType<typeof sessionWorld>) => ({ documentClient: w.db, tableName: "state" });
+  const HASH_KEY = askAliasHashKey(KEY);
+  const raw = ["Priya Raman", "Raman", "U0PRIYA001", "priya.raman@example.com", "priyaraman"];
 
-  it("keeps the names and handles under the person's label tag only, for the same 30 days as an Ask", async () => {
+  it("keeps keyed hashes of the names and handles under the person's label tag only, never a raw name, email or Slack id, for the same 30 days as an Ask", async () => {
     const w = sessionWorld();
-    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["U0PRIYA001"] }, w.clock.now);
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["U0PRIYA001", "priya.raman@example.com"] }, w.clock.now, HASH_KEY);
     const items = w.db.find((item) => item.pk === askErasedAliasPk(ORG_A));
     expect(items).toHaveLength(1);
-    expect(JSON.stringify(items)).not.toContain(PRIYA);
+    const text = JSON.stringify(items);
+    expect(text).not.toContain(PRIYA);
+    for (const secret of raw) expect(text.toLowerCase(), secret).not.toContain(secret.toLowerCase());
     expect(items[0]!["sk"]).toMatch(/^p_[0-9a-f]{6}$/u);
+    expect(items[0]!["nameHashes"] as string[]).toHaveLength(2);
+    expect(items[0]!["handleHashes"] as string[]).toHaveLength(2);
+    for (const value of [...(items[0]!["nameHashes"] as string[]), ...(items[0]!["handleHashes"] as string[]), ...(items[0]!["mentionHashes"] as string[])]) expect(value).toMatch(/^[0-9a-f]{64}$/u);
     expect(ERASED_ALIAS_RETENTION_DAYS).toBe(30);
     expect(items[0]!["indexExpiresAt"]).toBe(Math.floor(w.clock.now / 1000) + 30 * 86_400);
     const [alias] = await readErasedAliases(table(w), ORG_A, w.clock.now);
-    expect(alias).toMatchObject({ names: ["Priya Raman"], handles: ["U0PRIYA001"], tag: items[0]!["sk"] });
-    expect(alias!.developerId.startsWith("erased:")).toBe(true);
+    expect(alias!.tag).toBe(items[0]!["sk"]);
+    // The hashes are keyed: another key makes other hashes.
+    await rememberErasedAliases(table(w), ORG_A, { developerId: ARJUN, names: ["Priya Raman"] }, w.clock.now, askAliasHashKey("z".repeat(48)));
+    const other = (await readErasedAliases(table(w), ORG_A, w.clock.now)).find((entry) => entry.tag !== alias!.tag)!;
+    expect(other.names).not.toEqual(alias!.names);
+  });
+
+  it("without a key only the label tag is kept: nothing raw, nothing hashed", async () => {
+    const w = sessionWorld();
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["U0PRIYA001"] }, w.clock.now);
+    const [item] = w.db.find((entry) => entry.pk === askErasedAliasPk(ORG_A));
+    expect(item).toMatchObject({ nameHashes: [], handleHashes: [], mentionHashes: [] });
+    expect(JSON.stringify(item).toLowerCase()).not.toContain("priya");
   });
 
   it("is merged by the erase's second pass (which carries no names) and keeps the first erasure's expiry", async () => {
     const w = sessionWorld();
-    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["a"] }, w.clock.now);
-    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, handles: ["b"] }, w.clock.now + 20 * 60_000);
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["aa"] }, w.clock.now, HASH_KEY);
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, handles: ["bb"] }, w.clock.now + 20 * 60_000, HASH_KEY);
     const [alias] = await readErasedAliases(table(w), ORG_A, w.clock.now);
-    expect(alias).toMatchObject({ names: ["Priya Raman"], handles: ["a", "b"] });
+    expect(alias!.names).toHaveLength(2);
+    expect(alias!.handles).toHaveLength(2);
     const [item] = w.db.find((entry) => entry.pk === askErasedAliasPk(ORG_A));
     expect(item!["indexExpiresAt"]).toBe(Math.floor(w.clock.now / 1000) + 30 * 86_400);
   });
 
   it("ignores an alias past its time even before the table removes it, and the sweep deletes it", async () => {
     const w = sessionWorld();
-    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"] }, w.clock.now);
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"] }, w.clock.now, HASH_KEY);
     const after = w.clock.now + 31 * 86_400_000;
     expect(await readErasedAliases(table(w), ORG_A, after)).toEqual([]);
     expect(await sweepErasedAliases(table(w), ORG_A, w.clock.now)).toBe(0);
@@ -206,8 +225,55 @@ describe("erased people's kept aliases (LI-2): at most 30 days, then deleted", (
 
   it("is per org: another org's list is not read", async () => {
     const w = sessionWorld();
-    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"] }, w.clock.now);
+    await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"] }, w.clock.now, HASH_KEY);
     expect(await readErasedAliases(table(w), "org_bbbbbbbbbbbbbbbbbbbb", w.clock.now)).toEqual([]);
+  });
+
+  describe("scrubbing by hashing the text's own tokens", () => {
+    const entry = (names: string[], handles: string[]) => ({ tag: "p_aaaaaa", ...aliasHashesOf(HASH_KEY, { names, handles }) });
+    const dana = entry(["Dana Whitfield"], ["U0DANA0001", "dana.whitfield@example.com", "danaw"]);
+    const scrub = (text: string, ...entries: Array<ReturnType<typeof entry>>) => scrubWithAliasHashes(text, entries, HASH_KEY);
+
+    it("removes the name in the spellings people use, the email, the Slack id, the login and the @mention", () => {
+      for (const text of [
+        "Dana Whitfield approved it", "dana whitfield approved it", "DANA WHITFIELD approved it", "Whitfield, Dana approved it", "Dana-Whitfield approved it", "DanaWhitfield approved it", "Dana\nWhitfield approved it",
+        "Dаna Whitfield approved it", "Dána Whitfield approved it", "@dana approved it", "@Whitfield approved it", "dana.whitfield@example.com approved it", "Dana.Whitfield@Example.com, approved it", "U0DANA0001 approved it",
+        "@U0DANA0001 approved it", "danaw approved it", "@danaw approved it",
+      ]) {
+        const out = scrub(text, dana);
+        expect(out, text).toContain("@former-member");
+        expect(out, text).toContain("approved it");
+        for (const gone of ["Dana", "dana", "Whitfield", "whitfield", "U0DANA0001", "danaw"]) expect(out, `${text} / ${gone}`).not.toContain(gone);
+      }
+    });
+
+    it("leaves other text alone: a common word, a surname or first name alone without @, other people, URLs and code", () => {
+      const mark = entry(["Mark Vale"], []);
+      for (const text of ["mark the file as done", "Vale of tears", "the dana branch", "Sam Okafor approved it"]) expect(scrub(text, mark, dana), text).toBe(text);
+      // A URL path and code identifiers hold no run that is a name or a handle.
+      expect(scrub("https://example.com/path/dana/whitfield-docs", dana)).toBe("https://example.com/path/dana/whitfield-docs");
+      expect(scrub("const whitfieldDanaX = 1;", dana)).toBe("const whitfieldDanaX = 1;");
+      expect(scrub("mark the file as done", mark)).toBe("mark the file as done");
+      expect(scrub("Dana is a common first name here", dana)).toBe("Dana is a common first name here");
+      expect(scrub("Sam Okafor approved it", mark, dana)).toBe("Sam Okafor approved it");
+      expect(scrub("danawhitfield2 is another", dana)).toBe("danawhitfield2 is another");
+      expect(scrub("nothing here", { tag: "p_bbbbbb", names: [], handles: [], mentions: [] })).toBe("nothing here");
+    });
+  });
+
+  it("a stored Ask is scrubbed with the kept hashes, read on the server, and the item holds no raw alias", async () => {
+    const w = sessionWorld();
+    const made = w.seedSession({ kind: "task", owner: PRIYA });
+    await rememberErasedAliases(table(w), ORG_A, { developerId: ARJUN, names: ["Dana Whitfield"], handles: ["U0DANA0001", "dana.whitfield@example.com"] }, w.clock.now, HASH_KEY);
+    const dependencies = { documentClient: w.db, tableName: "state", callbackSigningKey: KEY, githubPullRequests: {}, editionPolicy: { edition: "enterprise" } } as unknown as AwsBrokerDependencies;
+    const ask = askDependenciesFor(dependencies, {} as never, {} as never, { LIVE_ASK_ENABLED: "1" })!;
+    const { writeAsk } = await import("../../packages/broker/src/agent-sessions/ask-store.js");
+    const askId = `ask_${"7".repeat(20)}`;
+    await writeAsk(ask.store(ORG_A), { edition: "enterprise", orgId: ORG_A, sessionId: made.sessionId, askId, audience: "web", askedBy: PRIYA, question: "Who is Whitfield, Dana?", answer: "Dana Whitfield (dana.whitfield@example.com, U0DANA0001) did it.", contextBytes: 1, model: "m", nowMs: w.clock.now });
+    const record = w.db.get(sessionAskKey(ORG_A, made.sessionId, askId)) as Record<string, unknown>;
+    expect(record["answer"]).toBe("@former-member (@member, @former-member) did it.");
+    expect(record["question"]).toBe("Who is @former-member?");
+    expect(JSON.stringify(w.db.find((item) => String(item.pk).includes("ASKERASED")))).not.toMatch(/whitfield|dana|U0DANA/iu);
   });
 });
 
@@ -334,19 +400,35 @@ describe("the switch and the wiring", () => {
 });
 
 describe("the erase walk remembers the aliases (LI-2)", () => {
-  it("keeps the erased person's names and source ids for 30 days under their label tag, and never puts the names in the erase's second-pass item", async () => {
+  async function erased(options: { key?: string; chosenName?: string }) {
     const { erasePerson } = await import("../../packages/broker/src/team-record/erase.js");
     const { ORG_A: RECORD_ORG, world: recordWorld } = await import("../support/team-record-core.js");
     const { deleteDeps } = await import("../support/team-record-delete.js");
     const rw = recordWorld();
     const d = deleteDeps(rw);
-    const erased = "e".repeat(64);
-    await erasePerson(d.deps, RECORD_ORG, { developerId: erased, projects: ["web"], names: ["Dana Whitfield"], identities: [{ system: "slack", sourceId: "U0DANA0001" }] }, "ask-alias-1");
-    const [alias] = await readErasedAliases({ documentClient: rw.db, tableName: "TeamRecord" }, RECORD_ORG, Date.now());
-    expect(alias).toMatchObject({ names: ["Dana Whitfield"], handles: ["U0DANA0001"] });
-    expect(JSON.stringify(rw.db.find((item) => String(item.pk).includes("ASKERASED")))).not.toContain(erased);
-    const sweep = rw.db.find((item) => String(item.sk).startsWith("ERASESWEEP#"));
+    const person = "e".repeat(64);
+    if (options.chosenName !== undefined) rw.db.set({ pk: `DEVELOPER_NAME#${person}`, sk: "NAME", entityType: "DEVELOPER_NAME", developerId: person, name: options.chosenName, chosenAt: "2026-10-01T00:00:00.000Z" });
+    await erasePerson({ ...d.deps, ...(options.key === undefined ? {} : { askAliasKey: options.key }) }, RECORD_ORG, { developerId: person, projects: ["web"], names: ["Dana Whitfield"], identities: [{ system: "slack", sourceId: "U0DANA0001" }, { system: "github", sourceId: "dana.w@example.com" }] }, "ask-alias-1");
+    return { rw, RECORD_ORG, person, entries: () => readErasedAliases({ documentClient: rw.db, tableName: "TeamRecord" }, RECORD_ORG, Date.now()) };
+  }
+
+  it("keeps hashes of the names (the caller's and the one the person chose) and of the source ids for 30 days under their label tag; no raw alias, no developer id, and no names in the second-pass item", async () => {
+    const key = askAliasHashKey(KEY);
+    const t = await erased({ key, chosenName: "Dani W" });
+    const [alias] = await t.entries();
+    expect(scrubWithAliasHashes("Dana Whitfield, U0DANA0001, dana.w@example.com and @dani", [alias!], key)).toBe("@former-member, @former-member, @former-member and @former-member");
+    const kept = JSON.stringify(t.rw.db.find((item) => String(item.pk).includes("ASKERASED")));
+    for (const secret of ["Dana", "Whitfield", "U0DANA0001", "dana.w@example.com", "Dani", t.person]) expect(kept.toLowerCase(), secret).not.toContain(secret.toLowerCase());
+    const sweep = rw(t).db.find((item) => String(item.sk).startsWith("ERASESWEEP#"));
     expect(sweep.length).toBeGreaterThan(0);
     expect(JSON.stringify(sweep)).not.toContain("Dana Whitfield");
   });
+
+  it("without the install's key only the label tag is kept", async () => {
+    const t = await erased({});
+    const [alias] = await t.entries();
+    expect(alias).toMatchObject({ names: [], handles: [], mentions: [] });
+    expect(JSON.stringify(t.rw.db.find((item) => String(item.pk).includes("ASKERASED"))).toLowerCase()).not.toContain("dana");
+  });
 });
+const rw = (t: { rw: { db: { find(predicate: (item: Record<string, unknown>) => boolean): Array<Record<string, unknown>> } } }) => t.rw;
