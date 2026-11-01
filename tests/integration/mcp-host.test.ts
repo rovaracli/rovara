@@ -221,7 +221,8 @@ describe("T6 end to end: what the install refuses", () => {
     expect(body.install?.code).toBe("git_dependency");
     expect(body.install?.sentence).toContain("does not come from your registry");
     expect(runner.started().filter((task) => task.spec.purpose === "probe").length).toBe(before);
-    await expect(prober().stdio({ ...proposal, name: "git-direct", version: "1.0.0" })).rejects.toMatchObject({ code: "host_refused" });
+    // Replaces: every install failure reaching the broker as host_refused. The broker now gets the install's fixed code and shows its own sentence for it.
+    await expect(prober().stdio({ ...proposal, name: "git-direct", version: "1.0.0" })).rejects.toMatchObject({ code: "install_failed", detail: { installCode: "git_dependency" } });
   }, 180_000);
   it("refuses a package whose tarball is not the checksum the admin typed, and shows the checksum it really has", async () => {
     const wrong = `sha512-${"B".repeat(86)}==`;

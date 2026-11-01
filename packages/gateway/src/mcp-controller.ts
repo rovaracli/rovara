@@ -31,6 +31,11 @@ export interface ApprovedServer {
   spec: McpStdioSpec;
   /** The tools hash the admin approved. A started task whose tools hash differs is stopped (design section 6, "First call"). */
   toolsHash: string;
+  /**
+   * Fix round 2: 2 (the default) when `toolsHash` covers the tools' descriptions; 1 for an approval made before that, whose hash covers names and schemas only. Version 1 is compared the old way
+   * (`legacyToolsHashOf`), and the descriptions are held to the baseline the controller records at the first start (see `PauseStore.baseline`).
+   */
+  toolsHashVersion?: 1 | 2 | undefined;
   /** The version of the server's secret, when it has one. A different version restarts the task (secret replaced). */
   secretVersion?: string | undefined;
   /** The name or ARN of the server's secret in the secret store: how the task definition names it. */
@@ -42,6 +47,14 @@ export interface ControllerRegistry {
   approved(serverId: string): Promise<ApprovedServer | undefined>;
   /** Told when a started server's tools are not the ones approved. The admin sees the diff; the server is not served until they look. */
   toolsChanged?(serverId: string, change: { approved: string; observed: string }): Promise<void>;
+  /**
+   * The secret a TEST of a proposal reads (T9). `serverId` is the proposal's own id, named by the broker. It resolves only for an id that has no entry yet (a proposal being tested for the
+   * first time) or whose entry is still waiting for approval; for an approved, disabled or other entry it answers undefined, so an approved server's secret never goes into a test of
+   * a package the broker names. Absent, or undefined: the test runs with no secrets (and a package that declares secret names then cannot start).
+   * Fix round 2 (N1): a PAUSED entry (tools changed after approval) also resolves, but only for the review and re-approve test of that same server: `test` must be its own pinned package, same
+   * name, version, arguments and secret names, with both pinned hashes equal. A test of any other package under that id gets no secret.
+   */
+  probeSecret?(serverId: string, test?: { spec: McpStdioProposal; pinned?: { lockfileHash: string; bundleHash: string } | undefined }): Promise<string | undefined>;
 }
 
 /** What a task definition is made from. */
@@ -136,7 +149,48 @@ export const CONTROLLER_LIMITS: ControllerLimits = {
   maxFailures: 3, failureWindowMs: 10 * 60_000, backoffMs: 10 * 60_000,
 };
 
+/**
+ * What the controller tells the broker has happened to a package-run server (T10). Fixed words, hashes and counts; never a package's output. The broker records each as an audit event and
+ * keeps the last few for the "recent starts" line. The sink must not throw and is not waited for.
+ */
+export type ControllerEvent =
+  | { type: "task_started"; serverId: string; trigger: "call" | "warm" }
+  | { type: "task_stopped"; serverId: string; reason: StopReason }
+  | { type: "changed_needs_review"; serverId: string; approved: string; observed: string };
+
+/**
+ * Why a server is not started (fix round 1, S2). When a started task shows tools other than the approved ones, the CONTROLLER records a pause right then, keyed by the approval it saw (the tools
+ * hash and the bundle hash). While the registry still names that very approval, a call or a warm-up is refused at once, with no task started: the server does not restart in a loop while it waits for
+ * an admin. An admin approving the new tools changes the approval, which no longer matches, and the pause is removed by the next start. The registry itself is not written by the controller (its role
+ * only reads the approvals); the broker moves the entry to `changed_needs_review` from the event the controller also writes.
+ */
+export interface PauseStore {
+  get(serverId: string): Promise<{ toolsHash: string; bundleHash: string } | undefined>;
+  set(serverId: string, pause: { toolsHash: string; bundleHash: string }): Promise<void>;
+  clear(serverId: string): Promise<void>;
+  /**
+   * Fix round 2: for an approval made before descriptions were hashed. At the first start with no change in names and schemas, the controller records the hash of what the tools say NOW (this is
+   * trust on first use: a description changed between the approval and that start is not caught, and nothing earlier than that start can be). Later starts compare to it, and a difference
+   * pauses the server like any other tools change. It names the approval it was made for, so it never applies to another.
+   */
+  baseline(serverId: string): Promise<{ approvedHash: string; bundleHash: string; contentHash: string } | undefined>;
+  setBaseline(serverId: string, baseline: { approvedHash: string; bundleHash: string; contentHash: string }): Promise<void>;
+}
+
+export function memoryPauses(): PauseStore {
+  const held = new Map<string, { toolsHash: string; bundleHash: string }>();
+  const bases = new Map<string, { approvedHash: string; bundleHash: string; contentHash: string }>();
+  return {
+    get: async (serverId) => held.get(serverId), set: async (serverId, pause) => { held.set(serverId, pause); }, clear: async (serverId) => { held.delete(serverId); },
+    baseline: async (serverId) => bases.get(serverId), setBaseline: async (serverId, baseline) => { bases.set(serverId, baseline); },
+  };
+}
+
 export interface McpControllerOptions {
+  /** Where a pause after a tools change is kept (the install's table in production, so a restarted controller keeps it). Default: in memory. */
+  pauses?: PauseStore | undefined;
+  /** Told of the events above. Absent: only the log records them. */
+  events?: ((event: ControllerEvent) => Promise<void>) | undefined;
   /** The bearer token the broker presents. */
   token: string;
   registry: ControllerRegistry;
@@ -155,6 +209,8 @@ export interface McpControllerOptions {
   probeSlots?: ProbeSlots | undefined;
   /** The hash of a tools list that the approval binds (the broker's `summariseProbe`). */
   toolsHashOf: (tools: ProbedTool[]) => string;
+  /** The hash of names and schemas only, for an approval of version 1 (made before descriptions were hashed). Absent: such an approval is treated as changed. */
+  legacyToolsHashOf?: ((tools: ProbedTool[]) => string) | undefined;
   limits?: Partial<ControllerLimits> | undefined;
   /** How often to look at a task that is starting. */
   pollMs?: number | undefined;
@@ -167,7 +223,7 @@ export interface McpControllerOptions {
 
 /** A refusal the controller can name to the broker as a fixed word. */
 export class ControllerError extends Error {
-  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed") {
+  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed" | "destination_refused" | "paused") {
     super(code);
     this.name = "ControllerError";
   }
@@ -277,6 +333,9 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const limits: ControllerLimits = { ...CONTROLLER_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => undefined);
+  const pauses = options.pauses ?? memoryPauses();
+  /** Tells the broker; never waits, never throws. */
+  const emit = (event: ControllerEvent): void => { if (options.events !== undefined) void Promise.resolve().then(() => options.events!(event)).catch(() => undefined); };
   const pollMs = options.pollMs ?? 1_000;
   const resources = options.resources ?? staticServerResources;
   const probeSlots = options.probeSlots ?? memoryProbeSlots(2);
@@ -412,7 +471,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /** Starts a serve or probe task for a bundle and waits until its bridge is ready. On any failure the task is stopped and its token revoked. */
-  async function launch(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined; isCancelled: () => boolean; onTask: (taskId: string) => void; reason: () => StopReason }): Promise<Launched> {
+  async function launch(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined; trigger?: "call" | "warm"; isCancelled: () => boolean; onTask: (taskId: string) => void; reason: () => StopReason }): Promise<Launched> {
     const { token, key } = addGrant({ purpose: input.kind, bundleHash: input.spec.bundleHash });
     // One nonce for each container that needs the token. RunTask carries these and nothing secret.
     const fetchNonce = issueNonce(key, token);
@@ -420,7 +479,10 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     let taskId: string | undefined;
     try {
       let made: { family: string; taskDefinition: string; securityGroupId?: string | undefined };
-      try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch { throw new ControllerError("resources_failed"); }
+      try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch (error) {
+        // A destination the install does not allow is the admin's to fix, so it has its own code (and, to the broker, its own fixed sentence); anything else is the cloud's.
+        throw new ControllerError((error as { name?: unknown } | null)?.name === "DestinationRefused" ? "destination_refused" : "resources_failed");
+      }
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const bundleHash = input.spec.bundleHash;
       taskId = await startTask({
@@ -435,6 +497,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         },
       }, (started) => { fetchNonce.entry.taskId = started; serverNonce.entry.taskId = started; input.onTask(started); if (input.kind !== "serve") activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: input.id, taskId, purpose: input.kind });
+      if (input.kind === "serve") emit({ type: "task_started", serverId: input.id, trigger: input.trigger ?? "call" });
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const base = await waitRunning(taskId, input.isCancelled);
       await waitReady(base, token, bundleHash, input.isCancelled);
@@ -445,6 +508,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await runner.stop(taskId, input.reason()).catch(() => undefined);
         activeTaskIds.delete(taskId);
         log("mcp_controller.task_stopped", { serverId: input.id, taskId, reason: input.reason() });
+        if (input.kind === "serve") emit({ type: "task_stopped", serverId: input.id, reason: input.reason() });
       }
       if (error instanceof ControllerError) throw error;
       throw new ControllerError("start_failed");
@@ -461,6 +525,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     if (entry.taskId !== undefined) {
       await runner.stop(entry.taskId, reason).catch(() => undefined);
       log("mcp_controller.task_stopped", { serverId, taskId: entry.taskId, reason });
+      emit({ type: "task_stopped", serverId, reason });
     }
     // A task that is still starting finds itself cancelled and stops what it started; its end is awaited so nothing is left behind.
     await entry.ready.catch(() => undefined);
@@ -469,7 +534,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const sameApproval = (entry: Serving, approved: ApprovedServer): boolean => entry.bundleHash === approved.spec.bundleHash && entry.secretVersion === approved.secretVersion;
 
   /** The running serve task for an approved entry, started if it is not. The table entry exists BEFORE the first await, so concurrent first requests share one start. */
-  async function ensureServing(serverId: string, approved: ApprovedServer): Promise<Serving> {
+  async function ensureServing(serverId: string, approved: ApprovedServer, trigger: "call" | "warm" = "call"): Promise<Serving> {
     for (;;) {
       if (closed) throw new ControllerError("closed");
       const existing = serving.get(serverId);
@@ -477,6 +542,14 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       if (sameApproval(existing, approved)) { existing.lastUsed = now(); await existing.ready; return existing; }
       // The approval moved while a task was up (another bundle, or a replaced secret): that task is not the approved one any more.
       await stopServing(serverId, existing.bundleHash === approved.spec.bundleHash ? "secret_replaced" : "approval_changed");
+    }
+    // A server whose tools changed after approval stays paused until its approval changes: no task, no restart loop. An unreadable pause is a refusal, not a start.
+    const paused = await pauses.get(serverId).catch(() => "unreadable" as const);
+    if (paused === "unreadable") throw new ControllerError("start_failed");
+    if (paused !== undefined) {
+      if (paused.toolsHash === approved.toolsHash && paused.bundleHash === approved.spec.bundleHash) throw new ControllerError("paused");
+      // The admin approved something else (the new tools, or another bundle): the pause is over.
+      await pauses.clear(serverId).catch(() => undefined);
     }
     if (inBackoff(serverId)) throw new ControllerError("keeps_stopping");
     const victims: string[] = [];
@@ -490,17 +563,38 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     entry.ready = (async () => {
       await Promise.all(making);
       const spec: RunnerSpec = { name: approved.spec.name, args: approved.spec.args, secretEnv: approved.spec.secretEnv, destinations: approved.spec.destinations, size: approved.spec.size, bundleHash: approved.spec.bundleHash };
-      const launched = await launch({ kind: "serve", id: serverId, spec, secretRef: approved.secretRef, isCancelled: () => entry.cancelled || closed, onTask: (taskId) => { entry.taskId = taskId; }, reason: () => (entry.cancelled ? "disabled" : "failed") });
+      const launched = await launch({ kind: "serve", id: serverId, spec, secretRef: approved.secretRef, trigger, isCancelled: () => entry.cancelled || closed, onTask: (taskId) => { entry.taskId = taskId; }, reason: () => (entry.cancelled ? "disabled" : "failed") });
       entry.token = launched.token;
       entry.grantKey = launched.grantKey;
       entry.base = launched.base;
       // The tools must be the ones the admin approved. If they are not, the task is stopped and the admin looks at the difference.
       let observed: string;
-      try { observed = options.toolsHashOf(await listTools(launched.base, launched.token)); } catch { await runner.stop(launched.taskId, "failed").catch(() => undefined); revoke(launched.grantKey); throw new ControllerError("start_failed"); }
-      if (observed !== approved.toolsHash) {
+      let changed: boolean;
+      try {
+        const listed = await listTools(launched.base, launched.token);
+        observed = options.toolsHashOf(listed);
+        if ((approved.toolsHashVersion ?? 2) === 2) changed = observed !== approved.toolsHash;
+        else {
+          // An approval from before descriptions were hashed: names and schemas must still match what was approved; the descriptions are held to the baseline recorded at the first such start. An
+          // unreadable or unwritable baseline is a refusal (the start fails), never a start without the check.
+          const legacy = options.legacyToolsHashOf?.(listed);
+          if (legacy === undefined || legacy !== approved.toolsHash) changed = true;
+          else {
+            const base = await pauses.baseline(serverId);
+            if (base !== undefined && base.approvedHash === approved.toolsHash && base.bundleHash === approved.spec.bundleHash) changed = base.contentHash !== observed;
+            else { await pauses.setBaseline(serverId, { approvedHash: approved.toolsHash, bundleHash: approved.spec.bundleHash, contentHash: observed }); changed = false; }
+          }
+        }
+      } catch { await runner.stop(launched.taskId, "failed").catch(() => undefined); revoke(launched.grantKey); throw new ControllerError("start_failed"); }
+      if (changed) {
         await runner.stop(launched.taskId, "tools_changed").catch(() => undefined);
         revoke(launched.grantKey);
         log("mcp_controller.tools_changed", { serverId });
+        // Paused right here, by the controller that saw it (S2): before anything else, so a failure below cannot leave the server free to restart.
+        await pauses.set(serverId, { toolsHash: approved.toolsHash, bundleHash: approved.spec.bundleHash }).catch(() => { log("mcp_controller.pause_not_kept", { serverId }); });
+        emit({ type: "task_stopped", serverId, reason: "tools_changed" });
+        unreported.set(serverId, { approved: approved.toolsHash, observed, bundleHash: approved.spec.bundleHash });
+        emit({ type: "changed_needs_review", serverId, approved: approved.toolsHash, observed });
         await options.registry.toolsChanged?.(serverId, { approved: approved.toolsHash, observed }).catch(() => undefined);
         throw new ControllerError("tools_changed");
       }
@@ -589,16 +683,18 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /** The install-then-probe (or probe-only, when the bundle is pinned) a proposal and an approval need. */
-  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined, jobCancelled: () => boolean): Promise<
-    { ok: true; tools: ProbedTool[]; integrity: string; lockfileHash: string; bundleHash: string } | { ok: false; install?: InstallOutcome & { ok: false } }
+  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined, jobCancelled: () => boolean, secretRef?: string): Promise<
+    { ok: true; tools: ProbedTool[]; integrity: string; lockfileHash: string; bundleHash: string; installed?: { packageCount: number; unpackedBytes: number } } | { ok: false; install?: InstallOutcome & { ok: false } }
   > {
     let lockfileHash: string;
     let bundleHash: string;
     let integrity: string;
+    let installed: { packageCount: number; unpackedBytes: number } | undefined;
     if (pinned === undefined) {
       const outcome = await runInstall(proposal, jobCancelled);
       if (!outcome.ok) return { ok: false, install: outcome };
       ({ lockfileHash, bundleHash, integrity } = outcome.report);
+      installed = { packageCount: outcome.report.packageCount, unpackedBytes: outcome.report.unpackedBytes };
     } else {
       // An approval probes the bundle it pinned. Nothing is installed again.
       if (proposal.integrity === undefined || !await options.bundles.has(pinned.bundleHash)) return { ok: false };
@@ -606,8 +702,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       integrity = proposal.integrity;
     }
     const probeId = `probe${createHash("sha256").update(`${bundleHash}${now()}${Math.random()}`).digest("hex").slice(0, 10)}`;
-    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, undefined, jobCancelled);
-    return { ok: true, tools, integrity, lockfileHash, bundleHash };
+    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, secretRef, jobCancelled);
+    return { ok: true, tools, integrity, lockfileHash, bundleHash, ...(installed === undefined ? {} : { installed }) };
   }
 
   function track<T>(job: Promise<T>): Promise<T> {
@@ -619,10 +715,13 @@ export function createMcpController(options: McpControllerOptions): McpControlle
 
   // ---- the broker's routes -----------------------------------------------------------------------------------
   async function handleProbe(req: IncomingMessage, res: ServerResponse, installOnly: boolean): Promise<void> {
-    let body: { spec?: unknown; pinned?: unknown } | undefined;
+    let body: { spec?: unknown; pinned?: unknown; serverId?: unknown } | undefined;
     try { body = JSON.parse((await readBytes(req, limits.bodyBytes)).toString("utf8")) as typeof body; } catch { send(res, 400, { error: "bad_request" }); return; }
     const parsed = McpStdioProposalSchema.safeParse(body?.spec);
     if (!parsed.success) { send(res, 400, { error: "bad_spec" }); return; }
+    // The id of the proposal being tested, named by the broker so a package that declares secrets can be tested with them. Only the shape of a server id is accepted.
+    const proposalId = body?.serverId;
+    if (proposalId !== undefined && (typeof proposalId !== "string" || !/^mcp[a-z0-9]{6,24}$/u.test(proposalId))) { send(res, 400, { error: "bad_spec" }); return; }
     let pinned: { lockfileHash: string; bundleHash: string } | undefined;
     if (body?.pinned !== undefined) {
       const candidate = body.pinned as { lockfileHash?: unknown; bundleHash?: unknown };
@@ -640,13 +739,15 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           const outcome = await runInstall(parsed.data, () => overtime);
           return { status: 200, body: outcome.ok ? { ok: true, ...outcome.report } : outcome };
         }
-        const result = await probe(parsed.data, pinned, () => overtime);
+        // A test of a proposal with secret names reads the secret the broker stored for the proposal (see `probeSecret`). The lookup failing is "no secret", which stops the start.
+        const secretRef = parsed.data.secretEnv.length === 0 || proposalId === undefined ? undefined : await options.registry.probeSecret?.(proposalId, { spec: parsed.data, pinned }).catch(() => undefined);
+        const result = await probe(parsed.data, pinned, () => overtime, secretRef);
         if (!result.ok) return { status: 200, body: { error: "host_refused", ...(result.install === undefined ? {} : { install: result.install }) } };
-        return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash } };
+        return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash, ...(result.installed === undefined ? {} : { installed: result.installed }) } };
       } catch (error) {
-        // The task's own text is never passed on: it can hold paths and registry addresses.
+        // The task's own text is never passed on: it can hold paths and registry addresses. Only a refused destination is named: it is the admin's to fix.
         log("mcp_controller.probe_failed", { error: error instanceof ControllerError ? error.code : "unknown" });
-        return { status: 200, body: { error: "host_refused" } };
+        return { status: 200, body: { error: "host_refused", ...(error instanceof ControllerError && error.code === "destination_refused" ? { reason: "destination_refused" } : {}) } };
       } finally {
         await release().catch(() => undefined);
       }
@@ -706,7 +807,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       const existing = serving.get(serverId);
       if (existing !== undefined && sameApproval(existing, approved)) { existing.lastUsed = now(); send(res, 200, { status: existing.base === undefined ? "starting" : "ready" }); return; }
       // A start without a call: it goes on after this answer, and a failure is counted like any other.
-      void track(ensureServing(serverId, approved).catch((error: unknown) => { log("mcp_controller.warm_failed", { serverId, error: error instanceof ControllerError ? error.code : "unknown" }); }));
+      void track(ensureServing(serverId, approved, "warm").catch((error: unknown) => { log("mcp_controller.warm_failed", { serverId, error: error instanceof ControllerError ? error.code : "unknown" }); }));
       send(res, 202, { status: "starting" });
       return;
     }
@@ -718,7 +819,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     } catch (error) {
       const code = error instanceof ControllerError ? error.code : "start_failed";
       log("mcp_controller.start_failed", { serverId, error: code });
-      if (code === "tools_changed") send(res, 409, { error: "needs_review" });
+      if (code === "tools_changed" || code === "paused") send(res, 409, { error: "needs_review" });
       else if (code === "keeps_stopping") send(res, 503, { error: "keeps_stopping" });
       else send(res, 503, { error: "server_unavailable" });
       return;
@@ -825,11 +926,24 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   // ---- reconcile ---------------------------------------------------------------------------------------------
+  /**
+   * Fix round 2 (re-check N3): the pauses whose "changed, needs review" event this controller made but has not seen taken. The event is sent without waiting and can be lost; the pause itself is
+   * safe either way, but the admin only sees a card once the broker moves the entry. Each pass re-sends the event for a pause whose approval is still the registry's (the entry has not moved yet);
+   * once the registry no longer approves it, or approves something else, the server is dropped from the list. Held in memory: a restart forgets it, and the next call that is refused re-adds it.
+   */
+  const unreported = new Map<string, { approved: string; observed: string; bundleHash: string }>();
+
   async function reconcile(): Promise<void> {
     if (closed || sweeping) return;
     sweeping = true;
     try {
       const at = now();
+      for (const [serverId, pending] of [...unreported]) {
+        let approved: ApprovedServer | undefined;
+        try { approved = await options.registry.approved(serverId); } catch { continue; }
+        if (approved === undefined || approved.toolsHash !== pending.approved || approved.spec.bundleHash !== pending.bundleHash) { unreported.delete(serverId); continue; }
+        emit({ type: "changed_needs_review", serverId, approved: pending.approved, observed: pending.observed });
+      }
       // 1. Tasks this controller is serving: idle, too old, or dead.
       for (const entry of [...serving.values()]) {
         if (entry.cancelled || entry.base === undefined) continue;
@@ -843,6 +957,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           if (serving.get(entry.serverId) === entry) { serving.delete(entry.serverId); revoke(entry.grantKey); recordFailure(entry.serverId); }
           await runner.stop(entry.taskId, "crash").catch(() => undefined);
           log("mcp_controller.task_stopped", { serverId: entry.serverId, taskId: entry.taskId, reason: "crash" });
+          emit({ type: "task_stopped", serverId: entry.serverId, reason: "crash" });
         }
       }
       // 2. The cloud's own list of tasks. If it cannot be read, nothing is judged from it.
@@ -861,6 +976,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             if (alive) continue;
             await runner.stop(task.taskId, "leftover").catch(() => undefined);
             log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            if (task.purpose === "serve") emit({ type: "task_stopped", serverId: task.serverId, reason: "leftover" });
             continue;
           }
           const entry = task.purpose === "serve" ? [...serving.values()].find((candidate) => candidate.taskId === task.taskId) : undefined;
@@ -870,6 +986,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             if ((startsInFlight.get(task.serverId) ?? 0) > 0) continue;
             await runner.stop(task.taskId, "leftover").catch(() => undefined);
             log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            if (task.purpose === "serve") emit({ type: "task_stopped", serverId: task.serverId, reason: "leftover" });
             continue;
           }
           if (task.purpose !== "serve") {

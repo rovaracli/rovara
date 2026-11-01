@@ -11,7 +11,7 @@ import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
+import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, RootRefusedError, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
 import { orgMcpServerSecretName } from "../connections/org-secrets.js";
 import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { installEnvironmentName } from "../org/resolve.js";
@@ -19,8 +19,10 @@ import { secretArnResolver, bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFro
 import { destinationResolver } from "./destinations.js";
 import { dynamoInstanceLeases } from "./instance-leases.js";
 import { dynamoProbeSlots } from "./probe-slots.js";
+import { dynamoControllerEvents } from "./events.js";
+import { dynamoPauses } from "./pauses.js";
 import { randomBytes } from "node:crypto";
-import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
+import { dynamoMcpServerStore, legacyToolsHash, summariseProbe } from "../context-sources/mcp-servers.js";
 
 function required(env: Record<string, string | undefined>, name: string): string {
   const value = env[name];
@@ -40,13 +42,32 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       if (spec === undefined) return undefined;
       // The secret's full ARN (ECS needs it to read one key of the JSON secret). A secret that cannot be resolved leaves no reference, and then a server that declares secrets does not start.
       const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
-      return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef };
+      return { spec, toolsHash: entry.probe.toolsHash, toolsHashVersion: entry.probe.hashVersion === 2 ? 2 : 1, secretVersion: entry.secretVersion, secretRef };
+    },
+    async probeSecret(serverId, test): Promise<string | undefined> {
+      if (secretArn === undefined) return undefined;
+      // The broker stores a proposal's secrets under the proposal's id BEFORE the test. That secret is read by a test only while the proposal has no entry yet or its entry still waits for
+      // approval: the secret of an approved or disabled entry never goes into a test of a package the caller names.
+      // Fix round 2 (N1): the one other case is the review and re-approve test of a PAUSED stdio entry, which has secrets and must be tested to be looked at. It gets the secret only when the test
+      // is that entry's own pinned package (same name, version, arguments, secret names and both pinned hashes); anything else under that id gets none.
+      const entry = await store.get(org, serverId);
+      if (entry !== undefined && entry.status === "changed_needs_review") {
+        const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
+        if (entry.hasSecret !== true || pinned === undefined || test === undefined || test.pinned === undefined) return undefined;
+        const same = test.spec.name === pinned.name && test.spec.version === pinned.version && test.spec.registry === pinned.registry
+          && JSON.stringify(test.spec.args) === JSON.stringify(pinned.args) && JSON.stringify(test.spec.secretEnv) === JSON.stringify(pinned.secretEnv)
+          && test.pinned.lockfileHash === pinned.lockfileHash && test.pinned.bundleHash === pinned.bundleHash;
+        if (!same) return undefined;
+      } else if (entry !== undefined && entry.status !== "awaiting_approval") return undefined;
+      return secretArn(serverId).catch(() => undefined);
     },
   };
 }
 
 /** The hash the approval binds, computed the way the broker computes it for what the admin was shown. */
 export const toolsHashOf = (tools: Parameters<typeof summariseProbe>[0]): string => summariseProbe(tools, 0).toolsHash;
+/** The hash an approval made before descriptions were hashed carries (names and schemas only). */
+export const legacyToolsHashOf = (tools: Parameters<typeof summariseProbe>[0]): string => legacyToolsHash(summariseProbe(tools, 0));
 
 export interface ControllerConfig {
   brokerPort: number;
@@ -122,7 +143,7 @@ export interface StartDependencies {
 export async function start(dependencies: StartDependencies = {}): Promise<void> {
   const identity = dependencies.identity ?? { getuid: () => process.getuid?.(), getgid: () => process.getgid?.(), geteuid: () => process.geteuid?.(), getegid: () => process.getegid?.() };
   // Not root, and not group root: the controller runs no customer code and needs no privilege. It refuses before it reads a secret or opens a port.
-  if (runsAsRoot(identity)) throw new Error("the MCP controller must not run as root");
+  if (runsAsRoot(identity)) throw new RootRefusedError("the MCP controller");
   const env = dependencies.env ?? process.env;
   const config = controllerConfigFromEnv(env);
   const token = env.MCP_HOST_TOKEN;
@@ -141,17 +162,18 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
   const installEnvironment = installEnvironmentName(env);
   const log = (event: string, fields: Record<string, string | number>): void => { console.log(JSON.stringify({ component: "mcp-controller", event, ...fields })); };
   const ecs = new sdk.ECSClient({});
+  const events = dynamoControllerEvents({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), log });
   const resources = ecsServerResources({
     definitions: ecsDefinitionApiFromSdk(sdk, ecs), groups: ec2GroupApiFromSdk(new EC2Client({})), vpcId: config.vpcId, image: config.runnerImage, executionRoleArn: config.executionRoleArn,
     logGroup: config.logGroup, region: config.region,
     endpoints: { endpointGroupIds: config.endpointGroupIds, s3PrefixListId: config.s3PrefixListId, controllerGroupId: config.controllerGroupId, controllerPort: config.runnerPort },
     resolveDestinations: destinationResolver({ installCidrs: config.privateCidrs, rovaraCidrs: config.rovaraCidrs }),
-    // Counts only: the audit event with the host names is the audit task's (T10).
-    onEgressChange: (change) => log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }),
+    // The log gets counts only; the audit event (with the approved names and the addresses) goes to the broker through the events partition.
+    onEgressChange: (change) => { log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }); void events.egress(change); },
   });
   const controller = createMcpController({
-    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
-    controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
+    token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
+    controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, legacyToolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
     leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),
   });
@@ -162,5 +184,5 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
 }
 
 if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  start().catch((error: unknown) => { console.error(JSON.stringify({ component: "mcp-controller", event: "start_failed", error: error instanceof Error ? error.message : "unknown" })); process.exit(1); });
+  start().catch((error: unknown) => { console.error(JSON.stringify({ component: "mcp-controller", event: "start_failed", ...(error instanceof RootRefusedError ? { code: error.code } : {}), error: error instanceof Error ? error.message : "unknown" })); process.exit(1); });
 }

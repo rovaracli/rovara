@@ -9,10 +9,11 @@ import { readConnection, readConnectionToken, type OrgConnectionDeps } from "../
 import type { AgentCaller } from "../agents/access.js";
 import { agentXError, type Edition, type OrgId } from "@agentx/contracts";
 import { dynamoCitationStore } from "./citations.js";
+import { dynamoControllerEventStore, drainControllerEvents, type DrainDependencies } from "./controller-events.js";
 import { dynamoMcpServerStore, probeLimiter, stdioAvailable, type McpServerDependencies, type McpServerSecrets } from "./mcp-servers.js";
 import { dynamoResultStore } from "./quotes.js";
 import type { ContextSourcesRuntime } from "./runtime.js";
-import { gatewayProber, gatewayServerPort, hostProbeClient, sourceEnvironment, type ConnectionLookup, type McpHostEndpoint } from "./server-port.js";
+import { gatewayProber, gatewayServerPort, hostControlClient, hostProbeClient, prewarmStdioServers, sourceEnvironment, type ConnectionLookup, type McpHostEndpoint } from "./server-port.js";
 import type { ContextSourceRouteDependencies } from "./settings-routes.js";
 import { dynamoContextSourceStore } from "./store.js";
 
@@ -64,29 +65,43 @@ export function connectionLookupFromStore(deps: OrgConnectionDeps): ConnectionLo
   };
 }
 
-export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextSourcesRuntime["teamSink"]; teamSearch?: ContextSourcesRuntime["teamSearch"] }): ContextSourcesRuntime {
+/** When the host says a package-run server is paused, record the controller's events and move the entry to `changed_needs_review` now (bounded, never throws). Only where package-run servers are on. */
+function needsReviewHook(deps: Common & { controllerEventAudit?: DrainDependencies["audit"] }, servers: ReturnType<typeof dynamoMcpServerStore>): Pick<Parameters<typeof gatewayServerPort>[0], "onHostNeedsReview"> {
+  if (deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) return {};
+  const events = dynamoControllerEventStore(deps);
+  return { onHostNeedsReview: (orgId) => { void drainControllerEvents({ events, servers, audit: deps.controllerEventAudit, now: deps.now }, orgId).catch(() => undefined); } };
+}
+
+export function createContextSourcesRuntime(deps: Common & { controllerEventAudit?: DrainDependencies["audit"]; teamSink?: ContextSourcesRuntime["teamSink"]; teamSearch?: ContextSourcesRuntime["teamSearch"] }): ContextSourcesRuntime {
   const servers = dynamoMcpServerStore(deps);
   return {
-    servers: gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) }),
+    servers: gatewayServerPort({ ...needsReviewHook(deps, servers), edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) }),
     citations: dynamoCitationStore(deps), results: dynamoResultStore(deps),
+    // The host is called only where package-run servers are on; elsewhere there is nothing to warm.
+    ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : {
+      prewarm: (orgId, serverIds) => prewarmStdioServers({ host: hostControlClient(deps.mcpHost!), servers, edition: deps.edition, stdioEnabled: deps.stdioEnabled }, orgId, serverIds),
+    }),
     ...(deps.teamSink === undefined ? {} : { teamSink: deps.teamSink }), ...(deps.teamSearch === undefined ? {} : { teamSearch: deps.teamSearch, teamRecordAvailable: true }),
   };
 }
 
-export function createContextSourceRouteDependencies(deps: Common & { requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"]; discoverAllowed?: ContextSourceRouteDependencies["discoverAllowed"] }): ContextSourceRouteDependencies {
+export function createContextSourceRouteDependencies(deps: Common & { controllerEventAudit?: DrainDependencies["audit"]; requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"]; discoverAllowed?: ContextSourceRouteDependencies["discoverAllowed"] }): ContextSourceRouteDependencies {
   const servers = dynamoMcpServerStore(deps);
-  const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) });
+  const port = gatewayServerPort({ ...needsReviewHook(deps, servers), edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) });
   return {
     store: dynamoContextSourceStore(deps), env: sourceEnvironment({ edition: deps.edition, connections: deps.connections, servers, port }), now: deps.now,
     requireProjectRole: deps.requireProjectRole, table: { documentClient: deps.documentClient, tableName: deps.tableName }, ...(deps.discoverAllowed === undefined ? {} : { discoverAllowed: deps.discoverAllowed }), ...(deps.audit === undefined ? {} : { audit: deps.audit }),
   };
 }
 
-export function createMcpServerDependencies(deps: Common & { audit?: McpServerDependencies["audit"]; secondAdminToApprove?: boolean }): McpServerDependencies {
+export function createMcpServerDependencies(deps: Common & { audit?: McpServerDependencies["audit"]; secondAdminToApprove?: boolean; controllerEventAudit?: DrainDependencies["audit"] }): McpServerDependencies {
   return {
     store: dynamoMcpServerStore(deps), edition: deps.edition, now: deps.now, probeAllowed: probeLimiter({ max: 10, windowMs: 600_000, now: deps.now }),
     // The host is handed to the prober only when package-run servers are switched on: with it off the broker never calls the host.
     secrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled,
+    // The controller's events are read only where package-run servers are on.
+    ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : { controllerEvents: { store: dynamoControllerEventStore(deps), audit: deps.controllerEventAudit } }),
+    ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : { host: hostControlClient(deps.mcpHost) }),
     prober: gatewayProber({ ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : { host: hostProbeClient(deps.mcpHost) }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) }),
     ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.secondAdminToApprove === undefined ? {} : { secondAdminToApprove: deps.secondAdminToApprove }),
   };

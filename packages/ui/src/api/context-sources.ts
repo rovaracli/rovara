@@ -19,12 +19,33 @@ const SourcesReader = z.object({ project: z.string().max(100), document: z.objec
 export const DiscoveredReader = z.object({ tools: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), schemaHash: z.string().length(64), annotation: z.enum(["read_only", "unannotated", "unsafe"]), nameSuggestsChange: z.boolean(), takesAddress: z.boolean() })).max(200) });
 export type DiscoveredView = z.infer<typeof DiscoveredReader>["tools"][number];
 const ProbeTool = z.object({ name: z.string().max(64), description: z.string().max(300), annotation: z.enum(["read_only", "unannotated", "unsafe"]) });
+const Sha256 = z.string().length(64);
 const McpServerReader = z.object({
-  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval"]),
-  transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({ name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200) }) })]),
+  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval", "changed_needs_review"]),
+  transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({
+    name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200), args: z.array(z.string().max(100)).max(8).default([]), bundleHash: Sha256.optional(), lockfileHash: Sha256.optional(),
+    destinations: z.array(z.object({ host: z.string().max(253), port: z.number() })).max(8).default([]), secretEnv: z.array(z.string().max(64)).max(8).default([]),
+    size: z.object({ cpu: z.number(), memoryMiB: z.number() }).optional(),
+  }) })]),
   probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40),
+  install: z.object({ packageCount: z.number(), unpackedBytes: z.number() }).optional(),
 });
 export type McpServerView = z.infer<typeof McpServerReader>;
+const STOP_REASONS = ["idle", "lifetime", "disabled", "secret_replaced", "crash", "leftover", "room", "approval_changed", "tools_changed", "failed", "done", "shutdown"] as const;
+/** How a package-run server has been doing, from the controller's own events (T10). */
+const McpActivityReader = z.object({ starts24h: z.number().int().min(0).max(100_000), lastStartAt: z.string().max(40).optional(), lastStop: z.object({ at: z.string().max(40), reason: z.enum(STOP_REASONS) }).optional(), keepsStopping: z.boolean() });
+export type McpActivityView = z.infer<typeof McpActivityReader>;
+const Annotation = z.enum(["read_only", "unannotated", "unsafe"]);
+/** What a paused server offers now against what was approved (fix round 1, S3). */
+const McpReviewReader = z.object({
+  server: McpServerReader, toolsHash: z.string().length(64), offers: z.object({ tools: z.array(ProbeTool).max(100) }),
+  diff: z.object({
+    added: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), annotation: Annotation })).max(100),
+    removed: z.array(z.object({ name: z.string().max(64) })).max(100),
+    changed: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), was: z.string().max(300).optional(), annotation: Annotation, what: z.array(z.enum(["definition", "read_only_claim", "description"])).max(3) })).max(100),
+  }),
+});
+export type McpReviewView = z.infer<typeof McpReviewReader>;
 
 const TIMEOUT_MS = 120_000;
 
@@ -47,9 +68,11 @@ export function createContextSourcesApi(host: AppHost) {
       call({ method: "POST", path: `${sourcesPath(project)}/changes`, body }, z.object({ changeId: z.string().max(60), needsSecondAdmin: z.array(z.string().max(300)).max(20) }), [202]),
     confirm: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/confirm` }, z.object({}).passthrough()),
     reject: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/reject` }, z.object({}).passthrough()),
-    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional() })),
-    addServer: (body: { label: string; transport: unknown; secret?: string }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
+    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional(), activity: z.record(z.string().max(40), McpActivityReader).optional() })),
+    addServer: (body: { label: string; transport: unknown; secret?: string; secrets?: Record<string, string> }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
     approveServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/approve` }, z.object({ server: McpServerReader })),
+    reviewServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/review`, body: {} }, McpReviewReader),
+    reapproveServer: (serverId: string, toolsHash: string) => call({ method: "POST", path: `${serversPath}/${serverId}/reapprove`, body: { toolsHash } }, z.object({ server: McpServerReader })),
     disableServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/disable` }, z.object({}).passthrough()),
     removeServer: (serverId: string) => call({ method: "DELETE", path: `${serversPath}/${serverId}` }, z.object({}).passthrough()),
     connections: () => call({ method: "GET", path: "/v1/app/connections" }, z.object({ connections: z.array(z.object({ connectionId: z.string().max(60), label: z.string().max(200), type: z.string().max(64) })).max(1000) })),

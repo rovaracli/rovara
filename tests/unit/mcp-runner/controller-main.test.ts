@@ -1,8 +1,9 @@
 // Stdio MCP host redesign, task T6: the controller's process. It refuses to start as root (this inverts the lane E host), reads its settings strictly, and serves only approved entries.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { controllerConfigFromEnv, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
+import { controllerConfigFromEnv, legacyToolsHashOf, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
 import type { McpServerEntry, McpStdioSpec } from "@agentx/contracts";
-import { summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { legacyToolsHash, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 
 const ENV = {
   MCP_CONTROLLER_URL: "https://mcp-controller.corp.example:8443", ROVARA_MCP_NPM_REGISTRY: "https://registry.corp.example/npm/", MCP_RUNNER_SUBNETS: "subnet-0aaaaaaaaaaaaaaaa, subnet-0bbbbbbbbbbbbbbbb",
@@ -45,6 +46,14 @@ describe("controller main: settings", () => {
   });
 });
 
+describe("fix round 1, S2: the controller keeps its pauses in the install's table", () => {
+  it("is built with the DynamoDB pause store, so a restarted controller keeps a pause (the in-memory default would forget it)", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile("packages/broker/src/mcp-host/main.ts", "utf8");
+    expect(source).toContain("pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) })");
+  });
+});
+
 describe("controller main: the registry", () => {
   const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
   const probe = summariseProbe([], 0);
@@ -60,10 +69,54 @@ describe("controller main: the registry", () => {
     const failing = registryFor({ get: async () => entry({ hasSecret: true, secretVersion: "v1" }) } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); });
     expect((await failing.approved("mcpsim000001"))?.secretRef).toBeUndefined();
   });
+  it("fix round 2: says which hash scheme the approval was made under, so an approval from before descriptions were hashed is read the old way", async () => {
+    expect((await registry(entry({ probe: { ...probe, hashVersion: 2 } })).approved("mcpsim000001"))?.toolsHashVersion).toBe(2);
+    const { hashVersion: _dropped, ...older } = probe; // eslint-disable-line @typescript-eslint/no-unused-vars -- a probe stored before the scheme had a version
+    expect((await registry(entry({ probe: older })).approved("mcpsim000001"))?.toolsHashVersion).toBe(1);
+  });
   it("serves nothing else: not a waiting, disabled or needs-reapproval entry, an http entry, or none", async () => {
     for (const status of ["awaiting_approval", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status })).approved("mcpsim000001"), status).toBeUndefined();
     expect(await registry(entry({ transport: { kind: "http", address: "https://mcp.corp.example/mcp" } })).approved("mcpsim000001")).toBeUndefined();
     expect(await registry(undefined).approved("mcpsim000001")).toBeUndefined();
+  });
+  it("T9: a test reads a proposal's secret only while the proposal has no entry or its entry waits for approval (never an approved, disabled or other entry's)", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
+    expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
+    for (const status of ["approved", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status, hasSecret: true })).probeSecret!("mcpsim000001"), status).toBeUndefined();
+    // no resolver, or one that fails: no secret
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa").probeSecret!("mcpnew0000001")).toBeUndefined();
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcpnew0000001")).toBeUndefined();
+  });
+  it("fix round 2 N1: a paused entry's secret goes only into the review and re-approve test of that same server's pinned package", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const withSecret = { ...spec, secretEnv: ["API_KEY"] };
+    const paused = registry(entry({ status: "changed_needs_review", hasSecret: true, transport: { kind: "stdio", spec: withSecret } }));
+    const own = { spec: { registry: "npm" as const, name: spec.name, version: spec.version, args: spec.args, integrity: spec.integrity, destinations: [], secretEnv: withSecret.secretEnv, size: spec.size }, pinned: { lockfileHash: spec.lockfileHash, bundleHash: spec.bundleHash } };
+    expect(await paused.probeSecret!("mcpsim000001", own)).toBe(arn("mcpsim000001"));
+    // not for a test that names nothing, is not pinned, or is another package / other hashes / other arguments or secret names
+    expect(await paused.probeSecret!("mcpsim000001")).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { spec: own.spec })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, name: "@evil/other-mcp" } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, version: "9.9.9" } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, args: ["--leak"] } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, secretEnv: ["OTHER_KEY"] } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, pinned: { ...own.pinned, bundleHash: "3".repeat(64) } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, pinned: { ...own.pinned, lockfileHash: "3".repeat(64) } })).toBeUndefined();
+    // an entry with no secret has nothing to give
+    expect(await registry(entry({ status: "changed_needs_review", transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own)).toBeUndefined();
+    // approved and disabled entries still give none, even to their own pinned package
+    for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
+  });
+  it("fix round 2: the old hash (names and schemas only) is what a version 1 approval carries, and the controller is given the means to compute it", () => {
+    const tools = [{ name: "b", description: "one", inputSchema: { type: "object" } }, { name: "a", description: "two", inputSchema: { type: "object" } }];
+    const shown = summariseProbe(tools, 0);
+    expect(legacyToolsHashOf(tools)).toBe(legacyToolsHash(shown));
+    expect(legacyToolsHashOf(tools)).not.toBe(toolsHashOf(tools));
+    // a description does not move the old hash, and does move the new one
+    expect(legacyToolsHashOf([{ ...tools[0]!, description: "other" }, tools[1]!])).toBe(legacyToolsHashOf(tools));
+    expect(toolsHashOf([{ ...tools[0]!, description: "other" }, tools[1]!])).not.toBe(toolsHashOf(tools));
+    expect(readFileSync("packages/broker/src/mcp-host/main.ts", "utf8")).toContain("toolsHashOf, legacyToolsHashOf, log,");
   });
   it("hashes tools the way the broker hashes what the admin was shown", () => {
     const tools = [{ name: "b", inputSchema: { type: "object" } }, { name: "a", inputSchema: { type: "object" } }];

@@ -462,7 +462,8 @@ describe("T6 controller: probe", () => {
   it("installs, then tests the bundle in a probe task, and answers with the tools and the hashes the approval binds", async () => {
     const w = await probeWorld();
     const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: proposal });
-    expect(await answer.json()).toEqual({ tools: [{ name: "echo", inputSchema: { type: "object" } }], integrity: INTEGRITY, lockfileHash: "2".repeat(64), bundleHash: BUNDLE });
+    // Replaces: the answer without `installed` (T9 shows the package count and size on the admin's card). A pinned test installs nothing, so it says nothing of an install.
+    expect(await answer.json()).toEqual({ tools: [{ name: "echo", inputSchema: { type: "object" } }], integrity: INTEGRITY, lockfileHash: "2".repeat(64), bundleHash: BUNDLE, installed: { packageCount: 3, unpackedBytes: 1000 } });
     expect(w.runner.started("install")).toHaveLength(1);
     const [probeTask] = w.runner.started("probe");
     expect(probeTask!.spec).toMatchObject({ purpose: "probe", approval: BUNDLE.slice(0, 12), family: "rovara-mcp-probe" });
@@ -474,7 +475,9 @@ describe("T6 controller: probe", () => {
     const w = await probeWorld();
     await w.bundles.put(BUNDLE, (async function* () { yield BYTES; })(), 1_000);
     const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: { ...proposal, integrity: INTEGRITY }, pinned: { lockfileHash: "2".repeat(64), bundleHash: BUNDLE } });
-    expect(await answer.json()).toMatchObject({ integrity: INTEGRITY, lockfileHash: "2".repeat(64), bundleHash: BUNDLE });
+    const said = await answer.json();
+    expect(said).toMatchObject({ integrity: INTEGRITY, lockfileHash: "2".repeat(64), bundleHash: BUNDLE });
+    expect(said).not.toHaveProperty("installed");
     expect(w.runner.started("install")).toEqual([]);
     expect(w.runner.started("probe")).toHaveLength(1);
   });
@@ -493,6 +496,71 @@ describe("T6 controller: probe", () => {
     const answer = await (await post(w.brokerUrl, "/probe", BROKER, { spec: proposal })).json();
     expect(answer).toEqual({ error: "host_refused", install: { ok: false, code: "git_dependency", sentence: "This package needs a git dependency. Rovara installs only from your registry." } });
     expect(w.runner.started("probe")).toEqual([]);
+  });
+  describe("T9: a test of a proposal that declares secrets, and a refused destination", () => {
+    const withSecrets = { ...proposal, secretEnv: ["JIRA_TOKEN"] };
+    const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpnew0000001-AbCdEf";
+    /** A resources fake that records what each probe was made with. */
+    function recording(refuse = false) {
+      const ensured: Array<{ kind: string; secretRef: string | undefined }> = [];
+      const resources = {
+        async ensure(input: { kind: "serve" | "probe"; secretRef?: string | undefined }) {
+          ensured.push({ kind: input.kind, secretRef: input.secretRef });
+          if (refuse) throw Object.assign(new Error("This address is outside the ranges your install allows."), { name: "DestinationRefused" });
+          return { family: "rovara-mcp-probe", taskDefinition: "rovara-mcp-probe" };
+        },
+        async release() { /* nothing */ },
+      };
+      return { ensured, resources };
+    }
+    it("gives the probe the secret the registry names for the proposal's id, and only when the package declares secret names", async () => {
+      const asked: string[] = [];
+      const tests: unknown[] = [];
+      const { ensured, resources } = recording();
+      const w = await probeWorld({ resources, registry: { approved: async () => undefined, probeSecret: async (id, test) => { asked.push(id); tests.push(test); return SECRET_ARN; } } });
+      expect((await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, serverId: "mcpnew0000001" })).status).toBe(200);
+      expect(asked).toEqual(["mcpnew0000001"]);
+      // the registry is told which package is being tested (a paused entry's secret depends on it)
+      expect(tests[0]).toMatchObject({ spec: { name: withSecrets.name, version: withSecrets.version } });
+      expect(ensured).toEqual([{ kind: "probe", secretRef: SECRET_ARN }]);
+      // no declared names: the registry is not even asked
+      await post(w.brokerUrl, "/probe", BROKER, { spec: proposal, serverId: "mcpnew0000001" });
+      expect(asked).toEqual(["mcpnew0000001"]);
+      expect(ensured[1]).toEqual({ kind: "probe", secretRef: undefined });
+    });
+    it("fix round 2 N1: a test of a pinned bundle tells the registry the pinned hashes along with the package", async () => {
+      const tests: Array<{ pinned?: unknown } | undefined> = [];
+      const w = await probeWorld({ registry: { approved: async () => undefined, probeSecret: async (_id, test) => { tests.push(test); return SECRET_ARN; } } });
+      await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, serverId: "mcpsim000001", pinned: { lockfileHash: "4".repeat(64), bundleHash: "5".repeat(64) } });
+      expect(tests[0]?.pinned).toEqual({ lockfileHash: "4".repeat(64), bundleHash: "5".repeat(64) });
+    });
+    it("runs the probe with no secret reference when no id is named, when the registry cannot say, or when it fails", async () => {
+      const cases: Array<{ name: string; registry: McpControllerOptions["registry"]; serverId?: string }> = [
+        { name: "no id named", registry: { approved: async () => undefined, probeSecret: async () => SECRET_ARN } },
+        { name: "registry has no probeSecret", registry: { approved: async () => undefined }, serverId: "mcpnew0000001" },
+        { name: "probeSecret fails", registry: { approved: async () => undefined, probeSecret: async (): Promise<string | undefined> => { throw new Error("down"); } }, serverId: "mcpnew0000001" },
+        { name: "probeSecret says no", registry: { approved: async () => undefined, probeSecret: async () => undefined }, serverId: "mcpnew0000001" },
+      ];
+      for (const item of cases) {
+        const { ensured, resources } = recording();
+        const w = await probeWorld({ resources, registry: item.registry });
+        await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, ...(item.serverId === undefined ? {} : { serverId: item.serverId }) });
+        expect(ensured.map((entry) => entry.secretRef), item.name).toEqual([undefined]);
+      }
+    });
+    it("refuses an id that is not the shape of a server id", async () => {
+      const w = await probeWorld({ registry: { approved: async () => undefined, probeSecret: async () => SECRET_ARN } });
+      for (const serverId of ["probe0123456789", "../x", 5, "mcp", "MCPUPPER00001"]) expect((await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, serverId })).status, String(serverId)).toBe(400);
+      expect(w.runner.started()).toEqual([]);
+    });
+    it("names a refused destination in its answer, and no other cloud failure", async () => {
+      const refused = recording(true);
+      const w = await probeWorld({ resources: refused.resources });
+      expect(await (await post(w.brokerUrl, "/probe", BROKER, { spec: proposal })).json()).toEqual({ error: "host_refused", reason: "destination_refused" });
+      expect(w.runner.started("probe")).toEqual([]);
+      const other = await probeWorld({ resources: { async ensure() { throw new Error("EC2 said no at 10.0.0.1"); }, async release() { /* nothing */ } } });
+      expect(await (await post(other.brokerUrl, "/probe", BROKER, { spec: proposal })).json()).toEqual({ error: "host_refused" });
+    });
   });
   it("says only that the host refused when the probe task does not come up, and stops it", async () => {
     const w = await probeWorld({ limits: { startMs: 120, installMs: 2_000 } }, { neverRunning: true });

@@ -184,6 +184,8 @@ describe("the event catalog", () => {
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
       // Lane E (private MCP servers, project Sources)
       "mcp_server.added", "mcp_server.approved", "mcp_server.disabled", "mcp_server.removed", "mcp_server.token_changed",
+      // Stdio MCP host (T10): replaces nothing; the new package-run facts
+      "mcp_server.installed", "mcp_server.probed", "mcp_server.changed_needs_review", "mcp_server.task_started", "mcp_server.task_stopped", "mcp_server.egress_updated", "mcp_server.secret_replaced",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
       // Live interaction part 2
       "session.redirected", "task.asked", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared",

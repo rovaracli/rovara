@@ -87,6 +87,9 @@ ENV PATH=/usr/local/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # Each container of a task sets its own user and command: fetch and install run /opt/mcp-runner/fetch.mjs and install.mjs as 10002; the server runs serve.mjs as 10003.
+# ECS (Fargate) copies the image's own content and permissions into a volume only when the image has a VOLUME directive at the same path; otherwise the volume is empty, owned by root
+# and 0755, and a non-root user could not write to it (AWS docs: "Use bind mounts with Amazon ECS"). The task definitions mount exactly these four paths.
+VOLUME ["/bundle", "/work", "/home/server", "/tmp"]
 USER 10003:10003
 WORKDIR /home/server
 CMD ["/usr/local/bin/node", "/opt/mcp-runner/serve.mjs"]

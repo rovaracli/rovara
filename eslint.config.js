@@ -22,6 +22,8 @@ export default tseslint.config(
       "tests/fixtures/e2e-web-api-app/**",
       "tests/support/stdio-mcp-fixture.mjs",
       "tests/support/stdio-runner-fixture.mjs",
+      "tests/linux/mcp-runner/adversary-mcp.mjs",
+      "tests/staging/selfcheck-mcp/**",
       "packages/verifier/assets/qualification-app/**",
       "tests/fixtures/orders-web-starter/**",
       "packages/audit-verifier/scripts/**",

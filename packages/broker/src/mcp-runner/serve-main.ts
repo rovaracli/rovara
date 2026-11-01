@@ -7,7 +7,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
 import { McpStdioProposalSchema } from "@agentx/contracts";
-import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, bootstrapEnvironment, confinedCommand, createBridge, runnerTokenWellFormed, type Bridge, type ConfineTools } from "@agentx/gateway";
+import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, bootstrapEnvironment, confinedCommand, createBridge, runnerTokenWellFormed, RootRefusedError, type Bridge, type ConfineTools } from "@agentx/gateway";
 
 export interface ServeConfig {
   token: string;
@@ -89,6 +89,11 @@ export async function start(dependencies: ServeDependencies): Promise<{ bridge: 
   return { bridge, server };
 }
 
+/** The fields the program's last line carries when it could not start: a root refusal says so (`code: "root"`); any other failure says nothing more, as before. */
+export function startFailureFields(error: unknown): Record<string, string> {
+  return error instanceof RootRefusedError ? { code: error.code } : {};
+}
+
 /** Whether this file is the program being run (and not just imported). The real path is compared: a program started through a link would otherwise never start. */
 function isMainModule(): boolean {
   if (process.argv[1] === undefined) return false;
@@ -101,5 +106,5 @@ if (isMainModule()) {
     const stop = (): void => { server.close(); void bridge.close().finally(() => process.exit(0)); };
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
-  }, () => { log("bridge.start_failed", {}); process.exit(1); });
+  }, (error: unknown) => { log("bridge.start_failed", startFailureFields(error)); process.exit(1); });
 }

@@ -3,15 +3,18 @@
 //   POST   /v1/app/org/mcp-servers                    add one: paste an address (or a stdio package); Rovara tests it and shows what it offers (nothing is allowed yet)
 //   POST   /v1/app/org/mcp-servers/{id}/approve       approve it, which adds it to the allow-list
 //   POST   /v1/app/org/mcp-servers/{id}/disable       take it out of the allow-list
+//   POST   /v1/app/org/mcp-servers/{id}/review        a paused server (its tools changed): what it offers now against what was approved. Changes nothing
+//   POST   /v1/app/org/mcp-servers/{id}/reapprove     approve the tools shown by `review` ({toolsHash}): one click; the pinned install is unchanged
 //   DELETE /v1/app/org/mcp-servers/{id}               remove a disabled or waiting entry
 import { z } from "zod";
 import { agentXError } from "@agentx/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, removeMcpServer, stdioAvailable, type McpServerDependencies } from "./mcp-servers.js";
+import { drainControllerEvents, serverActivities } from "./controller-events.js";
+import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, reapprovePausedMcpServer, removeMcpServer, reviewPausedMcpServer, stdioAvailable, type McpServerDependencies } from "./mcp-servers.js";
 
-export const MCP_SERVERS_PATH = /^\/v1\/app\/org\/mcp-servers(?:\/(mcp[a-z0-9]{6,24})(?:\/(approve|disable))?)?$/;
+export const MCP_SERVERS_PATH = /^\/v1\/app\/org\/mcp-servers(?:\/(mcp[a-z0-9]{6,24})(?:\/(approve|disable|review|reapprove))?)?$/;
 
 /** Nothing about where a token is stored leaves the broker: only that the server has one. */
 function withoutSecretVersion<T extends { secretVersion?: string | undefined }>(entry: T): Omit<T, "secretVersion"> {
@@ -22,7 +25,8 @@ function withoutSecretVersion<T extends { secretVersion?: string | undefined }>(
 
 const notThere = () => agentXError("NOT_FOUND", "route not found");
 
-const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), secret: z.string().min(1).max(4_096).optional() }).strict();
+const ReapproveBodySchema = z.object({ toolsHash: z.string().max(100) }).strict();
+const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), secret: z.string().min(1).max(4_096).optional(), secrets: z.record(z.string().max(64), z.string().max(4_096)).optional() }).strict();
 
 function jsonBody(request: AdaptedHttpRequest): unknown {
   if (request.body === undefined || request.body === "") return {};
@@ -35,7 +39,17 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
   const actor = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
   const [, serverId, action] = match;
   if (serverId === undefined) {
-    if (request.method === "GET") return { servers: (await listMcpServers(deps, actor)).map(withoutSecretVersion), stdioAvailable: stdioAvailable(deps) };
+    if (request.method === "GET") {
+      const servers = await listMcpServers(deps, actor);
+      // The controller's events: new ones are recorded and applied first (bounded, never throws), then the newest are summarised for the card. No controller, no activity.
+      let activity: ReturnType<typeof serverActivities> = {};
+      if (deps.controllerEvents !== undefined && servers.some((server) => server.transport.kind === "stdio")) {
+        await drainControllerEvents({ events: deps.controllerEvents.store, servers: deps.store, audit: deps.controllerEvents.audit, now: deps.now }, actor.orgId);
+        activity = serverActivities(await deps.controllerEvents.store.recent(actor.orgId, 200).catch(() => []), deps.now());
+      }
+      const listed = (await listMcpServers(deps, actor)).map(withoutSecretVersion);
+      return { servers: listed, stdioAvailable: stdioAvailable(deps), ...(Object.keys(activity).length === 0 ? {} : { activity }) };
+    }
     if (request.method !== "POST") throw notThere();
     const parsed = AddBodySchema.safeParse(jsonBody(request));
     if (!parsed.success) {
@@ -52,6 +66,12 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
     return { status: "REMOVED" };
   }
   if (request.method !== "POST") throw notThere();
+  if (action === "review") { const reviewed = await reviewPausedMcpServer(deps, actor, serverId); return { server: withoutSecretVersion(reviewed.server), offers: reviewed.offers, toolsHash: reviewed.toolsHash, diff: reviewed.diff }; }
+  if (action === "reapprove") {
+    const parsed = ReapproveBodySchema.safeParse(jsonBody(request));
+    if (!parsed.success) throw agentXError("CONFIG_INVALID", "toolsHash: name the tools you were shown");
+    return { server: withoutSecretVersion(await reapprovePausedMcpServer(deps, actor, serverId, parsed.data.toolsHash)) };
+  }
   if (action === "approve") return { server: withoutSecretVersion(await approveMcpServer(deps, actor, serverId)) };
   await disableMcpServer(deps, actor, serverId);
   return { status: "DISABLED" };

@@ -46,6 +46,10 @@ describe("T5 runner Dockerfile", () => {
     expect(await readFile("environments/mcp-runner/check-image.sh", "utf8")).not.toContain("--bounding-set");
     expect(await readFile("packages/gateway/src/mcp-runner/confine.ts", "utf8")).not.toMatch(/"--bounding-set/u);
   });
+  it("declares the four volume paths, so ECS copies their owner and mode into the volumes (otherwise a volume is root-owned and a non-root user cannot write)", () => {
+    const last = dockerfile.slice(dockerfile.lastIndexOf("FROM scratch"));
+    expect(last).toContain('VOLUME ["/bundle", "/work", "/home/server", "/tmp"]');
+  });
   it("strips setuid and setgid bits as it assembles", () => {
     expect(dockerfile).toContain("-perm /6000 -exec chmod ug-s {} +");
   });

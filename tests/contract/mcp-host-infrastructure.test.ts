@@ -1,99 +1,430 @@
-// Lane E, task E6: the MCP host's infrastructure, synthesized and read (nothing is deployed). It is reached only by the broker, reads only the MCP registry, holds no
-// secret but its token, reaches the internet nowhere, and runs on a read-only root file system.
+// Stdio MCP host redesign (T8): the infrastructure of the MCP controller and the runner network, synthesized and read (nothing is deployed). Every guard that the design's section 14
+// names is pinned here: the controller is not root, no task has a task role, no rule is the whole internet, the runner route table holds no way out, IAM is scoped to `rovara-mcp-*`,
+// one cluster, one execution role and tagged security groups, the bundle bucket is encrypted with its own key, and the controller is one instance.
 import { App, Stack, aws_ecs as ecs } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { McpHost } from "../../infra/lib/mcp-host.js";
+import { McpHost, mcpHostAllowDomains, type McpHostProps } from "../../infra/lib/mcp-host.js";
+import { enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
+type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource?: unknown; Condition?: Record<string, unknown> };
 /** A value inside parsed template JSON, by path. */
 const at = (value: unknown, ...path: Array<string | number>): unknown => path.reduce<unknown>((current, key) => (current !== null && typeof current === "object" ? (current as Record<string | number, unknown>)[key] : undefined), value);
 
 const CERTIFICATE = "arn:aws:acm:us-east-1:111111111111:certificate/abc";
+const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
+const RUNNER_IMAGE = `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`;
+const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/mcp-controller-tls-AbCdEf";
 
-function synth(over: { certificateArn?: string; cidrs?: string[]; hostName?: string } = {}) {
-  const app = new App();
-  const stack = new Stack(app, "Test", { env: { account: "111111111111", region: "us-east-1" } });
-  const host = new McpHost(stack, "McpHost", {
-    vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
-    image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), clientSecurityGroupIds: ["sg-0123456789abcdef0"],
-    stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/state", stateTableName: "state", orgId: "org_aaaaaaaaaaaaaaaaaaaa",
-    privateEgressCidrs: over.cidrs ?? ["10.0.0.0/16"], certificateArn: over.certificateArn ?? CERTIFICATE, hostName: over.hostName ?? "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ",
-  });
-  const json = Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> };
-  const of = (type: string): Array<Record<string, unknown>> => Object.entries(json.Resources).filter(([, resource]) => resource.Type === type).map(([id, resource]) => ({ id, ...resource.Properties }));
-  return { host, json, of };
+const PUBLIC_NPM = { publicNpm: true, natSubnetId: "subnet-0cccccccccccccccc", registryEgressCidrs: [], npmRegistry: "https://registry.npmjs.org/" } as const;
+
+function props(over: Partial<McpHostProps> = {}): McpHostProps {
+  return {
+    vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
+    runnerSubnetCidrs: ["10.42.160.0/22", "10.42.164.0/22"], region: "us-east-1", image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), runnerImage: RUNNER_IMAGE,
+    clientSecurityGroupIds: ["sg-0123456789abcdef0"], endpointSecurityGroupId: "sg-0endpoints000000000", stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/state", stateTableName: "state",
+    orgId: ORG, agentxEnv: "ent", registryEgressCidrs: ["10.60.0.0/24"], npmRegistry: "https://registry.corp.example.net/npm/", privateMcpCidrs: ["10.60.0.0/16"], vpcCidrs: ["10.42.0.0/16"],
+    certificateArn: CERTIFICATE, hostName: "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ", controllerTlsSecretArn: TLS_SECRET, controllerDnsNamespace: "mcp.rovara.internal",
+    ...over,
+  };
 }
 
-describe("the MCP host", () => {
-  it("is an internal load balancer in front of one Fargate service on private subnets with no public address", () => {
-    const { of } = synth();
-    expect(at(of("AWS::ElasticLoadBalancingV2::LoadBalancer")[0], "Scheme")).toBe("internal");
-    const service = of("AWS::ECS::Service")[0]!;
+function synth(over: Partial<McpHostProps> = {}) {
+  const app = new App();
+  const stack = new Stack(app, "Test", { env: { account: "111111111111", region: "us-east-1" } });
+  const host = new McpHost(stack, "McpHost", props(over));
+  const json = Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> };
+  const of = (type: string): Array<Record<string, unknown>> => Object.entries(json.Resources).filter(([, resource]) => resource.Type === type).map(([id, resource]) => ({ id, ...resource.Properties }));
+  const policies = (): Array<{ roleRef: string; statements: Statement[] }> => of("AWS::IAM::Policy").map((policy) => ({ roleRef: JSON.stringify(policy.Roles), statements: at(policy, "PolicyDocument", "Statement") as Statement[] }));
+  /** The statements attached to the role whose logical id starts with `prefix`. */
+  const statementsOf = (prefix: string): Statement[] => policies().filter((policy) => policy.roleRef.includes(`"Ref":"${host.node.id}${prefix}`) || policy.roleRef.includes(prefix)).flatMap((policy) => policy.statements);
+  const actionsOf = (statement: Statement): string[] => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]);
+  return { host, json, of, statementsOf, actionsOf };
+}
+const controllerContainer = (of: ReturnType<typeof synth>["of"]) => (of("AWS::ECS::TaskDefinition").find((task) => at(task, "Family") === undefined || (task.ContainerDefinitions as Array<{ Name: string }>)[0]!.Name === "Controller")!.ContainerDefinitions as Array<Record<string, unknown>>)[0]!;
+const groupsText = (of: ReturnType<typeof synth>["of"]) => JSON.stringify([of("AWS::EC2::SecurityGroup"), of("AWS::EC2::SecurityGroupIngress"), of("AWS::EC2::SecurityGroupEgress")]);
+
+describe("the controller", () => {
+  it("is not root, drops every capability, has a read-only root and an init process (design section 3)", () => {
+    const container = controllerContainer(synth().of);
+    expect(container.User).toBe("10001");
+    expect(container.ReadonlyRootFilesystem).toBe(true);
+    expect(at(container, "LinuxParameters", "Capabilities", "Drop")).toEqual(["ALL"]);
+    expect(at(container, "LinuxParameters", "Capabilities", "Add")).toBeUndefined();
+    expect(at(container, "LinuxParameters", "InitProcessEnabled")).toBe(true);
+    expect(container.Privileged).toBeUndefined();
+    expect(container.MountPoints).toEqual([{ ContainerPath: "/tmp", ReadOnly: false, SourceVolume: "scratch" }]);
+    expect(container.Command).toEqual(["node", "packages/broker/dist/mcp-host/main.js"]);
+  });
+  it("runs as exactly one instance that is replaced stop-then-start (tokens live in one process)", () => {
+    const service = synth().of("AWS::ECS::Service")[0]!;
+    expect(service.DesiredCount).toBe(1);
+    expect(at(service, "DeploymentConfiguration", "MinimumHealthyPercent")).toBe(0);
+    expect(at(service, "DeploymentConfiguration", "MaximumPercent")).toBe(100);
     expect(at(service, "NetworkConfiguration", "AwsvpcConfiguration", "AssignPublicIp")).toBe("DISABLED");
     expect(at(service, "NetworkConfiguration", "AwsvpcConfiguration", "Subnets")).toEqual(["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]);
   });
-  it("lets only the broker's group reach the load balancer, and only the load balancer reach the tasks", () => {
+  it("is reached by the broker through an internal HTTPS-only load balancer and a DNS name the certificate is for", () => {
+    const { of, host } = synth({ hostName: "mcp-host.corp.example.net" });
+    expect(at(of("AWS::ElasticLoadBalancingV2::LoadBalancer")[0], "Scheme")).toBe("internal");
+    expect(of("AWS::ElasticLoadBalancingV2::Listener").map((listener) => [listener.Protocol, listener.Port])).toEqual([["HTTPS", 443]]);
+    expect(host.url).toBe("https://mcp-host.corp.example.net");
+    expect(of("AWS::Route53::RecordSet")[0]!.Name).toBe("mcp-host.corp.example.net");
+    for (const bad of ["", "internal-x.us-east-1.elb.amazonaws.com", "localhost", "10.0.0.5"]) expect(() => synth({ hostName: bad }), bad).toThrow(/DNS name/u);
+    expect(() => synth({ certificateArn: "" })).toThrow(/certificate/u);
+    expect(() => synth({ certificateArn: "arn:aws:iam::111111111111:server-certificate/x" })).toThrow(/ACM certificate/u);
+  });
+  it("is reached by the runner tasks DIRECTLY at a Cloud Map name, on a TLS port, with its certificate read from a secret (never in the template)", () => {
+    const { of, host, json } = synth({ controllerCaPem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" });
+    expect(host.controllerUrl).toBe("https://controller.mcp.rovara.internal:8443");
+    const env = Object.fromEntries((controllerContainer(of).Environment as Array<{ Name: string; Value: unknown }>).map((entry) => [entry.Name, entry.Value]));
+    expect(env.MCP_CONTROLLER_URL).toBe("https://controller.mcp.rovara.internal:8443");
+    expect(String(env.ROVARA_MCP_CONTROLLER_CA)).toContain("BEGIN CERTIFICATE");
+    const secrets = (controllerContainer(of).Secrets as Array<{ Name: string; ValueFrom: unknown }>);
+    expect(secrets.map((secret) => secret.Name).sort()).toEqual(["MCP_CONTROLLER_TLS_CERT", "MCP_CONTROLLER_TLS_KEY", "MCP_HOST_TOKEN"]);
+    expect(JSON.stringify(secrets.filter((secret) => secret.Name.startsWith("MCP_CONTROLLER_TLS")).map((secret) => secret.ValueFrom))).toContain(TLS_SECRET);
+    const registrations = of("AWS::ServiceDiscovery::Service");
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.Name).toBe("controller");
+    expect(JSON.stringify(json)).not.toMatch(/"SecretString"|PRIVATE KEY/u);
+    for (const bad of ["not-an-arn", "arn:aws:iam::111111111111:role/x", ""]) expect(() => synth({ controllerTlsSecretArn: bad }), bad).toThrow(/Secrets Manager/u);
+    expect(() => synth({ controllerCaPem: "not a certificate" })).toThrow(/PEM/u);
+  });
+  it("gets every setting the controller's start-up reads, and no secret in its plain environment", () => {
+    const { of } = synth();
+    const container = controllerContainer(of);
+    const names = (container.Environment as Array<{ Name: string }>).map((entry) => entry.Name).sort();
+    expect(names).toEqual([
+      "AGENTX_ENV", "AWS_REGION", "MCP_BUNDLE_BUCKET", "MCP_CONTROLLER_SECURITY_GROUP", "MCP_CONTROLLER_URL", "MCP_ECS_CLUSTER", "MCP_ENDPOINT_SECURITY_GROUPS", "MCP_EXECUTION_ROLE_ARN",
+      "MCP_INSTALL_SECURITY_GROUP", "MCP_RUNNER_IMAGE", "MCP_RUNNER_LOG_GROUP", "MCP_RUNNER_PORT", "MCP_RUNNER_SUBNETS", "MCP_S3_PREFIX_LIST", "MCP_VPC_ID", "PORT", "ROVARA_MCP_NPM_REGISTRY",
+      "ROVARA_ORG_ID", "ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "STATE_TABLE_NAME",
+    ]);
+    expect(JSON.stringify(container.Environment)).not.toMatch(/TOKEN|SECRET|PRIVATE_KEY/u);
+    const env = Object.fromEntries((container.Environment as Array<{ Name: string; Value: unknown }>).map((entry) => [entry.Name, entry.Value]));
+    expect(env.MCP_RUNNER_IMAGE).toBe(RUNNER_IMAGE);
+    expect(env.ROVARA_MCP_NPM_REGISTRY).toBe("https://registry.corp.example.net/npm/");
+    expect(env.ROVARA_PRIVATE_MCP_CIDRS).toBe("10.60.0.0/16");
+  });
+});
+
+describe("the runner network", () => {
+  it("is dedicated subnets in the VPC's range whose route table has NO route out by default (no NAT, no cost): no default route, no internet-gateway route, no IPv6 route", () => {
+    const { of, json } = synth();
+    const subnets = of("AWS::EC2::Subnet");
+    expect(subnets.map((subnet) => [subnet.CidrBlock, subnet.AvailabilityZone, subnet.MapPublicIpOnLaunch])).toEqual([["10.42.160.0/22", "us-east-1a", false], ["10.42.164.0/22", "us-east-1b", false]]);
+    expect(subnets.some((subnet) => subnet.Ipv6CidrBlock !== undefined || subnet.AssignIpv6AddressOnCreation === true)).toBe(false);
+    expect(of("AWS::EC2::RouteTable")).toHaveLength(1);
+    expect(of("AWS::EC2::Route")).toEqual([]);
+    expect(of("AWS::EC2::NatGateway")).toEqual([]);
+    expect(of("AWS::EC2::EIP")).toEqual([]);
+    expect(of("AWS::EC2::InternetGateway")).toEqual([]);
+    expect(of("AWS::EC2::SubnetRouteTableAssociation")).toHaveLength(2);
+    expect(JSON.stringify(json)).not.toMatch(/"::\/0"|DestinationIpv6CidrBlock|EgressOnlyInternetGatewayId|0\.0\.0\.0\/0/u);
+  });
+  it("fix round 2: with public npm the table gets ONE NAT default route (no internet-gateway route, no IPv6), in the public subnet it is given, with an address of its own", () => {
+    const { of, json, host } = synth(PUBLIC_NPM);
+    const routes = of("AWS::EC2::Route");
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({ DestinationCidrBlock: "0.0.0.0/0" });
+    expect(JSON.stringify(routes[0]!.NatGatewayId)).toContain("RunnerNat");
+    expect(JSON.stringify(routes[0]!.RouteTableId)).toContain("RunnerRouteTable");
+    expect(routes[0]!.GatewayId).toBeUndefined();
+    expect(of("AWS::EC2::InternetGateway")).toEqual([]);
+    expect(JSON.stringify(json)).not.toMatch(/"::\/0"|DestinationIpv6CidrBlock|EgressOnlyInternetGatewayId/u);
+    const nat = of("AWS::EC2::NatGateway");
+    expect(nat).toHaveLength(1);
+    expect(nat[0]).toMatchObject({ SubnetId: "subnet-0cccccccccccccccc", ConnectivityType: "public" });
+    expect(of("AWS::EC2::EIP")).toHaveLength(1);
+    expect(host.natGateway).toBeDefined();
+  });
+  it("fix round 2: refuses a NAT subnet the controller runs in or one that is not a subnet (with public npm), and a NAT subnet without public npm", () => {
+    expect(() => synth({ ...PUBLIC_NPM, natSubnetId: "subnet-0aaaaaaaaaaaaaaaa" })).toThrow(/public subnet/u);
+    for (const bad of [undefined, "", "nonsense", "vpc-0123456789abcdef0"]) expect(() => synth({ ...PUBLIC_NPM, natSubnetId: bad as never }), String(bad)).toThrow(/NAT gateway/u);
+    expect(() => synth({ natSubnetId: "subnet-0cccccccccccccccc" })).toThrow(/only for an install that fetches from public npm/u);
+    // ranges beside public npm are two ways to install
+    expect(() => synth({ ...PUBLIC_NPM, registryEgressCidrs: ["10.60.0.0/24"] })).toThrow(/two ways/u);
+  });
+  it("adds routes to the customer's own private ranges through a transit gateway or a peering connection, and only those", () => {
+    const { of } = synth({ runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }, { cidr: "192.168.8.0/24", vpcPeeringConnectionId: "pcx-0123456789abcdef0" }] });
+    const routes = of("AWS::EC2::Route");
+    expect(routes.map((route) => route.DestinationCidrBlock).sort()).toEqual(["10.60.0.0/16", "192.168.8.0/24"]);
+    // with public npm as well, the default route is added to them
+    expect(synth({ ...PUBLIC_NPM, runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }] }).of("AWS::EC2::Route").map((route) => route.DestinationCidrBlock).sort()).toEqual(["0.0.0.0/0", "10.60.0.0/16"]);
+    expect(routes.find((route) => route.DestinationCidrBlock === "10.60.0.0/16")).toMatchObject({ TransitGatewayId: "tgw-0123456789abcdef0" });
+    expect(routes.find((route) => route.DestinationCidrBlock === "192.168.8.0/24")).toMatchObject({ VpcPeeringConnectionId: "pcx-0123456789abcdef0" });
+    const bad: Array<[string, unknown]> = [
+      ["the internet", { cidr: "0.0.0.0/0", transitGatewayId: "tgw-0123456789abcdef0" }], ["a public range", { cidr: "8.8.8.0/24", transitGatewayId: "tgw-0123456789abcdef0" }], ["a range wider than a private block", { cidr: "10.0.0.0/7", transitGatewayId: "tgw-0123456789abcdef0" }],
+      ["the VPC's own range", { cidr: "10.42.8.0/24", transitGatewayId: "tgw-0123456789abcdef0" }], ["no target", { cidr: "10.60.0.0/16" }], ["two targets", { cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0", vpcPeeringConnectionId: "pcx-0123456789abcdef0" }],
+      ["a target that is not one", { cidr: "10.60.0.0/16", transitGatewayId: "igw-0123456789abcdef0" }], ["not a range", { cidr: "nope", transitGatewayId: "tgw-0123456789abcdef0" }],
+    ];
+    for (const [label, route] of bad) expect(() => synth({ runnerRoutes: [route as never] }), label).toThrow(/runner route/u);
+    expect(() => synth({ runnerRoutes: Array.from({ length: 9 }, (_, i) => ({ cidr: `10.${60 + i}.0.0/16`, transitGatewayId: "tgw-0123456789abcdef0" })) })).toThrow(/at most 8/u);
+  });
+  it("still holds no rule of any security group that is the whole internet by default, and with customer routes in place", () => {
+    expect(groupsText(synth().of)).not.toContain("0.0.0.0/0");
+    expect(groupsText(synth({ runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }] }).of)).not.toContain("0.0.0.0/0");
+  });
+  it("fix round 2: with public npm, ONLY the install task's group may send HTTPS to the internet (one rule); no other group has any rule that could use the NAT route", () => {
+    const { of } = synth(PUBLIC_NPM);
+    const rules = [
+      ...of("AWS::EC2::SecurityGroup").flatMap((group) => ((group.SecurityGroupEgress ?? []) as Array<Record<string, unknown>>).map((rule) => ({ group: String(group.GroupDescription), rule }))),
+      ...of("AWS::EC2::SecurityGroupEgress").map((rule) => ({ group: JSON.stringify(rule.GroupId), rule })),
+    ];
+    const open = rules.filter(({ rule }) => rule.CidrIp === "0.0.0.0/0" || rule.CidrIpv6 !== undefined);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.group).toMatch(/^MCP install task/u);
+    expect(open[0]!.rule).toMatchObject({ IpProtocol: "tcp", FromPort: 443, ToPort: 443 });
+    expect(JSON.stringify(of("AWS::EC2::SecurityGroupIngress"))).not.toContain("0.0.0.0/0");
+    expect(JSON.stringify(of("AWS::EC2::SecurityGroup").flatMap((group) => (group.SecurityGroupIngress ?? []) as unknown[]))).not.toContain("0.0.0.0/0");
+    // the install group still has the endpoints, S3 and the controller beside it
+    expect(groupsText(of)).toContain("the VPC interface endpoints (ECR, logs)");
+    expect(groupsText(of)).toContain("the controller: bundle, result, bootstrap");
+  });
+  it("fix round 2: the controller is told public npm's address, and the DNS allow list names it", () => {
+    const { of } = synth({ ...PUBLIC_NPM, npmRegistry: "https://registry.npmjs.org/" });
+    const env = Object.fromEntries((controllerContainer(of).Environment as Array<{ Name: string; Value: unknown }>).map((entry) => [entry.Name, entry.Value]));
+    expect(env.ROVARA_MCP_NPM_REGISTRY).toBe("https://registry.npmjs.org/");
+  });
+  it("reaches S3 through a gateway endpoint on that table (image layers) with the install's own policy, and the ECS API through an interface endpoint", () => {
+    const { of } = synth();
+    const endpoints = of("AWS::EC2::VPCEndpoint");
+    const s3 = endpoints.find((endpoint) => endpoint.VpcEndpointType === "Gateway")!;
+    expect(s3.ServiceName).toBe("com.amazonaws.us-east-1.s3");
+    expect(JSON.stringify(s3.RouteTableIds)).toContain("RunnerRouteTable");
+    expect(JSON.stringify(s3.PolicyDocument)).toContain("aws:ResourceAccount");
+    const api = endpoints.find((endpoint) => endpoint.VpcEndpointType === "Interface")!;
+    expect(api.ServiceName).toBe("com.amazonaws.us-east-1.ecs");
+    expect(api.PrivateDnsEnabled).toBe(true);
+    expect(api.SecurityGroupIds).toEqual(["sg-0endpoints000000000"]);
+    expect(JSON.stringify(api.PolicyDocument)).toContain("aws:PrincipalAccount");
+  });
+  it("lets the endpoints' group take HTTPS from the runner subnets, one rule each", () => {
+    const rules = synth().of("AWS::EC2::SecurityGroupIngress").filter((rule) => rule.GroupId === "sg-0endpoints000000000");
+    expect(rules.map((rule) => [rule.CidrIp, rule.FromPort, rule.ToPort, rule.IpProtocol])).toEqual([["10.42.160.0/22", 443, 443, "tcp"], ["10.42.164.0/22", 443, 443, "tcp"]]);
+  });
+  it("refuses a runner range that is not inside the VPC, overlaps another, or is not an IPv4 range of a sensible size", () => {
+    for (const cidr of ["10.43.0.0/22", "192.168.0.0/24", "10.42.160.0/8", "10.42.160.0/27", "nonsense", "0.0.0.0/0"]) expect(() => synth({ runnerSubnetCidrs: [cidr] }), cidr).toThrow(/runner subnet range/u);
+    expect(() => synth({ runnerSubnetCidrs: ["10.42.160.0/22", "10.42.162.0/23"] })).toThrow(/overlap/u);
+    expect(() => synth({ runnerSubnetCidrs: [] })).toThrow(/one subnet range/u);
+    expect(() => synth({ runnerSubnetCidrs: ["10.42.160.0/22", "10.42.164.0/22", "10.42.168.0/22"] })).toThrow(/one subnet range/u);
+  });
+});
+
+describe("security groups", () => {
+  it("never hold the whole internet, in any rule of any group", () => {
+    const text = groupsText(synth().of);
+    expect(text).not.toContain("0.0.0.0/0");
+    expect(text).not.toContain("::/0");
+    expect(() => synth({ registryEgressCidrs: ["0.0.0.0/0"] })).toThrow(/whole internet/u);
+    expect(() => synth({ registryEgressCidrs: ["10.0.0.0/0"] })).toThrow(/whole internet/u);
+    expect(() => synth({ registryEgressCidrs: [] })).toThrow(/whole internet/u);
+    expect(() => synth({ privateMcpCidrs: ["10.0.0.0/0"] })).toThrow(/whole internet/u);
+  });
+  it("let only the broker's group reach the load balancer, only the load balancer reach the controller on the broker port, and only the runner subnets on the runner port", () => {
+    const { of } = synth();
+    const text = groupsText(of);
+    expect(text).toContain("sg-0123456789abcdef0");
+    const controller = of("AWS::EC2::SecurityGroup").find((group) => String(group.GroupDescription).startsWith("MCP controller tasks"))!;
+    const inline = (controller.SecurityGroupIngress ?? []) as Array<Record<string, unknown>>;
+    const separate = of("AWS::EC2::SecurityGroupIngress").filter((rule) => JSON.stringify(rule.GroupId).includes(String(controller.id)));
+    expect([...inline, ...separate].map((rule) => [rule.FromPort, rule.CidrIp ?? (rule.SourceSecurityGroupId === undefined ? "?" : "load balancer")]).sort())
+      .toEqual([[8080, "load balancer"], [8443, "10.42.160.0/22"], [8443, "10.42.164.0/22"]]);
+  });
+  it("hold, for the install task, only the endpoints, S3, the registry's ranges and the controller; for the controller, the endpoints, S3, DynamoDB and the runner subnets", () => {
     const { of } = synth();
     const groups = of("AWS::EC2::SecurityGroup");
-    expect(groups).toHaveLength(2);
-    const ingress = JSON.stringify([groups.map((group) => group.SecurityGroupIngress ?? []), of("AWS::EC2::SecurityGroupIngress")]);
-    expect(ingress).toContain("sg-0123456789abcdef0");
-    expect(ingress).not.toContain("0.0.0.0/0");
-    expect(JSON.stringify(groups)).not.toContain("0.0.0.0/0");
+    const egressOf = (name: string) => {
+      const group = groups.find((item) => String(item.GroupDescription).startsWith(name))!;
+      const inline = (group.SecurityGroupEgress ?? []) as Array<Record<string, unknown>>;
+      const separate = of("AWS::EC2::SecurityGroupEgress").filter((rule) => JSON.stringify(rule.GroupId).includes(String(group.id)));
+      return [...inline, ...separate].filter((rule) => rule.IpProtocol !== "icmp").map((rule) => `${String(rule.FromPort)}:${typeof rule.CidrIp === "string" ? rule.CidrIp : (rule.DestinationSecurityGroupId === undefined ? "?" : "group")}${rule.DestinationPrefixListId === undefined ? "" : "/prefix-list"}`).sort();
+    };
+    expect(egressOf("MCP install task")).toEqual(["443:10.60.0.0/24", "443:group", "443:?/prefix-list", "8443:group"].sort());
+    expect(egressOf("MCP controller tasks")).toEqual(["443:group", "443:?/prefix-list", "443:?/prefix-list", "8080:10.42.160.0/22", "8080:10.42.164.0/22"].sort());
   });
-  it("sends the tasks' traffic out over HTTPS to the listed ranges only, and refuses to be built with the whole internet", () => {
-    const { of } = synth({ cidrs: ["10.0.0.0/16", "10.9.0.0/24"] });
-    const egress = of("AWS::EC2::SecurityGroup").flatMap((group) => (group.SecurityGroupEgress ?? []) as Array<{ CidrIp?: string; FromPort?: number }>).filter((rule) => rule.CidrIp !== undefined);
-    expect(egress.map((rule) => [rule.CidrIp, rule.FromPort])).toEqual([["10.0.0.0/16", 443], ["10.9.0.0/24", 443]]);
-    expect(() => synth({ cidrs: ["0.0.0.0/0"] })).toThrow(/whole internet/u);
-    expect(() => synth({ cidrs: [] })).toThrow();
+  it("give the install task no ingress at all", () => {
+    const { of } = synth();
+    const install = of("AWS::EC2::SecurityGroup").find((item) => String(item.GroupDescription).startsWith("MCP install task"))!;
+    expect(install.SecurityGroupIngress).toBeUndefined();
+    expect(of("AWS::EC2::SecurityGroupIngress").filter((rule) => JSON.stringify(rule.GroupId).includes(String(install.id)))).toEqual([]);
   });
-  it("runs on a read-only root file system with a scratch folder, no secret in the template, and the token injected as a secret", () => {
-    const { of, json } = synth();
-    const container = (of("AWS::ECS::TaskDefinition")[0]!.ContainerDefinitions as Array<Record<string, unknown>>)[0]!;
+});
+
+describe("no task has a task role, and the install task is a static, locked-down definition", () => {
+  it("the install family is `rovara-mcp-install` with no task role, a non-root user, a read-only root, every capability dropped and the execution role", () => {
+    const { of } = synth();
+    const install = of("AWS::ECS::TaskDefinition").find((task) => task.Family === "rovara-mcp-install")!;
+    expect(install.TaskRoleArn).toBeUndefined();
+    expect(JSON.stringify(install.ExecutionRoleArn)).toContain("RunnerExecutionRole");
+    expect(install.RequiresCompatibilities).toEqual(["FARGATE"]);
+    const container = (install.ContainerDefinitions as Array<Record<string, unknown>>)[0]!;
+    expect(container.User).toBe("10002:10002");
     expect(container.ReadonlyRootFilesystem).toBe(true);
-    expect(container.MountPoints).toEqual([{ ContainerPath: "/tmp", ReadOnly: false, SourceVolume: "scratch" }]);
-    expect(container.Command).toEqual(["node", "packages/broker/dist/mcp-host/main.js"]);
-    expect((container.Secrets as Array<{ Name: string }>).map((secret) => secret.Name)).toEqual(["MCP_HOST_TOKEN"]);
-    expect(JSON.stringify(container.Environment)).not.toMatch(/TOKEN|SECRET|KEY/u);
-    expect(JSON.stringify(json)).not.toMatch(/"SecretString"/u);
+    expect(at(container, "LinuxParameters", "Capabilities", "Drop")).toEqual(["ALL"]);
+    expect(container.Privileged).toBeUndefined();
+    expect(container.Image).toBe(RUNNER_IMAGE);
+    expect(container.Command).toEqual(["/usr/local/bin/node", "/opt/mcp-runner/install.mjs"]);
+    expect(container.Environment).toBeUndefined();
+    expect(container.Secrets).toBeUndefined();
+    expect(container.MountPoints).toEqual([{ ContainerPath: "/work", ReadOnly: false, SourceVolume: "work" }, { ContainerPath: "/tmp", ReadOnly: false, SourceVolume: "tmp" }]);
   });
-  it("lets the task role read only the MCP registry rows of its org, and nothing else", () => {
+  it("the infrastructure holds exactly three groups (load balancer, controller, install): every server's own group is made by the controller", () => {
     const { of } = synth();
-    const statements = of("AWS::IAM::Policy").flatMap((policy) => at(policy, "PolicyDocument", "Statement") as Array<Record<string, unknown>>);
-    const read = statements.find((statement) => statement.Sid === "ReadMcpServerRegistry")!;
-    expect(read.Action).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
-    expect(at(read, "Condition", "ForAllValues:StringEquals", "dynamodb:LeadingKeys")).toEqual(["ORG#org_aaaaaaaaaaaaaaaaaaaa#MCPSRV"]);
-    const writes = statements.flatMap((statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]) as string[]).filter((action) => action.startsWith("dynamodb:") ? !["dynamodb:GetItem", "dynamodb:Query"].includes(action) : action.includes("*"));
-    expect(writes).toEqual([]);
-    // the only other grants are the execution role's own: its log stream, and reading the token it injects
-    expect(statements.flatMap((statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]) as string[]).filter((action) => !action.startsWith("dynamodb:")).sort())
-      .toEqual(["logs:CreateLogStream", "logs:PutLogEvents", "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]);
+    expect(of("AWS::EC2::SecurityGroup")).toHaveLength(3);
   });
-  it("serves HTTPS only: there is no plain-HTTP mode and no start without a certificate", () => {
-    const { of, host } = synth();
-    expect(of("AWS::ElasticLoadBalancingV2::Listener").map((listener) => [listener.Protocol, listener.Port])).toEqual([["HTTPS", 443]]);
-    expect(host.url).toMatch(/^https:\/\//u);
-    expect(() => synth({ certificateArn: "" })).toThrow(/certificate/u);
-    expect(() => new McpHost(new Stack(new App(), "NoCert"), "H", { vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], image: ecs.ContainerImage.fromRegistry("x"), clientSecurityGroupIds: [], stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", privateEgressCidrs: ["10.0.0.0/16"], hostName: "h.example.net", hostedZoneId: "Z1" } as never)).toThrow(/certificate/u);
+  it("refuses a runner image that is not this account's ECR image pinned by digest, or is in another region", () => {
+    for (const image of ["", "node:22", `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner:latest`, `docker.io/library/node@sha256:${"a".repeat(64)}`, `111111111111.dkr.ecr.eu-west-1.amazonaws.com/x@sha256:${"a".repeat(64)}`]) {
+      expect(() => synth({ runnerImage: image }), image).toThrow(/runner image/u);
+    }
   });
-  it("is reached by a DNS name the certificate is for, through an alias record to the load balancer (review m4)", () => {
-    const { of, host } = synth({ hostName: "mcp-host.corp.example.net" });
-    expect(host.url).toBe("https://mcp-host.corp.example.net");
-    const record = of("AWS::Route53::RecordSet")[0]!;
-    expect(record.Name).toBe("mcp-host.corp.example.net");
-    expect(record.Type).toBe("A");
-    expect(at(record, "AliasTarget", "EvaluateTargetHealth")).toBe(true);
-    for (const bad of ["", "internal-x.us-east-1.elb.amazonaws.com", "localhost", "10.0.0.5"]) expect(() => synth({ hostName: bad }), bad).toThrow(/DNS name/u);
+});
+
+describe("the runner execution role", () => {
+  it("is assumed by ECS tasks of this account only and reads only this org's `mcp*` secrets that carry the org's tag, pulls only the runner repository, and writes only the runner log group", () => {
+    const { json, statementsOf, actionsOf } = synth();
+    const role = Object.values(json.Resources).find((resource) => resource.Type === "AWS::IAM::Role" && JSON.stringify(resource.Properties).includes("RunnerExecution") === false && String(at(resource.Properties, "Description")).startsWith("Rovara MCP runner tasks"))!;
+    expect(at(role.Properties, "AssumeRolePolicyDocument", "Statement", 0, "Principal", "Service")).toBe("ecs-tasks.amazonaws.com");
+    expect(at(role.Properties, "AssumeRolePolicyDocument", "Statement", 0, "Condition", "StringEquals", "aws:SourceAccount")).toBe("111111111111");
+    const statements = statementsOf("RunnerExecutionRole");
+    const secrets = statements.find((statement) => statement.Sid === "ReadApprovedServerSecrets")!;
+    expect(actionsOf(secrets)).toEqual(["secretsmanager:GetSecretValue"]);
+    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcp*`);
+    expect(at(secrets, "Condition", "StringEquals", "secretsmanager:ResourceTag/rovara:org")).toBe(ORG);
+    const pull = statements.find((statement) => statement.Sid === "PullTheRunnerImage")!;
+    expect(JSON.stringify(pull.Resource)).toContain("repository/rovara/mcp-runner");
+    expect(JSON.stringify(pull.Resource)).not.toContain("*");
+    const logsStatement = statements.find((statement) => statement.Sid === "RunnerLogs")!;
+    expect(actionsOf(logsStatement)).toEqual(["logs:CreateLogStream", "logs:PutLogEvents"]);
+    expect(JSON.stringify(logsStatement.Resource)).toContain("RunnerLogs");
+    // nothing else: no wildcard action, nothing on the state table, the bundle bucket, KMS or ECS
+    const allActions = statements.flatMap(actionsOf).sort();
+    expect(allActions).toEqual(["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetAuthorizationToken", "ecr:GetDownloadUrlForLayer", "logs:CreateLogStream", "logs:PutLogEvents", "secretsmanager:GetSecretValue"]);
   });
-  it("starts as root only to give each hosted server its own uid, and drops the capabilities it does not need", () => {
-    const { of } = synth();
-    const container = (of("AWS::ECS::TaskDefinition")[0]!.ContainerDefinitions as Array<Record<string, unknown>>)[0]!;
-    expect(container.User).toBe("0");
-    const dropped = at(container, "LinuxParameters", "Capabilities", "Drop") as string[];
-    expect(dropped).toEqual(expect.arrayContaining(["NET_RAW", "MKNOD", "SETFCAP", "SETPCAP", "DAC_OVERRIDE", "SYS_CHROOT"]));
-    expect(at(container, "LinuxParameters", "Capabilities", "Add")).toBeUndefined();
-    expect(dropped).not.toEqual(expect.arrayContaining(["SETUID", "SETGID", "CHOWN", "KILL"]));
+});
+
+describe("the controller's task role is scoped to what the controller makes", () => {
+  const find = (statements: Statement[], sid: string): Statement => statements.find((statement) => statement.Sid === sid)!;
+  it("starts, stops and describes tasks only of `rovara-mcp-*` families in its one cluster", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const run = find(statements, "RunMcpTasks");
+    expect(actionsOf(run)).toEqual(["ecs:RunTask"]);
+    expect(JSON.stringify(run.Resource)).toContain("task-definition/rovara-mcp-*:*");
+    expect(JSON.stringify(at(run, "Condition", "ArnEquals", "ecs:cluster"))).toContain("Cluster");
+    // RunTask may not turn on ECS Exec. It takes no ecs:subnet or ecs:auto-assign-public-ip condition (those are CreateService and UpdateService keys: a condition on them would deny every RunTask).
+    expect(at(run, "Condition", "StringEqualsIfExists", "ecs:enable-execute-command")).toBe("false");
+    expect(JSON.stringify(run.Condition)).not.toMatch(/ecs:subnet|ecs:auto-assign-public-ip/u);
+    const stop = find(statements, "StopAndDescribeMcpTasks");
+    expect(actionsOf(stop)).toEqual(["ecs:StopTask", "ecs:DescribeTasks"]);
+    expect(JSON.stringify(at(stop, "Condition", "ArnEquals", "ecs:cluster"))).toContain("Cluster");
+    expect(JSON.stringify(stop.Resource)).toContain(":task/");
+    const list = find(statements, "ListTasksInTheCluster");
+    expect(JSON.stringify(at(list, "Condition", "ArnEquals", "ecs:cluster"))).toContain("Cluster");
+  });
+  it("registers task definitions only in `rovara-mcp-*` families and only tagged as managed; the actions IAM cannot scope are listed, and they cannot run or pass anything", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const register = find(statements, "RegisterMcpTaskDefinitions");
+    expect(JSON.stringify(register.Resource)).toContain("task-definition/rovara-mcp-*:*");
+    expect(at(register, "Condition", "StringEquals", "aws:RequestTag/rovara:managed")).toBe("rovara-mcp");
+    expect(actionsOf(find(statements, "ReadAndRetireTaskDefinitions")).sort()).toEqual(["ecs:DeregisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitionFamilies", "ecs:ListTaskDefinitions"]);
+    const tagging = find(statements, "TagOnCreateOnly");
+    expect(at(tagging, "Condition", "StringEquals", "ecs:CreateAction")).toEqual(["RunTask", "RegisterTaskDefinition"]);
+  });
+  it("may pass the runner execution role and no other, and only to ECS tasks", () => {
+    const { statementsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const pass = find(statements, "PassTheRunnerExecutionRoleOnly");
+    expect(JSON.stringify(pass.Resource)).toContain("RunnerExecutionRole");
+    expect(Array.isArray(pass.Resource)).toBe(false);
+    expect(at(pass, "Condition", "StringEquals", "iam:PassedToService")).toBe("ecs-tasks.amazonaws.com");
+    expect(statements.flatMap((statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action])).filter((action) => action.startsWith("iam:") || action === "*" || action.endsWith(":*"))).toEqual(["iam:PassRole"]);
+  });
+  it("creates security groups only in its VPC and only tagged managed, changes and deletes only groups tagged managed, and never writes a rule outside a group", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    expect(JSON.stringify(find(statements, "CreateSecurityGroupsInTheVpc").Resource)).toContain("vpc/vpc-0123456789abcdef0");
+    expect(at(find(statements, "CreateManagedSecurityGroups"), "Condition", "StringEquals", "aws:RequestTag/rovara:managed")).toBe("rovara-mcp");
+    const tags = find(statements, "TagSecurityGroupsAtCreation");
+    expect(at(tags, "Condition", "StringEquals", "ec2:CreateAction")).toBe("CreateSecurityGroup");
+    expect(at(tags, "Condition", "StringEquals", "aws:RequestTag/rovara:managed")).toBe("rovara-mcp");
+    const change = find(statements, "ChangeManagedSecurityGroups");
+    expect(actionsOf(change).sort()).toEqual(["ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress", "ec2:DeleteSecurityGroup", "ec2:RevokeSecurityGroupEgress", "ec2:RevokeSecurityGroupIngress"]);
+    expect(at(change, "Condition", "StringEquals", "aws:ResourceTag/rovara:managed")).toBe("rovara-mcp");
+    expect(JSON.stringify(change.Resource)).toContain("security-group/*");
+    // nothing on subnets, route tables, gateways, endpoints, network interfaces
+    const ec2Actions = statements.flatMap((statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action])).filter((action) => action.startsWith("ec2:")).sort();
+    expect(ec2Actions).toEqual(["ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress", "ec2:CreateSecurityGroup", "ec2:CreateSecurityGroup", "ec2:CreateTags", "ec2:DeleteSecurityGroup", "ec2:DescribeSecurityGroups", "ec2:RevokeSecurityGroupEgress", "ec2:RevokeSecurityGroupIngress"]);
+  });
+  it("reads only the registry, and writes only the probe slots, instance leases and its own events, each by the org's partition key", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const keys = (statement: Statement) => at(statement, "Condition", "ForAllValues:StringEquals", "dynamodb:LeadingKeys");
+    const read = find(statements, "ReadMcpServerRegistry");
+    expect(actionsOf(read)).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
+    expect(keys(read)).toEqual([`ORG#${ORG}#MCPSRV`]);
+    const slots = find(statements, "ProbeSlotsAndInstanceLeases");
+    expect(actionsOf(slots)).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]);
+    expect(keys(slots)).toEqual([`ORG#${ORG}#MCPSLOT`]);
+    const events = find(statements, "WriteControllerEvents");
+    expect(actionsOf(events)).toEqual(["dynamodb:PutItem"]);
+    expect(keys(events)).toEqual([`ORG#${ORG}#MCPEVT`]);
+    for (const statement of [read, slots, events]) expect(at(statement, "Condition", "Null", "dynamodb:LeadingKeys")).toBe("false");
+    // no write to the registry partition, and no other DynamoDB action anywhere
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("dynamodb:")).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query"]);
+  });
+  it("reaches Secrets Manager only to find the ARN of this org's `mcp*` secrets, never to read one", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const describe = find(statements, "ResolveServerSecretArns");
+    expect(actionsOf(describe)).toEqual(["secretsmanager:DescribeSecret"]);
+    expect(JSON.stringify(describe.Resource)).toContain(`org-connectors/${ORG}/mcp*`);
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("secretsmanager:") && action !== "secretsmanager:DescribeSecret")).toEqual([]);
+  });
+  it("reads and writes only the `bundles/` objects of the bundle bucket, lists that bucket, and uses only its own key", () => {
+    const { statementsOf, actionsOf } = synth();
+    const statements = statementsOf("ControllerTaskRole");
+    const objects = find(statements, "ReadAndWriteBundles");
+    expect(actionsOf(objects)).toEqual(["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"]);
+    expect(JSON.stringify(objects.Resource)).toContain("/bundles/*");
+    expect(JSON.stringify(objects.Resource)).toContain("Bundles");
+    expect(actionsOf(find(statements, "SeeWhichBundlesExist"))).toEqual(["s3:ListBucket"]);
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]);
+    const key = find(statements, "UseTheBundleKey");
+    expect(actionsOf(key)).toEqual(["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]);
+    expect(JSON.stringify(key.Resource)).toContain("BundleKey");
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("kms:"))).toEqual(["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]);
+  });
+});
+
+describe("the bundle bucket", () => {
+  it("is encrypted with its own rotating key, private, TLS-only, versioned and retained, with a lifecycle that clears failed uploads and replaced versions", () => {
+    const { of, json } = synth();
+    const bucket = of("AWS::S3::Bucket")[0]!;
+    expect(at(bucket, "BucketEncryption", "ServerSideEncryptionConfiguration", 0, "ServerSideEncryptionByDefault", "SSEAlgorithm")).toBe("aws:kms");
+    expect(JSON.stringify(at(bucket, "BucketEncryption", "ServerSideEncryptionConfiguration", 0, "ServerSideEncryptionByDefault", "KMSMasterKeyID"))).toContain("BundleKey");
+    expect(at(bucket, "PublicAccessBlockConfiguration")).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
+    expect(at(bucket, "VersioningConfiguration", "Status")).toBe("Enabled");
+    const rules = at(bucket, "LifecycleConfiguration", "Rules") as Array<Record<string, unknown>>;
+    expect(rules.map((rule) => [rule.Id, at(rule, "AbortIncompleteMultipartUpload", "DaysAfterInitiation"), at(rule, "NoncurrentVersionExpiration", "NoncurrentDays")])).toEqual([["abort-incomplete-uploads", 1, undefined], ["expire-replaced-versions", undefined, 30]]);
+    expect(rules.some((rule) => rule.ExpirationInDays !== undefined)).toBe(false);
+    expect(json.Resources[String(bucket.id)]).toMatchObject({ DeletionPolicy: "Retain" });
+    expect(JSON.stringify(of("AWS::S3::BucketPolicy"))).toContain("aws:SecureTransport");
+    const key = of("AWS::KMS::Key")[0]!;
+    expect(key.EnableKeyRotation).toBe(true);
+    expect(json.Resources[String(key.id)]).toMatchObject({ DeletionPolicy: "Retain" });
+  });
+});
+
+describe("the names the install's DNS firewall must let through", () => {
+  it("are the controller's Cloud Map name, the registry host and the ECS API, and the default allow-list is unchanged", () => {
+    expect(mcpHostAllowDomains({ controllerDnsNamespace: "mcp.rovara.internal", npmRegistry: "https://registry.corp.example.net/npm/", region: "us-east-1" })).toEqual(["controller.mcp.rovara.internal", "ecs.us-east-1.amazonaws.com", "registry.corp.example.net"]);
+    expect(enterpriseAllowDomains("us-east-1")).not.toContain("ecs.us-east-1.amazonaws.com");
+    expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true })).toContain("ecs.us-east-1.amazonaws.com");
+    expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true }).filter((name) => name !== "ecs.us-east-1.amazonaws.com")).toEqual(enterpriseAllowDomains("us-east-1"));
+  });
+  it("refuses a registry that is not an https address without credentials", () => {
+    for (const registry of ["http://registry.corp.example.net/", "https://user:pw@registry.corp.example.net/", "not a url", "https://registry.corp.example.net/?token=x"]) expect(() => synth({ npmRegistry: registry }), registry).toThrow(/registry/u);
   });
 });

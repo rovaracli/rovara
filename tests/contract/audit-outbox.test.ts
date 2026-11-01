@@ -796,6 +796,15 @@ describe("I4: the builders", () => {
     // Lane E (private MCP servers, project Sources)
     ["auditMcpServerChanged", (occurrence) => builders.auditMcpServerChanged({ ...base, occurrence, details, action: "mcp_server.added", serverId: "mcp_1", label: "Docs server", transport: "http", hasToken: true })],
     ["auditMcpServerTokenChanged", (occurrence) => builders.auditMcpServerTokenChanged({ ...base, occurrence, details, serverId: "mcp_1", change: "stored" })],
+    // Stdio MCP host (T10): hashes, counts and fixed words are facts; the package's destinations, the secret names and the addresses are the org's details
+    ["auditMcpServerApproved", (occurrence) => builders.auditMcpServerApproved({ ...base, occurrence, details, serverId: "mcp_1", label: "Docs server", transport: "stdio", hasToken: true, pin: { integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), toolsHash: "3".repeat(64), destinationCount: 1, secretCount: 1, secretVersion: "v1", destinations: "docs.corp.example:443", secretNames: "DOCS_TOKEN" } })],
+    ["auditMcpServerInstalled", (occurrence) => builders.auditMcpServerInstalled({ ...base, occurrence, details, serverId: "mcp_1", name: "@acme/docs-mcp", version: "1.0.0", integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), packageCount: 4, unpackedBytes: 4096 })],
+    ["auditMcpServerProbed", (occurrence) => builders.auditMcpServerProbed({ ...base, occurrence, details, serverId: "mcp_1", purpose: "proposal", toolsHash: "3".repeat(64), bundleHash: "2".repeat(64), toolCount: 2 })],
+    ["auditMcpServerChangedNeedsReview", (occurrence) => builders.auditMcpServerChangedNeedsReview({ ...base, occurrence, details, serverId: "mcp_1", approvedToolsHash: "3".repeat(64), observedToolsHash: "4".repeat(64) })],
+    ["auditMcpServerTaskStarted", (occurrence) => builders.auditMcpServerTaskStarted({ ...base, occurrence, details, serverId: "mcp_1", trigger: "warm" })],
+    ["auditMcpServerTaskStopped", (occurrence) => builders.auditMcpServerTaskStopped({ ...base, occurrence, details, serverId: "mcp_1", reason: "idle" })],
+    ["auditMcpServerEgressUpdated", (occurrence) => builders.auditMcpServerEgressUpdated({ ...base, occurrence, details, serverId: "mcp_1", added: 1, removed: 0, addresses: "for docs.corp.example:443; added 10.1.2.9:443; removed " })],
+    ["auditMcpServerSecretReplaced", (occurrence) => builders.auditMcpServerSecretReplaced({ ...base, occurrence, details, serverId: "mcp_1", secretCount: 1, secretVersion: "v2" })],
     ["auditContextSourceChange", (occurrence) => builders.auditContextSourceChange({ ...base, occurrence, details, action: "context_source.applied", projectName: "Secret Project", sourceId: "src_1", change: "set" })],
     // Live interaction part 2
     ["auditSessionRedirected", (occurrence) => builders.auditSessionRedirected({ ...base, occurrence, details, sessionId: "ses_1", taskId: "task_1", messageId: "msg_1", mode: "keep_plan", step: "IMPLEMENT", outcome: "restarted" })],

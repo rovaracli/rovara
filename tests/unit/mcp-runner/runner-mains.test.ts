@@ -11,7 +11,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js";
 import { main as fetchMain, readFetchConfig } from "../../../packages/broker/src/mcp-runner/fetch-main.js";
-import { readServeConfig, start as startServe } from "../../../packages/broker/src/mcp-runner/serve-main.js";
+import { readServeConfig, start as startServe, startFailureFields } from "../../../packages/broker/src/mcp-runner/serve-main.js";
+import { main as installMain, rootRefusalLine } from "../../../packages/broker/src/mcp-runner/install-main.js";
+import { RootRefusedError } from "../../../packages/gateway/src/mcp-runner/identity.js";
+import { createBridge } from "../../../packages/gateway/src/mcp-runner/bridge.js";
 
 const TOKEN = "t".repeat(43);
 const FIXTURE = resolve("tests/support/stdio-runner-fixture.mjs");
@@ -167,5 +170,38 @@ describe("T4 fetch-main", () => {
     expect(lines.map((line) => (JSON.parse(line) as { code: string }).code)).toEqual(["refused", "bad_request", "root", "root"]);
     expect(lines.join("\n")).not.toContain(TOKEN);
     expect(await readdir(join(work, "volume"))).toEqual([]);
+  });
+});
+
+describe("fix round 1, S6: a root refusal says it is one (the Linux job reads the code)", () => {
+  it("is a RootRefusedError with the code `root` and the same message as before, from the bridge and the install program", async () => {
+    const error = new RootRefusedError("the bridge");
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ code: "root", message: "the bridge must not run as root", name: "RootRefusedError" });
+    // (the install program reads the class from the built package, a second copy of the module in this test, so it is recognised by its name and code)
+    await expect(installMain({ env: {}, getuid: () => 0, write: () => undefined })).rejects.toMatchObject({ name: "RootRefusedError", code: "root", message: "the install task must not run as root" });
+    await expect(installMain({ env: {}, getuid: () => 10_002, getgid: () => 0, write: () => undefined })).rejects.toMatchObject({ code: "root" });
+    expect(() => createBridge({ token: "t".repeat(43), bundleHash: "a".repeat(64), bundleDir: "/x", packageName: "p", args: [], secretEnv: [], memoryMiB: 512, environment: {}, homeDir: "/h", tmpDir: "/t", confine: (f, a) => ({ file: f, args: a }), getuid: () => 0, getgid: () => 0 })).toThrow(RootRefusedError);
+    expect(() => createBridge({ token: "t".repeat(43), bundleHash: "a".repeat(64), bundleDir: "/x", packageName: "p", args: [], secretEnv: [], memoryMiB: 512, environment: {}, homeDir: "/h", tmpDir: "/t", confine: (f, a) => ({ file: f, args: a }), getuid: () => 10_003, getgid: () => 0 })).toThrow(expect.objectContaining({ code: "root" }));
+  });
+  it("puts the code on the last line of the serve program and the install program only for a root refusal, never for another failure", async () => {
+    const refusal = await installMain({ env: {}, getuid: () => 0, write: () => undefined }).catch((error: unknown) => error);
+    expect(startFailureFields(refusal)).toEqual({ code: "root" });
+    for (const other of [new Error("the bridge must not run as root"), new Error("anything"), "text", undefined, null]) expect(startFailureFields(other)).toEqual({});
+    expect(JSON.parse(rootRefusalLine(refusal)!)).toEqual({ component: "mcp-install", ok: false, code: "root" });
+    for (const other of [new Error("the install task must not run as root"), new Error("x"), "root", undefined]) expect(rootRefusalLine(other)).toBeUndefined();
+  });
+  it("keeps the programs' last-line handlers on those helpers (the Linux job reads what they print)", async () => {
+    const serve = await readFile("packages/broker/src/mcp-runner/serve-main.ts", "utf8");
+    expect(serve).toContain('log("bridge.start_failed", startFailureFields(error))');
+    const install = await readFile("packages/broker/src/mcp-runner/install-main.ts", "utf8");
+    expect(install).toContain("const line = rootRefusalLine(error);");
+    expect(install).toContain("if (line !== undefined) process.stdout.write(");
+    const controller = await readFile("packages/broker/src/mcp-host/main.ts", "utf8");
+    expect(controller).toContain("error instanceof RootRefusedError ? { code: error.code } : {}");
+    const job = await readFile("tests/linux/mcp-runner/mcp-runner-linux.test.ts", "utf8");
+    for (const wanted of ["serve.stdout).toContain('\"code\":\"root\"'", "installed.stdout).toContain('{\"component\":\"mcp-install\",\"ok\":false,\"code\":\"root\"}')", "serveControl.stdout).not.toContain", "installControl.stdout).not.toContain", "out.stderr).toContain('\"code\":\"root\"')"]) {
+      expect(job.replaceAll("\\", ""), wanted).toContain(wanted.replaceAll("\\", ""));
+    }
   });
 });
