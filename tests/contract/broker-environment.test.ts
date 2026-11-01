@@ -65,7 +65,7 @@ describe("the table of names", () => {
     const variables = specs.filter((spec) => spec.kind !== "deadLetterQueue").map((spec) => spec.variable);
     expect(new Set(variables).size).toBe(variables.length);
     expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.variable))).toEqual(new Set(["HEALTH_DEAD_LETTER_QUEUES"]));
-    expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.label)).size).toBe(4);
+    expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.label)).size).toBe(5);
     for (const spec of specs) expect(spec.code).toMatch(/^[a-z]{2}$/);
   });
 });

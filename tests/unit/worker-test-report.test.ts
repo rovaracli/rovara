@@ -1,7 +1,7 @@
 // Proof and evidence P2: reading a check's own JUnit or vitest/jest JSON report into totals, names, new tests and skip counts. Fail closed: a file that is not a report, is empty, too big or holds no test is "not measured".
 import { describe, expect, it } from "vitest";
 import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
-import { evidenceTests, parseJsonReport, parseJunit, parseTestReport, plainName, skipRise, skippedOutsideChanged, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
+import { evidenceTests, parseGoTestJson, parseJsonReport, parseJunit, parseTestReport, plainName, skipRise, skippedOutsideChanged, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
 
 // A pytest --junitxml file, as pytest 8 writes it.
 const PYTEST = `<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="1" skipped="1" tests="5" time="0.30">
@@ -222,5 +222,82 @@ describe("a rise in skips", () => {
   it("makes no claim without both reports", () => {
     expect(skipRise(undefined, before, changed)).toBeUndefined();
     expect(skipRise(before, undefined, changed)).toBeUndefined();
+  });
+});
+
+// `go test -json` (test2json events), as Go 1.22 writes them: one JSON object per line.
+const ev = (event: Record<string, unknown>): string => JSON.stringify({ Time: "2026-11-01T10:00:00Z", ...event });
+const GO_STREAM = [
+  ev({ Action: "start", Package: "example.com/m/match" }),
+  ev({ Action: "run", Package: "example.com/m/match", Test: "TestScores" }),
+  ev({ Action: "output", Package: "example.com/m/match", Test: "TestScores", Output: "=== RUN   TestScores\n" }),
+  ev({ Action: "pass", Package: "example.com/m/match", Test: "TestScores", Elapsed: 0.012 }),
+  ev({ Action: "run", Package: "example.com/m/match", Test: "TestRegion" }),
+  ev({ Action: "run", Package: "example.com/m/match", Test: "TestRegion/no_region" }),
+  ev({ Action: "output", Package: "example.com/m/match", Test: "TestRegion/no_region", Output: "--- PASS: TestPretend (0.00s)\n" }),
+  ev({ Action: "fail", Package: "example.com/m/match", Test: "TestRegion/no_region", Elapsed: 0.001 }),
+  ev({ Action: "fail", Package: "example.com/m/match", Test: "TestRegion", Elapsed: 0.002 }),
+  ev({ Action: "run", Package: "example.com/m/match", Test: "TestSlow" }),
+  ev({ Action: "skip", Package: "example.com/m/match", Test: "TestSlow", Elapsed: 0 }),
+  ev({ Action: "fail", Package: "example.com/m/match", Elapsed: 0.05 }),
+  ev({ Action: "skip", Package: "example.com/m/empty" }),
+  ev({ Action: "pass", Package: "example.com/m/rank", Elapsed: 0.01 }),
+].join("\n");
+
+describe("go test -json", () => {
+  it("counts the tests it reads, subtests too, from the Action fields only (a forged line inside Output changes nothing)", () => {
+    const report = parseGoTestJson(GO_STREAM)!;
+    expect(report).toMatchObject({ format: "gotest", total: 4, passed: 1, failed: 2, skipped: 1, errored: 0 });
+    expect(report.tests.map((test) => [test.file, test.name, test.status])).toEqual([
+      ["example.com/m/match", "TestScores", "passed"], ["example.com/m/match", "TestRegion/no_region", "failed"], ["example.com/m/match", "TestRegion", "failed"], ["example.com/m/match", "TestSlow", "skipped"],
+    ]);
+    expect(report.tests[0]?.durationMs).toBe(12);
+  });
+  it("counts a package that failed with no failing test of its own as one errored test named for the package (a build failure)", () => {
+    const report = parseGoTestJson([ev({ Action: "start", Package: "p/a" }), ev({ Action: "output", Package: "p/a", Output: "FAIL\tp/a [build failed]\n" }), ev({ Action: "fail", Package: "p/a", Elapsed: 0, FailedBuild: "p/a" })].join("\n"))!;
+    expect(report).toMatchObject({ total: 1, errored: 1, failed: 0 });
+    expect(report.tests[0]).toMatchObject({ file: "p/a", name: "p/a", status: "errored" });
+  });
+  it("counts a test that started and never finished as errored, so a cut-off file never reads as passing", () => {
+    const report = parseGoTestJson([ev({ Action: "run", Package: "p", Test: "TestA" }), ev({ Action: "pass", Package: "p", Test: "TestA", Elapsed: 0.1 }), ev({ Action: "run", Package: "p", Test: "TestB" })].join("\n"))!;
+    expect(report).toMatchObject({ total: 2, passed: 1, errored: 1 });
+    expect(report.tests.find((test) => test.status === "errored")?.name).toBe("TestB");
+  });
+  it("counts each repeated run of a test (-count=2) as its own test", () => {
+    const once = [ev({ Action: "run", Package: "p", Test: "TestA" }), ev({ Action: "pass", Package: "p", Test: "TestA" })];
+    expect(parseGoTestJson([...once, ...once].join("\n"))).toMatchObject({ total: 2, passed: 2 });
+  });
+  it("skips lines that are not events, but reads nothing from a file with no test result in it", () => {
+    const mixed = ["# p/a", "some compiler text", ev({ Action: "run", Package: "p", Test: "TestA" }), ev({ Action: "pass", Package: "p", Test: "TestA" }), "{not json"].join("\n");
+    expect(parseGoTestJson(mixed)).toMatchObject({ total: 1, passed: 1 });
+    expect(parseGoTestJson("")).toBeUndefined();
+    expect(parseGoTestJson("just text\nmore text")).toBeUndefined();
+    expect(parseGoTestJson([ev({ Action: "start", Package: "p" }), ev({ Action: "skip", Package: "p" }), ev({ Action: "pass", Package: "p" })].join("\n"))).toBeUndefined();
+    expect(parseGoTestJson(JSON.stringify({ testResults: [] }))).toBeUndefined();
+  });
+  it("ignores an event of an unknown Action, a missing Package or a wrong type, and never throws on odd values", () => {
+    const odd = [ev({ Action: "pass", Test: "TestNoPackage" }), ev({ Action: "explode", Package: "p", Test: "TestX" }), ev({ Action: 5, Package: "p", Test: "TestY" }), "null", "[]", "5", ev({ Action: "run", Package: "p", Test: "TestOk" }), ev({ Action: "pass", Package: "p", Test: "TestOk", Elapsed: "soon" })].join("\n");
+    expect(parseGoTestJson(odd)).toMatchObject({ total: 1, passed: 1 });
+    expect(parseGoTestJson(odd)?.tests[0]?.durationMs).toBeUndefined();
+  });
+  it("redacts and cuts a test name, and bounds the number of tests", () => {
+    const name = `Test${"x".repeat(500)}`;
+    expect(parseGoTestJson([ev({ Action: "run", Package: "p", Test: name }), ev({ Action: "pass", Package: "p", Test: name })].join("\n"))?.tests[0]?.name.length).toBeLessThanOrEqual(300);
+    const many = Array.from({ length: TEST_REPORT_MAX_TESTS + 1 }, (_, n) => ev({ Action: "pass", Package: "p", Test: `T${String(n)}` })).join("\n");
+    expect(parseGoTestJson(many)).toBeUndefined();
+  });
+  it("is chosen by parseTestReport from the content under auto and json, never for a JUnit request, and vitest JSON still reads as json", () => {
+    expect(parseTestReport(GO_STREAM)?.format).toBe("gotest");
+    expect(parseTestReport(GO_STREAM, "json")?.format).toBe("gotest");
+    expect(parseTestReport(GO_STREAM, "junit")).toBeUndefined();
+    expect(parseTestReport(VITEST)?.format).toBe("json");
+    expect(parseTestReport(PYTEST)?.format).toBe("junit");
+  });
+  it("feeds the evidence summary like any other report, and a Go package is never taken for a changed test file", () => {
+    const report = parseGoTestJson(GO_STREAM)!;
+    const summary = evidenceTests(report, { changedTestPaths: ["match/match_test.go"] });
+    expect(summary).toMatchObject({ total: 4, passed: 1, failed: 2, skipped: 1, newTests: [] });
+    expect(summary.names.slice(0, 2).map((item) => item.status)).toEqual(["failed", "failed"]);
+    expect(skippedOutsideChanged(report, ["match/match_test.go"])).toBe(1);
   });
 });

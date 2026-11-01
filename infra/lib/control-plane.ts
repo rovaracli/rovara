@@ -201,7 +201,7 @@ export class ControlPlaneStack extends Stack {
         { id: "ExpireE2EScreenshots", expiration: Duration.days(E2E_ARTIFACT_RETENTION_DAYS), tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: E2E_ARTIFACT_RETENTION_TAG_VALUE } },
         // Proof and evidence P6: stored evidence expires by class, on the same tag key. evidence-short is video and trace (14 days by default); evidence-std is screenshots, API samples and output tails (30 days).
         // An Enterprise install sets the days with the `evidenceRetentionDays` context value ({"evidence-short": n, "evidence-std": n}); a value outside the allowed range is clamped, never refused, so a bad
-        // setting cannot keep evidence longer than the maximum or expire it sooner than the minimum. evidence-record (the pack) lives with the task record and has no rule.
+        // setting cannot keep evidence longer than the maximum or expire it sooner than the minimum. The pack is tagged evidence-std as well, so it expires with the tails; erasing a person, archiving a project or closing a company deletes both at once (rovara-code/evidence-erase.ts).
         ...(["evidence-short", "evidence-std"] as const).map((retentionClass) => ({ id: retentionClass === "evidence-short" ? "ExpireEvidenceShort" : "ExpireEvidenceStd",
           expiration: Duration.days(evidenceRetentionDays(retentionClass, evidenceRetentionSetting(this.node.tryGetContext("evidenceRetentionDays"))?.[retentionClass] as number | undefined) ?? EVIDENCE_RETENTION_DAYS[retentionClass].default),
           // Prefix AND tag (S3 reads that as an `And` filter): another writer's object that happens to carry the tag, outside the private evidence keys, never matches (Opus review M1).

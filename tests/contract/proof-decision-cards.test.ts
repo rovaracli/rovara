@@ -3,7 +3,7 @@
 // sign-in within the last 10 minutes. With the switch off no card path exists, no Slack press is read, and the Lambda answers the press as any unknown button.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { DecisionCardsViewSchema, SLACK_OIDC_ISSUER, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, SLACK_OIDC_ISSUER, editionPolicy, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { mergeItemOf, mergeItemsFor, reviewVerdictOf, type MergeSourcePorts } from "../../packages/broker/src/decisions/merge-source.js";
@@ -12,7 +12,7 @@ import { routeDecisionCards, type DecisionPerformer } from "../../packages/broke
 import { createDecisionPerformer, mergeHandler } from "../../packages/broker/src/decisions/performer.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import { decisionRouteDepsOf, isDecisionPath } from "../../packages/broker/src/aws/developer-routes/decisions.js";
-import { handleSlackDecisionPress, isSlackDecisionPressEvent, slackPersonLookups, type SlackDecisionPressEvent } from "../../packages/broker/src/aws/broker/decision-press.js";
+import { handleSlackDecisionPress, isSlackDecisionPressEvent, slackPersonLookups, slackSignInStands, type SlackDecisionPressEvent, type SlackSignInPolicy } from "../../packages/broker/src/aws/broker/decision-press.js";
 import { decisionPressHandler } from "../../packages/broker/src/aws/slack-decision-press.js";
 import { DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION } from "../../packages/broker/src/decisions/slack-card.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -214,10 +214,17 @@ describe("a card button pressed in Slack", () => {
   const routeDependencies = { documentClient: { send: vi.fn() }, tableName: "t", developer: { signInTableName: "signin", issuer: "https://rovara.example" }, now: Date.now } as never;
   const identityKey = ownerKeyForSubject(SLACK_OIDC_ISSUER, "U0MAYA");
 
+  const NOW_SIGNED_IN = "2026-11-04T10:00:00.000Z";
+  const PUBLIC_POLICY = { editionPolicy: editionPolicy("public"), slackOn: true } as const;
   /** The lookups over fakes: who a verified Slack sign-in belongs to and who is a live member of which org; built over the map the handler gives them. */
-  const lookups = (over: { link?: string | undefined; row?: ReturnType<typeof person> | undefined; org?: string | undefined; member?: { orgId: string; role: string } | undefined } = {}) => (signedIn: Map<string, never> = new Map<string, never>()) => slackPersonLookups({
-    signIn: { developerForIdentity: async (key: string) => (key === identityKey && "link" in over ? over.link : key === identityKey ? "dev-1" : undefined), getDeveloper: async () => ("row" in over ? over.row : person()) as never },
+  const lookups = (over: { link?: string | undefined; row?: ReturnType<typeof person> | undefined; org?: string | undefined; member?: { orgId: string; role: string } | undefined; signedInAt?: string | undefined; policy?: Partial<SlackSignInPolicy> } = {}) => (signedIn: Map<string, never> = new Map<string, never>()) => slackPersonLookups({
+    signIn: {
+      developerForIdentity: async (key: string) => (key === identityKey && "link" in over ? over.link : key === identityKey ? "dev-1" : undefined),
+      getDeveloper: async () => ("row" in over ? over.row : person()) as never,
+      getIdentityLink: async () => ("signedInAt" in over ? (over.signedInAt === undefined ? undefined : { lastSignInAt: over.signedInAt }) : { lastSignInAt: NOW_SIGNED_IN }) as never,
+    },
     orgs: { orgForSlackTeam: async () => ("org" in over ? over.org : ORG), orgForDeveloper: async () => ("member" in over ? over.member : { orgId: ORG, role: "member" }) as never },
+    policy: { ...PUBLIC_POLICY, ...over.policy },
   }, signedIn);
 
   it("recognises the event and nothing looser", () => {
@@ -238,6 +245,45 @@ describe("a card button pressed in Slack", () => {
     expect(await lookups({ member: { orgId: "org-2", role: "member" } })().memberRole(ORG, "dev-1")).toBeUndefined();
     // A user id other than the one the sign-in identity names has no link (the stand-in identity is never used).
     expect(await l.linkedDeveloper({ teamId: "T1", userId: "U0OTHER" })).toBeUndefined();
+  });
+
+  it("holds a Slack press to the sign-in rules every request of a Slack session meets: revoked, ended by an admin, the method off in the install or the edition, turned on again since, and an Auditor outside Enterprise", async () => {
+    const stands = async (over: Parameters<typeof lookups>[0]) => (await lookups(over)().linkedDeveloper({ teamId: "T1", userId: "U0MAYA" })) === "dev-1";
+    expect(await stands({})).toBe(true);
+    expect(await stands({ row: { ...person(), revoked: true } })).toBe(false);
+    // An admin ended the person's sign-ins after their last Slack sign-in; a Slack sign-in after that stands again.
+    expect(await stands({ row: { ...person(), sessionsEndedAt: "2026-11-04T11:00:00.000Z" } as never })).toBe(false);
+    expect(await stands({ row: { ...person(), sessionsEndedAt: "2026-11-04T09:00:00.000Z" } as never })).toBe(true);
+    // The install has Slack sign-in off, or the edition does not offer it (Enterprise), or it was turned on again after the last sign-in.
+    expect(await stands({ policy: { slackOn: false } })).toBe(false);
+    expect(await stands({ policy: { editionPolicy: editionPolicy("enterprise") } })).toBe(false);
+    expect(await stands({ policy: { slackSince: Date.parse("2026-11-04T10:30:00.000Z") / 1000 } })).toBe(false);
+    expect(await stands({ policy: { slackSince: Date.parse("2026-11-04T09:30:00.000Z") / 1000 } })).toBe(true);
+    // A sign-in time that cannot be read fails closed.
+    expect(await stands({ signedInAt: "not a time" })).toBe(false);
+    // The Auditor is an Enterprise role.
+    expect(await lookups({ member: { orgId: ORG, role: "auditor" } })().memberRole(ORG, "dev-1")).toBeUndefined();
+    expect(await lookups({ member: { orgId: ORG, role: "auditor" }, policy: { editionPolicy: editionPolicy("enterprise") } })().memberRole(ORG, "dev-1")).toMatchObject({ orgRole: "auditor" });
+    expect(slackSignInStands({ revoked: false, lastSignInAt: NOW_SIGNED_IN }, PUBLIC_POLICY)).toBe(true);
+  });
+
+  it("a press by a person whose Slack sign-in was revoked or ended by an admin reaches no card route, and the caller of one that does is a Slack sign-in", async () => {
+    const env = { DECISION_CARDS_ENABLED: "1" };
+    const routed: Array<{ developerId: string; amr?: string }> = [];
+    const sources = { list: async () => [], locks: async () => ({}) };
+    const run = (l: ReturnType<typeof lookups>) => handleSlackDecisionPress(dependencies, routeDependencies, press(), env, {
+      lookupsOf: (map) => l(map as never),
+      cardDepsOf: ((_deps: unknown, who: { developerId: string; amr?: string }) => { routed.push(who); return { sources, performer: {} as never, store: inMemoryDecisionStore(), now: Date.now }; }),
+    });
+    for (const l of [lookups({ row: { ...person(), revoked: true } }), lookups({ row: { ...person(), sessionsEndedAt: "2026-11-04T11:00:00.000Z" } as never }), lookups({ policy: { slackOn: false } }), lookups({ policy: { editionPolicy: editionPolicy("enterprise") } })]) {
+      const out = await run(l);
+      expect((out as { text: string }).text).toContain("couldn't tell who you are");
+    }
+    expect(routed).toEqual([]);
+    // A person who first signed in another way and linked Slack: the caller is still a Slack sign-in, not their first method.
+    await run(lookups({ row: { ...person(), provider: "github" } }));
+    expect(routed).toHaveLength(1);
+    expect(routed[0]).toMatchObject({ developerId: "dev-1", amr: "slack" });
   });
 
   it("with the switch off nothing is read and the answer says so", async () => {

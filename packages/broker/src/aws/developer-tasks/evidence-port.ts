@@ -9,6 +9,7 @@ import { loadEvidencePack } from "../../rovara-code/evidence-keep.js";
 import { statEvidenceArtifacts, type EvidenceArtifactStore, type EvidenceDownloadDependencies } from "../evidence-artifacts.js";
 import type { AuditDeps } from "../../audit/outbox.js";
 import { taskPageUrl } from "./common.js";
+import type { DeveloperTaskRouteDependencies } from "./types.js";
 
 export interface EvidenceTaskKey { taskId: string; ownerKey: string; workspaceId: string }
 
@@ -62,4 +63,18 @@ export function createEvidencePort(input: EvidencePortInput): EvidencePort {
       return evidenceViewOf(found, task.taskId, stateOf);
     },
   };
+}
+
+/**
+ * Whether the person may see this task's evidence: they hold the project (a grant, an org owner's or admin's standing, or the project's Slack channel when that gives access), on top of the task page's own
+ * rule. A company-wide session share lets a person read the task page and does not give them the project, so it does not give them the evidence (owner decision on proof Q8: signed in with access to the
+ * project). A person with no access reads as "no", and so does anything that cannot be checked (fail closed).
+ */
+export async function mayReadEvidence(deps: Pick<DeveloperTaskRouteDependencies, "checkAccess">, task: { project: string }): Promise<boolean> {
+  try {
+    await deps.checkAccess(task.project, { ignoreTasksOff: true });
+    return true;
+  } catch {
+    return false;
+  }
 }

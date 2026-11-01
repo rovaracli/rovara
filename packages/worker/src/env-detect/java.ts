@@ -15,7 +15,7 @@ const GRADLE_SETTINGS_FILES = ["settings.gradle", "settings.gradle.kts"] as cons
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 /** Replaces the matched text with spaces, keeping every newline, so a line number found afterwards is still the file's. */
-const blank = (text: string, pattern: RegExp): string => text.replace(pattern, (match) => match.replace(/[^\n]/gu, " "));
+export const blank = (text: string, pattern: RegExp): string => text.replace(pattern, (match) => match.replace(/[^\n]/gu, " "));
 const safeRelative = (value: string): string | undefined => (SAFE_DIR.test(value) && !value.startsWith("/") && !value.split("/").some((part) => part === "" || part === "." || part === "..") ? value : undefined);
 const cmd = (cwd: string, executable: string, args: string[], timeoutSeconds: number) => ({ cwd, executable, args, timeoutSeconds });
 const plural = (count: number, word: string): string => `${String(count)} ${word}${count === 1 ? "" : "s"}`;
@@ -25,6 +25,10 @@ function moduleNote(modules: string[]): string {
   const more = modules.length > MAX_MODULES ? ` and ${String(modules.length - MAX_MODULES)} more` : "";
   return `The build has ${plural(modules.length, "module")}: ${shown}${more}. Each module writes its own test and coverage reports, so one report path cannot cover them; counts come from the exit code until a maintainer sets a report path.`;
 }
+
+/** Where a pom.xml / Gradle build file says which Java it needs; shared with the toolchain proposal. */
+export const MAVEN_JAVA_VERSION = /<(?:maven\.compiler\.release|maven\.compiler\.source|java\.version|release)>\s*(\d{1,2}(?:\.\d{1,2})?)\s*</u;
+export const GRADLE_JAVA_VERSION = /JavaLanguageVersion\.of\(\s*(\d{1,2})\s*\)|JavaVersion\.VERSION_(\d{1,2}(?:_\d{1,2})?)|\bsourceCompatibility\s*=?\s*['"]?(\d{1,2}(?:\.\d{1,2})?)/u;
 
 function javaVersionNote(path: string, text: string, pattern: RegExp): string | undefined {
   const match = pattern.exec(text);
@@ -101,7 +105,7 @@ async function detectMaven(context: DetectorContext, hasTests: boolean): Promise
   const modules = [...modulesBlock.matchAll(/<module>\s*([^<\s][^<]*?)\s*<\/module>/gu)].map((match) => match[1]!).filter((name) => /^[A-Za-z0-9_./-]{1,100}$/u.test(name));
   const multi = modules.length > 0;
   if (multi) notes.push(moduleNote(modules));
-  const versionNote = javaVersionNote("pom.xml", pom, /<(?:maven\.compiler\.release|maven\.compiler\.source|java\.version|release)>\s*(\d{1,2}(?:\.\d{1,2})?)\s*</u);
+  const versionNote = javaVersionNote("pom.xml", pom, MAVEN_JAVA_VERSION);
   if (versionNote !== undefined) notes.push(versionNote);
 
   const fullSuiteOn: Array<{ value: string; source: DetectedSource }> = [{ value: "pom.xml", source: "detector:java" }];
@@ -224,7 +228,7 @@ async function detectGradle(context: DetectorContext, hasTests: boolean): Promis
   }
   const multi = modules.length > 0;
   if (multi) notes.push(moduleNote(modules));
-  const versionNote = buildName === undefined ? undefined : javaVersionNote(buildName, build, /JavaLanguageVersion\.of\(\s*(\d{1,2})\s*\)|JavaVersion\.VERSION_(\d{1,2}(?:_\d{1,2})?)|\bsourceCompatibility\s*=?\s*['"]?(\d{1,2}(?:\.\d{1,2})?)/u);
+  const versionNote = buildName === undefined ? undefined : javaVersionNote(buildName, build, GRADLE_JAVA_VERSION);
   if (versionNote !== undefined) notes.push(versionNote);
 
   const fullSuiteOn: Array<{ value: string; source: DetectedSource }> = [];

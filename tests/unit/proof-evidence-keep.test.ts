@@ -32,10 +32,11 @@ function world(rawText: string | undefined, over: { key?: string } = {}) {
     async artifacts() { return rawText === undefined ? [] : [{ name: "evidence-raw.json", objectKey: over.key ?? `${PREFIX}evidence-raw.json` }]; },
     async readArtifact(key, max) { reads.push(key); return key.startsWith(PREFIX) && rawText !== undefined ? rawText.slice(0, max) : objects.get(key) ?? ""; },
   };
-  const deps: KeepEvidenceDeps = { actions: { ...actions, readArtifact: async (key, max) => (objects.has(key) ? objects.get(key)!.slice(0, max) : actions.readArtifact(key, max)) }, store: { s3, artifactBucketName: "bucket" } };
-  return { deps, objects, sent, reads };
+  const marked: string[] = [];
+  const deps: KeepEvidenceDeps = { markStored: async (orgId) => { marked.push(`${orgId}@${String(sent.length)}`); }, actions: { ...actions, readArtifact: async (key, max) => (objects.has(key) ? objects.get(key)!.slice(0, max) : actions.readArtifact(key, max)) }, store: { s3, artifactBucketName: "bucket" } };
+  return { deps, objects, sent, reads, marked };
 }
-const input = (over: Record<string, unknown> = {}) => ({ task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q"), entry("readiness:1", "ruff check .")], ...over });
+const input = (over: Record<string, unknown> = {}) => ({ orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q"), entry("readiness:1", "ruff check .")], ...over });
 
 describe("assembling the evidence of a run", () => {
   it("keeps a pack bound to the code, with the test details from the worker, the broker's own verdicts, and the output tail of a failed check stored first", async () => {
@@ -74,11 +75,26 @@ describe("assembling the evidence of a run", () => {
     expect(evidencePackKey(TASK, DIGEST)).toBe(`private/owner-1/ws-1/evidence-pack/task-1/${DIGEST}.json`);
   });
 
-  it("keeps nothing for a raw file of other code, none at all, an unreadable one, or one outside the operation's own prefix", async () => {
+  it("keeps nothing for a raw file of other code; for none at all or one outside the operation's own prefix it keeps a pack that says not captured; an unreadable one is the broker's verdicts and says so", async () => {
     const good = JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }]));
     expect(await keepEvidence(world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }], OTHER))).deps, input())).toEqual({ kept: false, reason: "not_bound" });
-    expect(await keepEvidence(world(undefined).deps, input())).toEqual({ kept: false, reason: "no_raw" });
-    expect(await keepEvidence(world(good, { key: `private/another-owner/${TASK.workspaceId}/${OP}/evidence-raw.json` }).deps, input())).toEqual({ kept: false, reason: "no_raw" });
+    // No raw file (an older worker was sent no request): recorded as NOT CAPTURED in the log and on the pack, which holds only the broker's own verdicts; the page can tell it from expired or off.
+    const logged: string[] = [];
+    const none = world(undefined);
+    expect(await keepEvidence({ ...none.deps, log: (event) => { logged.push(event); } }, input())).toMatchObject({ kept: true });
+    expect(logged).toEqual(["evidence.not_captured"]);
+    const notCaptured = await loadEvidencePack(none.deps.actions, TASK, DIGEST);
+    expect(notCaptured?.notTested).toContainEqual({ kind: "environment", id: "evidence_capture", text: "Test details were not captured for this run", reason: "the worker reported none" });
+    expect(notCaptured?.checks.every((check) => check.tests === undefined && check.outputTailRef === undefined)).toBe(true);
+    expect(notCaptured?.checks.map((check) => check.after)).toEqual(["passed", "passed"]);
+    // A raw file outside the operation's own prefix is not read: the same, not captured.
+    const outside = world(good, { key: `private/another-owner/${TASK.workspaceId}/${OP}/evidence-raw.json` });
+    expect(await keepEvidence(outside.deps, input())).toMatchObject({ kept: true });
+    expect((await loadEvidencePack(outside.deps.actions, TASK, DIGEST))?.notTested.some((item) => item.id === "evidence_capture")).toBe(true);
+    // A pack made from a raw file does not say so.
+    const captured = world(good);
+    await keepEvidence(captured.deps, input());
+    expect((await loadEvidencePack(captured.deps.actions, TASK, DIGEST))?.notTested.some((item) => item.id === "evidence_capture")).toBe(false);
     // Unreadable: the pack still holds what the broker knows itself, and says the details could not be read.
     const unreadable = world("{ not json");
     expect(await keepEvidence(unreadable.deps, input())).toMatchObject({ kept: true });
@@ -92,6 +108,16 @@ describe("assembling the evidence of a run", () => {
     await keepEvidence(w.deps, input());
     const pack = await loadEvidencePack(w.deps.actions, TASK, DIGEST);
     expect(pack?.checks[0]?.tests).toBeUndefined();
+  });
+
+  it("marks the org before the first object is stored, and stores nothing when the mark fails", async () => {
+    const w = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }])));
+    expect(await keepEvidence(w.deps, input())).toMatchObject({ kept: true });
+    // Marked when no object had been put yet.
+    expect(w.marked[0]).toBe("org-a@0");
+    const failing = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }])));
+    expect(await keepEvidence({ ...failing.deps, markStored: async () => { throw new Error("down"); } }, input())).toEqual({ kept: false, reason: "fault" });
+    expect(failing.sent).toEqual([]);
   });
 
   it("writes nothing more once its time has run out", async () => {
@@ -184,6 +210,31 @@ describe("the data guard on the evidence", () => {
     expect(guarded.pack?.checks[0]).not.toHaveProperty("outputTailRef");
     expect(guarded.pack?.checks[0]).toMatchObject({ checkId: "a", after: "failed" });
     expect(guarded.dropped.kinds).toContain("card_number");
+  });
+
+  const NO_DENY = { accountIds: [], hosts: [], arnPrefixes: [] };
+
+  it("reads full-width and other compatibility forms as the ASCII they imitate (NFKC): a full-width card number and a full-width email address are findings, alone and among other scripts", () => {
+    expect(evidenceFindings({ name: "charged ４１１１ １１１１ １１１１ １１１１ ok" }, NO_DENY)).toContain("card_number");
+    expect(evidenceFindings({ name: "ｍａｙａ@acme.com" }, NO_DENY)).toContain("email");
+    expect(evidenceFindings({ name: "ｍａｙａ＠ａｃｍｅ．ｃｏｍ" }, NO_DENY)).toContain("email");
+    // Mixed scripts: Cyrillic and Han words around full-width and ASCII digits in one card, and around a full-width email.
+    expect(evidenceFindings({ name: "клиент ４１１１ 1111 １１１１ 1111 оплатил 支付" }, NO_DENY)).toContain("card_number");
+    expect(evidenceFindings({ name: "имя ｍａｙａ@acme.com 客户" }, NO_DENY)).toContain("email");
+    // Clean text in those scripts is still clean.
+    expect(evidenceFindings({ name: "тест оплаты ４２ 支付成功" }, NO_DENY)).toEqual([]);
+  });
+
+  it("drops a check whose test name is a full-width card number, end to end, and stores nothing of it", async () => {
+    const w = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["charges ４１１１ １１１１ １１１１ １１１１", "t2", "t3"]) }])));
+    expect(await keepEvidence(w.deps, input())).toMatchObject({ kept: true, guardedParts: 1 });
+    expect((await loadEvidencePack(w.deps.actions, TASK, DIGEST))?.checks[0]?.tests).toBeUndefined();
+    expect([...w.objects.values()].join("\n")).not.toContain("４１１１");
+  });
+
+  it("exempts only a real ISO instant: a card number after a T is scanned, the timestamps the broker writes are not", () => {
+    expect(evidenceFindings({ name: "2024-01-01T4111111111111111Z" }, NO_DENY)).toContain("card_number");
+    expect(evidenceTexts({ at: "2026-11-02T00:00:00.000Z", a: "2026-11-02T00:00:00Z", b: "2024-01-01T4111111111111111Z", c: "2024-01-01T12:30:45.5Z" })).toEqual(["2024-01-01T4111111111111111Z"]);
   });
 
   it("fails closed on a text it cannot scan", () => {

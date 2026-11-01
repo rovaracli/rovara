@@ -336,7 +336,11 @@ import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
+import { DeveloperSignInStore } from "../developer/store.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
+import { opsQueueUrlOf, sqsOpsQueue } from "../team-record/ops-queue.js";
+import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
+import { personErasureStep } from "./broker/evidence-wiring.js";
 import { recordAuditSinkOf } from "./broker/team-record-wiring.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
@@ -504,7 +508,11 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
 };
 
 // Team record (wire-team-record): `undefined` unless the install was deployed with the record's switch on (TEAM_RECORD_ENABLED is exactly "1"). With it off nothing below is built or called.
-const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+const recordOpsQueueUrl = opsQueueUrlOf(process.env);
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { slackUserIdsOf: (developerId: string) => new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).slackUserIdsOf(developerId) }), ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+
+// Proof and evidence (wire-proof fix round 1): a person's erase also deletes the stored evidence of the tasks they created or own (not behind the proof switch).
+const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });
 
 // Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
 // with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
@@ -517,7 +525,7 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
   // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company; the Team record (where its switch is on) deletes their rows, facts, lessons and lake rows in the same request.
-  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, teamRecord === undefined ? undefined : (orgId, developerId) => teamRecord.erase.person(orgId, developerId)),
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, personErasureStep(teamRecord, personEvidenceErase)),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

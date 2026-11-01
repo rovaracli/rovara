@@ -105,8 +105,9 @@ describe("with the proof switch on", () => {
     expect(packView.checks[0]?.outputTailRef?.state).toBe("expired"); // the in-memory store has no HeadObject: the page never shows a link for a file it could not confirm
     const sha = createHash("sha256").update(tail).digest("hex");
     const recorded: unknown[] = [];
+    let checkAccess = async (): Promise<unknown> => ({ role: "viewer", access: "granted" });
     const download = (resolveAccess: never, hash = sha, record = async (event: unknown) => { recorded.push(event); }) => routeEvidenceDownload({
-      deps: { evidence: { ...port, view: async () => ({ ...packView, checks: [{ ...packView.checks[0]!, outputTailRef: { ...packView.checks[0]!.outputTailRef!, state: "available", href: `/v1/app/tasks/${w.taskId}/evidence/${sha}` } }] }) } } as never,
+      deps: { checkAccess, evidence: { ...port, view: async () => ({ ...packView, checks: [{ ...packView.checks[0]!, outputTailRef: { ...packView.checks[0]!.outputTailRef!, state: "available", href: `/v1/app/tasks/${w.taskId}/evidence/${sha}` } }] }) } } as never,
       caller: { orgId: "org", developerId: "dev-1", sessionId: "s", amr: "oidc", name: "x", orgRole: "member" } as never, taskId: w.taskId, sha256: hash, requestId: randomUUID(), now: () => Date.parse("2026-11-03T00:00:00Z"),
       resolveAccess, record,
     });
@@ -124,11 +125,33 @@ describe("with the proof switch on", () => {
     expect((await download(stranger))?.response.statusCode).toBe(403);
     const noRead = (async () => ({ task: (task as object), role: "denied", source: "task", ownerActorIds: [] })) as never;
     expect((await download(noRead))?.response.statusCode).toBe(403);
+    // A company-wide session-share viewer: the task page's rule lets them read the task, the project does not know them. No bytes, no audit.
+    checkAccess = async () => { throw Object.assign(new Error("no"), { code: "PROJECT_ACCESS_DENIED" }); };
+    expect((await download(reader))?.response.statusCode).toBe(403);
+    checkAccess = async () => { throw Object.assign(new Error("slack down"), { code: "SLACK_UNAVAILABLE" }); };
+    expect((await download(reader))?.response.statusCode).toBe(403);
     expect(recorded).toHaveLength(0);
+    checkAccess = async () => ({ role: "viewer", access: "granted" });
+    expect((await download(reader))?.response.statusCode).toBe(200);
+    recorded.length = 0;
     // A download that cannot be audited does not happen.
     const failing = await download(reader, sha, async () => { throw new Error("ledger down"); });
     expect(failing?.response.statusCode).toBe(503);
     expect(failing?.response.body).not.toContain(tail);
+  });
+});
+
+describe("who sees the evidence in the task view", () => {
+  it("only a person who holds the task's project: the owner who loses the project (no grant, no channel) still reads the task and gets no evidence field", async () => {
+    const w = await toChecks(true);
+    await w.harness.artifact(w.workspaceId, String(w.checksOperation.id), "evidence-raw.json", rawFor(w.candidate.digest, ["test_a", "test_b"]));
+    await w.harness.finish(w.workspaceId, String(w.checksOperation.id), "SUCCEEDED", checksResult(w.candidate));
+    expect(await view(w.harness, w.taskId)).toHaveProperty("evidence");
+    w.harness.channelMembers.mockImplementation(async () => ({ ok: true, memberOf: [] }));
+    const response = await w.harness.dev(MAYA, "GET", `/v1/dev/tasks/${w.taskId}`, undefined, { "x-agentx-task-view": "2" });
+    // The task may be refused outright for a person who has lost the project; if it is read at all, the evidence is not in it.
+    expect(JSON.stringify(response.body)).not.toContain("evidence-pack");
+    expect((response.body.task as Record<string, unknown> | undefined) ?? {}).not.toHaveProperty("evidence");
   });
 });
 

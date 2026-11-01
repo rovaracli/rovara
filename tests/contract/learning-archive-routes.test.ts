@@ -12,7 +12,6 @@ import { TEST_ORG } from "../support/orgs.js";
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 const partition = (h: Harness, project = "payments") => h.db.find((item) => item.pk === projectLearningKey(TEST_ORG, project, "STATE").pk);
 const indexed = (h: Harness) => h.db.find((item) => item.pk === WALK_INDEX_PK);
-const deletes = (h: Harness) => h.db.commandNames().filter((name) => name === "DeleteCommand").length;
 
 function seed(h: Harness, corrections: number, project = "payments"): void {
   seedItem(h.db, TEST_ORG, project, "STATE", { projectCreatedAt: PROJECT_CREATED, revision: 1, openSuggestions: 0, liveCorrections: corrections, pendingRules: 0 });
@@ -39,12 +38,12 @@ describe("POST /v1/app/projects/{name}/archive clears the learning data", () => 
 
   it("does one bounded page inline for a large project, answers, and the scheduled run finishes the rest", async () => {
     const h = await install(300);
-    const before = deletes(h);
+    const before = partition(h).length;
     const answer = await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId: randomUUID() });
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
     expect(answer.body.project).toMatchObject({ name: "payments", status: "archived" });
-    // The request itself spent one page of deletes, not the whole partition.
-    expect(deletes(h) - before).toBeLessThanOrEqual(ARCHIVE_INLINE_WRITES);
+    // The request itself removed one page of learning items, not the whole partition (counted by items, since the evidence erase's own pending-record delete is not a learning write).
+    expect(before - partition(h).length).toBeLessThanOrEqual(ARCHIVE_INLINE_WRITES);
     const left = partition(h).length;
     expect(left).toBeGreaterThan(150);
     expect(indexed(h)).toEqual([expect.objectContaining({ orgId: TEST_ORG, kind: "clear#payments" })]);

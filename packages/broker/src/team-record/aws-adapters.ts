@@ -1,10 +1,8 @@
 // The AWS SDK adapters of the Team record's storage ports (wire-team-record): Bedrock `InvokeModel` for embeddings, S3 Vectors for the vector index, Athena for the lake.
 //
-// The three SDK packages are loaded ON FIRST USE, by name, so that a broker where the Team record is off (the default) never loads them, and so that this file builds where
-// `@aws-sdk/client-s3vectors` and `@aws-sdk/client-athena` are not installed as dependencies yet (they are not in package-lock.json; adding them needs a network `npm install`, see the lane
-// report). The Lambda Node.js runtime carries the AWS SDK for JavaScript v3. If a package is missing there, the first call fails with the fixed code `sdk_unavailable` and the record's
-// code treats it as a storage failure (rows are stored with `embedPending`, search falls back to keywords, the lake answers "history unavailable"). Nothing here ever logs an SDK error
-// message: SDK errors can echo request text.
+// The three SDK packages are loaded ON FIRST USE (a literal dynamic import each), so that a broker where the Team record is off (the default) never evaluates them. S3 Vectors and Athena are
+// declared dependencies of the broker and are bundled with it, so the Lambda runtime's own SDK version does not matter (fix round 1, S1). If a package cannot be loaded the first call fails with
+// the fixed code `sdk_unavailable` and the record's code treats it as a storage failure. Nothing here ever logs an SDK error message: SDK errors can echo request text.
 //
 // [verify] in the test environment: the request and response shapes below follow the AWS documentation of the three APIs as the storage lane wrote its ports; the first run of
 // `tests/live/team-record-storage` (listed in the report's Test-environment checklist) is what confirms them against the real services.
@@ -21,14 +19,23 @@ export class SdkUnavailableError extends Error {
   constructor() { super("sdk_unavailable"); this.name = "SdkUnavailableError"; }
 }
 
-/** Loads a package by name. The name is a variable on purpose: the bundler must not try to resolve it at build time. */
+/**
+ * Loads a package by name, on first use. Each name is a LITERAL import, so the bundler includes the package (they are dependencies of the broker: `@aws-sdk/client-s3vectors` and
+ * `@aws-sdk/client-athena` at 3.1134.0, the version of the other clients) and evaluates it only when the record is used; a broker with the record off never loads them. Bedrock Runtime is
+ * resolved the same way from the workspace's hoisted copy. A name this does not know, or a package that cannot be loaded, is the fixed `sdk_unavailable`.
+ */
 export type SdkLoader = (name: string) => Promise<Record<string, unknown>>;
 export const loadSdkPackage: SdkLoader = async (name) => {
   try {
-    return await import(/* @vite-ignore */ name) as Record<string, unknown>;
+    switch (name) {
+      case "@aws-sdk/client-s3vectors": return await import("@aws-sdk/client-s3vectors");
+      case "@aws-sdk/client-athena": return await import("@aws-sdk/client-athena");
+      case "@aws-sdk/client-bedrock-runtime": return await import("@aws-sdk/client-bedrock-runtime");
+    }
   } catch {
-    throw new SdkUnavailableError();
+    // fall through to the fixed error
   }
+  throw new SdkUnavailableError();
 };
 
 const command = <T>(module: Record<string, unknown>, name: string, input: Record<string, unknown>): T => {

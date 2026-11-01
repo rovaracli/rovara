@@ -1,7 +1,7 @@
 // wire-team-record: the Slack ingress's side. It reads the channel's facts with the bot token and hands the verified event to the broker; Public text goes as a request/response invoke
 // (never parked in Lambda's asynchronous queue), everything else asynchronously.
 import { describe, expect, it } from "vitest";
-import { TEAM_RECORD_SLACK_SOURCE, carriesText, createSlackForwarder, readChannelInfo, type SlackForwardEvent } from "../../../packages/broker/src/team-record/slack-forward.js";
+import { TEAM_RECORD_SLACK_SOURCE, carriesText, createSlackForwarder, readChannelInfo, removalPayload, type SlackForwardEvent } from "../../../packages/broker/src/team-record/slack-forward.js";
 
 type Answer = Record<string, unknown> | undefined;
 const slack = (answers: Record<string, Answer>) => {
@@ -91,5 +91,40 @@ describe("createSlackForwarder", () => {
     expect((await run("public", { type: "url_verification" })).sent).toStrictEqual([]);
     expect((await run("public", { ...message(), team_id: "nonsense" })).sent).toStrictEqual([]);
     await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({ "conversations.info": info({ is_channel: true }) }).fetch, edition: "public", async invoke() { throw new Error("refused"); } })(message())).rejects.toThrow();
+  });
+});
+
+describe("removals go to the durable queue as ids only, before any Slack lookup", () => {
+  const deleted = { type: "event_callback", team_id: "T0123456789", api_app_id: "A0123456789", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1761818400.000100", ts: "1761818500.000100", previous_message: { text: "SECRET old words", user: "U0123456789" } } };
+  const tombstone = { type: "event_callback", team_id: "T0123456789", event: { type: "message", subtype: "message_changed", channel: "C0123456789", ts: "1761818500.000100", message: { ts: "1761818400.000100", subtype: "tombstone", text: "SECRET old words" }, previous_message: { text: "SECRET old words" } } };
+
+  it("cuts a deleted message and a tombstone edit down to ids: the old words never leave the ingress", async () => {
+    for (const payload of [deleted, tombstone]) {
+      const cut = removalPayload(payload)!;
+      expect(JSON.stringify(cut)).not.toContain("SECRET");
+      expect(cut).toMatchObject({ type: "event_callback", team_id: "T0123456789" });
+    }
+    expect(removalPayload(deleted)).toMatchObject({ event: { subtype: "message_deleted", deleted_ts: "1761818400.000100" } });
+    expect(removalPayload(tombstone)).toMatchObject({ event: { subtype: "message_changed", message: { ts: "1761818400.000100", subtype: "tombstone" } } });
+    for (const type of ["channel_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]) expect(removalPayload({ type: "event_callback", team_id: "T0123456789", event: { type, channel: "C0123456789" } }), type).toBeDefined();
+    expect(removalPayload(message())).toBeUndefined();
+    expect(removalPayload({ ...message("message_changed"), event: { type: "message", subtype: "message_changed", message: { ts: "1761818400.000100", text: "edited" } } })).toBeUndefined();
+  });
+
+  it("sends a removal to the queue with NO Slack call and NO invoke, in Public and Enterprise", async () => {
+    for (const edition of ["public", "enterprise"] as const) {
+      const queued: Array<Record<string, unknown>> = [];
+      const invoked: unknown[] = [];
+      const api = slack({ "conversations.info": info({ is_channel: true }) });
+      await createSlackForwarder({ token: async () => { throw new Error("no token needed"); }, fetch: api.fetch, edition, async invoke(event) { invoked.push(event); }, async sendRemoval(payload) { queued.push(payload); } })(deleted);
+      expect(api.urls, edition).toStrictEqual([]);
+      expect(invoked, edition).toStrictEqual([]);
+      expect(queued, edition).toHaveLength(1);
+      expect(JSON.stringify(queued)).not.toContain("SECRET");
+    }
+  });
+
+  it("lets a queue failure reach the ingress's own guard instead of dropping the removal silently", async () => {
+    await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "public", async invoke() {}, async sendRemoval() { throw new Error("queue down"); } })(deleted)).rejects.toThrow();
   });
 });
