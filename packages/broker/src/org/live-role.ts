@@ -17,19 +17,31 @@ export const NOT_A_WRITER_MESSAGE = "Your company role can read the audit log an
 /** How many merges a person's id is followed through (the same bound as the agent access rules). */
 export const MERGE_HOPS = 8;
 
-/**
- * The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it). Refuses (FORBIDDEN) when the chain loops or is
- * longer than MERGE_HOPS: an identity that cannot be traced to its survivor is not served.
- */
-export async function personIds(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<string[]> {
-  const ids = [developerId];
-  if (deps.signInTableName === undefined) return ids;
+/** `start`, then the person each id was merged into. Refuses (FORBIDDEN) when the chain loops or is longer than MERGE_HOPS: an identity that cannot be traced to its survivor is not served. */
+async function mergeChain(deps: { documentClient: DocumentClient; signInTableName: string }, start: string): Promise<string[]> {
+  const ids = [start];
   for (let hop = 0; hop <= MERGE_HOPS; hop += 1) {
     const response = await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: { pk: `DEVELOPER#${ids[ids.length - 1]!}`, sk: "META" }, ConsistentRead: true })) as { Item?: { mergedInto?: unknown } };
     const next = response.Item?.mergedInto;
     if (typeof next !== "string" || next === "") return ids;
     if (ids.includes(next) || hop === MERGE_HOPS) throw agentXError("FORBIDDEN", "this person's identity merges could not be followed to one person; ask an admin");
     ids.push(next);
+  }
+  return ids;
+}
+
+/**
+ * The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it), then the developer their identity is linked to
+ * NOW and whoever that developer was merged into. The last matters after an unlink and a relink: the relink writes the link back without restoring the merge the unlink dropped, so the
+ * link itself says who the identity belongs to. Later ids are the more current ones (the survivor wins).
+ */
+export async function personIds(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<string[]> {
+  if (deps.signInTableName === undefined) return [developerId];
+  const table = { documentClient: deps.documentClient, signInTableName: deps.signInTableName };
+  const ids = await mergeChain(table, developerId);
+  const link = (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: { pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { developerId?: unknown; unlinkedFrom?: unknown } }).Item;
+  if (link !== undefined && link.unlinkedFrom === undefined && typeof link.developerId === "string" && link.developerId !== developerId && !ids.includes(link.developerId)) {
+    for (const id of await mergeChain(table, link.developerId)) if (!ids.includes(id)) ids.push(id);
   }
   return ids;
 }
