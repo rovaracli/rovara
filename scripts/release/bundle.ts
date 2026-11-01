@@ -235,7 +235,7 @@ export const skopeoImageExporter: ImageExporter = async (sourceRef, destFile) =>
 };
 
 function usage(): string {
-  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> --kms-key <key id or ARN> --image <name>=<repo@sha256:...> [--image ...] [--notes <file>]\n(The litellm image is required. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
+  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> --kms-key <key id or ARN> --image <name>=<repo@sha256:...> [--image ...] [--synth-kit <dir>] [--notes <file>]\n(The litellm image is required. --synth-kit takes the folder `release:kit` made from this release: without it the bundle can be approved by a Public install only. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -249,6 +249,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const [out] = values("--out");
       const [kmsKey] = values("--kms-key");
       const [notesFile] = values("--notes");
+      const [synthKit] = values("--synth-kit");
       if (!release || !out || !kmsKey) throw new Error("--release, --out and --kms-key are required");
       const images = values("--image").map((value) => {
         const [name, ...rest] = value.split("=");
@@ -258,6 +259,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const signer = await kmsBundleSigner({ client: new KMSClient({}), keyId: kmsKey, commands: { GetPublicKeyCommand, SignCommand } });
       const result = await buildBundle({
         releaseDir: release, out: resolve(out), images, exportImage: skopeoImageExporter, signer,
+        ...(synthKit === undefined ? {} : { synthKitDir: resolve(synthKit) }),
         ...(notesFile === undefined ? {} : { notes: await readFile(notesFile, "utf8") }),
       });
       process.stdout.write(`wrote bundle ${result.manifest.version} id ${result.bundleSha256} to ${resolve(out)}\n`);
