@@ -4556,7 +4556,7 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     // A survivor with no org is accepted only for an identity that is itself unplaced (an unlinked requester); a placed identity whose survivor has no org does not add up and is refused.
-    if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+    if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or
   // banned person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
