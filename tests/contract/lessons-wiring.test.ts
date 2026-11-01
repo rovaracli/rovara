@@ -161,6 +161,12 @@ describe("rate limits", () => {
 });
 
 describe("what the agent loaded", () => {
+  it("is not mounted on an install with no lesson ports: the path answers as one that does not exist", async () => {
+    const f = fixture({ wired: false });
+    const missing = await f.request("GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledgez");
+    expect(await f.request("GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge")).toEqual(missing);
+    expect(await f.request("GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge/op1/plan/items/0/text")).toEqual(missing);
+  });
   it("is mounted: a task the caller cannot see answers as a task that is not there, not as a missing route", async () => {
     const f = fixture();
     const answer = await f.request("GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge");

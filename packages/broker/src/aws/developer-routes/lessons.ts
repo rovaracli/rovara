@@ -2,9 +2,10 @@
 // calls the two functions below. Everything answers `undefined` (the route falls through to "not found", as before) when the install has no `lessons` / `loadedKnowledge` ports, and the lessons
 // routes answer "not found" for a project whose learning mode is Off.
 import { agentXError, orgScoped } from "@agentx/contracts";
-import { routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
+import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
+import { resolveLearning } from "../../lessons/policy.js";
 import { LESSONS_PATH, TASK_LESSONS_PATH, routeLessons, type LessonRouteDependencies } from "../../lessons/routes.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
 import { latestDefinition } from "./project-list.js";
@@ -46,10 +47,17 @@ export async function routeLessonsFor(deps: DeveloperRouteDependencies, caller: 
   return lessonDeps === undefined ? undefined : routeLessons(lessonDeps, caller, method, url, body);
 }
 
-/** "What the agent loaded": the records of a task and the text of one listed rule file. Read-only; the text is served only where the install gave the two reads. */
+/**
+ * "What the agent loaded": the records of a task and the text of one listed rule file. Read-only; the text is served only where the install gave the two reads. Behind the same switch as the
+ * lessons routes: an install with no lesson ports does not mount it (the path is "not found", as before), and neither does a project whose learning is Off.
+ */
 export async function routeLoadedKnowledgeFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, url: URL): Promise<object | undefined> {
-  if (method !== "GET" || !url.pathname.startsWith("/v1/app/tasks/")) return undefined;
+  const matched = LOADED_KNOWLEDGE_PATH.exec(url.pathname);
+  if (method !== "GET" || matched === null || deps.lessons === undefined) return undefined;
   const task = developerTaskRouteDependencies(deps, caller), knowledge = deps.loadedKnowledge;
+  // The task's project, by the task page's own access check; a task the caller cannot read is refused by the route below exactly as it is today.
+  const project = await resolveTaskAccess(task, caller, matched[1]!, "read").then((access) => access.task.project, () => undefined);
+  if (project !== undefined && (await resolveLearning(deps.lessons.settings, caller.orgId, project)).mode === "Off") return undefined;
   return routeLoadedKnowledge({
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => { task.log?.(entry); }, access: task,
     ...(knowledge?.canReadRepository === undefined ? {} : { canReadRepository: (who, input) => knowledge.canReadRepository!(who, input) }),
