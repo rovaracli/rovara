@@ -7,7 +7,9 @@ import { createCandidateManifest, createWorkflowSnapshot, editionPolicy, type Wo
 import { acceptPullRequestLifecycle } from "../../packages/broker/src/aws/broker/acceptance.js";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { completedBranchSyncItems, completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
-import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
+import { verifyTaskFeedbackForWorkerStart } from "../../packages/broker/src/aws/broker/feedback-and-codebuild.js";
+import { baseTreeHolds } from "../../packages/broker/src/aws/broker/repository-hosts.js";
+import { githubWorkflowPullRequestKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { GITHUB_ONLY_MESSAGE } from "../../packages/broker/src/plugins/code-host/github-only.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
@@ -15,7 +17,7 @@ import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { NO_HOST_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { refusal } from "../support/p5-host-world.js";
+import { GITHUB_URL, SCOPE, TASK, WORKSPACE, refusal, world as hostWorld } from "../support/p5-host-world.js";
 
 const REPOSITORY_URL = "https://github.com/example/demo.git";
 const HEAD = "a".repeat(40);
@@ -71,8 +73,8 @@ describe("acceptance of a workflow's own push or merge of the base, on a host th
     const fix = { requestId: randomUUID(), repository: "demo", pullRequestNumber: 1, action: "append" };
     const sync = { requestId: randomUUID(), repository: "demo", pullRequestNumber: 1, action: "sync" };
     await expect(acceptPullRequestLifecycle(w.dependencies, identity, w.workspaceId, fix, undefined,
-      { workflowCandidate: { candidateDigest: "c".repeat(64), treeSha: TREE, baseCommitSha: BASE, expectedHeadCommit: HEAD } })).rejects.toThrow(refusal(message) as never);
-    await expect(acceptPullRequestLifecycle(w.dependencies, identity, w.workspaceId, sync, undefined, { workflowSync: { baseCommit: BASE, expectedHeadCommit: HEAD } })).rejects.toThrow(refusal(message) as never);
+      { workflowCandidate: { candidateDigest: "c".repeat(64), treeSha: TREE, baseCommitSha: BASE, expectedHeadCommit: HEAD } })).rejects.toThrow(refusal(message));
+    await expect(acceptPullRequestLifecycle(w.dependencies, identity, w.workspaceId, sync, undefined, { workflowSync: { baseCommit: BASE, expectedHeadCommit: HEAD } })).rejects.toThrow(refusal(message));
     expect(operations()).toHaveLength(before.operations);
     expect(idempotent()).toHaveLength(before.idempotent);
     expect(w.getChangeRequest).not.toHaveBeenCalled();
@@ -108,7 +110,7 @@ describe("the handlers of a pushed fix and of a merge of the base, on a host tha
     const w = await world();
     w.setHost(host);
     const f = handlerFixtures(w, "update");
-    await expect(completedWorkflowItems(w.dependencies, f.operation, { taskId: w.taskId } as never, "SUCCEEDED", NOW, f.result)).rejects.toThrow(refusal(message) as never);
+    await expect(completedWorkflowItems(w.dependencies, f.operation, { taskId: w.taskId } as never, "SUCCEEDED", NOW, f.result)).rejects.toThrow(refusal(message));
     expect(w.feedback).not.toHaveBeenCalled();
     expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
   });
@@ -120,8 +122,85 @@ describe("the handlers of a pushed fix and of a merge of the base, on a host tha
     const w = await world();
     w.setHost(host);
     const f = handlerFixtures(w, "sync");
-    await expect(completedBranchSyncItems(w.dependencies, f.operation, f.task, "SUCCEEDED", NOW, f.result, undefined)).rejects.toThrow(refusal(message) as never);
+    await expect(completedBranchSyncItems(w.dependencies, f.operation, f.task, "SUCCEEDED", NOW, f.result, undefined)).rejects.toThrow(refusal(message));
     expect(w.feedback).not.toHaveBeenCalled();
     expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
+  });
+});
+
+describe("the feedback check at a worker's start (GitHub-shaped feedback, linked-pull-request rows keyed by GitHub's name: left for P6)", () => {
+  const GITHUB_PR = "https://github.com/acme/web/pull/3";
+  const DIGEST = "d".repeat(64);
+  function startWorld(host: { kind: string; ref?: string }) {
+    const w = hostWorld({ repositories: [{ name: "api", url: GITHUB_URL, host }] });
+    const workflow = {
+      candidate: { digest: DIGEST, repositories: [{ repositoryId: "api", treeSha: TREE }] },
+      feedbackDispatchApproval: { candidateDigest: DIGEST },
+      feedbackReview: { status: "APPROVED", bundleRefs: [{ repositoryId: "api", number: 3, candidateDigest: DIGEST, headSha: HEAD, headTreeSha: TREE, commentSetDigest: "x" }] },
+      pullRequests: [{ repositoryId: "api", number: 3, state: "OPEN", url: GITHUB_PR, headSha: HEAD }],
+    };
+    w.db.set({ ...(w.db.get(`DEVTASK#${TASK}`, "META") as object), workflow });
+    // The linked-pull-request row a GitHub pull request of this task has, so that an unguarded check would go on to ask GitHub for the feedback.
+    w.db.set({ ...githubWorkflowPullRequestKey("acme/web", 3), entityType: "GITHUB_WORKFLOW_PR", repositoryFullName: "acme/web", repositoryId: "api", number: 3, url: GITHUB_PR, taskId: TASK, workspaceId: WORKSPACE, candidateDigest: DIGEST, createdAt: NOW });
+    return w;
+  }
+
+  it("is false for a repository on another registered host, and GitHub's feedback is not read", async () => {
+    const w = startWorld({ kind: "fake", ref: "r1" });
+    expect(await verifyTaskFeedbackForWorkerStart(w.dependencies, TASK)).toBe(false);
+    expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
+  });
+
+  it("is refused with the router's sentence for a repository whose host this install has not registered", async () => {
+    const w = startWorld({ kind: "gitfarm" });
+    await expect(verifyTaskFeedbackForWorkerStart(w.dependencies, TASK)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
+    expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
+  });
+
+  it("goes on to read GitHub's feedback for a GitHub repository (the same fixture, the record naming GitHub): the guard is what stopped the others", async () => {
+    const w = startWorld({ kind: "github" });
+    w.github.getPullRequestFeedback.mockRejectedValue(new Error("stop here"));
+    await expect(verifyTaskFeedbackForWorkerStart(w.dependencies, TASK)).rejects.toThrow("stop here");
+    expect(w.github.getPullRequestFeedback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the exported tree is held to the tree the repository's host has for the pinned base (baseline and grounding rounds)", () => {
+  const COMMIT = "c".repeat(40);
+  function treeWorld() {
+    const w = hostWorld();
+    const web = projectRowRecord("web", w);
+    return { w, web, api: projectRowRecord("api", w), mystery: projectRowRecord("mystery", w) };
+  }
+  function projectRowRecord(name: string, w: ReturnType<typeof hostWorld>) {
+    const project = w.db.find((item) => item.entityType === "PROJECT")[0] as unknown as { definition: { repositories: Array<{ name: string }> } };
+    return project.definition.repositories.find((repository) => repository.name === name) as never;
+  }
+
+  it("is read from the fake host for a record that names it, and compared", async () => {
+    const { w, api } = treeWorld();
+    w.model.revisions.set(COMMIT, { sha: COMMIT, tree: "t".repeat(40), parents: [], files: new Map() });
+    expect(await baseTreeHolds(w.dependencies, api, COMMIT, SCOPE, "t".repeat(40))).toBe(true);
+    expect(await baseTreeHolds(w.dependencies, api, COMMIT, SCOPE, "u".repeat(40))).toBe(false);
+    expect(w.github.getCommitTree).not.toHaveBeenCalled();
+  });
+
+  it("is read from GitHub for a GitHub record, and compared", async () => {
+    const { w, web } = treeWorld();
+    w.github.getCommitTree.mockResolvedValue("t".repeat(40));
+    expect(await baseTreeHolds(w.dependencies, web, COMMIT, SCOPE, "t".repeat(40))).toBe(true);
+    expect(await baseTreeHolds(w.dependencies, web, COMMIT, SCOPE, "u".repeat(40))).toBe(false);
+  });
+
+  it("is refused with the router's sentence for a host this install has not registered, and GitHub is not asked instead", async () => {
+    const { w, mystery } = treeWorld();
+    await expect(baseTreeHolds(w.dependencies, mystery, COMMIT, SCOPE, "t".repeat(40))).rejects.toThrow(refusal(NO_HOST_MESSAGE));
+    expect(w.github.getCommitTree).not.toHaveBeenCalled();
+  });
+
+  it("cannot be asked of a GitHub provider built without the tree read (a harness): the worker's word stands", async () => {
+    const w = hostWorld({ github: { getCommitTree: undefined } });
+    const web = projectRowRecord("web", w);
+    expect(await baseTreeHolds(w.dependencies, web, COMMIT, SCOPE, "t".repeat(40))).toBe(true);
   });
 });

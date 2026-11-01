@@ -105,6 +105,16 @@ export function canReadTree(dependencies: Pick<AwsBrokerDependencies, "githubPul
   return host.kind !== GITHUB_HOST_KIND || dependencies.githubPullRequests.getCommitTree !== undefined;
 }
 
+/**
+ * Whether the tree the code host has for a commit is the one expected (the baseline and grounding rounds hold a worker's exported tree to the host's own). The host is the one the repository's RECORD
+ * names (an unknown kind throws the router's sentence). A GitHub provider built without the tree read (a harness) cannot be asked, and the worker's word stands, as it did before the port.
+ */
+export async function baseTreeHolds(dependencies: HostDependencies, repository: Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId" | "url">, commit: string, scope: HostScope, expectedTree: string): Promise<boolean> {
+  const host = hostOfRepository(dependencies, repository);
+  if (!canReadTree(dependencies, host)) return true;
+  return await host.tree({ url: repository.url }, commit, scope) === expectedTree;
+}
+
 /** Whether a branch head and a tree can both be read from this host (see `canReadTree`). */
 export function canReadBranchAndTree(dependencies: Pick<AwsBrokerDependencies, "githubPullRequests">, host: Pick<CodeHost, "kind">): boolean {
   return host.kind !== GITHUB_HOST_KIND || (dependencies.githubPullRequests.getBranchHead !== undefined && dependencies.githubPullRequests.getCommitTree !== undefined);

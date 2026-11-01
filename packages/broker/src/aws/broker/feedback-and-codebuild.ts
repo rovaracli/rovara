@@ -205,7 +205,7 @@ function sameFeedbackApproval(stored: unknown, presented: WorkflowFeedbackApprov
   return parsed.success && JSON.stringify(parsed.data) === JSON.stringify(presented);
 }
 
-async function verifyTaskFeedbackForWorkerStart(dependencies: AwsBrokerDependencies, taskId: string): Promise<boolean> {
+export async function verifyTaskFeedbackForWorkerStart(dependencies: AwsBrokerDependencies, taskId: string): Promise<boolean> {
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
   const linked = task?.workflow?.pullRequests?.find(pr => pr.state === "OPEN" || pr.state === "UNKNOWN");
   const parsed = linked === undefined ? undefined : /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(linked.url);
