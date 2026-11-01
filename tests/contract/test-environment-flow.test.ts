@@ -2,6 +2,7 @@
 // sandbox draft; a maintainer proposes it, proves it with the project's setup check, and approves it as revision 1. With the switch off none of it exists: the run is not asked to detect, a reported draft is
 // kept nowhere, and the routes answer as any unknown path.
 import { randomUUID } from "node:crypto";
+import { DeleteScheduleCommand, SchedulerClient } from "@aws-sdk/client-scheduler";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TEST_ENV_DETECT_FEATURE, TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey,
@@ -265,5 +266,50 @@ describe("a task's checks", () => {
     const task = await withSwitch("1", () => startTask(t));
     expect(task.required.map((check) => check.command.executable)).toEqual(["make"]);
     expect(task.pins).toEqual([]);
+  });
+});
+
+describe("the nightly schedule after an approval", () => {
+  const SCHEDULER_ENV = {
+    AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker",
+    CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx-staging-chain-schedule", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-chain-schedule",
+  };
+  const withSchedulerEnv = async <T>(run: () => Promise<T>): Promise<T> => {
+    const before = Object.fromEntries(Object.keys(SCHEDULER_ENV).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, SCHEDULER_ENV);
+    try { return await run(); } finally { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  };
+  const approveOnce = async (t: Setup) => {
+    await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() });
+    await t.dev(OMAR, "POST", `${ENV}/propose`, {});
+    const digest = testEnvDigest(draftBody());
+    t.setupCheckPassed();
+    await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
+    return t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+  };
+
+  it("follows the approved environment (a project with the nightly run off has its schedule removed), and a scheduler that fails does not undo the approval", async () => {
+    const t = await setup();
+    const send = vi.spyOn(SchedulerClient.prototype, "send").mockRejectedValue(new Error("scheduler down"));
+    try {
+      const approved = await withSwitch("1", () => withSchedulerEnv(() => approveOnce(t)));
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(approved.body).toMatchObject({ revision: 1 });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]![0]).toBeInstanceOf(DeleteScheduleCommand);
+      expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#REV#"))).toHaveLength(1);
+    } finally { send.mockRestore(); }
+  });
+
+  it("makes no scheduler call while the switch is off, or where the install has no schedule group settings", async () => {
+    const send = vi.spyOn(SchedulerClient.prototype, "send").mockResolvedValue({} as never);
+    try {
+      const off = await setup();
+      // Off: the routes do not exist at all, so no approval can reach the hook.
+      await withSwitch(undefined, () => withSchedulerEnv(async () => { expect((await off.dev(OMAR, "POST", `${ENV}/approve`, { digest: "a".repeat(64), expectedRevision: 0 })).status).toBe(404); }));
+      const noGroup = await setup();
+      expect((await withSwitch("1", () => approveOnce(noGroup))).status).toBe(200);
+      expect(send).not.toHaveBeenCalled();
+    } finally { send.mockRestore(); }
   });
 });

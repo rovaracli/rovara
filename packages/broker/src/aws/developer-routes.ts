@@ -179,6 +179,7 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { routeIntake } from "./developer-routes/intake.js";
 import { routeTestEnvironment } from "./developer-routes/test-environment.js";
+import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest } from "../agents/routes.js";
@@ -510,7 +511,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   // Meta repo lane F: the tickets that wait for a member, and the places work is asked for.
   // Test environment (wire-testenv): `/v1/app/projects/{name}/test-environment*`. Exists only while the switch is on; with it off the path falls through as any unknown path.
-  const testEnvReply = await routeTestEnvironment(deps, caller, request, url);
+  const testEnvReply = await routeTestEnvironment(deps, caller, request, url, nightlyHooks());
   if (testEnvReply !== undefined) return testEnvReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
