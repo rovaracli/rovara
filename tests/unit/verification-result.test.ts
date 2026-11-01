@@ -346,7 +346,7 @@ describe("the new environment codes (SH16) and the card mapping stay in step wit
   });
 });
 
-describe("Opus review fix 3", () => {
+describe("Opus review fixes 3 and 4", () => {
   it("fix 3: a fault that stays today's ask is not renamed Blocked by environment when an environment code is beside it", () => {
     const make = () => blocked("VERIFY", WORKFLOW_BLOCK_REASONS.checkRunnerFailed);
     expect(run(make(), { facts: { blockCause: "owner-stopped", hostBlocked: true } })).toEqual(waiting("needs_a_person"));
@@ -355,5 +355,19 @@ describe("Opus review fix 3", () => {
     expect(run(verifyE2e(WORKFLOW_HISTORY_REWRITTEN_MESSAGE), { facts: { hostBlocked: true } })).toEqual(waiting("needs_a_person"));
     // Code still wins over an ask.
     expect(run(verifyE2e(incomplete("g1: build-failed", "g2: model-route-not-tested")))).toEqual(decided("code_failed", ["app_failed"]));
+  });
+
+  it("fix 4: a check that failed on the original code and is not in the pack's excused checks keeps the result Blocked", () => {
+    const two = blocked("VERIFY", undefined, results([check("unit", "FAILED"), check("api", "FAILED")]));
+    const evidence = pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
+    const facts = { checkOriginal: { unit: "failed", api: "failed" } } as const;
+    expect(run(two, { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    // Both covered and known: still Partially verified.
+    const both = pack([
+      { checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) },
+      { checkId: "api", before: "failed", after: "failed", class: "already_failing", tests: tests(["t2"]) },
+    ]);
+    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1", "t2"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
+    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
   });
 });

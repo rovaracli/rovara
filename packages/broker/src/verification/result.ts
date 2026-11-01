@@ -162,7 +162,10 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   }
   if (evidenceChecks.some((check) => check.after === "timed_out")) unclearWaiting = "cause_unknown";
   // A regression is already "Code failed"; what is left failing must all be an excused original-code failure.
-  const excused = () => knownFailingExcusedAll(failingChecks.filter((check) => check.class !== "regression"), originalFailingChecks, input.alreadyFailing);
+  // Every check the policy saw fail on the original code must be one of the excused checks of the pack: a failing check the pack does not cover is never hidden behind a known failing one.
+  const failedOnOriginal = (verification?.results ?? []).filter((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED" && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run"));
+  const excused = () => knownFailingExcusedAll(failingChecks.filter((check) => check.class !== "regression"), originalFailingChecks, input.alreadyFailing)
+    && failedOnOriginal.every((result) => originalFailingChecks.some((check) => check.checkId === result.checkId));
   if (originalFailingChecks.length > 0) originalFails = true;
 
   // ---- 1. Code failed wins; environment faults are still listed
