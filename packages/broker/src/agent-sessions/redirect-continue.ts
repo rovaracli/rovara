@@ -168,14 +168,16 @@ async function restart(deps: RedirectContinueDependencies, record: RedirectRecor
 const SWEEP_PAGE = 50;
 
 /**
- * Closes the redirects nobody finished: one still `stopping` or `restarting` after `REDIRECT_STOPPING_SWEEP_MINUTES` ends `left_blocked` (the step stays as the stop left it, the instruction stays a note
+ * Carries on the redirects whose stop landed where no hook ran (see `carryOn`), then closes the ones nobody finished: one still `stopping` or `restarting` after `REDIRECT_STOPPING_SWEEP_MINUTES` ends `left_blocked` (the step stays as the stop left it, the instruction stays a note
  * for the owner's Retry), and a marker without a live record is taken away. Never restarts a step: a redirect that old is the owner's to repeat. Answers how many it closed. Bounded to one page.
  */
-export async function sweepStoppingRedirects(deps: RedirectEndDependencies): Promise<number> {
+export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carryOn?: (taskId: string) => Promise<unknown>): Promise<number> {
   let closed = 0;
   const cutoff = deps.now() - REDIRECT_STOPPING_SWEEP_MINUTES * 60_000;
   for (const open of await listOpenRedirects(deps, SWEEP_PAGE)) {
     try {
+      // The stop may have landed where no hook runs (the Reconciler Lambda blocks a step whose cancel got stuck, and registers no continuation): the sweep, which runs in the broker, carries the redirect on.
+      if (carryOn !== undefined) await carryOn(open.taskId);
       if (Date.parse(open.createdAt) > cutoff) continue;
       const record = await readRedirect(deps, open.taskId, open.requestId);
       if (record === undefined || (record.state !== "stopping" && record.state !== "restarting")) {

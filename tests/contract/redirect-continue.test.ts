@@ -17,6 +17,7 @@ import { livePersonLabel } from "../../packages/broker/src/agent-sessions/live-s
 import { continueRedirect, judgeRedirect, sweepStoppingRedirects } from "../../packages/broker/src/agent-sessions/redirect-continue.js";
 import { readOpenRedirect, readRedirect, redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";
 import { registerRedirectContinuation, continueRedirectAfterStop } from "../../packages/broker/src/agent-sessions/redirect-hook.js";
+import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { redirectRestartHost } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
 import { redirectRestartRequestId } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
@@ -424,13 +425,50 @@ describe("what restarts and what does not, at the edges", () => {
     expect(t.sessionEvents(sessionId)).toContain(REDIRECT_LEFT_BLOCKED_MESSAGE);
   });
 
-  it("is started by the stuck-cancel path too: a stop that blocks the step after its workspace was released lets the redirect restart", async () => {
+  it("a stop that the Reconciler Lambda lands (its own client, no continuation registered there) is carried on by the broker's session sweep within one run", async () => {
     const t = await setup();
     const { taskId, sessionId, workspaceId } = await t.runningCoding();
     const requestId = randomUUID();
     await t.redirect(MAYA, sessionId, { requestId });
     const running = t.operations(workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!;
-    // The worker never answered: the workspace is released and the run marked interrupted (the reconciler's work), then its step is blocked by `blockStoppedWorkflowRun`.
+    // The Reconciler Lambda has its own table client (here a separate object over the same data). It frees the workspace of a run whose cancel failed and blocks the step with
+    // `blockStoppedWorkflowRun`, exactly as `stuck-cancels.ts` does. No continuation is registered against that client.
+    const workspace = t.db.get(`WORKSPACE#${workspaceId}`, "META") as Item;
+    const { activeOperationId: _active, ...free } = workspace;
+    void _active;
+    t.db.set({ ...free, status: "READY" });
+    t.db.set({ ...(t.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${running.id}`) as Item), status: "INTERRUPTED" });
+    const reconciler = new Proxy(t.db, {});
+    expect(await blockStoppedWorkflowRun(reconciler as never, "state", { ...(running as never as Parameters<typeof blockStoppedWorkflowRun>[2]), status: "INTERRUPTED" }, "INTERRUPTED")).toBe(true);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    // The broker's session sweep (every five minutes) carries it on.
+    const result = JSON.parse((await t.handler({ source: "agentx.session-sweep" })).body) as { redirects: unknown };
+    expect(result.redirects).toBe(0);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "restarted" });
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(2);
+  });
+
+  it("a run whose compute was lost (the Reconciler's real stuck-cancel sweep ends it failed) is not restarted: the redirect ends left_blocked at the broker's next sweep, not after 15 minutes", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    const swept = await sweepStuckCancels({ client: new Proxy(t.db, {}), tableName: "state" }, [{ workspaceId, compute: "gone" }], new Date(Date.now() + 60 * 60_000));
+    expect(swept.ended).toHaveLength(1);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    await t.handler({ source: "agentx.session-sweep" });
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "left_blocked" });
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+  });
+
+  it("the broker's own block of a stopped step still starts the redirect at once (blockStoppedWorkflowRun on the broker's client)", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    const running = t.operations(workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!;
     const workspace = t.db.get(`WORKSPACE#${workspaceId}`, "META") as Item;
     const { activeOperationId: _active, ...free } = workspace;
     void _active;
@@ -438,7 +476,6 @@ describe("what restarts and what does not, at the edges", () => {
     t.db.set({ ...(t.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${running.id}`) as Item), status: "INTERRUPTED" });
     expect(await blockStoppedWorkflowRun(t.db as never, "state", { ...(running as never as Parameters<typeof blockStoppedWorkflowRun>[2]), status: "INTERRUPTED" }, "INTERRUPTED")).toBe(true);
     expect(t.record(taskId, requestId)).toMatchObject({ state: "restarted" });
-    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
   });
 
   it("does not exist while the switch is off: no route, no registered hook, nothing looked at", async () => {

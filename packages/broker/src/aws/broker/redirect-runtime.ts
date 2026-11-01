@@ -97,6 +97,9 @@ export function redirectFromEnvironment(dependencies: AwsBrokerDependencies, env
 /** The session sweep's share: closes the redirects nobody finished. Does nothing (reads nothing) while the switch is off. Answers how many it closed. */
 export async function sweepRedirects(dependencies: AwsBrokerDependencies, env: Record<string, string | undefined> = process.env): Promise<number> {
   if (!liveInteractionFlagOn(env[LIVE_INTERACTION_FLAGS.redirect.variable])) return 0;
-  return sweepStoppingRedirects({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
+  const probe = { workerFeatures: (task: DeveloperTaskRecord) => workspaceWorkerFeatures(dependencies, task) };
+  // The Reconciler Lambda blocks a step whose cancel got stuck and runs no continuation of its own (it has no task wiring): this sweep, in the broker, picks the redirect up.
+  return sweepStoppingRedirects({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
+    (taskId) => continueRedirect(continueDependencies(dependencies, probe), taskId));
 }
 
