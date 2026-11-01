@@ -513,6 +513,19 @@ export interface RequesterStanding {
 }
 
 /**
+ * The standing of a developer who asks (an Ask's asker), read now for `requesterStandingGuard`: their member record as it is (role and which membership), else, with no record, that they
+ * have no removal tombstone; and in every case no ban row. It refuses nothing itself: the asker's level was already checked, and this only fixes what the key's write must still find true.
+ */
+export async function developerStanding(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string): Promise<RequesterStanding> {
+  const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const stored = await liveStoredRole(live, orgId, developerId);
+  const standing: RequesterStanding = { orgId, absent: [orgBanKey(orgId, developerId)], present: [] };
+  if (stored.present && typeof stored.role === "string") standing.present.push({ key: orgMemberKey(orgId, developerId), role: stored.role, joinedAt: stored.joinedAt });
+  else if (!stored.present) standing.absent.push(orgRemovedKey(orgId, developerId));
+  return standing;
+}
+
+/**
  * SY-7: the requester check and a key mint are separate steps, and a removal or ban written between them used to still get the key. These conditions are added to the write that records
  * the key, so that write fails (REMOVED_FROM_ORG) if any row the check found absent has appeared, or the member record it found is gone (a removal deletes it as it writes the tombstone).
  */

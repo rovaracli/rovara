@@ -31,6 +31,7 @@ import type { AdaptedHttpRequest } from "../lambda.js";
 import { requireLatestProject } from "./records.js";
 import { githubScope, modelSourceStoreOf } from "./scope-helpers.js";
 import { mintChatTurnKey } from "./model-access.js";
+import { developerStanding, requesterStandingGuard } from "./dependency-wiring.js";
 import { parseBody } from "./admin-and-helpers.js";
 import { requireSlackServiceRole } from "./workspace-preparation.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
@@ -151,7 +152,9 @@ export async function handleAskServiceRoute(
     if (level !== "use" && level !== "edit") throw agentXError("FORBIDDEN", "this question can't be answered now");
   }
   const requester = askedBy === undefined ? undefined : { kind: "developer" as const, developerId: askedBy, provider: task.provider };
-  return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }), request.requestId);
+  // SY-7: the asker's standing is read after the level check and asserted again in the write that records the key, so a removal or ban in between refuses the key.
+  const guard = askedBy === undefined ? undefined : requesterStandingGuard(dependencies.tableName, await developerStanding(dependencies, named.orgId, askedBy));
+  return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }, guard), request.requestId);
 }
 
 /** Where the upkeep got to today: the day, the last org done (orgs are walked in id order), and whether the whole walk is finished. */
