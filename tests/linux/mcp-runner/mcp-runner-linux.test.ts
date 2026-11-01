@@ -11,7 +11,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -171,7 +171,8 @@ describe.runIf(process.platform === "linux" && IMAGE !== undefined)("the MCP run
     expect(bridge.uid).toEqual([10003, 10003, 10003, 10003]);
     expect(bridge.gid).toEqual([10003, 10003, 10003, 10003]);
     for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] as const) expect(bridge.caps[name], `bridge ${name}`).toBe("0000000000000000");
-    expect((await readlink(`/proc/${pid}/exe`)).endsWith("/node")).toBe(true);
+    // /proc/<pid>/exe needs ptrace access to another user's process; its command line does not. The package runs under node.
+    expect((await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0")[0]!.endsWith("node")).toBe(true);
   }, 120_000);
 
   it("stops a hostile package at every step it tries", async () => {
