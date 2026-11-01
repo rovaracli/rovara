@@ -39,7 +39,7 @@ describe("switches", () => {
     for (const code of codes) expect(taken.has(code), code).toBe(false);
     const variables = new Set<string>(others.map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
-    const registered = Object.values(BROKER_SETTINGS).map((spec) => spec.code);
+    const registered: string[] = Object.values(BROKER_SETTINGS).map((spec) => spec.code);
     expect(registered.includes(LIVE_INTERACTION_FLAGS.fix.code), "fix").toBe(false);
   });
 

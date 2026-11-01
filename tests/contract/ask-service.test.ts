@@ -126,7 +126,8 @@ describe("model access for an Ask", () => {
     const t = world();
     const ref = await queuedAsk(t, ARJUN);
     // Arjun's 'use' share ends after he asked.
-    t.w.db.delete(t.w.db.find((item) => String(item.sk) === `SHARE#MEMBER#${ARJUN}`)[0]!);
+    const share = t.w.db.find((item) => String(item.sk) === `SHARE#MEMBER#${ARJUN}`)[0]!;
+    t.w.db.delete(String(share.pk), String(share.sk));
     await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1" }), "/v1/asks/model-access")).rejects.toMatchObject({ code: "FORBIDDEN" });
     const closing = world();
     const owned = await queuedAsk(closing, PRIYA);

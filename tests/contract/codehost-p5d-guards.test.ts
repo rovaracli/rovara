@@ -53,7 +53,7 @@ async function world() {
   const taskId = String((started.body.task as { taskId: string }).taskId);
   const task = () => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; orgId: string; project: string; startingRevision: number };
   const workspaceId = task().workspaceId;
-  const dependencies = brokerDependencies(h.brokerInput);
+  const dependencies = brokerDependencies(h.brokerInput as never);
   return { h, model, cr, github, getChangeRequest, feedback, setHost, taskId, task, workspaceId, dependencies };
 }
 

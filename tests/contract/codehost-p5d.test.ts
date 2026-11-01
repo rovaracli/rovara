@@ -257,7 +257,7 @@ describe("P5d: the CI checks a plan adds are read only for GitHub repositories",
     const dependencies = { ...w.dependencies, cloud: true } as never;
     const task = w.db.get(`DEVTASK#${TASK}`, "META") as never;
     await answerWithCiChecks(dependencies, task, project, "plan text");
-    const calls = (w.github.agentRepositoryReader as ReturnType<typeof vi.fn>).mock.calls.map((call) => (call as string[])[0]);
+    const calls = (w.github as unknown as { agentRepositoryReader: ReturnType<typeof vi.fn> }).agentRepositoryReader.mock.calls.map((call) => (call as string[])[0]);
     expect(calls).toEqual(expect.arrayContaining([GITHUB_URL]));
     expect(calls).not.toContain(FAKE_URL);
     expect(calls).not.toContain(MYSTERY_URL);
