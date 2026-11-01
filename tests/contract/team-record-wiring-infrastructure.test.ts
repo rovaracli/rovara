@@ -142,6 +142,17 @@ describe("the switch on: Public cloud", () => {
     expect(JSON.stringify(on.toJSON())).toMatch(/"sts:AssumeRole","sts:TagSession"/);
   }, 180_000);
 
+  it("S3: the Glue rights name the record's own database and tables, not every database and table of the account", () => {
+    const statements = Object.values(resourcesOf(on)).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy")
+      ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Resource: unknown }> }).Statement) : []);
+    const glue = statements.find((statement) => statement.Sid === "TeamRecordGlueCatalog");
+    expect(glue).toBeDefined();
+    const text = JSON.stringify(glue!.Resource);
+    expect(text).toContain("s3tablescatalog/agentx-staging-record-lake/record");
+    expect(text).not.toMatch(/:database\/\*"|:table\/\*"|"database\/\*"|"table\/\*"/);
+    expect(text).not.toMatch(/"(?:database|table)\/\*/);
+  }, 180_000);
+
   it("gives the broker rights on the table and its indexes only (no scan), and to assume the vector role", () => {
     const text = JSON.stringify(on.toJSON());
     expect(text).toContain("sts:AssumeRole");
