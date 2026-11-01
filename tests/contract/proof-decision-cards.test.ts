@@ -94,6 +94,12 @@ describe("whose merge cards", () => {
     expect((await mergeItemsFor(ports({}, { [taskId]: taken }), { orgId: ORG, developerId: "dev-2" }))).toEqual([]);
   });
 
+  it("a task of another org is never listed, whatever its index row says", async () => {
+    const rowsOfOtherOrg = [{ taskId: "other-org", orgId: ORG, status: "OPEN" }];
+    const foreign = task({ taskId: "other-org", orgId: "org-2", developerId: "dev-1" });
+    expect(await mergeItemsFor(ports({ documentClient: { send: vi.fn(async () => ({ Items: rowsOfOtherOrg })) } }, { "other-org": foreign }), { orgId: ORG, developerId: "dev-1" })).toEqual([]);
+  });
+
   it("a task or a session that cannot be read is no card, and the rest still are", async () => {
     const reads = ports({ task: async (id: string) => { if (id === taskId) throw new Error("down"); return undefined; } });
     expect(await mergeItemsFor(reads, { orgId: ORG, developerId: "dev-1" })).toEqual([]);

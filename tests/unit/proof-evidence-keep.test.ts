@@ -67,6 +67,9 @@ describe("assembling the evidence of a run", () => {
     expect(await loadEvidencePack(w.deps.actions, TASK, OTHER)).toBeUndefined();
     expect(await loadEvidencePack(w.deps.actions, { ...TASK, taskId: "task-2" }, DIGEST)).toBeUndefined();
     expect(await loadEvidencePack(w.deps.actions, TASK, undefined)).toBeUndefined();
+    // A pack kept for other code, found under this code's key, is not this code's.
+    w.objects.set(evidencePackKey(TASK, OTHER), w.objects.get(evidencePackKey(TASK, DIGEST))!);
+    expect(await loadEvidencePack(w.deps.actions, TASK, OTHER)).toBeUndefined();
     expect(await loadEvidencePack(w.deps.actions, TASK, "../../etc")).toBeUndefined();
     expect(evidencePackKey(TASK, DIGEST)).toBe(`private/owner-1/ws-1/evidence-pack/task-1/${DIGEST}.json`);
   });
@@ -160,6 +163,27 @@ describe("the data guard on the evidence", () => {
     const digest = `${"1".repeat(10)}${"a".repeat(54)}`;
     expect(evidenceTexts({ sha: digest, at: "2026-11-02T00:00:00.000Z", name: "x" })).toEqual(["x"]);
     expect(evidenceFindings({ sha: "4111111111111111".padEnd(64, "a") }, { accountIds: [], hosts: [], arnPrefixes: [] })).toEqual([]);
+  });
+
+  it("the built pack is checked again: a check label that holds an email (a command the repository wrote) becomes a numbered label, and nothing is stored with it", async () => {
+    const w = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }])));
+    const result = await keepEvidence(w.deps, input({ checks: [entry("readiness:0", `curl https://api.example.com --user ${EMAIL}`), entry("readiness:1", "ruff check .")] }));
+    expect(result).toMatchObject({ kept: true, guardedParts: 1 });
+    const pack = await loadEvidencePack(w.deps.actions, TASK, DIGEST);
+    expect(pack?.checks[0]?.label).toBe("Check 1");
+    expect(pack?.checks[1]?.label).toBe("ruff check .");
+    expect([...w.objects.values()].join("\n")).not.toContain(EMAIL);
+  });
+
+  it("guardPack drops an output tail that holds a finding, with the stored text, and keeps the broker's verdict", () => {
+    const text = `charged ${CARD} ok`;
+    const ref = { kind: "log_txt" as const, sha256: createHash("sha256").update(text).digest("hex"), bytes: Buffer.byteLength(text), retentionClass: "evidence-std" as const };
+    const pack = { schemaVersion: 1, candidateDigest: DIGEST, environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] }, checks: [{ checkId: "a", kind: "other", label: "x", before: "passed", after: "failed", class: "passing", durationMs: 1, outputTailRef: ref }], selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [] } as never;
+    const guarded = guardPack(pack, [{ ref, text }], { accountIds: [], hosts: [], arnPrefixes: [] });
+    expect(guarded.newArtifacts).toEqual([]);
+    expect(guarded.pack?.checks[0]).not.toHaveProperty("outputTailRef");
+    expect(guarded.pack?.checks[0]).toMatchObject({ checkId: "a", after: "failed" });
+    expect(guarded.dropped.kinds).toContain("card_number");
   });
 
   it("fails closed on a text it cannot scan", () => {
