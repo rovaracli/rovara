@@ -16,6 +16,11 @@ export interface RepositoryGrantScope {
   credentialRef: string;
   repositoryUrl: string;
   access: RepositoryAccess;
+  /**
+   * The code host the repository's RECORD names (`repositoryHostOf(record).kind`), set by the broker when it issues the grant. The credential is asked of that host and no other. A grant a
+   * release before this one issued has none: the repository then had no host record, which is GitHub.
+   */
+  hostKind?: string;
 }
 
 export type RepositoryAccess = "clone" | "push";
@@ -35,6 +40,7 @@ export class RepositoryGrantService {
       repositoryUrl: string,
       access: RepositoryAccess,
       scope: HostScope,
+      hostKind: string | undefined,
     ) => Promise<RepositoryCredential>,
   ) {
     if (signingKey.byteLength < 32) throw new Error("repository grant signing key must be at least 32 bytes");
@@ -75,19 +81,20 @@ export class RepositoryGrantService {
     scope: HostScope,
   ): Promise<RepositoryCredential> {
     const claims = this.verify(grant);
-    if (
-      claims.workspaceId !== request.workspaceId ||
-      claims.operationId !== request.operationId ||
-      !claims.repositories.some(
-        (repository) =>
-          repository.credentialRef === request.credentialRef &&
-          repository.repositoryUrl === request.repositoryUrl &&
-          repository.access === request.access,
-      )
-    ) {
+    const covering = claims.repositories.filter(
+      (repository) =>
+        repository.credentialRef === request.credentialRef &&
+        repository.repositoryUrl === request.repositoryUrl &&
+        repository.access === request.access,
+    );
+    if (claims.workspaceId !== request.workspaceId || claims.operationId !== request.operationId || covering.length === 0) {
       throw agentXError("FORBIDDEN", "repository credential grant does not cover this request");
     }
-    return this.resolveCredential(request.credentialRef, request.repositoryUrl, request.access, scope);
+    // One address held by repositories on different hosts is not told apart by the address: refused, never guessed.
+    if (new Set(covering.map((repository) => repository.hostKind ?? "github")).size > 1) {
+      throw agentXError("FORBIDDEN", "repository credential grant does not cover this request");
+    }
+    return this.resolveCredential(request.credentialRef, request.repositoryUrl, request.access, scope, covering[0]!.hostKind);
   }
 
   inspect(grant: string): Omit<RepositoryGrantClaims, "nonce"> {
@@ -135,7 +142,7 @@ export class RepositoryGrantService {
 function uniqueScopes(scopes: readonly RepositoryGrantScope[]): RepositoryGrantScope[] {
   const seen = new Set<string>();
   return scopes.flatMap((scope) => {
-    const key = `${scope.credentialRef}\0${scope.repositoryUrl}\0${scope.access}`;
+    const key = `${scope.credentialRef}\0${scope.repositoryUrl}\0${scope.access}\0${scope.hostKind ?? "github"}`;
     if (seen.has(key)) return [];
     seen.add(key);
     return [{ ...scope }];

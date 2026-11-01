@@ -549,3 +549,27 @@ describe("the baseline round and the project's AI day budget", () => {
     expect(round.harness.db.find((item) => String(item.sk).startsWith("E2E_MODEL_BUDGET"))).toEqual([]);
   });
 });
+
+// P5d: the same check when the task's repository record names another code host: the exported tree is held to THAT host's tree for the pinned base, and GitHub is never asked.
+describe("the baseline round's base tree, on a repository whose record names another host", () => {
+  it("runs the baseline when the fake host's tree is the exported one, and reads no tree from GitHub", async () => {
+    const round = await startApplicationRound({ baseline: "source", baseHost: "fake-match" });
+    expect(round.admissionRef.purpose).toBe("baseline");
+    expect(recordOf(round)).toMatchObject({ state: "STARTED" });
+    expect(round.hostWorld!.githubTree).not.toHaveBeenCalled();
+  });
+
+  it("does not run it when the fake host's tree is another (a worker labelling other code as the base), and reads no tree from GitHub", async () => {
+    const round = await startApplicationRound({ baseline: "source", baseHost: "fake-mismatch" });
+    expect(round.admissionRef.purpose).toBeUndefined();
+    expect(recordOf(round)).toMatchObject({ state: "UNAVAILABLE", reason: "refused" });
+    expect(round.hostWorld!.githubTree).not.toHaveBeenCalled();
+  });
+
+  it("does not run it for a record that names a host this install has not registered, and never asks GitHub instead", async () => {
+    const round = await startApplicationRound({ baseline: "source", baseHost: "unknown" });
+    expect(round.admissionRef.purpose).toBeUndefined();
+    expect(recordOf(round)).toMatchObject({ state: "UNAVAILABLE" });
+    expect(round.hostWorld!.githubTree).not.toHaveBeenCalled();
+  });
+});

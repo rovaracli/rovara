@@ -30,6 +30,7 @@ import {
   agentXError,
   metaRepositoryOf,
   projectAllows,
+  repositoryHostOf,
   runRequestKey,
   sanitizeSetupProposal,
   setupDraftKey,
@@ -349,11 +350,13 @@ export async function startSetupDraft(deps: SetupDraftDependencies, caller: Deve
 // ---- re-reading the citations
 
 /** What re-reading a proposal's citations found: the stored verdicts when they are final, else read now (and kept when final). */
-async function verificationOf(
+export async function verificationOf(
   deps: SetupDraftDependencies, caller: DeveloperCaller, definition: StoredProjectDefinition, pointer: SetupDraftPointer, proposal: SetupProposal,
 ): Promise<Record<string, SetupVerification>> {
   if (pointer.verification !== undefined) return pointer.verification.items;
-  const urlOf = new Map(definition.repositories.map((repository) => [repository.name, repository.url]));
+  // P5e: a citation is re-read with GitHub's file read (`deps.readFile`), which the code host port does not replace yet (left for P6). A repository on another host, or one whose host kind this
+  // install does not know, has no address to read: its citations stay unread ("unchecked"), never asked of GitHub.
+  const urlOf = new Map(definition.repositories.filter((repository) => repositoryHostOf(repository).kind === "github").map((repository) => [repository.name, repository.url]));
   const reader: CitationFileReader | undefined = deps.readFile === undefined ? undefined : async (repository, path, commit, options) => {
     const url = urlOf.get(repository);
     // A citation naming a repository the project does not have was already left out by the reader; one that slipped through is unread, never verified.

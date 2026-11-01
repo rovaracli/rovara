@@ -3,6 +3,7 @@ import {
   AgentXNameSchema,
   WorkerInvocationSchema,
   agentXError,
+  repositoryHostOf,
   workerProjectDefinition,
   type WorkerInvocation,
   type WorkspaceInstance,
@@ -121,6 +122,7 @@ export class PreparationCoordinator {
         credentialRef: repository.credentialRef,
         repositoryUrl: repository.url,
         access: "clone",
+        hostKind: repositoryHostOf(repository).kind,
       })),
     });
     const invocation = WorkerInvocationSchema.parse({

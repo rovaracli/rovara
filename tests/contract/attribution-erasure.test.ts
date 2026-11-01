@@ -10,6 +10,7 @@ import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ORG_A, world } from "../support/team-record-core.js";
 import { deleteDeps } from "../support/team-record-delete.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { projectRow, pullRequestDetails } from "../support/p5-world.js";
 
 describe("the Team record's person erase runs the attribution step", () => {
   it("calls the port once with the org and the developer, and reports the step done", async () => {
@@ -57,7 +58,8 @@ describe("the broker's port", () => {
       db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name });
     }
     const body = "Summary\nRequested by: Maya Chen\nPlan approved by: Priya Raman\n";
-    db.set({ ...taskKey(TASK), entityType: "DEVTASK", taskId: TASK, workspaceId: WORKSPACE, orgId: org });
+    db.set({ ...taskKey(TASK), entityType: "DEVTASK", taskId: TASK, workspaceId: WORKSPACE, orgId: org, project: "demo", startingRevision: 1 });
+    db.set(projectRow([{ name: "demo", url: URL }], "demo", 1, org));
     db.set({ pk: `WORKSPACE#${WORKSPACE}`, sk: "PULL_REQUEST#demo#000000000007", entityType: "PULL_REQUEST", repositoryUrl: URL, number: 7, body });
     db.set({ pk: `WORKSPACE#${WORKSPACE}`, sk: "OPERATION#op-1", entityType: "OPERATION", id: "op-1", publication: { title: "t", body, outboxId: "ob-1" } });
     db.set({ pk: "OUTBOX#ob-1", sk: "OUTBOX", id: "ob-1", entityType: "OUTBOX", status: "PENDING", operationId: "op-1", workspaceId: WORKSPACE,
@@ -66,8 +68,8 @@ describe("the broker's port", () => {
     const dependencies = {
       documentClient: db, tableName: "state", cloud: false,
       githubPullRequests: {
-        getPullRequest: async () => { host.reads += 1; if (host.failReads) throw new Error("host down"); return { body: host.body }; },
-        updatePullRequest: async (_url: string, _number: number, patch: { body?: string }) => { if (patch.body !== undefined) host.body = patch.body; return {}; },
+        getPullRequest: async () => { host.reads += 1; if (host.failReads) throw new Error("host down"); return pullRequestDetails(7, { body: host.body }); },
+        updatePullRequest: async (_url: string, _number: number, patch: { body?: string }) => { if (patch.body !== undefined) host.body = patch.body; return pullRequestDetails(7, { body: host.body }); },
       },
     };
     const tables = { documentClient: db, stateTable: "state", signInTable: "state", teamRecordTable: "state" };

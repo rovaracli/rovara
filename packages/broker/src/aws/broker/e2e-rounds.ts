@@ -41,6 +41,7 @@ import { WORKFLOW_E2E_ADMISSION_MAX_BYTES, readStoredBytes } from "./evidence-an
 import { storePlanAnswer, writeAllPlannerReplies, type PlannerReplies } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { githubScope, githubScopeOf, orgOfRecord } from "./scope-helpers.js";
+import { baseTreeHolds } from "./repository-hosts.js";
 import { requireWorkflowE2ECreatorAuthority } from "./sweeps-and-readiness.js";
 import { evaluateWorkflowE2EApplicationSelectionNow, type ApplicationSelectionNow } from "./task-operations.js";
 import { reconcileWorkflowTrackingTask } from "./terminal-and-github-events.js";
@@ -369,11 +370,11 @@ async function startBaselineApplicationRound(
   try {
     // The base commit is the task's real one (GitHub has it, and it is pinned); the tree the worker exported for it is held to GitHub's tree for that commit, so a worker cannot label
     // other code as the unchanged code. Where the broker cannot ask GitHub, the exported tree is the worker's word, and it only ever shapes informational rows.
-    if (dependencies.githubPullRequests.getCommitTree !== undefined) {
-      const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
-      const url = project.definition.repositories.find((entry) => entry.name === stored.repositoryId)?.url;
-      if (url === undefined || await dependencies.githubPullRequests.getCommitTree(url, stored.baseCommitSha, githubScope(dependencies, await orgOfRecord(dependencies, task))) !== stored.baseTreeSha) return await unavailable("refused");
-    }
+    // P5d: the tree is read from the code host the repository's record names (an unknown kind is refused: the round is not started).
+    const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+    const definition = project.definition.repositories.find((entry) => entry.name === stored.repositoryId);
+    const scope = githubScope(dependencies, await orgOfRecord(dependencies, task));
+    if (definition === undefined ? dependencies.githubPullRequests.getCommitTree !== undefined : !await baseTreeHolds(dependencies, definition, stored.baseCommitSha, scope, stored.baseTreeSha)) return await unavailable("refused");
     const sourceBytes = await readStoredBytes(dependencies, stored.sourceRef.key, MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES);
     if (sourceBytes === undefined || sourceBytes.byteLength !== stored.sourceRef.byteLength || createHash("sha256").update(sourceBytes).digest("hex") !== stored.sourceRef.sha256) return await unavailable("refused");
     const exportedSource = parseBaselineExport(sourceBytes);
@@ -456,7 +457,8 @@ export async function startPlanGroundingRound(
     if (repository === undefined || pinned === undefined || stored.repositoryId !== pinned.repositoryId || stored.baseCommitSha !== pinned.baseCommitSha || stored.buildSource.commitSha !== stored.baseCommitSha
       || stored.buildSource.treeSha !== stored.baseTreeSha) return await unavailable("refused");
     // The exported tree is held to GitHub's tree for the pinned base, so a worker cannot label other code as the unchanged code (as the baseline round does).
-    if (dependencies.githubPullRequests.getCommitTree !== undefined && await dependencies.githubPullRequests.getCommitTree(repository.url, stored.baseCommitSha, await githubScopeOf(dependencies, task)) !== stored.baseTreeSha) return await unavailable("refused");
+    // P5d: the same, from the code host this repository's record names.
+    if (!await baseTreeHolds(dependencies, repository, stored.baseCommitSha, await githubScopeOf(dependencies, task), stored.baseTreeSha)) return await unavailable("refused");
     const sourceBytes = await readStoredBytes(dependencies, stored.sourceRef.key, MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES);
     if (sourceBytes === undefined || sourceBytes.byteLength !== stored.sourceRef.byteLength || createHash("sha256").update(sourceBytes).digest("hex") !== stored.sourceRef.sha256) return await unavailable("refused");
     const exportedSource = parseBaselineExport(sourceBytes);

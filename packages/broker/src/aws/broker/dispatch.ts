@@ -33,6 +33,7 @@ import { companyAutonomyLimit, ownerCallerOf } from "./feedback-and-codebuild.js
 import { readObjectText } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { ec2Sessions } from "./runtime-clients.js";
+import { changeRequestRef, githubProviderOf, hostNameOf, hostOfTaskRepository } from "./repository-hosts.js";
 import { githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { workflowApplicationRouteDependencies } from "./slack-workflow-events.js";
 import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticModel, ensureWorkflowE2EComputeReadiness, recordWorkflowDispatchFailure, returnWorkflowToCorrectE2EPlan, settleLostBranchSync, type AccessPausedWorkflowDispatch } from "./sweeps-and-readiness.js";
@@ -185,6 +186,24 @@ async function waitForMachine(dependencies: AwsBrokerDependencies, item: Workflo
   }
 }
 
+/**
+ * The commit a pull request's base branch is at now (Plan 6 Task 17), which is the commit a merge of the base takes. The base is an ordinary branch (`main`, `release/2026-11`): it is read with the
+ * default-branch read, not `getBranchHead`, which GitHub's provider answers for Rovara's own `agentx/<uuid>` branches only and refuses any other name. That read has no code host port counterpart
+ * yet (left for P6), so it is GitHub's alone: a repository on another host is refused with the fixed sentence, an unknown host kind with the router's.
+ */
+export function currentBaseCommitOf(dependencies: AwsBrokerDependencies): (target: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }) => Promise<string> {
+  return async (target, pullRequest) => {
+    const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
+    if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+    const scope = await githubScopeOf(dependencies, target);
+    const host = await hostOfTaskRepository(dependencies, target, { name: pullRequest.repositoryId, url });
+    const github = githubProviderOf(dependencies, host);
+    const remote = await host.getChangeRequest(changeRequestRef(url, pullRequest.number), scope);
+    if (github.getDefaultBranchHead === undefined || typeof remote.targetBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
+    return github.getDefaultBranchHead(url, remote.targetBranch, scope);
+  };
+}
+
 /** The assessment a finished Understand run saved, read from its artifact and checked here (never taken from the worker's word): undefined when it is missing, too long, not JSON or not valid. */
 export async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<{ assessment: IntentAssessment; artifact: { id: string; objectKey: string; createdAt: string } } | undefined> {
   const artifacts = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
@@ -256,20 +275,14 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
-        const head = (await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, await githubScopeOf(dependencies, target)) as { headCommit?: unknown } | undefined)?.headCommit;
-        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
+        // P5d: the code host the repository's record names (an unknown kind is refused).
+        const host = await hostOfTaskRepository(dependencies, target, { name: pullRequest.repositoryId, url });
+        const head = (await host.getChangeRequest(changeRequestRef(url, pullRequest.number), await githubScopeOf(dependencies, target)) as { headRevision?: unknown } | undefined)?.headRevision;
+        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", `${hostNameOf(host)} did not say what the pull request's head is`);
         return head;
       },
       // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
-      currentBaseCommit: async (target, pullRequest) => {
-        const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
-        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
-        const scope = await githubScopeOf(dependencies, target);
-        const remote = await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, scope);
-        const getBranchHead = dependencies.githubPullRequests.getBranchHead;
-        if (getBranchHead === undefined || typeof remote.baseBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
-        return getBranchHead.call(dependencies.githubPullRequests, url, remote.baseBranch, scope);
-      },
+      currentBaseCommit: currentBaseCommitOf(dependencies),
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.

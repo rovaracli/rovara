@@ -19,6 +19,9 @@ import { githubRepositoryFullName } from "./admin-and-helpers.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { taskPageUrl } from "../developer-tasks/common.js";
 import { githubScopeOf } from "./scope-helpers.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { approvalReviewsOf } from "../../rovara-code/host-port.js";
+import { changeRequestRef, githubProviderOf, hostOfRepository, hostOfTaskRepository } from "./repository-hosts.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 
 /** A GitHub client for the task's project's meta repository, with a token the broker minted for itself (the same grant a worker would exchange, issued and exchanged here, never sent anywhere). */
@@ -27,18 +30,22 @@ async function metaClient(dependencies: AwsBrokerDependencies, task: DeveloperTa
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const meta = metaRepositoryOf(project.definition);
   if (meta === undefined) throw new SpecPublishError("setup", false);
+  // P5d: the meta repository's code host, by its record (an unknown kind is refused with the router's fixed sentence). The spec client below speaks GitHub's git API, so a meta repository on
+  // another host cannot publish a spec yet: that is a permanent refusal, not a retry (left for P6).
+  const host = hostOfRepository(dependencies, meta);
+  if (host.kind !== GITHUB_HOST_KIND) throw new SpecPublishError("setup", false);
   const operationId = randomUUID();
   const scope = await githubScopeOf(dependencies, task);
   const grant = dependencies.repositoryGrants.issue({
     ownerKey: task.ownerKey, projectName: project.definition.name, workspaceId: task.workspaceId, operationId, ttlSeconds: 120,
-    repositories: [{ credentialRef: meta.credentialRef, repositoryUrl: meta.url, access }],
+    repositories: [{ credentialRef: meta.credentialRef, repositoryUrl: meta.url, access, hostKind: host.kind }],
   });
   const credential = await dependencies.repositoryGrants.exchange(grant, { workspaceId: task.workspaceId, operationId, credentialRef: meta.credentialRef, repositoryUrl: meta.url, access }, scope);
   const token = credential.token ?? credential.password;
   if (token === undefined || token === "") throw new SpecPublishError("setup", false);
   const parsed = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u.exec(meta.url);
   if (parsed === null) throw new SpecPublishError("setup", false);
-  return { meta, scope, client: githubSpecClient({ repository: { owner: parsed[1]!, name: parsed[2]! }, token }) };
+  return { meta, scope, host, client: githubSpecClient({ repository: { owner: parsed[1]!, name: parsed[2]! }, token }) };
 }
 
 export function specEndEnvironmentOf(dependencies: AwsBrokerDependencies, now: () => string = () => new Date().toISOString()): SpecEndEnvironment {
@@ -100,22 +107,21 @@ export function publishSpecFilesOf(dependencies: AwsBrokerDependencies): (task: 
   return async (task, state, branch) => {
     try {
       if (state.files === undefined) return { ok: false, transient: false };
-      const { meta, scope, client } = await metaClient(dependencies, task, "push");
+      const { meta, scope, host, client } = await metaClient(dependencies, task, "push");
       const folder = commonFolderOf(state.files.map((file) => file.path));
-      const github = dependencies.githubPullRequests;
       const issuer = dependencies.developer?.issuer;
       const published = await publishSpec({
         git: client,
         pullRequests: {
           open: async (input) => {
-            const opened = await github.reconcilePullRequest({ repositoryUrl: meta.url, headBranch: input.headBranch, baseBranch: input.baseBranch, title: input.title, body: input.body, draft: false }, scope);
-            return { number: opened.number, url: opened.url, reconciled: opened.reconciled };
+            const opened = await host.reconcileChangeRequest({ repository: { url: meta.url }, sourceBranch: input.headBranch, targetBranch: input.baseBranch, title: input.title, body: input.body, draft: false }, scope);
+            return { number: Number(opened.ref.id), url: opened.ref.url, reconciled: opened.reconciled };
           },
           read: async (number) => {
-            const details = await github.getPullRequest(meta.url, number, scope);
-            return { head: details.headCommit, title: details.title, body: details.body };
+            const details = await host.getChangeRequest(changeRequestRef(meta.url, number), scope);
+            return { head: details.headRevision, title: details.title, body: details.body };
           },
-          close: async (number) => { await github.updatePullRequest(meta.url, number, { state: "closed" }, scope); },
+          close: async (number) => { await host.updateChangeRequest(changeRequestRef(meta.url, number), { state: "closed" }, scope); },
         },
       }, {
         files: state.files, folder, baseCommit: state.knowledgeCommit, baseBranch: meta.defaultBranch, branch, title: specPullRequestTitle(task.title),
@@ -155,6 +161,9 @@ export function readMetaFileOf(dependencies: AwsBrokerDependencies): (task: Deve
     const read = dependencies.githubPullRequests.getFileAtCommit;
     if (read === undefined) return undefined;
     try {
+      // P5d: the read is bounded by `maxBytes`, which the port's file read cannot carry yet (left for P6), so it is GitHub's alone: a repository on another host reads as "not there", and an
+      // unknown host kind is refused by the router (also "not there"). It is never asked of GitHub.
+      githubProviderOf(dependencies, await hostOfTaskRepository(dependencies, task, { url: repositoryUrl }));
       return (await read.call(dependencies.githubPullRequests, repositoryUrl, path, commit, await githubScopeOf(dependencies, task), { maxBytes })) ?? undefined;
     } catch {
       return undefined;
@@ -173,12 +182,17 @@ const REVIEWERS_CHECKED_MAX = 50;
  */
 export function readSpecPullRequestOf(dependencies: AwsBrokerDependencies): (task: DeveloperTaskRecord, repositoryUrl: string, number: number) => Promise<SpecPullRequestFacts | undefined> {
   return async (task, repositoryUrl, number) => {
-    const read = dependencies.githubPullRequests.getPullRequestStatus;
-    if (read === undefined) return undefined;
     try {
+      // P5d: the pull request and each reviewer's standing come from the code host the repository's record names; an unknown kind is refused (read as "cannot say").
+      const host = await hostOfTaskRepository(dependencies, task, { url: repositoryUrl });
+      const github = dependencies.githubPullRequests;
+      // A GitHub provider built without these reads (a harness) cannot say, as before; the port itself always can.
+      if (host.kind === GITHUB_HOST_KIND && github.getPullRequestStatus === undefined) return undefined;
+      const standingKnown = host.kind !== GITHUB_HOST_KIND || github.getRepositoryPermission !== undefined || github.getRepositoryStanding !== undefined;
       const scope = await githubScopeOf(dependencies, task);
-      const status = await read.call(dependencies.githubPullRequests, repositoryUrl, number, scope);
-      const permission = dependencies.githubPullRequests.getRepositoryPermission;
+      const read = await host.changeRequestStatus(changeRequestRef(repositoryUrl, number), scope);
+      // A review whose host names no account for the reviewer is never an approval (`approvalReviewsOf`); it may still object.
+      const status = { state: read.state, headSha: read.headRevision, reviewsIncomplete: read.reviewsIncomplete, reviews: approvalReviewsOf(read.reviews) };
       const latest = new Map<string, number>();
       status.reviews.forEach((review, index) => {
         if (review.commitId !== status.headSha) return;
@@ -192,8 +206,8 @@ export function readSpecPullRequestOf(dependencies: AwsBrokerDependencies): (tas
       if (!tooMany) {
         await Promise.all(toCheck.map(async (index) => {
           const review = status.reviews[index]!;
-          const person = review.userType !== "Bot" && !/\[bot\]$/iu.test(review.login) && permission !== undefined;
-          const level = person ? await permission.call(dependencies.githubPullRequests, repositoryUrl, review.login, scope).catch(() => { lookupFailed = true; return "none"; }) : "none";
+          const person = review.userType !== "Bot" && !/\[bot\]$/iu.test(review.login) && standingKnown;
+          const level = person ? await host.standing({ url: repositoryUrl }, { login: review.login }, scope).then((standing) => standing.permission).catch(() => { lookupFailed = true; return "none" as const; }) : "none";
           eligible.set(index, person && (level === "write" || level === "admin"));
         }));
       }

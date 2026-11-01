@@ -233,7 +233,9 @@ describe("a publication callback records pull_request.opened", () => {
     expect(capture.pending().filter(event => event.action !== "spending.policy_seeded").map((event) => event.action)).toEqual(["pull_request.opened"]);
   });
 
-  it("opens the pull request without an event when the workspace's org cannot be found, and says so without a value", async () => {
+  // Replaces: "opens the pull request without an event when the workspace's org cannot be found". The code host of a repository is found from the project record, which is the org's, so a
+  // workspace whose org cannot be found has no repository record to name the host: the publication is refused (nothing is opened on any host) instead of being opened on a host nobody named.
+  it("opens no pull request when the workspace's org cannot be found: the repository's code host cannot be named, and nothing is guessed", async () => {
     const capture = capturingAuditDeps();
     let resolveOrg: () => Promise<string | undefined> = async () => TEST_ORG;
     const h = await harness(capture, { orgResolver: () => resolveOrg() });
@@ -242,10 +244,10 @@ describe("a publication callback records pull_request.opened", () => {
     delete workspace.orgId;
     resolveOrg = async () => undefined;
     const response = await sendCallback(h, start);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(pullRequestRecord(h)).toBeDefined();
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(h.reconcile).not.toHaveBeenCalled();
+    expect(pullRequestRecord(h)).toBeUndefined();
     expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
-    expect(capture.logs).toEqual([expect.objectContaining({ event: "audit.record_invalid", reason: "builder_failed" })]);
   });
 
   it("opens the pull request without an event when the audit's own read of the earlier record fails, and logs the error's name only", async () => {

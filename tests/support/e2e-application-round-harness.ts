@@ -19,6 +19,11 @@ import { PROFILE, ordersContractManifest, shaCanonical, snapshotOf, webApiRow } 
 import type { E2EApplicationReport } from "../../packages/verifier/src/application-report-schema.js";
 import { collectApplicationGroupEvidence, type ApplicationGroupEvidence, type ObservedApiOutcome } from "./e2e-application-evidence-fixture.js";
 import { TEST_ORG, testProjectPk } from "./orgs.js";
+import { editionPolicy } from "../../packages/contracts/src/index.js";
+import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
+import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
+import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
+import { createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 
 /**
  * A whole application round on the real broker, short of the worker: a project whose repository holds several API applications that carry the orders project
@@ -86,6 +91,11 @@ export type RoundOptions = {
   baselinePin?: "other";
   /** What GitHub says the tree of the pinned base commit is (the broker holds the exported tree to it): the exported one, another, or nothing (GitHub cannot be asked). Absent: GitHub is not consulted. */
   githubBaseTree?: "match" | "mismatch" | "unreachable";
+  /**
+   * P5d: the task's repository is on another code host by its record, and the broker holds the exported tree to THAT host's tree for the pinned base ("fake-match", "fake-mismatch": a registered
+   * fake host answers with the exported tree or another), or the record names a host this install has not registered ("unknown"). GitHub's tree read is a spy that must never be asked.
+   */
+  baseHost?: "fake-match" | "fake-mismatch" | "unknown";
   /** Edits the files of the committed candidate before it is exported (the coding round changed the code): for a candidate whose source no longer gives the approved plan what it needs. */
   candidateTree?: (files: Record<string, string>) => Record<string, string>;
   /** Runs once the candidate is committed and exported, just before the first dispatch (to seed a row the dispatch reads, say). */
@@ -109,7 +119,16 @@ async function prepareRound(options: RoundOptions = {}) {
       if (options.githubBaseTree === "unreachable") throw new Error("GitHub is down");
       return options.githubBaseTree === "mismatch" ? "e".repeat(40) : github.baseTree ?? "0".repeat(40);
     } } };
-  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog", ...githubGateway, ...options.brokerExtra } });
+  // P5d: a registry with GitHub's adapter (over a tree read that must never be asked) and a fake host, for a repository whose record names the fake host.
+  const hostWorld = options.baseHost === undefined ? undefined : (() => {
+    const githubTree = vi.fn(async () => "0".repeat(40));
+    const provider = { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getCommitTree: githubTree };
+    const model = new FakeHostModel({ url: "https://github.com/example/demo.git", id: "9", fullName: "example/demo" });
+    const registry = createPluginRegistry({ codeHosts: [githubCodeHost(provider as never, { credentialRef: "github-app" }), new FakeCodeHost(model)], checkRunners: [], policy: editionPolicy("enterprise") });
+    return { githubTree, provider, model, registry };
+  })();
+  const hostGateway = hostWorld === undefined ? {} : { githubPullRequests: hostWorld.provider, codeHost: hostWorld.registry.codeHost };
+  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog", ...githubGateway, ...hostGateway, ...options.brokerExtra } });
   const projectRow = () => harness.db.find((row) => row.entityType === "PROJECT" && (row.definition as { name?: string } | undefined)?.name === "payments")[0]!;
   const projectBinding = projectRow().runtimeBinding as typeof binding;
   harness.db.set({ ...apiRowKey, ...webApiRow("api"), binding: projectBinding, bindingDigest: shaCanonical(projectBinding) });
@@ -165,7 +184,7 @@ async function prepareRound(options: RoundOptions = {}) {
   /** The owner's APPROVE of the written plan; a test that wants to change something before it (a registry row, say) calls it itself. */
   const approve = () => harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflowNow().revision, decision: "APPROVE",
     reason: "Approve the exact application intent", artifactDigest: workflowNow().artifacts.at(-1)!.sha256 });
-  return { harness, snapshot, tree, taskId, taskKey, workspaceId, operationRows, workflowNow, approve, policy, intent, targets, projectBinding, github };
+  return { harness, snapshot, tree, taskId, taskKey, workspaceId, operationRows, workflowNow, approve, policy, intent, targets, projectBinding, github, hostWorld };
 }
 
 /**
@@ -193,6 +212,17 @@ export async function startApplicationRound(options: RoundOptions = {}) {
   const real = await createRealCandidate(options.candidateTree?.(candidateFiles) ?? candidateFiles,
     withBase ? { repositoryId: "demo", baseTree: tree } : { repositoryId: "demo", baseCommitSha: snapshot.commitSha });
   github.baseTree = real.baseline?.baseTreeSha;
+  // P5d: now that the task is started, its repository's record names another host (a task cannot START on a host this install has not registered).
+  if (options.baseHost !== undefined && prepared.hostWorld !== undefined) {
+    const baseline = real.baseline;
+    if (baseline !== undefined && options.baseHost !== "unknown") {
+      prepared.hostWorld.model.revisions.set(baseline.baseCommitSha, { sha: baseline.baseCommitSha, tree: options.baseHost === "fake-match" ? baseline.baseTreeSha : "e".repeat(40), parents: [], files: new Map() });
+    }
+    for (const project of harness.db.find((row) => row.entityType === "PROJECT")) {
+      const definition = project.definition as { repositories: Array<Record<string, unknown>> };
+      harness.db.set({ ...project, definition: { ...definition, repositories: definition.repositories.map((repository) => ({ ...repository, host: { kind: options.baseHost === "unknown" ? "gitfarm" : "fake", ...(options.baseHost === "unknown" ? {} : { ref: "r1" }) } })) } });
+    }
+  }
   const task = harness.db.get(taskKey.pk, taskKey.sk)!;
   const approvedWorkflow = WorkflowSnapshotSchema.parse(task.workflow);
   const pinnedBase = real.baseline === undefined ? undefined : [{ repositoryId: "demo", baseCommitSha: options.baselinePin === "other" ? "7".repeat(40) : real.baseline.baseCommitSha }];
@@ -313,7 +343,7 @@ export async function startApplicationRound(options: RoundOptions = {}) {
     }
   };
 
-  return { reseedReadiness, harness: harness as unknown as RoundBrokerHarness, taskId, workspaceId, operationId, snapshot, policy, intent, targets, real, candidate, admission, admissionRef, admissionBytes, applicationGroups, groupIds, projectBinding,
+  return { hostWorld: prepared.hostWorld, reseedReadiness, harness: harness as unknown as RoundBrokerHarness, taskId, workspaceId, operationId, snapshot, policy, intent, targets, real, candidate, admission, admissionRef, admissionBytes, applicationGroups, groupIds, projectBinding,
     workflowNow, taskNow: () => harness.db.get(taskKey.pk, taskKey.sk)!, operationNow, markRunning, upload, evidenceCall, groupEnvelope, aggregateEnvelope, collectGroup, finishChecks, uploadRow, clearUpload,
     runDispatch, checksOperations, operationRows, capabilityFor };
   };
