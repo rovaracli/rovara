@@ -21,7 +21,7 @@
 //
 // WIRING (SH14), listed in the lane report: the task start's `run.setupAgent` hunk (purpose, `pendingWorkflowMode: "SETUP_AGENT"`, `setupAgentPointerItem`, the starting limit); the dispatch mode and the
 // worker feature string; the terminal result hooks (`completedWorkflowItems`, the cancel path); `release.ts`'s purpose list; the routes and the `su` switch.
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -194,12 +194,14 @@ async function readState(
   if (result?.status === "failed") {
     return failed(result.stop, result.failure, { ...(result.summary === undefined ? {} : { summary: result.summary }), ...(result.proposal === undefined ? {} : { proposal: result.proposal }) });
   }
-  if (task.closedAt !== undefined) return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person);
+  // A person's stop only when one was recorded; a task closed or cancelled any other way is a run that could not go on.
+  const cancelledWord = task.setupAgentStop === undefined ? ({ stop: "infrastructure", failure: SETUP_AGENT_FAILURES.infrastructure } as const) : ({ stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person } as const);
+  if (task.closedAt !== undefined) return failed(cancelledWord.stop, cancelledWord.failure);
   const workspace = await getItem(deps.documentClient, deps.tableName, { pk: `WORKSPACE#${task.workspaceId}`, sk: "META" });
   if (workspace?.["status"] === "PREPARATION_FAILED") return failed("infrastructure", SETUP_AGENT_FAILURES.machine);
-  if (workspace?.["status"] === "CLOSED") return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person);
+  if (workspace?.["status"] === "CLOSED") return failed(cancelledWord.stop, cancelledWord.failure);
   const taskPointer = await getItem(deps.documentClient, deps.tableName, taskPointerKey(task.workspaceId));
-  if (taskPointer?.["cancelledAt"] !== undefined) return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person);
+  if (taskPointer?.["cancelledAt"] !== undefined) return failed(cancelledWord.stop, cancelledWord.failure);
   const started = Date.parse(pointer.startedAt);
   if (Number.isFinite(started) && deps.now() - started > staleAfterMs(limits)) return failed("infrastructure", SETUP_AGENT_FAILURES.stale);
   return { view: { status: "running", ...base }, pointer };
@@ -233,17 +235,20 @@ function readWorkerAnswer(result: unknown, task: Pick<DeveloperTaskRecord, "star
 }
 
 /** The result for an outcome: which stop word, which fixed sentence, and what the run learned. Pure. */
-function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision">, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
+function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined }, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
   const failed = (stop: SetupRunEndWord, failure: string, learned: { proposal?: SetupProposal; summary?: SetupRunSummary } = {}): StoredResult => ({
     status: "failed", stop, failure, ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(learned.summary === undefined ? {} : { summary: learned.summary }),
   });
   if (operation.kind === "prepare") return failed("infrastructure", SETUP_AGENT_FAILURES.machine);
   const learned = readWorkerAnswer(outcome.result, task, outcome.repositories);
   // The broker's own knowledge first: a person's stop, and the budget running out, whatever the worker says.
-  if (outcome.status === "CANCELLED") return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person, { ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }) });
+  // What the run learned before it was cut short is kept: the proposal and its summary.
+  const kept = { ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(learned.summary === undefined ? {} : { summary: learned.summary }) };
+  // A cancel is a person's stop only when Stop was pressed (recorded on the task before the cancel). Any other cancel (a sweep, a closed workspace) is a run that could not go on.
+  if (outcome.status === "CANCELLED" && task.setupAgentStop !== undefined) return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person, kept);
   if (outcome.status !== "SUCCEEDED") {
-    const stop = outcome.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? "budget_used" : "infrastructure";
-    return failed(stop, SETUP_AGENT_FAILURES[stop], { ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }) });
+    const stop = outcome.status !== "CANCELLED" && outcome.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? "budget_used" : "infrastructure";
+    return failed(stop, SETUP_AGENT_FAILURES[stop], kept);
   }
   const { proposal, summary } = learned;
   if (summary === undefined || !WORKER_STOPS.has(summary.stop)) return failed("infrastructure", SETUP_AGENT_FAILURES.unreadable);
@@ -264,7 +269,7 @@ function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision">, operation
  */
 export function setupAgentEndItems(
   tableName: string,
-  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision"> & { orgId?: OrgId | undefined },
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision"> & { orgId?: OrgId | undefined; setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined },
   operation: { kind: string; workflowMode?: string | undefined },
   outcome: SetupAgentEndOutcome,
   now: string,
@@ -414,6 +419,11 @@ export async function stopSetupAgent(deps: SetupAgentDependencies, caller: Devel
   const state = await readState(deps, caller.orgId, name, latest.revision);
   if (state.view.status !== "running" || state.pointer === undefined) return new StatusReply(200, state.view);
   if (deps.starter === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
+  // Who pressed Stop is written BEFORE the cancel (the first stop stands), so the end can tell a person's stop from a cancel the system made; a write that fails cancels nothing.
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: taskKey(state.pointer.taskId), UpdateExpression: "SET setupAgentStop = if_not_exists(setupAgentStop, :stop)",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":stop": { by: caller.developerId, at: new Date(deps.now()).toISOString() } },
+  }));
   await deps.starter.cancel({
     orgId: caller.orgId, ownerDeveloperId: state.pointer.requestedBy, taskId: state.pointer.taskId, requestId: derivedRequestId(`${state.pointer.taskId}|${parsed.data.requestId}`, "stop"),
   });

@@ -226,6 +226,8 @@ export interface DeveloperTaskRecord {
    * Setup agent (SH11): what a `purpose: "setup_agent"` task ended with, written in the same transaction as `agentRunEnd` (rovara-code/setup-agent.ts). `stop` is the word the run ended with: the broker's own
    * (a person's stop, the budget, a fault) or, for a run that finished, one of the worker's that the broker accepts. `proposal` is the broker's reading of the worker's answer, never the worker's copy.
    */
+  /** Setup agent: who pressed Stop, written before the cancel (rovara-code/setup-agent.ts). A cancelled run is a person's stop only when this is here; a system cancel has none. */
+  setupAgentStop?: { by: string; at: string };
   setupAgentResult?: { status: "ready"; proposal: SetupProposal; summary: SetupRunSummary; stop: SetupRunEndWord } | { status: "failed"; stop: SetupRunEndWord; failure: string; proposal?: SetupProposal; summary?: SetupRunSummary };
   /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches

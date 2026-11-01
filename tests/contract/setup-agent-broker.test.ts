@@ -79,7 +79,7 @@ function world(options: { role?: "maintainer" | "contributor" | "viewer"; enable
 }
 
 const body = (requestId = randomUUID()) => ({ requestId });
-const taskOf = (w: World, taskId: string) => w.db.get(taskKey(taskId)) as Record<string, unknown> & { setupAgentResult?: Record<string, unknown>; agentRunEnd?: { state: string } };
+const taskOf = (w: World, taskId: string) => w.db.get(taskKey(taskId)) as Record<string, unknown> & { setupAgentResult?: Record<string, unknown>; agentRunEnd?: { state: string }; setupAgentStop?: { by: string; at: string } };
 const pointerOf = (w: World) => w.db.get(setupAgentKey(TEST_ORG, NAME)) as Record<string, unknown> & { taskId: string; limits: Record<string, number> };
 
 /** Ends a task the way the broker's terminal result transaction does: the end items, applied together. */
@@ -237,6 +237,21 @@ describe("one run per project", () => {
     expect((await startSetupAgent(w.deps, caller(PAT), NAME, body())).statusCode).toBe(202);
   });
 
+  it("answers a repeat of a request id after the run ended with the first run's state, and starts nothing; another person's use of the id never starts a second run", async () => {
+    const w = world();
+    const requestId = randomUUID();
+    const first = await startSetupAgent(w.deps, caller(), NAME, { requestId });
+    const taskId = (first.body as { taskId: string }).taskId;
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: summary() } });
+    const again = await startSetupAgent(w.deps, caller(), NAME, { requestId });
+    expect(again.statusCode).toBe(200);
+    expect(again.body).toMatchObject({ status: "ready", taskId });
+    expect(w.db.find((item) => item["purpose"] === "setup_agent")).toHaveLength(1);
+    const other = await startSetupAgent(w.deps, caller(PAT), NAME, { requestId });
+    expect(other.statusCode).toBe(200);
+    expect(w.db.find((item) => item["purpose"] === "setup_agent")).toHaveLength(1);
+  });
+
   it("answers a repeat of a request id with the first run and starts nothing more", async () => {
     const w = world();
     const requestId = randomUUID();
@@ -343,12 +358,33 @@ describe("the end of a run: the result is read again and stored in the task's ow
     expect(state.proposal).toBeDefined();
   });
 
-  it("is stopped_by_person when the task was cancelled, keeps a partial proposal if one was reported, and marks the run cancelled", async () => {
+  it("is stopped_by_person only when a person pressed Stop (recorded before the cancel): it keeps the proposal and the summary the run reported, and marks the run cancelled", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await stopSetupAgent(w.deps, caller(PAT), NAME, body());
+    expect(taskOf(w, taskId).setupAgentStop).toMatchObject({ by: PAT });
+    await end(w, taskId, { status: "CANCELLED", result: { setupProposal: proposal, setupRunSummary: summary({ stop: "attempts_used", partial: true }) } });
+    expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person, summary: { commandsRun: 9, partial: true } });
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).proposal).toBeDefined();
+    expect(taskOf(w, taskId).agentRunEnd).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("is NOT stopped_by_person when the task was cancelled by the system (a sweep, a workspace close): that is an infrastructure end, and no person is blamed", async () => {
     const w = world();
     const { taskId } = await started(w);
     await end(w, taskId, { status: "CANCELLED", result: { setupProposal: proposal } });
-    expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person });
+    expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "infrastructure", failure: SETUP_AGENT_FAILURES.infrastructure });
     expect(taskOf(w, taskId).agentRunEnd).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("reads a cancelled or closed task with no result the same way: a person's stop only with the recorded stop", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    const task = taskOf(w, taskId);
+    w.db.set({ ...task, closedAt: "2026-11-02T10:05:00.000Z" });
+    expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "infrastructure" });
+    w.db.set({ ...task, closedAt: "2026-11-02T10:05:00.000Z", setupAgentStop: { by: PAT, at: "2026-11-02T10:04:00.000Z" } });
+    expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "stopped_by_person" });
   });
 
   it("is infrastructure when the machine could not be prepared, and for any other failure; the error text is never stored", async () => {
@@ -384,6 +420,25 @@ describe("stopping a run", () => {
     expect(w.cancelled).toEqual([{ orgId: TEST_ORG, ownerDeveloperId: OMAR, taskId: (first as { taskId: string }).taskId, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as string }]);
     await stopSetupAgent(w.deps, caller(PAT), NAME, { requestId });
     expect(w.cancelled[1]!.requestId).toBe(w.cancelled[0]!.requestId);
+  });
+
+  it("records WHO stopped it on the task before it cancels, so the end can tell a person's stop from a system cancel", async () => {
+    const w = world();
+    const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
+    await stopSetupAgent(w.deps, caller(PAT), NAME, body());
+    expect(taskOf(w, (first as { taskId: string }).taskId).setupAgentStop).toEqual({ by: PAT, at: new Date(w.clock.now).toISOString() });
+    // The first stop stands: a second maintainer's stop does not rewrite who stopped it.
+    await stopSetupAgent(w.deps, caller(OMAR), NAME, body());
+    expect(taskOf(w, (first as { taskId: string }).taskId).setupAgentStop).toMatchObject({ by: PAT });
+  });
+
+  it("cancels nothing when the stop could not be recorded", async () => {
+    const w = world();
+    await startSetupAgent(w.deps, caller(), NAME, body());
+    const real = w.db.send.bind(w.db);
+    w.db.send = (async (command: Parameters<typeof real>[0]) => { if (command.constructor.name === "UpdateCommand") throw new Error("write failed"); return real(command); });
+    await expect(stopSetupAgent(w.deps, caller(PAT), NAME, body())).rejects.toThrow("write failed");
+    expect(w.cancelled).toHaveLength(0);
   });
 
   it("is for a maintainer only, and off with the switch", async () => {
