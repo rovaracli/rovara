@@ -2,13 +2,14 @@ import { transactionAuditEvent } from "../support/transaction-audit.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectMetaKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { swebenchDependencies } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { AgentXError, SwebenchLaunchSchema, type SwebenchLaunch } from "@agentx/contracts";
 import { swebenchEvalDefinition } from "../../infra/lib/swebench-eval-definition.js";
-import { stopSwebenchRun, type SwebenchDependencies, type SwebenchDeployment } from "../../packages/broker/src/aws/swebench.js";
+import { startSwebenchRun, stopSwebenchRun, type SwebenchDependencies, type SwebenchDeployment } from "../../packages/broker/src/aws/swebench.js";
 import { swebenchDeploymentFromParameters } from "../../packages/broker/src/aws/swebench-settings.js";
 import { createBatch, evalBatchRunId, getBatch, topUpBatches, withEvalBatches } from "../../packages/broker/src/aws/eval-batch.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, registerSlackProject, serviceCall } from "../support/slack-broker.js";
@@ -667,12 +668,14 @@ it("M47 actual eval start captures the strict project stop without applying the 
   expect([...h.launches.values()][0]?.run.maxCostUsd).toBe(1.234567);
 });
 
-it("an Auditor cannot start an eval run, whatever project grant it holds (I2)", async () => {
-  const h = await enrolledEvalBroker();
+// The Slack route refuses an Auditor before this (the requester rule); these call the run start itself, so its own writer check is what is under test, with spending stops enrolled and not.
+for (const enrolled of [true, false]) it(`an Auditor cannot start an eval run (I2), with spending stops ${enrolled ? "enabled" : "disabled"}`, async () => {
+  const h = enrolled ? await enrolledEvalBroker() : { ...(await evalBroker()), developerId: developerIdForSlackUser(member) };
+  if (!enrolled) await enable(h.handler);
   h.db.set({ ...orgMemberKey(TEST_ORG, h.developerId), orgId: TEST_ORG, developerId: h.developerId, role: "auditor" });
-  h.db.set({ ...developerOrgKey(h.developerId), orgId: TEST_ORG, role: "auditor" });
-  const reply = await start(h.handler);
-  expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  h.db.set({ ...projectMemberKey(TEST_ORG, h.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: h.developerId, projectName: "payments", role: "developer", projectRole: "contributor", grantId: "eval-grant" });
+  const context = { orgId: TEST_ORG, developerId: h.developerId, thread: slackThread, requester: { userId: member } as never, projectName: "payments", projectModel: async () => undefined };
+  await expect(startSwebenchRun(swebenchDependencies(h.brokerInput as never), context, { requestId: randomUUID(), dataset: "verified", instanceId: "django__django-11099" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   expect(h.startExecution).not.toHaveBeenCalled();
   expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
 });
