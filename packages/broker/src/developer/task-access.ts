@@ -86,11 +86,12 @@ export async function requireNativeProjectWorkRole(
 export const sendBackNoAccessMessage = (project: string) => `You don't have access to start tasks in \`${project}\`, so you can't send this task back to coding. Ask a maintainer to make you a contributor.`;
 
 /**
- * Sending a task back to coding needs the project access starting a task needs (owner decision, 0.4.27). `requireProjectWorkRole` lets a person with
- * no grant through, as the share design wants for other work; send-back does not: a company owner or admin passes, anyone else needs the project
- * access check to give them a role that may start tasks (a grant, or a bound Slack channel's contributor access). A viewer gets the viewer message;
- * no access gets the same PROJECT_ACCESS_DENIED. When the check is unavailable (Slack, a read) the retryable error stands. When the project turned
- * off tasks from AI tools, or the check failed otherwise, it judges by the person's own grant row (no channel) and refuses without one.
+ * Sending a task back to coding (a send-back, or a review finding to fix) needs the project access starting a task needs (owner decision, 0.4.27).
+ * `requireProjectWorkRole` lets a person with no grant through, as the share design wants for other work; send-back does not: a company owner or
+ * admin passes, anyone else needs the project access check to give them a role that may start tasks (a grant, or a bound Slack channel's
+ * contributor access). A viewer gets the viewer message; no access gets the same PROJECT_ACCESS_DENIED. The task already exists, so the project's
+ * tasks-off switch does not apply: the same rule is asked with the switch set aside. When the check is unavailable (Slack, a read) the retryable
+ * error stands. When it failed otherwise, it judges by the person's own grant row (no channel) and refuses without one.
  */
 export async function requireProjectSendBackRole(
   deps: Pick<AccessDependencies, "checkAccess" | "documentClient" | "tableName">,
@@ -100,7 +101,7 @@ export async function requireProjectSendBackRole(
   if (actor.orgRole === "owner" || actor.orgRole === "admin") return;
   let role: ProjectRole | undefined;
   try {
-    role = (await deps.checkAccess(task.project)).role;
+    role = await sendBackProjectRole(deps, task.project);
   } catch (error) {
     if (error instanceof AgentXError && (error.code === "SLACK_UNAVAILABLE" || error.code === "RUNTIME_UNAVAILABLE")) throw error;
     if (error instanceof AgentXError && (error.code === "PROJECT_ACCESS_DENIED" || error.code === "PROJECT_NOT_FOUND")) throw agentXError("PROJECT_ACCESS_DENIED", sendBackNoAccessMessage(task.project));
@@ -113,6 +114,16 @@ export async function requireProjectSendBackRole(
   }
   if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", sendBackNoAccessMessage(task.project));
   if (!projectAllows(role, "start_tasks")) throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+}
+
+/** The person's role from the project access check, asked again with the tasks-off switch set aside when the project turned tasks off. */
+async function sendBackProjectRole(deps: Pick<AccessDependencies, "checkAccess">, project: string): Promise<ProjectRole> {
+  try {
+    return (await deps.checkAccess(project)).role;
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "PROJECT_TASKS_DISABLED") throw error;
+    return (await deps.checkAccess(project, { ignoreTasksOff: true })).role;
+  }
 }
 
 /** Whether the actor may start or change work on the task now: false for a project viewer (or when that cannot be told). For the page's controls. */

@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { BUILTIN_AGENTS, EMPTY_RECIPE, agentXError, createCandidateManifest, type ResolvedRecipe, type WorkflowSnapshot } from "@agentx/contracts";
-import { sendTaskWorkflowBackToCoding, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
+import { resolveTaskWorkflowFindings, sendTaskWorkflowBackToCoding, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
@@ -11,6 +11,8 @@ import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../.
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
+import { openReviewFindings } from "../../packages/contracts/src/task-workflow-node.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { LEARNING_PROJECT_WIDE, LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -59,7 +61,7 @@ function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] 
  * A Quick task of project "payments", started by the API or in Slack, whose plan is approved. Coding then stops (FAILED), so the work is blocked and can be sent back.
  * `program: true` gives the stored workflow a program whose coding step is "code".
  */
-async function blockedTask(options: { slack?: boolean; program?: boolean; autofix?: boolean } = {}) {
+async function blockedTask(options: { slack?: boolean; program?: boolean; autofix?: boolean; findings?: boolean; beforeReview?: (harness: Harness) => void } = {}) {
   const harness = await createSingleAnswerPlanBroker({ brokerExtra: { planSelfCheck: false, ...(options.autofix === true ? { autofix: { enabled: true, capUsd: 1000, roundEstimateUsd: 3 } } : {}) } });
   seedProject(harness.db);
   let taskId: string;
@@ -83,16 +85,19 @@ async function blockedTask(options: { slack?: boolean; program?: boolean; autofi
   } else {
     expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, approval)).status).toBe(200);
   }
-  if (options.autofix === true) {
-    // Coding ends with a candidate and its reviews find an introduced problem: with automatic fixing on, Rovara sends the work back by itself.
+  if (options.autofix === true || options.findings === true) {
+    // Coding ends with a candidate and its reviews find an introduced problem: with automatic fixing on, Rovara sends the work back by itself;
+    // with it off, the review blocks on the finding for the owner to accept or have fixed.
     const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
     await harness.finish(workspaceId, String(codingRuns(harness, workspaceId).at(-1)!.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passingChecks() } });
     const review = operations(harness, workspaceId).filter((item) => item.workflowMode === "REVIEW").at(-1)!;
+    options.beforeReview?.(harness);
     const now = new Date().toISOString();
     await harness.finish(workspaceId, String(review.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: [
       { operationId: String(review.id), candidateDigest: candidate.digest, role: "CRITIC", provider: "t", version: "1", status: "FINDINGS", findings: [{ text: "The new parser drops the last line.", origin: "INTRODUCED", severity: "HIGH", file: "src/parse.ts", line: 40 }], readOnly: true, recordedAt: now },
       { operationId: String(review.id), candidateDigest: candidate.digest, role: "SECURITY", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now },
     ] } });
+    if (options.findings === true) expect(workflowOf(harness, taskId)).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
   } else {
     await harness.finish(workspaceId, String(codingRuns(harness, workspaceId).at(-1)!.id), "FAILED", { error: "the model stopped" });
     expect(workflowOf(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
@@ -108,13 +113,19 @@ async function blockedTask(options: { slack?: boolean; program?: boolean; autofi
   /** The same with the person's own project check answer (the default answers a channel contributor for everyone). */
   const sendWith = (checkAccess: CheckAccess, who: DeveloperCaller, instructions: string) =>
     sendTaskWorkflowBackToCoding(routeDeps(harness, undefined, checkAccess), who, taskId, { requestId: randomUUID(), expectedRevision: workflowOf(harness, taskId).revision, instructions });
+  /** The owner's answer to the blocking review findings, every one to `action`, with the person's own project check answer. */
+  const fixWith = (checkAccess: CheckAccess, who: DeveloperCaller, action: "FIX" | "ACCEPT" = "FIX") => {
+    const workflow = workflowOf(harness, taskId);
+    return resolveTaskWorkflowFindings(routeDeps(harness, undefined, checkAccess), who, taskId, { requestId: randomUUID(), expectedRevision: workflow.revision, candidateDigest: workflow.candidate!.digest,
+      resolutions: openReviewFindings(workflow).map((finding) => ({ findingId: finding.findingId, action, note: action === "FIX" ? "" : "Accepted for now." })) });
+  };
   /** The same through the developer API route. */
   const api = (who: Developer, instructions: string, requestId = randomUUID()) =>
     harness.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { requestId, expectedRevision: workflowOf(harness, taskId).revision, instructions });
   const slack = (userId: string, requestId = randomUUID()) =>
     harness.handler({ source: "agentx.slack-ingress", action: "workflow-send-back", taskId, userId, thread: THREAD, requestId, expectedRevision: workflowOf(harness, taskId).revision }) as Promise<{ statusCode: number; body: string }>;
   const owner: DeveloperCaller = { ...MAYA_CALLER, developerId: taskRow(harness, taskId).developerId };
-  return { harness, taskId, workspaceId, takeOver, send, sendWith, api, slack, owner };
+  return { harness, taskId, workspaceId, takeOver, send, sendWith, fixWith, api, slack, owner };
 }
 
 const corrections = (harness: Harness): LearningCorrection[] => learningItems(harness.db).filter((item) => String(item.sk).startsWith("CORRECTION#"))
@@ -452,72 +463,164 @@ describe("code send-back capture: it never holds up or fails the send-back", () 
 describe("code send-back needs the project access starting a task needs (0.4.27)", () => {
   const granted = (role: "viewer" | "contributor" | "maintainer"): CheckAccess => async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role });
   const denied: CheckAccess = async () => { throw agentXError("PROJECT_ACCESS_DENIED", "you do not have access to `payments`"); };
-  const tasksOff: CheckAccess = async () => { throw agentXError("PROJECT_TASKS_DISABLED", "tasks from AI tools are turned off for `payments`"); };
+  const notFound: CheckAccess = async () => { throw agentXError("PROJECT_NOT_FOUND", "project `payments` doesn't exist in this AgentX"); };
+  const broken: CheckAccess = async () => { throw new Error("the project check broke"); };
   const slackDown: CheckAccess = async () => { throw agentXError("SLACK_UNAVAILABLE", "Slack could not be reached to check your channel membership"); };
+  /** The project turned off tasks from AI tools: the check refuses, and answers `answer` only when asked with the switch set aside. */
+  const tasksOff = (answer: CheckAccess): CheckAccess => async (project, options) => {
+    if (options?.ignoreTasksOff === true) return answer(project);
+    throw agentXError("PROJECT_TASKS_DISABLED", "tasks from AI tools are turned off for `payments`");
+  };
+  const noAccess = { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${sendBackNoAccessMessage(PROJECT)}` };
+  const viewer = { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${viewerCannotStartTasksMessage(PROJECT)}` };
 
   /** Refused before anything moves: no new coding run, the same workflow revision, nothing captured. */
-  async function expectRefusedUnchanged(t: Awaited<ReturnType<typeof blockedTask>>, attempt: Promise<unknown>, expected: { code: string; message?: string }) {
+  async function expectRefusedUnchanged(t: Awaited<ReturnType<typeof blockedTask>>, attempt: () => Promise<unknown>, expected: { code: string; message?: string }) {
     const runs = codingRuns(t.harness, t.workspaceId).length, revision = workflowOf(t.harness, t.taskId).revision;
-    await expect(attempt).rejects.toMatchObject(expected);
+    await expect(attempt()).rejects.toMatchObject(expected);
     expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
     expect(workflowOf(t.harness, t.taskId)).toMatchObject({ revision, state: "BLOCKED" });
     expect(learningItems(t.harness.db)).toEqual([]);
   }
+  async function expectSentBack(t: Awaited<ReturnType<typeof blockedTask>>, attempt: () => Promise<unknown>) {
+    const runs = codingRuns(t.harness, t.workspaceId).length;
+    await attempt();
+    expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs + 1);
+    expect(workflowOf(t.harness, t.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  }
+  /** A blocked task Omar has taken over, holding `grant` in the project. */
+  async function takenBy(grant: GrantKind, options: { findings?: boolean; orgRole?: "owner" | "admin" } = {}) {
+    const t = await blockedTask({ program: true, ...(options.findings === true ? { findings: true } : {}) });
+    const who: DeveloperCaller = { ...OMAR_CALLER, ...(options.orgRole === undefined ? {} : { orgRole: options.orgRole }) };
+    seedPerson(t.harness.db, who, grant);
+    t.takeOver(who);
+    return { ...t, who };
+  }
+  /** Fails the read of Omar's own grant row in the project; everything else goes through. */
+  function failGrantReads(harness: Harness) {
+    const key = projectMemberKey(TEST_ORG, OMAR.developerId, PROJECT);
+    const send = harness.db.send.bind(harness.db);
+    harness.db.send = (async (command: Command & { input?: { Key?: { pk?: string; sk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && command.input?.Key?.pk === key.pk && command.input.Key.sk === key.sk) throw new Error("the grant could not be read");
+      return send(command as never);
+    });
+  }
 
   it("a taker with no project grant and no channel access is refused like a viewer, and nothing changes", async () => {
-    const t = await blockedTask({ program: true });
-    seedPerson(t.harness.db, OMAR_CALLER, "none");
-    t.takeOver(OMAR_CALLER);
-    await expectRefusedUnchanged(t, t.sendWith(denied, OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${sendBackNoAccessMessage(PROJECT)}` });
+    const t = await takenBy("none");
+    await expectRefusedUnchanged(t, () => t.sendWith(denied, t.who, NOTE), noAccess);
   });
 
-  it("a taker who is a project viewer is refused with the viewer message, and nothing changes", async () => {
-    const t = await blockedTask({ program: true });
-    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
-    t.takeOver(OMAR_CALLER);
-    await expectRefusedUnchanged(t, t.sendWith(granted("viewer"), OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${viewerCannotStartTasksMessage(PROJECT)}` });
+  it("a viewer role is refused with the viewer message even when the check gives it without a grant (the work gate looks only at granted viewers)", async () => {
+    const t = await takenBy("none");
+    const channelViewer: CheckAccess = async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "viewer" });
+    await expectRefusedUnchanged(t, () => t.sendWith(channelViewer, t.who, NOTE), viewer);
+  });
+
+  it("a project that is not found is refused as no access, and nothing changes", async () => {
+    const t = await takenBy("none");
+    await expectRefusedUnchanged(t, () => t.sendWith(notFound, t.who, NOTE), noAccess);
   });
 
   it("a taker who is a contributor by grant may send back", async () => {
-    const t = await blockedTask({ program: true });
-    seedPerson(t.harness.db, OMAR_CALLER, "contributor");
-    t.takeOver(OMAR_CALLER);
-    const runs = codingRuns(t.harness, t.workspaceId).length;
-    await t.sendWith(granted("contributor"), OMAR_CALLER, NOTE);
-    expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs + 1);
+    const t = await takenBy("contributor");
+    await expectSentBack(t, () => t.sendWith(granted("contributor"), t.who, NOTE));
     expect(corrections(t.harness)).toMatchObject([{ source: "send_back", stage: "code", author: OMAR.developerId }]);
   });
 
   for (const orgRole of ["owner", "admin"] as const) {
     it(`a company ${orgRole} with no project grant may send back, even when the project check would refuse them`, async () => {
-      const t = await blockedTask({ program: true });
-      const who = { ...OMAR_CALLER, orgRole };
-      seedPerson(t.harness.db, who, "none");
-      t.takeOver(who);
-      const runs = codingRuns(t.harness, t.workspaceId).length;
-      await t.sendWith(denied, who, NOTE);
-      expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs + 1);
+      const t = await takenBy("none", { orgRole });
+      await expectSentBack(t, () => t.sendWith(denied, t.who, NOTE));
     });
   }
 
-  it("when the project turned off tasks from AI tools, a grant still decides: a contributor may, no grant may not", async () => {
-    const allowed = await blockedTask({ program: true });
-    seedPerson(allowed.harness.db, OMAR_CALLER, "contributor");
-    allowed.takeOver(OMAR_CALLER);
-    const runs = codingRuns(allowed.harness, allowed.workspaceId).length;
-    await allowed.sendWith(tasksOff, OMAR_CALLER, NOTE);
-    expect(codingRuns(allowed.harness, allowed.workspaceId)).toHaveLength(runs + 1);
+  describe("when the project turned off tasks from AI tools, the task already exists: the same access rule decides, the switch aside", () => {
+    it("a contributor by grant may send back", async () => {
+      const t = await takenBy("contributor");
+      await expectSentBack(t, () => t.sendWith(tasksOff(granted("contributor")), t.who, NOTE));
+    });
+    it("a contributor through the project's Slack channel may send back", async () => {
+      const t = await takenBy("none");
+      await expectSentBack(t, () => t.sendWith(tasksOff(channelContributor), t.who, NOTE));
+    });
+    it("a viewer is refused with the viewer message", async () => {
+      const t = await takenBy("viewer");
+      await expectRefusedUnchanged(t, () => t.sendWith(tasksOff(granted("viewer")), t.who, NOTE), viewer);
+    });
+    it("no access is refused", async () => {
+      const t = await takenBy("none");
+      await expectRefusedUnchanged(t, () => t.sendWith(tasksOff(denied), t.who, NOTE), noAccess);
+    });
+  });
 
-    const refused = await blockedTask({ program: true });
-    seedPerson(refused.harness.db, OMAR_CALLER, "none");
-    refused.takeOver(OMAR_CALLER);
-    await expectRefusedUnchanged(refused, refused.sendWith(tasksOff, OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${sendBackNoAccessMessage(PROJECT)}` });
+  describe("when the check fails some other way, the person's own grant decides", () => {
+    it("a contributor grant may send back", async () => {
+      const t = await takenBy("contributor");
+      await expectSentBack(t, () => t.sendWith(broken, t.who, NOTE));
+    });
+    it("no grant is refused as no access", async () => {
+      const t = await takenBy("none");
+      await expectRefusedUnchanged(t, () => t.sendWith(broken, t.who, NOTE), noAccess);
+    });
+    it("a grant that cannot be read gives the retryable RUNTIME_UNAVAILABLE, and nothing changes", async () => {
+      const t = await takenBy("contributor");
+      failGrantReads(t.harness);
+      await expectRefusedUnchanged(t, () => t.sendWith(broken, t.who, NOTE), { code: "RUNTIME_UNAVAILABLE" });
+    });
   });
 
   it("when Slack cannot be asked, the retryable error stands and nothing changes", async () => {
-    const t = await blockedTask({ program: true });
-    seedPerson(t.harness.db, OMAR_CALLER, "none");
-    t.takeOver(OMAR_CALLER);
-    await expectRefusedUnchanged(t, t.sendWith(slackDown, OMAR_CALLER, NOTE), { code: "SLACK_UNAVAILABLE" });
+    const t = await takenBy("none");
+    await expectRefusedUnchanged(t, () => t.sendWith(slackDown, t.who, NOTE), { code: "SLACK_UNAVAILABLE" });
+  });
+
+  it("adds no project check of its own: the gate reuses the answer the task's access check got", async () => {
+    const t = await takenBy("none");
+    const asked: Array<{ ignoreTasksOff?: boolean } | undefined> = [];
+    await t.sendWith(async (project, options) => { asked.push(options); return channelContributor(project); }, t.who, NOTE);
+    // One for the task's access check and the gate together, then the coding queue's own two fresh rechecks before it commits (unchanged).
+    expect(asked).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("Rovara's own send-back still runs when the owner has lost project access", async () => {
+    // Maya's only access is the project's Slack channel; she leaves it before the review finds the problem.
+    const t = await blockedTask({ autofix: true, beforeReview: (harness) => harness.channelMembers.mockResolvedValue({ ok: true, memberOf: [] }) });
+    const refusedStart = await t.harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: PROJECT, instructions: "Another task", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    expect(refusedStart.body).toMatchObject({ error: { code: "PROJECT_ACCESS_DENIED" } });
+    expect(workflowOf(t.harness, t.taskId).decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(1);
+    expect(workflowOf(t.harness, t.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  });
+
+  describe("a review finding to fix sends the task back to coding, so it needs the same access", () => {
+    it("a taker with no access is refused, and nothing changes", async () => {
+      const t = await takenBy("none", { findings: true });
+      await expectRefusedUnchanged(t, () => t.fixWith(denied, t.who), noAccess);
+    });
+    it("a viewer role is refused with the viewer message", async () => {
+      const t = await takenBy("none", { findings: true });
+      const channelViewer: CheckAccess = async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "viewer" });
+      await expectRefusedUnchanged(t, () => t.fixWith(channelViewer, t.who), viewer);
+    });
+    it("a contributor by grant may have the findings fixed", async () => {
+      const t = await takenBy("contributor", { findings: true });
+      await expectSentBack(t, () => t.fixWith(granted("contributor"), t.who));
+    });
+    it("a company owner may, even when the project check would refuse them", async () => {
+      const t = await takenBy("none", { findings: true, orgRole: "owner" });
+      await expectSentBack(t, () => t.fixWith(denied, t.who));
+    });
+    it("with tasks turned off, a channel contributor may and no access may not", async () => {
+      const allowed = await takenBy("none", { findings: true });
+      await expectSentBack(allowed, () => allowed.fixWith(tasksOff(channelContributor), allowed.who));
+      const refused = await takenBy("none", { findings: true });
+      await expectRefusedUnchanged(refused, () => refused.fixWith(tasksOff(denied), refused.who), noAccess);
+    });
+    it("accepting every finding is not a send-back: no access is not asked for", async () => {
+      const t = await takenBy("none", { findings: true });
+      const runs = codingRuns(t.harness, t.workspaceId).length;
+      await t.fixWith(denied, t.who, "ACCEPT").catch((error: unknown) => { expect(error).not.toMatchObject({ code: "PROJECT_ACCESS_DENIED" }); });
+      expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
+    });
   });
 });

@@ -387,7 +387,7 @@ export interface DeveloperTaskRouteDependencies {
   refreshTaskFeedback?(taskId: string): Promise<void>;
   /** Present only for a Slack-signed internal task start; the existing thread becomes the task thread. */
   initialSlackThread?: { teamId: string; channelId: string; threadTs: string };
-  checkAccess(project: string): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }>;
+  checkAccess(project: string, options?: { ignoreTasksOff?: boolean }): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }>;
   /** C3: bound channels' names and privacy, best effort (R10). */
   boundChannels?(channelIds: readonly string[]): Promise<BoundChannel[]>;
   /**
@@ -4676,10 +4676,11 @@ async function retryWorkflowImplementation(
  */
 export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-send-back");
-  const access = await authorizeTaskAction(deps, caller, taskId, "work");
+  const checked = sharedAccessCheck(deps);
+  const access = await authorizeTaskAction(checked, caller, taskId, "work");
   const { task } = access;
   // Send-back needs the project access starting a task needs; a taker with no project access is refused like a viewer (0.4.27).
-  await requireProjectSendBackRole(deps, task, caller);
+  await requireProjectSendBackRole(checked, task, caller);
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
@@ -4729,6 +4730,20 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   return view;
 }
 
+/**
+ * One project access check per request and project: a send-back's gate asks what `authorizeTaskAction` has just asked, so the answer (or the refusal)
+ * is shared rather than asking Slack for channel members twice. A check with options (the tasks-off switch set aside) is asked on its own.
+ */
+function sharedAccessCheck(deps: DeveloperTaskRouteDependencies): DeveloperTaskRouteDependencies {
+  const answers = new Map<string, ReturnType<DeveloperTaskRouteDependencies["checkAccess"]>>();
+  return { ...deps, checkAccess: (project, options) => {
+    if (options !== undefined) return deps.checkAccess(project, options);
+    let answer = answers.get(project);
+    if (answer === undefined) answers.set(project, answer = deps.checkAccess(project));
+    return answer;
+  } };
+}
+
 /** What Slack's "Send back to coding" button sends as the owner's note: the button has no text box, so these are not a person's words. */
 export const SLACK_SEND_BACK_INSTRUCTIONS = "Fix the problems listed above, then report what changed.";
 
@@ -4740,8 +4755,11 @@ export const SLACK_SEND_BACK_INSTRUCTIONS = "Fix the problems listed above, then
  */
 export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowResolveFindingsInputSchema, value, deps, "workflow-review-findings");
-  const access = await authorizeTaskAction(deps, caller, taskId, "decide");
+  const checked = sharedAccessCheck(deps);
+  const access = await authorizeTaskAction(checked, caller, taskId, "decide");
   const { task } = access;
+  // A finding to fix sends the task back to coding, so it needs the project access a send-back needs (owner, 0.4.27); accepting every finding does not.
+  if (request.resolutions.some((resolution) => resolution.action === "FIX")) await requireProjectSendBackRole(checked, task, caller);
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
