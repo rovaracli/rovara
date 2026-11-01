@@ -745,6 +745,34 @@ export function askLinearCommentKey(orgId: OrgId, commentId: string): OrgKey {
   return { pk: orgScoped(orgId, "ASKLINEAR"), sk: keyPart(commentId, "a Linear comment id") };
 }
 
+/**
+ * Live interaction F2: the partition of one diagnosis (`DIAGNOSIS#<id>`): its request (`REQUEST`, ids, the state and, while it waits, the context text), its result (`RECORD`) and the link to the
+ * person who asked (`PERSON`, kept apart so erasure removes the person and keeps the diagnosis).
+ */
+export function diagnosisKey(orgId: OrgId, diagnosisId: string, part: "REQUEST" | "RECORD" | "PERSON"): OrgKey {
+  return { pk: orgScoped(orgId, `DIAGNOSIS#${keyPart(diagnosisId, "a diagnosis id")}`), sk: part };
+}
+
+/** The index of the diagnoses a person asked for (`DIAGNOSISBY#<developerId>`, one item per diagnosis), so erasing the person finds their person-link rows. Ids only. */
+export function diagnosisByPersonKey(orgId: OrgId, developerId: string, diagnosisId: string): OrgKey {
+  return { pk: diagnosisByPersonPk(orgId, developerId), sk: keyPart(diagnosisId, "a diagnosis id") };
+}
+
+/** The partition of one person's diagnosis index. */
+export function diagnosisByPersonPk(orgId: OrgId, developerId: string): string {
+  return orgScoped(orgId, `DIAGNOSISBY#${keyPart(developerId, "a developer id")}`);
+}
+
+/** "One open diagnosis per ErrorRef": the item that says a tier's diagnosis for this error (`errorRefKey`) is open until an hour has passed. The partition is the org's. */
+export function diagnosisOpenKey(orgId: OrgId, tier: "light" | "deep", errorKey: string): OrgKey {
+  return { pk: orgScoped(orgId, "DIAGNOSISOPEN"), sk: `${tier}#${keyPart(errorKey, "an error key")}` };
+}
+
+/** The fixed-window counters of diagnoses: `light_person#<id>` (an hour), `light_project#<name>` (a day) and `deep_person#<id>` (a day). The partition is the org's. */
+export function diagnosisRateKey(orgId: OrgId, kind: "light_person" | "light_project" | "deep_person", subject: string): OrgKey {
+  return { pk: orgScoped(orgId, "DIAGNOSISRATE"), sk: `${kind}#${keyPart(subject, "a rate subject")}` };
+}
+
 /** The partition of one day's expiring Asks. */
 export function askExpiryPk(orgId: OrgId, day: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("an expiry day is YYYY-MM-DD");

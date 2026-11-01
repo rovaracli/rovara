@@ -28,19 +28,18 @@ describe("the words about work kept on a stopped coding run (R3)", () => {
 });
 
 describe("switches", () => {
-  it("has three distinct two-letter codes that collide with no other broker setting (fx is the autofix switch); `rd` and `ak` are registered under their own codes, and `fd` is not yet", () => {
+  it("has three distinct two-letter codes that collide with no other broker setting (fx is the autofix switch); `rd`, `ak` and `fd` are each registered under their own code and variable", () => {
     const codes = Object.values(LIVE_INTERACTION_FLAGS).map((spec) => spec.code);
     expect(new Set(codes).size).toBe(3);
-    // Stop & redirect (R2/LI-1) registered `liveRedirect` and Ask (A3) registered `liveAsk`, each with its flag's code and variable; diagnosis (`fd`) waits for its own lane.
+    // Stop & redirect (R2/LI-1) registered `liveRedirect`, Ask (A3) registered `liveAsk` and Fix with agent (F2) registered `liveFix`, each with its flag's code and variable.
     expect(BROKER_SETTINGS.liveRedirect).toEqual({ code: LIVE_INTERACTION_FLAGS.redirect.code, variable: LIVE_INTERACTION_FLAGS.redirect.variable });
     expect(BROKER_SETTINGS.liveAsk).toEqual(LIVE_INTERACTION_FLAGS.ask);
-    const others = Object.entries(BROKER_SETTINGS).filter(([name]) => name !== "liveRedirect" && name !== "liveAsk").map(([, spec]) => spec);
+    expect(BROKER_SETTINGS.liveFix).toEqual(LIVE_INTERACTION_FLAGS.fix);
+    const others = Object.entries(BROKER_SETTINGS).filter(([name]) => name !== "liveRedirect" && name !== "liveAsk" && name !== "liveFix").map(([, spec]) => spec);
     const taken = new Set<string>(others.map((spec) => spec.code));
     for (const code of codes) expect(taken.has(code), code).toBe(false);
     const variables = new Set<string>(others.map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
-    const registered = Object.values(BROKER_SETTINGS).map((spec) => spec.code);
-    expect(registered.includes(LIVE_INTERACTION_FLAGS.fix.code), "fix").toBe(false);
   });
 
   it("the Ask switch is off unless set (the stack parameter default 0 is pinned in live-ask-switch.test.ts): only exactly 1 turns it on", () => {
@@ -255,8 +254,9 @@ describe("diagnosis proposals", () => {
     expect(ok("code_settings", "mergeMethod", "squash", "rebase")).toBe(false);
     expect(ok("code_settings", "mergeMethod", "ghp_notarealtoken", "merge")).toBe(false);
     expect(ok("code_settings", "mergeMethod", "squash", true)).toBe(false);
-    expect(ok("playbook", "e2e.traces", false, true)).toBe(true);
-    expect(ok("playbook", "e2e.traces", false, "true")).toBe(false);
+    // Replaces: the T0 playbook rows. No ordinary route changes a project's end-to-end capture, so nothing on the playbook target is prefilled.
+    expect(ok("playbook", "e2e.traces", false, true)).toBe(false);
+    expect(ok("playbook", "defaultProcess", null, "builtin")).toBe(false);
     expect(ok("setup_item", "devcontainer.configPath", ".devcontainer/devcontainer.json", ".devcontainer/other.json")).toBe(true);
     for (const bad of ["https://evil.example.com/x.json", "/etc/passwd", "../../x", ".devcontainer/../../x", "a b", `ghp_${"a".repeat(36)}?x=1`]) expect(ok("setup_item", "devcontainer.configPath", null, bad), bad).toBe(false);
     // Prototype names are not paths or targets.

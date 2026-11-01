@@ -1,4 +1,4 @@
-import { AskQueueMessageSchema, SlackPageCommentMessageSchema, SlackRequestMessageSchema, type AskQueueMessage, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@agentx/contracts";
+import { AskQueueMessageSchema, DiagnosisQueueMessageSchema, SlackPageCommentMessageSchema, SlackRequestMessageSchema, type AskQueueMessage, type DiagnosisQueueMessage, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@agentx/contracts";
 import { HANDOFF_MILLISECONDS, TurnHandedOffError } from "./interrupted-turn.js";
 import type { ServiceLog } from "./processor.js";
 
@@ -17,6 +17,8 @@ export interface QueueMessage {
   pageComment?: true;
   /** Live interaction A3: an Ask about a task (`AskQueueMessageSchema` body), never a chat request. */
   ask?: true;
+  /** Live interaction F2: a light diagnosis (`DiagnosisQueueMessageSchema` body), never a chat request. */
+  diagnosis?: true;
 }
 
 export interface QueueClient {
@@ -38,9 +40,12 @@ export interface ConsumerOptions {
   pageComment?: PageCommentHandler;
   /** Answers an Ask message; without it such a message is discarded. */
   ask?: AskHandler;
+  /** Answers a diagnosis message; without it such a message is discarded. */
+  diagnosis?: DiagnosisHandler;
   log?: ServiceLog;
 }
 
+export type DiagnosisHandler = (message: DiagnosisQueueMessage, context: { handoff?: AbortSignal }) => Promise<void>;
 export type AskHandler = (message: AskQueueMessage, context: { handoff?: AbortSignal }) => Promise<void>;
 export type PageCommentHandler = (message: SlackPageCommentMessage, context: { handoff?: AbortSignal }) => Promise<void>;
 
@@ -58,7 +63,7 @@ export type RequestHandler = (message: SlackRequestMessage, context: {
   onHeartbeat?: (listener: () => void) => void;
 }) => Promise<void>;
 
-type GroupOptions = Pick<ConsumerOptions, "maxReceiveCount" | "visibilitySeconds" | "heartbeatMilliseconds" | "pageComment" | "ask"> & {
+type GroupOptions = Pick<ConsumerOptions, "maxReceiveCount" | "visibilitySeconds" | "heartbeatMilliseconds" | "pageComment" | "ask" | "diagnosis"> & {
   /** Once aborted, a later message of the group is released rather than started. */
   stop?: AbortSignal;
   handoff?: AbortSignal;
@@ -150,6 +155,14 @@ export async function processGroup(
         const ask = AskQueueMessageSchema.safeParse(parseJson(entry.body));
         if (!ask.success || options.ask === undefined) log("message.discarded", { reason: ask.success ? "ask_unavailable" : "invalid_message" });
         else await options.ask(ask.data, options.handoff === undefined ? {} : { handoff: options.handoff });
+        await queue.delete(entry.receiptHandle);
+        continue;
+      }
+      if (entry.diagnosis === true) {
+        // Its own handler only: a diagnosis never runs as a chat request, and an unreadable one is dropped.
+        const diagnosis = DiagnosisQueueMessageSchema.safeParse(parseJson(entry.body));
+        if (!diagnosis.success || options.diagnosis === undefined) log("message.discarded", { reason: diagnosis.success ? "diagnosis_unavailable" : "invalid_message" });
+        else await options.diagnosis(diagnosis.data, options.handoff === undefined ? {} : { handoff: options.handoff });
         await queue.delete(entry.receiptHandle);
         continue;
       }

@@ -79,6 +79,8 @@ import { projectRoleForRoute } from "./project-members.js";
 import { putProjectSettings } from "./project-settings.js";
 import { checkProjectAccess } from "./project-access.js";
 import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
+import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
+import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
 
 /** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
 export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
@@ -102,6 +104,43 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
+  };
+}
+
+/**
+ * Live interaction F2: what the Fix with agent routes need, built for one caller. Undefined while the `fd` switch is off (every route is then NOT_FOUND), and where sessions or tasks are not set up
+ * (a diagnosis reads the task through its session and the person's level on it, so without them nothing is offered: fail closed).
+ */
+export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller): DiagnosisRouteDependencies | undefined {
+  if (!diagnosisEnabled()) return undefined;
+  const sessions = sessionDependenciesOf(deps);
+  if (sessions === undefined || deps.tasks === undefined || sessions.cursorKey === undefined) return undefined;
+  const access = sessionReadDependencies(deps, caller);
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  const table = { documentClient: deps.documentClient, tableName: deps.tableName };
+  return {
+    ...table, now: deps.now, enabled: true, edition: deps.editionPolicy?.edition ?? "public", queue: deps.developer.slackRequestQueue,
+    authority: { ...table, access },
+    audit: { ...table, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
+    log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    context: {
+      ...table, edition: deps.editionPolicy?.edition ?? "public", tagKey: diagnosisTagKeyOf(sessions.cursorKey),
+      // The person's own view of the task: its error reference, failure and events, as the app shows them. `details: false` reads nothing the diagnosis does not use and writes nothing.
+      taskView: (task) => taskView(taskDeps, task, { events: 80, details: false, actor: "viewer" }),
+      projectDefinition: async (orgId, project) => {
+        const latest = await latestRevision(table, orgId, project);
+        return latest === undefined ? undefined : {
+          devcontainer: latest.definition.devcontainer, repositories: latest.definition.repositories.map((repository) => repository.name),
+          allowedWebsites: latest.definition.network?.allowedDomains?.length ?? 0,
+        };
+      },
+      setupState: async (who, project) => {
+        const [record, meta] = await Promise.all([latestProjectRecord(deps, who.orgId, project), readProjectMeta(deps, who.orgId, project)]);
+        if (record === undefined) return undefined;
+        const summary = await appProjectSummary(deps, project, "maintainer", record, meta);
+        return { status: summary.setup.status, ...(summary.setup.failedStep === undefined ? {} : { failedStep: summary.setup.failedStep }), ...(summary.setup.errorRef === undefined ? {} : { errorRef: summary.setup.errorRef }) };
+      },
+    },
   };
 }
 

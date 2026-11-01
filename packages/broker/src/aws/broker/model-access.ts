@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place } from "@agentx/contracts";
+import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
 import { callConnector } from "../connector-routes.js";
@@ -15,7 +15,7 @@ import { developerIdForSlackUser } from "../admin-actions.js";
 import { keyIdOf, mintKeyHealing } from "../../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../../spend/admission.js";
 import { forgetKey, registerKey } from "../../spend/ledger.js";
-import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
+import { ROVARA_SOURCE_ID, budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
 import { readProjectAi, readSpendPolicy } from "../../spend/settings.js";
 import { followMerges } from "../../agents/access.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
@@ -504,6 +504,7 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
 export async function mintChatTurnKey(
   dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, requester: OperationRequester | undefined,
   body: { turnId: string; model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined },
+  options: { rovaraPays?: true } = {},
 ): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown }> {
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
@@ -513,6 +514,16 @@ export async function mintChatTurnKey(
     // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
     const routing = routingOf(dependencies);
     const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body);
+    // Live interaction F2 (Public light diagnosis): Rovara pays for its own support. Only a turn routed to Rovara's own AI is let through unmetered, on a key that can call that route alone and spend a
+    // fixed small amount; it is counted against none of the customer's budgets and does not need the trial or machine-time admission. A turn that routes anywhere else (the company's own source)
+    // is paid like any chat turn, below. The caller decides `rovaraPays` from the edition and the tier; nothing in a request can ask for it.
+    if (options.rovaraPays === true && routed !== undefined && routed.route.sourceId === ROVARA_SOURCE_ID) {
+      const support = await mintKeyHealing(
+        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
+        { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models },
+      );
+      return { baseUrl: modelAccess.proxyUrl, apiKey: support.key, expiresAt: support.expiresAt, ...(routed.wire === undefined ? {} : { route: routed.wire }) };
+    }
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, orgId, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is

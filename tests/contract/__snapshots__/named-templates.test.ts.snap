@@ -2884,6 +2884,24 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on",
       "Type": "String",
     },
+    "LiveAskEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: Ask about this task is on (only after the chat service that carries the Ask route is deployed); 0: every Ask route answers not found (agentx config set liveAsk.enabled 1)",
+      "Type": "String",
+    },
+    "LiveFixEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: Fix with agent is on (only after the chat service that carries the diagnosis route is deployed); 0: every diagnosis route answers not found (agentx config set liveFix.enabled 1)",
+      "Type": "String",
+    },
     "LiveRedirectEnabled": {
       "AllowedValues": [
         "0",
@@ -3416,7 +3434,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "fx=",
+                  "ak=",
+                  {
+                    "Ref": "LiveAskEnabled",
+                  },
+                  ",fd=",
+                  {
+                    "Ref": "LiveFixEnabled",
+                  },
+                  ",fx=",
                   {
                     "Ref": "AutofixEnabled",
                   },

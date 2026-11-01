@@ -159,6 +159,8 @@ export const BROKER_SETTINGS = {
   learningSuggestionsDefault: { code: "lg", variable: "LEARNING_SUGGESTIONS_DEFAULT" },
   // Stop & redirect kill switch (live-interaction design, switch `rd`; stack parameter LiveRedirectEnabled, "0" by default): the broker reads it as LIVE_REDIRECT_ENABLED, and the redirect route exists only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveRedirect: { code: "rd", variable: "LIVE_REDIRECT_ENABLED" },
+  // Live interaction F2 to F4: Fix with agent (diagnosis; switch `fd`, stack parameter LiveFixEnabled, "0" by default): the broker reads it as LIVE_FIX_ENABLED, and the diagnosis routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  liveFix: { code: "fd", variable: "LIVE_FIX_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

@@ -13,6 +13,7 @@ import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
+import { eraseDiagnosisPerson } from "../diagnosis/store.js";
 import { rememberErasedAliases } from "../agent-sessions/ask-erased-aliases.js";
 import { readChosenName } from "../developer/chosen-name.js";
 import type { ScopeCursor } from "./store.js";
@@ -101,7 +102,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // others, and the next run resumes it. The erased markers were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
   const context: EraseContext = { deps, orgId, who, ids, identities, rows, links: allLinks, at, occurrence, budget, queue, lessonsPurged: 0 };
-  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, attribution: true, rows: true };
+  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, diagnoses: true, attribution: true, rows: true };
   for (const step of REQUIRED_ERASE_STEPS) {
     try {
       if (step === "rows") continue; // last: the rows go only after the lessons that rest on them are settled
@@ -231,6 +232,16 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     await rememberErasedAliases(context.deps.table, context.orgId, { developerId: context.who.developerId, names: [...(context.who.names ?? []), ...(chosen === undefined ? [] : [chosen])], handles: context.ids }, Date.parse(context.at) || Date.now(), context.deps.askAliasKey);
     for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
       const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) }, context.ids);
+      if (result.complete) return true;
+    }
+    return false;
+  },
+  // Live interaction Fix with agent (diagnosis/store.ts): the person-link row of each diagnosis they asked for is deleted (the diagnosis stays and names no one), then the index. Bounded passes; not done
+  // means the next run resumes it.
+  async diagnoses(context) {
+    if (context.who.developerId === undefined) return true;
+    for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
+      const result = await eraseDiagnosisPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) });
       if (result.complete) return true;
     }
     return false;
