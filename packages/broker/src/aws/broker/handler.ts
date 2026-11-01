@@ -378,7 +378,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Decision cards (wire-proof): a card's button pressed in Slack. Answered with one fixed sentence for the interactivity Lambda to say privately; `enabled: false` while the cards switch is off.
     if (isSlackDecisionPressEvent(event)) {
       if (!decisionCardsEnabled() || dependencies.developer === undefined) return json({ enabled: false }, "slack-ingress");
-      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
+      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...routeEditionDependencies(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
     }
     if (isSlackTaskAuthorizationEvent(event)) {
       try { return json(await authorizeSlackTaskAction(dependencies, tasks, event), "slack-ingress"); }
