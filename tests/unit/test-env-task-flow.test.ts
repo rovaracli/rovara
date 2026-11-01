@@ -136,7 +136,8 @@ describe("the task's pin", () => {
     const start = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
     expect(start.used?.revision).toBe(1);
     h.db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
-    await h.approve(body({ roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } }), 1);
+    // A later revision that runs more (one more file that runs the whole suite): narrowing which tests run would be a less-safe change with a second person.
+    await h.approve(body({ roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: ["lint"], fullSuiteOn: ["poetry.lock", "Makefile"] } }), 1);
     expect((await usableTestEnvironment(h.deps, ORG, PROJECT, undefined, ON) as { environment: TestEnvironment }).environment.revision).toBe(2);
     expect(await readTestEnvPin(h.deps, ORG, PROJECT, "t1")).toMatchObject({ revision: 1 });
   });
