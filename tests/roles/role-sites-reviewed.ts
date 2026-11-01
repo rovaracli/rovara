@@ -11,7 +11,6 @@ export const REVIEWED_ROLE_SITES: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/aws/broker/admin-and-helpers.ts", needle: '?.role ?? "member"', why: DEFAULTS },
   { file: "packages/broker/src/aws/broker/sweeps-and-readiness.ts", needle: '?.role ?? "member"', why: DEFAULTS },
   { file: "packages/broker/src/aws/broker/workflow-e2e-verification.ts", needle: '?.role ?? "member"', why: DEFAULTS },
-  { file: "packages/broker/src/aws/broker/workspace-preparation.ts", needle: '?.role ?? "member"', why: DEFAULTS },
   { file: "packages/broker/src/chains/routes.ts", needle: '?? "member"', why: DEFAULTS },
   // ---- the Rovara roles that are not the Auditor's to hold
   { file: "packages/broker/src/aws/developer-routes/organization.ts", needle: 'caller.orgRole === "admin" && target.role !== "member"', why: "An admin may remove members only. An Auditor target is not a member, so an admin cannot remove one; only an owner can (stricter, not looser)." },
@@ -62,7 +61,6 @@ export const REVIEWED_ROLE_SITES_ROUND_1: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/agents/changes.ts", needle: "pointerModelGuards", why: "A background landing of an approved agent change builds a member-level caller for the model checks; the change was approved by writers, and the dispatcher refuses an Auditor's request for one." },
   { file: "packages/broker/src/agents/changes.ts", needle: 'orgRole:"member"', why: SYNTHETIC_MEMBER },
   { file: "packages/broker/src/audit/events.ts", needle: 'role: "admin" | "member"', why: INVITE_ROLE },
-  { file: "packages/broker/src/aws/broker/dependency-wiring.ts", needle: 'orgRole: role ?? "member"', why: "The Slack caller: the person's live writer role (liveWriterRole refuses an Auditor first); a missing record is an implicit member on a single-org install and is refused on Enterprise." },
   { file: "packages/broker/src/aws/broker/feedback-and-codebuild.ts", needle: 'orgRole: "member" as const', why: SYNTHETIC_MEMBER },
   { file: "packages/broker/src/aws/broker/records.ts", needle: "OrgRoleSchema.safeParse(record?.role)", why: "readOrgMember: its callers that authorize work (requireProjectAuthority) read the raw role and refuse a non-writer first; the others are display or sweeps." },
   { file: "packages/broker/src/aws/developer-routes/authentication.ts", needle: "OrgRoleSchema.safeParse(claims.org_role)", why: "The role claim of a verified token; the live membership replaces it, the edition check refuses an Auditor session where the edition has none, and the dispatcher holds an Auditor to its list." },

@@ -6,8 +6,8 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer, featureEnabled } from "@agentx/contracts";
-import { liveWriterRole } from "../../org/live-role.js";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
+import { liveWriterRole, personIds } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
@@ -415,18 +415,38 @@ export async function slackTeamOrg(dependencies: AwsBrokerDependencies, teamId: 
  * bound to. A person of another org, or of none, cannot act through this team's channels.
  */
 export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId: string, teamId: string): Promise<WriterCaller<DeveloperCaller>> {
-  const developerId = developerIdForSlackUser(userId);
   const teamOrg = await slackTeamOrg(dependencies, teamId);
+  const role = await requireSlackRequesterWriterRole(dependencies, userId, teamOrg);
+  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), orgRole: role });
+}
+
+/**
+ * The ONE rule for who a Slack requester is in the org its team is bound to, shared by the ingress callers (slackCallerFor) and the service routes (slackServiceIdentity,
+ * slackRequesterRole), so they cannot disagree. The person's own org must be the team's org (a Slack Connect guest or a stale link of another org is refused); the company sign-in
+ * must still allow them (I-1); their role is read under every id they answer to, so a member merged into another person is judged by the surviving record, and anything that is not
+ * a writer's role (the Auditor, an unknown role, a record with no role) is refused (I-2). With no member record at all the person is the implicit member of a single-org install
+ * only: a multi-org install, a cloud install and an Enterprise (Auditor-role) install refuse it, and so does a removed, banned or merged-away person's removal row.
+ */
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId): Promise<WriterOrgRole> {
+  const developerId = developerIdForSlackUser(userId);
   const orgId = requireOrgId(await orgResolverOf(dependencies)({ developerId }));
   if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
-  const role = await liveWriterRole({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName }, orgId, developerId);
+  const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
+  const role = await liveWriterRole(live, orgId, developerId);
+  if (role !== undefined) return role;
   // An Enterprise install has one company whose people all sign in; a Slack identity with no member record is nobody's, so it is not let in as an implicit member there.
-  if (role === undefined && dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
+  if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
   }
-  return requireWriterCaller({ ...slackWorkflowCaller(userId, orgId), orgRole: role ?? "member" });
+  if (dependencies.orgResolver !== undefined || dependencies.cloud === true) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
+  for (const id of await personIds(live, developerId)) {
+    for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
+      if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
+    }
+  }
+  return "member";
 }
 
 /**

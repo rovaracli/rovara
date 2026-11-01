@@ -4,7 +4,6 @@ import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition } from "@agentx/contracts";
-import { isWriterOrgRole, orgMemberKey } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -28,8 +27,8 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { issueRepositoryGrant, membershipRecord, object, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, slackTeamOrg } from "./dependency-wiring.js";
-import { getMembership, readOrgMember, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
+import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackTeamOrg } from "./dependency-wiring.js";
+import { getMembership, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
@@ -271,15 +270,10 @@ export async function slackRequesterRole(dependencies: AwsBrokerDependencies, id
   if (slack === undefined) return "contributor";
   const orgId = requireOrgId(identity.orgId);
   const developerId = developerIdForSlackUser(slack.requester.userId);
-  // I2: a person whose company role is not a writer's (the Auditor, or a role this release does not know) works on nothing through Slack, whatever grant or channel they hold.
-  // effectiveProjectRole gives an Auditor no project role, which the fallback below would turn into a contributor, so it is refused here, before the fallback. No record at all
-  // is the implicit member of a single-org install (Enterprise refuses that elsewhere).
-  const rawRole = (await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, developerId)))?.role;
-  if (rawRole !== undefined && !isWriterOrgRole(rawRole)) throw agentXError("TASK_ACCESS_DENIED", "your company role can no longer work on tasks");
-  return effectiveProjectRole(
-    { developerId, orgRole: (await readOrgMember(dependencies, orgId, developerId))?.role ?? "member" },
-    await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true,
-  ) ?? "contributor";
+  // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
+  // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
+  const orgRole = await requireSlackRequesterWriterRole(dependencies, slack.requester.userId, orgId);
+  return effectiveProjectRole({ developerId, orgRole }, await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true) ?? "contributor";
 }
 
 /**

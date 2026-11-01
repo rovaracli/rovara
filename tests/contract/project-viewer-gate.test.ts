@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectMemberKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { orgBanKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
@@ -41,7 +41,7 @@ describe("I2: a Slack-linked Auditor is read-only on every Slack route that star
     for (const [method, path, label, body] of calls) {
       const refused = await serviceCall(h.handler, thread, AUDITOR, method, path, body);
       expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
-      expect(refused.body.error, label).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+      expect(refused.body.error, label).toMatchObject({ code: "FORBIDDEN" });
     }
   });
 
@@ -50,7 +50,7 @@ describe("I2: a Slack-linked Auditor is read-only on every Slack route that star
     seedMembership(h.db, developerIdForSlackUser(AUDITOR), { orgId: TEST_ORG, role: "auditor" });
     const refused = await serviceCall(h.handler, thread, AUDITOR, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
     expect(refused.status, JSON.stringify(refused.body)).toBe(403);
-    expect(refused.body.error).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("cannot start a task or decide one from a Slack thread", async () => {
@@ -73,6 +73,70 @@ describe("I2: a Slack-linked Auditor is read-only on every Slack route that star
   });
 });
 
+describe("a Slack requester who is not a current writer of the team's org is refused on every Slack service route (ONE rule with the ingress callers)", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000801`;
+  const MAYA = "U0MAYA001";
+  const GUEST = "U0GUESTSL01";
+  const guestId = developerIdForSlackUser(GUEST);
+  const OTHER_ORG = "org_cccccccccccccccccccc";
+
+  /** Every route that starts work or changes the project, for the workspace Maya made: the guest must be refused on each. */
+  async function refusedOnEveryRoute(h: Harness, who: string) {
+    const created = await ensureWorkspace(h.handler, thread, MAYA);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["PUT", "/v1/service/project/model", "project model", { provider: "openai", modelId: "gpt-5" }],
+    ];
+    const ensure = await ensureWorkspace(h.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000802`, who);
+    expect(ensure.status, `ensure ${JSON.stringify(ensure.body)}`).toBe(403);
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, who, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+    }
+  }
+
+  it("a member merged into a surviving Auditor is the Auditor (the Slack id has no record of its own)", async () => {
+    const h = await withKit();
+    const survivor = "7".repeat(64);
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "auditor" });
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a member removed from a cloud org is no longer a member: a missing record is not the implicit member there", async () => {
+    const h = await withKit({ brokerExtra: { cloud: true } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a removed member and a banned member are refused even on a single-org install", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("control: a single-org install still treats a person with no record as the implicit member", async () => {
+    const h = await withKit();
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -82,8 +146,8 @@ function setGrant(db: FakeDynamoDb, who: Developer, role: ProjectRole): void {
     role: role === "viewer" ? "viewer" : "developer", projectRole: role });
 }
 
-async function withKit(): Promise<Harness> {
-  const h = await createSingleAnswerPlanBroker();
+async function withKit(options: Parameters<typeof createSingleAnswerPlanBroker>[0] = {}): Promise<Harness> {
+  const h = await createSingleAnswerPlanBroker(options);
   await h.orgOf(KIT);
   h.db.set({ pk: `SESSION#${KIT.sessionId}`, sk: "META", sessionId: KIT.sessionId, developerId: KIT.developerId, amr: KIT.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: "oidc", displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });

@@ -5,6 +5,8 @@ import { resolveSlackThreadKey, slackThreadKey } from "../../packages/broker/src
 import { workspaceOwner } from "../../packages/broker/src/aws/admin-reads.js";
 import { legacySlackThread } from "../support/legacy-slack-thread.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { seedMembership } from "../support/developer-task-broker.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_TEAM, SLACK_CHANNEL, createBroker, ensureWorkspace, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady, prepareThread, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 
 const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
@@ -56,6 +58,7 @@ describe("K1: pre-org Slack workspaces", () => {
     const foreign = "org_bbbbbbbbbbbbbbbbbbbb";
     const other = createBroker({ extra: { documentClient: db, orgResolver: async () => foreign } });
     db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: foreign });
+    seedMembership(db, developerIdForSlackUser(user), { orgId: foreign, role: "member" });
     await registerSlackProject(other.handler);
     const prior = structuredClone(db.get(`WORKSPACE#${workspaceId}`, "META"));
     const reply = await lazyEnsureWorkspace(other.handler, subject, user);
@@ -141,6 +144,8 @@ describe("K1: the install-org fallback for a workspace record with no org", () =
     db.delete({ pk: String(row.pk), sk: String(row.sk) });
     for (const item of db.find((entry) => entry.entityType === "DEFAULT_WORKSPACE")) db.delete({ pk: String(item.pk), sk: String(item.sk) });
     db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: foreign });
+    // The requester is a member of the other org too (the Slack requester must belong to the team's org).
+    seedMembership(db, developerIdForSlackUser(user), { orgId: foreign, role: "member" });
     const other = createBroker({ extra: { documentClient: db, orgResolver: async () => foreign } });
     await registerSlackProject(other.handler);
     return { db, other, workspaceId };

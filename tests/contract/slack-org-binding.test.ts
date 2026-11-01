@@ -8,7 +8,8 @@ import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-i
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSlackOrg, resolveSlackOrgForInstall, type OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 import {
@@ -135,7 +136,9 @@ describe("the broker's Slack routes in a two-org install", () => {
     [ownerKeyForSubject(issuer, "admin-a"), ORG_A],
     [ownerKeyForSubject(issuer, "admin-b"), ORG_B],
   ]);
-  const orgResolver: OrgResolver = async (subject) => (subject.ownerKey === undefined ? undefined : owners.get(subject.ownerKey));
+  // The Slack person is a member of org A (the requester's own org must be the team's: a person of no org or another org is refused, see project-viewer-gate).
+  const pratik = developerIdForSlackUser(PRATIK);
+  const orgResolver: OrgResolver = async (subject) => (subject.developerId === pratik ? ORG_A : subject.ownerKey === undefined ? undefined : owners.get(subject.ownerKey));
   const adminA = { subject: "admin-a", admin: true };
   const adminB = { subject: "admin-b", admin: true };
   const project = (name: string) => ({
@@ -159,6 +162,7 @@ describe("the broker's Slack routes in a two-org install", () => {
 
   it("binds the team to the admin's org first, then resolves the channel to that org's project", async () => {
     const { handler, db } = createBroker({ extra: { orgResolver } });
+    seedMembership(db, pratik, { orgId: ORG_A, role: "member" });
     await register(handler, adminA, "web");
     await register(handler, adminB, "web");
     expect((await bind(handler, adminA, T1, C1, "web")).status).toBe(200);
