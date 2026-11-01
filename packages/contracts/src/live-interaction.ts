@@ -81,7 +81,7 @@ export type RedirectState = (typeof REDIRECT_STATES)[number];
 export const REDIRECT_OUTCOMES = ["restarted", "revise_started", "left_blocked", "refused"] as const;
 export type RedirectOutcome = (typeof REDIRECT_OUTCOMES)[number];
 /** Why a redirect is refused or fell back, as fixed words (never the instruction). */
-export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available"] as const;
+export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available", "nothing_to_send_back"] as const;
 export type RedirectRefusal = (typeof REDIRECT_REFUSALS)[number];
 
 /** The `reason` a steer message carries when it is a redirect's instruction. */
@@ -108,6 +108,8 @@ export const REDIRECT_REFUSAL_MESSAGES: Readonly<Record<Exclude<RedirectRefusal,
   stale: "The task moved on while you were redirecting it. Look at where it is now and try again.",
   busy: "A redirect of this task is still being carried out. Try again in a moment.",
   not_available: "Stop & redirect isn't available for this task right now. You can stop it, or send the agent a message.",
+  /** The same sentence a send-back to coding gives: a blocked check or review restarts coding only when there is a failed check or a review finding to send back (fix round 1, S3). */
+  nothing_to_send_back: "there is no current failed check or review finding to send back to coding",
 };
 /** The line a restarted step always starts with: the stopped run may have left a file half written. */
 export const REDIRECT_RESTART_NOTE = "The previous run was stopped in the middle of a step; check the current state of the files before going on." as const;

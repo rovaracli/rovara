@@ -410,6 +410,20 @@ describe("what restarts and what does not, at the edges", () => {
     expect(t.everything()).toBe(before);
   });
 
+  it("a blocked review the owner could not send back is not sent back by phase 2 either (a stopped one is)", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
+    const row = t.task(taskId);
+    t.db.set({ ...row, workflow: { ...row.workflow, stage: "REVIEW", state: "BLOCKED", blockReason: "The review could not start. Retry it." } });
+    const revision = t.task(taskId).workflow.revision;
+    const record = { requestId: randomUUID(), kind: "blocked" as const, orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: revision,
+      step: "REVIEW", state: "stopping" as const, createdAt: new Date().toISOString(), ttl: 1_900_000_000 };
+    const host = redirectRestartHost(t.brokerInput as never);
+    await expect(host.sendBack(t.task(taskId) as never, record, { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "there is no current failed check or review finding to send back to coding" });
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+  });
+
   it("a restart that cannot start ends `left_blocked`, never stuck `restarting`: a pause that waits for an approval is not skipped, and the instruction stays a note", async () => {
     const t = await setup();
     const { taskId, sessionId, workspaceId } = await t.runningCoding();

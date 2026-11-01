@@ -1,7 +1,7 @@
 // Stop & redirect: what a redirect does for a task in the state it is in (live-interaction design 3.1, "What the redirect does" and "When nothing is running"). A pure reading of the task row, so phase 1
 // and phase 2 judge the same facts the same way and a state this code does not know is refused, not guessed at.
 import { WORKFLOW_BLOCK_REASONS, type RedirectKind, type RedirectMode, type RedirectRefusal } from "@agentx/contracts";
-import { workflowRedirectReviseOffered } from "@agentx/contracts";
+import { workflowRedirectReviseOffered, workflowSendBackOffered } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { WORKFLOW_STEP_STAGE, stoppedStepReason } from "../aws/workflow-cancel-reconcile.js";
 
@@ -51,6 +51,8 @@ export function classifyRedirect(task: DeveloperTaskRecord, mode: RedirectMode =
   if (workflow.state === "BLOCKED") {
     // "This changes the plan" at coding goes through the Revise move, which takes only coding that a stop blocked; another block offers the other choice instead.
     if (step === "IMPLEMENT" && mode === "change_plan" && !workflowRedirectReviseOffered(workflow)) return { refusal: "not_available" };
+    // A blocked check or review restarts coding as a send-back does, so it needs what a send-back needs: a failed check or a review finding of the current code (S3).
+    if ((step === "VERIFY" || step === "REVIEW") && !workflowSendBackOffered(workflow)) return { refusal: "nothing_to_send_back" };
     return { kind: "blocked", step, blockedRevision: workflow.revision, guard };
   }
   return { refusal: "not_available" };

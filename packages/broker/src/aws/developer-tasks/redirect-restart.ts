@@ -5,6 +5,8 @@
 import { randomUUID } from "node:crypto";
 import {
   REDIRECT_PLANNING_INTRO,
+  REDIRECT_REFUSAL_MESSAGES,
+  workflowSendBackOffered,
   workflowRequestId,
   REDIRECT_RETRY_INSTRUCTIONS,
   WORKFLOW_BLOCK_REASONS,
@@ -118,6 +120,8 @@ export async function restartCodingForRedirect(deps: DeveloperTaskRouteDependenc
  */
 export async function sendBackForRedirect(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, record: RedirectRecord, ownerRedirect: OwnerRedirectInvocation): Promise<void> {
   const { access, task, workflow } = await currentTask(deps, caller, record, "work");
+  // A step that was blocked already restarts coding only where the owner's own send-back would be offered (S3); a step this redirect stopped has no finding to send back and is exempt.
+  if (record.kind === "blocked" && !workflowSendBackOffered(workflow)) throw agentXError("CONFIG_INVALID", REDIRECT_REFUSAL_MESSAGES.nothing_to_send_back);
   const receivedAt = iso(deps);
   let returned: WorkflowSnapshot;
   try {

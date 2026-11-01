@@ -3,7 +3,7 @@
 // the in-flight marker, idempotency by request id, and the cancel that must follow the commit. Phase 2 (the restart) is `redirect-continue.test.ts`.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { OWNER_REDIRECT_FEATURE, REDIRECT_REFUSAL_MESSAGES, REDIRECT_SLACK_STATUS_LINE, agentSessionKey, agentXError, type OrgId } from "../../packages/contracts/src/index.js";
+import { OWNER_REDIRECT_FEATURE, REDIRECT_REFUSAL_MESSAGES, WORKFLOW_BLOCK_REASONS, REDIRECT_SLACK_STATUS_LINE, agentSessionKey, agentXError, type OrgId } from "../../packages/contracts/src/index.js";
 import { redirectSession, type RedirectConfig, type RedirectDependencies } from "../../packages/broker/src/agent-sessions/redirect.js";
 import { endRedirect, readOpenRedirect, readRedirect, redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";
 import { stopSession } from "../../packages/broker/src/agent-sessions/stop.js";
@@ -406,5 +406,25 @@ describe("nothing is running (R4)", () => {
     const bareBefore = bare.table();
     expect(await code(bare.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
     expect(bare.table()).toBe(bareBefore);
+  });
+});
+
+describe("a blocked check or review needs what a send-back needs (fix round 1, S3)", () => {
+  it("is refused with the send-back's own sentence when there is no failed check or review finding to send back, writing nothing", async () => {
+    for (const stage of ["VERIFY", "REVIEW"]) {
+      const s = world({ stage, state: "BLOCKED", workflow: { blockReason: "The checks could not start on this machine. Retry once it works." } });
+      const before = s.table();
+      expect(await code(s.go(PRIYA)), stage).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.nothing_to_send_back });
+      expect(s.table(), stage).toBe(before);
+      expect(s.calls.features).toBe(0);
+    }
+  });
+
+  it("is accepted where the owner's own send-back is offered (a regression found by the checks), and a blocked planning step is not held to it", async () => {
+    const offered = world({ stage: "VERIFY", state: "BLOCKED", workflow: { blockReason: WORKFLOW_BLOCK_REASONS.regressionFound } });
+    await expect(offered.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
+    expect(offered.records()[0]).toMatchObject({ kind: "blocked", step: "VERIFY" });
+    const planning = world({ stage: "PLAN", state: "BLOCKED", features: [], workflow: { blockReason: "planning operation ended failed" } });
+    await expect(planning.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
   });
 });
