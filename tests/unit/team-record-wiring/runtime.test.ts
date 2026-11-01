@@ -4,7 +4,7 @@
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -643,5 +643,36 @@ describe("fix round 1, S1: a workspace whose vector index cannot be opened is no
     for (const id of ["a", "b", "c", "d", "e"]) expect(await runtime.sink.put(githubDraft({ retention: "D", audience: { kind: "project" }, scope: "github:repo/9", sourceRef: { system: "github.com", id, version: "1" } }))).toMatchObject({ status: "stored" });
     expect(aws.sessions).toHaveLength(1);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(5);
+  });
+});
+
+describe("fix round 1, S4: a person's erase also reaches the Slack rows they wrote", () => {
+  const SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const says = (user: string, ts: string, text: string) => ({ type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user, text, ts, channel_type: "channel" } });
+
+  async function world(slackUserIdsOf?: (developerId: string) => Promise<string[]>) {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    db.set({ ...orgSlackTeamKey(ORG_A, "T0123456789"), teamId: "T0123456789" });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { ...(slackUserIdsOf === undefined ? {} : { slackUserIdsOf }) });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: says("U0123456789", "1761818400.000100", `leaver ${MARKER}`), channel });
+    await runtime.taps.slack({ payload: says("U0123456780", "1761818401.000100", "colleague stays"), channel });
+    return { db, runtime };
+  }
+
+  it("with the person's Slack id known, their Slack messages go and a colleague's stay", async () => {
+    const { db, runtime } = await world(async (developerId) => (developerId === "dev-1" ? ["U0123456789"] : []));
+    expect(everything(db)).toContain(MARKER);
+    await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).not.toContain(MARKER);
+    expect(everything(db)).toContain("colleague stays");
+  });
+
+  it("without a Slack link their Slack rows cannot be found by developer id (the stated limit)", async () => {
+    const { db, runtime } = await world();
+    await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).toContain(MARKER);
   });
 });

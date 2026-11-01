@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { OrgStore } from "../org/store.js";
@@ -64,6 +64,12 @@ export interface TeamRecordRuntimeInput {
   stateTableName: string;
   now?: () => number;
   log?: (entry: Record<string, unknown>) => void;
+  /**
+   * The Slack user ids a developer has signed in with (the sign-in store's linked Slack identities). A person erase also erases the Slack rows those ids wrote, in every Slack team bound to the org.
+   * Absent: only the linked GitHub account and the developer id are erased. (No Linear or Jira account is linked to a developer anywhere, so tracker rows by a person without a developer id are
+   * reachable only once such a link exists; the DPA wording says so.)
+   */
+  slackUserIdsOf?: (developerId: string) => Promise<string[]>;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
   audit?: RecordAuditSink;
   /** A model for the distiller (retention B / nightly). Absent: no distiller, B text is dropped. */
@@ -463,10 +469,22 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (complete) await dropJob(job.sk);
     return complete;
   }
-  /** The source identities a person has: their linked GitHub account. */
+  /** The source identities a person has: their linked GitHub account, and each Slack user id they signed in with in every Slack team bound to the org (a Slack row is indexed under `slack:<team>`). */
   async function personIdentities(orgId: OrgId, developerId: string): Promise<Array<{ system: string; sourceId: string }>> {
     const github = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: memberGithubKey(orgId, developerId), ConsistentRead: true }))) as { Item?: { githubUserId?: unknown } }).Item?.githubUserId;
-    return typeof github === "string" ? [{ system: "github", sourceId: github }] : [];
+    const identities: Array<{ system: string; sourceId: string }> = typeof github === "string" ? [{ system: "github", sourceId: github }] : [];
+    const slackIds = input.slackUserIdsOf === undefined ? [] : await input.slackUserIdsOf(developerId);
+    if (slackIds.length > 0) {
+      const teams = (await input.documentClient.send(new QueryCommand({
+        TableName: state.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, Limit: 25,
+        ExpressionAttributeValues: { ":pk": orgPk(orgId), ":prefix": "SLACK_TEAM#" },
+      }))) as { Items?: Array<{ sk?: unknown }> };
+      for (const team of teams.Items ?? []) {
+        const teamId = typeof team.sk === "string" ? team.sk.slice("SLACK_TEAM#".length) : "";
+        if (/^[TE][A-Z0-9]{2,31}$/.test(teamId)) for (const slackId of slackIds) identities.push({ system: `slack:${teamId}`, sourceId: slackId });
+      }
+    }
+    return identities.slice(0, 50);
   }
   const INLINE_ERASE: EraseBudget = { maxItems: 500, maxMs: 8_000 };
   const erase: TeamRecordRuntime["erase"] = {

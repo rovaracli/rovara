@@ -336,6 +336,7 @@ import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
+import { DeveloperSignInStore } from "../developer/store.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
 import { opsQueueUrlOf, sqsOpsQueue } from "../team-record/ops-queue.js";
 import { recordAuditSinkOf } from "./broker/team-record-wiring.js";
@@ -506,7 +507,7 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
 
 // Team record (wire-team-record): `undefined` unless the install was deployed with the record's switch on (TEAM_RECORD_ENABLED is exactly "1"). With it off nothing below is built or called.
 const recordOpsQueueUrl = opsQueueUrlOf(process.env);
-const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { slackUserIdsOf: (developerId: string) => new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).slackUserIdsOf(developerId) }), ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
 
 // Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
 // with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
