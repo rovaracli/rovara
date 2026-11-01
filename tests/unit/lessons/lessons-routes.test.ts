@@ -277,6 +277,27 @@ describe("fix round 1 at the route", () => {
     expect(await s.call(callerOf("carl"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: next.version })).toEqual({ status: "active", needs: "nothing" });
   });
 
+  it("rollback is rolled back from the set the person saw: a write that lands between the check and the store's write makes it a conflict", async () => {
+    const s = setup();
+    const a = lessonRecord({ id: "les_rb000001", tier: 1, tierReasons: ["not_a_fact"], type: "convention", approvals: [{ approvalId: "a0", by: "gone", at: 1, mode: "one" }] });
+    await seed(s.store, a);
+    const before = await s.store.setVersion(KEY);
+    await s.store.commit(KEY, before, [{ ...a, version: 2, body: "A newer wording." }], 2);
+    const now = await s.store.setVersion(KEY);
+    const real = s.store.setVersion.bind(s.store);
+    let reads = 0;
+    s.store.setVersion = async (key) => {
+      const seen = await real(key);
+      reads += 1;
+      // The route's own check is the first read; right after it, another maintainer's write lands.
+      if (reads === 1) await s.store.commit(KEY, seen, [{ ...(await s.store.get(KEY, "les_rb000001"))!, version: 3, body: "Written after the person looked." }], 3);
+      return seen;
+    };
+    const error = await refused(s.call(callerOf("ann"), "POST", `${base}/rollback`, { targetSetVersion: before, expectedSetVersion: now }));
+    expect(error.code).toBe("CHANGE_STALE");
+    expect((await s.store.get(KEY, "les_rb000001"))!.body).toBe("Written after the person looked.");
+  });
+
 });
 
 describe("rejecting, removing and rolling back", () => {

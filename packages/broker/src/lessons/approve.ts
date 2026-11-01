@@ -236,12 +236,12 @@ export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; 
   decideOnce(deps, { ...input, allowed: ["active", "stale", "pending", "candidate"], to: "retired", action: "lesson.retired" });
 
 /** Restores an earlier lesson-set version (design §4.6). Audited `lesson.rolled_back`. */
-export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
+export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** The set version the person saw: the store\'s conditional write enforces it, so a set that moved since is not rolled away. */ expectedSetVersion?: number; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
-  const current = await deps.store.setVersion(key);
+  const current = input.expectedSetVersion ?? await deps.store.setVersion(key);
   if (!(await requireAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } }))) return { ok: false, code: "audit_unavailable" };
   const result = await deps.store.rollback(key, input.targetSetVersion, current, deps.now());
   if (!result.ok) return { ok: false, code: "conflict" };

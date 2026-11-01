@@ -130,7 +130,7 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     if ((await deps.lessons.store.setVersion(key)) !== input.expectedSetVersion) refuse("conflict");
     const known = (await deps.lessons.store.snapshots(key)).slice(-SNAPSHOTS_MAX);
     if (!known.some((s) => s.setVersion === input.targetSetVersion) || input.targetSetVersion === input.expectedSetVersion) throw agentXError("NOT_FOUND", "That earlier version isn't available.");
-    const result = await rollbackLessonSetSettled(deps.lessons, { workspaceId: caller.orgId, project: name, targetSetVersion: input.targetSetVersion, actorId: caller.developerId });
+    const result = await rollbackLessonSetSettled(deps.lessons, { workspaceId: caller.orgId, project: name, targetSetVersion: input.targetSetVersion, actorId: caller.developerId, expectedSetVersion: input.expectedSetVersion });
     if (!result.ok) return refuse(result.code);
     return { setVersion: result.setVersion, restored: result.restored.length };
   }

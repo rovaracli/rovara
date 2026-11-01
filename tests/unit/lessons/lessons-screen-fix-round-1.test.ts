@@ -157,3 +157,20 @@ describe("S3: reject checks the version on every attempt", () => {
   });
 });
 
+describe("S4: rollback uses the set version the person saw", () => {
+  it("a set that moved since is not rolled back, and nothing is restored or audited as done", async () => {
+    const s = setup();
+    const a = lessonRecord({ id: "les_rb000001", tier: 1, tierReasons: ["not_a_fact"], type: "convention" });
+    await seed(s.store, a);
+    const target = await s.store.setVersion(KEY);
+    await s.store.commit(KEY, target, [{ ...a, version: 2, body: "Newer wording." }], 2);
+    const seen = await s.store.setVersion(KEY);
+    // A write the person never saw lands after they looked.
+    await s.store.commit(KEY, seen, [{ ...a, version: 3, body: "Newest wording." }], 3);
+    const out = await rollbackLessonSet(s.deps, { ...KEY, targetSetVersion: target, actorId: "ann", expectedSetVersion: seen });
+    expect(out).toEqual({ ok: false, code: "conflict" });
+    expect((await s.store.get(KEY, "les_rb000001"))!.body).toBe("Newest wording.");
+    const fresh = await rollbackLessonSet(s.deps, { ...KEY, targetSetVersion: target, actorId: "ann", expectedSetVersion: await s.store.setVersion(KEY) });
+    expect(fresh).toMatchObject({ ok: true });
+  });
+});
