@@ -105,6 +105,16 @@ export function testEnvSummaryOf(body: TestEnvironmentBody): TestEnvSummary {
   };
 }
 
+/** One repository's commands as the broker formats them: the lines a person reads before approving. `selectArgs` is shown because it decides which tests run once a coverage map exists. */
+export const TestEnvRunsSchema = z
+  .object({
+    repositoryId: line(200),
+    setup: z.array(line(600)).max(20),
+    checks: z.array(z.object({ id: Id, label: line(80), kind: CheckKindSchema, command: line(600), selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict()).max(32),
+  })
+  .strict();
+export type TestEnvRuns = z.infer<typeof TestEnvRunsSchema>;
+
 export const TestEnvironmentStateSchema = z
   .object({
     approved: z.object({ revision: z.number().int().min(1), approvedAt: z.string().datetime(), digest: Sha256, summary: TestEnvSummarySchema }).strict().optional(),
@@ -113,11 +123,26 @@ export const TestEnvironmentStateSchema = z
     proposal: z
       .object({
         digest: Sha256,
+        /** `setup`: what Rovara drafted from the default branch. `edited`: a maintainer's own edit of it. */
+        source: z.enum(["setup", "edited"]).default("setup"),
         risk: z.enum(["low", "medium", "high"]),
         lessSafe: z.array(z.string().max(60)).max(20),
         summary: TestEnvSummarySchema,
+        /** What will run, as the broker formats it (never the browser): each setup command and check, with the arguments that narrow its tests. */
+        runs: z.array(TestEnvRunsSchema).max(16).default([]),
+        /** Where each value came from: a file and line, a code detector, or the setup agent. */
+        valueSources: z.array(z.object({ field: line(200), source: TestEnvValueSourceSchema }).strict()).max(400).default([]),
         proved: z.boolean(),
         proveSteps: z.array(z.object({ step: z.string().max(40), status: z.enum(["passed", "failed", "skipped"]) }).strict()).max(10),
+        /**
+         * What approving it needs. A change that is less safe, or high risk, needs a fresh sign-in from the person who presses Approve; a less-safe one also needs a second person, who
+         * confirms on the confirmation page (or the one owner of a company with nobody else, by the sole-owner exception).
+         */
+        needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
+        /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
+        approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
+        /** The project's commands that the proposal's commands are not among, so the setup check has not run them. */
+        commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
       })
       .strict()
       .optional(),
@@ -128,3 +153,35 @@ export type TestEnvironmentState = z.infer<typeof TestEnvironmentStateSchema>;
 export const TestEnvProposeBodySchema = z.object({}).strict();
 export const TestEnvProveBodySchema = z.object({ digest: Sha256 }).strict();
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
+
+/** A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). */
+export const TestEnvEditBodySchema = z.object({ environment: TestEnvironmentBodySchema }).strict();
+export type TestEnvEditBody = z.infer<typeof TestEnvEditBodySchema>;
+
+/** Apply a proposal's commands to the project's settings: the settings revision the person looked at, and a request id so a retry is one save. */
+export const TestEnvApplyBodySchema = z.object({ digest: Sha256, requestId: z.string().uuid(), expectedRevision: z.number().int().positive() }).strict();
+export type TestEnvApplyBody = z.infer<typeof TestEnvApplyBodySchema>;
+
+export const TEST_ENV_APPLY_SKIPPED = ["different_directory", "too_many", "download_and_run", "not_needed"] as const;
+export const TestEnvApplyAnswerSchema = z
+  .object({
+    /** The commands now in the project's settings that came from the proposal, as the settings hold them. */
+    added: z.array(line(600)).max(40),
+    /** Commands left out, and why (fixed words, never the command). */
+    skipped: z.array(z.object({ reason: z.enum(TEST_ENV_APPLY_SKIPPED), count: z.number().int().min(1) }).strict()).max(8),
+    settingsRevision: z.number().int().min(1),
+    setupCheck: z.enum(["started", "not_started", "not_needed"]),
+    state: TestEnvironmentStateSchema,
+  })
+  .strict();
+export type TestEnvApplyAnswer = z.infer<typeof TestEnvApplyAnswerSchema>;
+
+/** Ask for the second person's confirmation of a change that needs one. */
+export const TestEnvRequestApprovalBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0) }).strict();
+export type TestEnvRequestApprovalBody = z.infer<typeof TestEnvRequestApprovalBodySchema>;
+export const TestEnvRequestApprovalAnswerSchema = z.object({ status: z.enum(["pending", "approved"]), confirmUrl: z.string().max(2048).optional(), state: TestEnvironmentStateSchema }).strict();
+export type TestEnvRequestApprovalAnswer = z.infer<typeof TestEnvRequestApprovalAnswerSchema>;
+
+/** What an approval answers. `needs_second_person`: nothing was approved; the confirmation card is what to open. */
+export const TestEnvApproveAnswerSchema = z.object({ revision: z.number().int().min(1), digest: Sha256, replayed: z.boolean(), state: TestEnvironmentStateSchema }).strict();
+export type TestEnvApproveAnswer = z.infer<typeof TestEnvApproveAnswerSchema>;

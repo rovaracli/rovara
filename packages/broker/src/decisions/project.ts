@@ -64,7 +64,7 @@ export type DecisionItem =
   | (ItemBase & { kind: "autofix_ask"; reasonWords: string; attempts: number })
   | (ItemBase & { kind: "approve_setting"; settingLabel: string; secondPerson: boolean })
   | (ItemBase & { kind: "approve_spend"; amountUsd: number; scopeLabel: string })
-  | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string })
+  | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string; /** The revision of the approved environment the person looked at (0: none yet): the approval is bound to it. */ expectedRevision: number })
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
   | (ItemBase & { kind: "spec_choice"; message: string });

@@ -39,7 +39,7 @@ export const DRAFT_LEFT_OUT_NOTE = "A command that downloads and runs code, or t
 const draftKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#DRAFT#${taskId}` });
 
 /** A command the broker will not carry in a draft: it fetches code and runs it, or its text changes under the redactor (a secret-shaped value). */
-function refusedCommand(command: ProjectCommand): boolean {
+export function refusedCommand(command: ProjectCommand): boolean {
   const text = formatCommandLine(command);
   return remoteCodeReason(text) !== undefined || redactText(text) !== text;
 }

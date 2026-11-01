@@ -63,7 +63,7 @@ export async function usableTestEnvironment(deps: TestEnvDeps, orgId: OrgId, pro
 const pinKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#PIN#${taskId}` });
 const PIN_TTL_SECONDS = 400 * 86_400;
 
-export interface TestEnvPin { revision: number; digest: string; unused?: UnusedReason }
+export interface TestEnvPin { revision: number; digest: string; unused?: UnusedReason; /** The digest of a newer revision whose change the task's owner declined: the card does not come back for it. */ declined?: string }
 
 /** The item that pins the revision a task started with, for the task's start transaction. `unused` records an environment that existed but was not applied, so the evidence can say why. */
 export function testEnvPinItem(tableName: string, input: { orgId: OrgId; project: string; taskId: string; nowMs: number; used?: TestEnvironment; unused?: { revision: number; digest: string; reason: UnusedReason } }): TransactItem | undefined {
@@ -88,7 +88,8 @@ export async function readTestEnvPin(deps: Pick<TestEnvDeps, "documentClient" | 
     const unused = stored["unused"];
     if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || typeof digest !== "string" || !/^[a-f0-9]{64}$/u.test(digest)) return undefined;
     if (unused !== undefined && !(UNUSED_REASONS as readonly unknown[]).includes(unused)) return undefined;
-    return { revision, digest, ...(unused === undefined ? {} : { unused: unused as UnusedReason }) };
+    const declined = stored["declined"];
+    return { revision, digest, ...(unused === undefined ? {} : { unused: unused as UnusedReason }), ...(typeof declined === "string" && /^[a-f0-9]{64}$/u.test(declined) ? { declined } : {}) };
   } catch {
     return undefined;
   }

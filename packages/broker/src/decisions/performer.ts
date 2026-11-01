@@ -74,3 +74,33 @@ export function spendHandler<C extends DecisionCaller>(decide: (caller: C, spend
   });
   return { approve: run("APPROVE"), reject: run("DENY") };
 }
+
+type TestEnvItem = Extract<DecisionItem, { kind: "approve_test_env" }>;
+
+/**
+ * Test environment: `approve` is the setup wizard's own approval (`approveChecked`), for the project and proposal the item names, at the revision the person was shown. It re-reads the proof and the caller's
+ * authority; a high-risk or less-safe change has no approve action on its card, and if one is pressed anyway the approval itself refuses it (it needs a fresh sign-in and a second person this press cannot give).
+ */
+export function testEnvHandler<C extends DecisionCaller>(approve: (caller: C, item: { project: string; digest: string; expectedRevision: number }, requestId: string) => Promise<unknown>): KindHandler<C> {
+  return {
+    approve: (caller, input) => perform(async () => {
+      const item = input.item as TestEnvItem;
+      if (item.kind !== "approve_test_env") return { kind: "refused", reason: "unsupported" };
+      await approve(caller, { project: item.project, digest: item.subjectId, expectedRevision: item.expectedRevision }, input.requestId);
+      return { kind: "done" };
+    }),
+  };
+}
+
+/**
+ * A running task's change of test environment: approve moves the task onto the newest revision, "Not now" keeps it on the one it started with and is remembered. `answer` returns "gone" when there is nothing left
+ * to confirm (the task ended, the owner changed, the change is not one a running task takes); that is the card's own `stale`.
+ */
+export function envChangeHandler<C extends DecisionCaller>(answer: (caller: C, taskId: string, answer: "approve" | "decline") => Promise<"moved" | "declined" | "gone">): KindHandler<C> {
+  const run = (choice: "approve" | "decline") => (caller: C, input: PerformInput): Promise<PerformOutcome> => perform(async () => {
+    const item = input.item;
+    if (item.kind !== "confirm_env_change" || item.taskId === undefined) return { kind: "refused", reason: "unsupported" };
+    return (await answer(caller, item.taskId, choice)) === "gone" ? { kind: "refused", reason: "stale" } : { kind: "done" };
+  });
+  return { approve: run("approve"), reject: run("decline") };
+}

@@ -13,7 +13,7 @@
 // The less-safe check is deliberately the blunt one `testEnvLessSafeChanges` gives (pre-prod, shared env, preview, video, traces, schema-synth mocks, a raised round budget). A change that turns on none of them
 // is an ordinary approval. The caller (the confirmation page route) fences the two people's live authority in its own transaction; this module checks only what it is handed.
 import { createHash } from "node:crypto";
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
   TestEnvProveReportSchema,
@@ -169,6 +169,38 @@ export async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: str
   const body = TestEnvironmentBodySchema.safeParse(item.environment);
   if (!body.success || testEnvDigest(body.data) !== digest || item.orgId !== orgId || item.project !== project) throw unavailable();
   return body.data;
+}
+
+/** The value sources a proposal was stored with (where each value came from) and who proposed it. Empty for a proposal that has none (an edit by a person). Never throws on a damaged field: it reads as none. */
+export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined }> {
+  const item = await read(deps, proposalKey(orgId, project, digest));
+  const sources = item?.valueSources;
+  const valueSources = Array.isArray(sources) ? sources.filter((entry): entry is { field: string; source: unknown } => typeof entry === "object" && entry !== null && typeof (entry as { field?: unknown }).field === "string") : [];
+  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined };
+}
+
+const editedKey = (orgId: OrgId, project: string) => keyOf(orgId, project, "TESTENV#EDITED");
+
+/**
+ * The maintainer's EDITED proposal, if there is one: a pointer to its digest (the body is the stored proposal, which has its own life). The newest edit wins; a new proposal from the setup draft clears it, so
+ * "go back to what Rovara found" is one press. The pointer carries no authority: whatever it names is read and checked again like any proposal.
+ */
+export async function setEditedProposal(deps: TestEnvDeps, input: { orgId: OrgId; project: string; digest: string; editedBy: string }): Promise<void> {
+  const now = deps.now();
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName,
+    Item: { ...editedKey(input.orgId, input.project), entityType: "TEST_ENV_EDITED", orgId: input.orgId, project: input.project, digest: input.digest, editedBy: input.editedBy, editedAt: new Date(now).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TEST_ENV_PROPOSAL_TTL_MS) / 1000) },
+  }));
+}
+export async function readEditedProposal(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<{ digest: string; editedBy: string } | undefined> {
+  const item = await read(deps, editedKey(orgId, project));
+  if (item === undefined || item.orgId !== orgId || item.project !== project || typeof item.digest !== "string" || !DIGEST.test(item.digest) || typeof item.editedBy !== "string") return undefined;
+  const expires = item[INDEX_EXPIRY_ATTRIBUTE];
+  if (typeof expires === "number" && expires * 1000 <= deps.now()) return undefined;
+  return { digest: item.digest, editedBy: item.editedBy };
+}
+export async function clearEditedProposal(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<void> {
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: editedKey(orgId, project) }));
 }
 
 /**
