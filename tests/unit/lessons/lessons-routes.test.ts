@@ -263,6 +263,15 @@ describe("rate limits", () => {
 });
 
 describe("fix round 1 at the route", () => {
+  it("read-only viewers get the lessons without who approved them; people who decide get the names", async () => {
+    const s = setup();
+    await seed(s.store, lessonRecord({ id: "les_act00001", approvals: [{ approvalId: "a", by: "bob", at: 1, mode: "one" }] }));
+    const reader = LessonsViewReaderSchema.parse(await s.call(callerOf("mallory"), "GET", base));
+    expect(reader.active[0]!.approvals).toEqual([]);
+    expect(JSON.stringify(reader)).not.toContain("Bob Baker");
+    expect(LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base)).active[0]!.approvals[0]!.by.name).toBe("Bob Baker");
+  });
+
   it("a tier-2 lesson whose first approver left the project is not stuck: the card no longer counts them, the next approval is the first, the one after finishes it", async () => {
     const s = setup({ eligible: ["owner", "ann", "bob", "carl"] });
     await seed(s.store, pending({ tier: 2, tierReasons: ["escalation_words"] }));
@@ -298,6 +307,27 @@ describe("fix round 1 at the route", () => {
     expect((await s.store.get(KEY, "les_rb000001"))!.body).toBe("Written after the person looked.");
   });
 
+  it("restoring a set and then approving works through the route, with the approval count starting again", async () => {
+    const s = setup();
+    const a = lessonRecord({ id: "les_rb000001", tier: 1, tierReasons: ["not_a_fact"], type: "convention", approvals: [{ approvalId: "a0", by: "gone", at: 1, mode: "one" }] });
+    await seed(s.store, a);
+    const before = await s.store.setVersion(KEY);
+    await s.store.commit(KEY, before, [{ ...a, version: 2, body: "A newer wording." }], 2);
+    const now = await s.store.setVersion(KEY);
+    await s.call(callerOf("ann"), "POST", `${base}/rollback`, { targetSetVersion: before, expectedSetVersion: now });
+    const card = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).waiting[0]!;
+    expect(card.needs).toMatchObject({ have: 0 });
+    expect(await s.call(callerOf("bob"), "POST", `${base}/les_rb000001/approve`, { expectedVersion: card.version })).toMatchObject({ status: "active" });
+  });
+
+  it("the digest and a lesson's history share a read budget; a refused read is a 429", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    for (let i = 0; i < 60; i += 1) await s.call(callerOf("ann"), "GET", `${base}/digest`);
+    expect((await refused(s.call(callerOf("ann"), "GET", `${base}/les_pend0001/history`))).code).toBe("TOO_MANY_REQUESTS");
+    expect(s.taken.get("LESSON_READS|ann")).toBe(61);
+    expect(LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base)).canDecide).toBe(true);
+  });
 });
 
 describe("rejecting, removing and rolling back", () => {
@@ -434,6 +464,9 @@ describe("what a browser may reach", () => {
     expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/loaded-knowledge`)).toBe(false);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/op1/plan/items/3`)).toBe(false);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/../x`)).toBe(false);
+    // Upper-case task ids are not task ids here (the broker's own patterns are lower-case only).
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/lessons`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/loaded-knowledge`)).toBe(false);
   });
 });
 

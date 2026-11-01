@@ -166,7 +166,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one.
       if (input.edit !== undefined) {
         const setVersion = await deps.store.setVersion(key);
-        const saved = await deps.store.commit(key, setVersion, [{ ...working, version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
+        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
         if (!saved.ok) continue;
       }
       let active: Lesson | undefined;

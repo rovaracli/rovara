@@ -45,10 +45,10 @@ export interface LessonRouteDependencies {
   rate(caller: DeveloperCaller, bucket: string, limit: number, windowMs: number): Promise<boolean>;
 }
 
-/** What a person may do per minute: any decision (approve, reject, remove), edits (each also counts as a decision), a rollback, and Helpful / Wrong here marks. */
-export const LESSON_RATES = { decision: 30, edit: 10, rollback: 5, mark: 60 } as const;
+/** What a person may do per minute: any decision (approve, reject, remove), edits (each also counts as a decision), a rollback, Helpful / Wrong here marks, and the heavier reads (the weekly digest and a lesson's history). */
+export const LESSON_RATES = { decision: 30, edit: 10, rollback: 5, mark: 60, read: 60 } as const;
 export const LESSON_RATE_WINDOW_MS = 60_000;
-export const LESSON_RATE_BUCKETS = { decision: "LESSON_DECISIONS", edit: "LESSON_EDITS", rollback: "LESSON_ROLLBACKS", mark: "LESSON_MARKS" } as const;
+export const LESSON_RATE_BUCKETS = { decision: "LESSON_DECISIONS", edit: "LESSON_EDITS", rollback: "LESSON_ROLLBACKS", mark: "LESSON_MARKS", read: "LESSON_READS" } as const;
 
 async function takeBudget(deps: LessonRouteDependencies, caller: DeveloperCaller, kind: keyof typeof LESSON_RATES): Promise<void> {
   let allowed: boolean;
@@ -113,6 +113,7 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     const { name } = await deps.projectFor(caller, rawProject!);
     await requireLearningOn(deps, caller, name);
     if (id === undefined) return buildLessonsView(deps.lessons, who, name);
+    await takeBudget(deps, caller, "read");
     if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);
     if (action === undefined && id === "sources") return buildLessonSources(deps.lessons, who, name);
     return buildLessonHistory(deps.lessons, who, name, id);
