@@ -17,7 +17,7 @@ import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
-import { idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
+import { distinctIds, idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps {
   store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader;
@@ -109,7 +109,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       // raise a tier, never lower it, so rewording a tier-2 lesson cannot take it to one person.
       const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined, judgeEscalate: lesson.tierReasons.includes("judge_escalate") }, { tier: lesson.tier, reasons: lesson.tierReasons });
       if (decision.tier === "never") return { ok: false, code: "tier_never" };
-      working = { ...working, tier: decision.tier, tierReasons: decision.reasons };
+      // The editor is recorded as an EDITOR, not an author: the author rule (who may approve alone) is about who wrote the evidence, so a one-tap edit keeps working, but erasure counts
+      // an editor as a writer of the text (a lesson an erased person rewrote is hard-deleted).
+      working = { ...working, tier: decision.tier, tierReasons: decision.reasons, provenance: { ...working.provenance, editors: distinctIds([...(working.provenance.editors ?? []), input.approverId]) } };
       // A person's edit is a new lesson text: approvals given to the old text do not carry over, and a higher tier needs its people again.
       approvals = [];
     }
