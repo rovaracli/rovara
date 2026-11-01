@@ -4545,6 +4545,12 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   const orgId = resolved === undefined && options.allowUnlinked === true ? orgIdOfTeam : requireOrgId(resolved);
   if (orgId !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   const ids = await slackMergeChain(dependencies, developerId);
+  // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
+  const survivor = ids[ids.length - 1]!;
+  if (survivor !== developerId && dependencies.orgResolver !== undefined) {
+    const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
+    if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  }
   let role: OrgRole | undefined;
   for (const id of ids) {
     const record = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, id));

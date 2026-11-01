@@ -110,6 +110,17 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     await refusedOnEveryRoute(h, GUEST);
   });
 
+  it("a merge survivor of another org refuses the Slack id, though the Slack id itself resolves to the team's org", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === survivor ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, survivor, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
   it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
