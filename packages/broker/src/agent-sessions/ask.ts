@@ -12,6 +12,7 @@ import {
   agentXError, askLockKey, askRequestKey, askRouteAttributes, sessionAskKey, sessionRateKey,
   type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel,
 } from "@agentx/contracts";
+import { failedIndexes } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
@@ -30,6 +31,8 @@ export const ASK_BUSY_TEXT = "One question at a time: wait for the answer to you
 export const ASK_ERASED_TEXT = "This account can't ask questions.";
 export const ASK_CLOSED_TEXT = "This task is closed, so it can't be asked about.";
 
+/** How many times an Ask reads the shared counters and tries again after losing a race to another Ask. */
+export const RATE_RACE_ATTEMPTS = 4;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 /** How long a waiting Ask holds its person's lock (a turn holds a queue message for at most 15 minutes; the service answers or fails it well within). */
@@ -152,29 +155,37 @@ export async function admitAsk(deps: AskDependencies, adm: AskAdmission): Promis
 
   const nowMs = deps.now();
   const scope = { orgId, sessionId: adm.sessionId };
-  const person = await rateStep(deps, sessionRateKey(orgId, adm.sessionId, adm.askerKey, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
-  const everyone = await rateStep(deps, sessionRateKey(orgId, adm.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
-  if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
   const lockKey = askLockKey(orgId, adm.sessionId, adm.askerKey);
-  const lock = await getItem(deps, lockKey);
-  if (lock !== undefined && typeof lock["expiresAt"] === "number" && lock["expiresAt"] > nowMs) throw agentXError("TASK_BUSY", ASK_BUSY_TEXT);
-
   const expires = Math.floor(nowMs / 1000) + REQUEST_TTL_SECONDS;
-  try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-      person.item, everyone.item,
-      { Put: { TableName: deps.tableName, Item: { ...lockKey, entityType: "ASK_LOCK", orgId, sessionId: adm.sessionId, askId, expiresAt: nowMs + LOCK_SECONDS * 1000, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + LOCK_SECONDS * 2 },
-        ConditionExpression: "attribute_not_exists(pk) OR expiresAt <= :now", ExpressionAttributeValues: { ":now": nowMs } } },
-      { Put: { TableName: deps.tableName, Item: { ...requestKey, entityType: "ASK_REQUEST", orgId, sessionId: adm.sessionId, askId, taskId: task.taskId, audience: adm.audience, askerKey: adm.askerKey,
-        ...(adm.askedBy === undefined ? {} : { askedBy: adm.askedBy }), ...(adm.issueId === undefined ? {} : { issueId: adm.issueId }), state: "queued", createdAt: new Date(nowMs).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires },
-        ConditionExpression: "attribute_not_exists(pk)" } },
-    ] as never }));
-  } catch (error) {
-    // Another call won a place at the same moment: if it was this very request, that is the answer; else it is a second question at once.
-    const now = await getItem(deps, requestKey);
-    if (now !== undefined) return statusOfRequest(deps, orgId, adm.sessionId, askId, now, adm.askerKey);
-    if (isCancelled(error)) throw agentXError("TASK_BUSY", ASK_BUSY_TEXT);
-    throw error;
+  // The counters are shared (the task's day count is everyone's), so a transaction can lose a race to another person's Ask at the same moment: that is retried, a bounded number of times, with the
+  // counters read again. Only the lock or the request item refusing means this person already has a question waiting (or this very request won).
+  for (let attempt = 1; ; attempt += 1) {
+    const person = await rateStep(deps, sessionRateKey(orgId, adm.sessionId, adm.askerKey, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
+    const everyone = await rateStep(deps, sessionRateKey(orgId, adm.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
+    if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
+    const lock = await getItem(deps, lockKey);
+    if (lock !== undefined && typeof lock["expiresAt"] === "number" && lock["expiresAt"] > nowMs) throw agentXError("TASK_BUSY", ASK_BUSY_TEXT);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        person.item, everyone.item,
+        { Put: { TableName: deps.tableName, Item: { ...lockKey, entityType: "ASK_LOCK", orgId, sessionId: adm.sessionId, askId, expiresAt: nowMs + LOCK_SECONDS * 1000, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + LOCK_SECONDS * 2 },
+          ConditionExpression: "attribute_not_exists(pk) OR expiresAt <= :now", ExpressionAttributeValues: { ":now": nowMs } } },
+        { Put: { TableName: deps.tableName, Item: { ...requestKey, entityType: "ASK_REQUEST", orgId, sessionId: adm.sessionId, askId, taskId: task.taskId, audience: adm.audience, askerKey: adm.askerKey,
+          ...(adm.askedBy === undefined ? {} : { askedBy: adm.askedBy }), ...(adm.issueId === undefined ? {} : { issueId: adm.issueId }), state: "queued", createdAt: new Date(nowMs).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires },
+          ConditionExpression: "attribute_not_exists(pk)" } },
+      ] as never }));
+      break;
+    } catch (error) {
+      // Another call won a place at the same moment: if it was this very request, that is the answer.
+      const now = await getItem(deps, requestKey);
+      if (now !== undefined) return statusOfRequest(deps, orgId, adm.sessionId, askId, now, adm.askerKey);
+      if (!isCancelled(error)) throw error;
+      const refused = failedIndexes(error);
+      // The lock (item 2) or the request (item 3) refused: a question of this person's is waiting.
+      if (refused?.has(2) === true || refused?.has(3) === true) throw agentXError("TASK_BUSY", ASK_BUSY_TEXT);
+      // Only the counters moved (another person's Ask): read them again. Out of attempts, say so without blaming the asker.
+      if (attempt >= RATE_RACE_ATTEMPTS) throw unavailable();
+    }
   }
   try {
     const message = AskQueueMessageSchema.parse({ version: 1, eventId: askEventId(askId), ask: { orgId, sessionId: adm.sessionId, askId, audience: adm.audience }, text: adm.question, receivedAt: new Date(nowMs).toISOString() });
@@ -253,15 +264,18 @@ async function settleRequest(deps: AskDependencies, orgId: OrgId, sessionId: str
 export async function takeSlackAskRates(deps: AskDependencies, task: DeveloperTaskRecord, developerId: string): Promise<void> {
   if (task.orgId === undefined || task.sessionId === undefined) throw unavailable();
   const scope = { orgId: task.orgId, sessionId: task.sessionId };
-  const person = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, developerId, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
-  const everyone = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
-  if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
-  try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [person.item, everyone.item] as never }));
-  } catch (error) {
-    // Another Ask took the last place at the same moment.
-    if (isCancelled(error)) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
-    throw error;
+  for (let attempt = 1; ; attempt += 1) {
+    const person = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, developerId, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
+    const everyone = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
+    if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [person.item, everyone.item] as never }));
+      return;
+    } catch (error) {
+      // Another Ask took a place at the same moment: read the counters again (a bounded number of times). A genuinely full counter is refused above, on the next read.
+      if (!isCancelled(error)) throw error;
+      if (attempt >= RATE_RACE_ATTEMPTS) throw unavailable();
+    }
   }
 }
 

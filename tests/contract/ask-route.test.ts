@@ -2,12 +2,13 @@
 // the question travels in the queue message and is never kept while the Ask waits; the service's three routes (turn, model access, answered) name the Ask and trust nothing else; an answer is
 // stored per edition and audited (Enterprise: every Ask; Public: a daily count), once; the switch is OFF by default.
 import { randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ASK_RATE, ASK_TURN_RULES, AskStatusSchema, askRequestKey, askLockKey, sessionAskKey, sessionRateKey, askCountKey, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import {
-  ASK_BUSY_TEXT, ASK_RATE_TEXT, askIdFor, askStatusFor, completeAsk, prepareAskTurn, submitAsk, type AskDependencies,
+  ASK_BUSY_TEXT, ASK_RATE_TEXT, RATE_RACE_ATTEMPTS, askIdFor, takeSlackAskRates, askStatusFor, completeAsk, prepareAskTurn, submitAsk, type AskDependencies,
 } from "../../packages/broker/src/agent-sessions/ask.js";
 import { flushDailyAskCounts } from "../../packages/broker/src/agent-sessions/ask-audit.js";
 import { ARJUN, MIA, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
@@ -174,6 +175,49 @@ describe("queueing, the question, the rates and the lock", () => {
     t.w.db.set({ ...sessionRateKey(ORG_A, t.made.sessionId, "task", "ask_day"), entityType: "SESSION_RATE", windowStart: Math.floor(t.w.clock.now / 86_400_000) * 86_400_000, count: ASK_RATE.perTaskPerDay });
     await expect(t.ask(PRIYA)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
     expect(t.sent).toEqual([]);
+  });
+
+  it("two people asking at the same moment are both admitted: a lost race on the shared counters is retried, not blamed on the asker (S1)", async () => {
+    const t = setup();
+    const direct = t.deps.documentClient;
+    let interleave: (() => Promise<unknown>) | undefined = () => submitAsk({ ...t.deps, documentClient: direct }, t.w.caller(PRIYA), t.made.sessionId, { requestId: randomUUID(), question: "first" });
+    t.deps.documentClient = { send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand && interleave !== undefined) { const run = interleave; interleave = undefined; await run(); }
+      return direct.send(command);
+    } };
+    expect((await t.ask(ARJUN)).state).toBe("queued");
+    expect(t.sent).toHaveLength(2);
+    expect(t.w.db.get(sessionRateKey(ORG_A, t.made.sessionId as never, "task", "ask_day"))!["count"]).toBe(2);
+    expect(t.w.db.get(sessionRateKey(ORG_A, t.made.sessionId as never, ARJUN, "ask"))!["count"]).toBe(1);
+  });
+
+  it("the same person asking twice at the same moment is told about the question that is waiting (TASK_BUSY), not blamed on a race", async () => {
+    const t = setup();
+    const direct = t.deps.documentClient;
+    let interleave: (() => Promise<unknown>) | undefined = () => submitAsk({ ...t.deps, documentClient: direct }, t.w.caller(ARJUN), t.made.sessionId, { requestId: randomUUID(), question: "first" });
+    t.deps.documentClient = { send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand && interleave !== undefined) { const run = interleave; interleave = undefined; await run(); }
+      return direct.send(command);
+    } };
+    await refused(t.ask(ARJUN), "TASK_BUSY", ASK_BUSY_TEXT);
+    expect(t.sent).toHaveLength(1);
+  });
+
+  it("a counter that keeps changing is tried a bounded number of times, then the asker is told to try again (not that they have a question waiting) and holds no lock", async () => {
+    const t = setup();
+    const direct = t.deps.documentClient;
+    let races = 0;
+    t.deps.documentClient = { send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand) {
+        races += 1;
+        // Somebody else's Ask lands before every attempt.
+        await takeSlackAskRates({ ...t.deps, documentClient: direct }, t.w.db.get({ pk: `DEVTASK#${t.made.taskId}`, sk: "META" }) as never, PRIYA);
+      }
+      return direct.send(command);
+    } };
+    await refused(t.ask(ARJUN), "RUNTIME_UNAVAILABLE", "Couldn't answer that just now.");
+    expect(races).toBeGreaterThanOrEqual(RATE_RACE_ATTEMPTS);
+    expect(t.w.db.get(askLockKey(ORG_A, t.made.sessionId as never, ARJUN))).toBeUndefined();
   });
 
   it("a queue that refuses ends the Ask in fixed words, lets the lock go, and queues nothing", async () => {

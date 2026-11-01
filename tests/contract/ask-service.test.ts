@@ -1,6 +1,7 @@
 // Live interaction A3: the broker's service routes for the chat service (`/v1/service/asks/*`), the daily upkeep, the erased people's kept aliases (register LI-2), and the Slack question's rates and
 // record. The routes answer the orchestrator role only, name the Ask (never a Slack thread), trust nothing in the request about who asks or what they pay, and are NOT_FOUND while the switch is off.
 import { randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { ASK_RATE, askErasedAliasPk, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 
@@ -120,6 +121,23 @@ describe("the Slack question: the same rates, record and audit", () => {
     // Another person is not held by it, and the task's own day count was spent by every question.
     await takeSlackAskRates(t.ask, taskOf(t), ARJUN);
     expect(t.w.db.get(sessionRateKey(ORG_A, t.made.sessionId as never, "task", "ask_day"))!["count"]).toBe(ASK_RATE.perPersonPerHour + 1);
+  });
+
+  it("two Slack questions at the same moment both get their place (a lost race is retried), and a counter that never settles is tried a bounded number of times", async () => {
+    const t = world();
+    const direct = t.ask.documentClient;
+    let interleave: (() => Promise<void>) | undefined = () => takeSlackAskRates({ ...t.ask, documentClient: direct }, taskOf(t), PRIYA);
+    t.ask.documentClient = { send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand && interleave !== undefined) { const run = interleave; interleave = undefined; await run(); }
+      return direct.send(command);
+    } };
+    await takeSlackAskRates(t.ask, taskOf(t), ARJUN);
+    expect(t.w.db.get(sessionRateKey(ORG_A, t.made.sessionId as never, "task", "ask_day"))!["count"]).toBe(2);
+    t.ask.documentClient = { send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand) await takeSlackAskRates({ ...t.ask, documentClient: direct }, taskOf(t), PRIYA).catch(() => undefined);
+      return direct.send(command);
+    } };
+    await expect(takeSlackAskRates(t.ask, taskOf(t), ARJUN)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
   it("Enterprise keeps the words of a Slack Ask and audits it; Public keeps a hash and sizes, never the words, and counts it", async () => {
