@@ -211,6 +211,7 @@ describe("where the early score may appear", () => {
       "broker/src/rovara-code/early-risk-signal.ts",
       "broker/src/rovara-code/task-view-compat.ts",
       "contracts/src/developer-tasks.ts",
+      "contracts/src/early-risk-signal.ts",
       "contracts/src/how-we-work-track-record.ts",
       "ui/src/screens/session/EarlySignal.tsx",
     ]);

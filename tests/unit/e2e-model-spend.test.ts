@@ -162,7 +162,7 @@ describe("the mint port over the real mintOperationKey's input", () => {
   });
   it("cannot be built without the task-stop guard: fail closed until the guard is wired", () => {
     const mintOperationKey = (() => Promise.resolve({ outcome: "raced" as const })) as never;
-    const { guardRecord: _guard, ...unguarded } = baseInput;
+    const unguarded = { ...baseInput, guardRecord: undefined };
     expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: unguarded })).toThrow(/guardRecord/);
   });
   it("hands the caller's guard to the mint, so the key is recorded through it", async () => {
