@@ -12,7 +12,7 @@ describe("config keys (FR-048)", () => {
       "models.orchestrator", "models.classifier", "models.worker", "models.e2eAgent", "models.fallback", "models.chatgpt.enabled", "models.chatgpt.preferredModel",
       "limits.workspacesPerMember", "limits.workspacesPerOrg", "limits.threadTurnsPerMinute",
       "slack.appPostedMessages", "alerts.address", "alerts.slowTurnMinutes",
-      "budget.monthlyUsd", "budget.scope", "audit.lock", "mcp.confirmElicitation", "rovaraCode.v2", "planSelfCheck.enabled", "autofix.enabled", "liveSteer.enabled", "liveRedirect.enabled", "liveAsk.enabled", "liveFix.enabled",
+      "budget.monthlyUsd", "budget.scope", "audit.lock", "mcp.confirmElicitation", "rovaraCode.v2", "planSelfCheck.enabled", "autofix.enabled", "liveSteer.enabled", "liveRedirect.enabled", "liveAsk.enabled", "liveFix.enabled", "proofEvidence.enabled", "decisionCards.enabled",
     ]);
   });
 

@@ -2793,6 +2793,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "NoEcho": true,
       "Type": "String",
     },
+    "DecisionCardsEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: decision cards are on (the card routes and the Slack card press); 0: no card route exists and a Slack card press is answered as gone (agentx config set decisionCards.enabled 1)",
+      "Type": "String",
+    },
     "DeveloperOidcClientId": {
       "Default": "",
       "Description": "Client ID of the company OIDC app for developer sign-in",
@@ -2964,6 +2973,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
     },
     "PrivateSubnetIds": {
       "Description": "Comma-separated private subnet IDs of the foundation VPC",
+      "Type": "String",
+    },
+    "ProofEvidenceEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: the evidence of a task's checks is gathered, kept and shown (only after the worker image that carries task.evidenceCapture.v1 is deployed); 0: nothing new is gathered, posted to a pull request or served (agentx config set proofEvidence.enabled 1)",
       "Type": "String",
     },
     "RovaraCodeV2Enabled": {
@@ -3438,6 +3456,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "LiveAskEnabled",
                   },
+                  ",dk=",
+                  {
+                    "Ref": "DecisionCardsEnabled",
+                  },
                   ",fd=",
                   {
                     "Ref": "LiveFixEnabled",
@@ -3473,6 +3495,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",pc=",
                   {
                     "Ref": "PlanSelfCheckEnabled",
+                  },
+                  ",pe=",
+                  {
+                    "Ref": "ProofEvidenceEnabled",
                   },
                   ",rd=",
                   {
