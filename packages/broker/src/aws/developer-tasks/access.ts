@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { type AgentXError, agentXError, type StartDeveloperTaskRequest } from "@agentx/contracts";
-import { aiToolTurn, taskKey, taskOwnerKey, isTaskOwner, type DeveloperTaskRecord, type TurnParty } from "../../developer/task-records.js";
+import { aiToolTurn, taskKey, taskOwnerKey, isTaskOwner, isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TurnParty } from "../../developer/task-records.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../../developer/task-access.js";
@@ -66,6 +66,11 @@ async function sessionActorAccess(deps: DeveloperTaskRouteDependencies, caller: 
     await requireProjectWorkRole(deps, task, caller);
   }
   const people = await loadTaskPeople(deps, taskId);
+  if (deps.sessionActor?.requireOwner === true) {
+    const effective = tryEffectiveTaskOwner(task)?.developerId === caller.developerId;
+    const coOwner = !isTaskTakenOver(task) && people?.people.some((person) => person.developerId === caller.developerId && person.role === "owner") === true;
+    if (!effective && !coOwner) throw notFound();
+  }
   const actorId = taskOwnerKey(caller.developerId, taskId);
   return { task, role: "owner", ...(people === undefined ? {} : { peopleRevision: people.revision }), ownerActorIds: [], actorId, authority: { actorId, ownerIds: [] } };
 }

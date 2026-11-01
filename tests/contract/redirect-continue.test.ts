@@ -269,6 +269,30 @@ describe("a Stop wins over a redirect that is still stopping (fix round 1, B1)",
   });
 });
 
+describe("the owner check and the People fence come from one read (fix round 1, S1)", () => {
+  for (const change of ["removed from the People list", "replaced by a take-over"] as const) {
+    it(`a co-owner ${change} while the worker is being asked gets no restart`, async () => {
+      const t = await setup();
+      const { taskId, sessionId, workspaceId } = await t.runningCoding();
+      grantProject(t.db, OMAR);
+      const owners = (role: "owner" | "viewer") => ({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: role === "owner" ? 1 : 2, orphaned: false, people: [{ developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: OMAR.name, role }] });
+      t.db.set(owners("owner"));
+      const requestId = randomUUID();
+      expect((await t.redirect(OMAR, sessionId, { requestId })).status).toBe(200);
+      // The first check (before the probe) passes; the change lands while the probe runs, before the restart reads the People list it fences on.
+      vi.stubGlobal("fetch", async () => {
+        if (change === "removed from the People list") t.db.set(owners("viewer"));
+        else t.db.set({ ...t.task(taskId), currentOwner: { developerId: MAYA.developerId, name: MAYA.name, provider: MAYA.provider, since: new Date().toISOString() } });
+        return new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [OWNER_REDIRECT_FEATURE] }), { status: 200 });
+      });
+      await t.stopLands(workspaceId);
+      expect(t.record(taskId, requestId)).toMatchObject({ state: "left_blocked" });
+      expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+      expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    });
+  }
+});
+
 describe("restart conditions (R3)", () => {
   it("does not restart a task that moved on after the redirect, and ends the redirect `failed`", async () => {
     const t = await setup();

@@ -59,7 +59,7 @@ async function restartDependencies(dependencies: AwsBrokerDependencies, record: 
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies),
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
   }, caller, undefined, null);
-  return { deps: { ...deps, sessionActor: { developerId: record.actorId } }, caller };
+  return { deps: { ...deps, sessionActor: { developerId: record.actorId, requireOwner: true } }, caller };
 }
 
 /** The task module's restarts for this broker. A task is read again by each (at the revision the redirect recorded); the `task` argument is only what the caller judged. */
