@@ -105,7 +105,9 @@ export function environmentLine(pack: EvidencePack, level: number): string {
   const listed = level >= 4 ? 3 : 8;
   const shown = services.slice(0, listed);
   const servicePart = shown.length === 0 ? "" : ` ${shown.join("; ")}${services.length > listed ? ` and ${services.length - listed} more` : ""}.`;
-  return cutLine(`Environment: ${TIER_WORDS[env.tier]}.${servicePart} Test data: ${env.data}.`);
+  // Test environment (wire-testenv): an approved environment is named with its revision. Replaces: the bare "Environment: sandbox." for a pack with an approved test environment.
+  const approved = env.envRevision > 0 ? `, approved test environment revision ${String(env.envRevision)}` : "";
+  return cutLine(`Environment: ${TIER_WORDS[env.tier]}${approved}.${servicePart} Test data: ${env.data}.`);
 }
 
 /** The not-run line (never dropped): how many tests were judged unaffected and the last full run. Absent when the whole suite ran. */

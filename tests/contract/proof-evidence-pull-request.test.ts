@@ -108,7 +108,7 @@ describe("the environment line of a pack with no approved test environment", () 
   const pack = EvidencePackSchema.parse({ schemaVersion: 1, candidateDigest: CODE.digest, environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] }, checks: [], selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [] });
   it("says so instead of claiming synthetic test data nobody checked (replaces the pack's 'Test data: synthetic' for such a pack)", () => {
     expect(environmentLine(pack, 0)).toBe("Environment: sandbox. No approved test environment: the project's own test setup was used.");
-    expect(environmentLine({ ...pack, environment: { ...pack.environment, envRevision: 2 } }, 0)).toBe("Environment: sandbox. Test data: synthetic.");
+    expect(environmentLine({ ...pack, environment: { ...pack.environment, envRevision: 2 } }, 0)).toBe("Environment: sandbox, approved test environment revision 2. Test data: synthetic.");
   });
 });
 

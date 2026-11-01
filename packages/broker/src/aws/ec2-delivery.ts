@@ -15,6 +15,8 @@ import {
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
+  TEST_ENV_DETECT_FEATURE,
+  TEST_ENV_PLAN_FEATURE,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -386,6 +388,14 @@ async function forWorkerFeatures(
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
   if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test environment: a setup draft that is asked to run the environment detectors is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.testEnvDetect === true && !features.includes(TEST_ENV_DETECT_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test environment: a verification run that carries the environment's plan is never sent to a worker that does not list it (it would run the whole suite under another budget and say nothing of it), and the field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined && !features.includes(TEST_ENV_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

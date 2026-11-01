@@ -36,6 +36,7 @@ import { prHeadItems } from "../../rovara-code/tracking-events.js";
 import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
+import { testEnvDraftEndItems } from "../../test-env/draft.js";
 import { diagnosisEndItems } from "../../diagnosis/deep.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
 import { canReadBranchAndTree, canReadFeedback, canReadParents, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
@@ -473,7 +474,8 @@ export async function completedWorkflowItems(
   if (task?.purpose === "setup_draft") {
     const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
-    return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
+    return [...setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now),
+      ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now)];
   }
   // Live interaction F3: a deep diagnosis's result is its diagnosis (or none), written with the result and unable to fail it.
   if (task?.purpose === "diagnosis") return diagnosisEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError }, now);

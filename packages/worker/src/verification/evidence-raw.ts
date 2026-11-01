@@ -22,6 +22,16 @@ export interface CollectEvidenceInput {
   candidateDigest: string;
   /** Where the task started, for the tests the change added or changed. A repository that cannot be read leaves its tests out of "new". */
   repositories: readonly TestProofRepository[];
+  /** What test selection decided (test environment, wire-testenv): used as it is when it ran fewer tests than the whole, otherwise only its fallback reason is kept and the counts are what the reports measured. */
+  selection?: EvidenceSelection | undefined;
+}
+
+type EvidenceSelection = NonNullable<EvidenceRaw["selection"]>;
+/** The selection the raw file reports: the plan's when it narrowed the tests, the whole check (counted by the reports) with the plan's reason when it fell back, and the whole check when nothing was planned. */
+function selectionOf(planned: EvidenceSelection | undefined, measured: number): EvidenceSelection | undefined {
+  if (planned !== undefined && planned.selected < planned.total) return planned;
+  if (measured <= 0) return undefined;
+  return { method: "full", selected: measured, total: measured, ...(planned?.fallbackReason === undefined ? {} : { fallbackReason: planned.fallbackReason }) };
 }
 
 const OUTPUT_TAIL_BYTES = Math.min(EVIDENCE_ARTIFACT_MAX_BYTES.log_txt, 16 * 1024);
@@ -61,7 +71,7 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
     if (checks.length === 0) return undefined;
     const raw: EvidenceRaw = {
       schemaVersion: 1, candidateDigest: input.candidateDigest, checks,
-      ...(measured > 0 ? { selection: { method: "full" as const, selected: measured, total: measured } } : {}),
+      ...(selectionOf(input.selection, measured) === undefined ? {} : { selection: selectionOf(input.selection, measured)! }),
     };
     const parsed = EvidenceRawSchema.safeParse(raw);
     if (!parsed.success) return undefined;
@@ -78,6 +88,7 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
 export async function saveEvidenceRaw(input: {
   sink: ArtifactSink; rootPath: string; plan: CheckPlan; entries: readonly CheckEntry[];
   repositories: ReadonlyArray<{ repositoryId: string; directory: string; baseCommitSha?: string | undefined }>; candidateBefore: ReadonlyArray<CandidateRepository>;
+  selection?: EvidenceSelection | undefined;
 }): Promise<boolean> {
   try {
     if (input.plan.source !== "project" || input.plan.readiness === undefined) return false;
@@ -87,6 +98,7 @@ export async function saveEvidenceRaw(input: {
         repositoryId: repository.repositoryId, directory: repository.directory, startCommit: repository.baseCommitSha ?? "",
         candidateTreeSha: input.candidateBefore.find((entry) => entry.repositoryId === repository.repositoryId)?.treeSha ?? "",
       })).filter((repository) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(repository.startCommit) && repository.candidateTreeSha !== ""),
+      selection: input.selection,
     });
     if (raw === undefined) return false;
     await input.sink({ name: EVIDENCE_RAW_ARTIFACT, mediaType: "application/json", content: JSON.stringify(raw) });

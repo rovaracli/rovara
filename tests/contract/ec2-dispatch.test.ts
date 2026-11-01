@@ -492,6 +492,20 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("never sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1: it is refused, and the field is not dropped (wire-testenv)", async () => {
+      const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });
+      const base = ["task.workflowMode", "task.setupDraft", "task.setupProposal.v2"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testEnvDetect.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).testEnvDetect).toBe(true);
+      // A setup draft that does not ask is delivered to either, as before.
+      const plain = taskRecord({ workflowMode: "SETUP_DRAFT" });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];

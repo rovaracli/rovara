@@ -252,6 +252,7 @@ export * from "./knowledge-skills.js";
 // K1 C5a: what the agent loaded (references only).
 export * from "./loaded-knowledge.js";
 export * from "./test-environment-prod-deny.js";
+export * from "./test-environment-wire.js";
 export * from "./service-mock-additions.js";
 export * from "./test-env-nightly.js";
 export * from "./verification-result.js";

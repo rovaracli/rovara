@@ -71,7 +71,7 @@ describe("the evidence lines", () => {
     expect(at0.lines[1]).toBe("Changed lines covered by tests: 41 of 48 (85%)");
   });
   it("name the environment, each service's mode, its recording and the data", () => {
-    expect(at0.lines[2]).toBe("Environment: sandbox. partner-scorer: mocked (recorded 2026-11-02, schema v3). Test data: synthetic.");
+    expect(at0.lines[2]).toBe("Environment: sandbox, approved test environment revision 3. partner-scorer: mocked (recorded 2026-11-02, schema v3). Test data: synthetic.");
   });
   it("say how many tests were not run and the last full run", () => {
     expect(at0.lines[3]).toBe("Not run here: 1,203 of 1,240 tests judged unaffected (coverage map, map 14 h old). Last full run: 2026-11-04 02:10 UTC, passed (1,238/1,240; 2 known flaky).");
@@ -162,7 +162,7 @@ describe("in the Proof section", () => {
   it("shows the evidence lines as bullets after the table and the not-tested bullets under What wasn't tested, before the table's own", () => {
     const text = section(context());
     const table = text.indexOf("| Requirement |");
-    const env = text.indexOf("- Environment: sandbox.");
+    const env = text.indexOf("- Environment: sandbox, approved test environment revision 3.");
     const untested = text.indexOf("What wasn't tested:");
     expect(table).toBeGreaterThan(-1);
     expect(env).toBeGreaterThan(table);
@@ -192,14 +192,14 @@ describe("in the Proof section", () => {
       const text = section(context(), level);
       expect(text.includes("Checks by kind:"), `counts at ${String(level)}`).toBe(level <= 1);
       expect(text.includes("Changed lines covered"), `coverage at ${String(level)}`).toBe(level <= 1);
-      expect(text, `environment at ${String(level)}`).toContain("- Environment: sandbox.");
+      expect(text, `environment at ${String(level)}`).toContain("- Environment: sandbox, approved test environment revision 3.");
       expect(text, `not run at ${String(level)}`).toContain("- Not run here: 1,203 of 1,240");
       expect(text, `link at ${String(level)}`).toContain("Full evidence (");
       expect(text, `mocked at ${String(level)}`).toContain("Mocked service");
     }
   });
   it("shortens the Environment line at levels 3 and 4 without dropping the mocked service", () => {
-    expect(section(context(), 3)).toContain("- Environment: sandbox. partner-scorer: mocked. Test data: synthetic.");
+    expect(section(context(), 3)).toContain("- Environment: sandbox, approved test environment revision 3. partner-scorer: mocked. Test data: synthetic.");
   });
   it("lists a not-tested item once when the table already has it", () => {
     const dupe = pack({ notTested: [{ kind: "check", id: "unit", text: "Unit tests", reason: "more tests skipped than before" }, { kind: "mocked_service", id: "partner-scorer", text: "partner-scorer is mocked", reason: "answered from recorded responses" }] });
@@ -227,7 +227,7 @@ describe("the whole description", () => {
     const big = pack({ environment: { tier: "sandbox", envRevision: 3, services, data: "synthetic", accounts: [] }, checks, notTested, selection: { method: "coverage_map", selected: 37, total: 1240 } });
     const text = body(context({ pack: big }));
     expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(PULL_REQUEST_BODY_MAX_BYTES);
-    expect(text).toContain("- Environment: sandbox.");
+    expect(text).toContain("- Environment: sandbox, approved test environment revision 3.");
     expect(text).toContain("- Not run here: 1,203 of 1,240");
     expect(text).toContain("- Mocked service thing 0");
     expect(text).toContain("A person must approve it and a person merges it.");

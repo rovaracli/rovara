@@ -176,6 +176,8 @@ export const BROKER_SETTINGS = {
   proofEvidence: { code: "pe", variable: "PROOF_EVIDENCE_ENABLED" },
   // Decision cards (wire-proof): the card routes (`/v1/app/decisions*`) and the Slack card press. Stack parameter DecisionCardsEnabled, "0" by default: the broker reads it as DECISION_CARDS_ENABLED, and the routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   decisionCards: { code: "dk", variable: "DECISION_CARDS_ENABLED" },
+  // Test environment (wire-testenv): the project's approved test setup (the setup routes, the task's checks, the nightly run, the evidence's environment line). Stack parameter TestEnvironmentEnabled, "0" by default: the broker reads it as TEST_ENVIRONMENT_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  testEnvironment: { code: "ev", variable: "TEST_ENVIRONMENT_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

@@ -60,6 +60,8 @@ import { planQualityContextOf } from "../../developer/plan-self-check.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
+import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { testEnvPlanFor } from "../../test-env/task-plan.js";
 import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
@@ -492,6 +494,9 @@ export async function taskOperationParts(
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
   // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
   const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
+  // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
+  const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "task",
@@ -518,6 +523,8 @@ export async function taskOperationParts(
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
+      // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is refused the run at delivery, never sent it without the field.
+      ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
       // Live interaction F3: the marker that makes the worker's read-only look a diagnosis. A worker without "task.diagnosis.v1" is refused the run at delivery, never sent it without the field.
       ...(diagnosing ? { diagnosis: { diagnosisId: task.diagnosis!.diagnosisId } } : {}),
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
@@ -543,6 +550,8 @@ export async function taskOperationParts(
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is refused the run at delivery, never sent it without the field.
       ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled() ? { evidenceCapture: true as const } : {}),
+      // Test environment (wire-testenv): a worker without "task.testEnvironment.v1" is refused the run at delivery, never sent it without the field.
+      ...(testEnvironment === undefined ? {} : { testEnvironment }),
       // Stop & redirect (keep the plan): the owner's instruction, framed by the worker. A worker without "task.ownerRedirect.v1" is refused the run at delivery, never sent it without the field.
       ...(input.ownerRedirect === undefined ? {} : { ownerRedirect: input.ownerRedirect }),
       // Meta repo lane D: the spec write's binding; a worker without "task.specWrite.v1" is refused the run at delivery, never sent it without the field.
