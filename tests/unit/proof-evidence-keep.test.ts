@@ -186,6 +186,26 @@ describe("the data guard on the evidence", () => {
     expect(guarded.dropped.kinds).toContain("card_number");
   });
 
+  const NO_DENY = { accountIds: [], hosts: [], arnPrefixes: [] };
+
+  it("reads full-width and other compatibility forms as the ASCII they imitate (NFKC): a full-width card number and a full-width email address are findings, alone and among other scripts", () => {
+    expect(evidenceFindings({ name: "charged ４１１１ １１１１ １１１１ １１１１ ok" }, NO_DENY)).toContain("card_number");
+    expect(evidenceFindings({ name: "ｍａｙａ@acme.com" }, NO_DENY)).toContain("email");
+    expect(evidenceFindings({ name: "ｍａｙａ＠ａｃｍｅ．ｃｏｍ" }, NO_DENY)).toContain("email");
+    // Mixed scripts: Cyrillic and Han words around full-width and ASCII digits in one card, and around a full-width email.
+    expect(evidenceFindings({ name: "клиент ４１１１ 1111 １１１１ 1111 оплатил 支付" }, NO_DENY)).toContain("card_number");
+    expect(evidenceFindings({ name: "имя ｍａｙａ@acme.com 客户" }, NO_DENY)).toContain("email");
+    // Clean text in those scripts is still clean.
+    expect(evidenceFindings({ name: "тест оплаты ４２ 支付成功" }, NO_DENY)).toEqual([]);
+  });
+
+  it("drops a check whose test name is a full-width card number, end to end, and stores nothing of it", async () => {
+    const w = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["charges ４１１１ １１１１ １１１１ １１１１", "t2", "t3"]) }])));
+    expect(await keepEvidence(w.deps, input())).toMatchObject({ kept: true, guardedParts: 1 });
+    expect((await loadEvidencePack(w.deps.actions, TASK, DIGEST))?.checks[0]?.tests).toBeUndefined();
+    expect([...w.objects.values()].join("\n")).not.toContain("４１１１");
+  });
+
   it("fails closed on a text it cannot scan", () => {
     expect(evidenceFindings({ name: "x".repeat(5 * 1024 * 1024) }, { accountIds: [], hosts: [], arnPrefixes: [] })).toEqual(["secret"]);
   });

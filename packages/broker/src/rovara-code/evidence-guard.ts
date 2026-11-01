@@ -3,7 +3,8 @@
 // accounts on the company's production deny list). A part that holds a finding is DROPPED, whole, and counted; the matched text is never kept, logged or returned (only a fixed kind). The guard fails closed: a text
 // too large to scan, or a scan that throws, is a finding.
 //
-// Digests (64 hex characters) and timestamps are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing.
+// Digests (64 hex characters) and timestamps are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing. Text is
+// normalised (NFKC) before it is scanned.
 import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
 import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@agentx/contracts";
 import type { NewArtifact } from "./evidence-pack.js";
@@ -25,7 +26,8 @@ export function evidenceTexts(value: unknown, out: string[] = []): string[] {
 
 /** The fixed kinds of finding in a value's texts; `[]` means clean. A text too large to scan, or a scan that fails, is reported as `secret` (it is not kept). */
 export function evidenceFindings(value: unknown, deny: TestEnvProdDeny): DataGuardFindingKind[] {
-  const text = evidenceTexts(value).join("\n");
+  // NFKC first: full-width digits and letters (４１１１, ｍａｙａ@acme.com) and other compatibility forms read as the ASCII they imitate, which is what the scanner's patterns know.
+  const text = evidenceTexts(value).join("\n").normalize("NFKC");
   if (Buffer.byteLength(text, "utf8") > SCAN_LIMIT) return ["secret"];
   try { return scanText(text, deny); } catch { return ["secret"]; }
 }
