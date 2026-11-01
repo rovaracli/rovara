@@ -1270,6 +1270,8 @@ export class ControlPlaneStack extends Stack {
       // Proof and evidence, and decision cards (wire-proof): two switches, packed settings. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("proofEvidence", signInParameters.proofEvidenceEnabled.valueAsString);
       brokerSettings.add("decisionCards", signInParameters.decisionCardsEnabled.valueAsString);
+      // Test environment (wire-testenv): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("testEnvironment", signInParameters.testEnvironmentEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A

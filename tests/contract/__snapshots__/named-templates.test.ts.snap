@@ -3031,6 +3031,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Most requests one Slack thread may start in a minute; further requests pause the thread with one notice",
       "Type": "String",
     },
+    "TestEnvironmentEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: the project test environment is on (propose, prove, approve, and tasks use it; only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes (agentx config set testEnvironment.enabled 1)",
+      "Type": "String",
+    },
     "WorkflowDependenciesEnabled": {
       "AllowedValues": [
         "true",
@@ -3459,6 +3468,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",dk=",
                   {
                     "Ref": "DecisionCardsEnabled",
+                  },
+                  ",ev=",
+                  {
+                    "Ref": "TestEnvironmentEnabled",
                   },
                   ",fd=",
                   {

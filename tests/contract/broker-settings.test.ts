@@ -36,7 +36,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
   const ALL: Record<BrokerSettingKey, string> = {
     memberWorkspaceLimit: "3", organizationWorkspaceLimit: "20",
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
-    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", learningSuggestionsDefault: "off",
+    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learningSuggestionsDefault: "off",
   };
 
   it("puts every setting back under the variable the broker reads, to the text it was given", () => {
@@ -131,6 +131,7 @@ describe("the control plane wires each setting and name to what it came from", (
       liveFix: { Ref: "LiveFixEnabled" },
       proofEvidence: { Ref: "ProofEvidenceEnabled" },
       decisionCards: { Ref: "DecisionCardsEnabled" },
+      testEnvironment: { Ref: "TestEnvironmentEnabled" },
       learningSuggestionsDefault: { Ref: "LearningSuggestionsDefault" },
     });
     for (const spec of Object.values(BROKER_SETTINGS)) expect(cloud, spec.variable).not.toHaveProperty(spec.variable);
