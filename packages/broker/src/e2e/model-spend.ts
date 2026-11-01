@@ -147,6 +147,7 @@ export async function closeE2eRoundSpend(ports: Pick<RoundSpendPorts, "close">, 
 
 /**
  * The mint port over `mintOperationKey`. What it fixes, so a wiring task cannot get it wrong:
+ *   - the key is recorded through the caller's task-stop `guardRecord` (M47); without one the port cannot be built (fail closed until the guard is wired from the task, as handleModelAccess does);
  *   - the key's cap IS the round's worst case (`stepBudgetUsd` and the run limits are all set to it), never the whole room;
  *   - the ledger reservation is written: scopes (task stop, project, org, member) and tags are required, the install must have the ledger, and `reserved` is true only then;
  *   - the earlier-keys decision (`keepEarlierKeys`) is the caller's and explicit, because blocking the task's earlier keys is visible to a round that runs beside another;
@@ -155,9 +156,12 @@ export async function closeE2eRoundSpend(ports: Pick<RoundSpendPorts, "close">, 
 export function mintRoundKeyPort(input: {
   mintOperationKey: (deps: MintOperationDependencies, input: MintOperationKeyInput) => Promise<MintedOperationKey>;
   deps: MintOperationDependencies;
-  base: Pick<MintOperationKeyInput, "orgId" | "developerId" | "refId" | "agentName" | "taskKeyIds" | "operationKeyIds" | "pause" | "recordOn"> & { scopes: NonNullable<MintOperationKeyInput["scopes"]>; tags: NonNullable<MintOperationKeyInput["tags"]>; keepEarlierKeys: boolean };
+  base: Pick<MintOperationKeyInput, "orgId" | "developerId" | "refId" | "agentName" | "taskKeyIds" | "operationKeyIds" | "pause" | "recordOn" | "guardRecord" | "taskStopExempt"> & { scopes: NonNullable<MintOperationKeyInput["scopes"]>; tags: NonNullable<MintOperationKeyInput["tags"]>; keepEarlierKeys: boolean };
 }): RoundSpendPorts["mint"] {
   if (input.base.scopes.length === 0 || input.deps.ledger === undefined) throw new RangeError("a round key needs budget scopes and the spend ledger");
+  // Fail closed until the M47 task-stop guard is wired here: handleModelAccess records every task key through `guardRecord` (the operation's admitted source, the task's spending stop and, for own-source
+  // funding, the funding checks). A round key minted without it would reserve money outside a task's stop, so the port cannot be built without the caller's guard.
+  if (input.base.guardRecord === undefined) throw new RangeError("a round key must be recorded through the task-stop guard (guardRecord)");
   return async ({ routeAlias, ttlSeconds, capUsd }) => {
     const minted = await input.mintOperationKey(input.deps, {
       ...input.base, ttlSeconds, route: { alias: routeAlias }, runLimitUsd: capUsd, stopAtUsd: capUsd, stepBudgetUsd: capUsd, keepEarlierKeys: input.base.keepEarlierKeys,

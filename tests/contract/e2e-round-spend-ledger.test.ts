@@ -9,6 +9,7 @@ import { budgetScopesFor, mintTagsFor } from "../../packages/broker/src/spend/pa
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
+import type { TransactItem } from "../../packages/broker/src/agents/table-writes.js";
 
 const MONTH = "2026-10";
 const T0 = Date.parse("2026-10-21T12:00:00.000Z");
@@ -33,6 +34,8 @@ function setup(memberSpentUsd = 0) {
     scopes: budgetScopesFor(payer, { project: "web" }, { agentId: "rovara-code" }),
     tags: mintTagsFor({ payer, place: { project: "web" }, agentId: "rovara-code", origin: "app", taskId: "task-1", operationId: "op-1" }),
     keepEarlierKeys: true,
+    // The task-stop guard of the wiring (handleModelAccess builds the real one from the task); this test task has no stop, so it passes the items through.
+    guardRecord: (items: readonly TransactItem[]) => [...items],
   };
   const committed = (scope: BudgetScope) => (db.get(spendCounterKey(TEST_ORG, MONTH, scopeKey(scope))) as { committedUsd?: number } | undefined)?.committedUsd ?? 0;
   const ports = (withLedger = true) => ({
