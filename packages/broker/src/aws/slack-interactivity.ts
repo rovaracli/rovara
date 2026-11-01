@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { decisionPressHandler } from "./slack-decision-press.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -929,7 +930,7 @@ export function createAwsSlackInteractivityHandler() {
     ...(workflow === undefined ? {} : { workflow }),
     // The module's own respondEphemeral, for a button no handler knows.
     respondEphemeral,
-    handlers: [chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
+    handlers: [...(brokerFunctionName === undefined ? [] : [decisionPressHandler({ invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT })]), chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
       async loadConfirmation(subject) {
         const response = await documentClient.send(new GetCommand({ TableName: threadsTableName, Key: confirmationKey(subject), ConsistentRead: true }));
         return pendingConfirmationFromItem(response.Item);

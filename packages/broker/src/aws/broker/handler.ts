@@ -1,5 +1,7 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { decisionCardsEnabled } from "../../proof/switch.js";
+import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
@@ -354,6 +356,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         }
         return unexpectedErrorAnswer(error, "slack-ingress");
       }
+    }
+    // Decision cards (wire-proof): a card's button pressed in Slack. Answered with one fixed sentence for the interactivity Lambda to say privately; `enabled: false` while the cards switch is off.
+    if (isSlackDecisionPressEvent(event)) {
+      if (!decisionCardsEnabled() || dependencies.developer === undefined) return json({ enabled: false }, "slack-ingress");
+      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
     }
     if (isSlackTaskAuthorizationEvent(event)) {
       try { return json(await authorizeSlackTaskAction(dependencies, tasks, event), "slack-ingress"); }
