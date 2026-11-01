@@ -35,7 +35,7 @@ export function portCredentialResolver(input: { codeHost: CodeHostRouter; creden
     const repository = { url: repositoryUrl };
     // The host is the one the repository's RECORD names (the grant carries it, signed): `forRecord`, never the address (`forRepository` answers GitHub for every address). A kind this install has not
     // registered is refused with the router's fixed sentence, and a record naming another host never gets a GitHub token.
-    const host = input.codeHost.forRecord(hostKind === undefined || hostKind === "github" ? {} : { host: { kind: hostKind } as never });
+    const host = input.codeHost.forRecord(hostKind === undefined || hostKind === "github" ? {} : { host: { kind: hostKind } });
     const credential = await host.issueGitCredential(repository, access, scope);
     // The exchange serves a task's own clone and push: the broker is the service identity here, never a person's delegated credential.
     const usable = workerGitCredentialUsable(credential, { now: now(), actingAs: "service" });
