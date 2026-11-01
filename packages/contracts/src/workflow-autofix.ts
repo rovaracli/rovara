@@ -275,17 +275,19 @@ export const AUTO_FIX_ENVIRONMENT_CODES = [
 const ENVIRONMENT_CODES: ReadonlySet<AutoFixCode> = new Set<AutoFixCode>(AUTO_FIX_ENVIRONMENT_CODES);
 /** At a blocked REVIEW the tests already passed: the only environment fault that still reads as one is the workspace that could not be cleaned. */
 const REVIEW_STAGE_ENVIRONMENT_CODES: ReadonlySet<AutoFixCode> = new Set<AutoFixCode>(["leftover-processes"]);
-/** Asks that are about Rovara or the owner, never about the environment, whatever codes they carry. */
-const NOT_SETUP_ASK_REASONS: readonly AutoFixAskReason[] = ["owner-stopped", "unclear-fault", "inputs-missing"];
+/**
+ * The only asks that can be the Fix setup card: a fault only a person can fix, the one retry used, or the same checks failing on the original code. Every other reason (the owner's stop, an unclear fault,
+ * unreadable inputs, and the limits: send backs, total actions, spend cap, day budget, decision history) keeps the generic ask, which names the limit it hit.
+ */
+const SETUP_ASK_REASONS: readonly AutoFixAskReason[] = ["needs-a-person", "retry-limit", "original-code-also-fails"];
 
 export type AutoFixAskCard = "ask" | "fix_setup";
 
 /**
- * Which card an ASK is shown as. Fix setup only when every code is an environment code (a pull request being open does not change that), at least one is, and the ask is not about the owner's stop,
- * an unclear fault or unreadable inputs. A code a person's change caused (class `code`) or anything else keeps the generic ask: "Code failed" wins, and a mixed ask is not renamed.
+ * Which card an ASK is shown as. Fix setup only when every code is an environment code (a pull request being open does not change that), at least one is, and the ask is for a person's fault, the used retry or a failure on the original code (`SETUP_ASK_REASONS`). A code a person's change caused (class `code`) or anything else keeps the generic ask: "Code failed" wins, and a mixed ask is not renamed.
  */
 export function autoFixAskCard(ask: { reason: AutoFixAskReason; codes: readonly AutoFixCode[] }, stage: "VERIFY" | "REVIEW"): AutoFixAskCard {
-  if (NOT_SETUP_ASK_REASONS.includes(ask.reason)) return "ask";
+  if (!SETUP_ASK_REASONS.includes(ask.reason)) return "ask";
   const environment = stage === "REVIEW" ? REVIEW_STAGE_ENVIRONMENT_CODES : ENVIRONMENT_CODES;
   const relevant = ask.codes.filter((entry) => entry !== "pull-request-open");
   return relevant.length > 0 && relevant.every((entry) => environment.has(entry)) ? "fix_setup" : "ask";

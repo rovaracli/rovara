@@ -167,13 +167,19 @@ describe("limits do not move", () => {
 describe("autoFixAskCard: Fix setup instead of the generic ask", () => {
   const card = (reason: AutoFixAskReason, codes: AutoFixCode[], stage: "VERIFY" | "REVIEW" = "VERIFY") => autoFixAskCard({ reason, codes }, stage);
 
-  it("is Fix setup for every environment code alone, whichever the reason (a person's fault, a limit, the original-code failure)", () => {
+  it("is Fix setup for every environment code alone, whichever the reason (a person's fault, the used retry, the original-code failure)", () => {
     for (const entry of AUTO_FIX_ENVIRONMENT_CODES) {
       expect(card("needs-a-person", [entry]), entry).toBe("fix_setup");
       expect(card("retry-limit", [entry]), entry).toBe("fix_setup");
-      expect(card("total-limit", [entry]), entry).toBe("fix_setup");
     }
     expect(card("original-code-also-fails", ["fails-on-original-code"])).toBe("fix_setup");
+  });
+
+  it("keeps the generic ask, naming the limit, for every limit reason even with environment codes only (review fix 2)", () => {
+    expect(card("spend-cap", ["runner-busy"])).toBe("ask");
+    for (const reason of ["spend-cap", "day-budget", "total-limit", "history-full", "send-back-limit"] as const) {
+      for (const entry of AUTO_FIX_ENVIRONMENT_CODES) expect(card(reason, [entry]), `${reason} ${entry}`).toBe("ask");
+    }
   });
 
   it("is the generic ask when a fault the code caused is in the ask: code still wins", () => {
