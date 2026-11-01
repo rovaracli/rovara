@@ -4,6 +4,7 @@ import { orgMetaKey, orgMemberKey, developerOrgKey, projectMetaKey, projectMembe
 import { readSecondPersonApprovalEvidence } from "../../packages/broker/src/org/second-person-evidence.js";
 import { decideSecondPersonApproval } from "../../packages/broker/src/org/second-person-approval.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { realIdentityRow } from "../support/real-identity-row.js";
 
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const owner = "a".repeat(64), admin = "b".repeat(64), member = "c".repeat(64);
@@ -26,9 +27,18 @@ function fixture() {
 describe("live shared approval evidence", () => {
  it("accepts identity rows as a real sign-in writes them (no developerId attribute: the id is the key)", async () => {
   const f = fixture();f.person(admin, "admin");
-  for (const id of [owner, admin]) { const { developerId: _id, ...row } = f.db.get(`DEVELOPER#${id}`, "META")!;void _id;f.db.set({ ...row, entityType: "DEVELOPER", provider: "slack" }); }
+  for (const id of [owner, admin]) await realIdentityRow({ developerId: id, provider: "slack", issuer: "https://slack.com", subject: `U0${id.slice(0, 8)}`, displayName: "Someone" }, {}, f.db);
   const proof = await f.read(admin);
   expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("second_person");
+ });
+ it("refuses a real row that is revoked or merged, and no row at all", async () => {
+  for (const changes of [{ revoked: true }, { mergedInto: member }]) {
+   const f = fixture();f.person(admin, "admin");
+   await realIdentityRow({ developerId: admin, provider: "slack", issuer: "https://slack.com", subject: "U0ADMIN01", displayName: "Admin" }, changes, f.db);
+   await expect(f.read(admin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  }
+  const f = fixture();f.person(admin, "admin");f.db.delete({ pk: `DEVELOPER#${admin}`, sk: "META" });
+  await expect(f.read(admin)).rejects.toMatchObject({ code: "FORBIDDEN" });
  });
  it("still refuses an identity row that names another person", async () => {
   const f = fixture();f.person(admin, "admin");

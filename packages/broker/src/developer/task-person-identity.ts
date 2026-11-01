@@ -316,7 +316,8 @@ async function storedIdentityStatus(deps: TaskPersonIdentityDependencies, identi
   if (record === undefined || typeof record.revoked !== "boolean" || record.provider !== "oidc" || record.developerId !== identity.developerId
     || record.issuer !== identity.issuer || record.subject !== identity.subject || record.slackUserId !== identity.slackUserId
     || ownerKeyForSubject(record.issuer, record.subject) !== record.developerId) return refuse();
-  return record.revoked ? "ineligible" : "current";
+  // A merged-away identity (its sign-in now belongs to the survivor) is no longer this task person, as a revoked one is not.
+  return record.revoked || record.mergedInto !== undefined ? "ineligible" : "current";
 }
 
 async function verifyStoredIdentity(deps: TaskPersonIdentityDependencies, identity: TaskPersonIdentity): Promise<void> {

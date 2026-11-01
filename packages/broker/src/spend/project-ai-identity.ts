@@ -17,12 +17,13 @@ export async function projectAiCallerCheck(deps: Deps, by: string): Promise<Tran
     const response = await deps.documentClient.send(new GetCommand({ TableName: table, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
     row = response.Item;
   } catch { throw unavailable(); }
-  if (row === undefined || row === null || typeof row !== "object" || Array.isArray(row) || row.pk !== key.pk || row.sk !== key.sk || row.developerId !== by || Object.hasOwn(row, "mergedInto") || (Object.hasOwn(row, "revoked") && row.revoked !== false)) throw unavailable();
+  if (row === undefined || row === null || typeof row !== "object" || Array.isArray(row) || row.pk !== key.pk || row.sk !== key.sk || (row.developerId !== undefined && row.developerId !== by) || Object.hasOwn(row, "mergedInto") || (Object.hasOwn(row, "revoked") && row.revoked !== false)) throw unavailable();
   const marks = ["sessionsEndedAt", ...DeveloperSignInMethodSchema.options.map(methodSessionsEndedAttribute)];
   for (const field of marks) {
     if (Object.hasOwn(row, field) && (typeof row[field] !== "string" || !Number.isFinite(Date.parse(row[field])))) throw unavailable();
   }
-  const aliases = new Aliases();
-  const condition = ["attribute_exists(pk)", `${aliases.name("developerId")} = ${aliases.value(by)}`, `attribute_not_exists(${aliases.name("mergedInto")})`, ...["revoked", ...marks].map(field => Object.hasOwn(row, field) ? `${aliases.name(field)} = ${aliases.value(row[field])}` : `attribute_not_exists(${aliases.name(field)})`)].join(" AND ");
+  // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else is refused.
+  const aliases = new Aliases(), developerId = aliases.name("developerId");
+  const condition = ["attribute_exists(pk)", `(attribute_not_exists(${developerId}) OR ${developerId} = ${aliases.value(by)})`, `attribute_not_exists(${aliases.name("mergedInto")})`, ...["revoked", ...marks].map(field => Object.hasOwn(row, field) ? `${aliases.name(field)} = ${aliases.value(row[field])}` : `attribute_not_exists(${aliases.name(field)})`)].join(" AND ");
   return { ConditionCheck: { TableName: table, Key: key, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } };
 }

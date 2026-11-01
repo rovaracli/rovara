@@ -1,4 +1,6 @@
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { realIdentityRow } from "../support/real-identity-row.js";
+import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@agentx/contracts";
 import { channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerSinceFromEnvironment, developerTaskRouteDependencies, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -673,6 +675,20 @@ describe("D2 task-person route dependencies", () => {
     });
     expect(proof).toHaveBeenCalledWith({ kind: "task-person-proof", slackUserId: "U0MAYA001", channelIds: ["C0PAY0001"] });
     expect(db.find((item) => String(item.sk).startsWith("PERSON#") || String(item.sk).startsWith("PERSON_SUBJECT#"))).toEqual([]);
+  });
+
+  it("proves a company sign-in (OIDC) task person from the row their real sign-in wrote (no developerId attribute: the id is the key)", async () => {
+    const issuer = "https://identity.example.com", subject = "subject-123", oidcId = ownerKeyForSubject(issuer, subject);
+    const oidcTask = { ...task, developerId: oidcId, provider: "oidc", developerName: "Maya Chen" } as DeveloperTaskRecord;
+    db.set(oidcTask as unknown as Record<string, unknown>);
+    await realIdentityRow({ developerId: oidcId, provider: "oidc", issuer, subject, displayName: "Maya Chen", slackUserId: "U0MAYA001" }, {}, db);
+    config.taskPersonProof = vi.fn(async () => ({ ok: true as const, user: { id: "U0MAYA001", teamId: "T0TEAM1", name: "Maya Chen" }, memberOf: ["C0PAY0001"] }));
+    const check = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, { ...maya, developerId: oidcId, amr: "oidc" }).checkTaskPerson;
+    if (check === undefined) throw new Error("Task-person checker is required");
+    await expect(check(oidcTask, oidcId)).resolves.toMatchObject({ eligible: true, identity: { developerId: oidcId, method: "oidc" } });
+    // Merged into another developer, the identity is no longer this task person, as a revoked one is not.
+    await realIdentityRow({ developerId: oidcId, provider: "oidc", issuer, subject, displayName: "Maya Chen", slackUserId: "U0MAYA001" }, { mergedInto: "c".repeat(64) }, db);
+    await expect(check(oidcTask, oidcId)).resolves.toMatchObject({ eligible: false });
   });
 
   it("propagates the exact authenticated native caller for fresh qualification", async () => {

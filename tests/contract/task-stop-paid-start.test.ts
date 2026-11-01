@@ -18,6 +18,7 @@ import { MAYA } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { setup, PREPARED, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { realIdentityRow } from "../support/real-identity-row.js";
 async function fixture(amount = 1_234_567, options?: Parameters<typeof setup>[0]) {
   const t = await setup(options), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
   t.db.set({ ...policy, entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: amount } }, enrollment: { version: 1, state: "enabled" } });
@@ -1576,6 +1577,62 @@ for (const state of ["valid", "lost_at_commit", "share_at_commit"] as const) it(
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(reply.status).toBe(state === "valid" ? 200 : 503);
   if (state !== "valid") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(taskId).modelKeyIds).toBeUndefined(); }
+});
+
+// The same, on the identity row a real sign-in writes: no developerId attribute, the id is the key (store.ts getDeveloper). A row read
+// as current but changed before the key's commit is caught only by the commit-time identity check (oidcTaskPersonIdentityCheck).
+for (const state of ["valid", "other_id", "revoked", "merged", "revoked_at_commit", "merged_at_commit"] as const) it(`a real sign-in's OIDC PEOPLE identity row mints model keys only while current: ${state}`, async () => {
+  const issuer = "https://company-identity.example.com", subject = "real-row-owner", slackUserId = "U0REALOID";
+  const creator = { developerId: ownerKeyForSubject(issuer, subject), name: "Maya Company", provider: "oidc" as const, sessionId: randomUUID(), slackUserId };
+  const f = await fixture(1_234_567, { developerExtra: {
+    taskPeopleConfiguration: { peopleChangesEnabled: true },
+    taskPersonProof: async input => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.channelIds }),
+    taskPeopleDisplayRead: async input => input.operation === "proof"
+      ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        user: { id: input.request.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.request.channelIds } }
+      : { operation: "directory" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        users: [{ id: slackUserId, teamId: SLACK_TEAM, name: creator.name, memberOf: input.request.channelIds }] } },
+  } });
+  await f.t.orgOf(creator); f.t.grantRole(creator, "maintainer");
+  const identityKey = { pk: `DEVELOPER#${creator.developerId}`, sk: "META" };
+  await realIdentityRow({ developerId: creator.developerId, provider: "oidc", issuer, subject, displayName: creator.name, slackUserId }, {}, f.t.db);
+  f.t.db.set({ pk: `SESSION#${creator.sessionId}`, sk: "META", sessionId: creator.sessionId, developerId: creator.developerId, amr: creator.provider,
+    startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600 });
+  const agentId = await f.t.agentOf(CODING, { by: creator }), agent = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(agent)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId, { who: creator });
+  expect((await f.t.dev(creator, "POST", `/v1/dev/tasks/${task.taskId}/share`, { requestId: randomUUID() })).status).toBe(200);
+  expect((await f.t.dev(creator, "GET", `/v1/dev/tasks/${task.taskId}/people`)).status).toBe(200);
+  expect(f.t.db.get(`DEVTASK#${task.taskId}`, "PEOPLE")).toMatchObject({ orphaned: false, people: [{ developerId: creator.developerId, role: "owner" }] });
+  expect(f.t.db.get(identityKey)).not.toHaveProperty("developerId");
+  const change = { other_id: { developerId: "b".repeat(64) }, revoked: { revoked: true }, merged: { mergedInto: "c".repeat(64) },
+    revoked_at_commit: { revoked: true }, merged_at_commit: { mergedInto: "c".repeat(64) }, valid: {} }[state];
+  const atCommit = state === "revoked_at_commit" || state === "merged_at_commit";
+  if (!atCommit && state !== "valid") f.t.db.set({ ...f.t.db.get(identityKey)!, ...change });
+  const plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  let identityCheck: string | undefined;
+  f.t.db.send = async command => {
+    if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      identityCheck = command.input.TransactItems.find(item => item.ConditionCheck?.Key?.pk === identityKey.pk && item.ConditionCheck.Key.sk === identityKey.sk)?.ConditionCheck?.TableName;
+      if (atCommit && !raced) { raced = true; f.t.db.set({ ...f.t.db.get(identityKey)!, ...change }); }
+    }
+    return send(command);
+  };
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  if (state === "valid") {
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(identityCheck).toBe("signin");
+    expect(f.t.access.mintedKeys().length).toBe(before + 1);
+  } else if (atCommit) {
+    // Read as current, so the key's transaction carries the identity check; the row changed before it committed, so nothing is kept.
+    expect(raced).toBe(true); expect(identityCheck).toBe("signin"); expect(reply.status).not.toBe(200);
+    expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined();
+  } else {
+    expect(reply.status).not.toBe(200);
+    expect(f.t.access.mintedKeys().length).toBe(before);
+  }
 });
 
 for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`registered OIDC PEOPLE identity remains current for model keys: ${state}`, async () => {
