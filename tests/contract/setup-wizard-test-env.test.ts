@@ -377,7 +377,7 @@ describe("approving a change that is less safe than the sandbox", () => {
       expect((await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest: "c".repeat(64), expectedRevision: 1 })).status).toBe(409);
       expect(t.approvals()).toEqual([]);
       // A change that is not less safe has no second person to ask.
-      const plain = draftBody({ roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      const plain = draftBody({ roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**", "package.json"] } });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: plain });
       const plainDigest = testEnvDigest(plain);
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest: plainDigest });
@@ -391,7 +391,7 @@ describe("approving a change that is less safe than the sandbox", () => {
     const t = await setupWizardBench();
     await withSwitch("1", async () => {
       await t.approveFirst();
-      const plain = draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      const plain = draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**", "package.json"] } });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: plain });
       const digest = testEnvDigest(plain);
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest });

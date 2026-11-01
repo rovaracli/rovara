@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
+import { selectionNarrowed, testEnvLessSafeChanges } from "../../packages/contracts/src/index.js";
 import { answerEnvChange, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -20,7 +21,7 @@ const cards = async (t: Bench, who = OMAR) => {
   expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   const { requestId: _gateway, ...own } = reply.body; void _gateway;
   const view = DecisionCardsViewSchema.parse(own);
-  return { cards: view.cards, digests: view.digests };
+  return { cards: view.cards, digests: view.digests, details: view.details };
 };
 const ofKind = (list: readonly DecisionCard[], kind: string) => list.filter((card) => card.kind === kind);
 
@@ -61,7 +62,7 @@ describe("approve_test_env", () => {
     const t = await setupWizardBench();
     await withSwitch("1", () => withCards(async () => {
       await t.approveFirst();
-      const next = draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      const next = draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**", "package.json"] } });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: next });
       const digest = testEnvDigest(next);
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
@@ -79,7 +80,7 @@ describe("approve_test_env", () => {
     const t = await setupWizardBench();
     await withSwitch("1", () => withCards(async () => {
       await t.approveFirst();
-      const next = draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      const next = draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**", "package.json"] } });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: next });
       const digest = testEnvDigest(next);
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
@@ -88,7 +89,7 @@ describe("approve_test_env", () => {
       const base = `/v1/app/decisions/approve_test_env/${digest}`;
       await t.dev(OMAR, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: digests[card.id] });
       // Someone approves another revision first (a different environment), so the card's revision has moved on.
-      const other = draftBody({ selection: { method: "coverage_map", alwaysRun: ["unit"], fullSuiteOn: [] } });
+      const other = draftBody({ selection: { method: "full", alwaysRun: ["unit"], fullSuiteOn: [".github/**"] } });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: other });
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(other) });
       expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: testEnvDigest(other), expectedRevision: 1 })).status).toBe(200);
@@ -149,7 +150,7 @@ describe("approve_test_env", () => {
 });
 
 describe("confirm_env_change", () => {
-  const selectionChanged = () => draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+  const selectionChanged = () => draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**", "package.json"] } });
   const startTask = async (t: Bench): Promise<string> => {
     const started = await t.dev(OMAR, "POST", `/v1/app/projects/${NAME}/code`, { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
     expect(started.status, JSON.stringify(started.body)).toBe(202);
@@ -175,9 +176,11 @@ describe("confirm_env_change", () => {
       expect(pinOf(t, taskId)).toMatchObject({ revision: 1 });
       expect(ofKind((await cards(t)).cards, "confirm_env_change")).toEqual([]); // nothing newer yet
       const second = await approveSecond(t);
-      const { cards: list, digests } = await cards(t);
+      const { cards: list, digests, details } = await cards(t);
       const [card] = ofKind(list, "confirm_env_change");
       expect(card).toMatchObject({ id: `confirm_env_change:${taskId}`, risk: "medium", taskId });
+      // The card says what changes for the task, value by value, not "selection" alone.
+      expect(JSON.stringify(details[card!.id])).toContain("selection.fullSuiteOn: .github/** \u2192 .github/**, package.json");
       expect(ofKind((await cards(t, MAYA)).cards, "confirm_env_change")).toEqual([]);
       const base = `/v1/app/decisions/confirm_env_change/${taskId}`;
       await t.dev(OMAR, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: digests[card!.id] });
@@ -202,7 +205,7 @@ describe("confirm_env_change", () => {
       expect(pinOf(t, taskId)).toMatchObject({ revision: 1, declined: second });
       expect(ofKind((await cards(t)).cards, "confirm_env_change")).toEqual([]);
       // A newer revision is a new question.
-      const third = draftBody({ selection: { method: "coverage_map", alwaysRun: ["unit"], fullSuiteOn: [".github/**"] } });
+      const third = draftBody({ selection: { method: "full", alwaysRun: ["unit"], fullSuiteOn: [".github/**", "package.json", "Makefile"] } });
       expect((await t.web(OMAR, "POST", `${ENV}/edit`, { environment: third })).status).toBe(200);
       const digest = testEnvDigest(third);
       await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
@@ -267,11 +270,45 @@ describe("confirm_env_change", () => {
 
   it("a running task is never moved to something less safe, or to different checks (the rule on its own)", () => {
     const base = draftBody();
-    expect(takesTheChange(base, draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } }))).toBe(true);
+    expect(takesTheChange(base, draftBody({ selection: { method: "full", alwaysRun: ["unit"], fullSuiteOn: [".github/**", "package.json"] } }))).toBe(true); // runs more
+    expect(takesTheChange(base, draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } }))).toBe(false); // chooses tests
+    expect(takesTheChange(base, draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } }))).toBe(false); // fewer files run the whole suite
     expect(takesTheChange(base, draftBody({ nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" } }))).toBe(false);
     expect(takesTheChange(base, draftBody({ roundBudgetMin: 60 }))).toBe(false);
     expect(takesTheChange(base, draftBody({ capture: { screenshots: "failed", video: true, traces: false } }))).toBe(false);
     expect(takesTheChange(base, draftBody({ repos: [{ repositoryId: "web", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] }))).toBe(false);
     expect(takesTheChange(base, draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Renamed", command: command("make", ["old-test"], 1800), kind: "test" }] }] }))).toBe(true);
+  });
+});
+
+describe("narrowing which tests run", () => {
+  const base = draftBody();
+  const withSelection = (selection: Record<string, unknown>, selectArgs?: string[]) => draftBody({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**"], ...selection }, ...(selectArgs === undefined ? {} : { repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test", selectArgs }] }] }) });
+  it("is less safe: choosing tests, a changed selectArgs, fewer things that always run, fewer files that run everything; running more is not", () => {
+    expect(testEnvLessSafeChanges(base, withSelection({ method: "coverage_map" }))).toEqual(["selection_narrowed"]);
+    expect(testEnvLessSafeChanges(base, withSelection({ method: "declared", declared: [{ glob: "src/**", tests: ["t"] }] }))).toContain("selection_narrowed");
+    expect(testEnvLessSafeChanges(base, withSelection({}, ["{tests}", "-x"]))).toEqual(["selection_narrowed"]);
+    expect(testEnvLessSafeChanges(base, withSelection({ fullSuiteOn: [] }))).toEqual(["selection_narrowed"]);
+    const always = withSelection({ alwaysRun: ["unit"] });
+    expect(testEnvLessSafeChanges(base, always)).toEqual([]); // more always runs
+    expect(testEnvLessSafeChanges(always, base)).toEqual(["selection_narrowed"]);
+    expect(testEnvLessSafeChanges(base, withSelection({ fullSuiteOn: [".github/**", "package.json"] }))).toEqual([]);
+    expect(testEnvLessSafeChanges(withSelection({ method: "coverage_map" }), base)).toEqual([]); // back to running everything
+    expect(selectionNarrowed(base, base)).toBe(false);
+    // The first revision has nothing to narrow from.
+    expect(testEnvLessSafeChanges(undefined, withSelection({ method: "coverage_map" }))).toEqual([]);
+  });
+  it("through the wizard: a proposal that chooses tests needs a second person and a fresh sign-in", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      await t.approveFirst();
+      const chooser = withSelection({ method: "coverage_map" });
+      const edited = await t.web(OMAR, "POST", `${ENV}/edit`, { environment: chooser });
+      expect(edited.body).toMatchObject({ proposal: { lessSafe: ["selection_narrowed"], risk: "high", needs: { freshSignIn: true, secondPerson: true } } });
+      await t.web(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(chooser) });
+      const refused = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: testEnvDigest(chooser), expectedRevision: 1 });
+      expect(refused.status).toBe(403);
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
+    }));
   });
 });

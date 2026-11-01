@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { testEnvChangeLines } from "../org/test-env-diff.js";
 import { readApprovedTestEnvironment, readProposal, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
 import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
 import { testEnvironmentEnabled } from "../test-env/switch.js";
@@ -97,9 +98,13 @@ async function changeItemOf(ports: EnvChangePorts, task: DeveloperTaskRecord): P
   if (pin.declined === latestDigest) return undefined;
   const pinned = await readApprovedTestEnvironment(ports.store, orgId, task.project, pin.revision);
   if (pinned === undefined || testEnvDigest(pinned.environment) !== pin.digest || !takesTheChange(pinned.environment, latest.environment)) return undefined;
+  // The person is shown every value that changes for their task, as before and after: a change to which tests run (the method, `selectArgs`, what always runs) is never summed up in one word.
+  const lines = testEnvChangeLines(pinned.environment, latest.environment);
   return {
-    kind: "confirm_env_change", subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: latest.approvedAt, what: "selection",
+    kind: "confirm_env_change", subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: latest.approvedAt,
+    what: lines.some((line) => line.startsWith("selection")) || lines.some((line) => line.includes(".selectArgs:")) ? "selection" : "environment",
     openPath: `/app/projects/${encodeURIComponent(task.project)}`, contentVersion: sha(`${pin.digest}:${latestDigest}`),
+    details: [{ title: "What changes for this task", lines }],
   };
 }
 

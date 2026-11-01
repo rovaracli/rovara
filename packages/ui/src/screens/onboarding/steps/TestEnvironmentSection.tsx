@@ -17,7 +17,7 @@ const LESS_SAFE_WORDS: Record<string, string> = {
   schema_synth: "answers unrecorded requests with made-up data", round_budget_raised: "raises the time one round of checks may take", preprod_target_changed: "points at a different pre-production service",
   shared_target_changed: "points at a different shared environment", preview_target_changed: "changes how the per-task copy is built", account_target_changed: "uses different test accounts",
   prod_deny_reduced: "shortens the list of what counts as production", nightly_enabled: "runs the whole test suite every night, which costs money", nightly_more_often: "runs the nightly suite more often",
-  preview_cost_raised: "raises what the per-task copy may cost",
+  preview_cost_raised: "raises what the per-task copy may cost", selection_narrowed: "runs fewer of your tests than before",
 };
 const SKIPPED_WORDS: Record<TestEnvApplyAnswer["skipped"][number]["reason"], string> = {
   different_directory: "run in another directory, which the project's settings can't hold",
