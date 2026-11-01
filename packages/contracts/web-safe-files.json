@@ -69,6 +69,7 @@
   "packages/contracts/src/rovara-code.ts",
   "packages/contracts/src/session-views.ts",
   "packages/contracts/src/setup-proposal.ts",
+  "packages/contracts/src/setup-run.ts",
   "packages/contracts/src/spec-target.ts",
   "packages/contracts/src/spend.ts",
   "packages/contracts/src/stage-model-publish-refusal.ts",

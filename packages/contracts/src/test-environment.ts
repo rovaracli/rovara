@@ -15,6 +15,7 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
+import { SetupValueSourceSchema } from "./setup-run.js";
 import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
 
@@ -325,8 +326,11 @@ export function testEnvApprovalRisk(env: TestEnvironmentBody): DecisionRisk {
 
 // ---- the proposal and the Prove run
 
-/** Where a proposed value came from: a file and line, a code detector, or the setup agent's own reading. */
-export const TestEnvValueSourceSchema = z.union([z.object({ path: line(500), line: z.number().int().min(1).max(10_000_000) }).strict(), z.literal("model"), z.string().regex(/^detector:[a-z0-9_-]{1,40}$/u)]);
+/**
+ * Where a proposed value came from: a file and line, a code detector, the setup agent's own reading, or (setup run, SH2) a command the run observed working (`observed:<run>#<n>`),
+ * a company recipe (`recipe:<id>@<rev>`) or a person. Replaces: the three-member union; the new members are additions, so every stored proposal still parses.
+ */
+export const TestEnvValueSourceSchema = z.union([z.object({ path: line(500), line: z.number().int().min(1).max(10_000_000) }).strict(), z.literal("model"), z.string().regex(/^detector:[a-z0-9_-]{1,40}$/u), SetupValueSourceSchema]);
 export type TestEnvValueSource = z.infer<typeof TestEnvValueSourceSchema>;
 
 /** The setup agent's proposal: today's `SetupDraft` (and its flagged commands, which stay flagged) plus the test environment it proposes and the source of each value. A proposal, nothing more. */
