@@ -84,7 +84,7 @@ describe("redirect payloads", () => {
   });
 
   it("stores no instruction text on the REDIRECT# record", () => {
-    const record = { requestId: REQUEST, orgId: "org_aaaaaaaaaaaaaaaaaaaa", sessionId: "ses_00000000000000000001", taskId: "11111111-1111-4111-8111-111111111111", actorId: "a".repeat(64), messageId: MESSAGE, mode: "keep_plan", blockedRevision: 4, step: "IMPLEMENT", state: "stopping", createdAt: AT, ttl: 1_800_000_000 };
+    const record = { requestId: REQUEST, kind: "stop", orgId: "org_aaaaaaaaaaaaaaaaaaaa", sessionId: "ses_00000000000000000001", taskId: "11111111-1111-4111-8111-111111111111", actorId: "a".repeat(64), messageId: MESSAGE, mode: "keep_plan", blockedRevision: 4, step: "IMPLEMENT", state: "stopping", createdAt: AT, ttl: 1_800_000_000 };
     expect(RedirectRecordSchema.safeParse(record).success).toBe(true);
     expect(RedirectRecordSchema.safeParse({ ...record, text: "do this" }).success).toBe(false);
     expect(RedirectRecordSchema.safeParse({ ...record, state: "done" }).success).toBe(false);

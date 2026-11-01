@@ -14,12 +14,12 @@ type Item = Record<string, unknown>;
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 const TEXT = "use the retry helper in payments.ts instead, REDIRECT-SECRET-TEXT-5521";
 
-function world(options: { features?: readonly string[] | "down" | undefined; stage?: string; state?: string; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>; currentOwner?: string } = {}) {
+function world(options: { features?: readonly string[] | "down" | undefined; stage?: string; state?: string; workflow?: Record<string, unknown>; planChanges?: false; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>; currentOwner?: string } = {}) {
   const w = sessionWorld();
   const made = w.seedSession({ kind: "task", ...(options.people === undefined ? {} : { people: options.people }), ...(options.currentOwner === undefined ? {} : { currentOwner: options.currentOwner }) });
   const patchTask = (fields: Record<string, unknown>) => w.db.set({ ...(w.db.get(taskKey(made.taskId)) as Item), ...fields });
-  patchTask({ workflow: { revision: 3, stage: options.stage ?? "IMPLEMENT", state: options.state ?? "RUNNING", decisions: [], definitionVersion: "1.0.0" } });
-  const calls = { cancel: [] as Array<{ taskId: string; requestId: string }>, features: 0, continued: [] as string[] };
+  patchTask({ workflow: { revision: 3, stage: options.stage ?? "IMPLEMENT", state: options.state ?? "RUNNING", decisions: [], definitionVersion: "1.0.0", ...options.workflow } });
+  const calls = { cancel: [] as Array<{ taskId: string; requestId: string }>, features: 0, continued: [] as string[], plan: [] as Array<Record<string, unknown>> };
   const live = { cancelFailure: undefined as Error | undefined };
   const redirect: RedirectConfig = {
     workerFeatures: async () => { calls.features += 1; if (options.features === "down") throw new Error("ping failed"); return options.features ?? [OWNER_REDIRECT_FEATURE]; },
@@ -30,6 +30,7 @@ function world(options: { features?: readonly string[] | "down" | undefined; sta
     taskView: async (task: { taskId: string; project: string }) => ({ taskId: task.taskId, title: "Fix", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
     control: {
       cancelTask: async (task: { taskId: string }, requestId: string) => { calls.cancel.push({ taskId: task.taskId, requestId }); if (live.cancelFailure !== undefined) throw live.cancelFailure; },
+      ...(options.planChanges === false ? {} : { requestPlanChanges: async (_task: unknown, input: Record<string, unknown>) => { calls.plan.push(input); } }),
       retryWorkflow: async () => undefined, startAgentRun: async () => { throw new Error("not asked"); },
     },
     redirect,
@@ -197,15 +198,12 @@ describe("a redirect from the owner (R2, phase 1)", () => {
     await expect(s.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
   });
 
-  it("stops a task that is not running nothing at all: ended, paused for budget, or a state it does not know", async () => {
+  it("stops nothing for a task that ended or a step a redirect does not reach, and writes nothing", async () => {
     const closed = world();
     closed.patchTask({ closedAt: "2026-10-22T09:00:00.000Z" });
     const before = closed.table();
     expect(await code(closed.go(PRIYA))).toMatchObject({ code: "SESSION_ENDED" });
     expect(closed.table()).toBe(before);
-    const paused = world();
-    paused.patchTask({ budgetPause: { at: "2026-10-22T09:00:00.000Z" } });
-    expect(await code(paused.go(PRIYA))).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.paused_for_budget });
     const merged = world({ stage: "MERGED", state: "COMPLETE" });
     expect(await code(merged.go(PRIYA))).toMatchObject({ code: "SESSION_ENDED" });
     const critique = world({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
@@ -299,5 +297,114 @@ describe("the task must still be where the redirect read it", () => {
     expect(await code(s.go(PRIYA))).toMatchObject({ code: "SESSION_ENDED" });
     expect(s.records()).toEqual([]);
     expect(s.sessionItems("MESSAGE#msg_")).toEqual([]);
+  });
+});
+
+describe("nothing is running (R4)", () => {
+  const STOPPED = "implementation operation ended failed";
+
+  it("a blocked step has nothing to stop: it records the redirect against the step's own revision, asks for no cancel, and carries on at once", async () => {
+    const s = world({ state: "BLOCKED", workflow: { blockReason: STOPPED } });
+    const requestId = randomUUID();
+    const answer = await s.go(PRIYA, { requestId });
+    expect(answer.redirect).toMatchObject({ requestId, state: "stopping" });
+    expect(s.calls.cancel).toEqual([]);
+    expect(s.records()[0]).toMatchObject({ kind: "blocked", blockedRevision: 3, step: "IMPLEMENT", state: "stopping" });
+    // Phase 2 is asked for straight away, since no run has to end first.
+    expect(s.calls.continued).toEqual([s.made.taskId]);
+    expect(s.sessionItems("MESSAGE#msg_")).toHaveLength(1);
+    expect(s.notes()).toHaveLength(1);
+    // The same worker rule as a running step.
+    const old = world({ state: "BLOCKED", workflow: { blockReason: STOPPED }, features: [] });
+    expect(await code(old.go(PRIYA))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(old.records()).toEqual([]);
+  });
+
+  it("a blocked step is guarded like a running one: the transaction fails if the task moved, and the redirect is recorded against what is found then", async () => {
+    const s = world({ state: "BLOCKED", workflow: { blockReason: STOPPED } });
+    let moved = false;
+    const original = s.w.db.send.bind(s.w.db);
+    (s.deps as unknown as { documentClient: { send: typeof original } }).documentClient = {
+      send: async (command: Parameters<typeof original>[0]) => {
+        if (!moved && command.constructor.name === "TransactWriteCommand") { moved = true; s.patchTask({ workflow: { revision: 7, stage: "IMPLEMENT", state: "BLOCKED", blockReason: STOPPED, decisions: [], definitionVersion: "1.0.0" } }); }
+        return original(command);
+      },
+    };
+    await s.go(PRIYA);
+    expect(moved).toBe(true);
+    expect(s.records()[0]).toMatchObject({ kind: "blocked", blockedRevision: 7 });
+  });
+
+  it("'this changes the plan' on a coding step blocked by something that is not a stop is refused (the Revise move takes only a stopped step), writing nothing", async () => {
+    const s = world({ state: "BLOCKED", workflow: { blockReason: STOPPED } });
+    const before = s.table();
+    expect(await code(s.go(PRIYA, { mode: "change_plan" }))).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
+    expect(s.table()).toBe(before);
+    // A coding step blocked by a stop can take it.
+    const stopped = world({ state: "BLOCKED", workflow: { blockReason: "implementation operation ended cancelled", artifacts: [{ id: "p", type: "plan", version: 1, sha256: "c".repeat(64) }] } });
+    await expect(stopped.go(PRIYA, { mode: "change_plan" })).resolves.toMatchObject({ redirect: { state: "stopping" } });
+  });
+
+  it("a step waiting to start is cancelled (the cancel blocks it) and recorded against the revision the block will have", async () => {
+    const s = world({ stage: "PLAN", state: "READY", workflow: { definitionVersion: "1.1.0" } });
+    await s.go(PRIYA);
+    expect(s.calls.cancel).toHaveLength(1);
+    expect(s.records()[0]).toMatchObject({ kind: "queued", step: "PLAN", blockedRevision: 4 });
+    // A version 1 workflow's ready step is not a queued dispatch the cancel can remove.
+    const old = world({ stage: "PLAN", state: "READY" });
+    expect(await code(old.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
+  });
+
+  it("a paused task is not stopped or restarted: the instruction is saved as the owner's note, the answer says so in fixed words, and a repeat answers the same without a second message", async () => {
+    const s = world();
+    s.patchTask({ budgetPause: { at: "2026-10-22T09:00:00.000Z" } });
+    const requestId = randomUUID();
+    const answer = await s.go(PRIYA, { requestId });
+    expect(answer.redirect).toEqual({ requestId, mode: "keep_plan", state: "refused", message: REDIRECT_REFUSAL_MESSAGES.paused_for_budget });
+    expect(s.calls.cancel).toEqual([]);
+    expect(s.calls.features).toBe(0);
+    expect(s.records()).toEqual([]);
+    expect(s.sessionItems("MESSAGE#msg_")).toHaveLength(1);
+    expect(s.notes()[0]).toMatchObject({ isOwner: true, text: TEXT });
+    const before = s.table();
+    expect((await s.go(PRIYA, { requestId })).redirect).toMatchObject({ state: "refused", message: REDIRECT_REFUSAL_MESSAGES.paused_for_budget });
+    expect(s.table()).toBe(before);
+    // A step blocked for the pause is the same.
+    const blocked = world({ state: "BLOCKED", workflow: { blockReason: "Paused: this task needs more AI budget. I've asked for it." } });
+    expect((await blocked.go(PRIYA)).redirect.state).toBe("refused");
+    expect(blocked.records()).toEqual([]);
+  });
+
+  it("a plan waiting for approval becomes the owner's request for changes with the text, through the task's own decision, and a repeat answers the same without deciding again", async () => {
+    const plan = { id: "p", type: "plan", version: 1, sha256: "c".repeat(64) };
+    const s = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] } });
+    const requestId = randomUUID();
+    const answer = await s.go(PRIYA, { requestId, text: "also cover the v2 endpoint" });
+    expect(answer.redirect).toEqual({ requestId, mode: "keep_plan", state: "revise_started" });
+    expect(s.calls.plan).toEqual([{ requestId, expectedRevision: 3, artifactDigest: "c".repeat(64), reason: "also cover the v2 endpoint" }]);
+    expect(s.calls.cancel).toEqual([]);
+    expect(s.records()).toEqual([]);
+    expect((await s.go(PRIYA, { requestId, text: "also cover the v2 endpoint" })).redirect).toEqual({ requestId, mode: "keep_plan", state: "revise_started" });
+    expect(s.calls.plan).toHaveLength(1);
+    // Only the owner: the decision is not reached for anyone else.
+    const other = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] } });
+    other.w.seedShare(ORG_A, other.made.sessionId, { kind: "member", developerId: MAX }, "edit");
+    expect(await code(other.go(MAX))).toMatchObject({ code: "FORBIDDEN" });
+    expect(other.calls.plan).toEqual([]);
+  });
+
+  it("refuses a plan-review instruction longer than a request for changes can hold, a plan with no document, and a deployment with no decision seam, writing nothing", async () => {
+    const plan = { id: "p", type: "plan", version: 1, sha256: "c".repeat(64) };
+    const long = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] } });
+    const before = long.table();
+    expect(await code(long.go(PRIYA, { text: "x".repeat(501) }))).toMatchObject({ code: "CONFIG_INVALID", message: "Keep your instruction under 500 characters while the plan waits for your approval." });
+    expect(long.table()).toBe(before);
+    expect(long.calls.plan).toEqual([]);
+    const none = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [] } });
+    expect(await code(none.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
+    const bare = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] }, planChanges: false });
+    const bareBefore = bare.table();
+    expect(await code(bare.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
+    expect(bare.table()).toBe(bareBefore);
   });
 });

@@ -156,6 +156,47 @@ describe("keep the plan, at coding", () => {
   });
 });
 
+describe("nothing is running (R4), on the real broker", () => {
+  it("a coding step that failed is restarted at once with the instruction, with no cancel asked", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const requestId = randomUUID();
+    const answer = await t.redirect(MAYA, sessionId, { requestId });
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(answer.body.redirect).toMatchObject({ requestId, state: "restarted" });
+    expect(t.operations(workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+    const second = t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT").at(-1)!;
+    expect(second.requestId).toBe(t.restartId(taskId, requestId));
+    expect(t.outbox(second.id)!.payload["ownerRedirect"]).toMatchObject({ text: TEXT });
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    expect(t.record(taskId, requestId)).toMatchObject({ kind: "blocked", state: "restarted" });
+    expect(t.open(taskId)).toBeUndefined();
+  });
+
+  it("a plan waiting for approval gets the owner's request for changes with their words, and planning starts again; coding does not", async () => {
+    const t = await setup({ features: [] });
+    const { taskId, sessionId, workspaceId, plan } = await t.runningCoding("PLAN");
+    await finishPlanningWithMarkdown(t, workspaceId, String(t.operations(workspaceId).find((operation) => operation.workflowMode === "PLAN")!.id), plan);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const requestId = randomUUID();
+    const answer = await t.redirect(MAYA, sessionId, { requestId, text: "also cover the v2 endpoint" });
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(answer.body.redirect).toEqual({ requestId, mode: "keep_plan", state: "revise_started" });
+    const workflow = t.task(taskId).workflow;
+    expect(workflow.decisions.at(-1)).toMatchObject({ requestId, decision: "REQUEST_CHANGES", actorRole: "TASK_OWNER", reason: "also cover the v2 endpoint" });
+    expect(workflow).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toEqual([]);
+    expect(t.operations(workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+    // A repeat of the request decides nothing again.
+    const before = t.task(taskId).workflow.revision;
+    const again = await t.redirect(MAYA, sessionId, { requestId, text: "also cover the v2 endpoint" });
+    expect(again.status).toBe(200);
+    expect(t.task(taskId).workflow.revision).toBe(before);
+  });
+});
+
 describe("a co-owner", () => {
   it("can redirect, and the restart acts for the co-owner (their name on the record), not for the task's creator", async () => {
     const t = await setup();
@@ -243,7 +284,7 @@ describe("restart conditions (R3)", () => {
   });
 
   it("judges only the exact revision, stage and stop reason", () => {
-    const base = { requestId: randomUUID(), orgId: TEST_ORG, sessionId: "ses_00000000000000000001", taskId: randomUUID(), actorId: "a".repeat(64), messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: 5, step: "IMPLEMENT", state: "stopping" as const, createdAt: "2026-11-01T00:00:00.000Z", ttl: 1_900_000_000 };
+    const base = { requestId: randomUUID(), kind: "stop" as const, orgId: TEST_ORG, sessionId: "ses_00000000000000000001", taskId: randomUUID(), actorId: "a".repeat(64), messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: 5, step: "IMPLEMENT", state: "stopping" as const, createdAt: "2026-11-01T00:00:00.000Z", ttl: 1_900_000_000 };
     const task = (workflow: Item) => ({ closedAt: undefined, workflow } as never);
     const stopped = { revision: 5, stage: "IMPLEMENT", state: "BLOCKED", blockReason: "implementation operation ended cancelled" };
     expect(judgeRedirect(base, task(stopped))).toEqual({ kind: "go" });
@@ -294,7 +335,7 @@ describe("what restarts and what does not, at the edges", () => {
     await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "implementation operation ended cancelled" });
     const row = t.task(taskId);
     t.db.set({ ...row, workflow: { ...row.workflow, blockReason: "implementation operation ended cancelled" } });
-    const record = { requestId: randomUUID(), orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: t.task(taskId).workflow.revision,
+    const record = { requestId: randomUUID(), kind: "stop" as const, orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: t.task(taskId).workflow.revision,
       step: "IMPLEMENT", state: "stopping" as const, createdAt: new Date().toISOString(), ttl: 1_900_000_000 };
     // A record one revision behind the (blocked) workflow.
     const behind = { ...record, blockedRevision: record.blockedRevision - 1 };

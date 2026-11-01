@@ -132,8 +132,13 @@ export type OwnerRedirectInvocation = z.infer<typeof OwnerRedirectInvocationSche
  * conditional on it, so a task that moved on is never restarted. `actorId` is the person who pressed it; the restart acts for them after checking again that they still own the task.
  * Replaces: the first T0 shape (no org, session, task or person ids), which nothing wrote yet.
  */
+export const REDIRECT_KINDS = ["stop", "queued", "blocked"] as const;
+export type RedirectKind = (typeof REDIRECT_KINDS)[number];
+
 export const RedirectRecordSchema = z.object({
   requestId: z.string().uuid(),
+  /** What the redirect found: a running step it stops (`stop`), a step waiting to start that the cancel blocks (`queued`), or a step that was stopped or blocked already, so there is nothing to stop (`blocked`). */
+  kind: z.enum(REDIRECT_KINDS),
   orgId: OrgIdSchema,
   sessionId: SessionIdSchema,
   taskId: z.string().uuid(),

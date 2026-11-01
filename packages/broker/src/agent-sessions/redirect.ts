@@ -9,10 +9,11 @@
 // Who: the task's effective owner and its co-owners, read live from the task's People list (a task that was taken over has the taker as its only owner). Anyone else is refused before anything is
 // written. Plain Stop keeps its own rule. Fails closed everywhere: a task state this route does not know, a worker that cannot be asked, a rate counter that does not read, all refuse and write nothing.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
   OWNER_REDIRECT_FEATURE,
+  REDIRECT_BUDGET_PAUSE_MESSAGE,
   REDIRECT_RATE,
   REDIRECT_REFUSAL_MESSAGES,
   REDIRECT_SLACK_STATUS_LINE,
@@ -22,6 +23,7 @@ import {
   SESSION_RETENTION_DAYS,
   STEER_RATE,
   SessionMessageSchema,
+  redactText,
   agentXError,
   cleanSessionName,
   sessionEventId,
@@ -40,13 +42,13 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import { isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { sessionNoteItems } from "../aws/developer-tasks.js";
 import { readTaskPeople, requireSessionLevel, type SessionAccess } from "./access.js";
-import { countKey, messageKey, newMessageId, rateStep, sessionStillThere, storedText, type SessionMessageDependencies } from "./messages.js";
+import { countKey, messageKey, newMessageId, rateStep, sendSessionMessage, sessionStillThere, storedText, type SessionMessageDependencies } from "./messages.js";
 import { hourlyRedirects, readRedirect, redirectCreateItems, redirectTtl, stepRedirects, endRedirect, type RedirectStateDependencies } from "./redirect-state.js";
 import type { SessionReadDependencies } from "./read.js";
 import { planSteer, queuedSteersItem } from "./steer.js";
-import { repeatOf, readControlRequest, controlRequestItem, afterControl, answerOf, isEnded, isoOf, nameOrSomeone, taskOfSession, getItem, type ControlCaller } from "./stop.js";
+import { repeatOf, readControlRequest, controlRequestItem, afterControl, answerOf, isEnded, isoOf, nameOrSomeone, taskOfSession, getItem, type ControlCaller, type ControlRequest } from "./stop.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
-import { classifyRedirect, needsCodingRestart, type RedirectPlan } from "./redirect-plan.js";
+import { classifyRedirect, needsCodingRestart, type PlanReviewPlan, type RedirectPlan } from "./redirect-plan.js";
 
 /** The outside world of a redirect that is not the table: asking a worker what it supports, and (phase 2) restarting the step. Present only when the switch is on. */
 export interface RedirectConfig {
@@ -66,7 +68,8 @@ export interface RedirectDependencies extends SessionReadDependencies {
 /** What the route answers: the session as `GET` shows it, and where the redirect stands. */
 export interface RedirectAnswer {
   session: SessionView;
-  redirect: { requestId: string; mode: RedirectMode; state: RedirectState };
+  /** `state`: where the redirect stands; `refused` when the instruction was saved as a note and the redirect was not carried out (a pause for budget), with the fixed `message` to show. */
+  redirect: { requestId: string; mode: RedirectMode; state: RedirectState | "refused"; message?: string };
 }
 
 const ATTEMPTS = 4;
@@ -112,20 +115,30 @@ async function answerFor(deps: RedirectDependencies, caller: ControlCaller, sess
   return { ...(await answerOf(deps, caller, session.sessionId)), redirect: { requestId: record.requestId, mode: record.mode, state: record.state } };
 }
 
-/** A repeat of a request that committed: the cancel is asked for again (it is idempotent by the request id, and a crash after the commit may have lost it), then the answer is the record as it stands. */
-async function replayAnswer(deps: RedirectDependencies, config: RedirectConfig, caller: ControlCaller, session: AgentSessionRecord, task: DeveloperTaskRecord, requestId: string): Promise<RedirectAnswer> {
+/**
+ * A repeat of a request that committed: the cancel is asked for again (it is idempotent by the request id, and a crash after the commit may have lost it), then the answer is the record as it
+ * stands. A request that wrote no record (a plan that waited, a pause for budget) answers what it stored.
+ */
+async function replayAnswer(deps: RedirectDependencies, config: RedirectConfig, caller: ControlCaller, session: AgentSessionRecord, task: DeveloperTaskRecord, prior: ControlRequest, requestId: string): Promise<RedirectAnswer> {
   const record = await readRedirect(deps, task.taskId, requestId);
-  if (record === undefined) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
-  if (record.state === "stopping" && deps.control !== undefined) {
+  if (record === undefined) {
+    const stored = RedirectStoredResultSchema.safeParse(prior.result);
+    if (!stored.success) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+    return { ...(await answerOf(deps, caller, session.sessionId)), redirect: { requestId, mode: stored.data.mode, state: stored.data.state, ...(stored.data.message === undefined ? {} : { message: stored.data.message }) } };
+  }
+  if (record.state === "stopping" && record.kind !== "blocked" && deps.control !== undefined) {
     try {
       await deps.control.cancelTask(task, requestId);
     } catch {
       // The stop is asked for again by the next repeat, and the sweep ends a redirect nobody finished: the answer is the record as it stands.
     }
-    await config.continueRedirect?.(task.taskId);
   }
+  if (record.state === "stopping") await config.continueRedirect?.(task.taskId);
   return answerFor(deps, caller, session, (await readRedirect(deps, task.taskId, requestId)) ?? record);
 }
+
+/** What a request that wrote no record stores on its control request, so a repeat answers it. */
+const RedirectStoredResultSchema = z.object({ mode: z.enum(["keep_plan", "change_plan"]), state: z.enum(["revise_started", "refused"]), message: z.string().max(300).optional() }).strict();
 
 /** The audit item for one end of a redirect (ids and a fixed word only), to go in the transaction that ends it. */
 export async function redirectOutcomeAudit(deps: Pick<RedirectDependencies, "audit">, record: RedirectRecord, outcome: "restarted" | "revise_started" | "left_blocked" | "refused", occurredAt: string): Promise<TransactItem[]> {
@@ -154,7 +167,7 @@ export async function redirectSession(deps: RedirectDependencies, caller: Contro
   const prior = await readControlRequest(deps, session, input.requestId);
   if (prior !== undefined) {
     repeatOf(prior, "redirect", caller.developerId);
-    return replayAnswer(deps, config, caller, session, task, input.requestId);
+    return replayAnswer(deps, config, caller, session, task, prior, input.requestId);
   }
   if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
   if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", REDIRECT_REFUSAL_MESSAGES.not_available);
@@ -175,11 +188,15 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
       if (fresh === undefined || fresh.orgId !== session.orgId) throw agentXError("NOT_FOUND", "session not found");
       task = fresh;
     }
-    const plan = classifyRedirect(task);
+    const plan = classifyRedirect(task, input.mode);
     if ("refusal" in plan) {
       if (plan.refusal === "session_ended") throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
+      // Paused for budget: the instruction is saved as a note and used when work resumes; nothing is stopped or restarted.
+      if (plan.refusal === "paused_for_budget") return savePausedInstruction(deps, caller, access, task, input);
       throw redirectRefusal(plan.refusal);
     }
+    // The plan waits for the owner: a request for changes with the instruction as its words.
+    if (plan.kind === "plan_review") return requestChangesForWaitingPlan(deps, caller, access, task, plan, input);
     if (needsCodingRestart(plan.step, input.mode) && !await workerTakesRedirect(config, task)) throw redirectRefusal("old_worker");
     // Where the instruction goes as a note: a task that cannot take one (it holds all it keeps, it waits for answers) cannot be redirected, and nothing is written.
     const route = await planSteer(deps, session);
@@ -200,7 +217,7 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
       delivery: { state: "queued", at },
     });
     const record: RedirectRecord = {
-      requestId: input.requestId, orgId: session.orgId, sessionId: session.sessionId, taskId: task.taskId, actorId: caller.developerId, messageId, mode: input.mode, blockedRevision: plan.blockedRevision,
+      requestId: input.requestId, kind: plan.kind, orgId: session.orgId, sessionId: session.sessionId, taskId: task.taskId, actorId: caller.developerId, messageId, mode: input.mode, blockedRevision: plan.blockedRevision,
       step: plan.step, state: "stopping", createdAt: at, ttl: redirectTtl(nowMs),
     };
     const note = sessionNoteItems(deps, task, { taskId: task.taskId, source: "app", developerId: caller.developerId, name, isOwner: true, sessionId: session.sessionId, messageId, text });
@@ -257,7 +274,12 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
       const failed = failedIndexes(error);
       if (failed === undefined) throw error;
       // This very request committed already (a retry that crossed its own first try): its record is the answer.
-      if (failed.has(REQUEST) || failed.has(RECORD)) return replayAnswer(deps, config, caller, session, task, input.requestId);
+      if (failed.has(REQUEST) || failed.has(RECORD)) {
+        const recorded = await readControlRequest(deps, session, input.requestId);
+        if (recorded === undefined) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+        repeatOf(recorded, "redirect", caller.developerId);
+        return replayAnswer(deps, config, caller, session, task, recorded, input.requestId);
+      }
       if (failed.has(OPEN)) throw redirectRefusal("busy");
       if (failed.has(SESSION)) {
         // The session ended, or is gone, since it was read.
@@ -274,6 +296,54 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
     return stopAfterCommit(deps, config, caller, access, task, record);
   }
   throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+}
+
+/** The longest request for changes the task's decision takes (its reason is held to 500 characters). */
+const PLAN_CHANGES_MAX_CHARS = 500;
+
+/** Writes what a request that left no record answered, with the stopped event's sibling audit item, so a repeat answers it. Best effort after the action: the action itself is idempotent by the request id. */
+async function recordAnswer(deps: RedirectDependencies, caller: ControlCaller, session: AgentSessionRecord, task: DeveloperTaskRecord, input: z.infer<typeof RedirectBodySchema>, messageId: string, step: string,
+  answer: { state: "revise_started" | "refused"; message?: string }): Promise<void> {
+  const nowMs = deps.now();
+  const at = isoOf(nowMs);
+  const audit = await redirectOutcomeAudit(deps, {
+    requestId: input.requestId, orgId: session.orgId, sessionId: session.sessionId, taskId: task.taskId, actorId: caller.developerId, messageId, mode: input.mode, step,
+  } as RedirectRecord, answer.state, at);
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      controlRequestItem(deps, session, input.requestId, { action: "redirect", by: caller.developerId, at, sessionId: session.sessionId, result: { mode: input.mode, ...answer } }, Math.floor(nowMs / 1000) + 30 * 86_400),
+      ...audit,
+    ] }));
+  } catch (error) {
+    // Recorded already by a repeat that crossed this one: its answer is the same. Anything else is only logged by name: the action happened.
+    if (failedIndexes(error) === undefined) deps.log?.({ event: "redirect.answer_not_recorded", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
+ * The plan waits for the owner's approval: the redirect is their request for changes, with the instruction as its words, through the task's own decision (who may decide, the revision and the plan's
+ * digest are checked there, and it is idempotent by the request id). The planner then revises the plan, which the owner approves as always.
+ */
+async function requestChangesForWaitingPlan(deps: RedirectDependencies, caller: ControlCaller, access: SessionAccess, task: DeveloperTaskRecord, plan: PlanReviewPlan, input: z.infer<typeof RedirectBodySchema>): Promise<RedirectAnswer> {
+  const { session } = access;
+  if (deps.control?.requestPlanChanges === undefined) throw redirectRefusal("not_available");
+  const reason = redactText(input.text).trim();
+  if (reason.length > PLAN_CHANGES_MAX_CHARS) throw agentXError("CONFIG_INVALID", `Keep your instruction under ${String(PLAN_CHANGES_MAX_CHARS)} characters while the plan waits for your approval.`);
+  await deps.control.requestPlanChanges(task, { requestId: input.requestId, expectedRevision: plan.revision, artifactDigest: plan.artifactDigest, reason });
+  await recordAnswer(deps, caller, session, task, input, newMessageId(deps.now(), caller.developerId, input.requestId), "PLAN_REVIEW", { state: "revise_started" });
+  await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
+  return { ...(await answerOf(deps, caller, session.sessionId)), redirect: { requestId: input.requestId, mode: input.mode, state: "revise_started" } };
+}
+
+/**
+ * The task is paused for budget: nothing is stopped or restarted. The instruction is saved as the owner's message and note (the next step reads it when work resumes), and the answer says so in
+ * fixed words. The pause is never skipped by a redirect.
+ */
+async function savePausedInstruction(deps: RedirectDependencies, caller: ControlCaller, access: SessionAccess, task: DeveloperTaskRecord, input: z.infer<typeof RedirectBodySchema>): Promise<RedirectAnswer> {
+  const { session } = access;
+  const message = await sendSessionMessage(deps, caller, session.sessionId, { requestId: input.requestId, kind: "steer", text: input.text });
+  await recordAnswer(deps, caller, session, task, input, message.messageId, task.workflow?.stage ?? "UNKNOWN", { state: "refused", message: REDIRECT_BUDGET_PAUSE_MESSAGE });
+  return { ...(await answerOf(deps, caller, session.sessionId)), redirect: { requestId: input.requestId, mode: input.mode, state: "refused", message: REDIRECT_BUDGET_PAUSE_MESSAGE } };
 }
 
 /** Adds to the note's count update the condition that the task is still where the plan read it. The update is the only write on the task row in the transaction. */
@@ -293,12 +363,15 @@ function guardTask(update: TransactItem, plan: RedirectPlan): TransactItem {
 /** After the commit: the same cancel as Stop; a cancel that fails ends the redirect `failed` (the instruction stays a note) and raises the cancel's own fixed error. */
 async function stopAfterCommit(deps: RedirectDependencies, config: RedirectConfig, caller: ControlCaller, access: SessionAccess, task: DeveloperTaskRecord, record: RedirectRecord): Promise<RedirectAnswer> {
   const { session } = access;
-  try {
-    await deps.control!.cancelTask(task, record.requestId);
-  } catch (error) {
-    const audit = await redirectOutcomeAudit(deps, record, "refused", isoOf(deps.now()));
-    await endRedirect(deps, record, ["stopping"], "failed", audit).catch(() => undefined);
-    throw error;
+  // A step that is stopped or blocked already has nothing to stop: phase 2 runs at once.
+  if (record.kind !== "blocked") {
+    try {
+      await deps.control!.cancelTask(task, record.requestId);
+    } catch (error) {
+      const audit = await redirectOutcomeAudit(deps, record, "refused", isoOf(deps.now()));
+      await endRedirect(deps, record, ["stopping"], "failed", audit).catch(() => undefined);
+      throw error;
+    }
   }
   // The stop may have landed already (a step that was queued is blocked by the cancel's own transaction): phase 2 runs now if so, and otherwise waits for the terminal result of the run.
   await config.continueRedirect?.(task.taskId);

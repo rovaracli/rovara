@@ -14,6 +14,7 @@ import {
   REDIRECT_LEFT_BLOCKED_MESSAGE,
   REDIRECT_STOPPING_SWEEP_MINUTES,
   REDIRECT_TEXT_MAX_CHARS,
+  WORKFLOW_BLOCK_REASONS,
   redactText,
   sessionEventId,
   type OwnerRedirectInvocation,
@@ -76,6 +77,8 @@ export function judgeRedirect(record: RedirectRecord, task: DeveloperTaskRecord 
   if (workflow.revision > record.blockedRevision || workflow.stage !== record.step) return { kind: "end", to: "failed" };
   // At exactly the recorded revision: the stop must be what blocked the step. A step that is still running or waiting at that revision is not stopped yet.
   if (workflow.state !== "BLOCKED") return { kind: "wait" };
+  // A step that was blocked already when the redirect came restarts from any block but a pause for budget (that waits for an approval); a step the redirect stopped restarts only from that stop.
+  if (record.kind === "blocked") return workflow.blockReason === WORKFLOW_BLOCK_REASONS.budgetPaused ? { kind: "end", to: "left_blocked" } : { kind: "go" };
   const reasons = stoppedBlockReasons(record.step as RedirectStep);
   return workflow.blockReason !== undefined && reasons.includes(workflow.blockReason) ? { kind: "go" } : { kind: "end", to: "left_blocked" };
 }

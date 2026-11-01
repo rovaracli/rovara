@@ -33,6 +33,7 @@ import {
   CLOSED_TASK,
   cancelTask,
   cancelTaskFor,
+  decideTaskWorkflow,
   loadOwnedTask,
   retryTaskWorkflowFor,
   startAlreadyMade,
@@ -272,6 +273,8 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
     control: {
       cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      // Stop & redirect while the plan waits for approval: the caller's own request for changes, through the task's decision (their authority as a task owner is checked there).
+      requestPlanChanges: async (task, input) => { await decideTaskWorkflow(taskDeps, caller, task.taskId, { requestId: input.requestId, expectedRevision: input.expectedRevision, decision: "REQUEST_CHANGES", reason: input.reason, artifactDigest: input.artifactDigest }); },
       // Plan 6 Task 5: Understand starts again as soon as people answered. A failed start is the answer's dispatch row's to redo, so it is logged by name and not raised.
       startUnderstanding: async (task, workflowRevision) => {
         try {
