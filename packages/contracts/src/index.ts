@@ -87,6 +87,7 @@ export * from "./admin-changes.js";
 export * from "./swebench.js";
 export * from "./eval-batch.js";
 export * from "./eval-stats.js";
+export * from "./eval-memory.js";
 export * from "./e2e-node.js";
 export * from "./e2e-runtime-capabilities.js";
 export * from "./e2e-runtime-registration.js";

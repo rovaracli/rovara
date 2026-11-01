@@ -11,4 +11,8 @@
 - tests: tests/unit/lessons/metric.test.ts (24), metric-source.test.ts (8); read-paths.test.ts got one list entry for metric.ts (counts only)
 - 14 mutants of metric.ts killed by the tests.
 - NOT wired (no route, no UI): the controller hands it the curator matcher and mounts it on the overview.
-## Task 3: W1 memory-arm hook -- TODO
+## Task 3: W1 memory-arm hook -- DONE (commit below)
+- packages/contracts/src/eval-memory.ts (+1 export line in index.ts): EvalMemoryArm off|on, EvalMemoryDimension, evalMemoryArms, memoryInputForArm (on = frozen snapshot, never live), compareMemoryArms (paired, Wilson).
+- tests/contract/eval-memory-contracts.test.ts (10); 7 mutants killed.
+- Contract only: the quality-suite batch is not on cloud/next; today's EvalBatchFileSchema refuses a `memory` key (pinned by a test).
+- Inventory gates: task-owner-reads(+bypass), role-sites, agent-lifecycle, contracts-web-entry (the web-safe-files inventory) pass; contracts-web-entry's one dist test needs packages/web/dist (environmental).
