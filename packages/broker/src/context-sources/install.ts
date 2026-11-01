@@ -10,7 +10,7 @@
 import { EditionSchema, agentXError, type Edition } from "@agentx/contracts";
 import type { AuditDeps } from "../audit/outbox.js";
 import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
-import { contextSourceAudit, mcpServerAudit } from "./audit.js";
+import { contextSourceAudit, controllerEventAudit, mcpServerAudit } from "./audit.js";
 import { connectionLookupFromStore, createContextSourceRouteDependencies, createContextSourcesRuntime, createMcpServerDependencies, serverSecretsFromOrgSecrets } from "./wiring.js";
 import type { OrgConnectionDeps } from "../connections/store.js";
 import { probeLimiter, type McpServerDependencies } from "./mcp-servers.js";
@@ -105,7 +105,7 @@ export function installContextSources(input: ContextSourcesInstallInput): Contex
   // One limiter for the install: listing a server's tools is a call out to the server, so each org may do it only so often (like the test of a pasted server).
   const discoverAllowed = probeLimiter({ max: 30, windowMs: 600_000, now: common.now });
   // Built once for the install: the limiter on tests of a pasted server counts in this process.
-  const mcpServers = config.edition === "enterprise" ? createMcpServerDependencies({ ...common, ...(serverAudit === undefined ? {} : { audit: serverAudit }) }) : undefined;
+  const mcpServers = config.edition === "enterprise" ? createMcpServerDependencies({ ...common, ...(serverAudit === undefined ? {} : { audit: serverAudit }), controllerEventAudit: controllerEventAudit(ledger) }) : undefined;
   const stopCleanup = input.registerCleanup === false ? undefined : registerContextSourceCleanup({ store: dynamoResultStore(common), log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })) });
   return {
     config, runtime,

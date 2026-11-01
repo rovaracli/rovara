@@ -568,6 +568,49 @@ export function auditMcpServerChanged(input: AuditBuilderBase & { action: "mcp_s
   return build(action, { ...base, details: [...(base.details ?? []), { subject: "org", fields: { label: label.slice(0, AUDIT_LABEL_MAX_CHARS) } }] }, { kind: "mcp_server", id: serverId }, { transport, ...(withToken ? { hasCredential: hasToken === true } : {}) });
 }
 
+/** What an approval of a package-run server pinned. Hashes and counts are facts; the host names and secret NAMES (never values) go in the org's `details`. */
+export interface McpServerApprovalPin { integrity: string; lockfileHash: string; bundleHash: string; toolsHash: string; destinationCount: number; secretCount: number; secretVersion?: string | undefined; destinations?: string; secretNames?: string }
+
+/** `occurrence`: `auditOccurrence(serverId, time of the change)`. The target is the server's id; its label goes in `details` (org), its address and its token nowhere. */
+export function auditMcpServerApproved(input: AuditBuilderBase & { serverId: string; label: string; transport: "http" | "stdio"; hasToken?: boolean; pin?: McpServerApprovalPin }): AuditEventInput {
+  const { serverId, label, transport, hasToken, pin, ...base } = input;
+  const fields: Record<string, string> = { label: label.slice(0, AUDIT_LABEL_MAX_CHARS), ...(pin?.destinations === undefined ? {} : { destinations: pin.destinations }), ...(pin?.secretNames === undefined ? {} : { secretNames: pin.secretNames }) };
+  return build("mcp_server.approved", { ...base, details: [...(base.details ?? []), { subject: "org", fields }] }, { kind: "mcp_server", id: serverId }, {
+    transport, hasCredential: hasToken === true,
+    ...(pin === undefined ? {} : { integrity: pin.integrity, lockfileHash: pin.lockfileHash, bundleHash: pin.bundleHash, toolsHash: pin.toolsHash, destinationCount: pin.destinationCount, credentialCount: pin.secretCount, credentialVersion: pin.secretVersion }),
+  });
+}
+
+/** `occurrence`: `auditOccurrence(serverId, time)`. What the install of a package produced: the package, its three fingerprints and its size. */
+export function auditMcpServerInstalled(input: AuditBuilderBase & { serverId: string; name: string; version: string; integrity: string; lockfileHash: string; bundleHash: string; packageCount?: number | undefined; unpackedBytes?: number | undefined }): AuditEventInput {
+  const { serverId, name, version, integrity, lockfileHash, bundleHash, packageCount, unpackedBytes, ...base } = input;
+  return build("mcp_server.installed", base, { kind: "mcp_server", id: serverId }, { package: name, version, integrity, lockfileHash, bundleHash, packageCount, unpackedBytes });
+}
+
+/** `occurrence`: `auditOccurrence(serverId, time)`. A test of a package: for a `proposal` or an `approval`, with the hash of the tools it listed. */
+export function auditMcpServerProbed(input: AuditBuilderBase & { serverId: string; purpose: "proposal" | "approval"; toolsHash: string; bundleHash: string; toolCount: number }): AuditEventInput {
+  return build("mcp_server.probed", input, { kind: "mcp_server", id: input.serverId }, { purpose: input.purpose, toolsHash: input.toolsHash, bundleHash: input.bundleHash, toolCount: input.toolCount }, [input.purpose]);
+}
+
+/** The ids the host's events carry. The controller makes them (`occurrence` is the event's own key, so recording one twice is one event). */
+export function auditMcpServerChangedNeedsReview(input: AuditBuilderBase & { serverId: string; approvedToolsHash: string; observedToolsHash: string }): AuditEventInput {
+  return build("mcp_server.changed_needs_review", input, { kind: "mcp_server", id: input.serverId }, { approvedToolsHash: input.approvedToolsHash, observedToolsHash: input.observedToolsHash });
+}
+export function auditMcpServerTaskStarted(input: AuditBuilderBase & { serverId: string; trigger: "call" | "warm" }): AuditEventInput {
+  return build("mcp_server.task_started", input, { kind: "mcp_server", id: input.serverId }, { trigger: input.trigger });
+}
+export function auditMcpServerTaskStopped(input: AuditBuilderBase & { serverId: string; reason: string }): AuditEventInput {
+  return build("mcp_server.task_stopped", input, { kind: "mcp_server", id: input.serverId }, { cause: input.reason });
+}
+/** `addresses` (old and new, as the host saw them) are the org's details, not facts: only the counts are. */
+export function auditMcpServerEgressUpdated(input: AuditBuilderBase & { serverId: string; added: number; removed: number; addresses?: string }): AuditEventInput {
+  const { serverId, added, removed, addresses, ...base } = input;
+  return build("mcp_server.egress_updated", { ...base, ...(addresses === undefined ? {} : { details: [...(base.details ?? []), { subject: "org", fields: { addresses } }] }) }, { kind: "mcp_server", id: serverId }, { added, removed });
+}
+export function auditMcpServerSecretReplaced(input: AuditBuilderBase & { serverId: string; secretCount: number; secretVersion: string }): AuditEventInput {
+  return build("mcp_server.secret_replaced", input, { kind: "mcp_server", id: input.serverId }, { credentialCount: input.secretCount, credentialVersion: input.secretVersion }, [input.secretVersion]);
+}
+
 /** `occurrence`: `auditOccurrence(serverId, time)`. `change` is `stored` or `deleted`: that the server's token changed, never the token. */
 export function auditMcpServerTokenChanged(input: AuditBuilderBase & { serverId: string; change: "stored" | "deleted" }): AuditEventInput {
   return build("mcp_server.token_changed", input, { kind: "mcp_server", id: input.serverId }, { change: input.change }, [input.change]);

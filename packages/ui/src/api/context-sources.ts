@@ -21,7 +21,7 @@ export type DiscoveredView = z.infer<typeof DiscoveredReader>["tools"][number];
 const ProbeTool = z.object({ name: z.string().max(64), description: z.string().max(300), annotation: z.enum(["read_only", "unannotated", "unsafe"]) });
 const Sha256 = z.string().length(64);
 const McpServerReader = z.object({
-  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval"]),
+  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval", "changed_needs_review"]),
   transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({
     name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200), args: z.array(z.string().max(100)).max(8).default([]), bundleHash: Sha256.optional(), lockfileHash: Sha256.optional(),
     destinations: z.array(z.object({ host: z.string().max(253), port: z.number() })).max(8).default([]), secretEnv: z.array(z.string().max(64)).max(8).default([]),
@@ -31,6 +31,10 @@ const McpServerReader = z.object({
   install: z.object({ packageCount: z.number(), unpackedBytes: z.number() }).optional(),
 });
 export type McpServerView = z.infer<typeof McpServerReader>;
+const STOP_REASONS = ["idle", "lifetime", "disabled", "secret_replaced", "crash", "leftover", "room", "approval_changed", "tools_changed", "failed", "done", "shutdown"] as const;
+/** How a package-run server has been doing, from the controller's own events (T10). */
+const McpActivityReader = z.object({ starts24h: z.number().int().min(0).max(100_000), lastStartAt: z.string().max(40).optional(), lastStop: z.object({ at: z.string().max(40), reason: z.enum(STOP_REASONS) }).optional(), keepsStopping: z.boolean() });
+export type McpActivityView = z.infer<typeof McpActivityReader>;
 
 const TIMEOUT_MS = 120_000;
 
@@ -53,7 +57,7 @@ export function createContextSourcesApi(host: AppHost) {
       call({ method: "POST", path: `${sourcesPath(project)}/changes`, body }, z.object({ changeId: z.string().max(60), needsSecondAdmin: z.array(z.string().max(300)).max(20) }), [202]),
     confirm: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/confirm` }, z.object({}).passthrough()),
     reject: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/reject` }, z.object({}).passthrough()),
-    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional() })),
+    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional(), activity: z.record(z.string().max(40), McpActivityReader).optional() })),
     addServer: (body: { label: string; transport: unknown; secret?: string; secrets?: Record<string, string> }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
     approveServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/approve` }, z.object({ server: McpServerReader })),
     disableServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/disable` }, z.object({}).passthrough()),

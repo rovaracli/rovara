@@ -19,6 +19,7 @@ import { secretArnResolver, bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFro
 import { destinationResolver } from "./destinations.js";
 import { dynamoInstanceLeases } from "./instance-leases.js";
 import { dynamoProbeSlots } from "./probe-slots.js";
+import { dynamoControllerEvents } from "./events.js";
 import { randomBytes } from "node:crypto";
 import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
 
@@ -149,16 +150,17 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
   const installEnvironment = installEnvironmentName(env);
   const log = (event: string, fields: Record<string, string | number>): void => { console.log(JSON.stringify({ component: "mcp-controller", event, ...fields })); };
   const ecs = new sdk.ECSClient({});
+  const events = dynamoControllerEvents({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), log });
   const resources = ecsServerResources({
     definitions: ecsDefinitionApiFromSdk(sdk, ecs), groups: ec2GroupApiFromSdk(new EC2Client({})), vpcId: config.vpcId, image: config.runnerImage, executionRoleArn: config.executionRoleArn,
     logGroup: config.logGroup, region: config.region,
     endpoints: { endpointGroupIds: config.endpointGroupIds, s3PrefixListId: config.s3PrefixListId, controllerGroupId: config.controllerGroupId, controllerPort: config.runnerPort },
     resolveDestinations: destinationResolver({ installCidrs: config.privateCidrs, rovaraCidrs: config.rovaraCidrs }),
-    // Counts only: the audit event with the host names is the audit task's (T10).
-    onEgressChange: (change) => log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }),
+    // The log gets counts only; the audit event (with the approved names and the addresses) goes to the broker through the events partition.
+    onEgressChange: (change) => { log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }); void events.egress(change); },
   });
   const controller = createMcpController({
-    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
+    token, events: (event) => events.record(event), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
     leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),

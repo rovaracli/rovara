@@ -203,7 +203,7 @@ function fakeCloud() {
 
 function setup(over: Partial<EcsResourcesConfig> = {}) {
   const cloud = fakeCloud();
-  const changes: Array<{ serverId: string; added: string[]; removed: string[] }> = [];
+  const changes: Array<{ serverId: string; hosts: string[]; added: string[]; removed: string[] }> = [];
   const resolved: ResolvedDestination[] = [{ host: "jira.corp.example", port: 443, addresses: ["10.1.2.3"] }];
   const state = { resolved, refuse: false };
   const resources = ecsServerResources({
@@ -226,7 +226,7 @@ describe("per-server resources: ensure", () => {
     expect(group.egress.map(ruleKey)).toContain("tcp:443:cidr:10.1.2.3/32");
     expect(group.egress.some((rule) => rule.target.kind === "cidr" && rule.target.cidr === "0.0.0.0/0")).toBe(false);
     expect(group.tags).toEqual({ "rovara:managed": "rovara-mcp", "rovara:server": ID, "rovara:purpose": "serve" });
-    expect(w.changes).toEqual([{ serverId: ID, added: ["10.1.2.3:443"], removed: [] }]);
+    expect(w.changes).toEqual([{ serverId: ID, hosts: ["jira.corp.example:443"], added: ["10.1.2.3:443"], removed: [] }]);
   });
   it("registers a definition with the server's secrets, size and the image digest", async () => {
     const w = setup();
@@ -272,7 +272,7 @@ describe("per-server resources: ensure", () => {
     w.state.resolved = [{ host: "jira.corp.example", port: 443, addresses: ["10.1.2.9"] }];
     await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
     expect(w.calls).toEqual(["authorize:egress:tcp:443:cidr:10.1.2.9/32", "revoke:egress:tcp:443:cidr:10.1.2.3/32"]);
-    expect(w.changes.at(-1)).toEqual({ serverId: ID, added: ["10.1.2.9:443"], removed: ["10.1.2.3:443"] });
+    expect(w.changes.at(-1)).toEqual({ serverId: ID, hosts: ["jira.corp.example:443"], added: ["10.1.2.9:443"], removed: ["10.1.2.3:443"] });
     expect(w.groups.get("sg-00000000000000001")!.egress.map(ruleKey)).not.toContain("tcp:443:cidr:10.1.2.3/32");
   });
   it("brings a group that has a rule it should not have back to the wanted rules", async () => {

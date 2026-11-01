@@ -1,13 +1,13 @@
 // Stdio MCP host redesign, task T7: the controller's lifecycle against a fake task runner and fake per-server resources: idle and lifetime stops, reconcile from the cloud's records
 // (leftovers, over-age jobs, tasks that are not the approved one), crashes and backoff, a replaced secret, the per-server task definition and security group, and the release route.
 import { describe, expect, it, vi } from "vitest";
-import type { ServerResources, RunnerSpec } from "../../../packages/gateway/src/mcp-controller.js";
+import type { ControllerEvent as Told, ServerResources, RunnerSpec } from "../../../packages/gateway/src/mcp-controller.js";
 import type { RunnerTaskInfo } from "../../../packages/gateway/src/mcp-runner/task-runner.js";
 import { CONTROLLER_LIMITS, memoryProbeSlots } from "../../../packages/gateway/src/mcp-controller.js";
 import { HOST_PROBE_TIMEOUT_MS } from "../../../packages/broker/src/context-sources/server-port.js";
 import { PROBE_SLOT_LEASE_MS } from "../../../packages/broker/src/mcp-host/probe-slots.js";
 import { toolsHashOfNames } from "../../support/mcp-controller-fixtures.js";
-import { BROKER, BUNDLE, ECHO, OTHER, approvedOf, mcp, post, specOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
+import { BROKER, BUNDLE, BYTES, ECHO, OTHER, approvedOf, mcp, post, specOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
 
 useControllerWorld();
 
@@ -495,5 +495,97 @@ describe("fix round 1, m6: a probe job is over before its slot can be taken, and
     await w.bundles.put(BUNDLE, (async function* () { yield Buffer.from("a bundle"); })(), 1_000);
     const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: proposal, pinned: { lockfileHash: "2".repeat(64), bundleHash: BUNDLE } });
     expect(await answer.json()).toMatchObject({ bundleHash: BUNDLE });
+  });
+});
+
+describe("T10: what the controller tells the broker", () => {
+  async function told(over: Parameters<typeof world>[0] = {}) {
+    const events: Told[] = [];
+    const w = await lifecycle({ ...over, controller: { events: async (event) => { events.push(event); }, ...over.controller } });
+    const settle = async (): Promise<void> => { await new Promise((resolve) => setTimeout(resolve, 5)); };
+    return { ...w, events, settle };
+  }
+  it("says a server started, by a call, and stopped when idle, with the fixed reason", async () => {
+    const w = await told();
+    await mcp(w.brokerUrl, ID);
+    clock.offset = 11 * MIN;
+    await w.controller.reconcile();
+    await w.settle();
+    expect(w.events).toEqual([{ type: "task_started", serverId: ID, trigger: "call" }, { type: "task_stopped", serverId: ID, reason: "idle" }]);
+  });
+  it("says a start was a warm-up when the broker asked for one without a call", async () => {
+    const w = await told();
+    expect((await post(w.brokerUrl, `/servers/${ID}/warm`, BROKER)).status).toBe(202);
+    await vi.waitFor(() => expect(w.events.map((event) => event.type)).toContain("task_started"));
+    expect(w.events[0]).toEqual({ type: "task_started", serverId: ID, trigger: "warm" });
+  });
+  it("says why a task stopped: a crash, the end of its 12 hours, a disabled server, a leftover, a changed approval", async () => {
+    const crashed = await told();
+    await mcp(crashed.brokerUrl, ID);
+    await crashed.runner.crash(crashed.runner.started("serve")[0]!.taskId);
+    await crashed.controller.reconcile();
+    await crashed.settle();
+    expect(crashed.events.at(-1)).toEqual({ type: "task_stopped", serverId: ID, reason: "crash" });
+
+    const old = await told();
+    await mcp(old.brokerUrl, ID);
+    clock.offset = 12 * HOUR + MIN;
+    await mcp(old.brokerUrl, ID);
+    await old.controller.reconcile();
+    await old.settle();
+    expect(old.events.at(-1)).toEqual({ type: "task_stopped", serverId: ID, reason: "lifetime" });
+
+    const off = await told();
+    await mcp(off.brokerUrl, ID);
+    off.approved.delete(ID);
+    expect((await post(off.brokerUrl, `/servers/${ID}/release`, BROKER)).status).toBe(200);
+    await off.settle();
+    expect(off.events.at(-1)).toEqual({ type: "task_stopped", serverId: ID, reason: "disabled" });
+
+    const ghosted = await told();
+    ghosted.runner.extra.push(ghost());
+    await ghosted.controller.reconcile();
+    await ghosted.settle();
+    expect(ghosted.events).toEqual([{ type: "task_stopped", serverId: "mcpghost0001", reason: "leftover" }]);
+
+    const moved = await told();
+    await mcp(moved.brokerUrl, ID);
+    moved.approved.set(ID, approvedOf({ spec: specOf(OTHER) }));
+    await moved.controller.reconcile();
+    await moved.settle();
+    expect(moved.events.at(-1)).toEqual({ type: "task_stopped", serverId: ID, reason: "approval_changed" });
+  });
+  it("says the tools changed, with both hashes, and that the task stopped for it", async () => {
+    const w = await told({ runner: { tools: () => [{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }] } });
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    await w.settle();
+    expect(w.events).toContainEqual({ type: "task_stopped", serverId: ID, reason: "tools_changed" });
+    expect(w.events).toContainEqual({ type: "changed_needs_review", serverId: ID, approved: toolsHashOfNames(ECHO), observed: toolsHashOfNames([{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }]) });
+  });
+  it("says nothing about a probe or an install task, running or left over: only servers that serve", async () => {
+    const w = await told();
+    await w.bundles.put(BUNDLE, (async function* () { yield BYTES; })(), 1_000);
+    const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 }, integrity: `sha512-${"A".repeat(86)}==` }, pinned: { lockfileHash: "2".repeat(64), bundleHash: BUNDLE } });
+    expect(await answer.json()).toMatchObject({ bundleHash: BUNDLE });
+    expect(w.runner.started("probe")).toHaveLength(1);
+    w.runner.extra.push(ghost({ taskId: "ghost-2", purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789" }), ghost({ taskId: "ghost-3", purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install" }));
+    await w.controller.reconcile();
+    await w.settle();
+    expect(w.runner.stops.filter((stop) => stop.reason === "leftover")).toHaveLength(2);
+    expect(w.events).toEqual([]);
+  });
+  it("says a leftover serve task of an instance that is gone stopped, and not one of an instance that is alive", async () => {
+    const calls = { alive: { deadinst3: false, otherinst2: true } as Record<string, boolean> };
+    const w = await told({ controller: { leases: { renew: async () => undefined, alive: async (id: string) => calls.alive[id] === true } } });
+    w.runner.extra.push(ghost({ taskId: "theirs-1", owner: "otherinst2", serverId: "mcpalive00001" }), ghost({ taskId: "theirs-2", owner: "deadinst3", serverId: "mcpgone000001" }), ghost({ taskId: "theirs-3", owner: "deadinst3", purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789" }));
+    await w.controller.reconcile();
+    await w.settle();
+    expect(w.events).toEqual([{ type: "task_stopped", serverId: "mcpgone000001", reason: "leftover" }]);
+  });
+  it("works the same when the broker cannot be told: a sink that throws or never answers changes nothing for the call", async () => {
+    const throwing = await lifecycle({ controller: { events: async () => { throw new Error("table down"); } } });
+    expect((await mcp(throwing.brokerUrl, ID)).status).toBe(200);
+    const hanging = await lifecycle({ controller: { events: () => new Promise<void>(() => undefined) } });
+    expect((await mcp(hanging.brokerUrl, ID)).status).toBe(200);
   });
 });

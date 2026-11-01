@@ -237,7 +237,7 @@ export interface EcsResourcesConfig {
   /** Looks up each destination and applies the install's rules (inside the private ranges, outside Rovara's network, not on the never-called list). Throws when any is refused. */
   resolveDestinations: (destinations: ReadonlyArray<{ host: string; port: number }>) => Promise<ResolvedDestination[]>;
   /** Told when a server's allowed addresses changed: host names only, never anything secret. */
-  onEgressChange?: (change: { serverId: string; added: string[]; removed: string[] }) => void;
+  onEgressChange?: (change: { serverId: string; /** The approved destinations (host:port), so the audit event can say which names the addresses belong to. */ hosts: string[]; added: string[]; removed: string[] }) => void;
   /** How long to wait between tries to delete a group a stopped task has not released yet, and how many tries. */
   deleteRetryMs?: number;
   deleteRetries?: number;
@@ -310,7 +310,7 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
           await config.groups.deleteGroup(groupId).catch(() => undefined);
           throw error;
         }
-        config.onEgressChange?.({ serverId: id, added: resolved.flatMap((item) => item.addresses.map((address) => `${address}:${item.port}`)), removed: [] });
+        config.onEgressChange?.({ serverId: id, hosts: spec.destinations.map((item) => `${item.host}:${item.port}`), added: resolved.flatMap((item) => item.addresses.map((address) => `${address}:${item.port}`)), removed: [] });
       } else {
         groupId = existing.groupId;
         const have = new Map(existing.egress.map((rule) => [ruleKey(rule), rule]));
@@ -326,7 +326,7 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
         if (dropIngress.length > 0) await config.groups.revoke({ groupId, direction: "ingress", rules: dropIngress });
         if (drop.length > 0) await config.groups.revoke({ groupId, direction: "egress", rules: drop });
         const cidrs = (rules: GroupRule[]): string[] => rules.flatMap((rule) => (rule.target.kind === "cidr" ? [`${rule.target.cidr.replace("/32", "")}:${rule.port}`] : []));
-        if (add.length > 0 || drop.length > 0) config.onEgressChange?.({ serverId: id, added: cidrs(add), removed: cidrs(drop) });
+        if (add.length > 0 || drop.length > 0) config.onEgressChange?.({ serverId: id, hosts: spec.destinations.map((item) => `${item.host}:${item.port}`), added: cidrs(add), removed: cidrs(drop) });
         if (!exactlyWanted(await findGroup(kind, id), wanted)) throw new Error("the security group does not hold the wanted rules");
       }
       // 3. The task definition: the newest revision is used only if it is exactly what would be registered (checked by reading it back); otherwise a new one is registered. The task is

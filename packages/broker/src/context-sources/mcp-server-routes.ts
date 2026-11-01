@@ -9,6 +9,7 @@ import { agentXError } from "@agentx/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { drainControllerEvents, serverActivities } from "./controller-events.js";
 import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, removeMcpServer, stdioAvailable, type McpServerDependencies } from "./mcp-servers.js";
 
 export const MCP_SERVERS_PATH = /^\/v1\/app\/org\/mcp-servers(?:\/(mcp[a-z0-9]{6,24})(?:\/(approve|disable))?)?$/;
@@ -35,7 +36,17 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
   const actor = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
   const [, serverId, action] = match;
   if (serverId === undefined) {
-    if (request.method === "GET") return { servers: (await listMcpServers(deps, actor)).map(withoutSecretVersion), stdioAvailable: stdioAvailable(deps) };
+    if (request.method === "GET") {
+      const servers = await listMcpServers(deps, actor);
+      // The controller's events: new ones are recorded and applied first (bounded, never throws), then the newest are summarised for the card. No controller, no activity.
+      let activity: ReturnType<typeof serverActivities> = {};
+      if (deps.controllerEvents !== undefined && servers.some((server) => server.transport.kind === "stdio")) {
+        await drainControllerEvents({ events: deps.controllerEvents.store, servers: deps.store, audit: deps.controllerEvents.audit, now: deps.now }, actor.orgId);
+        activity = serverActivities(await deps.controllerEvents.store.recent(actor.orgId, 200).catch(() => []), deps.now());
+      }
+      const listed = (await listMcpServers(deps, actor)).map(withoutSecretVersion);
+      return { servers: listed, stdioAvailable: stdioAvailable(deps), ...(Object.keys(activity).length === 0 ? {} : { activity }) };
+    }
     if (request.method !== "POST") throw notThere();
     const parsed = AddBodySchema.safeParse(jsonBody(request));
     if (!parsed.success) {

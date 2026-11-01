@@ -11,8 +11,11 @@ export const McpServerIdSchema = z.string().regex(/^mcp[a-z0-9]{6,24}$/);
  * `needs_reapproval`: a package-run entry that was stored before the approval bound its install (no lockfile or bundle hash). It is never served and cannot be approved as it
  * is; an admin looks at it again by adding the package again. (Stdio never shipped switched on, so no running install has one; the status exists so that reading an old row
  * never throws and never serves.)
+ *
+ * `changed_needs_review` (T10): a package-run server that was approved and whose tools, when it started, were not the ones approved (for example after a Rovara upgrade changed the Node
+ * version). It is paused: never served. The admin looks again by adding the package again (the same flow as any new proposal, which shows what it offers now) and turns the old entry off.
  */
-export const MCP_SERVER_STATUSES = ["awaiting_approval", "approved", "disabled", "needs_reapproval"] as const;
+export const MCP_SERVER_STATUSES = ["awaiting_approval", "approved", "disabled", "needs_reapproval", "changed_needs_review"] as const;
 export const McpServerStatusSchema = z.enum(MCP_SERVER_STATUSES);
 export type McpServerStatus = z.infer<typeof McpServerStatusSchema>;
 
@@ -261,3 +264,26 @@ export const MCP_INSTALL_FAILURES = {
   upload_failed: "Rovara could not store the prepared package.",
 } as const;
 export type McpInstallFailureCode = keyof typeof MCP_INSTALL_FAILURES;
+
+// ---------------------------------------------------------------------------------------------
+// What the MCP controller tells the broker about a package-run server (T10)
+// ---------------------------------------------------------------------------------------------
+
+/** Why the controller stopped a server's task. Fixed words (the same list the task runner uses). */
+export const MCP_TASK_STOP_REASONS = ["idle", "lifetime", "disabled", "secret_replaced", "crash", "leftover", "room", "approval_changed", "tools_changed", "failed", "done", "shutdown"] as const;
+export type McpTaskStopReason = (typeof MCP_TASK_STOP_REASONS)[number];
+
+const EventTime = z.string().datetime();
+const PrintableLine = z.string().max(900).regex(/^[\x20-\x7e]*$/);
+
+/**
+ * One thing that happened to a package-run server, as the controller writes it and the broker reads it. Ids, fixed words, hashes and counts. `addresses` (an egress change) is host
+ * names and addresses the admin approved: the broker puts it in the org's audit details, never in a fact.
+ */
+export const McpControllerEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("task_started"), serverId: McpServerIdSchema, at: EventTime, trigger: z.enum(["call", "warm"]) }).strict(),
+  z.object({ type: z.literal("task_stopped"), serverId: McpServerIdSchema, at: EventTime, reason: z.enum(MCP_TASK_STOP_REASONS) }).strict(),
+  z.object({ type: z.literal("egress_updated"), serverId: McpServerIdSchema, at: EventTime, added: z.number().int().min(0).max(1_000), removed: z.number().int().min(0).max(1_000), addresses: PrintableLine }).strict(),
+  z.object({ type: z.literal("changed_needs_review"), serverId: McpServerIdSchema, at: EventTime, approved: Sha256Hex, observed: Sha256Hex }).strict(),
+]);
+export type McpControllerEvent = z.infer<typeof McpControllerEventSchema>;

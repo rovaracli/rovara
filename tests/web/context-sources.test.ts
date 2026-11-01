@@ -327,4 +327,42 @@ it("sends the server's token with the address, once, and offers package-run serv
    expect(source.match(/import\("\.\/McpPackageServer\.js"\)/gu)).toHaveLength(2);
   });
  });
+
+ describe("T10: recent starts and a paused server", () => {
+  const spec = { name: "@acme/wiki-mcp", version: "2.0.1", integrity: `sha512-${"A".repeat(86)}==`, args: [], bundleHash: hash("b"), lockfileHash: hash("1"), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
+  const wiki = { ...approved, serverId: "mcpwiki000001", label: "Wiki", transport: { kind: "stdio", spec } };
+  const mount = (list: unknown[], activity?: unknown) => {
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: list, stdioAvailable: true, ...(activity === undefined ? {} : { activity }) } } : { status: 200, body: {} });
+   renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+   return f;
+  };
+  it("says how many times a package-run server started in the last day, when it last started, and how it last stopped", async () => {
+   mount([wiki], { mcpwiki000001: { starts24h: 3, lastStartAt: "2026-11-01T10:00:00.000Z", lastStop: { at: "2026-11-01T10:30:00.000Z", reason: "idle" }, keepsStopping: false } });
+   const line = await screen.findByText(/Recent starts: 3 in the last day/);
+   expect(line.textContent).toMatch(/It stopped when it was idle\./u);
+   expect(line.textContent).not.toMatch(/keeps stopping/u);
+  });
+  it("says so when it has not started, and warns when it keeps stopping", async () => {
+   mount([wiki], { mcpwiki000001: { starts24h: 0, lastStop: { at: "2026-11-01T10:30:00.000Z", reason: "crash" }, keepsStopping: true } });
+   const line = await screen.findByText(/Recent starts: none in the last day/);
+   expect(line.textContent).toMatch(/This server keeps stopping\. Rovara has paused starting it for a while\./u);
+   expect(line.textContent).toMatch(/It stopped unexpectedly\./u);
+  });
+  it("shows no recent-starts line for an address-server or a server with no events", async () => {
+   mount([approved, wiki], { mcpsim000001: { starts24h: 9, keepsStopping: false } });
+   await screen.findByText("Wiki");
+   expect(screen.queryByText(/Recent starts/)).toBeNull();
+  });
+  it("says a paused server's tools changed, offers to look again with the same version, and can turn it off", async () => {
+   const f = mount([{ ...wiki, status: "changed_needs_review" }]);
+   await screen.findByText(/Paused: its tools changed/);
+   expect(screen.getByText(/Its tools are not the ones you allowed/)).toBeTruthy();
+   expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Look at it again" }));
+   expect((await screen.findByLabelText<HTMLInputElement>("Exact version")).value).toBe("2.0.1");
+   expect(screen.getByLabelText<HTMLInputElement>("Package").value).toBe("@acme/wiki-mcp");
+   fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+   await waitFor(() => expect(f.request.mock.calls.some(([request]) => (request).path.endsWith("/disable"))).toBe(true));
+  });
+ });
 });

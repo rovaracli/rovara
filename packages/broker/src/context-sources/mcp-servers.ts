@@ -13,6 +13,7 @@ import {
   type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
+import type { ControllerEventStore, DrainDependencies } from "./controller-events.js";
 import { inertSentence } from "./present.js";
 import { annotationVerdict, toolSchemaHash, type DiscoveredTool } from "./settings.js";
 
@@ -181,8 +182,12 @@ export interface McpServerActor { orgId: OrgId; developerId: string; orgRole: st
 
 /** What the audit trail is told: ids, fixed words and flags. The label goes in the event's org details; an address and a token never do. */
 export type McpServerAuditEvent =
-  | { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string; transport: "http" | "stdio"; hasToken: boolean }
-  | { action: "mcp_server.token_changed"; actor: McpServerActor; serverId: string; change: "stored" | "deleted" };
+  | { action: "mcp_server.added" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string; transport: "http" | "stdio"; hasToken: boolean }
+  /** `pin` (package-run servers): what the approval bound, as hashes and counts; `destinations` and `secretNames` are the org's details (names only, never values). */
+  | { action: "mcp_server.approved"; actor: McpServerActor; serverId: string; label: string; transport: "http" | "stdio"; hasToken: boolean; pin?: { integrity: string; lockfileHash: string; bundleHash: string; toolsHash: string; destinationCount: number; secretCount: number; secretVersion?: string | undefined; destinations: string; secretNames: string } }
+  | { action: "mcp_server.token_changed"; actor: McpServerActor; serverId: string; change: "stored" | "deleted" }
+  | { action: "mcp_server.installed"; actor: McpServerActor; serverId: string; name: string; version: string; integrity: string; lockfileHash: string; bundleHash: string; packageCount?: number | undefined; unpackedBytes?: number | undefined }
+  | { action: "mcp_server.probed"; actor: McpServerActor; serverId: string; purpose: "proposal" | "approval"; toolsHash: string; bundleHash: string; toolCount: number };
 
 export interface McpServerDependencies {
   store: McpServerStore;
@@ -202,6 +207,8 @@ export interface McpServerDependencies {
   secondAdminToApprove?: boolean;
   newId?: () => string;
   audit?: (event: McpServerAuditEvent) => Promise<void>;
+  /** What the MCP controller wrote about package-run servers: shown as "recent starts" and recorded in the audit trail when an admin lists the servers (controller-events.ts). */
+  controllerEvents?: { store: ControllerEventStore; audit?: DrainDependencies["audit"] } | undefined;
   /** The MCP host (package-run servers). Told, best effort, when a server is turned off or removed so its task, task definition and security group go at once; the host's own sweep does it within a minute otherwise. */
   host?: Pick<McpHostControl, "release"> | undefined;
 }
@@ -359,6 +366,12 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
   }
   await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
   if (secretVersion !== undefined) await told(deps, { action: "mcp_server.token_changed", actor, serverId: entry.serverId, change: "stored" });
+  if (entry.transport.kind === "stdio") {
+    // What the install produced and what the test listed: two facts in the ledger, so the approval that follows can be traced to the bytes the admin was shown.
+    const spec = stdioSpecIfComplete(entry)!;
+    await told(deps, { action: "mcp_server.installed", actor, serverId: entry.serverId, name: spec.name, version: spec.version, integrity: spec.integrity, lockfileHash: spec.lockfileHash, bundleHash: spec.bundleHash, packageCount: entry.install?.packageCount, unpackedBytes: entry.install?.unpackedBytes });
+    await told(deps, { action: "mcp_server.probed", actor, serverId: entry.serverId, purpose: "proposal", toolsHash: entry.probe.toolsHash, bundleHash: spec.bundleHash, toolCount: entry.probe.tools.length });
+  }
   return entry;
 }
 
@@ -370,6 +383,7 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   guard(deps, actor);
   const entry = await deps.store.get(actor.orgId, serverId);
   if (entry?.status === "needs_reapproval") throw agentXError("CHANGE_STALE", "This server was added before approvals pinned the install. Add the package again to look at it now.");
+  if (entry?.status === "changed_needs_review") throw agentXError("CHANGE_STALE", "This server's tools changed after you allowed it, so it is paused. Add the package again to look at what it offers now, then turn the old one off.");
   if (entry === undefined || entry.status !== "awaiting_approval") throw agentXError("NOT_FOUND", "no MCP server is waiting for approval with that id");
   if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
   if (entry.transport.kind === "stdio" && !stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
@@ -391,7 +405,14 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {
     throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
   }
-  await told(deps, { action: "mcp_server.approved", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
+  if (pinned !== undefined) await told(deps, { action: "mcp_server.probed", actor, serverId, purpose: "approval", toolsHash: again.probe.toolsHash, bundleHash: pinned.bundleHash, toolCount: again.probe.tools.length });
+  await told(deps, {
+    action: "mcp_server.approved", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true,
+    ...(pinned === undefined ? {} : { pin: {
+      integrity: pinned.integrity, lockfileHash: pinned.lockfileHash, bundleHash: pinned.bundleHash, toolsHash: entry.probe.toolsHash, destinationCount: pinned.destinations.length, secretCount: pinned.secretEnv.length, secretVersion: entry.secretVersion,
+      destinations: pinned.destinations.map((item) => `${item.host}:${item.port}`).join(", "), secretNames: pinned.secretEnv.join(", "),
+    } }),
+  });
   return { ...entry, status: "approved", decidedBy: actor.developerId, decidedAt: at };
 }
 

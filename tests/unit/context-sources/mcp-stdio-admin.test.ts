@@ -64,7 +64,7 @@ describe("T9: a package-run server's secrets", () => {
     const entry = await proposeMcpServer(w.deps, admin, { label: "Wiki", transport: PKG, secrets: SECRETS });
     const everything = JSON.stringify([entry, [...w.table.items.values()], w.audit, w.log, w.probes]);
     for (const value of Object.values(SECRETS)) expect(everything).not.toContain(value);
-    expect(w.audit).toEqual([`mcp_server.added:${entry.serverId}`, `mcp_server.token_changed:${entry.serverId}`]);
+    expect(w.audit).toEqual([`mcp_server.added:${entry.serverId}`, `mcp_server.token_changed:${entry.serverId}`, `mcp_server.installed:${entry.serverId}`, `mcp_server.probed:${entry.serverId}`]);
   });
   it("takes the values away again when the test fails, and stores no entry", async () => {
     const w = world();

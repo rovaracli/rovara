@@ -142,7 +142,18 @@ export const CONTROLLER_LIMITS: ControllerLimits = {
   maxFailures: 3, failureWindowMs: 10 * 60_000, backoffMs: 10 * 60_000,
 };
 
+/**
+ * What the controller tells the broker has happened to a package-run server (T10). Fixed words, hashes and counts; never a package's output. The broker records each as an audit event and
+ * keeps the last few for the "recent starts" line. The sink must not throw and is not waited for.
+ */
+export type ControllerEvent =
+  | { type: "task_started"; serverId: string; trigger: "call" | "warm" }
+  | { type: "task_stopped"; serverId: string; reason: StopReason }
+  | { type: "changed_needs_review"; serverId: string; approved: string; observed: string };
+
 export interface McpControllerOptions {
+  /** Told of the events above. Absent: only the log records them. */
+  events?: ((event: ControllerEvent) => Promise<void>) | undefined;
   /** The bearer token the broker presents. */
   token: string;
   registry: ControllerRegistry;
@@ -283,6 +294,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const limits: ControllerLimits = { ...CONTROLLER_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => undefined);
+  /** Tells the broker; never waits, never throws. */
+  const emit = (event: ControllerEvent): void => { if (options.events !== undefined) void Promise.resolve().then(() => options.events!(event)).catch(() => undefined); };
   const pollMs = options.pollMs ?? 1_000;
   const resources = options.resources ?? staticServerResources;
   const probeSlots = options.probeSlots ?? memoryProbeSlots(2);
@@ -418,7 +431,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /** Starts a serve or probe task for a bundle and waits until its bridge is ready. On any failure the task is stopped and its token revoked. */
-  async function launch(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined; isCancelled: () => boolean; onTask: (taskId: string) => void; reason: () => StopReason }): Promise<Launched> {
+  async function launch(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined; trigger?: "call" | "warm"; isCancelled: () => boolean; onTask: (taskId: string) => void; reason: () => StopReason }): Promise<Launched> {
     const { token, key } = addGrant({ purpose: input.kind, bundleHash: input.spec.bundleHash });
     // One nonce for each container that needs the token. RunTask carries these and nothing secret.
     const fetchNonce = issueNonce(key, token);
@@ -444,6 +457,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         },
       }, (started) => { fetchNonce.entry.taskId = started; serverNonce.entry.taskId = started; input.onTask(started); if (input.kind !== "serve") activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: input.id, taskId, purpose: input.kind });
+      if (input.kind === "serve") emit({ type: "task_started", serverId: input.id, trigger: input.trigger ?? "call" });
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const base = await waitRunning(taskId, input.isCancelled);
       await waitReady(base, token, bundleHash, input.isCancelled);
@@ -454,6 +468,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await runner.stop(taskId, input.reason()).catch(() => undefined);
         activeTaskIds.delete(taskId);
         log("mcp_controller.task_stopped", { serverId: input.id, taskId, reason: input.reason() });
+        if (input.kind === "serve") emit({ type: "task_stopped", serverId: input.id, reason: input.reason() });
       }
       if (error instanceof ControllerError) throw error;
       throw new ControllerError("start_failed");
@@ -470,6 +485,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     if (entry.taskId !== undefined) {
       await runner.stop(entry.taskId, reason).catch(() => undefined);
       log("mcp_controller.task_stopped", { serverId, taskId: entry.taskId, reason });
+      emit({ type: "task_stopped", serverId, reason });
     }
     // A task that is still starting finds itself cancelled and stops what it started; its end is awaited so nothing is left behind.
     await entry.ready.catch(() => undefined);
@@ -478,7 +494,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const sameApproval = (entry: Serving, approved: ApprovedServer): boolean => entry.bundleHash === approved.spec.bundleHash && entry.secretVersion === approved.secretVersion;
 
   /** The running serve task for an approved entry, started if it is not. The table entry exists BEFORE the first await, so concurrent first requests share one start. */
-  async function ensureServing(serverId: string, approved: ApprovedServer): Promise<Serving> {
+  async function ensureServing(serverId: string, approved: ApprovedServer, trigger: "call" | "warm" = "call"): Promise<Serving> {
     for (;;) {
       if (closed) throw new ControllerError("closed");
       const existing = serving.get(serverId);
@@ -499,7 +515,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     entry.ready = (async () => {
       await Promise.all(making);
       const spec: RunnerSpec = { name: approved.spec.name, args: approved.spec.args, secretEnv: approved.spec.secretEnv, destinations: approved.spec.destinations, size: approved.spec.size, bundleHash: approved.spec.bundleHash };
-      const launched = await launch({ kind: "serve", id: serverId, spec, secretRef: approved.secretRef, isCancelled: () => entry.cancelled || closed, onTask: (taskId) => { entry.taskId = taskId; }, reason: () => (entry.cancelled ? "disabled" : "failed") });
+      const launched = await launch({ kind: "serve", id: serverId, spec, secretRef: approved.secretRef, trigger, isCancelled: () => entry.cancelled || closed, onTask: (taskId) => { entry.taskId = taskId; }, reason: () => (entry.cancelled ? "disabled" : "failed") });
       entry.token = launched.token;
       entry.grantKey = launched.grantKey;
       entry.base = launched.base;
@@ -510,6 +526,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await runner.stop(launched.taskId, "tools_changed").catch(() => undefined);
         revoke(launched.grantKey);
         log("mcp_controller.tools_changed", { serverId });
+        emit({ type: "task_stopped", serverId, reason: "tools_changed" });
+        emit({ type: "changed_needs_review", serverId, approved: approved.toolsHash, observed });
         await options.registry.toolsChanged?.(serverId, { approved: approved.toolsHash, observed }).catch(() => undefined);
         throw new ControllerError("tools_changed");
       }
@@ -722,7 +740,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       const existing = serving.get(serverId);
       if (existing !== undefined && sameApproval(existing, approved)) { existing.lastUsed = now(); send(res, 200, { status: existing.base === undefined ? "starting" : "ready" }); return; }
       // A start without a call: it goes on after this answer, and a failure is counted like any other.
-      void track(ensureServing(serverId, approved).catch((error: unknown) => { log("mcp_controller.warm_failed", { serverId, error: error instanceof ControllerError ? error.code : "unknown" }); }));
+      void track(ensureServing(serverId, approved, "warm").catch((error: unknown) => { log("mcp_controller.warm_failed", { serverId, error: error instanceof ControllerError ? error.code : "unknown" }); }));
       send(res, 202, { status: "starting" });
       return;
     }
@@ -859,6 +877,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           if (serving.get(entry.serverId) === entry) { serving.delete(entry.serverId); revoke(entry.grantKey); recordFailure(entry.serverId); }
           await runner.stop(entry.taskId, "crash").catch(() => undefined);
           log("mcp_controller.task_stopped", { serverId: entry.serverId, taskId: entry.taskId, reason: "crash" });
+          emit({ type: "task_stopped", serverId: entry.serverId, reason: "crash" });
         }
       }
       // 2. The cloud's own list of tasks. If it cannot be read, nothing is judged from it.
@@ -877,6 +896,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             if (alive) continue;
             await runner.stop(task.taskId, "leftover").catch(() => undefined);
             log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            if (task.purpose === "serve") emit({ type: "task_stopped", serverId: task.serverId, reason: "leftover" });
             continue;
           }
           const entry = task.purpose === "serve" ? [...serving.values()].find((candidate) => candidate.taskId === task.taskId) : undefined;
@@ -886,6 +906,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             if ((startsInFlight.get(task.serverId) ?? 0) > 0) continue;
             await runner.stop(task.taskId, "leftover").catch(() => undefined);
             log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            if (task.purpose === "serve") emit({ type: "task_stopped", serverId: task.serverId, reason: "leftover" });
             continue;
           }
           if (task.purpose !== "serve") {
