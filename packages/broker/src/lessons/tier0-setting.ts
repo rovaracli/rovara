@@ -17,7 +17,7 @@
 import { randomUUID } from "node:crypto";
 import { requireAudit, emitAudit, TIER0_APPROVAL_DEFAULT } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
-import { trySecondPerson } from "./approve.js";
+import { trySecondPersonTimed } from "./approve.js";
 import { idIn, sameId } from "./types.js";
 
 export type Tier0Level = "auto" | "one" | "two";
@@ -114,8 +114,6 @@ export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   return created ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "conflict" };
 }
 
-/** The shared rule's cool-off after an eligible person left (`COOL_OFF_MS` in org/second-person-approval.ts); the test "is refused within 24 h" pins that both agree to the millisecond. */
-const SOLE_OWNER_COOL_OFF_MS = 86_400_000;
 export type Tier0ApproveResult = { ok: true; value: Tier0Level } | { ok: false; code: Tier0Failure; availableAt?: string };
 
 export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0Scope; changeId: string; approverId: string }): Promise<Tier0ApproveResult> {
@@ -131,12 +129,12 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   const group = await groupOf(deps, scope);
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
-  const decision = trySecondPerson(group, change.proposedBy, input.approverId, at);
+  const decision = trySecondPersonTimed(group, change.proposedBy, input.approverId, at);
   if (!decision.ok) {
     if (decision.code === "eligibility_unavailable") return { ok: false, code: "eligibility_unavailable" };
-    if (decision.code === "sole_owner_cool_off" && selfApproval && group.lastEligibleLossAtMs !== null) {
+    if (decision.code === "sole_owner_cool_off" && selfApproval && decision.availableAt !== undefined) {
       if (!(await soleOwnerAllowed(deps, scope))) return { ok: false, code: "second_person_required" };
-      return { ok: false, code: "sole_owner_cool_off", availableAt: new Date(group.lastEligibleLossAtMs + SOLE_OWNER_COOL_OFF_MS).toISOString() };
+      return { ok: false, code: "sole_owner_cool_off", availableAt: decision.availableAt };
     }
     return { ok: false, code: "second_person_required" };
   }

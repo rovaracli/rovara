@@ -173,6 +173,12 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
 
 export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
   | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure } {
+  const decision = trySecondPersonTimed(group, proposerId, approverId, nowMs);
+  return decision.ok ? decision : { ok: false, code: decision.code };
+}
+/** The same decision, and in the cool-off case the time it opens (ISO), taken from the shared rule's own refusal so no caller repeats the 24-hour constant. */
+export function trySecondPersonTimed(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
+  | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure; availableAt?: string } {
   // The shared rule compares ids exactly: hand it each person in the spelling of the eligible list.
   const spelled = (id: string): string => group.eligibleIds.find((e) => sameId(e, id)) ?? id;
   try {
@@ -181,8 +187,10 @@ export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eli
     });
     return { ok: true, mode: decision.mode };
   } catch (error) {
-    const reason = (error as { soleOwner?: { reasonCode?: string } }).soleOwner?.reasonCode;
-    return { ok: false, code: reason === "SOLE_OWNER_COOL_OFF" ? "sole_owner_cool_off" : reason === "SECOND_PERSON_REQUIRED" ? "second_person_required" : "eligibility_unavailable" };
+    const soleOwner = (error as { soleOwner?: { reasonCode?: string; availableAt?: unknown } }).soleOwner;
+    const reason = soleOwner?.reasonCode;
+    const code = reason === "SOLE_OWNER_COOL_OFF" ? "sole_owner_cool_off" : reason === "SECOND_PERSON_REQUIRED" ? "second_person_required" : "eligibility_unavailable";
+    return code === "sole_owner_cool_off" && typeof soleOwner?.availableAt === "string" ? { ok: false, code, availableAt: soleOwner.availableAt } : { ok: false, code };
   }
 }
 
