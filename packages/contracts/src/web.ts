@@ -30,7 +30,7 @@ export { SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionFoll
 export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInput, type SessionAnchorRef } from "./agent-sessions.js";
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
 
-export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
+export { TaskResponseSchema, TaskResponseReaderSchema } from "./task-response.js";
 
 export { DeveloperTaskViewReaderSchema } from "./session-views.js";
 export { SessionAnchorRefSchema } from "./agent-sessions.js";

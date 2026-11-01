@@ -2,7 +2,7 @@ import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
 import { OrgRoleSchema, OrgIdSchema } from "./org.js";
 import { DISPLAY_NAME_MAX_CODE_POINTS, containsEmailAddress, isReservedDisplayName } from "./display-name.js";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
 export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
 /**

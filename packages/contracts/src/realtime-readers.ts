@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 import { CodeSettingsChangedNoticeSchema, RealtimeNoticeSchema, RealtimeTokenResponseSchema, SessionSharedNoticeSchema } from "./realtime.js";
 
 export const RealtimeNoticeReaderSchema = forwardReader(RealtimeNoticeSchema);

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { AgentIdSchema } from "./agent.js";
 import { SessionIdSchema } from "./agent-sessions.js";
 import { OrgRoleSchema } from "./org.js";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 const CountSchema = z.number().int().min(0);
 export const AppTrialSchema = z.object({ state: z.enum(["locked", "unlocked", "github_used"]) }).strict();
