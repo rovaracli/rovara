@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
 import { selectionNarrowed, testEnvLessSafeChanges } from "../../packages/contracts/src/index.js";
-import { answerEnvChange, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
+import { proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
+import { answerEnvChange, newestProposal, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
@@ -310,5 +311,32 @@ describe("narrowing which tests run", () => {
       expect(refused.status).toBe(403);
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
     }));
+  });
+});
+
+describe("the card names the newest proposal, however many there are", () => {
+  /** 25 proposals, proposed one after the other, the NEWEST having the digest that sorts last (so a read of the first 20 rows by key never reaches it). Only the newest is proved. */
+  async function manyProposals(t: Bench) {
+    let at = Date.now();
+    const store = { documentClient: t.db, tableName: "state", now: () => (at += 5) };
+    const bodies = Array.from({ length: 25 }, (_, index) => draftBody({ data: { seeds: [], generator: "faker_seeded", seed: index + 1 } })).sort((left, right) => testEnvDigest(left).localeCompare(testEnvDigest(right)));
+    for (const body of bodies) await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body });
+    const newest = bodies.at(-1)!;
+    const step = (name: string, passed: boolean) => ({ step: name, status: passed ? "passed" : "skipped", durationMs: 0 });
+    await recordTestEnvProveReport(store, { orgId: TEST_ORG, project: NAME, report: { schemaVersion: 1, proposalDigest: testEnvDigest(newest), steps: [step("setup", true), step("build", false), step("smoke", false), step("full_suite", true)], services: [], finishedAt: new Date(at).toISOString() } });
+    return { store, digest: testEnvDigest(newest) };
+  }
+  it("with more than twenty proposals the card is for the newest one", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      const { digest } = await manyProposals(t);
+      expect(ofKind((await cards(t)).cards, "approve_test_env").map((card) => card.id)).toEqual([`approve_test_env:${digest}`]);
+    }));
+  });
+  it("reads every page of proposals, not the first", async () => {
+    const t = await setupWizardBench();
+    const { store, digest } = await manyProposals(t);
+    const small = { ...store, documentClient: { send: (command: { input?: Record<string, unknown> }) => t.db.send(Object.assign(command, { input: { ...command.input, Limit: 7 } }) as never) } };
+    expect((await newestProposal(small as never, TEST_ORG, NAME))?.digest).toBe(digest);
   });
 });

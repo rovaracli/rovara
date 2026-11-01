@@ -24,10 +24,29 @@ interface Who { orgId: string; developerId: string }
 /** The most projects and tasks one listing reads, so a listing is bounded. */
 export const TEST_ENV_CARD_PROJECTS_MAX = 25;
 export const TEST_ENV_CARD_TASKS_MAX = 50;
-const PROPOSALS_READ_MAX = 20;
+/** The most pages of a project's proposals read to find the newest (a page is up to 1 MB of small rows; a proposal lives 7 days). A project with more is left out rather than guessed at. */
+const PROPOSAL_PAGES_MAX = 50;
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 24);
 const flagWords = (flag: string): string => `Turns on or raises: ${flag.replace(/_/gu, " ")}.`;
+
+/** The newest proposal of a project by the time it was proposed, over ALL its stored proposals (the keys are digests, so the newest is anywhere among them). Throws when there are too many pages to read. */
+export async function newestProposal(store: TestEnvDeps, orgId: OrgId, project: string): Promise<{ digest: string; proposedAt: string } | undefined> {
+  let newest: { digest: string; proposedAt: string } | undefined;
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < PROPOSAL_PAGES_MAX; page += 1) {
+    const rows = (await store.documentClient.send(new QueryCommand({
+      TableName: store.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": "TESTENV#PROPOSAL#" },
+      ProjectionExpression: "digest, proposedAt", ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    }))) as { Items?: Array<{ digest?: unknown; proposedAt?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const row of rows.Items ?? []) {
+      if (typeof row.digest === "string" && typeof row.proposedAt === "string" && (newest === undefined || row.proposedAt.localeCompare(newest.proposedAt) > 0)) newest = { digest: row.digest, proposedAt: row.proposedAt };
+    }
+    if (rows.LastEvaluatedKey === undefined) return newest;
+    start = rows.LastEvaluatedKey;
+  }
+  throw new Error("too many proposals to read");
+}
 
 export interface TestEnvCardPorts {
   store: TestEnvDeps;
@@ -44,12 +63,7 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
   const found: DecisionItem[] = [];
   for (const project of (await ports.maintainedProjects(caller)).slice(0, TEST_ENV_CARD_PROJECTS_MAX)) {
     try {
-      const rows = (await ports.store.documentClient.send(new QueryCommand({
-        TableName: ports.store.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": "TESTENV#PROPOSAL#" },
-        ProjectionExpression: "digest, proposedAt", ConsistentRead: true, Limit: PROPOSALS_READ_MAX,
-      }))) as { Items?: Array<{ digest?: unknown; proposedAt?: unknown }> };
-      const newest = (rows.Items ?? []).filter((row): row is { digest: string; proposedAt: string } => typeof row.digest === "string" && typeof row.proposedAt === "string")
-        .sort((left, right) => right.proposedAt.localeCompare(left.proposedAt))[0];
+      const newest = await newestProposal(ports.store, orgId, project);
       if (newest === undefined) continue;
       const approved = await readApprovedTestEnvironment(ports.store, orgId, project);
       if (approved !== undefined && testEnvDigest(approved.environment) === newest.digest) continue;
