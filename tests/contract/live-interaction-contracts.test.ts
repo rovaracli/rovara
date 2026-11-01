@@ -18,13 +18,25 @@ const ORG = "org_abcdefghij0123456789";
 const base = { orgId: ORG, actor: { kind: "member" as const, id: "dev_1" }, occurredAt: AT, occurrence: "occ-1" };
 
 describe("switches", () => {
-  it("has three distinct two-letter codes that do not collide with an existing broker setting (fx is the autofix switch)", () => {
+  it("has three distinct two-letter codes that do not collide with an existing broker setting (fx is the autofix switch); `ak` is the one registered, and `rd` and `fd` are not yet", () => {
     const codes = Object.values(LIVE_INTERACTION_FLAGS).map((spec) => spec.code);
     expect(new Set(codes).size).toBe(3);
-    const taken = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.code));
+    // Live interaction A3 registered the Ask switch as `liveAsk` (stack parameter LiveAskEnabled), the same code and variable; the other two are not registered yet.
+    expect(BROKER_SETTINGS.liveAsk).toEqual(LIVE_INTERACTION_FLAGS.ask);
+    const others = Object.entries(BROKER_SETTINGS).filter(([name]) => name !== "liveAsk").map(([, spec]) => spec);
+    const taken = new Set<string>(others.map((spec) => spec.code));
     for (const code of codes) expect(taken.has(code), code).toBe(false);
-    const variables = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.variable));
+    const variables = new Set<string>(others.map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
+    const registered = Object.values(BROKER_SETTINGS).map((spec) => spec.code);
+    for (const key of ["redirect", "fix"] as const) expect(registered.includes(LIVE_INTERACTION_FLAGS[key].code), key).toBe(false);
+  });
+
+  it("the Ask switch is off unless set (the stack parameter default "0" is pinned in live-ask-switch.test.ts): only exactly 1 turns it on", () => {
+    expect(LIVE_INTERACTION_FLAGS.ask).toEqual({ code: "ak", variable: "LIVE_ASK_ENABLED" });
+    expect(liveInteractionFlagOn(undefined)).toBe(false);
+    expect(liveInteractionFlagOn("0")).toBe(false);
+    expect(liveInteractionFlagOn("1")).toBe(true);
   });
 
   it("is on only for exactly 1", () => {
