@@ -32,7 +32,7 @@ describe("switches", () => {
     for (const key of ["redirect", "fix"] as const) expect(registered.includes(LIVE_INTERACTION_FLAGS[key].code), key).toBe(false);
   });
 
-  it("the Ask switch is off unless set (the stack parameter default "0" is pinned in live-ask-switch.test.ts): only exactly 1 turns it on", () => {
+  it("the Ask switch is off unless set (the stack parameter default 0 is pinned in live-ask-switch.test.ts): only exactly 1 turns it on", () => {
     expect(LIVE_INTERACTION_FLAGS.ask).toEqual({ code: "ak", variable: "LIVE_ASK_ENABLED" });
     expect(liveInteractionFlagOn(undefined)).toBe(false);
     expect(liveInteractionFlagOn("0")).toBe(false);
