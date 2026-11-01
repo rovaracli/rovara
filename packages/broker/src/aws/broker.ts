@@ -4514,6 +4514,23 @@ function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: A
   }
 }
 
+/** How many merges a person's id is followed through (the same bound as the agent access rules). Reaching it, or finding a loop, is a refusal: an identity that cannot be traced to its survivor is not served. */
+const SLACK_MERGE_HOPS = 8;
+
+/** The ids a Slack person answers to: their own, then the person each was merged into. Refuses (FORBIDDEN) when the chain loops or is longer than SLACK_MERGE_HOPS. */
+async function slackMergeChain(dependencies: AwsBrokerDependencies, developerId: string): Promise<string[]> {
+  const ids = [developerId];
+  if (dependencies.developer === undefined) return ids;
+  const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  for (let hop = 0; hop <= SLACK_MERGE_HOPS; hop += 1) {
+    const next = (await merges.getDeveloper(ids[ids.length - 1]!))?.mergedInto;
+    if (typeof next !== "string" || next === "") return ids;
+    if (ids.includes(next) || hop === SLACK_MERGE_HOPS) throw agentXError("FORBIDDEN", "this Slack member's identity merges could not be followed to one person; ask an admin");
+    ids.push(next);
+  }
+  return ids;
+}
+
 /**
  * Slack requester role: ONE rule for who a Slack requester is in the org their team is bound to, shared by the ingress callers (slackCallerFor) and the service routes
  * (slackServiceIdentity, slackRequesterRole, model access). Their own org must be the team's. Their member record is read under every id they answer to (a duplicate merged into
@@ -4527,15 +4544,7 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? orgIdOfTeam : await orgResolverOf(dependencies)({ developerId });
   const orgId = resolved === undefined && options.allowUnlinked === true ? orgIdOfTeam : requireOrgId(resolved);
   if (orgId !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
-  const ids = [developerId];
-  if (dependencies.developer !== undefined) {
-    const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
-    for (let hop = 0; hop < 5; hop += 1) {
-      const next = (await merges.getDeveloper(ids[ids.length - 1]!))?.mergedInto;
-      if (typeof next !== "string" || next === "" || ids.includes(next)) break;
-      ids.push(next);
-    }
-  }
+  const ids = await slackMergeChain(dependencies, developerId);
   let role: OrgRole | undefined;
   for (const id of ids) {
     const record = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, id));

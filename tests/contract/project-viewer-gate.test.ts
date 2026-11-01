@@ -78,6 +78,29 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     }
   });
 
+  /** The Slack id merged into a chain of `merges` developers, each merged into the next (the last is the survivor). */
+  const mergeChain = (h: Harness, merges: number) => {
+    const ids = [guestId, ...Array.from({ length: merges }, (_, index) => String(index + 1).padStart(2, "0").repeat(32))];
+    ids.forEach((id, index) => { if (index < merges) h.db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, mergedInto: ids[index + 1] }); });
+    h.db.set({ pk: `DEVELOPER#${ids[merges]!}`, sk: "META", developerId: ids[merges] });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    return ids;
+  };
+
+  it("follows a merge chain up to the hop limit, and refuses one that reaches it or loops back", async () => {
+    const served = await withKit();
+    mergeChain(served, 8);
+    const answered = await serviceCall(served.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+    const tooLong = await withKit();
+    mergeChain(tooLong, 9);
+    await refusedOnEveryRoute(tooLong, GUEST);
+    const looping = await withKit();
+    const ids = mergeChain(looping, 2);
+    looping.db.set({ pk: `DEVELOPER#${ids[2]!}`, sk: "META", developerId: ids[2], mergedInto: guestId });
+    await refusedOnEveryRoute(looping, GUEST);
+  });
+
   it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
     const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
     const h = await withKit({ brokerExtra: { orgResolver } });
