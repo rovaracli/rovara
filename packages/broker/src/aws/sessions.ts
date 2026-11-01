@@ -29,6 +29,7 @@ import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { openCompute, recordMachineTime } from "../org/trial.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { failOutboxOperation } from "./outbox-failure.js";
+import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 
 /** What the provisioner state machine starts from. Deterministic for one generation, so a retried start is idempotent. */
 export interface ProvisioningInput {
@@ -569,7 +570,8 @@ export class SessionManager {
       { Update: {
         TableName: this.dependencies.tableName,
         Key: outboxKey(waitingOutboxId),
-        UpdateExpression: "SET #status = :waiting",
+        // A parked stage keeps no lessons (outbox-lessons.ts): it waits an unknown time and is released without them.
+        UpdateExpression: `SET #status = :waiting ${REMOVE_STORED_LESSONS}`,
         // PENDING too: the dispatcher can receive a record before the publisher marks it QUEUED.
         ConditionExpression: "#status = :queued OR #status = :pending",
         ExpressionAttributeNames: { "#status": "status" },

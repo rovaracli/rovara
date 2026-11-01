@@ -58,7 +58,9 @@ function world(over: { settings?: ReturnType<typeof settings>; store?: InMemoryL
 }
 const task = (over: Record<string, unknown> = {}) => ({ taskId: "task-1", orgId: WS, project: PROJECT, title: "Retry failed HTTP calls", shared: true, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 4 }, ...over }) as never;
 const definition = { repositories: [{ name: "api", url: "https://github.com/acme/api" }] } as never;
-const ask = (host: never, over: Record<string, unknown> = {}) => learnedContextForOperation(host, { orgId: WS, task: task(), workflowMode: "IMPLEMENT", definition, ...over });
+/** The install switch for lessons reaching an agent, on (it is off by default and apart from the Team record's flag). */
+const ON = { LEARNED_LESSONS_ENABLED: "1" };
+const ask = (host: never, over: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = ON) => learnedContextForOperation(host, { orgId: WS, task: task(), workflowMode: "IMPLEMENT", definition, ...over }, env);
 
 describe("learnedContextForOperation", () => {
   it("returns the approved, in-scope lessons for the stage, records the manifest, and names the stage's manifest for the report", async () => {
@@ -105,8 +107,22 @@ describe("learnedContextForOperation", () => {
     expect(await ask(w.host)).toEqual({});
   });
 
+  it("with the install switch off, nothing is loaded, recorded or sent even though lesson ports exist and an approved lesson matches", async () => {
+    const w = world();
+    await seed(w.store, conv("les_approved1"));
+    expect(await ask(w.host)).toMatchObject({ learnedContext: { lessons: [{ id: "les_approved1" }] } });
+    const before = (await w.store.manifests({ workspaceId: WS, project: PROJECT }, "task-1")).length;
+    for (const value of [undefined, "0", "", "true", "yes", " 1", "01"]) {
+      const env: NodeJS.ProcessEnv = value === undefined ? {} : { LEARNED_LESSONS_ENABLED: value };
+      expect(await ask(w.host, { task: task({ taskId: "task-2" }) }, env), String(value)).toEqual({});
+    }
+    expect(await w.store.manifests({ workspaceId: WS, project: PROJECT }, "task-2")).toEqual([]);
+    expect((await w.store.manifests({ workspaceId: WS, project: PROJECT }, "task-1")).length).toBe(before);
+    expect(w.identityCalls).toEqual([]);
+  });
+
   it("does nothing where the install has no lesson ports", async () => {
-    expect(await learnedContextForOperation({}, { orgId: WS, task: task(), workflowMode: "IMPLEMENT", definition })).toEqual({});
+    expect(await learnedContextForOperation({}, { orgId: WS, task: task(), workflowMode: "IMPLEMENT", definition }, ON)).toEqual({});
   });
 
   it("only the five coding stages of a Rovara Code task carry lessons", async () => {
@@ -247,7 +263,6 @@ describe("the lessons audit sink", () => {
     const sink = lessonAuditSink(async (event) => { written.push(event as never); }, () => Date.parse("2026-11-01T00:00:00.000Z"));
     const member = "a".repeat(64);
     await sink.emit({ action: "lesson.approved", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", actor: member, facts: { tier: 1, mode: "one", count: 1 } });
-    await sink.emit({ action: "lesson.merged", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", facts: { score: 0.9 } });
     await sink.emit({ action: "lesson.helpful", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", actor: member, facts: {} });
     expect(written).toHaveLength(1);
     expect(written[0]).toMatchObject({ action: "lesson.approved", orgId: WS, actor: { kind: "member", id: member }, target: { kind: "lesson", id: "les_aaaa1111" }, facts: { tier: 1, approvals: 1, soleOwner: false } });

@@ -9,7 +9,7 @@ import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/tas
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
 import { readFileSync } from "node:fs";
 import { registerHumanSendBackListener, sendBackToRecord, type HumanSendBackEvent } from "../../packages/broker/src/lessons/send-back-events.js";
-import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
+import { SEND_BACK_CAPTURE_BUDGET_MS, captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
@@ -688,6 +688,17 @@ describe("LS-1: one entry point for a send-back, and the lessons side is fed fro
     expect(corrections(t.harness)).toHaveLength(1);
     await captureSendBackQuietly(routeDeps(t.harness), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId: randomUUID(), reason: NOTE, included: [], stage: "code", alsoRecord: async () => { throw new Error("down"); } });
     expect(corrections(t.harness)).toHaveLength(2);
+  });
+
+  it("a lessons callback that never returns is given the capture's time limit, then the capture still runs (M1)", async () => {
+    const t = await blockedTask();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const started = Date.now();
+    await captureSendBackQuietly(routeDeps(t.harness), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId: randomUUID(), reason: NOTE, included: [], stage: "code", alsoRecord: () => new Promise<void>(() => undefined) });
+    const elapsed = Date.now() - started;
+    expect(corrections(t.harness)).toHaveLength(1);
+    expect(elapsed).toBeGreaterThanOrEqual(SEND_BACK_CAPTURE_BUDGET_MS - 50);
+    expect(elapsed).toBeLessThan(SEND_BACK_CAPTURE_BUDGET_MS * 2 + 500);
   });
 
   it("no call site announces beside the capture: the announcement is only ever passed to captureSendBackQuietly, and the plan send-back has none", () => {

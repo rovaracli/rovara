@@ -158,7 +158,7 @@ describe("the task's pin", () => {
     const h = harness();
     await h.approve(body({ accounts: [{ profileId: "buyer", provisioner: "seed_command", command: cmd("python", ["seed.py"]) }] }));
     const latestReads: unknown[] = [];
-    const spy = { ...h.deps, documentClient: { send: (command: { input?: { Key?: { sk?: string } } }) => { if (command.input?.Key?.sk === "TESTENV#LATEST") latestReads.push(1); return h.db.send(command); } } };
+    const spy = { ...h.deps, documentClient: { send: (command: { input?: { Key?: { sk?: string } } }) => { if (command.input?.Key?.sk === "TESTENV#LATEST") latestReads.push(1); return h.db.send(command as never); } } };
     const start = await testEnvironmentForStart(spy, { orgId: ORG, project: PROJECT, taskId: "t5" }, ON);
     expect(latestReads).toHaveLength(1);
     expect((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item).toMatchObject({ revision: 1, unused: "accounts_not_connected" });

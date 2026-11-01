@@ -184,7 +184,7 @@ async function patchMovedCitations(deps: CounterDeps, key: ScopeKey, id: string,
     const setVersion = await deps.store.setVersion(key);
     const result = await deps.store.commit(key, setVersion, [{ ...lesson, citations, version: nextVersion(lesson, await deps.store.versions(key, id)), updatedAt: deps.now() }], deps.now());
     if (result.ok) {
-      await emitAudit(deps.audit, { action: "lesson.citation_moved", workspaceId: key.workspaceId, project: key.project, lessonId: id, facts: { citations: corrected.length } });
+      await emitAudit(deps.audit, { action: "lesson.citation_moved", workspaceId: key.workspaceId, project: key.project, lessonId: id, facts: { citations: corrected.length, tier: lesson.tier } });
       return;
     }
   }

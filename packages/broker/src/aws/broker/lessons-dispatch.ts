@@ -1,5 +1,5 @@
 // Part of the broker: the lesson loader's one call at a coding stage's dispatch (learning v2, L4). `learnedContextForOperation` is what `taskOperationParts` spreads into the worker payload. It is
-// the only place a lesson can enter a worker invocation, and it does nothing (returns `{}`) unless ALL of these hold: the install has lesson ports (`dependencies.lessons`, built only where the
+// the only place a lesson can enter a worker invocation, and it does nothing (returns `{}`) unless ALL of these hold: the install switch for lessons reaching an agent is on (`LEARNED_LESSONS_ENABLED`, apart from the Team record's), the install has lesson ports (`dependencies.lessons`, built only where the
 // Team record is on), the operation is a stage of a Rovara Code task with an org, the project's learning mode allows loading (the loader's own check), and the task's owner can be told. It never
 // throws and never waits long: any failure, or a load slower than the deadline, sends nothing and the stage runs as it would without memory.
 //
@@ -8,6 +8,7 @@ import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, type LearnedContext, type 
 import { effectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { learnedContextForDispatch, type TaskAudience } from "../../lessons/load.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
+import { learnedLessonsEnabled } from "../../lessons/switch.js";
 
 /** The workflow modes that may carry lessons, and the lesson stage each is. Every other mode (checks, setup, spec writing, feedback review) carries none. */
 const STAGES: Readonly<Record<string, LessonStage>> = { UNDERSTAND: "UNDERSTAND", PLAN: "PLAN", IMPLEMENT: "IMPLEMENT", PLAN_CRITIQUE: "PLAN_CRITIQUE", REVIEW: "REVIEW" };
@@ -24,7 +25,10 @@ export interface LessonsHost { lessons?: LessonsRuntime | undefined }
 export async function learnedContextForOperation(
   host: LessonsHost,
   input: { orgId: string; task: DeveloperTaskRecord | undefined; workflowMode: string | undefined; legacyTask?: boolean | undefined; agentRun?: unknown; definition: Pick<ProjectDefinition, "repositories"> },
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ learnedContext?: LearnedContext; load?: LearnedLoadRef }> {
+  // The install switch for lessons reaching an agent (lessons/switch.ts), apart from the Team record's: off, nothing is loaded, recorded or sent.
+  if (!learnedLessonsEnabled(env)) return {};
   const lessons = host.lessons;
   const stage = lessonStageOf(input.workflowMode);
   const task = input.task;

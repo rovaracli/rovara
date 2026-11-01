@@ -199,8 +199,9 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
 
 /**
  * The single call the dispatch makes (the hunk in aws/broker.ts). It returns an object to spread into the worker invocation:
- * `{ learnedContext }` when something loads, `{}` otherwise. A worker that does not list the feature gets `{}` and nothing is recorded (no manifest, no
- * counters), and any failure inside is swallowed: learning never blocks a stage.
+ * `{ learnedContext }` when something loads, `{}` otherwise. Called with a worker that does not list the feature, it returns `{}` and records nothing (no manifest, no counters). The dispatch
+ * itself asks as for a worker that lists it, and delivery (`ec2-delivery.ts withoutLearnedContext`) removes the field for an older worker: so a manifest can name lessons that an older worker
+ * never received (the task page shows them as "not checked yet"). Any failure inside is swallowed: learning never blocks a stage.
  */
 export async function learnedContextForDispatch(deps: LoadDeps, request: LoadRequest, workerFeatures: readonly string[]): Promise<{ learnedContext?: LearnedContext }> {
   if (!workerFeatures.includes(LEARNED_CONTEXT_FEATURE)) return {};

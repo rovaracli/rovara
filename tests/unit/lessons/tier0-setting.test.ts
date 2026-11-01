@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   approveSoleOwnerSwitch, approveTier0Change, cancelTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchChange, type SoleOwnerSwitchDeps, type SoleOwnerSwitchStore, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Fence, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
 } from "../../../packages/broker/src/lessons/tier0-setting.js";
+import { AuditEventInputSchema } from "../../../packages/contracts/src/index.js";
+import { lessonAuditSink } from "../../../packages/broker/src/lessons/audit-sink.js";
 import { Audit, Clock, PROJECT, WS } from "./lesson-helpers.js";
 
 const PROJECT_SCOPE: Tier0Scope = { kind: "project", workspaceId: WS, project: PROJECT };
@@ -538,5 +540,31 @@ describe("the sole-owner switch setter (the only way routes change the switch)",
     w.store.beforeWrite = () => { w.group.membershipVersion = 4; };
     expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toEqual({ ok: false, code: "stale" });
     expect(w.store.value).toBe(true);
+  });
+});
+
+// S2 of the wire-lessons review: the real audit sink over the ledger. Loosening the setting used to pass `requireAudit` with no ledger entry because the action had no contract name.
+describe("tier-0 changes over the real audit sink", () => {
+  const withSink = (write: (event: unknown) => Promise<void>) => { const w = world(); w.deps.audit = lessonAuditSink(async (event) => { await write(event); }, w.clock.now); return w; };
+  it("a loosening is recorded in the ledger under contract names, with contract facts, for the proposal and the change", async () => {
+    const written: unknown[] = [];
+    const w = withSink(async (event) => { written.push(event); });
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: true, value: "auto" });
+    const events = written as Array<{ action: string; facts: Record<string, unknown> }>;
+    expect(events.map((e) => e.action)).toEqual(["lesson.tier0_setting_proposed", "lesson.tier0_setting_changed"]);
+    expect(events[1]!.facts).toEqual({ scope: "project", fromLevel: "one", toLevel: "auto", mode: "second_person" });
+    for (const event of events) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
+  });
+  it("with the ledger down the loosening is refused and taken back (not applied with no record)", async () => {
+    const w = withSink(async () => { throw new Error("ledger down"); });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(w.changes.rows.size).toBe(0);
+    const ok = world(); const written: unknown[] = [];
+    ok.deps.audit = lessonAuditSink(async (event) => { written.push(event); }, ok.clock.now);
+    await requestTier0Change(ok.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    ok.deps.audit = lessonAuditSink(async () => { throw new Error("ledger down"); }, ok.clock.now);
+    expect(await approveTier0Change(ok.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(ok.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
   });
 });

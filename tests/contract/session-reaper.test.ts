@@ -146,7 +146,7 @@ describe("idle reaper", () => {
     const workspaceId = seedReady(db, { idleMinutes: 10 });
     await reap();
     const outboxId = randomUUID();
-    db.set({ pk: `OUTBOX#${outboxId}`, sk: "OUTBOX", id: outboxId, entityType: "OUTBOX", status: "QUEUED", workspaceId, deploymentMode: "ec2-ebs" });
+    db.set({ pk: `OUTBOX#${outboxId}`, sk: "OUTBOX", id: outboxId, entityType: "OUTBOX", status: "QUEUED", workspaceId, deploymentMode: "ec2-ebs", invocation: { kind: "prepare", payload: {} } });
     expect(await sessions.ensureSession({ workspaceId, binding, waitingOutboxId: outboxId })).toMatchObject({ ready: false, state: "STOPPING" });
 
     setProgress({ instanceGone: true, instanceLive: false, volumeAvailable: true });
