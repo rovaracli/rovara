@@ -364,7 +364,16 @@ export class FakeGitHub {
     verifyWebhookRepository: async (): Promise<boolean> => {
       return this.fault("verifyWebhookRepository") !== "not_found";
     },
+    // As GitHub's provider answers it: Rovara's own `agentx/<uuid>` branches only; any other name (a base branch) is refused.
     getBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
+      this.fault("getBranchHead");
+      if (!/^agentx\/[0-9a-f-]{36}$/iu.test(branch)) throw new Error("branch name is invalid");
+      const pushed = this.pushes.get(branch);
+      if (pushed === undefined) throw new Error(`GitHub has no branch ${branch}`);
+      return pushed.commit;
+    },
+    // The head of an ordinary branch (a base branch such as `main`), as `getDefaultBranchHead` reads it.
+    getDefaultBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
       this.fault("getBranchHead");
       const base = this.baseHeads.get(branch);
       if (base !== undefined) return base;
