@@ -1,9 +1,9 @@
 // Wiring lane B, LR-W3: the stored tier-0 setting, its proposals and the settings reader over the TeamRecord table; the whole path from a loosening request to the effective approval.
-import { learningModeKey, learningModeLockKey } from "@agentx/contracts";
+import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import { dynamoLearningSettings, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
+import { dynamoLearningSettings, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
-import { approveTier0Change, requestTier0Change, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
+import { approveSoleOwnerSwitch, approveTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchDeps, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
 import { eraseWorkspace, erasePerson } from "../../../packages/broker/src/team-record/erase.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
@@ -15,11 +15,12 @@ const company = (workspaceId = ORG_A): Tier0Scope => ({ kind: "company", workspa
 function setup(autoEnabled = true) {
   const w = world();
   const store = new DynamoTier0Settings(w.table);
+  const sole = new DynamoSoleOwnerSwitch(w.table);
   const clock = new Clock();
   const audit = new Audit();
   const group = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null };
-  const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled };
-  return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
+  const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled, soleOwnerLoosening: (workspaceId) => sole.read(workspaceId) };
+  return { w, store, sole, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
 }
 
 describe("the stored setting and its proposals", () => {
@@ -59,6 +60,85 @@ describe("the stored setting and its proposals", () => {
     expect(await store.open(project(), 50)).toBeUndefined();
     expect(await store.get(project(), "c1")).toMatchObject({ state: "applied" });
     expect(await store.get(project(ORG_B), "c1")).toBeUndefined();
+  });
+});
+
+describe("a proposal remembers whether its proposer was the only eligible person", () => {
+  it("the flag round-trips; an older row without it reads as absent", async () => {
+    const { w, store } = setup();
+    await store.create({ id: "c1", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending", soleEligibleAtProposal: true });
+    expect(await store.get(company(), "c1")).toMatchObject({ soleEligibleAtProposal: true });
+    w.db.set({ pk: teamRecordPk(ORG_A, undefined), sk: "LESSONSET#TIER0CHG#old", entityType: "LESSON_TIER0_CHANGE", id: "old", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending" });
+    expect((await store.get(company(), "old"))?.soleEligibleAtProposal).toBeUndefined();
+  });
+});
+
+describe("the fenced write", () => {
+  const metaCheck = (version: number) => ({ ConditionCheck: { TableName: "TeamRecord", Key: { pk: teamRecordPk(ORG_A, undefined), sk: "FENCE#META" }, ConditionExpression: "approvalMembershipVersion = :v", ExpressionAttributeValues: { ":v": version } } });
+  it("commits the setting together with the membership conditions; a changed membership writes nothing", async () => {
+    const { w, store } = setup();
+    w.db.set({ pk: teamRecordPk(ORG_A, undefined), sk: "FENCE#META", approvalMembershipVersion: 4 });
+    expect(await store.write(company(), "two", { by: "owner", at: 1 }, "auto", { membershipVersion: 3, conditions: [metaCheck(3)] })).toBe(false);
+    expect(await store.read(company())).toBeUndefined();
+    expect(await store.write(company(), "two", { by: "owner", at: 1 }, "auto", { membershipVersion: 4, conditions: [metaCheck(4)] })).toBe(true);
+    expect(await store.read(company())).toBe("two");
+    // a stale value is still refused inside the transaction
+    expect(await store.write(company(), "one", { by: "owner", at: 2 }, "auto", { membershipVersion: 4, conditions: [metaCheck(4)] })).toBe(false);
+    expect(await store.read(company())).toBe("two");
+  });
+});
+
+describe("the company sole-owner switch", () => {
+  it("is ON until set, per workspace, and an invalid stored value is an error (the caller treats it as OFF)", async () => {
+    const { w, sole } = setup();
+    expect(await sole.read(ORG_A)).toBe(true);
+    expect(await sole.write(ORG_A, false, { by: "owner", at: 1 }, true)).toBe(true);
+    expect(await sole.read(ORG_A)).toBe(false);
+    expect(await sole.read(ORG_B)).toBe(true);
+    // conditional on the value read: a stale `from` writes nothing
+    expect(await sole.write(ORG_A, true, { by: "owner", at: 2 }, true)).toBe(false);
+    expect(await sole.write(ORG_A, true, { by: "owner", at: 2 }, false)).toBe(true);
+    expect(await sole.read(ORG_A)).toBe(true);
+    w.db.set({ pk: teamRecordPk(ORG_B, undefined), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled: "no" });
+    await expect(sole.read(ORG_B)).rejects.toThrow();
+  });
+  it("writing it does not disturb the company floor, and the workspace erase wipes it and its proposals", async () => {
+    const { w, store, sole } = setup();
+    await store.write(company(), "two", { by: "owner", at: 1 }, "auto");
+    await sole.write(ORG_A, false, { by: "owner", at: 2 }, true);
+    await sole.create({ id: "s1", workspaceId: ORG_A, from: false, to: true, proposedBy: "owner", at: 1, expiresAt: 100, state: "pending" });
+    expect(await store.read(company())).toBe("two");
+    expect(await sole.read(ORG_A)).toBe(false);
+    expect((await eraseWorkspace(deleteDeps(w).deps, ORG_A, [], "close-sole")).complete).toBe(true);
+    expect(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
+  });
+  it("the person erase replaces the proposer on a switch proposal, and the tier-0 proposal lookup ignores it", async () => {
+    const { w, store, sole } = setup();
+    await sole.create({ id: "s1", workspaceId: ORG_A, from: false, to: true, proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
+    expect(await store.open(company(), 5)).toBeUndefined();
+    await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e-sole");
+    expect(await sole.get(ORG_A, "s1")).toMatchObject({ proposedBy: "0".repeat(64), state: "pending" });
+  });
+  it("the whole path: a sole admin loosens alone through the stored switch; switched off it is refused, and it comes back ON only through a second admin", async () => {
+    const { sole, store, deps, clock, audit } = setup();
+    const one = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner"], lastEligibleLossAtMs: null };
+    const solo = { ...deps, authority: { eligibility: async () => one } };
+    await requestTier0Change(solo, { scope: company(), value: "two", requestedBy: "owner" });
+    expect(await requestTier0Change(solo, { scope: company(), value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    const switchDeps: SoleOwnerSwitchDeps = { store: sole, audit, authority: solo.authority, now: clock.now };
+    expect(await setSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, enabled: false, requestedBy: "owner" })).toEqual({ ok: true, status: "applied", enabled: false });
+    const pending = await store.open(company(), clock.now());
+    expect(await approveTier0Change(solo, { scope: company(), changeId: pending!.id, approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    // back ON: a proposal; the proposer alone cannot approve it, even as the only admin
+    const back = await setSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, enabled: true, requestedBy: "owner" });
+    expect(back).toMatchObject({ ok: true, status: "needs_approval" });
+    const changeId = (back as { changeId: string }).changeId;
+    expect(await approveSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, changeId, approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(await sole.read(ORG_A)).toBe(false);
+    const two = { ...one, eligibleIds: ["owner", "ann"] };
+    const withAnn = { ...switchDeps, authority: { eligibility: async () => two } };
+    expect(await approveSoleOwnerSwitch(withAnn, { workspaceId: ORG_A, changeId, approverId: "ann" })).toEqual({ ok: true, enabled: true });
+    expect(await sole.read(ORG_A)).toBe(true);
   });
 });
 
