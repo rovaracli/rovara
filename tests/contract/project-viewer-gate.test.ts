@@ -2,21 +2,344 @@
 // look at a task and cancel it, but every action that changes it or starts work is refused with the viewer message, on every surface, and no
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { projectMemberKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
 import { registerRevision } from "../support/developer-task-broker.js";
 import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import { createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, loadSlackBroker, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
+describe("Slack requester role: one shared rule for ingress and service routes", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000801`;
+  const MAYA = "U0MAYA001";
+  const GUEST = "U0GUESTSL01";
+  const guestId = developerIdForSlackUser(GUEST);
+  const OTHER_ORG = "org_cccccccccccccccccccc";
+  const survivor = "9".repeat(64);
+
+  /** Every route that starts work or changes the project, for the workspace Maya made: the requester must be refused on each. */
+  async function refusedOnEveryRoute(h: Harness, who: string) {
+    const created = await ensureWorkspace(h.handler, thread, MAYA);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["PUT", "/v1/service/project/model", "project model", { provider: "openai", modelId: "gpt-5" }],
+    ];
+    const ensure = await ensureWorkspace(h.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000802`, who);
+    expect(ensure.status, `ensure ${JSON.stringify(ensure.body)}`).toBe(403);
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, who, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+    }
+  }
+  /** The harness records a signed-in developer as a member; a merge deletes the duplicate's member record, so the Slack id is left with none. */
+  const mergedAway = (h: Harness) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+  };
+
+  it("a removed member and a banned member are refused", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a removal or ban row under the merge survivor's id alone refuses the merged-away Slack id", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      mergedAway(h);
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a member record with no role field, or a role this release does not know, is unreadable and refused, also under the merge survivor", async () => {
+    for (const arrange of [
+      (h: Harness) => { h.db.set({ pk: orgMemberKey(TEST_ORG, guestId).pk, sk: orgMemberKey(TEST_ORG, guestId).sk, orgId: TEST_ORG, developerId: guestId }); },
+      (h: Harness) => { h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "future-role" }); },
+      (h: Harness) => { mergedAway(h); h.db.set({ ...orgMemberKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor }); },
+    ]) {
+      const h = await withKit();
+      arrange(h);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  /** The Slack id merged into a chain of `merges` developers, each merged into the next (the last is the survivor). */
+  const mergeChain = (h: Harness, merges: number) => {
+    const ids = [guestId, ...Array.from({ length: merges }, (_, index) => String(index + 1).padStart(2, "0").repeat(32))];
+    ids.forEach((id, index) => { if (index < merges) h.db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, mergedInto: ids[index + 1] }); });
+    h.db.set({ pk: `DEVELOPER#${ids[merges]!}`, sk: "META", developerId: ids[merges] });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    return ids;
+  };
+
+  it("follows a merge chain up to the hop limit, and refuses one that reaches it or loops back", async () => {
+    const served = await withKit();
+    mergeChain(served, 8);
+    const answered = await serviceCall(served.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+    const tooLong = await withKit();
+    mergeChain(tooLong, 9);
+    await refusedOnEveryRoute(tooLong, GUEST);
+    const looping = await withKit();
+    const ids = mergeChain(looping, 2);
+    looping.db.set({ pk: `DEVELOPER#${ids[2]!}`, sk: "META", developerId: ids[2], mergedInto: guestId });
+    await refusedOnEveryRoute(looping, GUEST);
+  });
+
+  it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a merge survivor of another org refuses the Slack id, though the Slack id itself resolves to the team's org", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === survivor ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, survivor, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("the survivor's current role wins over a stale merged-away record's role", async () => {
+    const h = await withKit();
+    // The stale duplicate record says owner (an owner is maintainer everywhere); the survivor is a member, and the Slack id holds a viewer grant.
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+    const refused = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+  });
+
+  /** The Slack identity linked to `survivor` and then unlinked from it: the identity is its own developer again, with no merge and no member record. */
+  const unlinkedFrom = (h: Harness, developer: string) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: developer, provider: "slack", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", unlinkedFrom: developer, unlinkedAt: "2026-10-20T00:00:00.000Z" });
+  };
+
+  it("a Slack identity unlinked from a removed or banned developer is still refused, so unlinking does not clear a removal", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      unlinkedFrom(h, survivor);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("control: a Slack identity unlinked from a developer who is still a member is an unlinked requester, served as before", async () => {
+    const h = await withKit();
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    unlinkedFrom(h, survivor);
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("REMOVED_FROM_ORG");
+  });
+
+  /** The Slack identity linked to `developer` again after an unlink: the link is active, and the merge the unlink dropped is not restored. */
+  const relinkedTo = (h: Harness, developer: string) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: developer, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+  };
+
+  it("a relinked Slack identity is judged by the developer it is linked to now: once that developer is removed or banned it is refused", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      relinkedTo(h, survivor);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a relinked Slack identity keeps the role of the developer it is linked to: an owner or admin stays one, a member stays bound by a viewer grant", async () => {
+    for (const [role, refused] of [["owner", false], ["admin", false], ["member", true]] as const) {
+      const h = await withKit();
+      seedMembership(h.db, survivor, { orgId: TEST_ORG, role });
+      relinkedTo(h, survivor);
+      setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+      const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+      const code = (answered.body.error as { code?: string } | undefined)?.code;
+      if (refused) expect(code, role).toBe("PROJECT_ACCESS_DENIED");
+      else { expect(code, `${role} ${JSON.stringify(answered.body)}`).not.toBe("PROJECT_ACCESS_DENIED"); expect(code).not.toBe("FORBIDDEN"); }
+    }
+  });
+
+  it("an owner or admin working through their own Slack identity is served on the service routes (control)", async () => {
+    for (const role of ["owner", "admin"] as const) {
+      const h = await withKit();
+      seedMembership(h.db, guestId, { orgId: TEST_ORG, role });
+      setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+      const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+      const code = (answered.body.error as { code?: string } | undefined)?.code;
+      expect(code, `${role} ${JSON.stringify(answered.body)}`).not.toBe("PROJECT_ACCESS_DENIED");
+      expect(code).not.toBe("FORBIDDEN");
+    }
+  });
+
+  it("a Slack identity unlinked from a developer who was removed and then invited again is allowed: the new membership stands", async () => {
+    const h = await withKit();
+    h.db.set({ ...orgRemovedKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor });
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    unlinkedFrom(h, survivor);
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("REMOVED_FROM_ORG");
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+  });
+
+  it("a merge survivor with no org refuses an identity that is placed in the team's org, and is accepted for one that is unplaced too", async () => {
+    const placedGuest = async (guestOrg: string | undefined) => {
+      const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? guestOrg : subject.developerId === survivor ? undefined : TEST_ORG) as never;
+      const h = await withKit({ brokerExtra: { orgResolver } });
+      seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+      h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+      h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+      return h;
+    };
+    const placed = await placedGuest(TEST_ORG);
+    seedMembership(placed.db, guestId, { orgId: TEST_ORG, role: "member" });
+    await refusedOnEveryRoute(placed, GUEST);
+    const unplaced = await placedGuest(undefined);
+    await ensureWorkspace(unplaced.handler, thread, MAYA);
+    const answered = await serviceCall(unplaced.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+  });
+
+  it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
+    const h = await withKit();
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("REMOVED_FROM_ORG");
+  });
+});
+
+describe("the task paths read a member record that has no role as unreadable", () => {
+  it("refuses it, whatever grant the person still holds, and does not for a member with the same grant", async () => {
+    const h = await withKit();
+    const who = "6".repeat(64);
+    const { requireProjectAuthority } = await loadSlackBroker() as unknown as { requireProjectAuthority: (...args: unknown[]) => Promise<unknown> };
+    h.db.set({ ...projectMemberKey(TEST_ORG, who, "payments"), entityType: "MEMBERSHIP", ownerKey: who, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: "g2" });
+    seedMembership(h.db, who, { orgId: TEST_ORG, role: "member" });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).resolves.toMatchObject({ kind: "grant" });
+    h.db.set({ ...orgMemberKey(TEST_ORG, who), orgId: TEST_ORG, developerId: who });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+});
+
+describe("Slack model access for a project viewer", () => {
+  const VIEWER = "U0VIEWERSL2";
+  const viewerId = developerIdForSlackUser(VIEWER);
+  const taskThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000901" };
+  const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/${taskThread.threadTs}`;
+  const modelAccessInstall = async (role: "owner" | "admin" | "member" = "member") => {
+    const mintKey = vi.fn(async () => ({ key: "sk-proxy-per-turn-key-0001", expiresAt: Date.now() + 900_000 }));
+    const orgFigures = () => ({ spentUsd: 0, limitUsd: 500 });
+    const access = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(async () => ({ member: { spentUsd: 0, limitUsd: 29 }, org: orgFigures() })), orgSpend: vi.fn(async () => orgFigures()), keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn(), listSources: vi.fn(), auditKeys: vi.fn() };
+    const h = await withKit({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    seedMembership(h.db, viewerId, { orgId: TEST_ORG, role });
+    setGrant(h.db, { ...KIT, developerId: viewerId }, "viewer");
+    return { ...h, mintKey };
+  };
+  const sharedTask = (h: Harness, extra: Record<string, unknown> = {}) => {
+    const taskId = randomUUID();
+    h.db.set({ ...sharedTaskKey(taskThread), taskId, workspaceId: randomUUID(), ownerKey: taskOwnerKey(KIT.developerId, taskId), developerId: KIT.developerId, developerName: "Kit Alvarez", project: "payments", mode: "view", sharedAt: new Date().toISOString(), workflowThread: true, ...extra });
+  };
+  const ask = (h: Harness) => serviceCall(h.handler, subject, VIEWER, "POST", "/v1/service/model-access", { turnId: "Ev1" });
+
+  it("gets a key for a read-only task answer in a Slack-started task's thread, and is still refused one for any working thread", async () => {
+    const answer = await modelAccessInstall();
+    sharedTask(answer);
+    const answered = await ask(answer);
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(answer.mintKey).toHaveBeenCalledTimes(1);
+    // An ordinary channel thread, a closed task thread and a task thread opened for continuing are working threads.
+    const ordinary = await modelAccessInstall();
+    const refusedOrdinary = await ask(ordinary);
+    expect(refusedOrdinary.status).toBe(403);
+    expect(refusedOrdinary.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect(ordinary.mintKey).not.toHaveBeenCalled();
+    for (const extra of [{ closedAt: new Date().toISOString() }, { workflowThread: undefined, mode: "continue" }]) {
+      const h = await modelAccessInstall();
+      sharedTask(h, extra);
+      const refused = await ask(h);
+      expect(refused.status, JSON.stringify(extra)).toBe(403);
+      expect(h.mintKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it("is refused a key in a task thread of another project, though the thread is a Slack-started task's", async () => {
+    const h = await modelAccessInstall();
+    sharedTask(h, { project: "ledger" });
+    const refused = await ask(h);
+    expect(refused.status).toBe(403);
+    expect(h.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("serves an owner or admin a key in an ordinary thread, through their own Slack identity or one relinked to them (control)", async () => {
+    for (const role of ["owner", "admin"] as const) {
+      for (const relinked of [false, true]) {
+        const h = await modelAccessInstall(role);
+        if (relinked) {
+          const other = "9".repeat(64);
+          h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+          seedMembership(h.db, other, { orgId: TEST_ORG, role });
+          h.db.set({ pk: `DEVELOPER#${viewerId}`, sk: "META", developerId: viewerId });
+          h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+          h.db.set({ pk: `SIGNIN_IDENTITY#${viewerId}`, sk: "META", identityKey: viewerId, developerId: other, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+        }
+        const answered = await ask(h);
+        expect(answered.status, `${role} relinked=${String(relinked)} ${JSON.stringify(answered.body)}`).toBe(200);
+        expect(h.mintKey).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it("is refused a key once the developer the identity was relinked to is removed or banned", async () => {
+    const other = "9".repeat(64);
+    for (const row of [orgRemovedKey(TEST_ORG, other), orgBanKey(TEST_ORG, other)]) {
+      const h = await modelAccessInstall();
+      h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+      h.db.delete(projectMemberKey(TEST_ORG, viewerId, "payments")); // no viewer grant: only the relinked developer's removal can refuse the key
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: other });
+      h.db.set({ pk: `SIGNIN_IDENTITY#${viewerId}`, sk: "META", identityKey: viewerId, developerId: other, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      expect((await ask(h)).status).toBe(403);
+      expect(h.mintKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it("is refused a task-answer key once removed from the company", async () => {
+    const h = await modelAccessInstall();
+    sharedTask(h);
+    h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+    h.db.set({ ...orgRemovedKey(TEST_ORG, viewerId), orgId: TEST_ORG, developerId: viewerId });
+    expect((await ask(h)).status).toBe(403);
+    expect(h.mintKey).not.toHaveBeenCalled();
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -26,8 +349,8 @@ function setGrant(db: FakeDynamoDb, who: Developer, role: ProjectRole): void {
     role: role === "viewer" ? "viewer" : "developer", projectRole: role });
 }
 
-async function withKit(): Promise<Harness> {
-  const h = await createSingleAnswerPlanBroker();
+async function withKit(options: Parameters<typeof createSingleAnswerPlanBroker>[0] = {}): Promise<Harness> {
+  const h = await createSingleAnswerPlanBroker(options);
   await h.orgOf(KIT);
   h.db.set({ pk: `SESSION#${KIT.sessionId}`, sk: "META", sessionId: KIT.sessionId, developerId: KIT.developerId, amr: KIT.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: "oidc", displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });

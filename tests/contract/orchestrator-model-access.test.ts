@@ -6,6 +6,7 @@ import { agentXError, type SlackRequestMessage } from "../../packages/contracts/
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgBanKey, orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
@@ -76,6 +77,24 @@ describe("POST /v1/service/model-access", () => {
     expect(h.mintKey).toHaveBeenCalledTimes(1);
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "turn", refId: turnId, maxBudgetUsd: 2, ttlSeconds: 900 });
     expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
+  });
+
+  it("refuses a removed member, a banned member and a record with no role before routing, admitting or minting: no key, no spend read, nothing reserved", async () => {
+    const guest = developerIdForSlackUser(SLACK_USER);
+    const cases: Array<[string, (h: Awaited<ReturnType<typeof boundInstall>>) => void]> = [
+      ["a removed member", (h) => h.db.set({ ...orgRemovedKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
+      ["a banned member", (h) => h.db.set({ ...orgBanKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
+      ["a record with no role", (h) => h.db.set({ ...orgMemberKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
+    ];
+    for (const [label, arrange] of cases) {
+      const h = await boundInstall();
+      arrange(h);
+      const refused = await askFor(h.handler, { turnId: "Ev1" });
+      expect(refused.status, label).toBe(403);
+      expect(h.mintKey, label).not.toHaveBeenCalled();
+      expect(h.spend, label).not.toHaveBeenCalled();
+      expect(h.orgSpend, label).not.toHaveBeenCalled();
+    }
   });
 
   it("mints for the team's org when the body names no org (R32), and for the org alone", async () => {
