@@ -208,6 +208,32 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     await refusedOnEveryRoute(auditor, GUEST);
   });
 
+  /** The Slack identity linked to a developer and then unlinked from it: the identity is its own developer again, with no merge and no member record. */
+  const unlinkedFrom = (h: Harness, developer: string) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: developer, provider: "slack", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", unlinkedFrom: developer, unlinkedAt: "2026-10-20T00:00:00.000Z" });
+  };
+
+  it("a Slack identity unlinked from a removed or banned developer is still refused, so unlinking does not clear a removal", async () => {
+    const SURVIVOR = "7".repeat(64);
+    for (const row of [orgRemovedKey(TEST_ORG, SURVIVOR), orgBanKey(TEST_ORG, SURVIVOR)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: SURVIVOR });
+      unlinkedFrom(h, SURVIVOR);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("control: a Slack identity unlinked from a developer who is still a member is an unlinked requester, served as before", async () => {
+    const SURVIVOR = "7".repeat(64);
+    const h = await withKit();
+    seedMembership(h.db, SURVIVOR, { orgId: TEST_ORG, role: "member" });
+    unlinkedFrom(h, SURVIVOR);
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+  });
+
   it("control: a single-org install still treats a person with no record as the implicit member", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
