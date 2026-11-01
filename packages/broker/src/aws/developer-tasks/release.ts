@@ -23,7 +23,7 @@ export type ReleaseDeps = {
   tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> };
   /** The model proxy: what a finished run's keys spent, for the estimates (Task 34). Without it no cost is written. */
   modelAccess?: ModelAccess;
-  /** Track record: a fresh GitHub read of one of the task's pull requests, for settling a merged candidate's samples when the task ends. Without it such samples are `github_unavailable`. */
+  /** Track record: a fresh GitHub read of one of the task's pull requests, for settling a merged candidate's samples when the task ends. Without it such samples are `code_host_unavailable`. */
   outcomeReader?: (task: DeveloperTaskRecord) => EndedPullRequestReader | undefined;
   /** How long the settle's reads may take in all (default 8 seconds). */
   outcomeSettleBudgetMs?: number;
@@ -258,7 +258,7 @@ const RELEASE_SWEEP_SCAN = 200;
 /** After a release that did not go through, the next try waits this long, doubling each time up to the cap. */
 const RELEASE_RETRY_FIRST_MS = 5 * 60_000;
 const RELEASE_RETRY_MAX_MS = 6 * 3_600_000;
-/** After this many settles of their own that did not finish, a released task's open samples are closed out as `github_unavailable` by writes alone, and its mark goes. */
+/** After this many settles of their own that did not finish, a released task's open samples are closed out as `code_host_unavailable` by writes alone, and its mark goes. */
 const SETTLE_ATTEMPTS_MAX = 5;
 
 interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: number; settleAttempts?: number; nextAttemptAt?: string }

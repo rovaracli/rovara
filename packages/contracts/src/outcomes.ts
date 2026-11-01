@@ -17,7 +17,9 @@ export const OUTCOME_REASONS = [
   "plan_approved", "plan_skipped", "plan_changes_requested", "plan_rejected",
   "merged_no_changes_requested", "merged_without_person_review", "changes_requested_by_person", "feedback_round_approved",
   "ci_passing", "ci_failing", "ci_none", "ci_pending", "proof_unavailable",
-  "closed_unmerged", "task_closed", "superseded", "github_unavailable",
+  "closed_unmerged", "task_closed", "superseded",
+  // `code_host_unavailable`: the pull request could not be read from its code host (any host). `github_unavailable` is the word earlier versions wrote for the same thing; it is still read, never written.
+  "code_host_unavailable", "github_unavailable",
 ] as const;
 export const OutcomeReasonSchema = z.enum(OUTCOME_REASONS);
 export type OutcomeReason = z.infer<typeof OutcomeReasonSchema>;

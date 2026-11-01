@@ -5482,7 +5482,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     expect(outcome).toBe("released");
     const releasedAt = String((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt);
     expect(releasedAt).toEqual(expect.any(String));
-    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "code_host_unavailable")).toBe(true);
     // The order: the release was written, and only then were the samples settled.
     expect(t.samples().every((item) => String(item.scoredAt) >= releasedAt)).toBe(true);
   });
@@ -5595,7 +5595,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     expect(b.ids.every((id) => b.mark(id) === undefined)).toBe(true);
   });
 
-  it("a settle that keeps failing is given up after five tries of its own (busy retries before do not count): every open sample is scored github_unavailable by writes alone, and the mark goes", async () => {
+  it("a settle that keeps failing is given up after five tries of its own (busy retries before do not count): every open sample is scored code_host_unavailable by writes alone, and the mark goes", async () => {
     const b = await finishedBatch(1);
     const [id] = b.ids;
     const reader = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
@@ -5616,7 +5616,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     await release();
     expect(b.pending(id!)).toEqual([]);
     expect(b.mark(id!)).toBeUndefined();
-    expect(b.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE" && item.taskId === id).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    expect(b.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE" && item.taskId === id).every((item) => item.state === "no_outcome" && item.reason === "code_host_unavailable")).toBe(true);
   });
 
   it("a settle that did not finish after the release is tried again by the next sweep (the release mark stays until it completes)", async () => {
@@ -5654,7 +5654,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     await pullRequestEvent(t.harness, "closed");
     expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
     expect(t.samples().filter((item) => item.state === "pending")).toEqual([]);
-    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "code_host_unavailable")).toBe(true);
   });
 
   it("drops a pending update after the PR was merged", async () => {

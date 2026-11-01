@@ -383,8 +383,9 @@ export async function scoreMergedCandidate(
       first ??= { repositoryId: entry.repositoryId, number: entry.number, mergeCommit: read.mergeCommit, mergedAt: read.mergedAt };
     }
     const mergeCommit = first?.mergeCommit !== undefined && /^[a-f0-9]{40,64}$/u.test(first.mergeCommit) ? first.mergeCommit : undefined;
-    const mergedAt = first?.mergedAt !== undefined && Number.isFinite(Date.parse(first.mergedAt)) ? new Date(first.mergedAt).toISOString() : input.now;
-    const pr = { repositoryId: first!.repositoryId, number: first!.number, ...(mergeCommit === undefined ? {} : { mergeCommit }), mergedAt };
+    // Only what the host gave: a host (or a read) with no merge observation leaves the time unset, it is never taken from the settle.
+    const mergedAt = first?.mergedAt !== undefined && Number.isFinite(Date.parse(first.mergedAt)) ? new Date(first.mergedAt).toISOString() : undefined;
+    const pr = { repositoryId: first!.repositoryId, number: first!.number, ...(mergeCommit === undefined ? {} : { mergeCommit }), ...(mergedAt === undefined ? {} : { mergedAt }) };
     const held: Score = changes ? { state: "not_held", reason: "changes_requested_by_person", pr }
       : { state: "held", reason: reviewed ? "merged_no_changes_requested" : "merged_without_person_review", pr };
     const reviewScore: Score = changes || reviewed ? held : { ...held, unreviewedMerge: true };
@@ -403,8 +404,8 @@ export async function scoreMergedCandidate(
 
 /**
  * The task is over (closed, or finished and released): nothing stays pending. Every GitHub read of the settle shares ONE deadline (`budgetMs`), so a GitHub that does not answer costs
- * that long once, however many pull requests there are; what is left when it passes is `github_unavailable`.
- * - A candidate with a merged pull request is scored from a fresh read (a read that cannot be made is `github_unavailable`; one still waiting on another open pull request is `task_closed`).
+ * that long once, however many pull requests there are; what is left when it passes is `code_host_unavailable`.
+ * - A candidate with a merged pull request is scored from a fresh read (a read that cannot be made is `code_host_unavailable`; one still waiting on another open pull request is `task_closed`).
  * - A candidate whose pull requests are all closed: read again, so a reopened and merged one scores as merged, one still closed is `closed_unmerged`, and one open now has no outcome.
  *   (A close is never scored at the moment it happens: it may be reopened. Without a reader the workflow's own record stands.)
  * - A candidate no pull request holds any more was replaced: `superseded`. Anything else: `task_closed`.
@@ -415,10 +416,10 @@ export async function settleTaskOutcomes(
   try {
     if (task.orgId === undefined) return "done";
     // A pass that settles many tasks has one overall time (`until`): once it is reached nothing more is settled, and what is left stays open for the next pass.
-    // A task reached with too little of it left is not settled on a few milliseconds (its samples would end `github_unavailable` for want of time): it is left for the next pass.
+    // A task reached with too little of it left is not settled on a few milliseconds (its samples would end `code_host_unavailable` for want of time): it is left for the next pass.
     if (until !== undefined && until - Date.now() < MIN_SETTLE_MS) return "skipped";
     const deadline = Math.min(Date.now() + budgetMs, until ?? Number.POSITIVE_INFINITY);
-    const unavailable = (round: string) => scoreClaims(deps, task, round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
+    const unavailable = (round: string) => scoreClaims(deps, task, round, allPending({ state: "no_outcome", reason: "code_host_unavailable" }), now);
     for (const pointer of await pointersOf(deps, task.taskId)) {
       try {
         const all = task.workflow?.pullRequests ?? [];
@@ -460,10 +461,10 @@ export async function settleTaskOutcomes(
   }
 }
 
-/** A settle that could not finish after its tries is given up: every sample of the task still open is scored `no_outcome` / `github_unavailable`, by writes alone (no read). Never throws. */
+/** A settle that could not finish after its tries is given up: every sample of the task still open is scored `no_outcome` / `code_host_unavailable`, by writes alone (no read). Never throws. */
 export async function abandonTaskOutcomes(deps: OutcomeDependencies, task: OutcomeTask, now: string): Promise<void> {
   try {
-    for (const pointer of await pointersOf(deps, task.taskId)) await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
+    for (const pointer of await pointersOf(deps, task.taskId)) await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "code_host_unavailable" }), now);
   } catch (error) {
     noteFailure(deps, "abandon", error);
   }

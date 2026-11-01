@@ -586,7 +586,7 @@ async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies
 
 /**
  * Track record: a fresh GitHub read of one of a task's pull requests (its checks and reviews, its merge commit and time, and a person's permission on its repository), for scoring a candidate's
- * samples. Undefined where the provider cannot read a pull request's status or a person's permission: what waits on it is then `github_unavailable`, never guessed.
+ * samples. Undefined where the provider cannot read a pull request's status or a person's permission: what waits on it is then `code_host_unavailable`, never guessed.
  */
 function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, budget?: GithubMergeReadBudget): EndedPullRequestReader | undefined {
   if (task.orgId === undefined) return undefined;

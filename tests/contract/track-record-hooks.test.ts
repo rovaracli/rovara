@@ -213,6 +213,17 @@ async function merge(w: ReturnType<typeof world>, overrides: Partial<ChangeReque
 }
 
 describe("a pull request merges", () => {
+  it("a host that gives no merge observation leaves the merge time and commit unset: the settle time is never taken for it", async () => {
+    const w = await seeded();
+    const bare: EndedPullRequestReader = async () => ({ status: status({ reviews: [person("APPROVED")] }), permission: async (login) => (login.startsWith("user") ? "write" : "none") });
+    const result = await scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, { candidateDigest: CANDIDATE, read: bare, now: T2 });
+    expect(result).toBe("scored");
+    const scored = byClaim(w.db, "review_pass:CRITIC")[0]!;
+    expect(scored).toMatchObject({ state: "held", reason: "merged_no_changes_requested", pr: { repositoryId: "web", number: 7 } });
+    expect(scored["pr"]).not.toHaveProperty("mergedAt");
+    expect(scored["pr"]).not.toHaveProperty("mergeCommit");
+  });
+
   it("a reviewed merge holds the reviews and the risk, scores the proof by fresh CI, and keeps the merge commit and time", async () => {
     const w = await seeded();
     expect((await merge(w, { reviews: [person("APPROVED")] })).result).toBe("scored");
@@ -409,7 +420,7 @@ describe("the task ends", () => {
     expect(byClaim(w.db, "review_pass:CRITIC").find((item) => item.round === outcomeRoundOf(SECOND_CANDIDATE))).toMatchObject({ state: "no_outcome", reason: "task_closed" });
   });
 
-  it("a candidate with a merged pull request that is still pending is scored from a fresh read; if it cannot be read it is github_unavailable", async () => {
+  it("a candidate with a merged pull request that is still pending is scored from a fresh read; if it cannot be read it is code_host_unavailable", async () => {
     const read = await seeded();
     const reader = readerOf({}, status({ reviews: [person("APPROVED")] })).read;
     await settleTaskOutcomes(read.deps, withReader(reader, [{ number: 7, state: "MERGED" }]), T2, reader);
@@ -420,11 +431,11 @@ describe("the task ends", () => {
     const failing: EndedPullRequestReader = async () => { throw new Error("secret github text"); };
     await settleTaskOutcomes(broken.deps, withReader(failing, [{ number: 7, state: "MERGED" }]), T2, failing);
     expect(samples(broken.db).filter((item) => item.state === "pending")).toEqual([]);
-    expect(samples(broken.db).every((item) => item.reason === "github_unavailable" && item.state === "no_outcome")).toBe(true);
+    expect(samples(broken.db).every((item) => item.reason === "code_host_unavailable" && item.state === "no_outcome")).toBe(true);
 
     const noReader = await seeded();
     await settleTaskOutcomes(noReader.deps, withReader(undefined, [{ number: 7, state: "MERGED" }]), T2);
-    expect(samples(noReader.db).every((item) => item.reason === "github_unavailable")).toBe(true);
+    expect(samples(noReader.db).every((item) => item.reason === "code_host_unavailable")).toBe(true);
   });
 
   it("a closed pull request is scored closed_unmerged only if it is still closed now; reopened and merged scores as merged, reopened and open has no outcome", async () => {
@@ -449,21 +460,21 @@ describe("the task ends", () => {
     expect(samples(unread.db).every((item) => item.state === "closed_unmerged")).toBe(true);
   });
 
-  it("every read of a settle shares one deadline: a GitHub that never answers costs the budget once, and the rest is github_unavailable", async () => {
+  it("every read of a settle shares one deadline: a GitHub that never answers costs the budget once, and the rest is code_host_unavailable", async () => {
     const w = await seeded();
     const hanging: EndedPullRequestReader = () => new Promise(() => undefined);
     const prs = [{ number: 7, state: "MERGED" }, { number: 8, state: "MERGED", repositoryId: "api" }];
     const started = Date.now();
     await settleTaskOutcomes(w.deps, withReader(hanging, prs), T2, hanging, 150);
     expect(Date.now() - started).toBeLessThan(1_500);
-    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "code_host_unavailable")).toBe(true);
   });
 
-  it("a closed pull request whose fresh read cannot be made is github_unavailable, not guessed", async () => {
+  it("a closed pull request whose fresh read cannot be made is code_host_unavailable, not guessed", async () => {
     const w = await seeded();
     const failing: EndedPullRequestReader = async () => { throw new Error("secret github text"); };
     await settleTaskOutcomes(w.deps, withReader(failing, [{ number: 7, state: "CLOSED" }]), T2, failing);
-    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "code_host_unavailable")).toBe(true);
   });
 
   it("a candidate whose other pull request is still open when the task ends is not left pending", async () => {
