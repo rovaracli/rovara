@@ -102,7 +102,9 @@ export function classifyNightlyHealth(input: unknown): NightlyHealth {
     if (tests.total - tests.skipped === 0) return { class: "environment", cause: "no_tests_collected" };
     // "Passed" needs the whole run on record: at least one check, a passing test, no setup step failed (checked above), and both test steps present and passed.
     const testStepsPassed = NIGHTLY_HEALTH_TEST_STEPS.every((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
-    return checks.length > 0 && tests.passed > 0 && testStepsPassed ? { class: "passed" } : { class: "unclear", cause: "incomplete_run" };
+    // Skipped setup steps are fine one by one, but at least one of the steps that put the code in place (pull, update, setup, build) must have passed.
+    const codeInPlace = (["pull", "update", "setup", "build"] as const).some((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
+    return checks.length > 0 && tests.passed > 0 && testStepsPassed && codeInPlace ? { class: "passed" } : { class: "unclear", cause: "incomplete_run" };
   }
 
   // 4. real assertion failures next to tests that passed

@@ -37,6 +37,17 @@ describe("a run that proves nothing is never healthy (review fix 1)", () => {
     expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "skipped") }))).toEqual({ class: "unclear", cause: "incomplete_run" });
     expect(classifyNightlyHealth(run({ steps: withStep("smoke", "skipped") }))).toEqual({ class: "unclear", cause: "incomplete_run" });
   });
+
+  it("needs at least one of pull, update, setup, build to have passed: all setup steps skipped, or none at all, is unclear", () => {
+    const testSteps = NIGHTLY_HEALTH_TEST_STEPS.map((step) => ({ step, status: "passed" }));
+    const skippedSetup = NIGHTLY_HEALTH_SETUP_STEPS.map((step) => ({ step, status: "skipped" }));
+    expect(classifyNightlyHealth(run({ steps: [...skippedSetup, ...testSteps] }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    expect(classifyNightlyHealth(run({ steps: testSteps }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    // Boot, mocks and the pre-prod probe alone do not put the code in place.
+    expect(classifyNightlyHealth(run({ steps: [...skippedSetup.map((entry) => (entry.step === "boot" ? { ...entry, status: "passed" } : entry)), ...testSteps] }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    // One passed code-in-place step is enough, the others may be skipped.
+    expect(classifyNightlyHealth(run({ steps: [...skippedSetup.map((entry) => (entry.step === "build" ? { ...entry, status: "passed" } : entry)), ...testSteps] }))).toEqual({ class: "passed" });
+  });
 });
 
 describe("row 1: a step before the tests failed is the environment", () => {
