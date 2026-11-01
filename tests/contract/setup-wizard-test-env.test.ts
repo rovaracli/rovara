@@ -8,7 +8,7 @@ import { confirmationStands } from "../../packages/broker/src/org/test-environme
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { originOfSave, commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
-import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
+import { ENV, NAME, command, draftBody, draftOf, errorOf, TEAM_RECORD_TABLE, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 afterEach(() => { delete process.env.TEST_ENVIRONMENT_ENABLED; });
@@ -486,7 +486,7 @@ describe("when a second person's confirmation stands", () => {
 });
 
 describe("the company's switch for the sole-owner exception", () => {
-  const soleOwnerSwitch = (t: Bench, enabled: unknown) => t.db.set({ pk: teamRecordPk(TEST_ORG), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: 1 });
+  const soleOwnerSwitch = (t: Bench, enabled: unknown) => t.teamDb.set({ pk: teamRecordPk(TEST_ORG), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: 1 });
   const askAndConfirm = async (t: Bench) => {
     const digest = await lessSafeProposal(t);
     await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
@@ -494,7 +494,7 @@ describe("the company's switch for the sole-owner exception", () => {
     t.confirmCard(card!.approvalId, OMAR);
     return { digest, card: card! };
   };
-  const rule = (t: Bench, card: unknown) => mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now(), modelSignInTableName: "signin" } as never, { orgId: TEST_ORG, developerId: OMAR.developerId, orgRole: "owner" } as never, card as never);
+  const rule = (t: Bench, card: unknown) => mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now(), modelSignInTableName: "signin", teamRecordTable: { documentClient: t.teamDb, tableName: TEAM_RECORD_TABLE } } as never, { orgId: TEST_ORG, developerId: OMAR.developerId, orgRole: "owner" } as never, card as never);
 
   it("with the switch OFF the only owner is not a second person: the card rule says no and the approval is refused", async () => {
     const t = await setupWizardBench();
@@ -509,6 +509,31 @@ describe("the company's switch for the sole-owner exception", () => {
       expect(refused.status).toBe(403);
       expect(errorOf(refused).message).toContain("second person");
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
+    });
+  });
+
+  it("is read from the Team record's table, where it is written: a switch item in the State table is not the switch, and the two tables are separate stores", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", async () => {
+      expect(t.teamDb).not.toBe(t.db);
+      t.db.set({ pk: teamRecordPk(TEST_ORG), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled: false, updatedAt: 1 }); // the wrong table
+      const { digest, card } = await askAndConfirm(t);
+      expect(await rule(t, card)).toBe(true);
+      expect((await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).status).toBe(200);
+    });
+  });
+
+  it("where the Team record is off there is no switch to read, so the exception is not available (fail closed)", async () => {
+    const t = await setupWizardBench({ teamRecord: false });
+    await withSwitch("1", async () => {
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [card] = t.approvals();
+      expect(await mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now(), modelSignInTableName: "signin" } as never, { orgId: TEST_ORG, developerId: OMAR.developerId, orgRole: "owner" } as never, card as never)).toBe(false);
+      t.confirmCard(card!.approvalId, OMAR);
+      const refused = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
+      expect(refused.status).toBe(403);
+      expect(errorOf(refused).message).toContain("second person");
     });
   });
 

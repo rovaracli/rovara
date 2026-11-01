@@ -5,6 +5,7 @@ import {
   TestEnvironmentBodySchema, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, TEST_ENV_DRAFT_RESULT_KEY, testEnvDigest,
   type GithubInstallationRecord, type TestEnvDraft, type TestEnvironmentBody,
 } from "../../packages/contracts/src/index.js";
+import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "./developer-task-broker.js";
 import { TEST_ORG } from "./orgs.js";
@@ -27,13 +28,19 @@ export const draftBody = (over: Record<string, unknown> = {}): TestEnvironmentBo
 export const draftOf = (environment = draftBody()): TestEnvDraft => ({ environment, valueSources: [{ field: "repos[0].checks[0]", source: "detector:node" }, { field: "repos[0].setupCommands[0]", source: { path: "Makefile", line: 3 } }], pendingServices: [], notes: ["Found a Makefile."], questions: [] });
 const SETUP_PROPOSAL = { setup: [{ repo: "web", commands: ["npm ci"], confidence: "high", from: [{ kind: "inferred", repo: "web", note: "a package.json" }] }], tests: [], notes: "ok" };
 
-export async function setupWizardBench(options: { agents?: boolean } = {}) {
+/** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`agentx-<env>-team-record`). A read of the wrong table finds nothing. */
+export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
+
+export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean } = {}) {
+  const teamDb = new FakeDynamoDb();
   const h = await createDeveloperTaskBroker({
     register: false,
     brokerExtra: {
       cloud: true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async () => undefined), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
+      // The Team record is on (its table is separate from the State table) unless the test says otherwise. Only its table is used by the test-environment code; the rest is what other callers would find missing.
+      ...(options.teamRecord === false ? {} : { teamRecord: { table: { documentClient: teamDb, tableName: TEAM_RECORD_TABLE }, taps: {}, erase: {}, jobs: {} } }),
     },
   });
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
@@ -128,7 +135,7 @@ export async function setupWizardBench(options: { agents?: boolean } = {}) {
     const decidedAt = Date.now() - (when.confirmedMinutesAgo ?? 0) * 60_000;
     h.db.set({ ...card, status: "APPROVED_DONE", decidedBy: by.developerId, decidedAt: new Date(decidedAt).toISOString(), decision: "APPROVE", decisionProof: { kind: "fresh_sign_in", method: "email_code", authTime: new Date(decidedAt - (when.signedInMinutesBefore ?? 0) * 60_000).toISOString(), sessionRef: "5".repeat(64) } });
   };
-  return { ...h, person, ask, drafted, setupCheckPassed, web, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
+  return { ...h, teamDb, person, ask, drafted, setupCheckPassed, web, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
 }
 export type Bench = Awaited<ReturnType<typeof setupWizardBench>>;
 

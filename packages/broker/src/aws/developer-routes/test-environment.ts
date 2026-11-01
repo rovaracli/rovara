@@ -75,7 +75,7 @@ export function testEnvApprovalStoreOf(deps: DeveloperRouteDependencies): TestEn
   const signInTableName = deps.developer?.signInTableName;
   return {
     ...testEnvStoreOf(deps),
-    ...(signInTableName === undefined || signInTableName === "" ? {} : { secondPerson: secondPersonFromRecords({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName, now: deps.now }) }),
+    ...(signInTableName === undefined || signInTableName === "" ? {} : { secondPerson: secondPersonFromRecords({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName, now: deps.now, soleOwnerTable: deps.teamRecord?.table }) }),
   };
 }
 

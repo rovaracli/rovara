@@ -27,6 +27,7 @@ import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
 import type { DecideGuard, WriteGateRuntime } from "./write-gate.js";
 import type { AgentRunHost } from "./run-engine.js";
+import type { TeamRecordTable } from "../team-record/types.js";
 import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
@@ -34,6 +35,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   modelRouting?: RoutingDependencies;
   /** Existing sign-in table, used only for global revocation ConditionChecks. */
   modelSignInTableName?: string;
+  /** The Team record's table, where the company's sole-owner switch lives (test environments read it for the sole-owner exception). Absent where the Team record is off. */
+  teamRecordTable?: TeamRecordTable;
   stageChatgpt?: Pick<ChatGptConnections,"settings"|"view">;
   /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
   chains?: ChainStore;

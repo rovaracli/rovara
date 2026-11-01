@@ -47,7 +47,7 @@ export function registerTestEnvApprovals(): void {
     if (!isChange(record) || record.subject.kind !== "test_env" || caller.orgId !== record.orgId || deps.modelSignInTableName === undefined) return false;
     try {
       await decideFromRecords(
-        { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.modelSignInTableName, now: deps.now },
+        { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.modelSignInTableName, now: deps.now, soleOwnerTable: deps.teamRecordTable },
         { orgId: record.orgId, project: record.subject.project, proposerId: record.requestedBy, approverId: caller.developerId },
       );
       return true;
