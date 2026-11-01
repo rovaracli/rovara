@@ -142,7 +142,7 @@ describe("the dispatcher answering a task-peek event", () => {
 });
 
 describe("the broker's peek client", () => {
-  const task = (overrides: Partial<DeveloperTaskRecord> = {}) => ({ taskId, workspaceId, project: "p", ...overrides }) as DeveloperTaskRecord;
+  const task = (overrides: { [K in keyof DeveloperTaskRecord]?: DeveloperTaskRecord[K] | undefined } = {}) => ({ taskId, workspaceId, project: "p", ...overrides }) as DeveloperTaskRecord;
 
   it("builds a peek invocation with no capability and no command, and returns only a peeked answer", async () => {
     const db = table(workspaceRows());
@@ -156,8 +156,8 @@ describe("the broker's peek client", () => {
   });
 
   it("gives nothing, and never throws, when the workspace is not this task's, is not up, or the dispatcher fails or answers badly", async () => {
-    const invoke = vi.fn(async () => ({ outcome: "peeked", answer }));
-    const make = (rows: Item[], inv: typeof invoke = invoke) => createPeekClient({ documentClient: table(rows).client as never, tableName: "state", invoke: inv });
+    const invoke = vi.fn(async (): Promise<unknown> => ({ outcome: "peeked", answer }));
+    const make = (rows: Item[], inv: () => Promise<unknown> = invoke) => createPeekClient({ documentClient: table(rows).client as never, tableName: "state", invoke: inv });
     expect(await make(workspaceRows())(task({ workspaceId: undefined }))).toBeUndefined();
     expect(await make(workspaceRows())(task({ taskId: randomUUID() }))).toBeUndefined();
     expect(await make(workspaceRows({ workspace: { status: "CLOSED" } }))(task())).toBeUndefined();

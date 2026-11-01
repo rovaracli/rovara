@@ -2042,7 +2042,8 @@ describe("P0 normal project onboarding journey", () => {
     expect(Date.parse(String(acceptedChecks?.updatedAt))).toBeLessThanOrEqual(Date.parse(roundDeadline!));
     const delayedReadTime = Math.max(Date.now() + 10_000, Date.parse(roundDeadline!) + 10_000);
     vi.useFakeTimers({ toFake: ["Date"] });
-    let publishDispatch: Awaited<ReturnType<typeof publishDispatcher>>;
+    // The dispatcher handler is overloaded (a queue batch, or a peek call); ReturnType reads the last overload, so the batch reply is named here.
+    let publishDispatch: { batchItemFailures: Array<{ itemIdentifier: string }> };
     try {
       vi.setSystemTime(delayedReadTime);
       const delayedTaskRead = await broker.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${featureTaskId}`, rawQueryString: "",

@@ -827,7 +827,7 @@ describe("every task launch checks that the creator is still a member (ruling R6
   // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
   const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound", "taskStopGuardedPaidDispatch"];
 
-  it("finds the twenty-four acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the twenty-five acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
@@ -840,8 +840,9 @@ describe("every task launch checks that the creator is still a member (ruling R6
     const recovery = functions.find(chunk => /function resumeTaskAfterSpendApproval\(/.test(chunk))!;
     expect(recovery.indexOf("creatorGuard(")).toBeGreaterThanOrEqual(0);
     expect(recovery.indexOf("creatorGuard(")).toBeLessThan(recovery.indexOf("taskStopGuardedPaidDispatch("));
+    // Stop & redirect adds one: the planning restart (`restartPlanningForRedirect` in redirect-restart.ts), which launches inside withCurrentThreadNotes (that runs creatorGuard before every attempt).
     // M47 adds one forwarding seam that merges admitted source guards; its workflow callers retain creatorGuard.
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(24);
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(25);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;
