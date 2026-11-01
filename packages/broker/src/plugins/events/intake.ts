@@ -44,9 +44,9 @@ export function requireRegisteredKind(router: Pick<CodeHostRouter, "kinds">, kin
 export async function receiveCodeHostDelivery(input: CodeHostIntakeInput): Promise<CodeHostIntakeResult> {
   const kind = requireRegisteredKind(input.router, input.kind);
   const host = input.router.forKind(kind);
-  const events = host.events;
-  if (events.mode !== "webhook" || events.normalise === undefined) throw agentXError("CONFIG_INVALID", NO_EVENTS_MESSAGE);
-  const mapped = await events.normalise(input.delivery, input.scope);
+  const normalise = host.events.mode === "webhook" ? host.events.normalise?.bind(host.events) : undefined;
+  if (normalise === undefined) throw agentXError("CONFIG_INVALID", NO_EVENTS_MESSAGE);
+  const mapped = await normalise(input.delivery, input.scope);
   if (mapped.length > MAX_EVENTS_PER_DELIVERY) throw agentXError("CONFIG_INVALID", NO_EVENTS_MESSAGE);
   // All events are checked before any is reserved or consumed: a delivery with one bad event consumes none.
   const checked = mapped.map((event) => {
@@ -54,15 +54,24 @@ export async function receiveCodeHostDelivery(input: CodeHostIntakeInput): Promi
     if (!parsed.success || parsed.data.host !== kind) throw agentXError("CONFIG_INVALID", "The code host sent an event this install cannot read.");
     return parsed.data;
   });
+  const { consumed, duplicates } = await reserveAndConsume(checked, input.reservations, (event) => input.consume(event));
+  return { host: kind, consumed, duplicates };
+}
+
+/**
+ * Reserves each event once and consumes the new ones, in order: a repeat is dropped, an id reused with other content is refused, and an event is marked consumed only after `consume` returned (a
+ * `consume` that throws leaves it to be offered again). Shared by webhook deliveries and the poller, so both are deduplicated the same way.
+ */
+export async function reserveAndConsume(events: readonly CodeHostEvent[], reservations: EventReservations, consume: (event: CodeHostEvent) => Promise<void>): Promise<{ consumed: CodeHostEvent[]; duplicates: number }> {
   const consumed: CodeHostEvent[] = [];
   let duplicates = 0;
-  for (const event of checked) {
-    const reserved = await input.reservations.reserve(event, codeHostEventHash(event));
+  for (const event of events) {
+    const reserved = await reservations.reserve(event, codeHostEventHash(event));
     if (reserved === "conflict") throw agentXError("CONFIG_INVALID", EVENT_CONFLICT_MESSAGE);
     if (reserved === "duplicate") { duplicates += 1; continue; }
-    await input.consume(event);
-    await input.reservations.complete(event);
+    await consume(event);
+    await reservations.complete(event);
     consumed.push(event);
   }
-  return { host: kind, consumed, duplicates };
+  return { consumed, duplicates };
 }
