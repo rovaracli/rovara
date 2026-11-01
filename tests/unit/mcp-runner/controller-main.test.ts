@@ -82,6 +82,26 @@ describe("controller main: the registry", () => {
     expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa").probeSecret!("mcpnew0000001")).toBeUndefined();
     expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcpnew0000001")).toBeUndefined();
   });
+  it("fix round 2 N1: a paused entry's secret goes only into the review and re-approve test of that same server's pinned package", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const withSecret = { ...spec, secretEnv: ["API_KEY"] };
+    const paused = registry(entry({ status: "changed_needs_review", hasSecret: true, transport: { kind: "stdio", spec: withSecret } }));
+    const own = { spec: { registry: "npm" as const, name: spec.name, version: spec.version, args: spec.args, integrity: spec.integrity, destinations: [], secretEnv: withSecret.secretEnv, size: spec.size }, pinned: { lockfileHash: spec.lockfileHash, bundleHash: spec.bundleHash } };
+    expect(await paused.probeSecret!("mcpsim000001", own)).toBe(arn("mcpsim000001"));
+    // not for a test that names nothing, is not pinned, or is another package / other hashes / other arguments or secret names
+    expect(await paused.probeSecret!("mcpsim000001")).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { spec: own.spec })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, name: "@evil/other-mcp" } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, version: "9.9.9" } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, args: ["--leak"] } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: { ...own.spec, secretEnv: ["OTHER_KEY"] } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, pinned: { ...own.pinned, bundleHash: "3".repeat(64) } })).toBeUndefined();
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, pinned: { ...own.pinned, lockfileHash: "3".repeat(64) } })).toBeUndefined();
+    // an entry with no secret has nothing to give
+    expect(await registry(entry({ status: "changed_needs_review", transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own)).toBeUndefined();
+    // approved and disabled entries still give none, even to their own pinned package
+    for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
+  });
   it("hashes tools the way the broker hashes what the admin was shown", () => {
     const tools = [{ name: "b", inputSchema: { type: "object" } }, { name: "a", inputSchema: { type: "object" } }];
     expect(toolsHashOf(tools)).toBe(summariseProbe(tools, 123).toolsHash);

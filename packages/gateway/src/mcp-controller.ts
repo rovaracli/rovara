@@ -46,8 +46,10 @@ export interface ControllerRegistry {
    * The secret a TEST of a proposal reads (T9). `serverId` is the proposal's own id, named by the broker. It resolves only for an id that has no entry yet (a proposal being tested for the
    * first time) or whose entry is still waiting for approval; for an approved, disabled or other entry it answers undefined, so an approved server's secret never goes into a test of
    * a package the broker names. Absent, or undefined: the test runs with no secrets (and a package that declares secret names then cannot start).
+   * Fix round 2 (N1): a PAUSED entry (tools changed after approval) also resolves, but only for the review and re-approve test of that same server: `test` must be its own pinned package, same
+   * name, version, arguments and secret names, with both pinned hashes equal. A test of any other package under that id gets no secret.
    */
-  probeSecret?(serverId: string): Promise<string | undefined>;
+  probeSecret?(serverId: string, test?: { spec: McpStdioProposal; pinned?: { lockfileHash: string; bundleHash: string } | undefined }): Promise<string | undefined>;
 }
 
 /** What a task definition is made from. */
@@ -703,7 +705,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           return { status: 200, body: outcome.ok ? { ok: true, ...outcome.report } : outcome };
         }
         // A test of a proposal with secret names reads the secret the broker stored for the proposal (see `probeSecret`). The lookup failing is "no secret", which stops the start.
-        const secretRef = parsed.data.secretEnv.length === 0 || proposalId === undefined ? undefined : await options.registry.probeSecret?.(proposalId).catch(() => undefined);
+        const secretRef = parsed.data.secretEnv.length === 0 || proposalId === undefined ? undefined : await options.registry.probeSecret?.(proposalId, { spec: parsed.data, pinned }).catch(() => undefined);
         const result = await probe(parsed.data, pinned, () => overtime, secretRef);
         if (!result.ok) return { status: 200, body: { error: "host_refused", ...(result.install === undefined ? {} : { install: result.install }) } };
         return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash, ...(result.installed === undefined ? {} : { installed: result.installed }) } };

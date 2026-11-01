@@ -515,15 +515,24 @@ describe("T6 controller: probe", () => {
     }
     it("gives the probe the secret the registry names for the proposal's id, and only when the package declares secret names", async () => {
       const asked: string[] = [];
+      const tests: unknown[] = [];
       const { ensured, resources } = recording();
-      const w = await probeWorld({ resources, registry: { approved: async () => undefined, probeSecret: async (id) => { asked.push(id); return SECRET_ARN; } } });
+      const w = await probeWorld({ resources, registry: { approved: async () => undefined, probeSecret: async (id, test) => { asked.push(id); tests.push(test); return SECRET_ARN; } } });
       expect((await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, serverId: "mcpnew0000001" })).status).toBe(200);
       expect(asked).toEqual(["mcpnew0000001"]);
+      // the registry is told which package is being tested (a paused entry's secret depends on it)
+      expect(tests[0]).toMatchObject({ spec: { name: withSecrets.name, version: withSecrets.version } });
       expect(ensured).toEqual([{ kind: "probe", secretRef: SECRET_ARN }]);
       // no declared names: the registry is not even asked
       await post(w.brokerUrl, "/probe", BROKER, { spec: proposal, serverId: "mcpnew0000001" });
       expect(asked).toEqual(["mcpnew0000001"]);
       expect(ensured[1]).toEqual({ kind: "probe", secretRef: undefined });
+    });
+    it("fix round 2 N1: a test of a pinned bundle tells the registry the pinned hashes along with the package", async () => {
+      const tests: Array<{ pinned?: unknown } | undefined> = [];
+      const w = await probeWorld({ registry: { approved: async () => undefined, probeSecret: async (_id, test) => { tests.push(test); return SECRET_ARN; } } });
+      await post(w.brokerUrl, "/probe", BROKER, { spec: withSecrets, serverId: "mcpsim000001", pinned: { lockfileHash: "4".repeat(64), bundleHash: "5".repeat(64) } });
+      expect(tests[0]?.pinned).toEqual({ lockfileHash: "4".repeat(64), bundleHash: "5".repeat(64) });
     });
     it("runs the probe with no secret reference when no id is named, when the registry cannot say, or when it fails", async () => {
       const cases: Array<{ name: string; registry: McpControllerOptions["registry"]; serverId?: string }> = [

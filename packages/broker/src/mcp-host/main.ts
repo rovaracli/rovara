@@ -44,12 +44,21 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
       return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef };
     },
-    async probeSecret(serverId): Promise<string | undefined> {
+    async probeSecret(serverId, test): Promise<string | undefined> {
       if (secretArn === undefined) return undefined;
       // The broker stores a proposal's secrets under the proposal's id BEFORE the test. That secret is read by a test only while the proposal has no entry yet or its entry still waits for
-      // approval: the secret of an approved, disabled or other entry never goes into a test of a package the caller names.
+      // approval: the secret of an approved or disabled entry never goes into a test of a package the caller names.
+      // Fix round 2 (N1): the one other case is the review and re-approve test of a PAUSED stdio entry, which has secrets and must be tested to be looked at. It gets the secret only when the test
+      // is that entry's own pinned package (same name, version, arguments, secret names and both pinned hashes); anything else under that id gets none.
       const entry = await store.get(org, serverId);
-      if (entry !== undefined && entry.status !== "awaiting_approval") return undefined;
+      if (entry !== undefined && entry.status === "changed_needs_review") {
+        const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
+        if (entry.hasSecret !== true || pinned === undefined || test === undefined || test.pinned === undefined) return undefined;
+        const same = test.spec.name === pinned.name && test.spec.version === pinned.version && test.spec.registry === pinned.registry
+          && JSON.stringify(test.spec.args) === JSON.stringify(pinned.args) && JSON.stringify(test.spec.secretEnv) === JSON.stringify(pinned.secretEnv)
+          && test.pinned.lockfileHash === pinned.lockfileHash && test.pinned.bundleHash === pinned.bundleHash;
+        if (!same) return undefined;
+      } else if (entry !== undefined && entry.status !== "awaiting_approval") return undefined;
       return secretArn(serverId).catch(() => undefined);
     },
   };
