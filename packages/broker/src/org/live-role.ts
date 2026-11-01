@@ -14,14 +14,21 @@ export async function liveStoredRole(deps: { documentClient: DocumentClient; tab
 
 export const NOT_A_WRITER_MESSAGE = "Your company role can read the audit log and nothing else.";
 
-/** The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it). Bounded; a loop stops. */
+/** How many merges a person's id is followed through (the same bound as the agent access rules). */
+export const MERGE_HOPS = 8;
+
+/**
+ * The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it). Refuses (FORBIDDEN) when the chain loops or is
+ * longer than MERGE_HOPS: an identity that cannot be traced to its survivor is not served.
+ */
 export async function personIds(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<string[]> {
   const ids = [developerId];
   if (deps.signInTableName === undefined) return ids;
-  for (let hop = 0; hop < 5; hop += 1) {
+  for (let hop = 0; hop <= MERGE_HOPS; hop += 1) {
     const response = await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: { pk: `DEVELOPER#${ids[ids.length - 1]!}`, sk: "META" }, ConsistentRead: true })) as { Item?: { mergedInto?: unknown } };
     const next = response.Item?.mergedInto;
-    if (typeof next !== "string" || next === "" || ids.includes(next)) break;
+    if (typeof next !== "string" || next === "") return ids;
+    if (ids.includes(next) || hop === MERGE_HOPS) throw agentXError("FORBIDDEN", "this person's identity merges could not be followed to one person; ask an admin");
     ids.push(next);
   }
   return ids;
