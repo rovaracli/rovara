@@ -624,3 +624,16 @@ describe("an erase that does not finish is resumed, and a company stays in the d
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
   });
 });
+
+describe("fix round 1, S1: a workspace whose vector index cannot be opened is not retried on every write", () => {
+  it("in Public, with the S3 Vectors package missing, five writes make ONE STS session and every row is still stored", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    const sdk = async (name: string) => (name === "@aws-sdk/client-s3vectors" ? Promise.reject(new SdkUnavailableError()) : aws.sdk(name));
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "public" }, { sdk, sts: aws.sts });
+    await addSource(db, "public", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "D" });
+    for (const id of ["a", "b", "c", "d", "e"]) expect(await runtime.sink.put(githubDraft({ retention: "D", audience: { kind: "project" }, scope: "github:repo/9", sourceRef: { system: "github.com", id, version: "1" } }))).toMatchObject({ status: "stored" });
+    expect(aws.sessions).toHaveLength(1);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(5);
+  });
+});

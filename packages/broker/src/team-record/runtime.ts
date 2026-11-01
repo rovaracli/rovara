@@ -169,8 +169,11 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       });
   const indexReady = new Set<OrgId>();
   /** The workspace's vector index, or undefined where vectors are not set up or cannot be opened (the row is then stored without a vector and found by keyword). */
+  // A workspace whose index could not be opened is not tried again for a minute: without this every record write would repeat the bucket lookup, a new STS session and the failing call.
+  const vectorsFailedUntil = new Map<OrgId, number>();
   async function indexFor(orgId: OrgId): Promise<S3VectorsIndex | undefined> {
     if (vectorPorts === undefined) return undefined;
+    if ((vectorsFailedUntil.get(orgId) ?? 0) > now()) return undefined;
     try {
       const bucket = await ensureWorkspaceVectorBucket(table, orgId, buckets, chooseVectorBucketForNewWorkspace, now);
       const index = await openWorkspaceIndex({ ports: vectorPorts, workspaceId: orgId, bucket, dimension: VECTOR_DIMENSION_DEFAULT });
@@ -179,6 +182,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       return index;
     } catch {
       log("record.vectors_unavailable", {});
+      vectorsFailedUntil.set(orgId, now() + 60_000);
       return undefined;
     }
   }
