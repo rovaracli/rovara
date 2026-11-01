@@ -182,6 +182,30 @@ describe("the intersection of a report with the diff", () => {
     // a.py lost two lines (nothing written) and rewrote the line now numbered 4 (x6 -> NEW6, listed and covered); b.py and docs.md are not in the report.
     expect(result.files).toEqual([{ repositoryId: "api", path: "a.py", changed: 1, covered: 1, uncovered: [] }]);
     expect(result).toMatchObject({ linesChanged: 1, linesCovered: 1 });
+    // b.py is a changed source file the report never names: counted apart, not silently dropped. docs.md is not source.
+    expect(result.unlistedFiles).toBe(1);
+  });
+
+  it("counts changed source files the report does not name, but not tests, documents, deleted files or files the report names", async () => {
+    const box = await repository({ "src/a.py": lines(3), "src/named.py": lines(3), "src/gone.py": lines(3), "tests/test_a.py": lines(3), "README.md": "x\n" }, async (directory) => {
+      await writeFile(join(directory, "src/a.py"), "n\nn\nn\n");
+      await writeFile(join(directory, "src/named.py"), "n\nn\nn\n");
+      await writeFile(join(directory, "src/new_module.ts"), "export const a = 1;\n");
+      await writeFile(join(directory, "tests/test_a.py"), "n\n");
+      await writeFile(join(directory, "README.md"), "changed\n");
+      await rm(join(directory, "src/gone.py"));
+    });
+    const parsed = parseLcov(lcov([{ file: join(box.directory, "src/named.py"), lines: [[1, 1]] }]))!;
+    const result = (await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [root] }))!;
+    expect(result.unlistedFiles).toBe(2);
+    // A file the report names but lists none of the changed lines of is named.
+    const comment = parseLcov(lcov([{ file: join(box.directory, "src/a.py"), lines: [[99, 1]] }, { file: join(box.directory, "src/named.py"), lines: [[1, 1]] }, { file: join(box.directory, "src/new_module.ts"), lines: [[1, 0]] }]))!;
+    expect((await intersectCoverage(comment, { repositories: await changesOf(box), bases: [root] }))?.unlistedFiles).toBe(0);
+    // A file the diff could not place (a type change, a binary patch) cannot be measured: counted too.
+    const unplaced: RepositoryChanges[] = [{ repositoryId: "api", directory: join(root, "api"), changes: [{ path: "src/odd.py", status: "UNPLACEABLE" as const, hunks: [] }] }];
+    expect((await intersectCoverage(parsed, { repositories: unplaced, bases: [root] }))?.unlistedFiles).toBe(1);
+    expect(coveragePart(result, 1)).toMatchObject({ unlistedFiles: 2 });
+    expect(coveragePart({ ...result, unlistedFiles: 0 }, 1)).not.toHaveProperty("unlistedFiles");
   });
 
   it("finds a file by a name relative to the check's directory, to the workspace root, or to a `<source>` that is not on this machine (unique suffix of two segments)", async () => {
@@ -239,6 +263,10 @@ describe("hostile reports cost a bounded time", () => {
     const hostile = await timed(() => intersectCoverage(parsed, { repositories: changed(2_000), bases: [root] }));
     expect(hostile.value?.files).toEqual([]);
     expect(hostile.ms).toBeLessThan(100);
+    // A one-segment name under several sources still finds its two-segment suffix under the right one.
+    const oneSegment: RepositoryChanges[] = [{ repositoryId: "api", directory: join(root, "api"), changes: [{ path: "pkg/mod.ts", status: "MODIFIED" as const, hunks: [[1, 3] as const] }] }];
+    const multi = parseCobertura('<coverage><sources><source>/ci/a</source><source>/ci/pkg</source></sources><packages><package><classes><class filename="mod.ts"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>')!;
+    expect((await intersectCoverage(multi, { repositories: oneSegment, bases: [root] }))?.files).toHaveLength(1);
     // Few candidates: the suffix match still works for a name that is not on this machine.
     const one = parseLcov(lcov([{ file: "/ci/build/p7/src/index.ts", lines: [[1, 1]] }]))!;
     expect((await intersectCoverage(one, { repositories: changed(2_000), bases: [root] }))?.files).toHaveLength(0);

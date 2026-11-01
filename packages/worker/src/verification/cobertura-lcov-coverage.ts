@@ -11,6 +11,7 @@ import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
 import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, isTestCommandHead, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { CandidateChange } from "./diff.js";
+import { isTestPath } from "./test-paths.js";
 import { readContainedReport, type ReportFileFailure } from "./report-file.js";
 import { ATTRIBUTE_TEXT_MAX, parseAttributes, tagEnd, unescapeXml, withoutCommentsAndCdata } from "./test-report.js";
 
@@ -263,7 +264,11 @@ export interface ChangedCoverage {
   linesChanged: number;
   linesCovered: number;
   files: ChangedCoverageFile[];
+  /** Changed source files (tests excluded) with lines of their own that the report never names: none of their lines is in the counts, and the count says so instead of leaving them out silently. */
+  unlistedFiles: number;
 }
+
+const SOURCE_EXTENSION = /\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|go|java|kt|kts|scala|rb|rs|c|cc|cpp|cxx|h|hpp|cs|php|swift|m|mm)$/iu;
 
 const posix = (path: string) => path.split(sep).join("/");
 /** The path below `directory` (POSIX separators), or undefined when it is not strictly inside it. Both are absolute and already normalised, so a prefix test is the whole check (and costs no path arithmetic). */
@@ -325,6 +330,9 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
     if (listed === undefined) suffixes.set(key, [target]);
     else listed.push(target);
   }
+  // The report's sources, sorted out once (not per file): the absolute ones (the first few only) and the relative ones.
+  const absoluteSources = parsed.sources.filter((source) => isAbsolute(source)).slice(0, SUFFIX_SOURCES_MAX);
+  const relativeSources = parsed.sources.filter((source) => !isAbsolute(source));
   const byTarget = new Map<Target, ReportLines>();
   const matchExact = (absolute: string): Target | undefined => {
     for (const root of roots) {
@@ -347,14 +355,20 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
   };
   for (const [name, lines] of parsed.files) {
     // Names the report itself makes absolute (an absolute file name, or a name under an absolute `<source>`) may be paths on another machine; names made absolute by this machine's own directories are exact or nothing.
-    const foreign = isAbsolute(name) ? [normalize(name)] : parsed.sources.filter((source) => isAbsolute(source)).slice(0, SUFFIX_SOURCES_MAX).map((source) => resolve(source, name));
-    const local = isAbsolute(name) ? [] : [...parsed.sources.filter((source) => !isAbsolute(source)).flatMap((source) => bases.map((base) => resolve(base, source, name))), ...bases.map((base) => resolve(base, name))];
+    // A name with no `.` or `..` segment is joined by concatenation (a path resolve per name and source was most of the time a big report cost).
+    const plainName = !isAbsolute(name) && !/(^|[\\/])\.{1,2}([\\/]|$)/u.test(name) && !name.includes("\\");
+    const foreign = isAbsolute(name) ? [normalize(name)] : absoluteSources.map((source) => (plainName ? `${source.endsWith(sep) ? source : `${source}${sep}`}${name}` : resolve(source, name)));
+    const local = isAbsolute(name) ? [] : [...relativeSources.flatMap((source) => bases.map((base) => resolve(base, source, name))), ...bases.map((base) => resolve(base, name))];
     let target: Target | undefined;
     for (const absolute of [...foreign, ...local]) {
       target = matchExact(absolute);
       if (target !== undefined) break;
     }
-    if (target === undefined) {
+    // Every foreign address of one name ends the same way, so when no changed file (or too many) ends like the name, none of them can match by suffix: the loop is skipped whole.
+    // (A one-segment name ends differently under each source, so it is not skipped this way.)
+    const sameEnding = foreign.length > 0 && name.split(/[\\/]/u).length >= 2;
+    const candidates = foreign.length === 0 ? 0 : (suffixes.get(lastTwo(foreign[0]!))?.length ?? 0);
+    if (target === undefined && foreign.length > 0 && (!sameEnding || (candidates > 0 && candidates <= SUFFIX_CANDIDATES_MAX))) {
       for (const absolute of foreign) {
         const posixPath = posix(absolute);
         if (posixPath.startsWith("/") && !roots.some((root) => root.directories.some((directory) => withinDirectory(absolute, directory) !== undefined))) {
@@ -376,7 +390,19 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
     files.push({ repositoryId: target.repositoryId, path: target.path, changed: measured.length, covered: measured.length - uncovered.length, uncovered });
   }
   files.sort((left, right) => right.uncovered.length - left.uncovered.length || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-  return { linesChanged: files.reduce((sum, file) => sum + file.changed, 0), linesCovered: files.reduce((sum, file) => sum + file.covered, 0), files };
+  // A changed source file the report never named (a new module no test imports is absent from most tools' reports): counted apart, never dropped. A file the report names but lists none of the changed lines of is
+  // named, so it is not here; a file the diff could not place (a type change, a binary patch) cannot be measured at all and is counted too.
+  const named = new Set<string>();
+  for (const target of byTarget.keys()) named.add(`${target.repositoryId}\0${target.path}`);
+  let unlistedFiles = 0;
+  for (const repository of context.repositories) {
+    for (const change of repository.changes) {
+      if (!SOURCE_EXTENSION.test(change.path) || isTestPath(change.path)) continue;
+      const placed = (change.status === "ADDED" || change.status === "MODIFIED") && change.hunks.length > 0;
+      if ((placed || change.status === "UNPLACEABLE") && !named.has(`${repository.repositoryId}\0${change.path}`)) unlistedFiles += 1;
+    }
+  }
+  return { linesChanged: files.reduce((sum, file) => sum + file.changed, 0), linesCovered: files.reduce((sum, file) => sum + file.covered, 0), files, unlistedFiles };
 }
 
 /** The evidence's coverage part: files with uncovered lines first, then those fully covered, bounded as the pack's schema is. A path names its repository when the task has more than one. */
@@ -384,6 +410,7 @@ export function coveragePart(coverage: ChangedCoverage, repositoryCount: number)
   return {
     linesChanged: coverage.linesChanged,
     linesCovered: coverage.linesCovered,
+    ...(coverage.unlistedFiles > 0 ? { unlistedFiles: coverage.unlistedFiles } : {}),
     files: coverage.files.slice(0, EVIDENCE_COVERAGE_FILES_MAX).map((file) => ({
       path: plainPath(repositoryCount > 1 ? `${file.repositoryId}/${file.path}` : file.path),
       uncovered: file.uncovered.slice(0, EVIDENCE_UNCOVERED_LINES_MAX),

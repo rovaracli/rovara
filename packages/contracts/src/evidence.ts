@@ -258,6 +258,8 @@ export const EvidenceCoverageSchema = z
     linesChanged: CountSchema,
     linesCovered: CountSchema,
     files: z.array(z.object({ path: line(500), uncovered: z.array(z.number().int().min(1).max(10_000_000)).max(EVIDENCE_UNCOVERED_LINES_MAX) }).strict()).max(EVIDENCE_COVERAGE_FILES_MAX),
+    /** Changed source files (not tests) that the coverage report does not name, so none of their lines is in the counts above. Absent = none (and an older worker never says). */
+    unlistedFiles: CountSchema.optional(),
   })
   .strict();
 export const EvidenceFindingsSchema = z.object({ tool: line(60), newCount: CountSchema, bySeverity: SeverityCountsSchema, items: z.array(EvidenceFindingSchema).max(EVIDENCE_FINDINGS_MAX) }).strict();

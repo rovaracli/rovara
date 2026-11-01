@@ -27,9 +27,9 @@ function world(rawText: string) {
   };
   return { deps: { markStored: async () => undefined, actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
 }
-const keep = async (checks: unknown[]) => {
+const keep = async (checks: unknown[], entries: CheckEntry[] = [entry("readiness:0", "pytest -q")]) => {
   const w = world(JSON.stringify(rawOf(checks)));
-  const result = await keepEvidence(w.deps, { orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q")] });
+  const result = await keepEvidence(w.deps, { orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: entries });
   return { result, pack: await loadEvidencePack(w.deps.actions, TASK, DIGEST) };
 };
 const prLines = (pack: NonNullable<Awaited<ReturnType<typeof keep>>["pack"]>) => evidenceLines({ pack, mode: "summary" }, DIGEST, 0).lines.join("\n");
@@ -52,6 +52,20 @@ describe("changed-line coverage in the evidence", () => {
   it("says so when the report lists none of the changed lines, instead of a bare 0 of 0", async () => {
     const { pack } = await keep([{ checkId: "readiness:0", tests, coverage: { linesChanged: 0, linesCovered: 0, files: [] } }]);
     expect(prLines(pack!)).toContain("the coverage report lists none of the changed lines");
+  });
+
+  it("says in fixed words how many changed source files the report does not name, and 'at least' when several reports are summed", async () => {
+    const one = await keep([{ checkId: "readiness:0", tests, coverage: { linesChanged: 8, linesCovered: 8, unlistedFiles: 2, files: [] } }]);
+    expect(one.pack?.checks[0]?.coverage?.unlistedFiles).toBe(2);
+    expect(prLines(one.pack!)).toContain("Changed lines covered by tests: 8 of 8 (100%); 2 changed source files are not in the coverage report");
+    const single = await keep([{ checkId: "readiness:0", tests, coverage: { linesChanged: 8, linesCovered: 4, unlistedFiles: 1, files: [] } }]);
+    expect(prLines(single.pack!)).toContain("(50%); 1 changed source file is not in the coverage report");
+    // Two reports: a file one of them names may be named by the other, so only the smaller count is certain.
+    const two = await keep([{ checkId: "readiness:0", tests, coverage: { linesChanged: 8, linesCovered: 8, unlistedFiles: 3, files: [] } }, { checkId: "readiness:1", tests, coverage: { linesChanged: 2, linesCovered: 2, unlistedFiles: 1, files: [] } }], [entry("readiness:0", "pytest -q"), entry("readiness:1", "pytest web")]);
+    expect(prLines(two.pack!)).toContain("10 of 10 (100%); at least 1 changed source file is not in the coverage report");
+    const none = await keep([{ checkId: "readiness:0", tests, coverage: { linesChanged: 8, linesCovered: 8, files: [] } }]);
+    expect(prLines(none.pack!)).toContain("8 of 8 (100%)");
+    expect(prLines(none.pack!)).not.toContain("not in the coverage report");
   });
 
   it("drops coverage whose file lists do not add up (a worker is not taken at its word), keeping the rest of the check", async () => {

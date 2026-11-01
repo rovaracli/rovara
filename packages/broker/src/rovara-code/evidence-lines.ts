@@ -94,8 +94,11 @@ export function coverageLine(pack: EvidencePack): string | undefined {
   if (measured.length === 0) return pack.checks.some((check) => check.kind === "test") ? "Changed lines covered by tests: no coverage report" : undefined;
   const changed = measured.reduce((sum, check) => sum + check.coverage!.linesChanged, 0);
   const covered = measured.reduce((sum, check) => sum + check.coverage!.linesCovered, 0);
-  if (changed === 0) return "Changed lines covered by tests: the coverage report lists none of the changed lines";
-  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)} (${Math.round((covered / changed) * 100)}%)`;
+  // Changed source files the report never names have no line in the counts: said in fixed words, never left out. With several reports a file may be named by another one, so the smallest count is a floor.
+  const unlisted = Math.min(...measured.map((check) => check.coverage!.unlistedFiles ?? 0));
+  const missing = unlisted === 0 ? "" : `; ${measured.length > 1 ? "at least " : ""}${number(unlisted)} changed source file${unlisted === 1 ? " is" : "s are"} not in the coverage report`;
+  if (changed === 0) return `Changed lines covered by tests: the coverage report lists none of the changed lines${missing}`;
+  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)} (${Math.round((covered / changed) * 100)}%)${missing}`;
 }
 
 /** The Environment line (never dropped; shorter at level 3 and above): the tier, each service's mode (mocked ones with their recording), the accounts' kind and the data. */
