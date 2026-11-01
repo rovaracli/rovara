@@ -111,7 +111,8 @@ export interface TeamRecordRuntime {
 const DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
 const ORG_PAGE = 50;
 const MAX_ORGS_PER_RUN = 500;
-const JOB_BUDGET_MS = 24_000;
+/** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
+export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
 const ERASE_PASSES = 5;
 

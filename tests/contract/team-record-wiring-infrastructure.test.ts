@@ -10,6 +10,7 @@ import { BROKER_NAMES, BROKER_SETTINGS, teamRecordTableName } from "@agentx/cont
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
+import { DEPLOY_PARAMETER_VALUES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -129,5 +130,18 @@ describe("the switch on: Enterprise", () => {
     const table = Object.values(resourcesOf(on)).find((resource) => resource.Type === "AWS::DynamoDB::Table" && resource.Properties.TableName === teamRecordTableName("ent"));
     expect(table?.Properties.SSESpecification).toMatchObject({ SSEEnabled: true, SSEType: "KMS", KMSMasterKeyId: KMS });
     expect(brokerSettingsIn(functionVariables(on, /^Broker[0-9A-F]{8}$/)).teamRecordLake).toBe("0");
+  }, 240_000);
+});
+
+describe("the broker's environment still fits Lambda's 4 KB with the record on", () => {
+  // The same ceiling and headroom as tests/contract/lambda-environment-size.test.ts, for an install with the switch ON (that test measures the default, switch-off installs).
+  const CEILING = 3800;
+  const HEADROOM = 400;
+  it.each([["staging"], ["a1234567890123456789"]])("environment %s: the broker keeps its headroom and the Slack ingress stays small", (env) => {
+    const stack = buildAgentXApp({ agentxEnv: env, agentxCloud: true, agentxTeamRecord: "enabled" }).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane")!;
+    const found = lambdaEnvironments(Template.fromStack(stack).toJSON() as ResolvableTemplate, { env, stackName: stack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES });
+    const broker = found.find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!;
+    expect(CEILING - broker.bytes, `the broker's environment is ${broker.bytes} bytes`).toBeGreaterThanOrEqual(HEADROOM);
+    for (const entry of found) expect(entry.bytes, entry.logicalId).toBeLessThan(CEILING);
   }, 240_000);
 });

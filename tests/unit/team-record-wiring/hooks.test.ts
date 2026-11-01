@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { learningEraseHook, learningWalkDeps } from "../../../packages/broker/src/learning/cleanup.js";
 import { clearArchivedProjectLearning } from "../../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
-import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { installTeamRecordEmitter, teamRecordEmitterInstalled, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A } from "../../support/team-record-core.js";
 
@@ -56,6 +56,15 @@ describe("a human send-back", () => {
     uninstallTeamRecordEmitter();
     await announceHumanSendBack(event);
     expect(sent).toHaveLength(1);
+  });
+
+  it("registers no listener at all while the record is off", () => {
+    installTeamRecordEmitter({ teamRecord: undefined });
+    expect(teamRecordEmitterInstalled()).toBe(false);
+    installTeamRecordEmitter({ teamRecord: { emitter: { sendBack: async () => undefined } } as never });
+    expect(teamRecordEmitterInstalled()).toBe(true);
+    uninstallTeamRecordEmitter();
+    expect(teamRecordEmitterInstalled()).toBe(false);
   });
 
   it("follows the latest broker: a broker without the record writes nothing", async () => {
