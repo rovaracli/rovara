@@ -158,18 +158,41 @@ async function rosterEligibility(deps: SecondPersonEvidenceDependencies, scope: 
  * `complete: false` means the answer must not be trusted (nobody is then eligible). It reads only; it conveys no authority and any write that relies on it checks the caller itself.
  */
 export async function readApproverRoster(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project: string }): Promise<{ complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null }> {
+ const { complete, membershipVersion, ownerIds, eligibleIds, lastEligibleLossAtMs } = await readRoster(deps, scope, undefined);
+ return { complete, membershipVersion, ownerIds, eligibleIds, lastEligibleLossAtMs };
+}
+
+/**
+ * The roster plus the commit conditions that pin it for one approver (the production fence of a lesson approval): the company META membership generation, the approver's live-person
+ * checks (membership, sign-in identity, project grant) and the project META snapshot. They MUST commit with the decision; a commit then fails if the membership changed in between.
+ * It does not call `readSecondPersonApprovalEvidence` with proposer = approver: that throws for a company with no membership counter, which would block every legacy company.
+ */
+export async function readApproverRosterFenced(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project: string; approverId: string }): Promise<{ complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null; conditions: TransactItem[] }> {
+ return readRoster(deps, scope, scope.approverId);
+}
+
+async function readRoster(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project: string }, approverId: string | undefined): Promise<{ complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null; conditions: TransactItem[] }> {
  if (!deps.signInTableName) throw forbidden();
+ if (approverId !== undefined && !personId.test(approverId)) throw forbidden();
+ // The approver's own authority is read first, as in a second-person decision.
+ const approver = approverId === undefined ? undefined : await livePerson(deps, { orgId: scope.orgId, project: scope.project, proposerId: approverId, approverId }, approverId);
  const meta = await read(deps, orgMetaKey(scope.orgId));
  if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined) throw stale();
  const project = await read(deps, projectMetaKey(scope.orgId, scope.project));
  if (project === undefined || project.status !== "active") throw stale();
  // An absent counter proves no history: the answer is read as it stands, and a decision that needs a sole-owner exception refuses it (version 0).
- const version = meta.approvalMembershipVersion === undefined ? 0 : Number(meta.approvalMembershipVersion);
+ const unset = meta.approvalMembershipVersion === undefined;
+ const version = unset ? 0 : Number(meta.approvalMembershipVersion);
  if (!Number.isSafeInteger(version) || version < 0) throw stale();
  const roster = await rosterEligibility(deps, scope, meta, project, deps.now());
  const after = await read(deps, orgMetaKey(scope.orgId));
  if (after === undefined || after.approvalMembershipVersion !== meta.approvalMembershipVersion || after.closedAt !== undefined || after.closingAt !== undefined) throw stale();
- return { ...roster, membershipVersion: version, ownerIds: roster.ownerIds.sort(), eligibleIds: roster.eligibleIds.sort() };
+ const conditions: TransactItem[] = approver === undefined ? [] : [
+  { ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(scope.orgId), ...(unset ? { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt) AND attribute_not_exists(approvalMembershipVersion)" } : secondPersonMembershipCondition(version)) } },
+  ...approver.conditions,
+  snapshot(deps.tableName, projectMetaKey(scope.orgId, scope.project), project, ["status", "archiveRevision", "createdAt", "createdBy", "approvalLastMaintainerLossAt"]),
+ ];
+ return { ...roster, membershipVersion: version, ownerIds: roster.ownerIds.sort(), eligibleIds: roster.eligibleIds.sort(), conditions };
 }
 
 /** A direct narrowing needs live actor authority, not a second-person decision. */

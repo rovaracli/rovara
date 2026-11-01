@@ -2,7 +2,7 @@
 // (`org/second-person-evidence.ts readApproverRoster`): owners, admins and the project's maintainers whose identity and grant are live. An unreadable or incomplete roster is an answer of
 // `complete: false`, which the library reads as "nobody may decide" (fail closed). A person's identity set for the ACL checks is their linked source accounts (a GitHub account, today).
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
-import { readApproverRoster, type SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
+import { readApproverRoster, readApproverRosterFenced, type SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
 import type { ApproverDirectory } from "./ports.js";
 import type { IdentitySet } from "./types.js";
 
@@ -16,10 +16,15 @@ const NOBODY = { complete: false, membershipVersion: 0, ownerIds: [] as string[]
 
 export function createApproverDirectory(input: DirectoryInput): ApproverDirectory {
   return {
-    async eligibility(workspaceId, project) {
+    async eligibility(workspaceId, project, who) {
       const org = OrgIdSchema.safeParse(workspaceId);
       if (!org.success) return NOBODY;
-      try { return await readApproverRoster(input.evidence, { orgId: org.data, project }); } catch { return NOBODY; }
+      try {
+        if (who === undefined) return await readApproverRoster(input.evidence, { orgId: org.data, project });
+        // For a named approver the answer carries the commit conditions that pin it (the membership generation, the approver's live checks, the project). A failed fenced read is NEVER answered with an unfenced roster.
+        const { conditions, ...roster } = await readApproverRosterFenced(input.evidence, { orgId: org.data, project, approverId: who.approverId });
+        return { ...roster, fence: conditions };
+      } catch { return NOBODY; }
     },
     async identity(workspaceId, developerId): Promise<IdentitySet> {
       const org = OrgIdSchema.safeParse(workspaceId);
