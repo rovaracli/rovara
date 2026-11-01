@@ -44,6 +44,12 @@ describe("the commit a pull request's base branch is at", () => {
     expect(t.github.getPullRequest).not.toHaveBeenCalled();
   });
 
+  it("a GitHub provider built without the default-branch read cannot say, in GitHub's words, and is not asked", async () => {
+    const t = baseWorld("main");
+    delete (t.github as { getDefaultBranchHead?: unknown }).getDefaultBranchHead;
+    await expect(currentBaseCommitOf(t.dependencies)(t.target, { repositoryId: "web", number: 7 })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("GitHub cannot say what the base branch is at") as unknown });
+  });
+
   it("is refused for an unknown host kind with the router's sentence, before the pull request is read", async () => {
     const t = baseWorld("main");
     await expect(currentBaseCommitOf(t.dependencies)(t.target, { repositoryId: "mystery", number: 7 })).rejects.toThrow(refusal(NO_HOST_MESSAGE));

@@ -20,6 +20,16 @@ import { TEST_ORG } from "../support/orgs.js";
 import { NOW, TABLE, TASK_ID, world as trackingWorld, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { githubDelivery, githubPayloads, signGithubBody, webhookSecretReader } from "../plugins/github-deliveries.js";
 
+/** What a promise that must be refused was refused with. */
+async function refusalOf(run: Promise<unknown>): Promise<{ code: string; message: string }> {
+  try {
+    await run;
+  } catch (error) {
+    return error as { code: string; message: string };
+  }
+  throw new Error("expected a refusal");
+}
+
 const FAKE_URL = "https://git.example.test/acme/api";
 const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as typeof TEST_ORG;
 const COALESCE = TRACKING_COALESCE_SECONDS * 1_000;
@@ -41,10 +51,10 @@ describe("P6: a host kind this install has not registered is refused, and never 
     const normalise = vi.spyOn(github.events as { normalise: NonNullable<CodeHost["events"]["normalise"]> }, "normalise");
     const db = new FakeDynamoDb();
     const consume = vi.fn(async () => undefined);
-    const refused = await receiveCodeHostDelivery({
+    const refused = await refusalOf(receiveCodeHostDelivery({
       router, kind, delivery: githubDelivery("pull_request", githubPayloads.pullRequest("opened")), scope: SCOPE,
       reservations: dynamoEventReservations({ documentClient: db, tableName: TABLE, now: () => NOW }), consume,
-    }).catch((error: unknown) => error as { code: string; message: string });
+    }));
     expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
     expect(refused.message).toContain(NO_HOST_MESSAGE);
     // The sentence never names the kind that was asked for.
@@ -71,18 +81,20 @@ describe("P6: a host kind this install has not registered is refused, and never 
     const noSecret = githubCodeHost(GITHUB, { credentialRef: "github" });
     const { router } = registry([], noSecret);
     for (const kind of ["github"]) {
-      const refused = await receiveCodeHostDelivery({
+      const refused = await refusalOf(receiveCodeHostDelivery({
         router, kind, delivery: githubDelivery("push", githubPayloads.push("refs/heads/x")), scope: SCOPE,
         reservations: dynamoEventReservations({ documentClient: new FakeDynamoDb(), tableName: TABLE, now: () => NOW }), consume: async () => undefined,
-      }).catch((error: unknown) => error as { message: string });
+      }));
       expect(refused.message).toContain(NO_EVENTS_MESSAGE);
     }
     const polling = new FakeCodeHost(new FakeHostModel({ url: FAKE_URL, id: "7", fullName: "acme/api" }));
-    (polling as { events: CodeHost["events"] }).events = { mode: "poll" };
-    const refused = await receiveCodeHostDelivery({
+    // A host that polls is not a webhook host even if it has a normaliser to hand: the mode decides.
+    const honest = polling.events.normalise!.bind(polling.events);
+    (polling as { events: CodeHost["events"] }).events = { mode: "poll", normalise: honest };
+    const refused = await refusalOf(receiveCodeHostDelivery({
       router: createPluginRegistry({ codeHosts: [noSecret, polling], checkRunners: [], policy: editionPolicy("enterprise") }).codeHost, kind: "fake", delivery: fakeDelivery(), scope: SCOPE,
       reservations: dynamoEventReservations({ documentClient: new FakeDynamoDb(), tableName: TABLE, now: () => NOW }), consume: async () => undefined,
-    }).catch((error: unknown) => error as { message: string });
+    }));
     expect(refused.message).toContain(NO_EVENTS_MESSAGE);
   });
 });
@@ -161,7 +173,7 @@ describe("P6: each event is consumed once", () => {
   it("refuses an id reused with different content, and consumes nothing for it", async () => {
     const { consume, run } = intake();
     await run(fakeDelivery("7", "d-1", "cr.updated"));
-    const refused = await run(fakeDelivery("7", "d-1", "cr.merged")).catch((error: unknown) => error as { message: string });
+    const refused = await refusalOf(run(fakeDelivery("7", "d-1", "cr.merged")));
     expect(refused.message).toContain(EVENT_CONFLICT_MESSAGE);
     expect(consume).toHaveBeenCalledTimes(1);
   });
@@ -218,7 +230,7 @@ describe("P6: the link from a change request to its task is read from the neutra
 
   it("finds a neutral link on any host, and prefers it to the old row", async () => {
     const { w, deps } = linkWorld();
-    w.db.set(neutral());
+    w.db.set({ ...neutral() });
     expect(await findLinkedChangeRequest(deps, { hostKind: "fake", repositoryAddress: FAKE_URL, id: "7" })).toMatchObject({ source: "neutral", taskId: TASK_ID, repositoryId: "api" });
     w.db.set({ ...neutral({ hostKind: "github", repositoryAddress: "https://github.com/acme/payments", repositoryId: "payments", taskId: "00000000-0000-4000-8000-0000000000b9" }) });
     expect(await findLinkedChangeRequest(deps, { hostKind: "github", repositoryAddress: "https://github.com/acme/payments", id: "7" })).toMatchObject({ source: "neutral", taskId: "00000000-0000-4000-8000-0000000000b9" });
@@ -260,7 +272,7 @@ describe("P6: a new event wakes the tracking row of the task it is about", () =>
     const w = trackingWorld({ pullRequests: [{ repositoryId: on === "fake" ? "api" : "payments", number: 7 }] });
     if (on === "fake") {
       for (const key of [...w.db.items.keys()]) if (key.includes("GITHUB_PR#")) w.db.items.delete(key);
-      w.db.set(linkedChangeRequestItem(TABLE, { hostKind: "fake", repositoryAddress: FAKE_URL, changeRequestId: "7", repositoryId: "api", number: 7, url: `${FAKE_URL}/pull/7`, taskId: TASK_ID, workspaceId: "ws-1", candidateDigest: "c".repeat(64), createdAt: "2026-11-01T00:00:00.000Z" })!.Put.Item);
+      w.db.set({ ...linkedChangeRequestItem(TABLE, { hostKind: "fake", repositoryAddress: FAKE_URL, changeRequestId: "7", repositoryId: "api", number: 7, url: `${FAKE_URL}/pull/7`, taskId: TASK_ID, workspaceId: "ws-1", candidateDigest: "c".repeat(64), createdAt: "2026-11-01T00:00:00.000Z" })!.Put.Item });
       w.setWorkflow({ pullRequests: [{ repositoryId: "api", number: 7, headSha: "a".repeat(40), url: `${FAKE_URL}/pull/7`, candidateDigest: "c".repeat(64), required: true, state: "OPEN" }] });
     }
     // The row as a published task's is: a tracking row due at the heartbeat, which a wake brings forward.

@@ -7,6 +7,16 @@ import { GITHUB_WEBHOOK_MAX_BYTES, githubCodeHostEvents, neutralEventsOfGithub }
 import { verifyGithubWebhookSignature } from "../../packages/broker/src/aws/github-webhooks.js";
 import { WEBHOOK_SECRET, githubDelivery, githubPayloads, signGithubBody, webhookSecretReader } from "../plugins/github-deliveries.js";
 
+/** What a promise that must be refused was refused with. */
+async function refusalOf(run: Promise<unknown>): Promise<{ code: string; message: string }> {
+  try {
+    await run;
+  } catch (error) {
+    return error as { code: string; message: string };
+  }
+  throw new Error("expected a refusal");
+}
+
 const SCOPE = { system: "webhook" } as const;
 const DELIVERY = "7f0b6a52-3c1e-4d6a-9d0e-2a1b3c4d5e6f";
 const REF = { repository: { url: "https://github.com/acme/app" }, id: "7", url: "https://github.com/acme/app/pull/7" };
@@ -71,7 +81,7 @@ describe("P6: a GitHub delivery becomes neutral events", () => {
   });
 
   it("refuses a followed event whose body cannot be read, with a fixed sentence", async () => {
-    const refused = await normalise("pull_request", { action: "opened", repository: { full_name: "acme/app" } }).catch((error: unknown) => error as { code: string; message: string });
+    const refused = await refusalOf(normalise("pull_request", { action: "opened", repository: { full_name: "acme/app" } }));
     expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
     expect(refused.message).toContain("the delivery cannot be read");
   });
@@ -85,7 +95,7 @@ describe("P6: the delivery is verified before any of it is read", () => {
   it("refuses a bad signature without reading the body: an unparseable body gets the signature's refusal, and JSON is never parsed", async () => {
     const parse = vi.spyOn(JSON, "parse");
     const delivery = githubDelivery("pull_request", undefined, { raw: "{ this is not json", signature: signGithubBody("something else"), deliveryId: DELIVERY });
-    const refused = await events.normalise!(delivery, SCOPE).catch((error: unknown) => error as { code: string; message: string });
+    const refused = await refusalOf(events.normalise!(delivery, SCOPE));
     expect(refused).toMatchObject({ code: "CALLBACK_FORBIDDEN" });
     expect(refused.message).toContain("the delivery's signature does not verify");
     expect(parse).not.toHaveBeenCalledWith(delivery.rawBody);
@@ -99,6 +109,16 @@ describe("P6: the delivery is verified before any of it is read", () => {
     }
   });
 
+  it("refuses a signature that differs from the right one in a single digit, at either end", async () => {
+    const good = githubDelivery("pull_request", githubPayloads.pullRequest("opened"), { deliveryId: DELIVERY });
+    const right = good.headers["x-hub-signature-256"]!;
+    const flip = (digit: string) => (digit === "0" ? "1" : "0");
+    for (const changed of [`sha256=${flip(right[7]!)}${right.slice(8)}`, `${right.slice(0, -1)}${flip(right.at(-1)!)}`, `${right.slice(0, 40)}${flip(right[40]!)}${right.slice(41)}`]) {
+      await expect(events.normalise!({ rawBody: good.rawBody, headers: { ...good.headers, "x-hub-signature-256": changed } }, SCOPE)).rejects.toMatchObject({ code: "CALLBACK_FORBIDDEN" });
+    }
+    expect(await events.normalise!(good, SCOPE)).toHaveLength(1);
+  });
+
   it("refuses a body changed after it was signed", async () => {
     const good = githubDelivery("pull_request", githubPayloads.pullRequest("opened"), { deliveryId: DELIVERY });
     await expect(events.normalise!({ ...good, rawBody: good.rawBody.replace('"opened"', '"closed"') }, SCOPE)).rejects.toMatchObject({ code: "CALLBACK_FORBIDDEN" });
@@ -107,7 +127,7 @@ describe("P6: the delivery is verified before any of it is read", () => {
   it("checks the size before the signature, and neither reads the body", async () => {
     const parse = vi.spyOn(JSON, "parse");
     const big = "x".repeat(GITHUB_WEBHOOK_MAX_BYTES + 1);
-    const refused = await events.normalise!({ rawBody: big, headers: { "x-hub-signature-256": signGithubBody(big), "x-github-delivery": DELIVERY, "x-github-event": "push" } }, SCOPE).catch((error: unknown) => error as { code: string });
+    const refused = await refusalOf(events.normalise!({ rawBody: big, headers: { "x-hub-signature-256": signGithubBody(big), "x-github-delivery": DELIVERY, "x-github-event": "push" } }, SCOPE));
     expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
     expect(parse).not.toHaveBeenCalled();
   });

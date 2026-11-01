@@ -396,7 +396,7 @@ describe("P6: the broker's poll pass, for every host that polls", () => {
   function brokerPoll() {
     const w = trackingWorld({ pullRequests: [{ repositoryId: "api", number: 1 }] });
     for (const key of [...w.db.items.keys()]) if (key.includes("GITHUB_PR#") || key.includes("WORKFLOW_MERGE_RECOVERY")) w.db.items.delete(key);
-    w.db.set(linkedChangeRequestItem(TABLE, { hostKind: KIND, repositoryAddress: URL, changeRequestId: "1", repositoryId: "api", number: 1, url: `${URL}/pull/1`, taskId: TASK_ID, workspaceId: "ws-1", candidateDigest: "c".repeat(64), createdAt: "2026-11-01T00:00:00.000Z" })!.Put.Item);
+    w.db.set({ ...linkedChangeRequestItem(TABLE, { hostKind: KIND, repositoryAddress: URL, changeRequestId: "1", repositoryId: "api", number: 1, url: `${URL}/pull/1`, taskId: TASK_ID, workspaceId: "ws-1", candidateDigest: "c".repeat(64), createdAt: "2026-11-01T00:00:00.000Z" })!.Put.Item });
     w.setWorkflow({ pullRequests: [{ repositoryId: "api", number: 1, headSha: "a".repeat(40), url: `${URL}/pull/1`, candidateDigest: "c".repeat(64), required: true, state: "OPEN" }] });
     const model = new FakeHostModel({ url: URL, id: "7", fullName: "acme/api" });
     const polling = new PollingHost(model);
