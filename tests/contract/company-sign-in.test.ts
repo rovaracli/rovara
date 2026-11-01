@@ -215,7 +215,7 @@ describe("refusals (fail closed, and before anything is written about the person
       const { h } = await banned();
       const forSomeoneElse = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", email: "someone-else@example.test" });
       await expectRefused(h, forSomeoneElse.token, "another person's address");
-      const forThem = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", email: una.email });
+      const forThem = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", email: una.email! });
       const back = await withInvite(h, forThem.token);
       expect(back.searchParams.get("code")).not.toBeNull();
       expect(await h.orgs.isBanned(TEST_ORG, una_id)).toBe(false);
