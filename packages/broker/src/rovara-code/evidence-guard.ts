@@ -3,7 +3,7 @@
 // accounts on the company's production deny list). A part that holds a finding is DROPPED, whole, and counted; the matched text is never kept, logged or returned (only a fixed kind). The guard fails closed: a text
 // too large to scan, or a scan that throws, is a finding.
 //
-// Digests (64 hex characters) and timestamps are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing. Text is
+// Digests (64 hex characters) and ISO timestamps (exact shape) are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing. Text is
 // normalised (NFKC) before it is scanned.
 import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
 import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@agentx/contracts";
@@ -13,7 +13,8 @@ import type { NewArtifact } from "./evidence-pack.js";
 export const NO_PROD_DENY: TestEnvProdDeny = { accountIds: [], hosts: [], arnPrefixes: [] };
 
 const DIGEST = /^[a-f0-9]{64}$/u;
-const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/u;
+// A real ISO instant, with its fixed field widths: only a value of exactly this shape is exempt, so a run of digits after the T (a card number) is scanned.
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 const SCAN_LIMIT = 4 * 1024 * 1024;
 
 /** Every string a person or a repository wrote in a value, one per line, without digests and timestamps; keys are fixed words and are not scanned. */

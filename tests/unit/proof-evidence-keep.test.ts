@@ -206,6 +206,11 @@ describe("the data guard on the evidence", () => {
     expect([...w.objects.values()].join("\n")).not.toContain("４１１１");
   });
 
+  it("exempts only a real ISO instant: a card number after a T is scanned, the timestamps the broker writes are not", () => {
+    expect(evidenceFindings({ name: "2024-01-01T4111111111111111Z" }, NO_DENY)).toContain("card_number");
+    expect(evidenceTexts({ at: "2026-11-02T00:00:00.000Z", a: "2026-11-02T00:00:00Z", b: "2024-01-01T4111111111111111Z", c: "2024-01-01T12:30:45.5Z" })).toEqual(["2024-01-01T4111111111111111Z"]);
+  });
+
   it("fails closed on a text it cannot scan", () => {
     expect(evidenceFindings({ name: "x".repeat(5 * 1024 * 1024) }, { accountIds: [], hosts: [], arnPrefixes: [] })).toEqual(["secret"]);
   });
