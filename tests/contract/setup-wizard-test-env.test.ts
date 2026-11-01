@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { TestEnvironmentStateSchema, projectMetaKey, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
@@ -271,27 +272,59 @@ describe("approving a change that is less safe than the sandbox", () => {
     });
   });
 
-  it("the second person's confirmation is read again: an old sign-in proof, a person demoted since, the wrong proposal or revision, and another asker's card are not accepted", async () => {
+  it("the second person's sign-in must be fresh when THEY confirm, not when the asker presses: a confirmation made soon after their sign-in stands for a day, and a stale one is asked for again", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "admin");
+    await withSwitch("1", async () => {
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [first] = t.approvals();
+      // Maya signed in 11 minutes before she confirmed: the page would not have allowed it; a record like that does not stand, and the proposal is not stuck behind it.
+      t.confirmCard(first!.approvalId, MAYA, { signedInMinutesBefore: 11 });
+      expect(errorOf(await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).message).toContain("second person");
+      expect((await t.state()).proposal!.approval.status).toBe("expired");
+      const again = await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      expect(again.body).toMatchObject({ status: "pending" });
+      const second = t.approvals().find((entry) => entry.approvalId !== first!.approvalId)!;
+      // She signed in 8 minutes before confirming, and confirmed 30 minutes ago: her sign-in was fresh when she decided, so the confirmation stands for the asker's press now.
+      t.confirmCard(second.approvalId, MAYA, { signedInMinutesBefore: 8, confirmedMinutesAgo: 30 });
+      expect((await t.state()).proposal!.approval.status).toBe("approved");
+      // The same card cannot be confirmed twice, as the real page would refuse it.
+      expect(() => t.confirmCard(second.approvalId, MAYA)).toThrow(/already decided/u);
+      const approved = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    });
+  });
+
+  it("a confirmation more than a day old is not one, and the asker asks again", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "admin");
+    await withSwitch("1", async () => {
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      t.confirmCard(t.approvals()[0]!.approvalId, MAYA, { confirmedMinutesAgo: 25 * 60 });
+      expect(errorOf(await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).message).toContain("second person");
+      expect((await t.state()).proposal!.approval.status).toBe("expired");
+      expect(((await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 })).body as { status: string }).status).toBe("pending");
+    });
+  });
+
+  it("the second person's authority is read again at the press: a person demoted since confirming is refused, and a card the asker did not ask is not theirs to finish", async () => {
     const t = await setupWizardBench();
     await t.person(MAYA, "admin");
     await withSwitch("1", async () => {
       const digest = await lessSafeProposal(t);
       await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
       const [card] = t.approvals();
-      // A confirmation older than ten minutes.
-      t.confirmCard(card!.approvalId, MAYA, Date.now() - 11 * 60_000);
-      const old = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
-      expect(errorOf(old).code).toBe("REAUTH_REQUIRED");
-      // Confirmed just now, but the confirming person has since become an ordinary member with no project grant.
       t.confirmCard(card!.approvalId, MAYA);
       await t.person(MAYA, "member");
       const demoted = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
       expect(demoted.status).toBe(403);
       expect(errorOf(demoted).message).toContain("second person");
       await t.person(MAYA, "admin");
-      // A card for the revision the proposal was looked at against is bound to that revision: an approval that moves it on leaves the old card unusable, and the card never carries to another asker.
-      const otherAsker = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
-      expect(otherAsker.status).toBe(409);
+      // A card is bound to the revision the proposal was looked at against.
+      const otherRevision = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(otherRevision.status).toBe(409);
       expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#REV#"))).toHaveLength(1);
       // Maya presses Approve with Omar's card: it was not asked by her, so it is not hers to finish.
       await t.person(MAYA, "admin", "maintainer");
@@ -433,5 +466,19 @@ describe("applying commands where the project's commands run in more than one di
       expect(refused.status).toBe(400);
       expect(errorOf(refused).message).toContain("more than one directory");
     });
+  });
+});
+
+describe("when a second person's confirmation stands", () => {
+  const MIN = 60_000, now = 1_000 * 3_600_000;
+  it("needs their sign-in fresh at their decision (not later than ten minutes before it) and the decision within a day, never before the sign-in or in the future", () => {
+    expect(confirmationStands(now - 30 * MIN, now - 25 * MIN, now)).toBe(true);
+    expect(confirmationStands(now - 40 * MIN, now - 30 * MIN, now)).toBe(true); // exactly ten minutes before deciding
+    expect(confirmationStands(now - 41 * MIN - 1, now - 30 * MIN, now)).toBe(false);
+    expect(confirmationStands(now - 40 * MIN, now - 41 * MIN, now)).toBe(false); // signed in after deciding
+    expect(confirmationStands(now - 5 * MIN, now + MIN, now)).toBe(false); // decided in the future
+    expect(confirmationStands(now - 25 * 60 * MIN, now - 24 * 60 * MIN - 1, now)).toBe(false);
+    expect(confirmationStands(now - 24 * 60 * MIN - 5 * MIN, now - 24 * 60 * MIN, now)).toBe(true);
+    expect(confirmationStands(Number.NaN, now, now)).toBe(false);
   });
 });

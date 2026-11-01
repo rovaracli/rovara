@@ -70,8 +70,18 @@ type Item = Record<string, unknown>;
 
 /** How long a proposal stays approvable. A later change to the repositories makes an old proposal wrong, so it is not kept long. */
 export const TEST_ENV_PROPOSAL_TTL_MS = 7 * 86_400_000;
-/** A less-safe approval needs the second person to have signed in this recently, as the confirmation page asks. */
+/** A sign-in counts as fresh this long, as the confirmation page asks of the person who confirms. */
 export const TEST_ENV_FRESH_SIGN_IN_MS = 10 * 60_000;
+/** A second person's confirmation stays good this long after they gave it (it is bound to one proposal and one revision). */
+export const TEST_ENV_CONFIRMATION_TTL_MS = 24 * 3_600_000;
+
+/**
+ * Whether a second person's confirmation stands: they signed in no more than ten minutes before they confirmed (the confirmation page requires that of them at the moment they decide), they confirmed
+ * no later than now, and no more than a day ago. Measured at THEIR decision, not at the asker's press: the asker cannot be asked to hurry before the confirmer's sign-in ages out.
+ */
+export function confirmationStands(signedInAtMs: number, decidedAtMs: number, nowMs: number): boolean {
+  return Number.isFinite(signedInAtMs) && Number.isFinite(decidedAtMs) && signedInAtMs <= decidedAtMs && decidedAtMs - signedInAtMs <= TEST_ENV_FRESH_SIGN_IN_MS && decidedAtMs <= nowMs && nowMs - decidedAtMs <= TEST_ENV_CONFIRMATION_TTL_MS;
+}
 const REVISION_WIDTH = 8;
 
 const REVISION_PREFIX = "TESTENV#REV#";
@@ -255,8 +265,13 @@ export async function readApprovedTestEnvironment(deps: TestEnvDeps, orgId: OrgI
 export interface LessSafeApproval {
   /** The second person, as the confirmation page authenticated them. Their role and whether a sole-owner exception applies are read from the company's records, not from here. */
   approverId: string;
-  /** When they last signed in (ms). Older than `TEST_ENV_FRESH_SIGN_IN_MS` is refused. */
+  /** When they last signed in (ms). */
   signedInAtMs: number;
+  /**
+   * When they confirmed (ms). With it, their sign-in must have been fresh AT THAT MOMENT and the confirmation at most `TEST_ENV_CONFIRMATION_TTL_MS` old (`confirmationStands`). Without it, the sign-in itself
+   * must be no older than `TEST_ENV_FRESH_SIGN_IN_MS` now (a second person who is pressing the approval themselves).
+   */
+  decidedAtMs?: number;
   /** The sha256 of their confirmation session's key, recorded in the audit event as the proof. */
   sessionRef: string;
 }
@@ -300,7 +315,7 @@ export async function approveTestEnvironment(
     const approval = input.approval;
     const needSecond = () => agentXError("FORBIDDEN", "this change needs a second person to approve it on the confirmation page");
     if (approval === undefined || deps.secondPerson === undefined || !/^[0-9a-f]{64}$/u.test(approval.sessionRef)) throw needSecond();
-    if (!fresh(approval.signedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+    if (approval.decidedAtMs === undefined ? !fresh(approval.signedInAtMs) : !confirmationStands(approval.signedInAtMs, approval.decidedAtMs, now)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
     // Both people's live authority and the sole-owner exception come from the company's records. The same person is accepted only when the records say the company has exactly one eligible owner.
     let check: SecondPersonCheck;
     try {

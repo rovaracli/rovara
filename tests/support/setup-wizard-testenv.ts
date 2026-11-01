@@ -118,10 +118,15 @@ export async function setupWizardBench(options: { agents?: boolean } = {}) {
     return digest;
   };
   const approvals = () => h.db.find((item) => item.entityType === "APPROVAL") as Array<Record<string, unknown> & { approvalId: string; status: string; subject: { kind: string; project: string; digest: string; expectedRevision: number }; requestedBy: string; approvers: { kind: string; rule?: string } }>;
-  /** What the confirmation page leaves in a card the second person confirmed: consent, with the fresh sign-in proof of that page. */
-  const confirmCard = (approvalId: string, by: Developer, authTimeMs = Date.now()) => {
+  /**
+   * What the confirmation page leaves in a card the second person confirmed: consent, with the fresh sign-in proof of that page. A card is decided ONCE: confirming one that was already decided throws, as the
+   * real page would refuse it. `signedInMinutesBefore` is how long before confirming the person signed in; `confirmedMinutesAgo` is when they confirmed.
+   */
+  const confirmCard = (approvalId: string, by: Developer, when: { signedInMinutesBefore?: number; confirmedMinutesAgo?: number } = {}) => {
     const card = h.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]!;
-    h.db.set({ ...card, status: "APPROVED_DONE", decidedBy: by.developerId, decidedAt: new Date().toISOString(), decision: "APPROVE", decisionProof: { kind: "fresh_sign_in", method: "email_code", authTime: new Date(authTimeMs).toISOString(), sessionRef: "5".repeat(64) } });
+    if (card.status !== "PENDING") throw new Error(`the card was already decided (${String(card.status)})`);
+    const decidedAt = Date.now() - (when.confirmedMinutesAgo ?? 0) * 60_000;
+    h.db.set({ ...card, status: "APPROVED_DONE", decidedBy: by.developerId, decidedAt: new Date(decidedAt).toISOString(), decision: "APPROVE", decisionProof: { kind: "fresh_sign_in", method: "email_code", authTime: new Date(decidedAt - (when.signedInMinutesBefore ?? 0) * 60_000).toISOString(), sessionRef: "5".repeat(64) } });
   };
   return { ...h, person, ask, drafted, setupCheckPassed, web, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
 }

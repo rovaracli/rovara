@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { AuditProofSchema, agentXError, type OrgId } from "@agentx/contracts";
 import { approvalIdFor, createPendingChange, getApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
 import type { ApprovalCaller } from "../agents/approvals.js";
-import { type LessSafeApproval } from "./test-environment.js";
+import { confirmationStands, type LessSafeApproval } from "./test-environment.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { readSecondPersonApprovalEvidence } from "./second-person-evidence.js";
 
@@ -64,6 +64,15 @@ export function registerTestEnvApprovals(): void {
 }
 registerTestEnvApprovals();
 
+/** The confirmation a decided card holds, if it stands: decided on the confirmation page with a fresh sign-in proof, and still good (`confirmationStands`). A card that holds none reads as expired, so it is asked for again. */
+function confirmationOf(record: ApprovalRecord, nowMs: number): LessSafeApproval | undefined {
+  if (record.decidedBy === undefined || record.decision !== "APPROVE") return undefined;
+  const proof = AuditProofSchema.safeParse((record as { decisionProof?: unknown }).decisionProof);
+  if (!proof.success || proof.data.kind !== "fresh_sign_in") return undefined;
+  const signedInAtMs = Date.parse(proof.data.authTime), decidedAtMs = Date.parse(record.decidedAt ?? "");
+  return confirmationStands(signedInAtMs, decidedAtMs, nowMs) ? { approverId: record.decidedBy, signedInAtMs, decidedAtMs, sessionRef: proof.data.sessionRef } : undefined;
+}
+
 export type TestEnvCardState = "none" | "pending" | "approved" | "expired";
 export interface TestEnvCard { state: TestEnvCardState; approvalId?: string; record?: ApprovalRecord }
 
@@ -78,7 +87,11 @@ async function cardAt(deps: ApprovalDependencies, scope: CardScope, attempt: num
     case "PENDING":
     case "EXECUTING": return Date.parse(record.expiresAt) <= deps.now() ? { state: "expired", approvalId: record.approvalId, record } : { state: "pending", approvalId: record.approvalId, record };
     case "APPROVED":
-    case "APPROVED_DONE": return record.decidedBy === undefined ? { state: "pending", approvalId: record.approvalId, record } : { state: "approved", approvalId: record.approvalId, record };
+    case "APPROVED_DONE": {
+      if (record.decidedBy === undefined) return { state: "pending", approvalId: record.approvalId, record };
+      // A confirmation is good for a day: after that the asker asks again (a new card), which is what the wizard offers for an expired one.
+      return confirmationOf(record, deps.now()) !== undefined ? { state: "approved", approvalId: record.approvalId, record } : { state: "expired", approvalId: record.approvalId, record };
+    }
     default: return { state: "expired", approvalId: record.approvalId, record };
   }
 }
@@ -123,15 +136,11 @@ export async function testEnvCardStateOf(deps: ApprovalDependencies, scope: Card
 }
 
 /**
- * The second person's confirmation of the asker's card, as `approveTestEnvironment` takes it: who confirmed and the fresh sign-in the confirmation page recorded. Undefined unless a card of THIS proposal and
- * revision, asked by this person, was confirmed with a fresh sign-in proof. The proof's age and the person's authority are checked again by the approval itself.
+ * The second person's confirmation of the asker's card, as `approveTestEnvironment` takes it: who confirmed, the sign-in the confirmation page recorded and when they confirmed. Undefined unless a card of THIS
+ * proposal and revision, asked by this person, was confirmed with a fresh sign-in proof that stood at the moment of confirming (`confirmationStands`: ten minutes of sign-in before it, a day after it). The
+ * approval itself reads both people's authority and the same times again.
  */
 export async function confirmedTestEnvApproval(deps: ApprovalDependencies, scope: CardScope): Promise<LessSafeApproval | undefined> {
   const { card } = await liveTestEnvCard(deps, scope);
-  const record = card.record;
-  if (card.state !== "approved" || record === undefined || record.decidedBy === undefined || record.decision !== "APPROVE") return undefined;
-  const proof = AuditProofSchema.safeParse((record as { decisionProof?: unknown }).decisionProof);
-  if (!proof.success || proof.data.kind !== "fresh_sign_in") return undefined;
-  const signedInAtMs = Date.parse(proof.data.authTime);
-  return Number.isFinite(signedInAtMs) ? { approverId: record.decidedBy, signedInAtMs, sessionRef: proof.data.sessionRef } : undefined;
+  return card.state === "approved" && card.record !== undefined ? confirmationOf(card.record, deps.now()) : undefined;
 }
