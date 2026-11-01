@@ -10,12 +10,15 @@ import type { TransactItem } from "../audit/outbox.js";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { TIER0_APPROVAL_DEFAULT, type LearningSettings, type LearningSettingsReader } from "./policy.js";
-import type { Tier0Change, Tier0ChangeStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
+import type { SoleOwnerSwitchChange, SoleOwnerSwitchStore, Tier0Change, Tier0ChangeStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
 const settingKey = (scope: Tier0Scope) => ({ pk: pkOf(scope), sk: scope.kind === "project" ? "LESSONSET#SETTINGS" : "LESSONSET#COMPANY" });
 const changeKey = (scope: Tier0Scope, id: string) => ({ pk: pkOf(scope), sk: `LESSONSET#TIER0CHG#${id.replace(/#/gu, "_")}` });
 const SOLE_OWNER_SK = "LESSONSET#COMPANYSOLE";
+// The switch's proposals live under the tier-0 proposals' prefix on purpose: the person erase already replaces `proposedBy` on every row under it.
+const SOLE_CHANGE_PREFIX = "LESSONSET#TIER0CHG#SOLE#";
+const soleChangeKey = (workspaceId: string, id: string) => ({ pk: teamRecordPk(workspaceId, undefined), sk: `${SOLE_CHANGE_PREFIX}${id.replace(/#/gu, "_")}` });
 const isLevel = (value: unknown): value is Tier0Level => value === "auto" || value === "one" || value === "two";
 /** The contracts' mode names (lower case) and the policy's (capitalised). */
 type Mode = NonNullable<LearningSettings["mode"]>;
@@ -57,18 +60,6 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
     }
   }
 
-  /** The company switch for the sole-owner exception on loosening. Never set means ON (the default); a stored value that is not a boolean throws, and the caller treats that as OFF. */
-  async soleOwnerLoosening(workspaceId: string): Promise<boolean> {
-    const item = await this.item({ pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK });
-    if (item === undefined) return true;
-    if (typeof item.enabled !== "boolean") throw new Error("the stored sole-owner setting is not valid");
-    return item.enabled;
-  }
-  /** Writes the switch. (Who may call this, and the audit event, belong to the route that wraps it.) */
-  async setSoleOwnerLoosening(workspaceId: string, enabled: boolean, at: number): Promise<void> {
-    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK, entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: at } }));
-  }
-
   async create(change: Tier0Change): Promise<boolean> {
     try {
       await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { ...changeKey(change.scope, change.id), entityType: "LESSON_TIER0_CHANGE", ...structuredClone(change) }, ConditionExpression: "attribute_not_exists(pk)" }));
@@ -99,6 +90,73 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
     try {
       await this.table.documentClient.send(new UpdateCommand({
         TableName: this.table.tableName, Key: changeKey(scope, id), UpdateExpression: "SET #s = :to", ConditionExpression: "#s = :from",
+        ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":to": to, ":from": from },
+      }));
+      return true;
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+}
+
+/**
+ * The company switch for the sole-owner exception on loosening, and its proposals. `read` is ON when never set; a stored value that is not a boolean throws (the caller counts it as OFF).
+ * `write` is internal to `setSoleOwnerSwitch` / `approveSoleOwnerSwitch` (tier0-setting.ts): routes never call it, so an OFF switch can only come back ON through a second admin.
+ */
+export class DynamoSoleOwnerSwitch implements SoleOwnerSwitchStore {
+  constructor(private readonly table: TeamRecordTable) {}
+  private async item(key: { pk: string; sk: string }): Promise<Item | undefined> {
+    return (await this.table.documentClient.send(new GetCommand({ TableName: this.table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
+  }
+  async read(workspaceId: string): Promise<boolean> {
+    const item = await this.item({ pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK });
+    if (item === undefined) return true;
+    if (typeof item.enabled !== "boolean") throw new Error("the stored sole-owner setting is not valid");
+    return item.enabled;
+  }
+  async write(workspaceId: string, enabled: boolean, meta: { by: string; at: number }, from: boolean, fence?: Tier0Fence): Promise<boolean> {
+    // The item holds no person (the audit event names who); an absent item is ON.
+    const put = {
+      TableName: this.table.tableName, Item: { pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK, entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: meta.at },
+      ConditionExpression: from ? "attribute_not_exists(pk) OR #e = :from" : "#e = :from", ExpressionAttributeNames: { "#e": "enabled" }, ExpressionAttributeValues: { ":from": from },
+    };
+    try {
+      if (fence?.conditions !== undefined && fence.conditions.length > 0) await this.table.documentClient.send(new TransactWriteCommand({ TransactItems: [...(fence.conditions as TransactItem[]), { Put: put }] }));
+      else await this.table.documentClient.send(new PutCommand(put));
+      return true;
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException" || errorName(error) === "TransactionCanceledException") return false;
+      throw error;
+    }
+  }
+  async create(change: SoleOwnerSwitchChange): Promise<boolean> {
+    try {
+      await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { ...soleChangeKey(change.workspaceId, change.id), entityType: "LESSON_SOLE_SWITCH_CHANGE", ...structuredClone(change) }, ConditionExpression: "attribute_not_exists(pk)" }));
+      return true;
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
+  }
+  private parse(item: Item | undefined): SoleOwnerSwitchChange | undefined {
+    if (item?.entityType !== "LESSON_SOLE_SWITCH_CHANGE" || typeof item.id !== "string" || typeof item.workspaceId !== "string" || typeof item.from !== "boolean" || typeof item.to !== "boolean") return undefined;
+    if (item.state !== "pending" && item.state !== "applied" && item.state !== "cancelled") return undefined;
+    if (typeof item.proposedBy !== "string" || typeof item.at !== "number" || typeof item.expiresAt !== "number") return undefined;
+    return { id: item.id, workspaceId: item.workspaceId, from: item.from, to: item.to, proposedBy: item.proposedBy, at: item.at, expiresAt: item.expiresAt, state: item.state };
+  }
+  async get(workspaceId: string, id: string): Promise<SoleOwnerSwitchChange | undefined> { return this.parse(await this.item(soleChangeKey(workspaceId, id))); }
+  async open(workspaceId: string, now: number): Promise<SoleOwnerSwitchChange | undefined> {
+    const response = await this.table.documentClient.send(new QueryCommand({
+      TableName: this.table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true,
+      ExpressionAttributeValues: { ":pk": teamRecordPk(workspaceId, undefined), ":p": SOLE_CHANGE_PREFIX },
+    })) as { Items?: Item[] };
+    return (response.Items ?? []).map((i) => this.parse(i)).find((c) => c !== undefined && c.state === "pending" && c.expiresAt > now);
+  }
+  async transition(workspaceId: string, id: string, from: SoleOwnerSwitchChange["state"], to: SoleOwnerSwitchChange["state"]): Promise<boolean> {
+    try {
+      await this.table.documentClient.send(new UpdateCommand({
+        TableName: this.table.tableName, Key: soleChangeKey(workspaceId, id), UpdateExpression: "SET #s = :to", ConditionExpression: "#s = :from",
         ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":to": to, ":from": from },
       }));
       return true;

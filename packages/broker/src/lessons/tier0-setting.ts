@@ -95,7 +95,7 @@ async function floorOf(deps: Tier0Deps, scope: Tier0Scope): Promise<Tier0Level> 
 async function soleOwnerAllowed(deps: Tier0Deps, scope: Tier0Scope): Promise<boolean> {
   try { return (await deps.soleOwnerLoosening(scope.workspaceId)) === true; } catch { return false; }
 }
-async function groupOf(deps: Tier0Deps, scope: Tier0Scope, who: { proposerId: string; approverId: string }) {
+async function groupOf(deps: Pick<Tier0Deps, "authority">, scope: Tier0Scope, who: { proposerId: string; approverId: string }) {
   const group = await deps.authority.eligibility(scope, who).catch(() => undefined);
   return group !== undefined && group.complete ? group : undefined;
 }
@@ -199,4 +199,92 @@ export async function cancelTier0Change(deps: Tier0Deps, input: { scope: Tier0Sc
   if (!(await deps.changes.transition(input.scope, change.id, "pending", "cancelled"))) return { ok: false, code: "not_pending" };
   await emitAudit(deps.audit, { action: "lesson.tier0_setting_cancelled", workspaceId: input.scope.workspaceId, project: projectOf(input.scope), actor: input.actorId, facts: { changeId: change.id, scope: input.scope.kind } });
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// The company switch for the sole-owner exception on loosening (owner decision 2026-11-01). Routes call ONLY these two functions; the store's `write` is internal to them.
+//  - OFF (stricter: the exception stops working) applies at once, by an eligible company admin, audited (an audit outage does not block it).
+//  - ON (a loosening) opens a proposal that a DIFFERENT eligible admin approves. The sole-owner exception does NOT apply to turning itself back on: a company of one that switched the
+//    exception off keeps it off unless a second admin joins (safer default; the owner may change this).
+// Both writes are fenced on the membership the decision rested on, like the tier-0 setting itself.
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+export interface SoleOwnerSwitchChange {
+  id: string; workspaceId: string; from: boolean; to: boolean; proposedBy: string; at: number; expiresAt: number; state: "pending" | "applied" | "cancelled";
+}
+export interface SoleOwnerSwitchStore {
+  /** The stored switch; true (ON) when never set. Throws when the stored value is not valid. */
+  read(workspaceId: string): Promise<boolean>;
+  /** INTERNAL to `setSoleOwnerSwitch` / `approveSoleOwnerSwitch`. Writes only if the switch is still `from`; false: it moved, or the fence failed, and nothing was written. */
+  write(workspaceId: string, enabled: boolean, meta: { by: string; at: number }, from: boolean, fence?: Tier0Fence): Promise<boolean>;
+  create(change: SoleOwnerSwitchChange): Promise<boolean>;
+  get(workspaceId: string, id: string): Promise<SoleOwnerSwitchChange | undefined>;
+  open(workspaceId: string, now: number): Promise<SoleOwnerSwitchChange | undefined>;
+  transition(workspaceId: string, id: string, from: SoleOwnerSwitchChange["state"], to: SoleOwnerSwitchChange["state"]): Promise<boolean>;
+}
+export interface SoleOwnerSwitchDeps { store: SoleOwnerSwitchStore; audit: LessonAuditSink; authority: Tier0Authority; now(): number; newId?: () => string }
+export type SoleOwnerSwitchRequest = { ok: true; status: "applied"; enabled: boolean } | { ok: true; status: "needs_approval"; changeId: string } | { ok: false; code: Tier0Failure };
+
+const companyScope = (workspaceId: string): Tier0Scope => ({ kind: "company", workspaceId });
+
+/** Asks to set the switch. Turning it OFF applies now; turning it ON (or leaving it as it is) is a no-op or a proposal. */
+export async function setSoleOwnerSwitch(deps: SoleOwnerSwitchDeps, input: { workspaceId: string; enabled: boolean; requestedBy: string }): Promise<SoleOwnerSwitchRequest> {
+  const { workspaceId, enabled } = input;
+  if (typeof enabled !== "boolean") return { ok: false, code: "invalid_value" };
+  const scope = companyScope(workspaceId);
+  const group = await groupOf(deps, scope, { proposerId: input.requestedBy, approverId: input.requestedBy });
+  if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
+  if (!idIn(group.eligibleIds, input.requestedBy)) return { ok: false, code: "not_eligible" };
+  let current: boolean;
+  try { current = await deps.store.read(workspaceId); } catch { return { ok: false, code: "conflict" }; }
+  const at = deps.now();
+  const facts = (extra: Record<string, string | boolean> = {}) => ({ from: current, to: enabled, membershipVersion: group.membershipVersion, ...extra });
+  if (enabled === current) return { ok: true, status: "applied", enabled };
+  if (!enabled) {
+    // Stricter: applied now, against the value it was read at, fenced. An audit outage never blocks the stricter side.
+    if (!(await deps.store.write(workspaceId, false, { by: input.requestedBy, at }, current, fenceOf(group)))) return { ok: false, code: "stale" };
+    await emitAudit(deps.audit, { action: "lesson.sole_owner_switch_changed", workspaceId, project: NO_PROJECT, actor: input.requestedBy, facts: facts({ mode: "direct" }) });
+    return { ok: true, status: "applied", enabled };
+  }
+  // Turning ON is a loosening: a proposal for a different admin.
+  if ((await deps.store.open(workspaceId, at)) !== undefined) return { ok: false, code: "already_open" };
+  const id = (deps.newId ?? (() => randomUUID()))();
+  if (!(await requireAudit(deps.audit, { action: "lesson.sole_owner_switch_proposed", workspaceId, project: NO_PROJECT, actor: input.requestedBy, facts: facts({ changeId: id }) }))) return { ok: false, code: "audit_unavailable" };
+  const created = await deps.store.create({ id, workspaceId, from: current, to: true, proposedBy: input.requestedBy, at, expiresAt: at + TIER0_CHANGE_TTL_MS, state: "pending" });
+  return created ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "conflict" };
+}
+
+/** A DIFFERENT eligible admin approves a proposal to turn the switch ON. The proposer can never approve it, and the sole-owner exception does not apply. */
+export async function approveSoleOwnerSwitch(deps: SoleOwnerSwitchDeps, input: { workspaceId: string; changeId: string; approverId: string }): Promise<{ ok: true; enabled: boolean } | { ok: false; code: Tier0Failure }> {
+  const { workspaceId } = input;
+  const change = await deps.store.get(workspaceId, input.changeId);
+  if (change === undefined || change.workspaceId !== workspaceId) return { ok: false, code: "not_found" };
+  if (change.state !== "pending") return { ok: false, code: "not_pending" };
+  const at = deps.now();
+  if (change.expiresAt <= at) return { ok: false, code: "expired" };
+  if (sameId(change.proposedBy, input.approverId)) return { ok: false, code: "second_person_required" };
+  const scope = companyScope(workspaceId);
+  const group = await groupOf(deps, scope, { proposerId: change.proposedBy, approverId: input.approverId });
+  if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
+  if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
+  const decision = trySecondPersonTimed(group, change.proposedBy, input.approverId, at);
+  if (!decision.ok) return { ok: false, code: decision.code === "eligibility_unavailable" ? "eligibility_unavailable" : "second_person_required" };
+  if (decision.mode !== "second_person") return { ok: false, code: "second_person_required" };
+  let current: boolean;
+  try { current = await deps.store.read(workspaceId); } catch { return { ok: false, code: "conflict" }; }
+  if (current !== change.from) return { ok: false, code: "stale" };
+  if (!(await deps.store.transition(workspaceId, change.id, "pending", "applied"))) return { ok: false, code: "not_pending" };
+  if (!(await deps.store.write(workspaceId, change.to, { by: input.approverId, at }, change.from, fenceOf(group)))) {
+    await deps.store.transition(workspaceId, change.id, "applied", "cancelled").catch(() => false);
+    return { ok: false, code: "stale" };
+  }
+  const audited = await requireAudit(deps.audit, {
+    action: "lesson.sole_owner_switch_changed", workspaceId, project: NO_PROJECT, actor: input.approverId,
+    facts: { from: change.from, to: change.to, mode: "second_person", proposedBy: change.proposedBy, changeId: change.id, membershipVersion: group.membershipVersion },
+  });
+  if (!audited) {
+    await deps.store.write(workspaceId, change.from, { by: input.approverId, at }, change.to).catch(() => false);
+    await deps.store.transition(workspaceId, change.id, "applied", "cancelled").catch(() => false);
+    return { ok: false, code: "audit_unavailable" };
+  }
+  return { ok: true, enabled: change.to };
 }
