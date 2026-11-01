@@ -254,12 +254,27 @@ const told = async (deps: McpServerDependencies, event: McpServerAuditEvent): Pr
   try { await deps.audit?.(event); } catch { /* an audit hiccup does not undo the decision */ }
 };
 
-/** What the admin is shown, and what an approval is bound to. */
+/**
+ * What the admin is shown, and what an approval is bound to. Fix round 2 (review N2, tool poisoning): the hash covers each tool's name, its schema and hints (`schemaHash`: the input schema and the
+ * four standard hints) AND the whole description as the server gave it, so a changed description pauses the server like any other tool change. Replaces: a hash of names and schemas only
+ * (still computed by `legacyToolsHash`, for approvals made before this).
+ */
 export function summariseProbe(tools: readonly DiscoveredTool[], now: number): McpServerProbe {
   const shown = [...tools].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100).map((tool) => ({
     name: tool.name.slice(0, 64), description: inertSentence(tool.description ?? "", 300), annotation: annotationVerdict(tool), schemaHash: toolSchemaHash(tool),
+    descriptionHash: createHash("sha256").update(tool.description ?? "").digest("hex"),
   }));
-  return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash]))).digest("hex"), tools: shown };
+  return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash, tool.descriptionHash]))).digest("hex"), hashVersion: 2, tools: shown };
+}
+
+/** The hash an approval made before descriptions were hashed carries: names and schemas only. Computed from what a probe holds, so an old and a new probe of the same tools can be compared. */
+export function legacyToolsHash(probe: Pick<McpServerProbe, "tools">): string {
+  return createHash("sha256").update(canonicalJson(probe.tools.map((tool) => [tool.name, tool.schemaHash]))).digest("hex");
+}
+
+/** Whether a probe made now offers the tools a stored probe showed: by the full hash when the stored one has descriptions in it, otherwise by names and schemas (the old way). */
+export function sameTools(stored: Pick<McpServerProbe, "toolsHash" | "hashVersion" | "tools">, now: Pick<McpServerProbe, "toolsHash" | "tools">): boolean {
+  return stored.hashVersion === 2 ? stored.toolsHash === now.toolsHash : stored.toolsHash === legacyToolsHash(now);
 }
 
 /**
@@ -419,7 +434,7 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   const again = await probe(deps, actor.orgId, entry.transport, token, entry.transport.kind === "stdio" && entry.hasSecret === true ? serverId : undefined);
   // The host installed the tarball again and checked it against the pinned integrity; a different tarball or bundle never gets here, and the tools must be the ones that were shown.
   if (pinned !== undefined && (again.integrity !== pinned.integrity || again.lockfileHash !== pinned.lockfileHash || again.bundleHash !== pinned.bundleHash)) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
-  if (again.probe.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
+  if (!sameTools(entry.probe, again.probe)) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
   const at = new Date(deps.now()).toISOString();
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {
     throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
@@ -439,7 +454,8 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
 export interface McpToolsDiff {
   added: Array<{ name: string; description: string; annotation: McpServerProbe["tools"][number]["annotation"] }>;
   removed: Array<{ name: string }>;
-  changed: Array<{ name: string; description: string; annotation: McpServerProbe["tools"][number]["annotation"]; what: Array<"definition" | "read_only_claim"> }>;
+  /** `was` is the description it had when approved, given only when the description is what changed. */
+  changed: Array<{ name: string; description: string; was?: string; annotation: McpServerProbe["tools"][number]["annotation"]; what: Array<"definition" | "read_only_claim" | "description"> }>;
 }
 
 export function diffTools(before: McpServerProbe["tools"], after: McpServerProbe["tools"]): McpToolsDiff {
@@ -451,10 +467,13 @@ export function diffTools(before: McpServerProbe["tools"], after: McpServerProbe
     if (was === undefined) { diff.added.push({ name: tool.name, description: tool.description, annotation: tool.annotation }); continue; }
     // The schema hash covers the tool's whole definition, its read-only claim included, so a changed claim is reported as the claim (its definition may have changed with it); the same claim with a
     // different hash is a changed definition (its inputs, its description of itself).
-    const what: Array<"definition" | "read_only_claim"> = [];
+    const what: Array<"definition" | "read_only_claim" | "description"> = [];
     if (was.annotation !== tool.annotation) what.push("read_only_claim");
     else if (was.schemaHash !== tool.schemaHash) what.push("definition");
-    if (what.length > 0) diff.changed.push({ name: tool.name, description: tool.description, annotation: tool.annotation, what });
+    // Fix round 2: a changed description is a change. By the full hash when both sides have one; otherwise (an approval from before descriptions were hashed) by the shown text.
+    const descriptionChanged = was.descriptionHash !== undefined && tool.descriptionHash !== undefined ? was.descriptionHash !== tool.descriptionHash : was.description !== tool.description;
+    if (descriptionChanged) what.push("description");
+    if (what.length > 0) diff.changed.push({ name: tool.name, description: tool.description, ...(descriptionChanged ? { was: was.description } : {}), annotation: tool.annotation, what });
   }
   for (const tool of before) if (!now.has(tool.name)) diff.removed.push({ name: tool.name });
   return diff;

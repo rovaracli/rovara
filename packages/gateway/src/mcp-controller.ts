@@ -31,6 +31,11 @@ export interface ApprovedServer {
   spec: McpStdioSpec;
   /** The tools hash the admin approved. A started task whose tools hash differs is stopped (design section 6, "First call"). */
   toolsHash: string;
+  /**
+   * Fix round 2: 2 (the default) when `toolsHash` covers the tools' descriptions; 1 for an approval made before that, whose hash covers names and schemas only. Version 1 is compared the old way
+   * (`legacyToolsHashOf`), and the descriptions are held to the baseline the controller records at the first start (see `PauseStore.baseline`).
+   */
+  toolsHashVersion?: 1 | 2 | undefined;
   /** The version of the server's secret, when it has one. A different version restarts the task (secret replaced). */
   secretVersion?: string | undefined;
   /** The name or ARN of the server's secret in the secret store: how the task definition names it. */
@@ -163,11 +168,22 @@ export interface PauseStore {
   get(serverId: string): Promise<{ toolsHash: string; bundleHash: string } | undefined>;
   set(serverId: string, pause: { toolsHash: string; bundleHash: string }): Promise<void>;
   clear(serverId: string): Promise<void>;
+  /**
+   * Fix round 2: for an approval made before descriptions were hashed. At the first start with no change in names and schemas, the controller records the hash of what the tools say NOW (this is
+   * trust on first use: a description changed between the approval and that start is not caught, and nothing earlier than that start can be). Later starts compare to it, and a difference
+   * pauses the server like any other tools change. It names the approval it was made for, so it never applies to another.
+   */
+  baseline(serverId: string): Promise<{ approvedHash: string; bundleHash: string; contentHash: string } | undefined>;
+  setBaseline(serverId: string, baseline: { approvedHash: string; bundleHash: string; contentHash: string }): Promise<void>;
 }
 
 export function memoryPauses(): PauseStore {
   const held = new Map<string, { toolsHash: string; bundleHash: string }>();
-  return { get: async (serverId) => held.get(serverId), set: async (serverId, pause) => { held.set(serverId, pause); }, clear: async (serverId) => { held.delete(serverId); } };
+  const bases = new Map<string, { approvedHash: string; bundleHash: string; contentHash: string }>();
+  return {
+    get: async (serverId) => held.get(serverId), set: async (serverId, pause) => { held.set(serverId, pause); }, clear: async (serverId) => { held.delete(serverId); },
+    baseline: async (serverId) => bases.get(serverId), setBaseline: async (serverId, baseline) => { bases.set(serverId, baseline); },
+  };
 }
 
 export interface McpControllerOptions {
@@ -193,6 +209,8 @@ export interface McpControllerOptions {
   probeSlots?: ProbeSlots | undefined;
   /** The hash of a tools list that the approval binds (the broker's `summariseProbe`). */
   toolsHashOf: (tools: ProbedTool[]) => string;
+  /** The hash of names and schemas only, for an approval of version 1 (made before descriptions were hashed). Absent: such an approval is treated as changed. */
+  legacyToolsHashOf?: ((tools: ProbedTool[]) => string) | undefined;
   limits?: Partial<ControllerLimits> | undefined;
   /** How often to look at a task that is starting. */
   pollMs?: number | undefined;
@@ -551,8 +569,24 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       entry.base = launched.base;
       // The tools must be the ones the admin approved. If they are not, the task is stopped and the admin looks at the difference.
       let observed: string;
-      try { observed = options.toolsHashOf(await listTools(launched.base, launched.token)); } catch { await runner.stop(launched.taskId, "failed").catch(() => undefined); revoke(launched.grantKey); throw new ControllerError("start_failed"); }
-      if (observed !== approved.toolsHash) {
+      let changed: boolean;
+      try {
+        const listed = await listTools(launched.base, launched.token);
+        observed = options.toolsHashOf(listed);
+        if ((approved.toolsHashVersion ?? 2) === 2) changed = observed !== approved.toolsHash;
+        else {
+          // An approval from before descriptions were hashed: names and schemas must still match what was approved; the descriptions are held to the baseline recorded at the first such start. An
+          // unreadable or unwritable baseline is a refusal (the start fails), never a start without the check.
+          const legacy = options.legacyToolsHashOf?.(listed);
+          if (legacy === undefined || legacy !== approved.toolsHash) changed = true;
+          else {
+            const base = await pauses.baseline(serverId);
+            if (base !== undefined && base.approvedHash === approved.toolsHash && base.bundleHash === approved.spec.bundleHash) changed = base.contentHash !== observed;
+            else { await pauses.setBaseline(serverId, { approvedHash: approved.toolsHash, bundleHash: approved.spec.bundleHash, contentHash: observed }); changed = false; }
+          }
+        }
+      } catch { await runner.stop(launched.taskId, "failed").catch(() => undefined); revoke(launched.grantKey); throw new ControllerError("start_failed"); }
+      if (changed) {
         await runner.stop(launched.taskId, "tools_changed").catch(() => undefined);
         revoke(launched.grantKey);
         log("mcp_controller.tools_changed", { serverId });

@@ -22,7 +22,7 @@ import { dynamoProbeSlots } from "./probe-slots.js";
 import { dynamoControllerEvents } from "./events.js";
 import { dynamoPauses } from "./pauses.js";
 import { randomBytes } from "node:crypto";
-import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
+import { dynamoMcpServerStore, legacyToolsHash, summariseProbe } from "../context-sources/mcp-servers.js";
 
 function required(env: Record<string, string | undefined>, name: string): string {
   const value = env[name];
@@ -42,7 +42,7 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       if (spec === undefined) return undefined;
       // The secret's full ARN (ECS needs it to read one key of the JSON secret). A secret that cannot be resolved leaves no reference, and then a server that declares secrets does not start.
       const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
-      return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef };
+      return { spec, toolsHash: entry.probe.toolsHash, toolsHashVersion: entry.probe.hashVersion === 2 ? 2 : 1, secretVersion: entry.secretVersion, secretRef };
     },
     async probeSecret(serverId, test): Promise<string | undefined> {
       if (secretArn === undefined) return undefined;
@@ -66,6 +66,8 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
 
 /** The hash the approval binds, computed the way the broker computes it for what the admin was shown. */
 export const toolsHashOf = (tools: Parameters<typeof summariseProbe>[0]): string => summariseProbe(tools, 0).toolsHash;
+/** The hash an approval made before descriptions were hashed carries (names and schemas only). */
+export const legacyToolsHashOf = (tools: Parameters<typeof summariseProbe>[0]): string => legacyToolsHash(summariseProbe(tools, 0));
 
 export interface ControllerConfig {
   brokerPort: number;
@@ -171,7 +173,7 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
   });
   const controller = createMcpController({
     token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
-    controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
+    controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, legacyToolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
     leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),
   });

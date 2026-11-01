@@ -162,11 +162,18 @@ const McpServerStoredTransportSchema = z.discriminatedUnion("kind", [
 export const McpServerProbeSchema = z.object({
   at: z.string().max(40),
   toolsHash: z.string().regex(/^[0-9a-f]{64}$/),
+  /**
+   * Fix round 2: 2 when `toolsHash` also covers each tool's full description (`descriptionHash`); absent on a probe stored before that, whose hash covers names and schemas only. A reader
+   * that finds it absent compares the old way (see the controller's baseline), so an approval made before this change is not read as a tools change.
+   */
+  hashVersion: z.literal(2).optional(),
   tools: z.array(z.object({
     name: z.string().max(64),
     description: z.string().max(300),
     annotation: z.enum(["read_only", "unannotated", "unsafe"]),
     schemaHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /** Fix round 2: the hash of the tool's whole description as the server gave it (the shown description is cut to 300 characters). */
+    descriptionHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   }).strict()).max(100),
 }).strict();
 export type McpServerProbe = z.infer<typeof McpServerProbeSchema>;

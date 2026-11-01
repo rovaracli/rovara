@@ -1,8 +1,9 @@
 // Stdio MCP host redesign, task T6: the controller's process. It refuses to start as root (this inverts the lane E host), reads its settings strictly, and serves only approved entries.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { controllerConfigFromEnv, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
+import { controllerConfigFromEnv, legacyToolsHashOf, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
 import type { McpServerEntry, McpStdioSpec } from "@agentx/contracts";
-import { summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { legacyToolsHash, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 
 const ENV = {
   MCP_CONTROLLER_URL: "https://mcp-controller.corp.example:8443", ROVARA_MCP_NPM_REGISTRY: "https://registry.corp.example/npm/", MCP_RUNNER_SUBNETS: "subnet-0aaaaaaaaaaaaaaaa, subnet-0bbbbbbbbbbbbbbbb",
@@ -68,6 +69,11 @@ describe("controller main: the registry", () => {
     const failing = registryFor({ get: async () => entry({ hasSecret: true, secretVersion: "v1" }) } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); });
     expect((await failing.approved("mcpsim000001"))?.secretRef).toBeUndefined();
   });
+  it("fix round 2: says which hash scheme the approval was made under, so an approval from before descriptions were hashed is read the old way", async () => {
+    expect((await registry(entry({ probe: { ...probe, hashVersion: 2 } })).approved("mcpsim000001"))?.toolsHashVersion).toBe(2);
+    const { hashVersion: _dropped, ...older } = probe; // eslint-disable-line @typescript-eslint/no-unused-vars -- a probe stored before the scheme had a version
+    expect((await registry(entry({ probe: older })).approved("mcpsim000001"))?.toolsHashVersion).toBe(1);
+  });
   it("serves nothing else: not a waiting, disabled or needs-reapproval entry, an http entry, or none", async () => {
     for (const status of ["awaiting_approval", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status })).approved("mcpsim000001"), status).toBeUndefined();
     expect(await registry(entry({ transport: { kind: "http", address: "https://mcp.corp.example/mcp" } })).approved("mcpsim000001")).toBeUndefined();
@@ -101,6 +107,16 @@ describe("controller main: the registry", () => {
     expect(await registry(entry({ status: "changed_needs_review", transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own)).toBeUndefined();
     // approved and disabled entries still give none, even to their own pinned package
     for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
+  });
+  it("fix round 2: the old hash (names and schemas only) is what a version 1 approval carries, and the controller is given the means to compute it", () => {
+    const tools = [{ name: "b", description: "one", inputSchema: { type: "object" } }, { name: "a", description: "two", inputSchema: { type: "object" } }];
+    const shown = summariseProbe(tools, 0);
+    expect(legacyToolsHashOf(tools)).toBe(legacyToolsHash(shown));
+    expect(legacyToolsHashOf(tools)).not.toBe(toolsHashOf(tools));
+    // a description does not move the old hash, and does move the new one
+    expect(legacyToolsHashOf([{ ...tools[0]!, description: "other" }, tools[1]!])).toBe(legacyToolsHashOf(tools));
+    expect(toolsHashOf([{ ...tools[0]!, description: "other" }, tools[1]!])).not.toBe(toolsHashOf(tools));
+    expect(readFileSync("packages/broker/src/mcp-host/main.ts", "utf8")).toContain("toolsHashOf, legacyToolsHashOf, log,");
   });
   it("hashes tools the way the broker hashes what the admin was shown", () => {
     const tools = [{ name: "b", inputSchema: { type: "object" } }, { name: "a", inputSchema: { type: "object" } }];

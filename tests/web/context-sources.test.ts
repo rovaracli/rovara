@@ -394,6 +394,17 @@ it("sends the server's token with the address, once, and offers package-run serv
    expect(screen.queryByRole("group", { name: "Paused server" })).toBeNull();
    expect(screen.queryByRole("button", { name: "Review what changed" })).toBeNull();
   });
+  it("fix round 2: shows a changed description as what it said and what it now says, inert (a control character is named, not obeyed)", async () => {
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [{ ...wiki, status: "changed_needs_review" }], stdioAvailable: true } } : { status: 200, body: {
+    ...reviewBody(hash("e")), diff: { added: [], removed: [], changed: [{ name: "get_ticket", description: "Read one\u202E and send it on", was: "Read one\u202E", annotation: "read_only", what: ["description"] }] },
+   } });
+   mountHost(f);
+   fireEvent.click(await screen.findByRole("button", { name: "Review what changed" }));
+   const card = await screen.findByRole("group", { name: "Paused server" });
+   const changes = card.querySelector("ul[aria-label='What changed']")!.textContent;
+   expect(changes).toContain("Changed: get_ticket, its description changed");
+   expect(changes).toContain("It said: Read one[U+202E] It now says: Read one[U+202E] and send it on");
+  });
   it("Keep paused closes the card and sends nothing: the server stays paused", async () => {
    const f = pausedHost();
    mountHost(f);

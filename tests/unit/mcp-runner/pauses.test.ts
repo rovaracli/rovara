@@ -21,6 +21,23 @@ describe("the controller's pause store", () => {
     expect(await pauses.get(SERVER)).toBeUndefined();
     await expect(pauses.clear(SERVER)).resolves.toBeUndefined();
   });
+  it("fix round 2: keeps a baseline for an approval from before descriptions were hashed, in its own item beside the pause, and reads it back", async () => {
+    const { db, pauses } = setup();
+    await pauses.setBaseline(SERVER, { approvedHash: A, bundleHash: B, contentHash: "c".repeat(64) });
+    expect([...db.items.values()]).toEqual([{ pk: orgScoped(ORG, "MCPSLOT"), sk: `BASE#${SERVER}`, approvedHash: A, bundleHash: B, contentHash: "c".repeat(64) }]);
+    expect(await pauses.baseline(SERVER)).toEqual({ approvedHash: A, bundleHash: B, contentHash: "c".repeat(64) });
+    expect(await pauses.get(SERVER)).toBeUndefined();
+    await pauses.setBaseline(SERVER, { approvedHash: A, bundleHash: B, contentHash: "d".repeat(64) });
+    expect((await pauses.baseline(SERVER))?.contentHash).toBe("d".repeat(64));
+    expect(await setup().pauses.baseline(SERVER)).toBeUndefined();
+    await expect(pauses.setBaseline(SERVER, { approvedHash: A, bundleHash: B, contentHash: "x" })).rejects.toThrow(/three hashes/u);
+    await expect(pauses.baseline("../x")).rejects.toThrow();
+  });
+  it("reads a damaged baseline as one that matches no approval, never as none", async () => {
+    const { db, pauses } = setup();
+    await db.send(new PutCommand({ TableName: "state", Item: { pk: orgScoped(ORG, "MCPSLOT"), sk: `BASE#${SERVER}`, approvedHash: 5 } }));
+    expect(await pauses.baseline(SERVER)).toEqual({ approvedHash: "", bundleHash: "", contentHash: "" });
+  });
   it("never writes the registry's partition", async () => {
     const { db, pauses } = setup();
     await pauses.set(SERVER, { toolsHash: A, bundleHash: B });

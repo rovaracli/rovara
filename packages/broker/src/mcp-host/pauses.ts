@@ -10,6 +10,7 @@ const HASH = /^[0-9a-f]{64}$/u;
 
 export function dynamoPauses(options: { documentClient: DocumentClient; tableName: string; orgId: OrgId }): PauseStore {
   const key = (serverId: string) => ({ pk: orgScoped(options.orgId, "MCPSLOT"), sk: `PAUSE#${McpServerIdSchema.parse(serverId)}` });
+  const baseKey = (serverId: string) => ({ pk: orgScoped(options.orgId, "MCPSLOT"), sk: `BASE#${McpServerIdSchema.parse(serverId)}` });
   return {
     async get(serverId) {
       const found = await options.documentClient.send(new GetCommand({ TableName: options.tableName, Key: key(serverId), ConsistentRead: true })) as { Item?: { toolsHash?: unknown; bundleHash?: unknown } };
@@ -21,6 +22,18 @@ export function dynamoPauses(options: { documentClient: DocumentClient; tableNam
     async set(serverId, pause) {
       if (!HASH.test(pause.toolsHash) || !HASH.test(pause.bundleHash)) throw new Error("a pause names two hashes");
       await options.documentClient.send(new PutCommand({ TableName: options.tableName, Item: { ...key(serverId), toolsHash: pause.toolsHash, bundleHash: pause.bundleHash } }));
+    },
+    async baseline(serverId) {
+      const found = await options.documentClient.send(new GetCommand({ TableName: options.tableName, Key: baseKey(serverId), ConsistentRead: true })) as { Item?: { approvedHash?: unknown; bundleHash?: unknown; contentHash?: unknown } };
+      const item = found.Item;
+      if (item === undefined) return undefined;
+      // An item that does not read as a baseline is no baseline that matches (the next start writes a new one over it).
+      return [item.approvedHash, item.bundleHash, item.contentHash].every((value) => typeof value === "string" && HASH.test(value))
+        ? { approvedHash: item.approvedHash as string, bundleHash: item.bundleHash as string, contentHash: item.contentHash as string } : { approvedHash: "", bundleHash: "", contentHash: "" };
+    },
+    async setBaseline(serverId, baseline) {
+      if (![baseline.approvedHash, baseline.bundleHash, baseline.contentHash].every((value) => HASH.test(value))) throw new Error("a baseline names three hashes");
+      await options.documentClient.send(new PutCommand({ TableName: options.tableName, Item: { ...baseKey(serverId), ...baseline } }));
     },
     async clear(serverId) {
       await options.documentClient.send(new DeleteCommand({ TableName: options.tableName, Key: key(serverId) }));

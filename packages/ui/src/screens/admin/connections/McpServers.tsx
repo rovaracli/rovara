@@ -25,7 +25,7 @@ export function Activity({ activity }: { activity: McpActivityView }) {
  return <p>{activity.keepsStopping ? <strong>This server keeps stopping. Rovara has paused starting it for a while. </strong> : null}Recent starts: {activity.starts24h === 0 ? "none in the last day" : `${activity.starts24h} in the last day`}{activity.lastStartAt === undefined ? "" : `, the last at ${new Date(activity.lastStartAt).toLocaleString()}`}.{activity.lastStop === undefined ? "" : ` It ${stopWords[activity.lastStop.reason]}.`}</p>;
 }
 
-const changeWords = { definition: "its inputs or definition changed", read_only_claim: "what it says about only reading changed" } as const;
+const changeWords = { definition: "its inputs or definition changed", read_only_claim: "what it says about only reading changed", description: "its description changed" } as const;
 
 /** Exactly which tools were added, removed or changed, in plain words. Names and descriptions come from the server and are shown inert. */
 function ToolChanges({ review }: { review: McpReviewView }) {
@@ -34,7 +34,7 @@ function ToolChanges({ review }: { review: McpReviewView }) {
  return <ul aria-label="What changed">
   {added.map(tool => <li key={`a-${tool.name}`}>Added: <code><VisibleText text={tool.name} /></code>, {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}
   {removed.map(tool => <li key={`r-${tool.name}`}>Removed: <code><VisibleText text={tool.name} /></code>.</li>)}
-  {changed.map(tool => <li key={`c-${tool.name}`}>Changed: <code><VisibleText text={tool.name} /></code>, {tool.what.map(item => changeWords[item]).join(" and ")}; now {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}
+  {changed.map(tool => <li key={`c-${tool.name}`}>Changed: <code><VisibleText text={tool.name} /></code>, {tool.what.map(item => changeWords[item]).join(" and ")}; now {annotationWords[tool.annotation]}. {tool.was !== undefined && <>It said: <q><VisibleText text={tool.was} /></q> It now says: </>}<VisibleText text={tool.description} /></li>)}
  </ul>;
 }
 

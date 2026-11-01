@@ -42,7 +42,7 @@ const McpReviewReader = z.object({
   diff: z.object({
     added: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), annotation: Annotation })).max(100),
     removed: z.array(z.object({ name: z.string().max(64) })).max(100),
-    changed: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), annotation: Annotation, what: z.array(z.enum(["definition", "read_only_claim"])).max(2) })).max(100),
+    changed: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), was: z.string().max(300).optional(), annotation: Annotation, what: z.array(z.enum(["definition", "read_only_claim", "description"])).max(3) })).max(100),
   }),
 });
 export type McpReviewView = z.infer<typeof McpReviewReader>;
