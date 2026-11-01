@@ -26,6 +26,8 @@ type Item = Record<string, unknown>;
 type Edition = "enterprise" | "public";
 
 /** The words a refusal says. Fixed: no refusal repeats the question or anything of the task. */
+/** What a Linear Ask's turn gets in place of the project's chat instructions. */
+export const LINEAR_TURN_INSTRUCTIONS = "Answer from the task data only, in a few plain sentences.";
 export const ASK_RATE_TEXT = "You've asked a lot of questions lately. Try again a little later.";
 export const ASK_BUSY_TEXT = "One question at a time: wait for the answer to your last one.";
 export const ASK_ERASED_TEXT = "This account can't ask questions.";
@@ -345,7 +347,9 @@ export async function prepareAskTurn(deps: AskDependencies, value: unknown): Pro
   if (pending.askedBy !== undefined && await deps.store(ref.data.orgId).isErased(pending.askedBy)) throw agentXError("FORBIDDEN", ASK_ERASED_TEXT);
   const context = await askContext({ documentClient: deps.documentClient, tableName: deps.tableName, actions: deps.actions, sessionLevel: sessionLevelPort(deps.access) }, pending.viewer, pending.task.taskId, deps.readers);
   if (context === undefined) throw agentXError("FORBIDDEN", "this question can't be answered now");
-  return { workspaceId: pending.task.workspaceId, orchestratorInstructions: await deps.orchestratorInstructions(ref.data.orgId, pending.task.project), taskContext: `${ASK_TURN_RULES}\n${context.text}` };
+  // The project's chat instructions are admin-written configuration (internal links, repository names, policy): a Linear issue's viewers are not members, so their turn gets a fixed line instead.
+  const instructions = pending.audience === "linear" ? LINEAR_TURN_INSTRUCTIONS : await deps.orchestratorInstructions(ref.data.orgId, pending.task.project);
+  return { workspaceId: pending.task.workspaceId, orchestratorInstructions: instructions, taskContext: `${ASK_TURN_RULES}\n${context.text}` };
 }
 
 /**
