@@ -264,6 +264,32 @@ describe("a Stop wins over a redirect that is still stopping (fix round 1, B1)",
     });
   }
 
+  it("a late replay of an old Stop changes nothing: it does not end a newer redirect (LR-3 N3), while a new Stop does", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    // The first Stop, and the step it stopped.
+    const firstStop = randomUUID();
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: firstStop })).status).toBe(200);
+    await t.stopLands(workspaceId);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    // The owner tries the step again and redirects it: a newer redirect is stopping.
+    const retried = await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again", expectedRevision: t.task(taskId).workflow.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    const requestId = randomUUID();
+    const redirected = await t.redirect(MAYA, sessionId, { requestId });
+    expect(redirected.status, JSON.stringify(redirected.body)).toBe(200);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+    // The first Stop's request arrives again, late.
+    const replay = await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: firstStop });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+    expect(t.open(taskId)).toBeDefined();
+    // Control: a Stop with a new request id still ends it.
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
+    expect(t.open(taskId)).toBeUndefined();
+  });
+
   it("the redirect's own cancel (same request id, asked again by a repeat) does not end the redirect", async () => {
     const t = await setup();
     const { taskId, sessionId } = await t.runningCoding();
