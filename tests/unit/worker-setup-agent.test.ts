@@ -1,15 +1,15 @@
 // Setup agent (SH7): the sandbox holds no secret and has only the R56 shape, the tools have no write or edit, a change to a tracked file or to HEAD ends the run, a download-and-run command stays flagged,
 // every command has a time limit, and the final answer is read by the draft's reader. Fake tokens are built at runtime.
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { REMOTE_CODE_REASON, SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
 import {
-  SETUP_AGENT_TOOLS, SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_REFUSED_TEXT, assertSetupSandboxRunArgs, checkTrackedFiles, commandTail, createSetupSandbox,
-  credentialShapedVariables, finishSetupAgent, guardedSetupDocker, setupAgentSessionParts, setupAgentShell, type SetupAgentHooks, type SetupCommandRecord, type TrackedFilesVerdict,
+  SETUP_AGENT_TOOLS, SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_REFUSED_TEXT, assertSetupSandboxRunArgs, checkTrackedFiles, commandTail, createSetupSandbox, defaultSetupGit,
+  credentialShapedVariables, finishSetupAgent, guardedSetupDocker, setupAgentSessionParts, setupAgentShell, type SetupAgentHooks, type SetupCommandRecord, type SetupGit, type TrackedFilesVerdict,
 } from "../../packages/worker/src/setup-agent.js";
 import { SETUP_AGENT_NEEDS_CODE_CHANGE_MARKER, asksForCodeChange, setupAgentInstructions } from "../../packages/worker/src/setup-agent-prompt.js";
 import { agentShellTool, piTaskToolCapabilities } from "../../packages/worker/src/pi-session.js";
@@ -189,25 +189,27 @@ describe("the tools", () => {
 const COMMIT = "a".repeat(40);
 describe("tracked files (fake git)", () => {
   const repos = [{ name: "web", path: "repo/web", directory: "/w/repo/web", resolvedCommit: COMMIT }];
-  const git = (answers: { head?: string; status?: string; fail?: boolean }) => (_directory: string, args: readonly string[]) => {
-    if (answers.fail === true) return Promise.reject(new Error("git failed"));
-    return Promise.resolve(args[0] === "rev-parse" ? `${answers.head ?? COMMIT}\n` : answers.status ?? "");
-  };
+  const git = (answers: { head?: string; changed?: boolean; tags?: string[]; fail?: "head" | "tags" | "changed" } = {}): SetupGit => ({
+    head: () => (answers.fail === "head" ? Promise.reject(new Error("git failed")) : Promise.resolve(`${answers.head ?? COMMIT}\n`)),
+    indexTags: () => (answers.fail === "tags" ? Promise.reject(new Error("git failed")) : Promise.resolve(answers.tags ?? ["H", "H"])),
+    changedTracked: () => (answers.fail === "changed" ? Promise.reject(new Error("git failed")) : Promise.resolve(answers.changed ?? false)),
+  });
   it("passes a clean repository at its cloned commit", async () => {
-    expect(await checkTrackedFiles(repos, git({}))).toEqual({ ok: true });
+    expect(await checkTrackedFiles(repos, git())).toEqual({ ok: true });
   });
-  it("fails closed on a changed file, a moved HEAD, a git failure, and a repository with no recorded commit", async () => {
-    expect(await checkTrackedFiles(repos, git({ status: " M package-lock.json\n" }))).toEqual({ ok: false, reason: "tracked_files_changed" });
+  it("fails closed on a changed file, a moved HEAD, an index flag, a git failure at any step, and a repository with no recorded commit", async () => {
+    expect(await checkTrackedFiles(repos, git({ changed: true }))).toEqual({ ok: false, reason: "tracked_files_changed" });
     expect(await checkTrackedFiles(repos, git({ head: "b".repeat(40) }))).toEqual({ ok: false, reason: "head_moved" });
-    expect(await checkTrackedFiles(repos, git({ fail: true }))).toEqual({ ok: false, reason: "unreadable" });
-    expect(await checkTrackedFiles([{ ...repos[0]!, resolvedCommit: undefined }], git({}))).toEqual({ ok: false, reason: "unreadable" });
-    expect(await checkTrackedFiles([{ ...repos[0]!, resolvedCommit: "main" }], git({}))).toEqual({ ok: false, reason: "unreadable" });
+    for (const tag of ["S", "h", "s", "M", "R", "C", "K", "?", ""]) expect(await checkTrackedFiles(repos, git({ tags: ["H", tag] })), tag).toEqual({ ok: false, reason: "index_flags" });
+    for (const fail of ["head", "tags", "changed"] as const) expect(await checkTrackedFiles(repos, git({ fail })), fail).toEqual({ ok: false, reason: "unreadable" });
+    expect(await checkTrackedFiles([{ ...repos[0]!, resolvedCommit: undefined }], git())).toEqual({ ok: false, reason: "unreadable" });
+    expect(await checkTrackedFiles([{ ...repos[0]!, resolvedCommit: "main" }], git())).toEqual({ ok: false, reason: "unreadable" });
   });
-  it("checks every repository", async () => {
+  it("checks every repository, the commit first", async () => {
     const two = [...repos, { name: "api", path: "repo/api", directory: "/w/repo/api", resolvedCommit: COMMIT }];
     const seen: string[] = [];
-    await checkTrackedFiles(two, (directory, args) => { seen.push(`${directory} ${args[0]}`); return Promise.resolve(args[0] === "rev-parse" ? COMMIT : ""); });
-    expect(seen).toEqual(["/w/repo/web rev-parse", "/w/repo/web status", "/w/repo/api rev-parse", "/w/repo/api status"]);
+    await checkTrackedFiles(two, { head: (d) => { seen.push(`${d} head`); return Promise.resolve(COMMIT); }, indexTags: (d) => { seen.push(`${d} tags`); return Promise.resolve(["H"]); }, changedTracked: (d) => { seen.push(`${d} changed`); return Promise.resolve(false); } });
+    expect(seen).toEqual(["/w/repo/web head", "/w/repo/web tags", "/w/repo/web changed", "/w/repo/api head", "/w/repo/api tags", "/w/repo/api changed"]);
   });
 });
 
@@ -218,20 +220,26 @@ describe("tracked files (a real repository, through the worker's isolated git)",
     const git = (...args: string[]) => run("git", args, { cwd: directory, env });
     await git("init", "-q", "-b", "main");
     await writeFile(join(directory, "package.json"), "{}\n");
+    await writeFile(join(directory, "a.txt"), "one\n");
+    await writeFile(join(directory, "b.txt"), "two\n");
     await writeFile(join(directory, ".gitignore"), "node_modules/\n");
     await git("add", ".");
     await git("commit", "-q", "-m", "init");
     const commit = (await git("rev-parse", "HEAD")).stdout.trim();
     return { directory, git, commit, repos: [{ name: "web", path: ".", directory, resolvedCommit: commit }] };
   }
+  /** The content check alone: the real index tags answered as a clean one, so only the work tree against a fresh index decides. */
+  const contentOnly: SetupGit = { ...defaultSetupGit, indexTags: () => Promise.resolve(["H"]) };
+
   it("sees a clean checkout, and does not mind untracked or ignored files (setup's own output)", async () => {
     const { directory, repos } = await repository();
     await mkdir(join(directory, "node_modules"));
     await writeFile(join(directory, "node_modules/x.js"), "1");
     await writeFile(join(directory, "build.log"), "log");
     expect(await checkTrackedFiles(repos)).toEqual({ ok: true });
+    expect(await checkTrackedFiles(repos, contentOnly)).toEqual({ ok: true });
   });
-  it("sees an edited tracked file, a staged change, a commit and a moved branch", async () => {
+  it("sees an edited tracked file, a staged change, a deleted file, a mode change, a commit and a moved branch", async () => {
     const edited = await repository();
     await writeFile(join(edited.directory, "package.json"), "{\"a\":1}\n");
     expect(await checkTrackedFiles(edited.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
@@ -241,10 +249,42 @@ describe("tracked files (a real repository, through the worker's isolated git)",
     await staged.git("add", "package.json");
     expect(await checkTrackedFiles(staged.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
 
+    const deleted = await repository();
+    await rm(join(deleted.directory, "b.txt"));
+    expect(await checkTrackedFiles(deleted.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
+
+    const mode = await repository();
+    await chmod(join(mode.directory, "a.txt"), 0o755);
+    expect(await checkTrackedFiles(mode.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
+
     const committed = await repository();
     await writeFile(join(committed.directory, "package.json"), "{\"a\":2}\n");
     await committed.git("commit", "-q", "-am", "agent commit");
     expect(await checkTrackedFiles(committed.repos)).toEqual({ ok: false, reason: "head_moved" });
+  });
+
+  describe("the review's index-flag probes (the old check, which asked `git status` over the repository's own index, said ok for all of them)", () => {
+    const probes: Array<[string, (r: Awaited<ReturnType<typeof repository>>) => Promise<void>]> = [
+      ["skip-worktree, then edit", async (r) => { await r.git("update-index", "--skip-worktree", "a.txt"); await writeFile(join(r.directory, "a.txt"), "HACK\n"); }],
+      ["assume-unchanged, then edit", async (r) => { await r.git("update-index", "--assume-unchanged", "a.txt"); await writeFile(join(r.directory, "a.txt"), "HACK\n"); }],
+      ["skip-worktree, then delete", async (r) => { await r.git("update-index", "--skip-worktree", "b.txt"); await rm(join(r.directory, "b.txt")); }],
+    ];
+    for (const [name, act] of probes) {
+      it(`${name}: refused as an index flag, and the content check alone also sees the edit`, async () => {
+        const r = await repository();
+        await act(r);
+        // Positive control: `git status` over the real index is blind to it, which is why it was a bypass.
+        expect((await run("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: r.directory })).stdout.trim()).toBe("");
+        expect(await checkTrackedFiles(r.repos)).toEqual({ ok: false, reason: "index_flags" });
+        expect(await checkTrackedFiles(r.repos, contentOnly)).toEqual({ ok: false, reason: "tracked_files_changed" });
+      });
+    }
+    it("a flag with no edit is still refused (the flag is the signal), and clearing it does not matter to the content check", async () => {
+      const r = await repository();
+      await r.git("update-index", "--assume-unchanged", "a.txt");
+      expect(await checkTrackedFiles(r.repos)).toEqual({ ok: false, reason: "index_flags" });
+      expect(await checkTrackedFiles(r.repos, contentOnly)).toEqual({ ok: true });
+    });
   });
   it("is unreadable for a folder that is not a repository", async () => {
     const { repos } = await repository();

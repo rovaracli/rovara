@@ -14,6 +14,7 @@
 //   - the answer is read by the draft's reader (`readSetupProposalAnswer`): bounded, redacted, cited, secrets by name only. Repository text and command output are data.
 import { agentXError, isCredentialKey, redactText, remoteCodeReason, type SetupProposal, type SetupRunEndWord } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { snapshotTree, withIsolatedGit } from "./isolated-git.js";
 import { runIsolatedGit } from "./isolated-repository.js";
 import type { CollectedProcess, CollectedProcessOptions } from "./collected-process.js";
 import { asksForCodeChange } from "./setup-agent-prompt.js";
@@ -132,25 +133,47 @@ export interface SetupAgentRepository extends SetupDraftRepository {
 }
 
 /** What the check found, in fixed words. */
-export type TrackedFilesVerdict = { ok: true } | { ok: false; reason: "tracked_files_changed" | "head_moved" | "unreadable" };
-
-/** Runs one git command in a repository without trusting its config; default: the worker's isolated git. A test gives a fake. */
-export type SetupGit = (directory: string, args: readonly string[]) => Promise<string>;
-
-const defaultGit: SetupGit = (directory, args) => runIsolatedGit(directory, args, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+export type TrackedFilesVerdict = { ok: true } | { ok: false; reason: "tracked_files_changed" | "head_moved" | "index_flags" | "unreadable" };
 
 /**
- * Whether every repository is still at the commit it was cloned at, with no change to a tracked file in the work tree or the index. `git status --porcelain --untracked-files=no` lists a changed or
- * staged tracked path; `rev-parse HEAD` must equal the cloned commit. Untracked and ignored files (`node_modules`, build output) are the point of setup and are not looked at. A repository with no
- * recorded commit, or any git failure, is `unreadable`, which ends the run like a change: the check never passes on a guess.
+ * What one repository's check needs from git, each answered by the worker's isolated git (never a git the repository's own config could steer):
+ *   - `head`: the commit HEAD names;
+ *   - `changedTracked`: whether the work tree differs from HEAD in any tracked path (content, mode, a deletion), judged against a FRESH index built from HEAD, so nothing the agent set on the
+ *     repository's real index (`--skip-worktree`, `--assume-unchanged`, a stale entry) can hide an edit;
+ *   - `indexTags`: the `git ls-files -v` tag of every entry of the real index. Anything but `H` (cached, nothing special) means the agent set a flag on the index.
  */
-export async function checkTrackedFiles(repositories: ReadonlyArray<SetupAgentRepository>, git: SetupGit = defaultGit): Promise<TrackedFilesVerdict> {
+export interface SetupGit {
+  head(directory: string): Promise<string>;
+  changedTracked(directory: string, head: string): Promise<boolean>;
+  indexTags(directory: string): Promise<string[]>;
+}
+
+export const defaultSetupGit: SetupGit = {
+  head: async (directory) => (await runIsolatedGit(directory, ["rev-parse", "--verify", "HEAD"], { timeout: 120_000 })).trim(),
+  changedTracked: (directory, head) => withIsolatedGit(directory, "read", async (git) => {
+    // A fresh index from HEAD, then the work tree added to it (nested repositories and Git LFS files are refused, as for every candidate snapshot): the tree that results is the work tree's.
+    const tree = await snapshotTree(git, head);
+    // Compared with HEAD's own tree. A path that exists only in the work tree (status `A`: an untracked file, setup's own output) is not a change to a tracked file; every other difference is.
+    const diff = await git.text(["diff-tree", "-r", "--name-status", "--no-renames", "-z", head, tree], { index: "none", maxBuffer: 16 * 1024 * 1024, timeout: 120_000 });
+    return diff.split("\0").some((field, position) => position % 2 === 0 && field !== "" && !field.startsWith("A"));
+  }),
+  indexTags: async (directory) => (await runIsolatedGit(directory, ["ls-files", "-v", "-z"], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 })).split("\0").filter((entry) => entry !== "").map((entry) => entry.slice(0, 1)),
+};
+
+/**
+ * Whether every repository is still at the commit it was cloned at, with no change to a tracked file and no flag on the index. The work tree is compared with HEAD through a fresh index, so a flag
+ * the agent put on the real index (`git update-index --skip-worktree` or `--assume-unchanged`, which make `git status` blind to an edit) does not hide anything, and the flag itself is refused
+ * (`index_flags`). Untracked and ignored files (`node_modules`, build output) are the point of setup and are not looked at. A repository with no recorded commit, or any git failure, is
+ * `unreadable`, which ends the run like a change: the check never passes on a guess.
+ */
+export async function checkTrackedFiles(repositories: ReadonlyArray<SetupAgentRepository>, git: SetupGit = defaultSetupGit): Promise<TrackedFilesVerdict> {
   for (const repository of repositories) {
     if (repository.resolvedCommit === undefined || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(repository.resolvedCommit)) return { ok: false, reason: "unreadable" };
     try {
-      const head = (await git(repository.directory, ["rev-parse", "--verify", "HEAD"])).trim();
+      const head = (await git.head(repository.directory)).trim();
       if (head !== repository.resolvedCommit) return { ok: false, reason: "head_moved" };
-      if ((await git(repository.directory, ["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"])).trim() !== "") return { ok: false, reason: "tracked_files_changed" };
+      if ((await git.indexTags(repository.directory)).some((tag) => tag !== "H")) return { ok: false, reason: "index_flags" };
+      if (await git.changedTracked(repository.directory, head)) return { ok: false, reason: "tracked_files_changed" };
     } catch {
       return { ok: false, reason: "unreadable" };
     }
