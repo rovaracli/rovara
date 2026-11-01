@@ -3,8 +3,9 @@
 // means there is no evidence for this code), and is bounded: a call past its time writes nothing more.
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import type { CheckEntry } from "@agentx/contracts";
+import type { CheckEntry, OrgId } from "@agentx/contracts";
 import { workflowSelectedChecks, type WorkflowSnapshot } from "@agentx/contracts";
+import { createEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { developerTaskActions } from "./dependency-wiring.js";
@@ -44,4 +45,17 @@ export function evidenceRouteDependencies(dependencies: AwsBrokerDependencies, e
   if (!proofEvidenceEnabled(env)) return {};
   return { evidence: createEvidencePort({ actions: developerTaskActions(dependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, issuer: dependencies.developer?.issuer, audit: dependencies.audit,
     presign: ({ key, contentType, disposition, expiresInSeconds }) => getSignedUrl(dependencies.s3, new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: key, ResponseContentType: contentType, ResponseContentDisposition: disposition }), { expiresIn: expiresInSeconds }) }) };
+}
+
+/** The deletion of stored evidence for a project, a company or a person (rovara-code/evidence-erase.ts). Not behind the proof switch: it erases what was kept while the switch was on. */
+export function evidenceEraseOf(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "documentClient" | "tableName">): EvidenceErase {
+  return createEvidenceErase({ s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName, documentClient: dependencies.documentClient, tableName: dependencies.tableName });
+}
+
+/** What a person's erase does after the learning walk: the Team record's erase (where that switch is on), then the stored evidence of the person's tasks. Either one not finishing throws, and the request is repeated. */
+export function personErasureStep(teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined, evidence: Pick<EvidenceErase, "person">): (orgId: OrgId, developerId: string) => Promise<void> {
+  return async (orgId, developerId) => {
+    if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
+    await evidence.person(orgId, developerId);
+  };
 }

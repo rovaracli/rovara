@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { evidenceEraseOf } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -468,6 +469,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...routeEditionDependencies(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
+          evidenceErase: evidenceEraseOf(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
@@ -750,6 +752,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
+          // Proof and evidence (wire-proof fix round 1): the stored evidence of an archived project or a closed company is deleted with it.
+          evidenceErase: evidenceEraseOf(dependencies),
           ...(agents === undefined ? {} : { agents }),
           // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
           ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {

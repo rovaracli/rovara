@@ -28,7 +28,7 @@ const keyOf = (owner: EvidenceOwner, sha256: string): string => {
 const SHA = /^[a-f0-9]{64}$/u;
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-/** The `x-amz-tagging` form of a class's tag. `evidence-record` lives with the task record and is never stored here. */
+/** The `x-amz-tagging` form of a class's tag. `evidence-record` is never stored through this function; the pack is written by evidence-keep.ts with the `evidence-std` tag. */
 export function evidenceTagging(retentionClass: Exclude<EvidenceRetentionClass, "evidence-record">): string {
   return `${E2E_ARTIFACT_RETENTION_TAG_KEY}=${retentionClass}`;
 }

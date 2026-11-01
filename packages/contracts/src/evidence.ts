@@ -34,7 +34,7 @@ export const EVIDENCE_CHECK_CLASSES = ["passing", "regression", "already_failing
 
 /**
  * Retention classes, applied as an S3 lifecycle tag per artifact kind.
- * evidence-short: video and trace. evidence-std: screenshots, API samples, output tails. evidence-record: the pack itself, which lives with the task record.
+ * evidence-short: video and trace. evidence-std: screenshots, API samples, output tails. evidence-record: the pack itself as a class of record; the stored pack object is tagged evidence-std (it expires with the tails) and is deleted with them on erasure.
  */
 export const EVIDENCE_RETENTION_CLASSES = ["evidence-short", "evidence-std", "evidence-record"] as const;
 export const EvidenceRetentionClassSchema = z.enum(EVIDENCE_RETENTION_CLASSES);
@@ -78,7 +78,7 @@ export const EVIDENCE_RETENTION_DAYS = {
   "evidence-std": { default: 30, min: 7, max: 180 },
 } as const;
 
-/** The days an artifact of `retentionClass` is kept, given a company setting (the default when there is none, and always inside the allowed range). `evidence-record` lives with the task: null. */
+/** The days an artifact of `retentionClass` is kept, given a company setting (the default when there is none, and always inside the allowed range). `evidence-record` has no lifecycle rule of its own (the stored pack is tagged evidence-std): null. */
 export function evidenceRetentionDays(retentionClass: EvidenceRetentionClass, configured?: number): number | null {
   if (retentionClass === "evidence-record") return null;
   const rule = EVIDENCE_RETENTION_DAYS[retentionClass];
@@ -351,7 +351,7 @@ export function evidencePackShape<A extends z.ZodType>(artifact: A) {
     });
 }
 
-/** What the broker builds from the worker's raw parts and keeps with the task record (`evidence-record`). */
+/** What the broker builds from the worker's raw parts and keeps in the artifact store, next to the task's evidence (tagged evidence-std; see rovara-code/evidence-keep.ts). */
 export const EvidencePackSchema = evidencePackShape(ArtifactRefSchema);
 export type EvidencePack = z.infer<typeof EvidencePackSchema>;
 

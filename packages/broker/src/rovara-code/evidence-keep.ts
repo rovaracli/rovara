@@ -13,7 +13,7 @@ import {
   type CheckEntry, type CheckKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type TestEnvProdDeny,
 } from "@agentx/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
-import { storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
+import { evidenceTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
 import { buildEvidencePack, type EvidenceProblem } from "./evidence-pack.js";
 import { NO_PROD_DENY, guardPack, guardRaw } from "./evidence-guard.js";
 
@@ -109,7 +109,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const checked = EvidencePackSchema.safeParse(pack);
     if (!checked.success) return { kept: false, reason: "invalid" };
     if (deps.late?.() === true) return { kept: false, reason: "fault" };
-    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" } }));
+    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" }, Tagging: evidenceTagging("evidence-std") }));
     return { kept: true, problems: built.problems, guardedParts: guarded };
   } catch (error) {
     deps.log?.("evidence.keep_failed", { error: error instanceof Error ? error.name : "unknown" });

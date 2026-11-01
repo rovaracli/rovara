@@ -286,6 +286,18 @@ export async function removeOrganizationMember(deps: DeveloperRouteDependencies,
 const LeaveBodySchema = z.object({ requestId: z.string().uuid().optional() }).strict();
 
 /**
+ * What closing a company clears besides its connections, triggers, hooks and sessions: its learning data, then its Team record (where that switch is on), then its stored proof evidence (not behind the proof
+ * switch). Each pass that does not finish throws, and the close is repeated.
+ */
+export function clearOrgData(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "teamRecord" | "evidenceErase">): (orgId: OrgId) => Promise<void> {
+  return async (orgId) => {
+    await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId);
+    await deps.teamRecord?.erase.workspace(orgId);
+    await deps.evidenceErase?.workspace(orgId);
+  };
+}
+
+/**
  * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member
  * closes the org (its GitHub connection and Slack workspace are released, its projects archived). Otherwise LAST_OWNER (409).
  */
@@ -326,7 +338,7 @@ export async function leaveOrganization(deps: DeveloperRouteDependencies, caller
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     // v1.2 learning loop: the company's learning data is deleted by a bounded walk over its projects; a walk that does not finish is resumed later (`resumeLearningWalks`).
     // Team record (wire-team-record): the company's whole record (rows, vectors, facts, lessons, lake) is erased with it, where the record's switch is on; a pass that does not finish throws, and the close is repeated.
-    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); await deps.teamRecord?.erase.workspace(orgId); });
+    const clearLearning = deps.closeOrgHooks?.clearLearning ?? clearOrgData(deps);
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
