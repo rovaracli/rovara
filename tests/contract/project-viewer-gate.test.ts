@@ -269,6 +269,23 @@ describe("a Slack requester who is not a current writer of the team's org is ref
       }
     });
 
+    it("a non-writer record under the Slack id refuses it, though the developer it is linked to is an admin (fail closed, not only the survivor's record is read)", async () => {
+      for (const stale of ["auditor", "future-role"]) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "admin" });
+        reach[1]![1](h);
+        // The Slack id keeps a record of its own (relinked, not merged): an Auditor's, or a role this release does not know.
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: stale });
+        await refusedOnEveryRoute(h, GUEST);
+        expect((await code(h))?.code, stale).toBe("FORBIDDEN");
+      }
+      // The control: with no record of its own the same link is served as the admin.
+      const control = await withKit();
+      seedMembership(control.db, survivorId, { orgId: TEST_ORG, role: "admin" });
+      reach[1]![1](control);
+      expect((await code(control))?.code).not.toBe("FORBIDDEN");
+    });
+
     it("a survivor's viewer grant beats a stale contributor grant under the Slack id", async () => {
       for (const [how, arrange] of reach) {
         const h = await withKit();
