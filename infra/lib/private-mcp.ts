@@ -3,6 +3,7 @@
 //
 //   rovaraPrivateMcpCidrs          comma-separated private ranges outside which no private MCP server is tested or called -> ROVARA_PRIVATE_MCP_CIDRS
 //   rovaraStdioMcpServers          package-run servers. Stops synth unless the release flag STDIO_MCP_RELEASED is true (it is false); then every setting below is required
+//   rovaraMcpPublicNpm             optional, default false: the install task fetches packages from PUBLIC npm instead of the customer's own registry mirror. Only then is a NAT gateway made (and only the install task may use it)
 //   rovaraMcpRunnerRoutes          optional: routes from the runner subnets to the customer's own private ranges, `<cidr>=<tgw-...|pcx-...>`, comma-separated, at most 8
 //   rovaraMcpRunnerSubnetCidrs, rovaraMcpRegistryCidrs, rovaraMcpControllerTlsSecretArn, rovaraMcpControllerDnsNamespace, rovaraMcpControllerCa   the runner network, the registry's ranges, the controller's certificate
 //   rovaraMcpHostCertificateArn    the ACM certificate of the MCP host's HTTPS listener (McpHost refuses to be built without one)
@@ -20,6 +21,7 @@ export const PRIVATE_MCP_CONTEXT_KEYS = {
   hostName: "rovaraMcpHostName",
   hostedZoneId: "rovaraMcpHostedZoneId",
   npmRegistry: "rovaraMcpNpmRegistry",
+  publicNpm: "rovaraMcpPublicNpm",
   runnerSubnetCidrs: "rovaraMcpRunnerSubnetCidrs",
   runnerRoutes: "rovaraMcpRunnerRoutes",
   registryCidrs: "rovaraMcpRegistryCidrs",
@@ -54,6 +56,8 @@ export interface PrivateMcpInstall {
   npmRegistry?: string;
   runnerSubnetCidrs?: string[];
   runnerRoutes?: Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
+  /** Fix round 2: the install fetches from public npm (the explicit setting). Then no registry ranges are given and the registry defaults to https://registry.npmjs.org/. */
+  publicNpm?: boolean;
   registryCidrs?: string[];
   controllerTlsSecretArn?: string;
   controllerDnsNamespace?: string;
@@ -111,6 +115,12 @@ function cidrList(key: string, value: unknown, count: number, maxPrefix: number)
   return items;
 }
 
+function publicNpmOf(value: unknown): boolean {
+  if (value === undefined || value === false || value === "false" || value === 0 || value === "0" || value === "") return false;
+  if (value === true || value === "true" || value === 1 || value === "1") return true;
+  throw new Error(`${KEYS.publicNpm} must be true or false`);
+}
+
 function stdioOf(value: unknown): boolean {
   if (value === undefined || value === false || value === "false" || value === 0 || value === "0" || value === "") return false;
   if (value === true || value === "true" || value === 1 || value === "1") return true;
@@ -125,7 +135,7 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   const cidrsValue = input.get(KEYS.cidrs);
   const cidrsGiven = isSet(cidrsValue) && cidrsValue !== "";
   const stdioRequested = stdioOf(input.get(KEYS.stdio));
-  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry, KEYS.runnerSubnetCidrs, KEYS.runnerRoutes, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa].filter((key) => isSet(input.get(key)));
+  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry, KEYS.publicNpm, KEYS.runnerSubnetCidrs, KEYS.runnerRoutes, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa].filter((key) => isSet(input.get(key)));
   if ((cidrsGiven || given.length > 0 || stdioRequested) && input.edition !== "enterprise") {
     throw new Error(`the private MCP settings (${[...(cidrsGiven ? [KEYS.cidrs] : []), ...given, ...(stdioRequested ? [KEYS.stdio] : [])].join(", ")}) apply only to an Enterprise install (rovaraEdition=enterprise)`);
   }
@@ -167,6 +177,8 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   }
   const npmRegistry = input.get(KEYS.npmRegistry);
   if (isSet(npmRegistry)) install.npmRegistry = parseNpmRegistry(npmRegistry);
+  const publicNpm = input.get(KEYS.publicNpm);
+  if (isSet(publicNpm) && publicNpmOf(publicNpm)) install.publicNpm = true;
   const runnerSubnets = input.get(KEYS.runnerSubnetCidrs);
   if (isSet(runnerSubnets)) install.runnerSubnetCidrs = cidrList(KEYS.runnerSubnetCidrs, runnerSubnets, 2, 26);
   const runnerRoutes = input.get(KEYS.runnerRoutes);
@@ -201,6 +213,9 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
 }
 
 /** An https address with no credentials, query or fragment: the install task sends package requests there and nowhere else. */
+/** The registry of an install that sets `rovaraMcpPublicNpm` and names none. */
+export const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/";
+
 export function parseNpmRegistry(value: unknown): string {
   const fail = (): never => { throw new Error(`${KEYS.npmRegistry} must be an https address without credentials, such as https://registry.corp.example.net/npm/`); };
   if (typeof value !== "string" || value.length > 2_000) return fail();
@@ -225,21 +240,23 @@ export function privateMcpBrokerEnvironment(install: PrivateMcpInstall): Record<
  */
 export function mcpHostPropsFromInstall(install: PrivateMcpInstall): {
   certificateArn: string; hostName: string; hostedZoneId: string; npmRegistry: string; runnerSubnetCidrs: string[]; registryEgressCidrs: string[]; controllerTlsSecretArn: string; controllerDnsNamespace: string;
-  controllerCaPem?: string; privateMcpCidrs: string[]; vpcCidrs: string[]; runnerRoutes?: Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
+  publicNpm?: boolean; controllerCaPem?: string; privateMcpCidrs: string[]; vpcCidrs: string[]; runnerRoutes?: Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
 } {
   const { certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryCidrs, controllerTlsSecretArn, controllerDnsNamespace, controllerCa } = install;
   if (certificateArn === undefined) throw new Error(`the MCP host needs a certificate for its HTTPS listener: set ${KEYS.certificateArn}`);
   if (hostName === undefined) throw new Error(`the MCP host needs the DNS name its certificate is for: set ${KEYS.hostName}`);
   if (hostedZoneId === undefined) throw new Error(`the MCP host needs the Route 53 zone for its DNS name: set ${KEYS.hostedZoneId}`);
-  if (npmRegistry === undefined) throw new Error(`package-run servers need your package registry (the install task has no internet): set ${KEYS.npmRegistry}`);
+  const publicNpm = install.publicNpm === true;
+  if (npmRegistry === undefined && !publicNpm) throw new Error(`package-run servers need your package registry (the install task has no internet): set ${KEYS.npmRegistry}, or fetch from public npm by setting ${KEYS.publicNpm}`);
   if (runnerSubnetCidrs === undefined) throw new Error(`package-run servers need ranges for their own subnets inside the network: set ${KEYS.runnerSubnetCidrs}`);
-  if (registryCidrs === undefined) throw new Error(`package-run servers need the ranges your package registry is reached at: set ${KEYS.registryCidrs}`);
+  if (publicNpm && registryCidrs !== undefined) throw new Error(`${KEYS.publicNpm} and ${KEYS.registryCidrs} are two ways to install; set one`);
+  if (!publicNpm && registryCidrs === undefined) throw new Error(`package-run servers need the ranges your package registry is reached at: set ${KEYS.registryCidrs}`);
   if (controllerTlsSecretArn === undefined) throw new Error(`the MCP controller needs a certificate for the runner tasks to trust: set ${KEYS.controllerTlsSecretArn}`);
   if (controllerDnsNamespace === undefined) throw new Error(`the MCP controller needs a private DNS name: set ${KEYS.controllerDnsNamespace}`);
   if (install.privateCidrs.length === 0 || install.vpcCidrs === undefined) throw new Error(`package-run servers need ${KEYS.cidrs}: a server can only be given addresses inside your private ranges`);
   return {
-    certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryEgressCidrs: registryCidrs, controllerTlsSecretArn, controllerDnsNamespace,
-    ...(controllerCa === undefined ? {} : { controllerCaPem: controllerCa }), ...(install.runnerRoutes === undefined ? {} : { runnerRoutes: install.runnerRoutes }), privateMcpCidrs: install.privateCidrs, vpcCidrs: install.vpcCidrs,
+    certificateArn, hostName, hostedZoneId, npmRegistry: npmRegistry ?? PUBLIC_NPM_REGISTRY, runnerSubnetCidrs, registryEgressCidrs: registryCidrs ?? [], controllerTlsSecretArn, controllerDnsNamespace,
+    ...(publicNpm ? { publicNpm: true } : {}), ...(controllerCa === undefined ? {} : { controllerCaPem: controllerCa }), ...(install.runnerRoutes === undefined ? {} : { runnerRoutes: install.runnerRoutes }), privateMcpCidrs: install.privateCidrs, vpcCidrs: install.vpcCidrs,
   };
 }
 

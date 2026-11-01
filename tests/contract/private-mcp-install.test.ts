@@ -119,10 +119,28 @@ describe("the MCP host's settings", () => {
     }
     expect(() => parsePrivateMcpContext({ edition: "public", get: context({ [KEYS.runnerRoutes]: "10.60.0.0/16=tgw-0123456789abcdef0" }) })).toThrow(/Enterprise/u);
   });
+  it("fix round 2: public npm is an explicit Enterprise setting, off by default; with it no registry ranges are given and the registry is public npm unless one is named", () => {
+    const { [KEYS.registryCidrs]: _ranges, [KEYS.npmRegistry]: _registry, ...base } = full; // eslint-disable-line @typescript-eslint/no-unused-vars -- the customer's registry settings, left out
+    const parse = (extra: Record<string, unknown>) => parsePrivateMcpContext({ edition: "enterprise", get: context({ ...base, ...extra }) });
+    // default: nothing public, and the customer's registry and its ranges are required
+    expect(mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }))).not.toHaveProperty("publicNpm");
+    for (const off of [undefined, "false", false, "0", ""]) expect(() => mcpHostPropsFromInstall(parse({ [KEYS.publicNpm]: off })), String(off)).toThrow(new RegExp(KEYS.npmRegistry, "u"));
+    // on: no registry settings needed, and the registry defaults to public npm
+    for (const on of ["true", true, "1", 1]) {
+      const host = mcpHostPropsFromInstall(parse({ [KEYS.publicNpm]: on }));
+      expect(host, String(on)).toMatchObject({ publicNpm: true, npmRegistry: "https://registry.npmjs.org/", registryEgressCidrs: [] });
+    }
+    // a registry may still be named (a public one that is not npm's); ranges beside public npm are two ways to install and are refused
+    expect(mcpHostPropsFromInstall(parse({ [KEYS.publicNpm]: "true", [KEYS.npmRegistry]: "https://npm.pkg.example.org/" })).npmRegistry).toBe("https://npm.pkg.example.org/");
+    expect(() => mcpHostPropsFromInstall(parse({ [KEYS.publicNpm]: "true", [KEYS.registryCidrs]: "10.60.0.0/24" }))).toThrow(/two ways/u);
+    for (const bad of ["maybe", "yes", 2, {}]) expect(() => parse({ [KEYS.publicNpm]: bad }), JSON.stringify(bad)).toThrow(new RegExp(KEYS.publicNpm, "u"));
+    expect(() => parsePrivateMcpContext({ edition: "public", get: context({ [KEYS.publicNpm]: "true" }) })).toThrow(/Enterprise/u);
+    expect((SYNTH_CONTEXT_KEYS as readonly string[]).includes(KEYS.publicNpm)).toBe(true);
+  });
   it("are what McpHost is built from, and McpHost itself refuses a certificate that is not an ACM one", () => {
     const props = toHost(full);
     const build = (certificateArn: string) => new McpHost(new Stack(new App(), "S", { env: { account: "111111111111", region: "us-east-1" } }), "H", {
-      vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"], natSubnetId: "subnet-0cccccccccccccccc", region: "us-east-1",
+      vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"], region: "us-east-1",
       image: ecs.ContainerImage.fromRegistry("x"), runnerImage: `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`, clientSecurityGroupIds: [],
       endpointSecurityGroupId: "sg-0endpoints000000000", stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", agentxEnv: "ent", ...props, certificateArn,
     });

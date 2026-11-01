@@ -17,10 +17,12 @@ const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
 const RUNNER_IMAGE = `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`;
 const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/mcp-controller-tls-AbCdEf";
 
+const PUBLIC_NPM = { publicNpm: true, natSubnetId: "subnet-0cccccccccccccccc", registryEgressCidrs: [], npmRegistry: "https://registry.npmjs.org/" } as const;
+
 function props(over: Partial<McpHostProps> = {}): McpHostProps {
   return {
     vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
-    runnerSubnetCidrs: ["10.42.160.0/22", "10.42.164.0/22"], natSubnetId: "subnet-0cccccccccccccccc", region: "us-east-1", image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), runnerImage: RUNNER_IMAGE,
+    runnerSubnetCidrs: ["10.42.160.0/22", "10.42.164.0/22"], region: "us-east-1", image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), runnerImage: RUNNER_IMAGE,
     clientSecurityGroupIds: ["sg-0123456789abcdef0"], endpointSecurityGroupId: "sg-0endpoints000000000", stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/state", stateTableName: "state",
     orgId: ORG, agentxEnv: "ent", registryEgressCidrs: ["10.60.0.0/24"], npmRegistry: "https://registry.corp.example.net/npm/", privateMcpCidrs: ["10.60.0.0/16"], vpcCidrs: ["10.42.0.0/16"],
     certificateArn: CERTIFICATE, hostName: "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ", controllerTlsSecretArn: TLS_SECRET, controllerDnsNamespace: "mcp.rovara.internal",
@@ -107,12 +109,21 @@ describe("the controller", () => {
 });
 
 describe("the runner network", () => {
-  it("is dedicated subnets in the VPC's range whose route table has one way out, a NAT default route, and no internet-gateway route, no IPv6 route and no other default", () => {
+  it("is dedicated subnets in the VPC's range whose route table has NO route out by default (no NAT, no cost): no default route, no internet-gateway route, no IPv6 route", () => {
     const { of, json } = synth();
     const subnets = of("AWS::EC2::Subnet");
     expect(subnets.map((subnet) => [subnet.CidrBlock, subnet.AvailabilityZone, subnet.MapPublicIpOnLaunch])).toEqual([["10.42.160.0/22", "us-east-1a", false], ["10.42.164.0/22", "us-east-1b", false]]);
     expect(subnets.some((subnet) => subnet.Ipv6CidrBlock !== undefined || subnet.AssignIpv6AddressOnCreation === true)).toBe(false);
     expect(of("AWS::EC2::RouteTable")).toHaveLength(1);
+    expect(of("AWS::EC2::Route")).toEqual([]);
+    expect(of("AWS::EC2::NatGateway")).toEqual([]);
+    expect(of("AWS::EC2::EIP")).toEqual([]);
+    expect(of("AWS::EC2::InternetGateway")).toEqual([]);
+    expect(of("AWS::EC2::SubnetRouteTableAssociation")).toHaveLength(2);
+    expect(JSON.stringify(json)).not.toMatch(/"::\/0"|DestinationIpv6CidrBlock|EgressOnlyInternetGatewayId|0\.0\.0\.0\/0/u);
+  });
+  it("fix round 2: with public npm the table gets ONE NAT default route (no internet-gateway route, no IPv6), in the public subnet it is given, with an address of its own", () => {
+    const { of, json, host } = synth(PUBLIC_NPM);
     const routes = of("AWS::EC2::Route");
     expect(routes).toHaveLength(1);
     expect(routes[0]).toMatchObject({ DestinationCidrBlock: "0.0.0.0/0" });
@@ -120,22 +131,26 @@ describe("the runner network", () => {
     expect(JSON.stringify(routes[0]!.RouteTableId)).toContain("RunnerRouteTable");
     expect(routes[0]!.GatewayId).toBeUndefined();
     expect(of("AWS::EC2::InternetGateway")).toEqual([]);
-    expect(of("AWS::EC2::SubnetRouteTableAssociation")).toHaveLength(2);
     expect(JSON.stringify(json)).not.toMatch(/"::\/0"|DestinationIpv6CidrBlock|EgressOnlyInternetGatewayId/u);
-  });
-  it("puts the NAT gateway in the public subnet it is given, with an address of its own, and refuses a subnet the controller runs in or one that is not a subnet", () => {
-    const { of } = synth();
     const nat = of("AWS::EC2::NatGateway");
     expect(nat).toHaveLength(1);
     expect(nat[0]).toMatchObject({ SubnetId: "subnet-0cccccccccccccccc", ConnectivityType: "public" });
     expect(of("AWS::EC2::EIP")).toHaveLength(1);
-    expect(() => synth({ natSubnetId: "subnet-0aaaaaaaaaaaaaaaa" })).toThrow(/public subnet/u);
-    for (const bad of ["", "nonsense", "vpc-0123456789abcdef0"]) expect(() => synth({ natSubnetId: bad }), bad).toThrow(/NAT gateway/u);
+    expect(host.natGateway).toBeDefined();
+  });
+  it("fix round 2: refuses a NAT subnet the controller runs in or one that is not a subnet (with public npm), and a NAT subnet without public npm", () => {
+    expect(() => synth({ ...PUBLIC_NPM, natSubnetId: "subnet-0aaaaaaaaaaaaaaaa" })).toThrow(/public subnet/u);
+    for (const bad of [undefined, "", "nonsense", "vpc-0123456789abcdef0"]) expect(() => synth({ ...PUBLIC_NPM, natSubnetId: bad as never }), String(bad)).toThrow(/NAT gateway/u);
+    expect(() => synth({ natSubnetId: "subnet-0cccccccccccccccc" })).toThrow(/only for an install that fetches from public npm/u);
+    // ranges beside public npm are two ways to install
+    expect(() => synth({ ...PUBLIC_NPM, registryEgressCidrs: ["10.60.0.0/24"] })).toThrow(/two ways/u);
   });
   it("adds routes to the customer's own private ranges through a transit gateway or a peering connection, and only those", () => {
     const { of } = synth({ runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }, { cidr: "192.168.8.0/24", vpcPeeringConnectionId: "pcx-0123456789abcdef0" }] });
     const routes = of("AWS::EC2::Route");
-    expect(routes.map((route) => route.DestinationCidrBlock).sort()).toEqual(["0.0.0.0/0", "10.60.0.0/16", "192.168.8.0/24"]);
+    expect(routes.map((route) => route.DestinationCidrBlock).sort()).toEqual(["10.60.0.0/16", "192.168.8.0/24"]);
+    // with public npm as well, the default route is added to them
+    expect(synth({ ...PUBLIC_NPM, runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }] }).of("AWS::EC2::Route").map((route) => route.DestinationCidrBlock).sort()).toEqual(["0.0.0.0/0", "10.60.0.0/16"]);
     expect(routes.find((route) => route.DestinationCidrBlock === "10.60.0.0/16")).toMatchObject({ TransitGatewayId: "tgw-0123456789abcdef0" });
     expect(routes.find((route) => route.DestinationCidrBlock === "192.168.8.0/24")).toMatchObject({ VpcPeeringConnectionId: "pcx-0123456789abcdef0" });
     const bad: Array<[string, unknown]> = [
@@ -146,9 +161,30 @@ describe("the runner network", () => {
     for (const [label, route] of bad) expect(() => synth({ runnerRoutes: [route as never] }), label).toThrow(/runner route/u);
     expect(() => synth({ runnerRoutes: Array.from({ length: 9 }, (_, i) => ({ cidr: `10.${60 + i}.0.0/16`, transitGatewayId: "tgw-0123456789abcdef0" })) })).toThrow(/at most 8/u);
   });
-  it("still holds no rule of any security group that is the whole internet, with the NAT route in place (what a task may reach is the groups' to say)", () => {
+  it("still holds no rule of any security group that is the whole internet by default, and with customer routes in place", () => {
     expect(groupsText(synth().of)).not.toContain("0.0.0.0/0");
     expect(groupsText(synth({ runnerRoutes: [{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }] }).of)).not.toContain("0.0.0.0/0");
+  });
+  it("fix round 2: with public npm, ONLY the install task's group may send HTTPS to the internet (one rule); no other group has any rule that could use the NAT route", () => {
+    const { of } = synth(PUBLIC_NPM);
+    const rules = [
+      ...of("AWS::EC2::SecurityGroup").flatMap((group) => ((group.SecurityGroupEgress ?? []) as Array<Record<string, unknown>>).map((rule) => ({ group: String(group.GroupDescription), rule }))),
+      ...of("AWS::EC2::SecurityGroupEgress").map((rule) => ({ group: JSON.stringify(rule.GroupId), rule })),
+    ];
+    const open = rules.filter(({ rule }) => rule.CidrIp === "0.0.0.0/0" || rule.CidrIpv6 !== undefined);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.group).toMatch(/^MCP install task/u);
+    expect(open[0]!.rule).toMatchObject({ IpProtocol: "tcp", FromPort: 443, ToPort: 443 });
+    expect(JSON.stringify(of("AWS::EC2::SecurityGroupIngress"))).not.toContain("0.0.0.0/0");
+    expect(JSON.stringify(of("AWS::EC2::SecurityGroup").flatMap((group) => (group.SecurityGroupIngress ?? []) as unknown[]))).not.toContain("0.0.0.0/0");
+    // the install group still has the endpoints, S3 and the controller beside it
+    expect(groupsText(of)).toContain("the VPC interface endpoints (ECR, logs)");
+    expect(groupsText(of)).toContain("the controller: bundle, result, bootstrap");
+  });
+  it("fix round 2: the controller is told public npm's address, and the DNS allow list names it", () => {
+    const { of } = synth({ ...PUBLIC_NPM, npmRegistry: "https://registry.npmjs.org/" });
+    const env = Object.fromEntries((controllerContainer(of).Environment as Array<{ Name: string; Value: unknown }>).map((entry) => [entry.Name, entry.Value]));
+    expect(env.ROVARA_MCP_NPM_REGISTRY).toBe("https://registry.npmjs.org/");
   });
   it("reaches S3 through a gateway endpoint on that table (image layers) with the install's own policy, and the ECS API through an interface endpoint", () => {
     const { of } = synth();
