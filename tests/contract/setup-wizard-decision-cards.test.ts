@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
-import { selectionNarrowed, testEnvLessSafeChanges } from "../../packages/contracts/src/index.js";
+import { selectionNarrowed, teamRecordPk, testEnvLessSafeChanges } from "../../packages/contracts/src/index.js";
 import { proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import { answerEnvChange, newestProposal, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -56,6 +56,30 @@ describe("approve_test_env", () => {
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")[0]).toMatchObject({ digest, approvedBy: OMAR.developerId, revision: 1 });
       expect(ofKind((await cards(t)).cards, "approve_test_env")).toEqual([]);
+    }));
+  });
+
+  it("a sole owner's own card opens the confirmation page only while the company's switch lets the exception stand (read through the wired approvals, from the Team record's table)", async () => {
+    const on = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      await on.approveFirst();
+      await on.web(OMAR, "POST", `${ENV}/edit`, { environment: NIGHTLY });
+      const digest = testEnvDigest(NIGHTLY);
+      await on.web(OMAR, "POST", `${ENV}/prove`, { digest });
+      await on.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [card] = ofKind((await cards(on)).cards, "approve_test_env");
+      expect(card!.actions[0]!.href).toMatch(/^\/v1\/app\/approve\/apr_/u);
+      on.teamDb.set({ pk: teamRecordPk(TEST_ORG), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled: false, updatedAt: 1 });
+      const [off] = ofKind((await cards(on)).cards, "approve_test_env");
+      expect(off!.actions[0]!.href).toBe(`/app/onboard?project=${NAME}&step=setup`);
+    }));
+    const noRecord = await setupWizardBench({ teamRecord: false });
+    await withSwitch("1", () => withCards(async () => {
+      await noRecord.approveFirst();
+      await noRecord.web(OMAR, "POST", `${ENV}/edit`, { environment: NIGHTLY });
+      await noRecord.web(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(NIGHTLY) });
+      await noRecord.web(OMAR, "POST", `${ENV}/request-approval`, { digest: testEnvDigest(NIGHTLY), expectedRevision: 1 });
+      expect(ofKind((await cards(noRecord)).cards, "approve_test_env")[0]!.actions[0]!.href).toBe(`/app/onboard?project=${NAME}&step=setup`);
     }));
   });
 
