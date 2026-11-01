@@ -57,11 +57,28 @@ export interface ServerPortDependencies {
   privateGuard?: ((orgId: OrgId) => McpEndpointGuard) | undefined;
   connect?: typeof connectMcp | undefined;
   list?: typeof listMcpTools | undefined;
+  /**
+   * Told (fire and forget, at most once every 30 seconds for a server) when the MCP host answers 409 for a package-run server: its tools changed after approval and the controller has paused it.
+   * The broker uses it to record the controller's events and move the entry to `changed_needs_review` at once, instead of waiting for an admin to open the list (fix round 1, S2).
+   */
+  onHostNeedsReview?: ((orgId: OrgId, serverId: string) => void) | undefined;
 }
 
 const NO_TOKEN_AUTH: McpAuth = { header: "x-rovara-client", prefix: "rovara" };
 
 interface Target { endpoint: URL; token: string; auth: McpAuth | undefined; fetchImplementation: typeof fetch; hosts: string[] }
+
+const NEEDS_REVIEW_EVERY_MS = 30_000;
+const noted = new Map<string, number>();
+/** Calls `notify` for a server at most once every 30 seconds; never throws. The map is bounded (it forgets entries older than the window). */
+export function noteNeedsReview(notify: (orgId: OrgId, serverId: string) => void, orgId: OrgId, serverId: string, now: () => number = Date.now): void {
+  const at = now();
+  for (const [key, when] of noted) if (at - when >= NEEDS_REVIEW_EVERY_MS) noted.delete(key);
+  const key = `${orgId}/${serverId}`;
+  if (noted.has(key) || noted.size >= 1_000) return;
+  noted.set(key, at);
+  try { notify(orgId, serverId); } catch { /* the call that found it is not the place to fail */ }
+}
 
 async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: ContextSourceServer): Promise<Target> {
   if (server.kind === "connection") {
@@ -93,7 +110,12 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
   if (deps.mcpHost === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the MCP host is not set up in this install");
   // The host address is the operator's, not a person's: it is not an SSRF input and is called with the host's own token. A stdio server has no site of its own, so
   // no address argument is ever on its host.
-  return { endpoint: new URL(`${assertSecureHostUrl(deps.mcpHost.url).href.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: fetch, hosts: [] };
+  const hostFetch: typeof fetch = deps.onHostNeedsReview === undefined ? fetch : (async (input, init) => {
+    const response = await fetch(input, init);
+    if (response.status === 409) noteNeedsReview(deps.onHostNeedsReview!, orgId, server.serverId);
+    return response;
+  });
+  return { endpoint: new URL(`${assertSecureHostUrl(deps.mcpHost.url).href.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: hostFetch, hosts: [] };
 }
 
 const toDiscovered = (tools: McpConnection["tools"]): DiscoveredTool[] => tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations }));

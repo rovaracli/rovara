@@ -97,9 +97,9 @@ export function installContextSources(input: ContextSourcesInstallInput): Contex
     rovaraCidrs: config.rovaraCidrs,
     ...(config.mcpHost === undefined ? {} : { mcpHost: config.mcpHost }),
   };
-  const runtime = createContextSourcesRuntime(common);
-  // Admin changes to servers and Sources are recorded in the Audit Ledger (audit.ts), where the install has one.
   const ledger: AuditDeps = input.audit ?? {};
+  const runtime = createContextSourcesRuntime({ ...common, controllerEventAudit: controllerEventAudit(ledger) });
+  // Admin changes to servers and Sources are recorded in the Audit Ledger (audit.ts), where the install has one.
   const serverAudit = mcpServerAudit(ledger, common.now);
   const sourceAudit = contextSourceAudit(ledger, common.now);
   // One limiter for the install: listing a server's tools is a call out to the server, so each org may do it only so often (like the test of a pasted server).
@@ -110,7 +110,7 @@ export function installContextSources(input: ContextSourcesInstallInput): Contex
   return {
     config, runtime,
     routes: ({ requireProjectRole }) => ({
-      contextSources: createContextSourceRouteDependencies({ ...common, requireProjectRole, discoverAllowed, ...(sourceAudit === undefined ? {} : { audit: sourceAudit }) }),
+      contextSources: createContextSourceRouteDependencies({ ...common, controllerEventAudit: controllerEventAudit(ledger), requireProjectRole, discoverAllowed, ...(sourceAudit === undefined ? {} : { audit: sourceAudit }) }),
       ...(mcpServers === undefined ? {} : { mcpServers }),
     }),
     ...(stopCleanup === undefined ? {} : { stopCleanup }),

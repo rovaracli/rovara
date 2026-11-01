@@ -45,6 +45,14 @@ describe("controller main: settings", () => {
   });
 });
 
+describe("fix round 1, S2: the controller keeps its pauses in the install's table", () => {
+  it("is built with the DynamoDB pause store, so a restarted controller keeps a pause (the in-memory default would forget it)", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile("packages/broker/src/mcp-host/main.ts", "utf8");
+    expect(source).toContain("pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) })");
+  });
+});
+
 describe("controller main: the registry", () => {
   const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
   const probe = summariseProbe([], 0);

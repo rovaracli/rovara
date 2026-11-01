@@ -151,7 +151,26 @@ export type ControllerEvent =
   | { type: "task_stopped"; serverId: string; reason: StopReason }
   | { type: "changed_needs_review"; serverId: string; approved: string; observed: string };
 
+/**
+ * Why a server is not started (fix round 1, S2). When a started task shows tools other than the approved ones, the CONTROLLER records a pause right then, keyed by the approval it saw (the tools
+ * hash and the bundle hash). While the registry still names that very approval, a call or a warm-up is refused at once, with no task started: the server does not restart in a loop while it waits for
+ * an admin. An admin approving the new tools changes the approval, which no longer matches, and the pause is removed by the next start. The registry itself is not written by the controller (its role
+ * only reads the approvals); the broker moves the entry to `changed_needs_review` from the event the controller also writes.
+ */
+export interface PauseStore {
+  get(serverId: string): Promise<{ toolsHash: string; bundleHash: string } | undefined>;
+  set(serverId: string, pause: { toolsHash: string; bundleHash: string }): Promise<void>;
+  clear(serverId: string): Promise<void>;
+}
+
+export function memoryPauses(): PauseStore {
+  const held = new Map<string, { toolsHash: string; bundleHash: string }>();
+  return { get: async (serverId) => held.get(serverId), set: async (serverId, pause) => { held.set(serverId, pause); }, clear: async (serverId) => { held.delete(serverId); } };
+}
+
 export interface McpControllerOptions {
+  /** Where a pause after a tools change is kept (the install's table in production, so a restarted controller keeps it). Default: in memory. */
+  pauses?: PauseStore | undefined;
   /** Told of the events above. Absent: only the log records them. */
   events?: ((event: ControllerEvent) => Promise<void>) | undefined;
   /** The bearer token the broker presents. */
@@ -184,7 +203,7 @@ export interface McpControllerOptions {
 
 /** A refusal the controller can name to the broker as a fixed word. */
 export class ControllerError extends Error {
-  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed" | "destination_refused") {
+  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed" | "destination_refused" | "paused") {
     super(code);
     this.name = "ControllerError";
   }
@@ -294,6 +313,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const limits: ControllerLimits = { ...CONTROLLER_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => undefined);
+  const pauses = options.pauses ?? memoryPauses();
   /** Tells the broker; never waits, never throws. */
   const emit = (event: ControllerEvent): void => { if (options.events !== undefined) void Promise.resolve().then(() => options.events!(event)).catch(() => undefined); };
   const pollMs = options.pollMs ?? 1_000;
@@ -503,6 +523,14 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       // The approval moved while a task was up (another bundle, or a replaced secret): that task is not the approved one any more.
       await stopServing(serverId, existing.bundleHash === approved.spec.bundleHash ? "secret_replaced" : "approval_changed");
     }
+    // A server whose tools changed after approval stays paused until its approval changes: no task, no restart loop. An unreadable pause is a refusal, not a start.
+    const paused = await pauses.get(serverId).catch(() => "unreadable" as const);
+    if (paused === "unreadable") throw new ControllerError("start_failed");
+    if (paused !== undefined) {
+      if (paused.toolsHash === approved.toolsHash && paused.bundleHash === approved.spec.bundleHash) throw new ControllerError("paused");
+      // The admin approved something else (the new tools, or another bundle): the pause is over.
+      await pauses.clear(serverId).catch(() => undefined);
+    }
     if (inBackoff(serverId)) throw new ControllerError("keeps_stopping");
     const victims: string[] = [];
     const byUse = [...serving.values()].sort((a, b) => a.lastUsed - b.lastUsed);
@@ -526,6 +554,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await runner.stop(launched.taskId, "tools_changed").catch(() => undefined);
         revoke(launched.grantKey);
         log("mcp_controller.tools_changed", { serverId });
+        // Paused right here, by the controller that saw it (S2): before anything else, so a failure below cannot leave the server free to restart.
+        await pauses.set(serverId, { toolsHash: approved.toolsHash, bundleHash: approved.spec.bundleHash }).catch(() => { log("mcp_controller.pause_not_kept", { serverId }); });
         emit({ type: "task_stopped", serverId, reason: "tools_changed" });
         emit({ type: "changed_needs_review", serverId, approved: approved.toolsHash, observed });
         await options.registry.toolsChanged?.(serverId, { approved: approved.toolsHash, observed }).catch(() => undefined);
@@ -752,7 +782,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     } catch (error) {
       const code = error instanceof ControllerError ? error.code : "start_failed";
       log("mcp_controller.start_failed", { serverId, error: code });
-      if (code === "tools_changed") send(res, 409, { error: "needs_review" });
+      if (code === "tools_changed" || code === "paused") send(res, 409, { error: "needs_review" });
       else if (code === "keeps_stopping") send(res, 503, { error: "keeps_stopping" });
       else send(res, 503, { error: "server_unavailable" });
       return;

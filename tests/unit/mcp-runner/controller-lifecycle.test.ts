@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ControllerEvent as Told, ServerResources, RunnerSpec } from "../../../packages/gateway/src/mcp-controller.js";
 import type { RunnerTaskInfo } from "../../../packages/gateway/src/mcp-runner/task-runner.js";
-import { CONTROLLER_LIMITS, memoryProbeSlots } from "../../../packages/gateway/src/mcp-controller.js";
+import { CONTROLLER_LIMITS, memoryPauses, memoryProbeSlots } from "../../../packages/gateway/src/mcp-controller.js";
 import { HOST_PROBE_TIMEOUT_MS } from "../../../packages/broker/src/context-sources/server-port.js";
 import { PROBE_SLOT_LEASE_MS } from "../../../packages/broker/src/mcp-host/probe-slots.js";
 import { toolsHashOfNames } from "../../support/mcp-controller-fixtures.js";
@@ -587,5 +587,77 @@ describe("T10: what the controller tells the broker", () => {
     expect((await mcp(throwing.brokerUrl, ID)).status).toBe(200);
     const hanging = await lifecycle({ controller: { events: () => new Promise<void>(() => undefined) } });
     expect((await mcp(hanging.brokerUrl, ID)).status).toBe(200);
+  });
+});
+
+describe("fix round 1, S2: the controller pauses a server whose tools changed, at once, with no restart loop", () => {
+  const changed = () => ({ runner: { tools: () => [{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }] } });
+  it("refuses the call that finds the change, and then every later call and warm-up WITHOUT starting a task", async () => {
+    const w = await lifecycle(changed());
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    expect(w.runner.started("serve")).toHaveLength(1);
+    for (let round = 0; round < 6; round += 1) expect(await (await mcp(w.brokerUrl, ID)).json(), String(round)).toEqual({ error: "needs_review" });
+    expect((await post(w.brokerUrl, `/servers/${ID}/warm`, BROKER)).status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(w.runner.started("serve")).toHaveLength(1);
+    // and a paused server is not counted as crashing: it never reaches "keeps stopping"
+    expect(w.controller.recentStarts(ID).backoffUntil ?? 0).toBeLessThanOrEqual(0);
+  });
+  it("is the controller's own doing: the pause exists before any admin or broker looks, with the registry unwritten", async () => {
+    const pauses = memoryPauses();
+    const w = await lifecycle({ ...changed(), controller: { pauses } });
+    await mcp(w.brokerUrl, ID);
+    expect(await pauses.get(ID)).toEqual({ toolsHash: toolsHashOfNames(ECHO), bundleHash: BUNDLE });
+    expect(w.approved.get(ID)!.toolsHash).toBe(toolsHashOfNames(ECHO));
+  });
+  it("keeps the pause across a controller restart (a new controller reading the same store starts nothing)", async () => {
+    const pauses = memoryPauses();
+    const first = await lifecycle({ ...changed(), controller: { pauses } });
+    await mcp(first.brokerUrl, ID);
+    const second = await lifecycle({ ...changed(), controller: { pauses } });
+    expect((await mcp(second.brokerUrl, ID)).status).toBe(409);
+    expect(second.runner.started("serve")).toEqual([]);
+  });
+  it("ends when the approval changes: the new tools approved, or another bundle, and the server runs again", async () => {
+    const pauses = memoryPauses();
+    const w = await lifecycle({ ...changed(), controller: { pauses } });
+    await mcp(w.brokerUrl, ID);
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    // the admin re-approves: the registry now names the tools the server really has
+    w.approved.set(ID, approvedOf({ toolsHash: toolsHashOfNames([{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }]) }));
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(200);
+    expect(await pauses.get(ID)).toBeUndefined();
+    expect(w.runner.started("serve")).toHaveLength(2);
+  });
+  it("ends when the bundle approved is another one, and does not end for the same approval seen again", async () => {
+    const pauses = memoryPauses();
+    await pauses.set(ID, { toolsHash: toolsHashOfNames(ECHO), bundleHash: OTHER });
+    const w = await lifecycle({ controller: { pauses } });
+    // a pause for a bundle that is not the approved one is not this approval's
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(200);
+    expect(await pauses.get(ID)).toBeUndefined();
+    await pauses.set(ID, { toolsHash: toolsHashOfNames(ECHO), bundleHash: BUNDLE });
+    w.approved.set(ID, approvedOf());
+    const second = await lifecycle({ controller: { pauses } });
+    expect((await mcp(second.brokerUrl, ID)).status).toBe(409);
+    expect(second.runner.started("serve")).toEqual([]);
+  });
+  it("refuses, and starts nothing, when the pause cannot be read; and still refuses when it cannot be written", async () => {
+    const unreadable = await lifecycle({ controller: { pauses: { get: async () => { throw new Error("table down"); }, set: async () => undefined, clear: async () => undefined } } });
+    expect((await mcp(unreadable.brokerUrl, ID)).status).toBe(503);
+    expect(unreadable.runner.started("serve")).toEqual([]);
+    const unwritable = await lifecycle({ ...changed(), controller: { pauses: { get: async () => undefined, set: async () => { throw new Error("table down"); }, clear: async () => undefined } } });
+    expect((await mcp(unwritable.brokerUrl, ID)).status).toBe(409);
+  });
+  it("pauses one server only: another approved server still runs", async () => {
+    const other = "mcpsim000002";
+    const w = await lifecycle({ ...changed(), approved: { [ID]: approvedOf(), [other]: approvedOf() } });
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    expect((await mcp(w.brokerUrl, other)).status).toBe(409);
+    const pauses = memoryPauses();
+    await pauses.set(ID, { toolsHash: toolsHashOfNames(ECHO), bundleHash: BUNDLE });
+    const healthy = await lifecycle({ controller: { pauses }, approved: { [ID]: approvedOf(), [other]: approvedOf() } });
+    expect((await mcp(healthy.brokerUrl, ID)).status).toBe(409);
+    expect((await mcp(healthy.brokerUrl, other)).status).toBe(200);
   });
 });

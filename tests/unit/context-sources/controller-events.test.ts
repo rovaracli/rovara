@@ -349,3 +349,77 @@ describe("T10: the list route", () => {
     expect(answer).not.toHaveProperty("activity");
   });
 });
+
+describe("fix round 1, S2: the broker moves a paused server to changed_needs_review as soon as the host says so", () => {
+  async function world(over: { stdio?: boolean } = {}) {
+    const db = new FakeDynamoDb();
+    const capture = capturingAuditDeps({ db, now: () => NOW });
+    const vault = new Map<string, string>();
+    const secrets: McpServerSecrets = { put: async (_o, id, value) => { vault.set(id, value); return "v1"; }, read: async (_o, id) => vault.get(id), remove: async (_o, id) => { vault.delete(id); } };
+    const deps: McpServerDependencies = {
+      store: dynamoMcpServerStore({ documentClient: db, tableName: "state" }), edition: "enterprise", now: () => NOW, secrets, stdioEnabled: true, newId: () => "00000001abcd",
+      prober: { http: async () => [SEARCH_TOOL], stdio: async () => ({ tools: [SEARCH_TOOL, GET_TOOL], integrity: INTEGRITY, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) }) },
+    };
+    const entry = await proposeMcpServer(deps, admin, { label: "Plain", transport: { kind: "stdio", spec: { registry: "npm", name: "@acme/plain", version: "1.0.0", args: [] } } });
+    await approveMcpServer(deps, admin, entry.serverId);
+    const { PutCommand } = await import("@aws-sdk/lib-dynamodb");
+    await db.send(new PutCommand({ TableName: "state", Item: { pk: orgScoped(ORG, "MCPEVT"), sk: "EVT#a#1", type: "changed_needs_review", serverId: entry.serverId, at: at(-1_000), approved: entry.probe.toolsHash, observed: HASH_B } }));
+    const { createContextSourcesRuntime } = await import("../../../packages/broker/src/context-sources/wiring.js");
+    const runtime = createContextSourcesRuntime({
+      documentClient: db, tableName: "state", now: () => NOW, edition: "enterprise", connections: { read: async () => undefined, token: async () => undefined }, serverSecrets: secrets,
+      stdioEnabled: over.stdio ?? true, mcpHost: { url: "https://mcp-host.internal", token: "h".repeat(40) }, controllerEventAudit: controllerEventAudit(capture.deps),
+    });
+    return { db, deps, entry, runtime, capture };
+  }
+  const answering = (status: number) => { const calls: string[] = []; const fake = (async (url: string) => { calls.push(url); return new Response(JSON.stringify({ error: "needs_review" }), { status }); }) as unknown as typeof fetch; return { calls, fake }; };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+  it("a 409 from the host records the controller's events and pauses the entry, without any admin opening the list", async () => {
+    const w = await world();
+    const { vi } = await import("vitest");
+    const host = answering(409);
+    vi.stubGlobal("fetch", host.fake);
+    try {
+      await expect(w.runtime.servers.listAll!(ORG, { kind: "registered_server", serverId: w.entry.serverId }, AbortSignal.timeout(5_000))).rejects.toThrow(/needs_review/u);
+      await settle();
+    } finally { vi.unstubAllGlobals(); }
+    expect(String(host.calls[0])).toContain(`/servers/${w.entry.serverId}/mcp`);
+    expect((await w.deps.store.get(ORG, w.entry.serverId))?.status).toBe("changed_needs_review");
+    expect(w.capture.recordedBy("mcp_server.changed_needs_review")).toHaveLength(1);
+  });
+  it("any other answer from the host leaves the entry and the events alone", async () => {
+    for (const status of [200, 404, 503]) {
+      const w = await world();
+      const { vi } = await import("vitest");
+      vi.stubGlobal("fetch", answering(status).fake);
+      try { await w.runtime.servers.listAll!(ORG, { kind: "registered_server", serverId: w.entry.serverId }, AbortSignal.timeout(5_000)).catch(() => undefined); await settle(); } finally { vi.unstubAllGlobals(); }
+      expect((await w.deps.store.get(ORG, w.entry.serverId))?.status, String(status)).toBe("approved");
+    }
+  });
+  it("asks at most once every 30 seconds for a server, never throws, and is off where package-run servers are off", async () => {
+    const { noteNeedsReview } = await import("../../../packages/broker/src/context-sources/server-port.js");
+    const calls: string[] = [];
+    let clock = 1_000_000;
+    const unique = "mcpdebounce001";
+    noteNeedsReview((_o, id) => { calls.push(id); }, ORG, unique, () => clock);
+    noteNeedsReview((_o, id) => { calls.push(id); }, ORG, unique, () => clock + 29_000);
+    expect(calls).toEqual([unique]);
+    clock += 30_000;
+    noteNeedsReview((_o, id) => { calls.push(id); }, ORG, unique, () => clock);
+    expect(calls).toEqual([unique, unique]);
+    expect(() => noteNeedsReview(() => { throw new Error("boom"); }, ORG, "mcpdebounce002", () => clock)).not.toThrow();
+    // the memory of what was asked is bounded: a thousand servers at one moment fill it, and the next is not asked about (it will be on a later call)
+    const asked: string[] = [];
+    const later = clock + 10 * 60_000;
+    for (let index = 0; index < 1_100; index += 1) noteNeedsReview((_o, id) => { asked.push(id); }, ORG, `mcpmany${String(index).padStart(6, "0")}`, () => later);
+    expect(asked.length).toBeLessThanOrEqual(1_000);
+    expect(asked.length).toBeGreaterThan(900);
+    const off = await world({ stdio: false });
+    const { vi } = await import("vitest");
+    const host = answering(409);
+    vi.stubGlobal("fetch", host.fake);
+    try { await off.runtime.servers.listAll!(ORG, { kind: "registered_server", serverId: off.entry.serverId }, AbortSignal.timeout(5_000)).catch(() => undefined); await settle(); } finally { vi.unstubAllGlobals(); }
+    expect(host.calls).toEqual([]);
+    expect((await off.deps.store.get(ORG, off.entry.serverId))?.status).toBe("approved");
+  });
+});
