@@ -805,6 +805,21 @@ describe("SY-7: a removal or ban written between the requester check and the key
     expect(guarded.attempts).toBe(1);
   });
 
+  // Fix round 1 (dedupe): overlapping walks name one ban or tombstone row twice, and a transaction that names an item twice is refused whole.
+  it("a merged person whose identity was also unlinked from the survivor (overlapping walks) still gets a key", async () => {
+    const other = "8".repeat(64);
+    for (const agents of [true, false]) {
+      const h = await install(() => undefined, { agents });
+      h.db.delete(orgMemberKey(TEST_ORG, whoId));
+      seedMembership(h.db, other, { orgId: TEST_ORG, role: "member" });
+      h.db.set({ pk: `DEVELOPER#${whoId}`, sk: "META", developerId: whoId, mergedInto: other });
+      h.db.set({ pk: `SIGNIN_IDENTITY#${whoId}`, sk: "META", identityKey: whoId, provider: "slack", unlinkedFrom: other, linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      const answered = await ask(h);
+      expect(answered.status, `agents=${String(agents)} ${JSON.stringify(answered.body)}`).toBe(200);
+      if (agents) expect(keyRecords(h)).toHaveLength(1);
+    }
+  });
+
   it("an install that records no key (no agents) still refuses a removal that lands before the key is handed out", async () => {
     const h = await install(removal, { agents: false });
     const refused = await ask(h);

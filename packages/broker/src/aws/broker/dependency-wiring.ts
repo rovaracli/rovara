@@ -517,9 +517,12 @@ export interface RequesterStanding {
  * the key, so that write fails (REMOVED_FROM_ORG) if any row the check found absent has appeared, or the member record it found is gone (a removal deletes it as it writes the tombstone).
  */
 export function requesterStandingGuard(tableName: string, standing: RequesterStanding): { checks: TransactItem[]; refusal: () => Error } {
+  // One check per item: the walks can overlap (a merged and relinked person), and a transaction that names one item twice is refused whole.
+  const seenKeys = new Set<string>();
+  const absent = standing.absent.filter((key) => { const id = `${key.pk}|${key.sk}`; if (seenKeys.has(id)) return false; seenKeys.add(id); return true; });
   return {
     checks: [
-      ...standing.absent.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_not_exists(pk)" } })),
+      ...absent.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_not_exists(pk)" } })),
       ...standing.present.map(({ key, role, joinedAt }): TransactItem => ({ ConditionCheck: {
         TableName: tableName, Key: key,
         ConditionExpression: `attribute_exists(pk) AND #role = :seenRole AND ${typeof joinedAt === "string" ? "joinedAt = :seenJoined" : "attribute_not_exists(joinedAt)"}`,
