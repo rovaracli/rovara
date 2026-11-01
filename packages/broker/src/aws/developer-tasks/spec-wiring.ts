@@ -234,8 +234,9 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
-  // An archived project takes no new work: Retry starts the spec write again (Re-plan has its own check in replanForSpecChange).
-  if (action === "retry") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
+  // An archived project takes no new work: Retry starts the spec write again, and Keep and Continue without spec queue the review or publication that follows (SY-2), so all three are
+  // refused before anything is recorded or queued (Re-plan has its own check in replanForSpecChange).
+  if (action !== "replan") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // Re-plan sends the task back to plan approval (wire lane D, MD-1): the workflow, the planning run and the spec's record move in one transaction.
   if (action === "replan") { await replanForSpecChange(deps, caller, taskId); return { status: "replan" }; }
   const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));

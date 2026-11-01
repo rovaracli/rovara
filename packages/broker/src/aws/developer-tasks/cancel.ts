@@ -68,8 +68,6 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   // Final review M2: a closed task is refused as continue refuses it, before anything is written,
   // so a repeat after the close answers "this task is closed" like any new call.
   if (task.closedAt !== undefined) throw agentXError("CONFIG_INVALID", CLOSED_TASK);
-  // Stop & redirect: a Stop pressed after a redirect wins; the redirect that is still stopping is ended so its restart never starts the step again (the redirect's own cancel is not a Stop).
-  await endRedirectForStop(deps, task.taskId, request.requestId);
   const turns = turnTable(deps);
   const receivedAt = iso(deps);
   // Ruling F14: the same key the task's other actions use, so one requestId names one action.
@@ -83,6 +81,9 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   const current = async () => ({ task: await taskView(deps, task, { events: 0, details: false }) });
   // A repeated cancel answers with the task as it is now and writes nothing.
   if (await repeated()) return current();
+  // Stop & redirect: a Stop pressed after a redirect wins; the redirect that is still stopping is ended so its restart never starts the step again (the redirect's own cancel is not a Stop).
+  // After the repeat check (LR-3 N3): a late replay of an old Stop is no new Stop, so it must not end a newer redirect.
+  await endRedirectForStop(deps, task.taskId, request.requestId);
   const marker = putNew(deps.tableName, { ...idempotencyKey, entityType: "IDEMPOTENCY", action: "cancel", payloadHash: CANCEL_PAYLOAD_HASH });
   const record = (response: string, operationId?: string) => putNew(turns, aiToolTurn({
     party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "cancel", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),

@@ -2,7 +2,8 @@
 // names and counts only; the Ask rates apply; and a refusal is ANSWERED in fixed words (the service posts the sentence and marks the note answered), so a refused question never stays behind as a
 // note the next agent step could read as an instruction. With the switch OFF the old behaviour is pinned by the unchanged fixtures of developer-task-workflow-flow.test.ts and page-comment-answers.test.ts.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as AskService from "../../packages/broker/src/aws/broker/ask-service.js";
 import { ASK_RATE, orgBanKey, orgRemovedKey, projectMemberKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
@@ -12,6 +13,25 @@ import { createSingleAnswerPlanBroker, seedMembership, teammate } from "../suppo
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+
+// Test-only injection (LA-6 N4): production installs the Slack question's Ask only from the session routes' own dependencies. This wrapper runs the real install, then, while `askSwitch.on` is set, adds the Ask
+// dependencies as if the `ak` switch were on, on an install with no agents (the level comes from `slackAskLevel`). The broker reads no test flag.
+const askSwitch = vi.hoisted(() => ({ on: false }));
+vi.mock("../../packages/broker/src/aws/broker/ask-service.js", async (importOriginal) => {
+  const original = await importOriginal<typeof AskService>();
+  return {
+    ...original,
+    installSlackAsk: (...args: Parameters<typeof original.installSlackAsk>) => {
+      original.installSlackAsk(...args);
+      const [dependencies, actions, access, env = process.env] = args;
+      if (!askSwitch.on || dependencies.slackAsk === undefined || dependencies.slackAsk.ask !== undefined) return;
+      const asked = original.askDependenciesFor(dependencies, access ?? { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, projectMembers: { roleOf: async () => undefined } }, actions, { ...env, LIVE_ASK_ENABLED: "1" });
+      dependencies.slackAsk = { ...dependencies.slackAsk, ask: asked };
+    },
+  };
+});
+
+afterEach(() => { askSwitch.on = false; });
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
@@ -23,7 +43,8 @@ describe("a question in a task's thread with the Ask switch on", () => {
   const MARKDOWN = "# Plan\n\nAdd greet.\n\nUse a horizontal rule between the two sections.\n";
 
   async function planWaiting(threadTs: string, extra: Record<string, unknown> = {}, member = true, beforeStart?: (harness: Harness) => void) {
-    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { slackAskOn: true, slackAskLevel: async () => "use", ...extra } });
+    askSwitch.on = true;
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { slackAskLevel: async () => "use", ...extra } });
     // (the first membership also creates the org record the task start needs)
     seedMembership(harness.db, developerIdForSlackUser(member ? "U0TEAMMATE1" : "U0SEEDONLY1"));
     beforeStart?.(harness);

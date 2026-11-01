@@ -106,6 +106,42 @@ describe("an archived project takes no new work", () => {
     expect(outbox(t)).toBe(runs);
     expect((await t.store.load(t.taskId)).state).toMatchObject({ status: "failed", revision: failed.revision });
   });
+
+  // SY-2: Keep and Continue without spec do not start a run themselves, but they queue the review or publication that follows; an archived project queues neither.
+  const withCandidate = (t: Awaited<ReturnType<typeof editedSpecTask>>) => {
+    const task = t.record();
+    t.db.set({ ...task, workflow: { ...task.workflow, candidate: { digest: "e".repeat(64), repositories: [{ repositoryId: "api", treeSha: "f".repeat(40) }] } } });
+  };
+  const dispatchRows = (t: Awaited<ReturnType<typeof editedSpecTask>>) => t.db.find((item) => item.entityType === "WORKFLOW_DISPATCH").length;
+  const heldFailed = async (t: Awaited<ReturnType<typeof editedSpecTask>>) => {
+    const { state } = await t.store.load(t.taskId);
+    await t.db.send(new PutCommand({ TableName: "state", Item: { ...state!, revision: state!.revision + 1, status: "failed", attempt: 1, failure: { code: "publish_failed", at: NOW }, editPrompt: undefined } as SpecState }));
+  };
+  const choices: Array<[string, (t: Awaited<ReturnType<typeof editedSpecTask>>) => Promise<void>]> = [["keep", async () => undefined], ["continue", heldFailed]];
+
+  it.each(choices)("control: %s queues the review that follows when the project is open", async (choice, prepare) => {
+    const t = await editedSpecTask();
+    withCandidate(t);
+    await prepare(t);
+    const reply = await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/${choice}`);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(dispatchRows(t)).toBe(1);
+  });
+
+  it.each(choices)("refuses %s on an archived project: nothing is queued and the spec's record does not move", async (choice, prepare) => {
+    const t = await editedSpecTask();
+    withCandidate(t);
+    await prepare(t);
+    archive(t);
+    const before = (await t.store.load(t.taskId)).state;
+    const task = t.record();
+    const reply = await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/${choice}`);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(409);
+    expect(reply.body).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(dispatchRows(t)).toBe(0);
+    expect((await t.store.load(t.taskId)).state).toEqual(before);
+    expect(t.record()).toEqual(task);
+  });
 });
 
 describe("the held spec on the task page", () => {

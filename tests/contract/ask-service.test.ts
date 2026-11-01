@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askCountKey, askErasedAliasPk, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, askCountKey, askErasedAliasPk, orgBanKey, orgMemberKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
@@ -59,6 +59,41 @@ describe("model access for an Ask", () => {
     expect(args[2]).toBe("web");
     expect(args[3]).toMatchObject({ kind: "developer", developerId: PRIYA });
     expect(args[4]).toMatchObject({ turnId: "Ev1234567890" });
+  });
+
+  it("hands the mint the asker's standing to assert again in the key's write: it holds while nothing changes, and fails once the asker is removed, banned or changed (SY-7)", async () => {
+    const t = world();
+    const ref = await queuedAsk(t);
+    const run = async () => {
+      mint.mockClear();
+      const reply = await handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1234567890" }), "/v1/asks/model-access");
+      expect(reply?.statusCode).toBe(200);
+      const guard = mint.mock.calls[0]![5] as { checks: Array<Record<string, unknown>>; refusal: () => { code: string } } | undefined;
+      expect(guard, "the mint is given a guard").toBeDefined();
+      return guard!;
+    };
+    const holds = async (guard: { checks: Array<Record<string, unknown>> }) => t.w.db.send(new TransactWriteCommand({ TransactItems: guard.checks })).then(() => true, () => false);
+    const memberKey = orgMemberKey(ORG_A, PRIYA);
+    const original = t.w.db.get(memberKey)!;
+    expect(await holds(await run())).toBe(true);
+    expect((await run()).refusal()).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    // Removed: the record is deleted and a tombstone written.
+    const removed = await run();
+    t.w.db.delete(memberKey);
+    expect(await holds(removed)).toBe(false);
+    t.w.db.set(original);
+    // Banned.
+    const banned = await run();
+    t.w.db.set({ ...orgBanKey(ORG_A, PRIYA), orgId: ORG_A, developerId: PRIYA });
+    expect(await holds(banned)).toBe(false);
+    t.w.db.delete(orgBanKey(ORG_A, PRIYA));
+    // Changed to the Auditor in place, and removed then invited again.
+    for (const change of [{ role: "auditor" }, { joinedAt: "2031-01-01T00:00:00.000Z" }]) {
+      const before = await run();
+      t.w.db.set({ ...original, ...change });
+      expect(await holds(before), JSON.stringify(change)).toBe(false);
+      t.w.db.set(original);
+    }
   });
 
   it("is refused for anyone but the orchestrator role, and mints nothing", async () => {

@@ -14,7 +14,7 @@ import { developerTaskIdentity, effectiveTaskOwner, taskKey, taskPointerKey, try
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { keyIdOf, mintKeyHealing } from "../../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../../spend/admission.js";
-import { forgetKey, registerKey } from "../../spend/ledger.js";
+import { forgetKey, registerKey, type RegisterGuard } from "../../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
 import { readProjectAi, readSpendPolicy } from "../../spend/settings.js";
 import { followMerges } from "../../agents/access.js";
@@ -38,7 +38,7 @@ import { resolveTaskAccess } from "../../developer/task-access.js";
 import { acceptTask } from "./acceptance.js";
 import { parseBody, verifyCapability } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { orgStoreOf, requireSlackRequesterWriterRole, slackTeamOrg } from "./dependency-wiring.js";
+import { orgStoreOf, requesterStandingGuard, slackRequesterStanding, slackTeamOrg, type RequesterStanding } from "./dependency-wiring.js";
 import { putArtifact } from "./pull-request-reconcile.js";
 import { requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf, routingOf } from "./scope-helpers.js";
@@ -46,11 +46,11 @@ import { ledgerOf } from "./sweeps-and-readiness.js";
 import { agentToolsBase, workspaceTask } from "./task-operations.js";
 import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
-import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectRole } from "./workspace-preparation.js";
+import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectAccess } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
-import { type TransactItem, failedIndexes } from "../../agents/table-writes.js";
+import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentRouteDependencies, developerTaskActions } from "./dependency-wiring.js";
 import { auditPendingItem } from "../../audit/outbox.js";
@@ -491,9 +491,15 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
   // Everything else about the requester (removed, banned, another org, an unreadable role) is refused there as anywhere.
   const shared = await sharedThread(dependencies, thread);
   const taskAnswerThread = shared !== undefined && !sharedThreadOpen(shared, binding) && shared.workflowThread === true && shared.closedAt === undefined && binding.projectName === shared.project;
-  if (taskAnswerThread) await requireSlackRequesterWriterRole(dependencies, requester.userId, teamOrg, { allowUnlinked: true, allowReadOnly: true });
-  else if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
-  return json(await mintChatTurnKey(dependencies, teamOrg, binding.projectName, requester, body.data), request.requestId);
+  // SY-7: what the check read is passed on and re-asserted in the write that records the key, so a removal or ban written after the check and before the key is recorded still refuses it.
+  let standing: RequesterStanding;
+  if (taskAnswerThread) standing = (await slackRequesterStanding(dependencies, requester.userId, teamOrg, { allowUnlinked: true, allowReadOnly: true })).standing;
+  else {
+    const access = await slackRequesterProjectAccess(dependencies, teamOrg, requester.userId, binding.projectName);
+    if (access.role === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
+    standing = access.standing;
+  }
+  return json(await mintChatTurnKey(dependencies, teamOrg, binding.projectName, requester, body.data, requesterStandingGuard(dependencies.tableName, standing)), request.requestId);
 }
 
 /**
@@ -504,6 +510,8 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
 export async function mintChatTurnKey(
   dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, requester: OperationRequester | undefined,
   body: { turnId: string; model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined },
+  /** SY-7: conditions on the requester's standing, checked in the write that records the key (or, where no key is recorded, in one of their own right) and refused as REMOVED_FROM_ORG. */
+  guard?: RegisterGuard,
 ): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown }> {
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
@@ -536,20 +544,39 @@ export async function mintChatTurnKey(
         await registerKey(ledger, {
           orgId: orgId, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, tags, expiresAt: minted.expiresAt,
           scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }).map((key) => ({ key })),
-        });
+        }, guard);
       } catch (error) {
-        await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        await giveKeyBack(modelAccess.access, minted.key);
         await forgetKey(ledger, orgId, keyIdOf(minted.key)).catch(() => undefined);
+        throw error;
+      }
+    } else if (guard !== undefined && guard.checks.length > 0) {
+      // No key record is written here (an install without agents), so the same conditions are asserted in a write of their own before the key is handed out. A cancellation by a
+      // concurrent write (no condition failed) is tried once more; a failed condition is a refusal.
+      try {
+        for (let attempt = 0; ; attempt += 1) {
+          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: guard.checks })); break; }
+          catch (error) { if (attempt === 0 && isTransactionConflict(error)) continue; throw error; }
+        }
+      } catch (error) {
+        await giveKeyBack(modelAccess.access, minted.key);
+        if (failedIndexes(error)?.size) throw guard.refusal();
         throw error;
       }
     }
     return { baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) };
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED")) throw error;
+    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED" || error.code === "REMOVED_FROM_ORG")) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/** Gives a minted key back to the proxy when it will not be handed out. A revoke that fails leaves a key nobody holds until it expires; it is logged by event name and error class only (never the key). */
+async function giveKeyBack(access: { revokeKey(key: string): Promise<unknown> }, key: string): Promise<void> {
+  try { await access.revokeKey(key); }
+  catch (error) { console.log(JSON.stringify({ component: "broker", event: "model_access.turn_revoke_failed", errorName: error instanceof Error ? error.name : "unknown" })); }
 }
 
 /**
