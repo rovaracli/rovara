@@ -1,7 +1,7 @@
 // Setup wizard (E4): what a second person is shown when they confirm a test environment. A confirmation is only worth something if the person sees what they are confirming, so the card lists every value that
 // changes as `where: before -> after`, built by the broker from the stored proposal and the stored approved revision (never from the asker's words). Every value is one plain line: hidden characters are shown
 // as codes and a long value is cut. What matters most to a reviewer (where tests call out to, who they sign in as, when and how long they run) comes first.
-import { formatCommandLine, type TestEnvironmentBody } from "@agentx/contracts";
+import { formatCommandLine, redactText, type TestEnvironmentBody } from "@agentx/contracts";
 import { shownLine } from "./shown-line.js";
 
 /** The most change lines a card carries; the rest are counted. */
@@ -11,7 +11,7 @@ const LINE_MAX = 300;
 /** Paths that decide what an environment can reach or cost come first. */
 const FIRST = ["tier", "services", "shared", "preview", "accounts", "capture", "nightly", "roundBudgetMin", "prodDeny", "data", "selection", "repos"];
 
-const isCommand = (value: unknown): value is { cwd: string; executable: string; args: string[]; timeoutSeconds: number } =>
+const isCommand = (value: unknown): value is { cwd: string; executable: string; args: string[]; timeoutSeconds: number; env?: Record<string, string> } =>
   typeof value === "object" && value !== null && typeof (value as { executable?: unknown }).executable === "string" && Array.isArray((value as { args?: unknown }).args);
 const identity = (item: unknown, index: number): string => {
   if (typeof item === "object" && item !== null) for (const key of ["id", "name", "profileId", "repositoryId"]) { const value = (item as Record<string, unknown>)[key]; if (typeof value === "string") return value; }
@@ -20,7 +20,8 @@ const identity = (item: unknown, index: number): string => {
 
 function flatten(value: unknown, path: string, out: Map<string, string>): void {
   if (value === undefined || value === null) return;
-  if (isCommand(value)) { out.set(path, `${value.cwd}: ${formatCommandLine(value)} (up to ${String(value.timeoutSeconds)} seconds)`); return; }
+  if (isCommand(value)) { const env = Object.entries(value.env ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([name, text]) => `${name}=${text}`);
+    out.set(path, `${value.cwd}: ${formatCommandLine(value)} (up to ${String(value.timeoutSeconds)} seconds)${env.length === 0 ? "" : ` with ${env.join(" ")}`}`); return; }
   if (Array.isArray(value)) {
     if (value.every((item) => typeof item !== "object" || item === null)) { out.set(path, value.map(String).join(", ")); return; }
     value.forEach((item, index) => flatten(item, `${path}[${identity(item, index)}]`, out));
@@ -37,6 +38,6 @@ export function testEnvChangeLines(previous: TestEnvironmentBody | undefined, ne
   const before = new Map<string, string>(), after = new Map<string, string>();
   flatten(previous, "", before); flatten(next, "", after);
   const changed = [...new Set([...before.keys(), ...after.keys()])].filter((path) => before.get(path) !== after.get(path)).sort((left, right) => rank(left) - rank(right) || left.localeCompare(right));
-  const lines = changed.slice(0, TEST_ENV_DIFF_MAX).map((path) => shownLine(`${path}: ${before.get(path) ?? "(none)"} → ${after.get(path) ?? "(none)"}`, LINE_MAX));
+  const lines = changed.slice(0, TEST_ENV_DIFF_MAX).map((path) => shownLine(redactText(`${path}: ${before.get(path) ?? "(none)"} → ${after.get(path) ?? "(none)"}`), LINE_MAX));
   return changed.length > TEST_ENV_DIFF_MAX ? [...lines, `and ${String(changed.length - TEST_ENV_DIFF_MAX)} more changes`] : lines;
 }

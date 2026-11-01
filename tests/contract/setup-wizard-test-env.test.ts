@@ -2,7 +2,7 @@
 // less safe than the sandbox (a fresh browser sign-in, and a second person's confirmation card read back from the company's records). With the switch off none of it exists.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { TestEnvironmentStateSchema, projectMetaKey, teamRecordPk, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { TestEnvironmentStateSchema, projectMetaKey, redactText, teamRecordPk, testEnvDigest } from "../../packages/contracts/src/index.js";
 import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
 import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
@@ -555,6 +555,22 @@ describe("the company's switch for the sole-owner exception", () => {
 });
 
 describe("what the second person is shown", () => {
+  it("shows a change to a command's env as before and after, and redacts a secret-shaped value in a seed command or an env value", () => {
+    const token = `ghp_${"aB3dE6gH9".repeat(4)}`; // built at run time, never written out
+    const withEnv = (env: Record<string, string>) => draftBody({ repos: [{ repositoryId: "web", setupCommands: [{ ...command("make", ["old-setup"], 900), env }], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] });
+    const lines = testEnvChangeLines(withEnv({ NODE_ENV: "test" }), withEnv({ NODE_ENV: "test", NODE_OPTIONS: "--require ./evil.js" }));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("with NODE_ENV=test \u2192");
+    expect(lines[0]).toContain("NODE_OPTIONS=--require ./evil.js");
+    const seeded = testEnvChangeLines(draftBody(), draftBody({ data: { seeds: [{ command: command("make", ["seed", `--token=${token}`], 60) }], generator: "faker_seeded", seed: 1 } }));
+    expect(seeded.some((line) => line.startsWith("data.seeds"))).toBe(true);
+    expect(seeded.join("\n")).not.toContain(token);
+    const secretEnv = testEnvChangeLines(withEnv({}), withEnv({ API_KEY: token }));
+    expect(secretEnv).toHaveLength(1);
+    expect(secretEnv[0]).not.toContain(token);
+    expect(redactText(`--token=${token}`)).not.toContain(token); // the redactor knows this shape: the check above is not vacuous
+  });
+
   it("the card lists every changed value as before and after, built from the stored proposal and revision, most sensitive first, as plain lines", async () => {
     const t = await setupWizardBench();
     await t.person(MAYA, "admin");
