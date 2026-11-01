@@ -94,9 +94,9 @@ export const TESTING_REASON_CLASS = {
 
 // ---- the rows of the Testing section
 
-export const TESTING_ROW_STATUSES = ["passed", "failed", "blocked", "not_run", "pending"] as const;
+export const TESTING_ROW_STATUSES = ["passed", "failed", "blocked", "not_run", "pending", "known_failing"] as const;
 export type TestingRowStatus = (typeof TESTING_ROW_STATUSES)[number];
-export const TESTING_ROW_STATUS_LABELS: Readonly<Record<TestingRowStatus, string>> = { passed: "passed", failed: "failed", blocked: "blocked", not_run: "not run", pending: "pending" };
+export const TESTING_ROW_STATUS_LABELS: Readonly<Record<TestingRowStatus, string>> = { passed: "passed", failed: "failed", blocked: "blocked", not_run: "not run", pending: "pending", known_failing: "already failing" };
 
 export const TESTING_ROWS_MAX = 100;
 export const TESTING_REASONS_MAX = 16;
@@ -124,6 +124,9 @@ export const TestingRowSchema = z
       if (row.reason !== undefined) issue("a passed row names no reason");
     } else if (row.status === "failed") {
       if (row.reason !== undefined && !TESTING_REASON_CLASS.code.has(row.reason)) issue("a failed row names what the change broke, or nothing");
+    } else if (row.status === "known_failing") {
+      // Every failing test of the row was already failing before this change: only a Partially verified view may show it (checked in the view).
+      if (row.reason !== "known_failing_only") issue("a known-failing row names known_failing_only");
     } else if (row.status === "blocked") {
       if (row.reason === undefined || !TESTING_REASON_CLASS.blocked.has(row.reason)) issue("a blocked row names its environment reason");
     } else if (row.reason === undefined || !TESTING_REASON_CLASS.partial.has(row.reason)) issue("a row that did not run names why");
@@ -133,7 +136,7 @@ export type TestingRow = z.infer<typeof TestingRowSchema>;
 
 /**
  * The Testing view of a task or pull request. The invariants keep a view from saying more than its result allows: Verified lists only passed rows and no reasons, Partially verified has no failed
- * or blocked row, Blocked by environment has no failed row, and the reasons of a result are of its own kind (Code failed may also list the blocked reasons, which are still shown).
+ * or blocked row (it may have rows already failing before the change, with known_failing_only), Blocked by environment has no failed row, and the reasons of a result are of its own kind (Code failed may also list the blocked reasons, which are still shown).
  */
 export const TestingViewSchema = z
   .object({
@@ -166,8 +169,10 @@ export const TestingViewSchema = z
         if (!has("partial")) issue("reasons", "a partial result names what did not run");
         if (has("code") || has("blocked")) issue("reasons", "a partial result lists neither a failure nor a blocked check");
         if (rowsWith("failed") || rowsWith("blocked")) issue("rows", "a partial result has no failed or blocked row");
+        if (rowsWith("known_failing") && !view.reasons.includes("known_failing_only")) issue("reasons", "a known-failing row is explained by known_failing_only");
         break;
     }
+    if (view.result !== "partially_verified" && rowsWith("known_failing")) issue("rows", "only a partial result shows a known-failing row");
   });
 export type TestingView = z.infer<typeof TestingViewSchema>;
 

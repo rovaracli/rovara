@@ -99,6 +99,24 @@ describe("TestingViewSchema", () => {
   });
 });
 
+describe("known_failing rows (review fix 5)", () => {
+  const known = (over: Record<string, unknown> = {}) => row({ status: "known_failing", reason: "known_failing_only", ...over });
+  it("is a row status that names known_failing_only and nothing else", () => {
+    expect(TestingRowSchema.safeParse(known()).success).toBe(true);
+    expect(TestingRowSchema.safeParse(row({ status: "known_failing" })).success).toBe(false);
+    expect(TestingRowSchema.safeParse(known({ reason: "check_not_run" })).success).toBe(false);
+    expect(TestingRowSchema.safeParse(known({ passedTests: 1 })).success).toBe(false);
+  });
+
+  it("is allowed only in a Partially verified view that says known_failing_only", () => {
+    expect(TestingViewSchema.safeParse(view({ result: "partially_verified", reasons: ["known_failing_only"], rows: [row(), known()] })).success).toBe(true);
+    expect(TestingViewSchema.safeParse(view({ result: "partially_verified", reasons: ["check_not_run"], rows: [row(), known()] })).success).toBe(false);
+    expect(TestingViewSchema.safeParse(view({ rows: [row(), known()] })).success).toBe(false);
+    expect(TestingViewSchema.safeParse(view({ result: "code_failed", reasons: ["check_failed"], rows: [row({ status: "failed" }), known()] })).success).toBe(false);
+    expect(TestingViewSchema.safeParse(view({ result: "blocked_by_environment", reasons: ["host_blocked"], rows: [row({ status: "blocked", reason: "host_blocked" }), known()] })).success).toBe(false);
+  });
+});
+
 describe("testingSummary", () => {
   it("says each result in fixed words with counts from the rows", () => {
     const blocked = row({ status: "blocked", reason: "host_blocked" });
