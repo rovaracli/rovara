@@ -17,6 +17,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { runIsolatedGit } from "./isolated-repository.js";
 import type { CollectedProcess, CollectedProcessOptions } from "./collected-process.js";
 import { asksForCodeChange } from "./setup-agent-prompt.js";
+import { SETUP_AGENT_MAX_OUTPUT_TOKENS } from "./setup-agent-journal.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
 import { TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, TaskSandbox, type TaskSandboxOptions } from "./task-sandbox.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -169,9 +170,11 @@ export interface SetupCommandRecord {
   timedOut: boolean;
   tail: string;
   startedAt: number;
+  ticket?: unknown;
 }
 
-export type SetupCommandDecision = { allow: true } | { allow: false };
+/** `ticket`: whatever the hook needs to match the command to its reservation; the shell hands it back unchanged in the record. */
+export type SetupCommandDecision = { allow: true; ticket?: unknown } | { allow: false };
 
 /** Where the journal and the governor (SH8) plug in. `beforeCommand` may refuse a command (a limit is used up); `afterCommand` sees every command that ran. */
 export interface SetupAgentHooks {
@@ -246,7 +249,7 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
         timedOut = error instanceof Error && error.message.startsWith("timeout:");
       }
       const record: SetupCommandRecord = {
-        command: redactText(command), flagged, exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail: commandTail(captured), startedAt,
+        command: redactText(command), flagged, ...(decision?.allow === true && decision.ticket !== undefined ? { ticket: decision.ticket } : {}), exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail: commandTail(captured), startedAt,
       };
       await input.hooks?.afterCommand?.(record);
       if (input.checkFiles !== undefined) {
@@ -268,8 +271,11 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
  * The parts of the session input the caller adds to its own (run-task.ts, SH14): the tools, the shell and the sandbox's file tools. The session runs as an IMPLEMENT-mode session narrowed to
  * these tools, so it has the shell and no write or edit tool.
  */
-export function setupAgentSessionParts(input: { sandbox: TaskSandbox; shell: SetupAgentShell }): { workflowMode: "IMPLEMENT"; agentTools: readonly string[]; bashOperations: BashOperations; fileTools: ReturnType<TaskSandbox["fileOpsTarget"]> } {
-  return { workflowMode: "IMPLEMENT", agentTools: SETUP_AGENT_TOOLS, bashOperations: input.shell.operations, fileTools: input.sandbox.fileOpsTarget() };
+export function setupAgentSessionParts(input: { sandbox: TaskSandbox; shell: SetupAgentShell }): {
+  workflowMode: "IMPLEMENT"; agentTools: readonly string[]; bashOperations: BashOperations; fileTools: ReturnType<TaskSandbox["fileOpsTarget"]>; sequentialTools: true; maxOutputTokens: number;
+} {
+  // Sequential tools: the governor counts a command when it is allowed, but one command at a time is also what the journal and the live view show. The output cap bounds what one turn can cost.
+  return { workflowMode: "IMPLEMENT", agentTools: SETUP_AGENT_TOOLS, bashOperations: input.shell.operations, fileTools: input.sandbox.fileOpsTarget(), sequentialTools: true, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS };
 }
 
 // ---- the final answer

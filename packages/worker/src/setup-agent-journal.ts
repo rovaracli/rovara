@@ -45,8 +45,11 @@ function tokensOf(command: string): string[] {
  */
 export function stepKeyOf(command: string): string {
   let text = command.replace(/\s2>&1/gu, " ").replace(/\|\s*(?:tail|head|tee)\b.*$/u, " ");
-  text = text.replace(/^\s*cd\s+\S+\s*&&\s*/u, "");
-  const first = text.split(/&&|\|\||;|\|/u)[0] ?? text;
+  text = text.replace(/^[\s(]*cd\s+\S+\s*&&\s*/u, "").replace(/^[\s({]+/u, "");
+  // Wrappers that run the next word do not make a different step: `env npm ci`, `command npm ci`, `time npm ci`, `/usr/bin/npm ci`.
+  for (let wrapper = 0; wrapper < 4 && /^(?:env|command|exec|time|nohup|nice|sudo|builtin)\s+/u.test(text); wrapper += 1) text = text.replace(/^(?:env|command|exec|time|nohup|nice|sudo|builtin)\s+(?:-\S+\s+)*/u, "");
+  text = text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, "").replace(/^(?:\/[\w.-]+)*\/([\w.+-]+)(?=\s|$)/u, "$1");
+  const first = text.split(/&&|\|\||;|\||\)/u)[0] ?? text;
   const tokens = tokensOf(first).filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token));
   const program = tokens[0] ?? "";
   const rest = tokens.slice(1);
@@ -64,6 +67,32 @@ export function isProbeCommand(command: string): boolean {
   return PROBES.has(program);
 }
 
+// ---- bounding what one model turn can cost
+
+/** The most output tokens one model turn may produce in a setup session (the session's model is capped to this). */
+export const SETUP_AGENT_MAX_OUTPUT_TOKENS = 8_192;
+
+/**
+ * The most the next model turn can cost, in whole cents, rounded up: the whole transcript sent as input at the model's input price, plus the output cap at its output price. Prices are dollars per
+ * million tokens. A figure that is not a finite non-negative number gives NaN, which the governor reads as the whole budget.
+ */
+export function estimateNextTurnCents(input: { inputTokens: number; maxOutputTokens: number; inputPerMTok: number; outputPerMTok: number }): number {
+  const values = [input.inputTokens, input.maxOutputTokens, input.inputPerMTok, input.outputPerMTok];
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) return Number.NaN;
+  return Math.max(0, Math.ceil(((input.inputTokens * input.inputPerMTok + input.maxOutputTokens * input.outputPerMTok) / 1_000_000) * 100 - 1e-9));
+}
+
+/**
+ * The session listener that keeps the governor looking: every `turn_end` (and every tool event) checks the limits, so a run with a model that only thinks, or one that ends its turns without a
+ * command, still stops at the budget and the clock. `subscribe` returns the listener the session's `subscribe` takes.
+ */
+export function governorSessionListener(governor: { check(): unknown }): (event: unknown) => void {
+  return (event) => {
+    const type = typeof event === "object" && event !== null ? (event as { type?: unknown }).type : undefined;
+    if (type === "turn_end" || type === "turn_start" || type === "tool_execution_start" || type === "tool_execution_end" || type === "message_end") governor.check();
+  };
+}
+
 // ---- the governor and the journal
 
 export interface SetupGovernorInput {
@@ -72,6 +101,11 @@ export interface SetupGovernorInput {
   now?: () => number;
   /** The model spend so far, in whole cents (`centsFromDollars` of the session's cost); undefined when it cannot be read. Read at every check. */
   spendCents: () => number | undefined;
+  /**
+   * What the next model turn may cost at most, in whole cents (`estimateNextTurnCents`). The run stops when the spend so far plus this would reach the budget, so a turn cannot carry it past the limit.
+   * A value that is not a non-negative number counts as the whole budget (fail closed). Default: 0, which leaves the overshoot at one turn; the caller that has the model's prices should pass it.
+   */
+  nextTurnCents?: () => number;
   /** The hosts the DNS watch (SH9) saw blocked since the last call, cleared by the call. Default: none. */
   takeBlockedHosts?: () => readonly string[];
   /** Called once, when the run must end: the caller aborts the model session. */
@@ -91,6 +125,11 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   private readonly startedAt: number;
   private readonly journal: SetupJournalEntry[] = [];
   private readonly failures = new Map<string, number>();
+  /** Agent commands that were allowed and have not reported yet, in total and by step: counted against the limits at the moment they are allowed, so parallel tool calls cannot all pass. */
+  private inflight = 0;
+  private readonly inflightByStep = new Map<string, number>();
+  /** Agent commands that finished, whether or not their journal entry could be written. */
+  private agentFinished = 0;
   private readonly hosts = new Set<string>();
   private parkedAt: number | undefined;
   private parkedTotalMs = 0;
@@ -150,7 +189,8 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   check(): SetupRunEndWord | undefined {
     if (this.stopped !== undefined) return this.stopped;
     const spend = this.input.spendCents();
-    if (spend === undefined || spend >= this.limits.budgetCents) this.stop("budget_used");
+    const next = this.input.nextTurnCents === undefined ? 0 : this.input.nextTurnCents();
+    if (spend === undefined || !Number.isFinite(next) || next < 0 || spend + next >= this.limits.budgetCents) this.stop("budget_used");
     else if (this.elapsedMs() >= this.limits.wallClockMin * MINUTE_MS) this.stop("time_used");
     else if (this.waitedOnHostsTooLong()) this.stop("hosts_waiting");
     return this.stopped;
@@ -160,11 +200,14 @@ export class SetupAgentGovernor implements SetupAgentHooks {
 
   beforeCommand(command: string): SetupCommandDecision {
     if (this.check() !== undefined) return { allow: false };
-    const agentCommands = this.journal.filter((entry) => entry.source === "agent").length;
-    if (agentCommands >= this.limits.commands || this.journal.length >= SETUP_JOURNAL_MAX_ENTRIES) { this.stop("attempts_used"); return { allow: false }; }
-    // A further try of a step that already failed this many times with nothing changed in between.
-    if ((this.failures.get(stepKeyOf(command)) ?? 0) >= this.limits.sameStepTries) { this.stop("attempts_used"); return { allow: false }; }
-    return { allow: true };
+    // Everything from the check to the reservation is synchronous: two calls cannot both see the same free slot.
+    if (this.agentFinished + this.inflight >= this.limits.commands || this.journal.length + this.inflight >= SETUP_JOURNAL_MAX_ENTRIES) { this.stop("attempts_used"); return { allow: false }; }
+    // A further try of a step that already failed this many times with nothing changed in between. A command of the step that is still running counts as a try: it may yet fail.
+    const key = stepKeyOf(command);
+    if ((this.failures.get(key) ?? 0) + (this.inflightByStep.get(key) ?? 0) >= this.limits.sameStepTries) { this.stop("attempts_used"); return { allow: false }; }
+    this.inflight += 1;
+    this.inflightByStep.set(key, (this.inflightByStep.get(key) ?? 0) + 1);
+    return { allow: true, ticket: key };
   }
 
   maxTimeoutSeconds(): number {
@@ -172,8 +215,13 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   }
 
   afterCommand(record: SetupCommandRecord): void {
+    const key = typeof record.ticket === "string" ? record.ticket : stepKeyOf(record.command);
+    // The reservation made when the command was allowed is given back here, on every path, before the entry is written.
+    if (this.inflight > 0) this.inflight -= 1;
+    const left = (this.inflightByStep.get(key) ?? 0) - 1;
+    if (left > 0) this.inflightByStep.set(key, left); else this.inflightByStep.delete(key);
+    this.agentFinished += 1;
     this.append("agent", record);
-    const key = stepKeyOf(record.command);
     if (record.exitCode === 0 && !record.timedOut) {
       this.failures.delete(key);
       // A command that changed something is progress: the other steps get their tries back. A command that only looked is not.
@@ -186,7 +234,10 @@ export class SetupAgentGovernor implements SetupAgentHooks {
 
   /** The shell found the repositories changed (setup-agent.ts). */
   onEnded(word: "changed_repository_files"): void {
-    this.stop(word);
+    // A changed repository outranks every other reason, even one that was already final: the run has no proposal whatever stopped it first (a command that was still running when a limit
+    // stopped the run may be the one that edited the files). The caller was already told to stop; it is not told twice.
+    if (this.stopped === undefined) { this.stop(word); return; }
+    this.stopped = word;
   }
 
   // ---- a person's command (SH13), recorded with the same bounds
@@ -263,7 +314,7 @@ export class SetupAgentGovernor implements SetupAgentHooks {
       flagged: record.flagged,
       blockedHosts: hosts,
       tail: record.tail.slice(0, SETUP_JOURNAL_TAIL_BYTES),
-      startedAt: new Date(Number.isFinite(record.startedAt) ? record.startedAt : this.now()).toISOString(),
+      startedAt: isoOf(record.startedAt, this.now()),
     });
     if (!parsed.success) return undefined;
     this.journal.push(parsed.data);
@@ -291,6 +342,12 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   }
 }
 
+/** An ISO time for a millisecond clock value; the fallback when the value is not a time `Date` can hold (it would throw). */
+function isoOf(value: number, fallback: number): string {
+  const date = new Date(Number.isFinite(value) ? value : fallback);
+  return Number.isNaN(date.getTime()) ? new Date(fallback).toISOString() : date.toISOString();
+}
+
 /** The limits a caller uses when it has none to pass (the contract's defaults). */
 export const SETUP_GOVERNOR_DEFAULT_LIMITS: SetupAgentLimits = SETUP_AGENT_LIMITS_DEFAULT;
 
@@ -311,13 +368,17 @@ export interface StoppedRunResult {
  */
 export async function finishStoppedRun(input: {
   governor: SetupAgentGovernor;
+  /** The agent's shell: when it found the repositories changed, there is no proposal, whatever else stopped the run. */
+  shell?: { ended(): string | undefined };
   lastText: string;
   basedOnRevision: number;
   rootPath: string;
   repositories: ReadonlyArray<SetupDraftRepository>;
   metaRepo?: string | undefined;
 }): Promise<StoppedRunResult> {
+  if (input.shell?.ended() === "changed_repository_files") input.governor.onEnded("changed_repository_files");
   const summary = input.governor.summary();
+  if (summary.stop === "changed_repository_files") return { end: summary.stop, summary, proposal: undefined, learned: [] };
   const read = await readSetupProposalAnswer(input.lastText, {
     basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories: input.repositories, ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }),
   }).catch(() => ({ ok: false as const, errors: ["unreadable"] }));

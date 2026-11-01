@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_RUN_LIMIT_STOPS, SetupJournalEntrySchema, SetupRunSummarySchema, type SetupAgentLimits, type SetupRunEndWord } from "../../packages/contracts/src/index.js";
-import { SetupAgentGovernor, centsFromDollars, finishStoppedRun, isProbeCommand, stepKeyOf, type SetupGovernorInput } from "../../packages/worker/src/setup-agent-journal.js";
+import { SETUP_AGENT_MAX_OUTPUT_TOKENS, SetupAgentGovernor, centsFromDollars, estimateNextTurnCents, finishStoppedRun, governorSessionListener, isProbeCommand, stepKeyOf, type SetupGovernorInput } from "../../packages/worker/src/setup-agent-journal.js";
 import { setupAgentShell, type SetupCommandRecord } from "../../packages/worker/src/setup-agent.js";
 
 const roots: string[] = [];
@@ -157,7 +157,7 @@ describe("wall clock", () => {
   it("allows a command just inside the limit and refuses one at it, with the word time_used", () => {
     const h = harness({ limits: { wallClockMin: 10 } });
     h.clock.t += 10 * MIN - 1_000;
-    expect(h.governor.beforeCommand("a")).toEqual({ allow: true });
+    expect(h.governor.beforeCommand("a")).toMatchObject({ allow: true });
     h.clock.t += 1_000;
     expect(h.governor.beforeCommand("a")).toEqual({ allow: false });
     expect(h.governor.ended()).toBe("time_used");
@@ -204,7 +204,7 @@ describe("model spend", () => {
   it("refuses a command at the limit, and not below it", () => {
     const h = harness({ limits: { budgetCents: 400 } });
     h.spend.cents = 399;
-    expect(h.governor.beforeCommand("a")).toEqual({ allow: true });
+    expect(h.governor.beforeCommand("a")).toMatchObject({ allow: true });
     h.spend.cents = 400;
     expect(h.governor.beforeCommand("a")).toEqual({ allow: false });
     expect(h.governor.ended()).toBe("budget_used");
@@ -247,7 +247,7 @@ describe("host asks", () => {
     expect(h.governor.elapsedMs()).toBe(4 * MIN);
     h.governor.resumeFromHosts();
     h.clock.t += 5 * MIN;
-    expect(h.governor.beforeCommand("a")).toEqual({ allow: true });
+    expect(h.governor.beforeCommand("a")).toMatchObject({ allow: true });
     h.clock.t += MIN;
     expect(h.governor.beforeCommand("a")).toEqual({ allow: false });
     expect(h.governor.ended()).toBe("time_used");
@@ -291,8 +291,10 @@ describe("order and finality", () => {
     h.clock.t += 999 * MIN;
     expect(h.governor.check()).toBe("attempts_used");
     h.governor.stop("stopped_by_person");
-    h.governor.onEnded("changed_repository_files");
     expect(h.governor.ended()).toBe("attempts_used");
+    // Only a changed repository outranks the first reason (see the fix round 1 tests), and the caller is not told twice.
+    h.governor.onEnded("changed_repository_files");
+    expect(h.governor.ended()).toBe("changed_repository_files");
     expect(h.stops).toEqual(["attempts_used"]);
   });
   it("takes a stop from the shell and from a person", () => {
@@ -448,5 +450,138 @@ describe("with the shell", () => {
     await changing.operations.exec("npm install", "/w", { onData: () => undefined });
     expect(g.governor.ended()).toBe("changed_repository_files");
     expect(g.stops).toEqual(["changed_repository_files"]);
+  });
+});
+
+describe("fix round 1: parallel tool calls", () => {
+  const slowShell = (hooks: SetupAgentGovernor, exitCode = 1) => {
+    let ran = 0;
+    const shell = setupAgentShell({ base: { exec: async () => { ran += 1; await new Promise((resolve) => setTimeout(resolve, 15)); return { exitCode }; } }, hooks });
+    return { shell, ran: () => ran, run: (command: string) => shell.operations.exec(command, "/w", { onData: () => undefined }) };
+  };
+  const governorOf = (over: Partial<SetupAgentLimits>) => new SetupAgentGovernor({ limits: limits(over), spendCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+
+  it("holds the same-step limit when ten copies of a command are in flight at once (the review's probe: all ten used to run)", async () => {
+    const governor = governorOf({ commands: 2, sameStepTries: 1 });
+    const h = slowShell(governor);
+    await Promise.all(Array.from({ length: 10 }, () => h.run("npm ci")));
+    expect(h.ran()).toBe(1);
+    expect(governor.ended()).toBe("attempts_used");
+    expect(governor.entries()).toHaveLength(1);
+  });
+  it("holds the commands limit when different commands are in flight at once", async () => {
+    const governor = governorOf({ commands: 2, sameStepTries: 5 });
+    const h = slowShell(governor, 0);
+    await Promise.all(Array.from({ length: 10 }, (_, i) => h.run(`make step${String(i)}`)));
+    expect(h.ran()).toBe(2);
+    expect(governor.ended()).toBe("attempts_used");
+    expect(governor.entries()).toHaveLength(2);
+  });
+  it("gives a reservation back when the command finishes, so a later command is allowed", async () => {
+    const governor = governorOf({ commands: 2, sameStepTries: 5 });
+    const h = slowShell(governor, 0);
+    await h.run("make a1");
+    await h.run("make b2");
+    expect(governor.ended()).toBeUndefined();
+    await h.run("make c3");
+    expect(h.ran()).toBe(2);
+  });
+  it("gives a reservation back when the command throws (a timeout)", async () => {
+    const governor = governorOf({ commands: 2, sameStepTries: 5 });
+    const shell = setupAgentShell({ base: { exec: () => Promise.reject(new Error("timeout:60")) }, hooks: governor });
+    await expect(shell.operations.exec("make a1", "/w", { onData: () => undefined })).rejects.toThrow();
+    await expect(shell.operations.exec("make b2", "/w", { onData: () => undefined })).rejects.toThrow();
+    expect(governor.ended()).toBeUndefined();
+    expect(governor.entries()).toHaveLength(2);
+  });
+  it("counts a command even when its journal entry cannot be written", () => {
+    const h = harness({ limits: { commands: 2, sameStepTries: 5 } });
+    // A record the contract cannot hold (an exit code that is not a number) must not be a free command.
+    for (const command of ["echo 1", "echo 2"]) { h.governor.beforeCommand(command); h.governor.afterCommand(h.record(command, { exitCode: Number.NaN })); }
+    expect(h.governor.entries()).toHaveLength(0);
+    expect(h.governor.beforeCommand("echo 3")).toEqual({ allow: false });
+    expect(h.governor.ended()).toBe("attempts_used");
+  });
+  it("does not throw out of the hook for a start time Date cannot hold", () => {
+    const h = harness();
+    h.governor.beforeCommand("echo 1");
+    expect(() => h.governor.afterCommand(h.record("echo 1", { startedAt: 9e18 }))).not.toThrow();
+    expect(h.governor.entries()).toHaveLength(1);
+  });
+  it("sees through the wrappers that would make one step look like many", () => {
+    for (const same of ["env npm ci", "command npm ci", "/usr/bin/npm ci", "(npm ci)", "time npm ci", "NODE_ENV=x npm ci --no-audit", "sudo -n npm ci", "cd a/b && env npm ci 2>&1 | tail -3"]) expect(stepKeyOf(same), same).toBe("npm ci");
+  });
+});
+
+describe("fix round 1: a changed repository outranks every other reason", () => {
+  const block = (answer: unknown) => `done\n\`\`\`agentx-setup-proposal\n${JSON.stringify(answer)}\n\`\`\``;
+  it("a deadline fires mid-command, the command edits a tracked file: the end word is changed_repository_files, there is no proposal, and the caller was told once", async () => {
+    const h = harness({ limits: { wallClockMin: 10 } });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const shell = setupAgentShell({ base: { exec: async () => { await gate; return { exitCode: 0 }; } }, hooks: h.governor, checkFiles: () => Promise.resolve({ ok: false, reason: "tracked_files_changed" }) });
+    const running = shell.operations.exec("make edit", "/w", { onData: () => undefined });
+    h.clock.t += 10 * MIN;
+    h.timers[0]!.fire();
+    expect(h.governor.ended()).toBe("time_used");
+    release();
+    await running;
+    expect(shell.ended()).toBe("changed_repository_files");
+    expect(h.governor.ended()).toBe("changed_repository_files");
+    expect(h.stops).toEqual(["time_used"]);
+    const rootPath = await mkdtemp(join(tmpdir(), "setup-outrank-"));
+    roots.push(rootPath);
+    await mkdir(join(rootPath, "repo/web"), { recursive: true });
+    const answer = { setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", line: 2, quote: "\"scripts\"" }] }] };
+    const result = await finishStoppedRun({ governor: h.governor, shell, lastText: block(answer), basedOnRevision: 1, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
+    expect(result).toMatchObject({ end: "changed_repository_files", proposal: undefined, learned: [] });
+    expect(result.summary).toMatchObject({ stop: "changed_repository_files", partial: true });
+  });
+  it("finishStoppedRun also takes the shell's word when the governor was never told", async () => {
+    const h = harness({ limits: { commands: 1 } });
+    h.run("a");
+    h.run("b");
+    const shell = { ended: () => "changed_repository_files" };
+    const rootPath = await mkdtemp(join(tmpdir(), "setup-outrank-"));
+    roots.push(rootPath);
+    const result = await finishStoppedRun({ governor: h.governor, shell, lastText: "x", basedOnRevision: 1, rootPath, repositories: [] });
+    expect(result.end).toBe("changed_repository_files");
+    expect(result.proposal).toBeUndefined();
+  });
+});
+
+describe("fix round 1: one model turn cannot carry the run past the budget", () => {
+  it("stops when the spend so far plus the next turn's most would reach the budget", () => {
+    const h = harness({ limits: { budgetCents: 400 }, nextTurnCents: () => 100 });
+    h.spend.cents = 299;
+    expect(h.governor.check()).toBeUndefined();
+    h.spend.cents = 300;
+    expect(h.governor.check()).toBe("budget_used");
+  });
+  it("reads an estimate that is not a non-negative number as the whole budget", () => {
+    for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+      const h = harness({ nextTurnCents: () => bad });
+      expect(h.governor.check(), String(bad)).toBe("budget_used");
+    }
+  });
+  it("estimates a turn from the transcript, the output cap and the model's prices, rounding up", () => {
+    expect(SETUP_AGENT_MAX_OUTPUT_TOKENS).toBe(8_192);
+    // 100k input tokens at $3/M = 30 cents; 8,192 output tokens at $15/M = 12.288 cents; 42.288 -> 43.
+    expect(estimateNextTurnCents({ inputTokens: 100_000, maxOutputTokens: 8_192, inputPerMTok: 3, outputPerMTok: 15 })).toBe(43);
+    expect(estimateNextTurnCents({ inputTokens: 0, maxOutputTokens: 0, inputPerMTok: 3, outputPerMTok: 15 })).toBe(0);
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) expect(estimateNextTurnCents({ inputTokens: bad, maxOutputTokens: 1, inputPerMTok: 1, outputPerMTok: 1 })).toBeNaN();
+  });
+  it("checks on every turn end, not only on a tool event: a model that ends turns without a command still stops at the budget", () => {
+    const h = harness({ limits: { budgetCents: 400 } });
+    const listen = governorSessionListener(h.governor);
+    listen({ type: "agent_start" });
+    h.spend.cents = 500;
+    listen({ type: "message_update" });
+    expect(h.governor.ended()).toBeUndefined();
+    listen({ type: "turn_end" });
+    expect(h.governor.ended()).toBe("budget_used");
+    expect(h.stops).toEqual(["budget_used"]);
+    listen(null);
+    listen("x");
   });
 });

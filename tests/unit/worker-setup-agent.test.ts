@@ -12,7 +12,7 @@ import {
   credentialShapedVariables, finishSetupAgent, guardedSetupDocker, setupAgentSessionParts, setupAgentShell, type SetupAgentHooks, type SetupCommandRecord, type TrackedFilesVerdict,
 } from "../../packages/worker/src/setup-agent.js";
 import { SETUP_AGENT_NEEDS_CODE_CHANGE_MARKER, asksForCodeChange, setupAgentInstructions } from "../../packages/worker/src/setup-agent-prompt.js";
-import { piTaskToolCapabilities } from "../../packages/worker/src/pi-session.js";
+import { agentShellTool, piTaskToolCapabilities } from "../../packages/worker/src/pi-session.js";
 import { agentStepTools } from "../../packages/worker/src/agent-step.js";
 import { taskSandboxRunArgs } from "../../packages/worker/src/task-sandbox.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
@@ -163,6 +163,16 @@ describe("the tools", () => {
     expect(tools.tools).not.toContain("edit");
     // Positive control: the mode itself does have them, so the narrowing is what removes them.
     expect(piTaskToolCapabilities("IMPLEMENT").tools).toEqual(expect.arrayContaining(["write", "edit"]));
+  });
+  it("run one tool call at a time, and the session's model is capped on output", async () => {
+    const root = await temp("setup-sandbox-");
+    const sandbox = createSetupSandbox({ rootPath: root, taskId: "t4", docker: fakeDocker().docker, image: IMAGE });
+    const parts = setupAgentSessionParts({ sandbox, shell: setupAgentShell({ base: { exec: () => Promise.resolve({ exitCode: 0 }) } }) });
+    expect(parts.sequentialTools).toBe(true);
+    expect(parts.maxOutputTokens).toBe(8_192);
+    const shellTool = agentShellTool("/w", undefined, true) as unknown as { executionMode?: string };
+    expect(shellTool.executionMode).toBe("sequential");
+    expect((agentShellTool("/w", { exec: () => Promise.resolve({ exitCode: 0 }) }) as unknown as { executionMode?: string }).executionMode).toBeUndefined();
   });
   it("are handed to the session with the sandbox's file tools and the guarded shell", async () => {
     const root = await temp("setup-sandbox-");
