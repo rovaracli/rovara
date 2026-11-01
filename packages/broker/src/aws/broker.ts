@@ -393,7 +393,7 @@ const githubCredentials = github.provider;
 // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
 const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
 // Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router is what consumers move to (tasks P5a-e).
-const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
+const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, webhookSecret: github.webhookSecret, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
   .update("agentx:repository-grants:v3")
   .digest();
