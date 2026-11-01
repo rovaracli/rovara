@@ -820,6 +820,19 @@ describe("SY-7: a removal or ban written between the requester check and the key
     }
   });
 
+  // Fix round 1 (revoke logging): a key that could not be given back is logged by event and error class, never the key.
+  it("logs a failed revoke by event name and error class only", async () => {
+    const h = await install(removal);
+    h.revokeKey.mockRejectedValueOnce(Object.assign(new Error("proxy said sk-proxy-race-turn-key-0001"), { name: "ProxyDown" }));
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+    try { await ask(h); } finally { log.mockRestore(); }
+    const line = lines.find((entry) => entry.includes("model_access.turn_revoke_failed"));
+    expect(line).toBeDefined();
+    expect(line).toContain("ProxyDown");
+    expect(lines.join("\n")).not.toContain("sk-proxy-race-turn-key-0001");
+  });
+
   it("an install that records no key (no agents) still refuses a removal that lands before the key is handed out", async () => {
     const h = await install(removal, { agents: false });
     const refused = await ask(h);

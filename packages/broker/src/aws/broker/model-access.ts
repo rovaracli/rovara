@@ -546,7 +546,7 @@ export async function mintChatTurnKey(
           scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }).map((key) => ({ key })),
         }, guard);
       } catch (error) {
-        await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        await giveKeyBack(modelAccess.access, minted.key);
         await forgetKey(ledger, orgId, keyIdOf(minted.key)).catch(() => undefined);
         throw error;
       }
@@ -559,7 +559,7 @@ export async function mintChatTurnKey(
           catch (error) { if (attempt === 0 && isTransactionConflict(error)) continue; throw error; }
         }
       } catch (error) {
-        await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        await giveKeyBack(modelAccess.access, minted.key);
         if (failedIndexes(error)?.size) throw guard.refusal();
         throw error;
       }
@@ -571,6 +571,12 @@ export async function mintChatTurnKey(
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/** Gives a minted key back to the proxy when it will not be handed out. A revoke that fails leaves a key nobody holds until it expires; it is logged by event name and error class only (never the key). */
+async function giveKeyBack(access: { revokeKey(key: string): Promise<unknown> }, key: string): Promise<void> {
+  try { await access.revokeKey(key); }
+  catch (error) { console.log(JSON.stringify({ component: "broker", event: "model_access.turn_revoke_failed", errorName: error instanceof Error ? error.name : "unknown" })); }
 }
 
 /**
