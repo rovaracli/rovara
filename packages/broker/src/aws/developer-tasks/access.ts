@@ -45,7 +45,8 @@ export interface AuthorizedTask extends TaskAccess {
 
 /**
  * Whether this is the session actor of `cancelTaskFor` or `retryTaskWorkflowFor` asking for an action it was given: stop (`control`), retry, and `work`, which a retry asks for
- * when it restarts coding (`queueWorkflowCoding`). Only those two functions set `sessionActor`, so `work` is reached only through a retry.
+ * when it restarts coding (`queueWorkflowCoding`). Only those two functions, and the Stop & redirect restart (`aws/broker/redirect-runtime.ts`, which checks that the person is the task's owner or a
+ * co-owner first), set `sessionActor`, so `work` is reached only through a retry or that restart.
  */
 function isSessionActor(deps: Pick<DeveloperTaskRouteDependencies, "sessionActor">, caller: DeveloperCaller, action: TaskAction): action is "retry" | "control" | "work" {
   return deps.sessionActor !== undefined && deps.sessionActor.developerId === caller.developerId && (action === "retry" || action === "control" || action === "work");

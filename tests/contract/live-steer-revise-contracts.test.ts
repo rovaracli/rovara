@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WorkflowSnapshotSchema, createWorkflowSnapshot, WorkflowTransitionError, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { liveSteerCodingBlockReason, revisePlanWithLiveChange, workflowReviseOffered, WORKFLOW_REVISE_PLAN_DECISION_REASON } from "../../packages/contracts/src/task-workflow-revise.js";
+import { liveSteerCodingBlockReason, revisePlanWithLiveChange, workflowReviseOffered, workflowRedirectReviseOffered, WORKFLOW_CODING_STOPPED_REASONS, WORKFLOW_REVISE_PLAN_DECISION_REASON } from "../../packages/contracts/src/task-workflow-revise.js";
+import { WORKFLOW_REDIRECT_PLAN_DECISION_REASON } from "../../packages/contracts/src/live-interaction.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const owner = "a".repeat(64);
@@ -90,5 +91,40 @@ describe("which block reason coding stops with", () => {
     expect(REASON).toMatch(/approve the revised plan/u);
     expect(REASON).toMatch(/Retry coding/u);
     expect(WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding).not.toMatch(/Revise the plan/u);
+  });
+});
+
+// ---- Stop & redirect "this changes the plan": the same move, from a coding step the owner's stop blocked (R3)
+
+describe("the move widened for Stop & redirect", () => {
+  const STOPPED = WORKFLOW_CODING_STOPPED_REASONS[0]!;
+
+  it("accepts coding blocked by its stop (cancelled or interrupted) when the redirect asks for it, and not otherwise", () => {
+    expect(WORKFLOW_CODING_STOPPED_REASONS).toEqual(["implementation operation ended cancelled", "implementation operation ended interrupted"]);
+    for (const reason of WORKFLOW_CODING_STOPPED_REASONS) {
+      expect(workflowRedirectReviseOffered(blocked({}, reason))).toBe(true);
+      expect(workflowReviseOffered(blocked({}, reason)), "the live-steer gate is unchanged").toBe(false);
+    }
+    // A failed run, a budget pause and the re-approval stops are not the owner's stop.
+    for (const reason of ["implementation operation ended failed", WORKFLOW_BLOCK_REASONS.budgetPaused, WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding]) expect(workflowRedirectReviseOffered(blocked({}, reason)), reason).toBe(false);
+    // The plan must be able to take the change in (no pull request open, no fix round, no custom sequence).
+    expect(workflowRedirectReviseOffered(blocked({ fixSource: "ci" }, STOPPED))).toBe(false);
+    expect(workflowRedirectReviseOffered(blocked({ stage: "VERIFY" }, STOPPED))).toBe(false);
+    expect(workflowRedirectReviseOffered(blocked({ state: "RUNNING", blockReason: undefined }, STOPPED))).toBe(false);
+  });
+
+  it("goes to planning with a fixed-words request for changes (never the instruction), only for the owner, and only with the redirect flag", () => {
+    const current = blocked({}, STOPPED);
+    const next = revisePlanWithLiveChange(current, { requestId, actorId: owner, now: later, redirect: true }, undefined);
+    expect(next).toMatchObject({ stage: "PLAN", state: "READY", revision: 10, outcome: "CHANGES_REQUESTED" });
+    expect(next.decisions.at(-1)).toMatchObject({ requestId, decision: "REQUEST_CHANGES", actorId: owner, actorRole: "TASK_OWNER", reason: WORKFLOW_REDIRECT_PLAN_DECISION_REASON });
+    expect(next.blockReason).toBeUndefined();
+    // Without the flag the live-steer rule still holds: a stop that is not the re-approval stop is refused.
+    expect(() => revisePlanWithLiveChange(current, { requestId, actorId: owner, now: later }, undefined)).toThrow(WorkflowTransitionError);
+    // Anyone but the owner is refused, flag or not.
+    expect(() => revisePlanWithLiveChange(current, { requestId, actorId: stranger, now: later, redirect: true }, undefined)).toThrow("only the task owner");
+    // The flag does not open the re-approval stop to the other reason's checks, and a repeated request id is refused.
+    expect(() => revisePlanWithLiveChange(next as never, { requestId, actorId: owner, now: later, redirect: true }, undefined)).toThrow(WorkflowTransitionError);
+    expect(() => revisePlanWithLiveChange(blocked({ decisions: [{ requestId, workflowRevision: 5, decision: "APPROVE", actorId: owner, actorRole: "TASK_OWNER", reason: "Approved", artifactDigest: plan.sha256, at: now }] }, STOPPED), { requestId, actorId: owner, now: later, redirect: true }, undefined)).toThrow("already used");
   });
 });

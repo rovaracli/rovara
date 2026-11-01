@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASK_LIMITS, ASK_RATE, AUDIT_FACT_KEYS, AskBodySchema, AskRecordSchema, AuditEventInputSchema, BROKER_SETTINGS, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_RATE, ERROR_REF_KINDS, ErrorRefSchema,
   LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied, diagnosisPrefillAllowed, DIAGNOSIS_PREFILL_ALLOW,
-  editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature,
+  editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature, WORKFLOW_BLOCK_REASONS,
 } from "../../packages/contracts/src/index.js";
 import {
   auditDiagnosisBundlePrepared, auditDiagnosisProposalRaised, auditDiagnosisProposed, auditDiagnosisStarted, auditDiagnosisSupportEscalated, auditSessionRedirected, auditTaskAsked, auditOccurrence,
@@ -16,6 +16,16 @@ const MESSAGE = "msg_abcdefghij0123456789";
 const AT = "2026-10-31T10:00:00.000Z";
 const ORG = "org_abcdefghij0123456789";
 const base = { orgId: ORG, actor: { kind: "member" as const, id: "dev_1" }, occurredAt: AT, occurrence: "occ-1" };
+
+describe("the words about work kept on a stopped coding run (R3)", () => {
+  it("say the stopped round's changes stay in the workspace unchecked, in both re-approval stops, and never that the work was discarded (tests/integration/worker-cancelled-implement-keeps-work.test.ts pins what the worker keeps)", () => {
+    for (const reason of [WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding, WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise]) {
+      expect(reason).toContain("still in the workspace but was not checked");
+      expect(reason).not.toMatch(/work was not kept|not kept/u);
+    }
+    expect(WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding).toContain("continues the approved plan from the current code");
+  });
+});
 
 describe("switches", () => {
   it("has three distinct two-letter codes; the ones not wired yet collide with no broker setting (fx is the autofix switch), and the redirect switch is wired under its own code", () => {

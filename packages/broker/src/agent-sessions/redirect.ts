@@ -100,7 +100,7 @@ export async function mayRedirectTask(deps: Pick<RedirectDependencies, "document
 }
 
 /** Whether the worker can take an owner redirect: it lists the feature. Anything else (older worker, no answer, no probe) is no. */
-export async function workerTakesRedirect(config: RedirectConfig, task: DeveloperTaskRecord): Promise<boolean> {
+export async function workerTakesRedirect(config: Pick<RedirectConfig, "workerFeatures">, task: DeveloperTaskRecord): Promise<boolean> {
   try {
     return (await config.workerFeatures(task))?.includes(OWNER_REDIRECT_FEATURE) === true;
   } catch {

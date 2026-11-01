@@ -53,6 +53,7 @@ import { sweepChainRuns } from "../../chains/lifecycle.js";
 import type { ChainRouteDependencies } from "../../chains/routes.js";
 import { chainSessionSource } from "../../chains/session-seam.js";
 import { drainEndedSessions, sweepAgentSessions } from "../../agent-sessions/sweep.js";
+import { sweepRedirects } from "./redirect-runtime.js";
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../../realtime/sink.js";
 import { DecideReauthRequired } from "../../developer/decide-session.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../../developer/decide-inspect.js";
@@ -177,6 +178,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The function's timeout is 30 seconds: the drain gets what is left of 25 (a refresh or a page of updates that has started may run a second or two over).
       try { outcome.drain = await drainEndedSessions(table, Date.now(), { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) }); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.drain = "failed"; }
+      // Stop & redirect: a redirect nobody finished is closed (nothing is read while the rd switch is off).
+      try { outcome.redirects = await sweepRedirects(dependencies); }
+      catch (error) { console.log(JSON.stringify({ component: "broker", event: "redirect.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.redirects = "failed"; }
       return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
