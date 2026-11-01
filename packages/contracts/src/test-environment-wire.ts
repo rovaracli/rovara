@@ -77,7 +77,8 @@ export const TEST_ENV_REFUSALS = [
 ] as const;
 export type TestEnvRefusal = (typeof TEST_ENV_REFUSALS)[number];
 
-const CheckRow = z.object({ id: Id, label: line(80), kind: CheckKindSchema }).strict();
+/** A check as the approval card shows it, with the arguments that narrow its tests (shown, because they decide which tests run once a map exists). */
+const CheckRow = z.object({ id: Id, label: line(80), kind: CheckKindSchema, selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict();
 export const TestEnvSummarySchema = z
   .object({
     tier: z.enum(["sandbox", "preview", "shared"]),
@@ -93,7 +94,7 @@ export type TestEnvSummary = z.infer<typeof TestEnvSummarySchema>;
 export function testEnvSummaryOf(body: TestEnvironmentBody): TestEnvSummary {
   return {
     tier: body.tier,
-    repositories: body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setupCommands: repo.setupCommands.length, checks: repo.checks.map((check) => ({ id: check.id, label: check.label, kind: check.kind })) })),
+    repositories: body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setupCommands: repo.setupCommands.length, checks: repo.checks.map((check) => ({ id: check.id, label: check.label, kind: check.kind, ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }) })) })),
     selectionMethod: body.selection.method,
     roundBudgetMin: body.roundBudgetMin,
     nightly: { enabled: body.nightly.enabled, cronUtc: body.nightly.cronUtc, branch: body.nightly.branch },

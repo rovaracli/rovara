@@ -13,6 +13,18 @@ import { TestEnvProveReportSchema, type AppProjectSummary, type ProjectCommand, 
 /** How old a passing setup check may be and still prove a proposal: the proposal's own life. */
 export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
 
+/**
+ * The fields that decide WHICH tests a check runs once a coverage map exists: a check's `selectArgs` is exactly the approved placeholder `["{tests}"]` (any other argument, `--co` or `--passWithNoTests`, would make a
+ * "selected" run pass without testing), the selection method is `full` or `coverage_map`, and there is no `declared` mapping (a few globs that send every source file to one trivial test). Shared by the draft
+ * sanitizer and the Prove derivation, so what is stored and what is proved cannot differ.
+ */
+export const SAFE_SELECT_ARGS: readonly string[] = ["{tests}"];
+export const SAFE_SELECTION_METHODS: readonly string[] = ["full", "coverage_map"];
+export const selectArgsAreSafe = (selectArgs: readonly string[] | undefined): boolean => selectArgs === undefined || (selectArgs.length === SAFE_SELECT_ARGS.length && selectArgs.every((arg, index) => arg === SAFE_SELECT_ARGS[index]));
+export function selectionFieldsAreSafe(body: TestEnvironmentBody): boolean {
+  return SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined && body.repos.every((repo) => repo.checks.every((check) => selectArgsAreSafe(check.selectArgs)));
+}
+
 export interface ProjectCommandsAt { revision: number; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }
 
 const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
@@ -38,6 +50,8 @@ export function proveReportFromSetupCheck(input: {
   // A service needs its boot and its mock or probe proved: that is the full Prove run, not this.
   if (environment.services.length > 0) return { ok: false, refusal: "services_need_prove" };
 
+  // The selection fields are proved too: a check that narrows its tests some other way than the approved placeholder is not provable.
+  if (!selectionFieldsAreSafe(environment)) return { ok: false, refusal: "not_provable" };
   const setupCommands = environment.repos.flatMap((repo) => repo.setupCommands);
   const checksOf = (kind: string) => environment.repos.flatMap((repo) => repo.checks).filter((check) => check.kind === kind);
   const build = checksOf("build"), smoke = checksOf("smoke"), tests = checksOf("test");

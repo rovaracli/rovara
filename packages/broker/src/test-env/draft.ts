@@ -26,10 +26,12 @@ import {
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { TransactItem } from "../audit/outbox.js";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "../org/test-environment.js";
+import { selectArgsAreSafe, SAFE_SELECTION_METHODS } from "./prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
 
+export const DRAFT_SELECTION_NOTE = "A way of narrowing the tests that Rovara does not accept was left out; that check runs in full.";
 export const DRAFT_LEFT_OUT_NOTE = "A command that downloads and runs code, or that holds a secret, was left out of the proposal.";
 
 const draftKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#DRAFT#${taskId}` });
@@ -44,6 +46,7 @@ function refusedCommand(command: ProjectCommand): boolean {
 function isSafestEnvironment(body: TestEnvironmentBody): boolean {
   return body.tier === "sandbox" && body.services.length === 0 && body.accounts.length === 0 && body.data.seeds.length === 0
     && body.preview === undefined && body.shared === undefined && !body.capture.video && !body.capture.traces && body.capture.screenshots === "failed"
+    && SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined
     && !body.nightly.enabled && body.roundBudgetMin === TEST_ENV_ROUND_BUDGET_MIN.min
     && body.prodDeny.accountIds.length === 0 && body.prodDeny.hosts.length === 0 && body.prodDeny.arnPrefixes.length === 0
     && testEnvLessSafeChanges(undefined, body).length === 0;
@@ -57,10 +60,13 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
   if (!parsed.success || !isSafestEnvironment(parsed.data.environment)) return undefined;
   const draft = parsed.data;
   let leftOut = false;
+  let narrowingDropped = false;
   const kept = new Set<string>();
   const repos = draft.environment.repos.map((repo) => {
     const setupCommands = repo.setupCommands.filter((command) => { const refused = refusedCommand(command); leftOut ||= refused; return !refused; });
-    const checks = repo.checks.filter((check) => { const refused = refusedCommand(check.command); leftOut ||= refused; if (!refused) kept.add(check.id); return !refused; });
+    const checks = repo.checks.filter((check) => { const refused = refusedCommand(check.command); leftOut ||= refused; if (!refused) kept.add(check.id); return !refused; })
+      // A narrowing argument other than the approved placeholder is dropped (the check then runs in full), never carried.
+      .map((check) => { if (selectArgsAreSafe(check.selectArgs)) return check; narrowingDropped = true; const { selectArgs: _dropped, ...whole } = check; void _dropped; return whole; });
     return { ...repo, setupCommands, checks };
   });
   if (repos.every((repo) => repo.checks.length === 0)) return undefined;
@@ -70,11 +76,11 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
     selection: { ...draft.environment.selection, alwaysRun: draft.environment.selection.alwaysRun.filter((id) => kept.has(id)) },
   };
   // A value source names a field by position: those of a dropped command would now point at another value, so the sources of a draft that lost something are kept only where they still line up (none).
-  const valueSources = leftOut ? [] : draft.valueSources;
+  const valueSources = leftOut || narrowingDropped ? [] : draft.valueSources;
   return {
     environment, valueSources,
     pendingServices: draft.pendingServices.map((service) => ({ kind: service.kind, target: plain(service.target) })).filter((service) => service.target !== ""),
-    notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : [])].filter((line) => line !== "").slice(0, 60),
+    notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : [])].filter((line) => line !== "").slice(0, 60),
     questions: draft.questions.map(plain).filter((line) => line !== "").slice(0, 60),
   };
 }
