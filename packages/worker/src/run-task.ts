@@ -510,13 +510,19 @@ async function runTask(
         });
       }
       // Proof and evidence (wire-proof): the checks' own test reports are read before TESTPROOF runs the original code. Only when the broker asked (its proof switch is on); informational.
-      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, selection: testEnv?.selection });
+      // The baseline run of a scanner on the original code (P4) takes time from the same budget the test proof below has.
+      const evidenceStarted = Date.now();
+      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) {
+        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection,
+          baseline: { runners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
+      }
+      const evidenceSpentMs = Date.now() - evidenceStarted;
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.
       if (status === "verified" && plan.source === "project" && !stop.signal.aborted) {
         const testProof = await runTestProofStep({ plan, round: round.entries, runners, repositories, candidateBefore, rootPath: canonicalRoot, signal: stop.signal,
-          budgetMs: roundBudgetMs - roundSpentMs, events, originalCode: dependencies.testProofOriginalCode });
+          budgetMs: roundBudgetMs - roundSpentMs - evidenceSpentMs, events, originalCode: dependencies.testProofOriginalCode });
         // Read only when the proof ran, and deliberately fail-closed: a read failure here fails the task rather than reporting a candidate nobody confirmed.
         // The after-snapshot is read after the proof run too: whatever it left behind in the candidate is then seen by the broker as drift.
         const afterProof = await readCandidateRepositories(repositories);

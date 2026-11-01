@@ -34,6 +34,7 @@ import { branchSyncRequestId } from "../../rovara-code/branch-sync.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
 import { attributionForPublication } from "../../wiring/enterprise-identity.js";
 import { recomputeRisk, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
+import { evidenceRiskOfTask } from "./evidence-risk-input.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../../developer/test-proof-lines.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -237,10 +238,12 @@ export async function startTaskWorkflowPublicationFromSystem(
     { documentClient: deps.documentClient, stateTable: deps.tableName, signInTable: deps.signInTableName ?? deps.tableName, teamRecordTable: deps.tableName },
     { orgId: deps.orgId, taskId, requesterId: task.developerId, decisions: workflow.decisions, origin: origin.taskPageUrl ?? deps.issuer },
   );
+  // Proof and evidence P4: a security scan's new high findings on this code raise the risk (only while the proof switch is on; otherwise there is no port and no signal).
+  const evidenceRisk = rovaraV2 ? await evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest) : undefined;
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2
-    ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), attribution: resolvedAttribution.attribution }
+    ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
     : { attribution: resolvedAttribution.attribution };
-  const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
+  const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
   const body = withSpecLink(workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext, await loadTestProofLines(deps.actions, task, workflow.candidate?.digest, inertPlanLine)), spec.linkLine);
@@ -365,7 +368,7 @@ async function startTaskWorkflowPullRequestUpdate(
   const receivedAt = iso(deps);
   // Rovara Code version 2: the code on the pull request changes with this push, so its risk is judged again for the new code, in the write that starts the push.
   const started = startWorkflowPullRequestUpdate(workflow, receivedAt);
-  const judged = workflow.definitionVersion === "1.1.0" ? recomputeRisk(started, await candidateChangedFiles(deps, task), {}) : started;
+  const judged = workflow.definitionVersion === "1.1.0" ? recomputeRisk(started, await candidateChangedFiles(deps, task), {}, await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest)) : started;
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequestUpdate"]>>;
   try {
     accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task, deps.orgId), task.workspaceId, {

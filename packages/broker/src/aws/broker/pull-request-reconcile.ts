@@ -11,6 +11,7 @@ import { parseGitHubRepository, pullRequestBodyWithDraftNote } from "../../githu
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
+import { evidenceRiskOfTask } from "../developer-tasks/evidence-risk-input.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../../rovara-code/session-bindings.js";
@@ -178,9 +179,11 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const proofResult = proofRead === undefined ? undefined : await proofRead;
     const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel ? undefined : {
+    // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
+    const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && evidenceRisk === undefined ? undefined : {
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
-      ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }),
+      ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }),
     };
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;

@@ -4,6 +4,7 @@
 // At launch this is deliberately simple. Later (owner, 2026-10-22) it should also weigh how often each file changes, how far a change reaches, each project's own sensitive-path settings
 // and what past reverts of Rovara's merged pull requests teach.
 import { RISK_LARGE_CHANGE_LINES, RiskAssessmentSchema, type RiskAssessment, type VerificationReport } from "@agentx/contracts";
+import type { EvidenceRiskSignal } from "./evidence-risk.js";
 import { inertLine } from "./inert-text.js";
 
 export type RiskLevel = RiskAssessment["level"];
@@ -109,6 +110,8 @@ export interface RiskInput {
   /** The code reviewer's own level for this code, when it gave one. */
   reviewerRisk?: RiskLevel | undefined;
   candidateDigest: string;
+  /** Proof and evidence P4: a security scan's new high or critical findings on this code, from the evidence pack (only while the proof switch is on). Absent: the level is what it was before evidence existed. */
+  evidence?: EvidenceRiskSignal | undefined;
 }
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
@@ -147,6 +150,8 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");
   else if (input.securityFindings > 0) high.push("The security review reported a problem with this change.");
   if (input.reviewerRisk === "high") high.push("The code review rated this change high risk.");
+  // A new high or critical finding from a security scan: high, whatever the files and the reviewer said (a fixed sentence; the tool's own words are not used).
+  if (input.evidence !== undefined && input.evidence.highNewFindings > 0) high.push(`A security scan found ${plural(input.evidence.highNewFindings, "new high or critical finding", "new high or critical findings")}.`);
 
   const lines = input.changedFiles.reduce((total, file) => total + (file.added ?? 0) + (file.removed ?? 0), 0);
   if (lines > RISK_LARGE_CHANGE_LINES) medium.push(`Changes ${lines} lines, more than ${RISK_LARGE_CHANGE_LINES}.`);
@@ -164,6 +169,8 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   if (input.report.notChecked.length > 0 && !input.report.reviewOnly) medium.push(`${plural(input.report.notChecked.length, "check", "checks")} could not be run.`);
   if (input.acceptedFindings.some((finding) => finding.role === "CRITIC")) medium.push("The owner accepted a code review finding.");
   if (input.reviewerRisk === "medium") medium.push("The code review rated this change medium risk.");
+  // A security scan reported high findings that could not be compared with the original code (no baseline ran, or it could not be trusted): at least medium ("needs review"), never silently low.
+  if (input.evidence !== undefined && (input.evidence.unverifiedHighFindings ?? 0) > 0) medium.push(`A security scan reported ${plural(input.evidence.unverifiedHighFindings!, "high or critical finding", "high or critical findings")} that could not be compared with the original code, so it needs review.`);
 
   const level: RiskLevel = high.length > 0 ? "high" : medium.length > 0 ? "medium" : "low";
   const reasons = [...high, ...medium].map((reason) => reason.slice(0, REASON_MAX));

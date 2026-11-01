@@ -59,7 +59,7 @@ function duration(seconds: number | undefined, unit: "s" | "ms"): number | undef
 // ---- JUnit XML
 
 const ENTITY = /&(?:lt|gt|quot|apos|amp|#(\d{1,7})|#x([0-9a-fA-F]{1,6}));/g;
-function unescapeXml(text: string): string {
+export function unescapeXml(text: string): string {
   return text.replace(ENTITY, (match, decimal: string | undefined, hex: string | undefined) => {
     if (decimal !== undefined || hex !== undefined) {
       const code = decimal !== undefined ? Number(decimal) : parseInt(hex!, 16);
@@ -105,7 +105,7 @@ export function tagEnd(text: string, from: number): number {
 }
 
 /** A tag's attribute text longer than this makes the file unreadable: no real test case has attributes this long. */
-const ATTRIBUTE_TEXT_MAX = 16_384;
+export const ATTRIBUTE_TEXT_MAX = 16_384;
 const NAME_CHAR = /[\w:.-]/;
 const SPACE = /\s/;
 

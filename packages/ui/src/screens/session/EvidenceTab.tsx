@@ -61,8 +61,9 @@ function TestsSection({ evidence }: { evidence: Evidence }) {
 }
 function CoverageSection({ checks }: { checks: readonly Check[] }) {
  const covered = checks.filter(check => check.coverage !== undefined);
- if (covered.length === 0) return <><h3>Changed-line coverage</h3><p>Not measured.</p></>;
+ if (covered.length === 0) return <><h3>Changed-line coverage</h3><p>No coverage report.</p></>;
  return <><h3>Changed-line coverage</h3>{covered.map(check => { const coverage = check.coverage!;return <section key={check.checkId} aria-label={"Coverage of " + check.label}><p>{coverage.linesCovered + " of " + coverage.linesChanged + " changed lines covered" + (coverage.linesChanged > 0 ? " (" + Math.round(100 * coverage.linesCovered / coverage.linesChanged) + "%)" : "") + "."}</p>
+  {(coverage.unlistedFiles ?? 0) > 0 && <p>{(coverage.unlistedFiles ?? 0) + " changed source file" + (coverage.unlistedFiles === 1 ? " is" : "s are") + " not in the coverage report."}</p>}
   {coverage.files.length > 0 && <ul>{coverage.files.map(file => <li key={file.path}><VisibleText text={file.path} />{file.uncovered.length > 0 && <span>{" uncovered lines: " + file.uncovered.join(", ")}</span>}</li>)}</ul>}</section>; })}</>;
 }
 function ApiSection({ evidence }: { evidence: Evidence }) {

@@ -69,26 +69,37 @@ export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string 
       const findings = check.findings;
       if (check.after !== "passed" && check.after !== "failed") parts.push(`security scan ${OUTCOME_WORDS[check.after]}`);
       else if (findings === undefined) parts.push(`security scan ${OUTCOME_WORDS[check.after]} (findings not read)`);
+      else if ((findings.unverified ?? 0) > 0) parts.push(`security scan ${OUTCOME_WORDS[check.after]}: ${number(findings.unverified!)} high or critical finding${findings.unverified === 1 ? "" : "s"} could not be compared with the original code`);
       else parts.push(`security scan ${OUTCOME_WORDS[check.after]}: ${findings.newCount === 0 ? "0 new findings" : `${number(findings.newCount)} new${findings.bySeverity.critical + findings.bySeverity.high > 0 ? ` (${number(findings.bySeverity.critical + findings.bySeverity.high)} high or critical)` : ""}`}`);
     } else if (check.kind === "migration") {
       const migrations = check.migrations;
       if (check.after !== "passed" || migrations === undefined) parts.push(`migrations ${OUTCOME_WORDS[check.after]}`);
       else parts.push(`migrations: ${number(migrations.applied.length)} applied${migrations.rolledBack === true ? " and rolled back cleanly" : migrations.rolledBack === false ? ", rollback failed" : ""}`);
     } else {
-      parts.push(`${check.kind === "other" ? label : KIND_WORDS[check.kind]} ${OUTCOME_WORDS[check.after]}`);
+      // A lint or type check that wrote SARIF also says how many findings are new (counts only; a finding's text is not on the pull request).
+      const found = check.findings;
+      const note = found === undefined ? "" : found.newCount === 0 ? " (no new findings)" : ` (${number(found.newCount)} new finding${found.newCount === 1 ? "" : "s"})`;
+      parts.push(`${check.kind === "other" ? label : KIND_WORDS[check.kind]} ${OUTCOME_WORDS[check.after]}${note}`);
     }
   }
   if (pack.selection.selected < pack.selection.total) parts.push(`${number(pack.selection.selected)} of ${number(pack.selection.total)} tests selected (${SELECTION_WORDS[pack.selection.method]})`);
   return parts.length === 0 ? undefined : cutLine(`Checks by kind: ${parts.slice(0, 12).join(" · ")}${parts.length > 12 ? ` · and ${parts.length - 12} more` : ""}`);
 }
 
-/** The changed-line coverage line (dropped from shrink level 2): the changed lines the tests cover, over every check that measured it; "not measured" when a test check ran and none did. */
+/**
+ * The changed-line coverage line (dropped from shrink level 2): the changed lines the tests cover, over every check that measured it. "No coverage report" when a test check ran and none wrote one this round (or the
+ * one it wrote could not be read); a report that lists none of the changed lines says so instead of a bare "0 of 0". Replaces: "not measured", which did not say why.
+ */
 export function coverageLine(pack: EvidencePack): string | undefined {
   const measured = pack.checks.filter((check) => check.coverage !== undefined);
-  if (measured.length === 0) return pack.checks.some((check) => check.kind === "test") ? "Changed lines covered by tests: not measured" : undefined;
+  if (measured.length === 0) return pack.checks.some((check) => check.kind === "test") ? "Changed lines covered by tests: no coverage report" : undefined;
   const changed = measured.reduce((sum, check) => sum + check.coverage!.linesChanged, 0);
   const covered = measured.reduce((sum, check) => sum + check.coverage!.linesCovered, 0);
-  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)}${changed === 0 ? "" : ` (${Math.round((covered / changed) * 100)}%)`}`;
+  // Changed source files the report never names have no line in the counts: said in fixed words, never left out. With several reports a file may be named by another one, so the smallest count is a floor.
+  const unlisted = Math.min(...measured.map((check) => check.coverage!.unlistedFiles ?? 0));
+  const missing = unlisted === 0 ? "" : `; ${measured.length > 1 ? "at least " : ""}${number(unlisted)} changed source file${unlisted === 1 ? " is" : "s are"} not in the coverage report`;
+  if (changed === 0) return `Changed lines covered by tests: the coverage report lists none of the changed lines${missing}`;
+  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)} (${Math.round((covered / changed) * 100)}%)${missing}`;
 }
 
 /** The Environment line (never dropped; shorter at level 3 and above): the tier, each service's mode (mocked ones with their recording), the accounts' kind and the data. */
