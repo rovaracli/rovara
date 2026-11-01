@@ -931,7 +931,7 @@ export async function handleAgentSkills(dependencies: AwsBrokerDependencies, req
  * call is never begun after a stop), and its task must belong to the same org: any disagreement serves nothing. What a step may use, and every check before a
  * vendor is asked, is `agents/agent-tools-routes.ts`.
  */
-export async function handleAgentTools(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined, request: AdaptedHttpRequest, kind: "list" | "call") {
+export async function handleAgentTools(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined, request: AdaptedHttpRequest, kind: "list" | "call" | "record-list" | "record-call") {
   const token = request.headers["x-agentx-callback-capability"];
   if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
   let claims: CallbackClaims;
@@ -949,6 +949,19 @@ export async function handleAgentTools(dependencies: AwsBrokerDependencies, agen
   }
   const stepId = (operation as { programStepId?: unknown }).programStepId;
   const run: AgentToolsRun = { orgId, task, workspace, operation: { id: operation.id, ...(typeof stepId === "string" ? { programStepId: stepId } : {}) } };
+  // Team record (wire-team-record): the record tools of the step (`/v1/internal/record-tools*`), on the same capability and the same checks as the connector tools above. Nothing is offered or answered
+  // where the record's switch is off. The audience is the TASK's: a shared task sees project-wide rows only, a private task what its owner sees. The stage is not known here, so outside people's text is withheld (the strictest).
+  if (kind === "record-list" || kind === "record-call") {
+    const record = dependencies.teamRecord;
+    if (kind === "record-list") return { tools: record === undefined ? [] : record.tools.list({}) };
+    if (record === undefined) throw agentXError("NOT_FOUND", "the team record is not set up in this deployment");
+    const body = parseBody(request.body) as { tool?: unknown; arguments?: unknown };
+    const ownerAudience = task.shared ? undefined : await record.tools.ownerAudience(task, effectiveTaskOwner(task).developerId);
+    return record.tools.call(
+      { orgId, project: task.project, taskId: task.taskId, visibility: task.shared ? "shared" : "private", ...(ownerAudience === undefined ? {} : { ownerAudience }) },
+      { tool: typeof body.tool === "string" ? body.tool : "", arguments: body.arguments },
+    );
+  }
   const tools = agentToolsDependencies(dependencies, agents);
   return kind === "list" ? listAgentTools(tools, run) : callAgentTool(tools, run, parseBody(request.body));
 }

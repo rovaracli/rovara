@@ -1,3 +1,4 @@
+import { createSlackForwarder } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -1088,8 +1089,20 @@ function createAwsSlackIngressHandler() {
   const choices = createDynamoWorkflowChoiceStore({ documentClient, tableName: threadsTableName });
   const changePending = threadPendingCounter(documentClient, threadsTableName);
   const enqueueAnswer = createAnswerQueue({ sqs, queueUrl, changePending });
+  // Team record (wire-team-record): only where the install was deployed with the record's switch on. The ingress reads the channel's facts with the bot token and hands the verified event to the BROKER by a direct invoke;
+  // it gets no table or queue right of its own. Text-carrying events go as a request/response invoke in Public (Slack's terms: no persisted copy of message text), the rest as asynchronous events.
+  const recordTap = process.env.TEAM_RECORD_ENABLED !== "1" || brokerFunctionName === undefined ? undefined : createSlackForwarder({
+    token: async () => (await secrets()).botToken,
+    fetch: fetch,
+    edition: process.env.ROVARA_EDITION === "enterprise" ? "enterprise" : "public",
+    async invoke(event, wait) {
+      const response = await lambda.send(new InvokeCommand({ FunctionName: brokerFunctionName, InvocationType: wait ? "RequestResponse" : "Event", Payload: Buffer.from(JSON.stringify(event)) }));
+      if (response.FunctionError !== undefined) throw new Error("the broker refused the record event");
+    },
+  });
   return createSlackIngressHandler({
     secrets,
+    ...(recordTap === undefined ? {} : { recordTap }),
     appPosted: { accept: settings.acceptAppPosted, checkMember },
     turnLimit: {
       perMinute: settings.turnsPerMinute,

@@ -1333,3 +1333,12 @@ export function intakeOwnWriteKey(orgId: OrgId, ticketItemId: string, kind: Inta
   const part = kind === "touch" ? "-" : createHash("sha256").update(value.normalize("NFC").trim().toLowerCase(), "utf8").digest("hex").slice(0, 32);
   return { pk: orgScoped(orgId, "INTAKE_OWN"), sk: `${ticketItemId}#${kind}#${part}` };
 }
+
+/**
+ * Team record (wire-team-record): the directory of the workspaces that have written to the record, so the scheduled jobs (the delete worker, the raw-text expiry, the archiver) can reach every
+ * workspace that has anything to delete. One small item per org, holding the org id and a time; written before the first record write of an org, removed when the org's record is erased.
+ */
+export const TEAM_RECORD_ORG_DIRECTORY_PK = "TEAM_RECORD_ORGS";
+export function teamRecordOrgDirectoryKey(orgId: OrgId): { pk: string; sk: string } {
+  return { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: orgId };
+}

@@ -4,6 +4,8 @@ import { checkedBrokerEnvironment } from "./private-mcp.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
+import { attachTeamRecord } from "./team-record-wiring.js";
+import type { TeamRecordContext } from "./team-record-edition.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
 import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
@@ -92,6 +94,11 @@ export interface ControlPlaneStackProps extends StackProps {
   bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
   brokerEnvironment?: Readonly<Record<string, string>>;
+  /**
+   * Team record (wire-team-record): the parameters of the record's storage, present ONLY when the install is synthesised with `agentxTeamRecord=enabled`. Absent (the default), nothing of
+   * the record is created and the templates are unchanged. Named environments only (checked by `parseTeamRecordSwitch`).
+   */
+  teamRecord?: TeamRecordContext;
 }
 
 /**
@@ -1082,6 +1089,8 @@ export class ControlPlaneStack extends Stack {
         },
       });
     }
+    // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
+    if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, scheduleRole: githubRecoveryRole });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
     // aws:SourceArn to the schedule GROUP's ARN, not the schedule's, so that is what the role's trust names (a `schedule/...` pattern would never match, and a schedule of any
     // other group is refused). The role can invoke the broker function and write the dead-letter queue, nothing else. The queue is encrypted with SQS-managed keys, so no KMS

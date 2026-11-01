@@ -447,9 +447,11 @@ export function learningWalkDeps(input: { documentClient: LearningDeps["document
  * The function for `AuditEraseDeps.eraseLearning`: runs the erase walk and answers only when it finished. A walk that stopped on its budget is an error so the erasure request is answered
  * "send the same request again", and that repeat resumes the walk.
  */
-export function learningEraseHook(deps: LearningDeps, budget?: WalkLimits): (orgId: OrgId, developerId: string) => Promise<void> {
+export function learningEraseHook(deps: LearningDeps, budget?: WalkLimits, andThen?: (orgId: OrgId, developerId: string) => Promise<void>): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
     const result = await eraseLearningSubject(deps, orgId, developerId, budget);
     if (result.status !== "done") throw Object.assign(new Error("learning erase not finished"), { name: "LearningEraseUnfinished" });
+    // Team record (wire-team-record): the person's rows, facts, lessons and lake rows go in the same request; a pass that does not finish throws, and the request is repeated.
+    await andThen?.(orgId, developerId);
   };
 }

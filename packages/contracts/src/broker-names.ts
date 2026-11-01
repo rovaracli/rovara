@@ -109,6 +109,10 @@ export const BROKER_NAMES = {
   slackRequestDeadLetters: { code: "sr", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "slack-requests" },
   developerNoticeDeadLetters: { code: "dn", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "developer-notices" },
   developerNoticeStreamFailures: { code: "ds", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "developer-notice-stream" },
+  // Team record (wire-team-record; present only when the install is synthesised with `agentxTeamRecord=enabled`): the role the broker assumes, with a per-workspace session policy, for every vector call.
+  teamRecordVectorsRole: { code: "vr", variable: "TEAM_RECORD_VECTORS_ROLE_ARN", kind: "roleArn" },
+  // Team record, Enterprise: the customer's KMS key (its id; the broker builds the ARN in this account and region), named in each workspace's vector session policy.
+  teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 
 export type BrokerNameKey = keyof typeof BROKER_NAMES;
@@ -161,6 +165,11 @@ export const BROKER_SETTINGS = {
   liveRedirect: { code: "rd", variable: "LIVE_REDIRECT_ENABLED" },
   // Live interaction F2 to F4: Fix with agent (diagnosis; switch `fd`, stack parameter LiveFixEnabled, "0" by default): the broker reads it as LIVE_FIX_ENABLED, and the diagnosis routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveFix: { code: "fd", variable: "LIVE_FIX_ENABLED" },
+  // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
+  // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
+  teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
+  teamRecordEmbeddingModel: { code: "te", variable: "TEAM_RECORD_EMBEDDING_MODEL_ID" },
+  teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

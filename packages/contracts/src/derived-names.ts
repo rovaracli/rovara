@@ -28,6 +28,16 @@ export function auditIntakeQueueName(env: string): string {
   return `agentx-${env}-audit-intake.fifo`;
 }
 
+/**
+ * Team record (wire-team-record): the names of the record's storage under the `agentx-<env>-...` naming. CDK names the resources with these (infra/lib/team-record-wiring.ts) and the broker
+ * builds the variables from the same functions, so nothing is passed. `TeamRecordStorage` appends `-record-vectors`, `-record-lake` and `-record` to the prefix.
+ */
+export const teamRecordNamePrefix = (env: string): string => `agentx-${env}`;
+export const teamRecordTableName = (env: string): string => `agentx-${env}-team-record`;
+export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
+export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
+export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
+
 /** The port the model proxy's inference listener serves on; the broker builds the proxy's URL from the load balancer's name and this. */
 export const MODEL_PROXY_INFERENCE_PORT = 4000;
 
@@ -61,4 +71,9 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "BROKER_ROLE_ARN", kind: "roleArn", roleName: brokerRoleName, cloudOnly: true },
   // The one role the broker assumes for an org's connection secrets.
   { variable: "CONNECTOR_SECRETS_ROLE_ARN", kind: "roleArn", roleName: connectorSecretsRoleName },
+  // Team record: set in the process (not in Lambda's configuration) for every named environment; the record does nothing unless TEAM_RECORD_ENABLED is "1".
+  { variable: "TEAM_RECORD_TABLE_NAME", kind: "text", value: teamRecordTableName },
+  { variable: "TEAM_RECORD_VECTOR_BUCKETS", kind: "text", value: teamRecordVectorBucketName },
+  { variable: "TEAM_RECORD_TABLE_BUCKET", kind: "text", value: teamRecordTableBucketName },
+  { variable: "TEAM_RECORD_ATHENA_WORKGROUP", kind: "text", value: teamRecordWorkGroupName },
 ];
