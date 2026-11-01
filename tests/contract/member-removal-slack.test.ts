@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { orgMemberKey, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { resolveTaskPickerPerson, checkTaskPersonIdentity, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../../packages/broker/src/developer/task-person-identity.js";
+import { resolveTaskPickerPerson, checkTaskPersonIdentity, type TaskPersonIdentityDependencies } from "../../packages/broker/src/developer/task-person-identity.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createDeveloperTaskBroker, OMAR, seedMembership } from "../support/developer-task-broker.js";
@@ -69,7 +69,7 @@ describe("a task's person proof", () => {
       documentClient: db, tableName: "state", slackTeamId: TEAM, now: () => T0, uuid: () => "22222222-2222-4222-8222-222222222222",
       taskPersonProof: vi.fn(async (request: TaskPersonProofRequest): Promise<TaskPersonProofResponse> => ({ ok: true, user: { id: request.slackUserId, teamId: TEAM, name: "Priya" }, memberOf: ["C0PAY0001"] })),
       developerRecord: vi.fn(async () => undefined), projectChannelIds: vi.fn(async () => ["C0PAY0001"]),
-      targetProjectAccess: vi.fn(async (_subject: ProjectAccessSubject) => undefined),
+      targetProjectAccess: vi.fn(async () => undefined),
     };
     return { db, deps };
   };
