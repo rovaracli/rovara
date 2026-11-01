@@ -236,6 +236,22 @@ describe("an install that never kept evidence, and a walk that continues", () =>
   });
 });
 
+describe("the cursor is saved between pages", () => {
+  it("a pass that dies in the middle (the store errors on a later page) has saved where it was, so the next one does not start over", async () => {
+    const t = table({ extraTasks: 200 });
+    const b = populate();
+    let calls = 0;
+    const dying = { send: async (command: unknown) => { calls += 1; if (calls > 400) throw new Error("store down"); return b.s3.send(command as never); } } as unknown as S3Client;
+    await expect(createEvidenceErase({ s3: dying, artifactBucketName: "bucket", ...t }).person(ORG, DEV)).rejects.toThrow("store down");
+    const pending = [...t.items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING");
+    expect((pending[0]?.cursor as { i: number } | undefined)?.i).toBeGreaterThan(0);
+    // The next call goes on from there and finishes.
+    t.calls.queries.length = 0;
+    await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).person(ORG, DEV);
+    expect(Math.min(...t.calls.queries.map((query) => (query.ExclusiveStartKey as { i: number } | undefined)?.i ?? 0))).toBe((pending[0]!.cursor as { i: number }).i);
+  });
+});
+
 describe("a close or an archive that does not finish is not left behind", () => {
   /** An erase whose clock jumps with every store call, so a pass runs out of time after a couple of calls; `resumer` has all the time it needs. */
   function interrupted(t: ReturnType<typeof table>, b: ReturnType<typeof bucket>) {
