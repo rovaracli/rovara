@@ -16,3 +16,7 @@
 - tests/contract/eval-memory-contracts.test.ts (10); 7 mutants killed.
 - Contract only: the quality-suite batch is not on cloud/next; today's EvalBatchFileSchema refuses a `memory` key (pinned by a test).
 - Inventory gates: task-owner-reads(+bypass), role-sites, agent-lifecycle, contracts-web-entry (the web-safe-files inventory) pass; contracts-web-entry's one dist test needs packages/web/dist (environmental).
+
+## Status: ALL THREE TASKS DONE. Commits: 6be9916e3 + c670da0ea (suite), 951a19edd (metric), 1fae8e043 (memory arm).
+- Gaps found: GAP-1 reflect-input.ts:79 (steeringTrust absent fails open); GAP-2 sources.ts:60-76 + process.ts:104-110 (a burst spread over many sources never pauses auto-apply). Both are `it.fails` in learning-poisoning.test.ts.
+- report.md could not be written (the Write tool refused report files for this subagent); the full report went to the controller in the final hand-back message.
