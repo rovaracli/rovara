@@ -185,7 +185,7 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
     const file = `images/${image.name}.oci.tar`;
     await input.exportImage(image.sourceRef, join(out, file));
     // The archive must hold the very digest the signed manifest will promise; a converted manifest has another digest (review I7).
-    const held = await ociArchiveDigests(join(out, file)).catch(() => []);
+    const held = await ociArchiveDigests(join(out, file)).catch((): string[] => []);
     if (!held.includes(imageDigestOf(image.sourceRef))) throw new Error(`the exported archive of image ${image.name} does not hold ${imageDigestOf(image.sourceRef)}`);
     files.push({ file, kind: "image", ...(await sha256OfFile(join(out, file))) });
     images.push({ name: image.name, sourceRef: image.sourceRef, file });
