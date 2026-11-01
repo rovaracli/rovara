@@ -30,6 +30,19 @@ export interface ProjectCommandsAt { revision: number; setup: readonly ProjectCo
 const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
 const covered = (command: ProjectCommand, among: readonly ProjectCommand[]): boolean => among.some((candidate) => sameCommand(candidate, command));
 
+/** The kinds of check the setup check proves: its readiness commands are the project's build, smoke and test commands. */
+export const PROVED_CHECK_KINDS: readonly string[] = ["build", "smoke", "test"];
+
+/**
+ * How many of a proposal's commands the setup check has NOT run: setup commands that are in neither the project's setup nor its readiness commands, and build, smoke and test checks that are not exactly one of
+ * its readiness commands. Zero means the commands are all among the ones the check ran (the rest of the Prove rules still apply).
+ */
+export function commandsNotRun(environment: TestEnvironmentBody, definition: Pick<ProjectCommandsAt, "setup" | "readiness">): number {
+  const setupMissing = environment.repos.flatMap((repo) => repo.setupCommands).filter((command) => !covered(command, definition.setup) && !covered(command, definition.readiness)).length;
+  const checksMissing = environment.repos.flatMap((repo) => repo.checks).filter((check) => PROVED_CHECK_KINDS.includes(check.kind) && !covered(check.command, definition.readiness)).length;
+  return setupMissing + checksMissing;
+}
+
 export type ProveFromSetupCheck = { ok: true; report: TestEnvProveReport } | { ok: false; refusal: TestEnvRefusal };
 
 export function proveReportFromSetupCheck(input: {

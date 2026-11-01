@@ -251,7 +251,7 @@ export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
 // ---- less-safe fields and the approval card's risk
 
 /** The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised"] as const;
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
@@ -265,6 +265,25 @@ function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
   // A nightly run is a full run of the suite on a worker, paid for by the project: turning it on is a spending change.
   if (env.nightly.enabled) set.add("nightly_enabled");
   return set;
+}
+
+const SELECTION_METHOD_RANK: Record<string, number> = { full: 0, coverage_map: 1, import_graph: 2, declared: 3 };
+
+/**
+ * Whether `next` runs FEWER of a project's tests than `previous` did: the selection method moved from running everything toward choosing tests (full, then a coverage map, then an import graph, then a declared
+ * mapping), a check began to name which tests it runs (`selectArgs`, added or changed), or an entry was taken out of what always runs or of the files that make the whole suite run. A change that only runs more is not narrowing.
+ */
+export function selectionNarrowed(previous: TestEnvironmentBody, next: TestEnvironmentBody): boolean {
+  const rank = (method: string): number => SELECTION_METHOD_RANK[method] ?? Number.POSITIVE_INFINITY;
+  if (rank(next.selection.method) > rank(previous.selection.method)) return true;
+  const before = new Map(previous.repos.flatMap((repo) => repo.checks).map((check) => [check.id, check] as const));
+  const nextIds = new Set(next.repos.flatMap((repo) => repo.checks).map((check) => check.id));
+  for (const check of next.repos.flatMap((repo) => repo.checks)) {
+    const was = before.get(check.id);
+    if (was !== undefined && check.selectArgs !== undefined && JSON.stringify(was.selectArgs ?? null) !== JSON.stringify(check.selectArgs)) return true;
+  }
+  if (previous.selection.alwaysRun.some((id) => nextIds.has(id) && !next.selection.alwaysRun.includes(id))) return true;
+  return previous.selection.fullSuiteOn.some((glob) => !next.selection.fullSuiteOn.includes(glob));
 }
 
 /** How many times a five-field cron fires in a week, roughly (a month is 30 days, a restricted month counts its share). Anything it cannot read counts as unbounded, so an odd cron is never "less often". */
@@ -312,6 +331,7 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
     const missing = (was: readonly string[], now: readonly string[]) => was.some((entry) => !now.includes(entry));
     if (cronRunsPerWeek(next.nightly.cronUtc) > cronRunsPerWeek(previous.nightly.cronUtc) && next.nightly.enabled) changed.push("nightly_more_often");
     if (previous.preview !== undefined && next.preview !== undefined && (next.preview.costCapUsdPerDay > previous.preview.costCapUsdPerDay || next.preview.ttlHours > previous.preview.ttlHours)) changed.push("preview_cost_raised");
+    if (selectionNarrowed(previous, next)) changed.push("selection_narrowed");
     if (missing(previous.prodDeny.accountIds, next.prodDeny.accountIds) || missing(previous.prodDeny.hosts, next.prodDeny.hosts) || missing(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) changed.push("prod_deny_reduced");
   }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));

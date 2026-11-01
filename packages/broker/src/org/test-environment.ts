@@ -13,7 +13,7 @@
 // The less-safe check is deliberately the blunt one `testEnvLessSafeChanges` gives (pre-prod, shared env, preview, video, traces, schema-synth mocks, a raised round budget). A change that turns on none of them
 // is an ordinary approval. The caller (the confirmation page route) fences the two people's live authority in its own transaction; this module checks only what it is handed.
 import { createHash } from "node:crypto";
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
   TestEnvProveReportSchema,
@@ -41,6 +41,8 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
+import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
+import type { TeamRecordTable } from "../team-record/types.js";
 
 /** What the second-person check answers: the mode the COMPANY'S RECORDS allow, and the conditions that pin both people's live authority so they commit with the approval. */
 export interface SecondPersonCheck { mode: "second_person" | "sole_owner_exception"; membershipVersion: number; conditions: TransactItem[] }
@@ -57,21 +59,52 @@ export interface TestEnvDeps extends AuditDeps {
   secondPerson?: SecondPersonPort;
 }
 
-/** The real second-person check over the company's records (the same evidence and decision every other less-safe approval uses). */
-export function secondPersonFromRecords(deps: SecondPersonEvidenceDependencies): SecondPersonPort {
-  return async (scope) => {
-    const { decisionInput, conditions } = await readSecondPersonApprovalEvidence(deps, scope);
-    const decision = decideSecondPersonApproval(decisionInput);
-    return { mode: decision.mode, membershipVersion: decision.membershipVersion, conditions };
-  };
+/**
+ * Whether the company lets its only owner stand in as the second person (the company switch, default ON; owner decision 2026-11-01). A switch that cannot be read, or holds something that is not a boolean, is
+ * OFF: the exception is never assumed.
+ */
+export async function soleOwnerExceptionOn(table: TeamRecordTable | undefined, orgId: OrgId): Promise<boolean> {
+  // The switch lives in the Team record's table (where `setSoleOwnerSwitch` writes it), read by the reader the lessons tier-0 code uses. Where the Team record is off there is no such table and the switch cannot be
+  // read, so the exception is not available: fail closed.
+  if (table === undefined) return false;
+  try { return await new DynamoSoleOwnerSwitch(table).read(orgId); } catch { return false; }
+}
+
+/** What the second-person decision needs: the company's records, and the Team record's table for the sole-owner switch (absent where the Team record is off: no sole-owner exception). */
+export type SecondPersonDecisionDependencies = SecondPersonEvidenceDependencies & { soleOwnerTable?: TeamRecordTable | undefined };
+
+/**
+ * The second-person decision for one scope, over the company's records: both people's live authority, the shared decision, and the company switch for the sole-owner exception (with it OFF, the same person is
+ * never the second person). Throws like the shared decision does when there is no eligible second person.
+ */
+export async function decideFromRecords(deps: SecondPersonDecisionDependencies, scope: { orgId: OrgId; project: string; proposerId: string; approverId: string }): Promise<SecondPersonCheck> {
+  const { decisionInput, conditions } = await readSecondPersonApprovalEvidence(deps, scope);
+  const decision = decideSecondPersonApproval(decisionInput);
+  if (decision.mode === "sole_owner_exception" && !(await soleOwnerExceptionOn(deps.soleOwnerTable, scope.orgId))) throw agentXError("FORBIDDEN", "a fresh eligible second-person approval is required");
+  return { mode: decision.mode, membershipVersion: decision.membershipVersion, conditions };
+}
+
+/** The real second-person check over the company's records (the same evidence and decision every other less-safe approval uses, and the company's sole-owner switch). */
+export function secondPersonFromRecords(deps: SecondPersonDecisionDependencies): SecondPersonPort {
+  return (scope) => decideFromRecords(deps, scope);
 }
 
 type Item = Record<string, unknown>;
 
 /** How long a proposal stays approvable. A later change to the repositories makes an old proposal wrong, so it is not kept long. */
 export const TEST_ENV_PROPOSAL_TTL_MS = 7 * 86_400_000;
-/** A less-safe approval needs the second person to have signed in this recently, as the confirmation page asks. */
+/** A sign-in counts as fresh this long, as the confirmation page asks of the person who confirms. */
 export const TEST_ENV_FRESH_SIGN_IN_MS = 10 * 60_000;
+/** A second person's confirmation stays good this long after they gave it (it is bound to one proposal and one revision). */
+export const TEST_ENV_CONFIRMATION_TTL_MS = 24 * 3_600_000;
+
+/**
+ * Whether a second person's confirmation stands: they signed in no more than ten minutes before they confirmed (the confirmation page requires that of them at the moment they decide), they confirmed
+ * no later than now, and no more than a day ago. Measured at THEIR decision, not at the asker's press: the asker cannot be asked to hurry before the confirmer's sign-in ages out.
+ */
+export function confirmationStands(signedInAtMs: number, decidedAtMs: number, nowMs: number): boolean {
+  return Number.isFinite(signedInAtMs) && Number.isFinite(decidedAtMs) && signedInAtMs <= decidedAtMs && decidedAtMs - signedInAtMs <= TEST_ENV_FRESH_SIGN_IN_MS && decidedAtMs <= nowMs && nowMs - decidedAtMs <= TEST_ENV_CONFIRMATION_TTL_MS;
+}
 const REVISION_WIDTH = 8;
 
 const REVISION_PREFIX = "TESTENV#REV#";
@@ -171,6 +204,38 @@ export async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: str
   return body.data;
 }
 
+/** The value sources a proposal was stored with (where each value came from) and who proposed it. Empty for a proposal that has none (an edit by a person). Never throws on a damaged field: it reads as none. */
+export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined }> {
+  const item = await read(deps, proposalKey(orgId, project, digest));
+  const sources = item?.valueSources;
+  const valueSources = Array.isArray(sources) ? sources.filter((entry): entry is { field: string; source: unknown } => typeof entry === "object" && entry !== null && typeof (entry as { field?: unknown }).field === "string") : [];
+  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined };
+}
+
+const editedKey = (orgId: OrgId, project: string) => keyOf(orgId, project, "TESTENV#EDITED");
+
+/**
+ * The maintainer's EDITED proposal, if there is one: a pointer to its digest (the body is the stored proposal, which has its own life). The newest edit wins; a new proposal from the setup draft clears it, so
+ * "go back to what Rovara found" is one press. The pointer carries no authority: whatever it names is read and checked again like any proposal.
+ */
+export async function setEditedProposal(deps: TestEnvDeps, input: { orgId: OrgId; project: string; digest: string; editedBy: string }): Promise<void> {
+  const now = deps.now();
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName,
+    Item: { ...editedKey(input.orgId, input.project), entityType: "TEST_ENV_EDITED", orgId: input.orgId, project: input.project, digest: input.digest, editedBy: input.editedBy, editedAt: new Date(now).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TEST_ENV_PROPOSAL_TTL_MS) / 1000) },
+  }));
+}
+export async function readEditedProposal(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<{ digest: string; editedBy: string } | undefined> {
+  const item = await read(deps, editedKey(orgId, project));
+  if (item === undefined || item.orgId !== orgId || item.project !== project || typeof item.digest !== "string" || !DIGEST.test(item.digest) || typeof item.editedBy !== "string") return undefined;
+  const expires = item[INDEX_EXPIRY_ATTRIBUTE];
+  if (typeof expires === "number" && expires * 1000 <= deps.now()) return undefined;
+  return { digest: item.digest, editedBy: item.editedBy };
+}
+export async function clearEditedProposal(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<void> {
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: editedKey(orgId, project) }));
+}
+
 /**
  * Stores the worker's Prove report for a proposal. A report is accepted only for a proposal that exists (so a worker cannot invent a digest), and the latest report for a digest replaces the earlier one.
  * Whether it passed is read again at approval (`testEnvIsProved`), never trusted from here.
@@ -223,8 +288,13 @@ export async function readApprovedTestEnvironment(deps: TestEnvDeps, orgId: OrgI
 export interface LessSafeApproval {
   /** The second person, as the confirmation page authenticated them. Their role and whether a sole-owner exception applies are read from the company's records, not from here. */
   approverId: string;
-  /** When they last signed in (ms). Older than `TEST_ENV_FRESH_SIGN_IN_MS` is refused. */
+  /** When they last signed in (ms). */
   signedInAtMs: number;
+  /**
+   * When they confirmed (ms). With it, their sign-in must have been fresh AT THAT MOMENT and the confirmation at most `TEST_ENV_CONFIRMATION_TTL_MS` old (`confirmationStands`). Without it, the sign-in itself
+   * must be no older than `TEST_ENV_FRESH_SIGN_IN_MS` now (a second person who is pressing the approval themselves).
+   */
+  decidedAtMs?: number;
   /** The sha256 of their confirmation session's key, recorded in the audit event as the proof. */
   sessionRef: string;
 }
@@ -268,7 +338,7 @@ export async function approveTestEnvironment(
     const approval = input.approval;
     const needSecond = () => agentXError("FORBIDDEN", "this change needs a second person to approve it on the confirmation page");
     if (approval === undefined || deps.secondPerson === undefined || !/^[0-9a-f]{64}$/u.test(approval.sessionRef)) throw needSecond();
-    if (!fresh(approval.signedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+    if (approval.decidedAtMs === undefined ? !fresh(approval.signedInAtMs) : !confirmationStands(approval.signedInAtMs, approval.decidedAtMs, now)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
     // Both people's live authority and the sole-owner exception come from the company's records. The same person is accepted only when the records say the company has exactly one eligible owner.
     let check: SecondPersonCheck;
     try {

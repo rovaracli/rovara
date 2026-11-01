@@ -207,6 +207,17 @@ describe("a less-safe change", () => {
     expect(done.revision).toBe(1);
     expect(h.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#REV#00000001" })?.secondApprover).toMatchObject({ id: "dev_a", mode: "sole_owner_exception", membershipVersion: 4 });
   });
+  it("a second person's confirmation is judged at the moment they confirmed: a sign-in fresh then stands for a day, whatever its age now", async () => {
+    const h = harness();
+    const { digest } = await h.proposeAndProve(withPreprod());
+    const MIN = 60_000, ok = (signedBefore: number, decidedAgo: number) => ({ approverId: "dev_b", signedInAtMs: h.clock.now - decidedAgo * MIN - signedBefore * MIN, decidedAtMs: h.clock.now - decidedAgo * MIN, sessionRef: sha("5") });
+    await expect(h.approve(digest, { approval: ok(11, 5) })).rejects.toThrow(/sign in again/); // not fresh when they confirmed
+    await expect(h.approve(digest, { approval: ok(5, 25 * 60) })).rejects.toThrow(/sign in again/); // more than a day ago
+    await expect(h.approve(digest, { approval: { ...ok(5, 5), decidedAtMs: h.clock.now + 5_000 } })).rejects.toThrow(/sign in again/); // in the future
+    expect(await readApprovedTestEnvironment(h.deps, ORG, PROJECT)).toBeUndefined();
+    const done = await h.approve(digest, { approval: ok(8, 120) }); // signed in ten minutes before, confirmed two hours ago
+    expect(done.revision).toBe(1);
+  });
   it("the second person's role is read from the records: someone who is not eligible is refused, and the caller's word is not asked", async () => {
     const h = harness();
     const { digest } = await h.proposeAndProve(withPreprod());
