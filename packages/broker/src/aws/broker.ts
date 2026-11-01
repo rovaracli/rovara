@@ -4551,13 +4551,22 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
+  // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or
+  // banned person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
+  const former = dependencies.developer === undefined ? undefined
+    : (await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId))?.unlinkedFrom;
+  const formerIds = former === undefined || former === developerId ? [] : await slackMergeChain(dependencies, former);
+  const refuseIfRemoved = async (id: string): Promise<void> => {
+    for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
+      if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+    }
+  };
+  for (const id of formerIds) if (await getItem(dependencies, orgMemberKey(orgId, id)) === undefined) await refuseIfRemoved(id);
   let role: OrgRole | undefined;
   for (const id of ids) {
     const record = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, id));
     if (record === undefined) {
-      for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
-        if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
-      }
+      await refuseIfRemoved(id);
       continue;
     }
     const parsed = OrgRoleSchema.safeParse(record.role);

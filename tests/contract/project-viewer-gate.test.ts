@@ -133,6 +133,31 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
   });
 
+  /** The Slack identity linked to `survivor` and then unlinked from it: the identity is its own developer again, with no merge and no member record. */
+  const unlinkedFrom = (h: Harness, developer: string) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+    h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: developer, provider: "slack", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", unlinkedFrom: developer, unlinkedAt: "2026-10-20T00:00:00.000Z" });
+  };
+
+  it("a Slack identity unlinked from a removed or banned developer is still refused, so unlinking does not clear a removal", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      unlinkedFrom(h, survivor);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("control: a Slack identity unlinked from a developer who is still a member is an unlinked requester, served as before", async () => {
+    const h = await withKit();
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    unlinkedFrom(h, survivor);
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("REMOVED_FROM_ORG");
+  });
+
   it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
