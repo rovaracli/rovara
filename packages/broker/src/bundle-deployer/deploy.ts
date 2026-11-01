@@ -28,7 +28,7 @@ import {
   DEPLOYER_PARTS,
   DEPLOY_LOCK_STALE_MS,
   DeployerRequestSchema,
-  ReleaseManifestSchema,
+  parseReleaseManifestIgnoringUnknownFields,
   bundleApprovalKey,
   approvedFileKey,
   bundleTrustParameter,
@@ -260,7 +260,8 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   if (signedRelease === undefined || releaseBytes === undefined || releaseBytes.length !== signedRelease.bytes || sha256OfBytes(releaseBytes) !== signedRelease.sha256) return refused("release.json is not the file the signed manifest lists");
   let release;
   try {
-    release = ReleaseManifestSchema.parse(JSON.parse(releaseBytes.toString("utf8")));
+    // Fields this deployer does not know are ignored (a later release may add some; the deployer is upgraded by a bundle and must not refuse every newer one); every field it uses is checked.
+    release = parseReleaseManifestIgnoringUnknownFields(JSON.parse(releaseBytes.toString("utf8")));
   } catch {
     return refused("release.json is not valid");
   }

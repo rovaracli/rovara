@@ -72,3 +72,31 @@ export const ReleaseManifestSchema = z
   .strict();
 
 export type ReleaseManifest = z.infer<typeof ReleaseManifestSchema>;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const only = (value: unknown, keys: readonly string[]): unknown => (isRecord(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => keys.includes(key))) : value);
+
+/**
+ * For a reader that only deploys what it checks (the in-account bundle deployer): the release manifest with fields this version does not know DROPPED, every field it does know checked
+ * exactly as `ReleaseManifestSchema` checks it. A later release that adds an optional field therefore cannot stop an installed deployer from reading it (the deployer is upgraded by a bundle,
+ * so a deployer that refused every newer release could not be upgraded). A change that must stop older readers bumps `schemaVersion`, which stays a literal here. Unknown fields are never read.
+ */
+export function parseReleaseManifestIgnoringUnknownFields(json: unknown): ReleaseManifest {
+  if (!isRecord(json)) return ReleaseManifestSchema.parse(json);
+  const shape = ReleaseManifestSchema.shape;
+  const known = {
+    ...(only(json, Object.keys(shape)) as Record<string, unknown>),
+  };
+  const entryKeys = {
+    templates: Object.keys(shape.templates.element.shape),
+    packages: Object.keys(shape.packages.element.shape),
+    enterprisePackages: Object.keys(shape.enterprisePackages.unwrap().element.shape),
+    legalDocuments: Object.keys(shape.legalDocuments.unwrap().element.shape),
+  } as const;
+  for (const [name, keys] of Object.entries(entryKeys)) {
+    const list = known[name];
+    if (Array.isArray(list)) known[name] = list.map((entry) => only(entry, keys));
+  }
+  if (isRecord(known.images)) known.images = only(known.images, Object.keys(shape.images.shape));
+  return ReleaseManifestSchema.parse(known);
+}
