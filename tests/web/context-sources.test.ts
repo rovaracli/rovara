@@ -441,7 +441,7 @@ it("sends the server's token with the address, once, and offers package-run serv
  });
 
  describe("fix round 1, S4: the card shows every argument and the real size", () => {
-  const spec = { name: "@acme/wiki-mcp", version: "2.0.1", integrity: `sha512-${"A".repeat(86)}==`, args: ["--allow-writes", "--root", "/", "<b>x</b>"], bundleHash: hash("b"), lockfileHash: hash("c"), destinations: [], secretEnv: [], size: { cpu: 1024, memoryMiB: 2048 } };
+  const spec = { name: "@acme/wiki-mcp", version: "2.0.1", integrity: `sha512-${"A".repeat(86)}==`, args: ["--allow-writes", "--root", "/", "<b>x</b>", "a\u202Eb"], bundleHash: hash("b"), lockfileHash: hash("c"), destinations: [], secretEnv: [], size: { cpu: 1024, memoryMiB: 2048 } };
   it("lists each argument as plain text, in order, and the size that was approved", async () => {
    const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [{ ...approved, serverId: "mcpargs000001", label: "Args", status: "awaiting_approval", transport: { kind: "stdio", spec } }], stdioAvailable: true } } : { status: 200, body: {} });
    renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
@@ -449,7 +449,7 @@ it("sends the server's token with the address, once, and offers package-run serv
    const card = await screen.findByRole("group", { name: "What Rovara will run" });
    const items = [...card.querySelectorAll("li")].map(item => item.textContent);
    const args = items.find(item => item.startsWith("It is started with"))!;
-   expect(args).toContain("--allow-writes --root / <b>x</b>");
+   expect(args).toContain("--allow-writes --root / <b>x</b> a[U+202E]b");
    expect(card.querySelector("b")).toBeNull();
    expect(items).toContain("Size: 1 vCPU and 2048 MiB of memory.");
    expect(items.find(item => item.startsWith("Fingerprint"))).toContain(`dependency list ${hash("c").slice(0, 12)}`);
