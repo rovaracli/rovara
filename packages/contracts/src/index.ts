@@ -57,6 +57,7 @@ export * from "./live-interaction.js";
 export * from "./live-interaction-errors.js";
 export * from "./live-peek.js";
 export * from "./live-ask.js";
+export * from "./live-diagnosis.js";
 export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";

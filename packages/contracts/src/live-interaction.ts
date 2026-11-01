@@ -27,11 +27,12 @@ export type LiveInteractionFlagKey = keyof typeof LIVE_INTERACTION_FLAGS;
 
 /**
  * HARD DEPLOY GATES: what must be wired before a switch may exist in the deploy (stack parameter, CLI key, broker setting). `tests/contract/live-interaction-deploy-gate.test.ts` fails the build as
- * soon as the ask switch is added to a deploy file while either item is missing:
+ * soon as a switch is added to a deploy file while one of its items is missing. For the fix switch the one item is `diagnoses_erase_step`: the team-record person erasure runs the `diagnoses` step (a
+ * person's link to the diagnoses they asked for goes). For the ask switch:
  *  - `asks_erase_step`: the team-record person erasure runs the `asks` step (a person's Asks and their label in other answers go), and
  *  - `daily_ask_sweep`: a scheduled job calls `sweepExpiredAsks` for every org at least daily, so the 30 days hold in environments whose table has no TTL.
  */
-export const LIVE_INTERACTION_DEPLOY_GATES = { ask: ["asks_erase_step", "daily_ask_sweep"] } as const;
+export const LIVE_INTERACTION_DEPLOY_GATES = { ask: ["asks_erase_step", "daily_ask_sweep"], fix: ["diagnoses_erase_step"] } as const;
 
 /** A switch is on only when its value is exactly "1". Anything else (missing, empty, "true", " 1") is off. */
 export function liveInteractionFlagOn(value: string | undefined): boolean {
@@ -384,7 +385,9 @@ type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boole
 export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS_TARGETS)[number], Readonly<Record<string, PrefillValue>>>> = {
   code_settings: { mergeMethod: { kind: "enum", values: ["squash", "merge"] } },
   setup_item: { "devcontainer.configPath": { kind: "relative_path" } },
-  playbook: { "e2e.screenshots": { kind: "boolean" }, "e2e.traces": { kind: "boolean" } },
+  // Replaces: the T0 rows `e2e.screenshots` and `e2e.traces`. No ordinary route changes a project's end-to-end capture (the project definition's `e2e` policy is changed by an administrator with
+  // `agentx admin project register`), so a "Propose this change" for it would have no path to raise it into. Until a How-we-work route exists for a path, it is explain-and-link only.
+  playbook: {},
   connector: {},
   model_access: {},
 };
@@ -453,6 +456,8 @@ export const DiagnosisRecordSchema = z.object({
   tier: DiagnosisTierSchema,
   proposals: z.array(DiagnosisProposalSchema).max(DIAGNOSIS_PROPOSALS_MAX),
   droppedProposals: z.number().int().min(0),
+  /** Light only: the answer says the cause is in the code, so a deep diagnosis (which reads the repositories) may be asked for. */
+  needsCode: z.boolean().default(false),
   model: z.string().min(1).max(200),
   costCents: z.number().int().min(0),
   createdAt: z.string().datetime(),

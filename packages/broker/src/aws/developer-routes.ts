@@ -183,6 +183,7 @@ import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
 import { isAgentSessionRoute, routeAgentSessionRequest } from "../agent-sessions/routes.js";
+import { isDiagnosisPath, routeDiagnosisRequest } from "../diagnosis/routes.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
@@ -214,6 +215,7 @@ import {
   gateDeveloperStart,
   sessionDependenciesOf,
   sessionReadDependencies,
+  diagnosisRouteDepsOf,
   setupDraftDepsOf,
   startAppRun,
 } from "./developer-routes/dependencies.js";
@@ -390,6 +392,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
+  // Live interaction F2 to F4: Fix with agent (`/v1/app/diagnoses*`); the dependencies exist only while the `fd` switch is on.
+  if (isDiagnosisPath(url.pathname)) return (await routeDiagnosisRequest(diagnosisRouteDepsOf(deps, caller), caller, request.method, url.pathname, () => jsonBody(request)))!;
   // Plan 5, Tasks 17, 18 and 22: `/v1/app/devices*` (the Mac's command poll, and a removal that ends the sessions on it) and `/v1/app/org/local-agents`.
   if (isDeviceRoute(url.pathname)) {
     const log = sessionDependenciesOf(deps)?.log;

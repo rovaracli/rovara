@@ -14,7 +14,7 @@ import {
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import {
   SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, confirmationBlocks,
-  SlackRequestMessageSchema, isAskRoute, isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type AskRef, type SlackRequestMessage,
+  SlackRequestMessageSchema, isAskRoute, isDiagnosisRoute, isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type AskRef, type DiagnosisRef, type SlackRequestMessage,
 } from "@agentx/contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
 import { runOrchestratorTurn } from "@agentx/orchestrator/orchestrator";
@@ -25,8 +25,9 @@ import { processSlackRequest, type ServiceLog, type ThreadServiceApi, type Threa
 import { createProxiedModels } from "./proxied-models.js";
 import { createSignedServiceFetch } from "./signing-fetch.js";
 import { createSlackUserNames } from "./user-names.js";
-import { createAskApi, createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
+import { createAskApi, createDiagnosisApi, createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
 import { handleAsk } from "./ask-question.js";
+import { handleDiagnosis } from "./diagnosis-question.js";
 import { SlackApiError, runEvalBatchWatcher } from "./eval-batch-watcher.js";
 import { HANDOFF_MILLISECONDS, activeTurnFromItem, turnNoteFromItem } from "./interrupted-turn.js";
 import { classifierTimeoutMs, createHostedClassifier, createHostedRequestRouter, createHostedSlackRuntime, gateDecisionLogFields, runHostedTurn } from "./runtime.js";
@@ -190,6 +191,21 @@ const askProxiedModels = modelProxyEnabled ? createProxiedModels({
   },
 }) : undefined;
 
+// Live interaction F2: a light diagnosis, like an Ask, has no Slack thread or member. Its turn is keyed by the queue event's id; the diagnosis it belongs to is remembered here while the turn runs, so
+// the model key is asked for on the diagnosis's own broker route (which names the diagnosis, reads the requester's right again and decides who pays) and never on a Slack thread's.
+const diagnosisTurns = new Map<string, DiagnosisRef>();
+const diagnosisProxiedModels = modelProxyEnabled ? createProxiedModels({
+  controlPlaneUrl,
+  signedFetchFor: () => createSignedServiceFetch({ region, credentials }),
+  classifierModel, orchestratorModel: model, classifierTimeoutMs: gateClassifierTimeoutMs, log,
+  createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
+  accessRouteFor: (message) => {
+    const ref = diagnosisTurns.get(message.eventId);
+    if (ref === undefined) throw new Error("no diagnosis is running for this turn");
+    return { orgId: ref.orgId, path: "/v1/diagnoses/model-access", body: { diagnosisId: ref.diagnosisId } };
+  },
+}) : undefined;
+
 function routeOption(message: SlackRequestMessage): { route?: NonNullable<typeof requestRouter> } {
   const route = proxiedModels === undefined ? requestRouter : proxiedModels.routerFor(message);
   return route === undefined ? {} : { route };
@@ -298,7 +314,7 @@ async function loadSession(subject: string): Promise<Uint8Array | undefined> {
   }
 }
 
-async function runTurn(input: TurnInput, ask?: AskRef): Promise<string> {
+async function runTurn(input: TurnInput, ask?: AskRef | DiagnosisRef): Promise<string> {
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(stateDirectory, "thread-"));
   try {
@@ -312,7 +328,7 @@ async function runTurn(input: TurnInput, ask?: AskRef): Promise<string> {
     const userName = ask === undefined ? await slackUserName(input.message.userId) : undefined;
     const signedFetch = createSignedServiceFetch({ region, credentials, ...(ask === undefined ? { thread: input.message.thread, userId: input.message.userId, ...(userName === undefined ? {} : { userName }) } : {}) });
     // One proxy and key for the whole message: the orchestrator's model and the gate's classifier share it (and the router's).
-    const turn = await (ask === undefined ? proxiedModels : askProxiedModels)?.turnModels(input.message);
+    const turn = await (ask === undefined ? proxiedModels : "diagnosisId" in ask ? diagnosisProxiedModels : askProxiedModels)?.turnModels(input.message);
     const proxy = turn?.proxy;
     const turnClassifier = turn === undefined ? classifier : turn.classifier;
     // MODEL3: the model that ran in place of a missing-key one is said under the reply.
@@ -386,6 +402,7 @@ const queue: QueueClient = {
       const taskQuestion = taskQuestionOf(message.MessageAttributes);
       const pageComment = isPageCommentRoute(message.MessageAttributes);
       const askRoute = isAskRoute(message.MessageAttributes);
+      const diagnosisRoute = isDiagnosisRoute(message.MessageAttributes);
       return {
         body: message.Body ?? "",
         receiptHandle: message.ReceiptHandle ?? "",
@@ -396,6 +413,7 @@ const queue: QueueClient = {
         ...(taskQuestion === undefined ? {} : { taskQuestion }),
         ...(pageComment ? { pageComment: true as const } : {}),
         ...(askRoute ? { ask: true as const } : {}),
+        ...(diagnosisRoute ? { diagnosis: true as const } : {}),
       };
     });
   },
@@ -494,6 +512,28 @@ await runConsumer(queue, (message, { route, taskQuestion, ...context }) => taskQ
           }, ref);
         } finally {
           askTurns.delete(eventId);
+        }
+      },
+      log,
+    });
+  },
+  // Live interaction F2: a light diagnosis of an error Rovara showed: the same read-only turn, with the context the broker built; nothing is posted in Slack.
+  diagnosis: (message, { handoff }) => {
+    const diagnosisApi = createDiagnosisApi({ controlPlaneUrl, signedFetch: createSignedServiceFetch({ region, credentials }) });
+    return handleDiagnosis(message, {
+      api: diagnosisApi,
+      runTurn: async ({ ref, question, eventId, turn }) => {
+        // The turn needs a message-shaped record for its models and logs; its ids are placeholders, used nowhere that reaches Slack or the broker.
+        const placeholder = SlackRequestMessageSchema.parse({ version: 1, eventId, thread: { teamId: "T0000000000", channelId: "C0000000000", threadTs: "1700000000.000000" }, userId: "U0000000000", text: question, receivedAt: new Date().toISOString() });
+        diagnosisTurns.set(eventId, ref);
+        try {
+          return await runTurn({
+            message: placeholder, subject: `diagnosis:${ref.diagnosisId}`, workspaceId: turn.workspaceId, conversationId: deterministicUuid(`${ref.diagnosisId}:diagnosis-conversation`),
+            orchestratorInstructions: turn.orchestratorInstructions, requestId: requestIdSequence(eventId), turnNote: turn.taskContext, answerOnly: true,
+            ...(handoff === undefined ? {} : { signal: handoff }),
+          }, ref);
+        } finally {
+          diagnosisTurns.delete(eventId);
         }
       },
       log,

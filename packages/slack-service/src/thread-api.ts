@@ -1,5 +1,8 @@
 import {
   AskAnsweredRequestSchema,
+  DiagnosisAnsweredRequestSchema,
+  DiagnosisRefSchema,
+  DiagnosisTurnResultSchema,
   AskTurnRequestSchema,
   AskTurnResultSchema,
   EvalBatchSlackStartRequestSchema,
@@ -31,6 +34,7 @@ import type { ThreadServiceApi } from "./processor.js";
 import type { EvalBatchWatchApi } from "./eval-batch-watcher.js";
 import { threadWorkspaceRequest } from "./thread-workspace-request.js";
 import type { AskServiceApi } from "./ask-question.js";
+import type { DiagnosisServiceApi } from "./diagnosis-question.js";
 
 /** The Slack service's thread-level control-plane client, moved out of main.ts so tests can drive it. */
 /** One request to a /v1/service route; an error answer throws with its code and message. */
@@ -57,6 +61,19 @@ export function createAskApi(options: { controlPlaneUrl: string; signedFetch: ty
     },
     async answered(request) {
       await post("/v1/asks/answered", AskAnsweredRequestSchema.parse(request), "writing the ask answer failed");
+    },
+  };
+}
+
+/** The broker's diagnosis routes (`/v1/service/diagnoses/turn` and `…/answered`), signed as the orchestrator role with no Slack thread or member: the diagnosis names itself. */
+export function createDiagnosisApi(options: { controlPlaneUrl: string; signedFetch: typeof fetch }): DiagnosisServiceApi {
+  const post = (path: string, body: unknown, failure: string) => serviceRequestWith(options.signedFetch, `${options.controlPlaneUrl}${path}`, "POST", body, failure);
+  return {
+    async turn(ref) {
+      return DiagnosisTurnResultSchema.parse(await post("/v1/diagnoses/turn", DiagnosisRefSchema.parse(ref), "diagnosis context request failed"));
+    },
+    async answered(request) {
+      await post("/v1/diagnoses/answered", DiagnosisAnsweredRequestSchema.parse(request), "writing the diagnosis answer failed");
     },
   };
 }

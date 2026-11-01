@@ -190,6 +190,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/ask.ts", "packages/broker/src/agent-sessions/ask-audit.ts", "packages/broker/src/agent-sessions/ask-erased-aliases.ts",
       // Live interaction L1: a Linear comment's seen-marker (a replay key) expires on it.
       "packages/broker/src/rovara-code/linear-comments.ts",
+      // CodeHost P6: a neutral code-host event's reservation row (dedupe) expires on it after 30 days.
+      "packages/broker/src/plugins/events/reservations.ts",
+      // Live interaction F2/F3: a diagnosis's record, its one-open-place item and its rate rows expire on it (store.ts writes and reads them; deep.ts writes the deep record).
+      "packages/broker/src/diagnosis/store.ts", "packages/broker/src/diagnosis/deep.ts",
       // Plan 5, Task 21: a closed org's session data, and a removed member's revoked devices, are given a short expiry (lifecycle.ts shortens it, never lengthens).
       "packages/broker/src/agent-sessions/lifecycle.ts",
       // Plan 5, Task 17: a removed device keeps its record, and its row in the member's list, for a year (`revokedAt`), then the TTL deletes both.

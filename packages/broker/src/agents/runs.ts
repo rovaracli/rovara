@@ -36,6 +36,9 @@ import {
   runRequestKey,
   type AgentId,
   type AgentRunState,
+  DiagnosisIdSchema,
+  ErrorRefSchema,
+  type ErrorRef,
   type ModelIdentifier,
   type OrgId,
   type Payer,
@@ -126,6 +129,11 @@ export interface AgentRunRequest {
    * `seenTaskId` is the draft the project's pointer named when the route read it; it is not part of what the request IS, so it is not in the fingerprint.
    */
   setupDraft?: { seenTaskId?: string | undefined };
+  /**
+   * Live interaction F3: the run is the deep tier of Fix with agent, a read-only look at the repositories to diagnose one error (the same boundary as a setup draft; it starts, is admitted and is paid like any
+   * task, as `startedBy`). Only `startDeepDiagnosis` sets it, never a request body. It carries ids and codes only: the data is the run's context.
+   */
+  diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
 }
 
 /**
@@ -160,6 +168,8 @@ export interface RunStartOptions {
   codeIntent?: CodeIntentStart;
   /** Plan 6 Task 10: the run is a setup draft (see `AgentRunRequest.setupDraft`). */
   setupDraft?: { seenTaskId?: string | undefined };
+  /** Live interaction F3: the run is a deep diagnosis (see `AgentRunRequest.diagnosis`). */
+  diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -192,6 +202,7 @@ const AgentRunRequestShape = z.object({
   runLimitUsd: z.number().finite().min(0).optional(),
   codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional() }).strict().optional(),
   setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
+  diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -545,6 +556,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     ...(request.codeIntent === undefined ? {} : { codeIntent: request.codeIntent }),
     // Likewise: only a setup draft carries this (its pointer's seen task is not part of the request).
     ...(request.setupDraft === undefined ? {} : { purpose: "setup_draft" }),
+    // Likewise: only a deep diagnosis carries this.
+    ...(request.diagnosis === undefined ? {} : { purpose: "diagnosis", diagnosis: request.diagnosis.diagnosisId }),
   });
 }
 
@@ -606,6 +619,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.versionApproved === true ? { versionApproved: true as const } : {}),
     ...(intent === undefined ? {} : { codeIntent: intent }),
     ...(request.setupDraft === undefined ? {} : { setupDraft: request.setupDraft }),
+    ...(request.diagnosis === undefined ? {} : { diagnosis: request.diagnosis }),
   });
   return started.run;
 }

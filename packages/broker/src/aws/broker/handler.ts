@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
+import { handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
@@ -110,6 +111,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installOwnWriteRecorder(dependencies);
   installLearningTaskEnd(dependencies);
   installSlackAsk(dependencies, tasks, agents?.agentSessions);
+  installDiagnosisService(dependencies, agents?.agentSessions);
   // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
   // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
   // here when those land (the sweep's event passes them the same way).
@@ -637,6 +639,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         // Live interaction A3: the Ask routes name the Ask itself (no Slack thread), so they are answered before the thread's identity is read.
         const askAnswer = await handleAskServiceRoute(dependencies, dependencies.slackAsk?.ask, request, serviceUrl.pathname);
         if (askAnswer !== undefined) return askAnswer;
+        // Live interaction F2: the diagnosis routes name the diagnosis itself, like the Ask routes.
+        const diagnosisAnswer = await handleDiagnosisServiceRoute(dependencies, dependencies.diagnosisService, request, serviceUrl.pathname);
+        if (diagnosisAnswer !== undefined) return diagnosisAnswer;
         const identity = await slackServiceIdentity(dependencies, request);
         if (request.method === "POST" && serviceUrl.pathname === "/v1/threads/workspace") {
           return json(await ensureThreadWorkspace(dependencies, identity, parseBody(request.body)), request.requestId);

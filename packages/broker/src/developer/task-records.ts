@@ -42,6 +42,7 @@ import {
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
+  type ErrorRef,
   type OrgId,
   type Payer,
   type Place,
@@ -210,7 +211,12 @@ export interface DeveloperTaskRecord {
    * Plan 6, Task 10: the task is Rovara drafting a project's dev setup (read-only look at the repositories; its result is a proposal in the project's `SETUP_DRAFT` item). It is
    * no workflow and no agent-step run: its result sets `agentRunEnd`, which is how it gives back its workspace, and it never feeds the run-cost estimates.
    */
-  purpose?: "setup_draft";
+  purpose?: "setup_draft" | "diagnosis";
+  /**
+   * Live interaction F3 (Fix with agent, deep tier): a `purpose: "diagnosis"` task reads the repositories read-only to diagnose the error `errorRef` names (codes and ids only). It is no workflow and no agent-step
+   * run: like a setup draft its end sets `agentRunEnd` and it never feeds the run-cost estimates, and its answer is written to `DIAGNOSIS#<diagnosisId>` in the same transaction (diagnosis/deep.ts).
+   */
+  diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
   /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
   /** The setup agent's result (meta repo lane B). `draft` is a version 1 draft stored by the earlier code: it reads as outdated and is never applied. */
   setupDraftResult?: { status: "ready"; proposal: SetupProposal } | { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };

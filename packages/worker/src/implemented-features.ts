@@ -52,4 +52,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.peek.v1",
   // Enterprise foundations I3: the commit a publication makes carries a random attribution reference, and the description names who asked and who approved (publish.ts).
   "publish.attribution",
+  // Live interaction F3: a deep diagnosis, the read-only look answered with the diagnosis JSON (diagnosis.ts).
+  "task.diagnosis.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -3,6 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
+import { DIAGNOSIS_RETRY_PROMPT, cutDiagnosisAnswer, diagnosisInstructions, holdsJsonObject } from "./diagnosis.js";
 import { readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
 import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
@@ -89,6 +90,8 @@ export interface TaskInvocationResult {
   workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT" | "SPEC_WRITE";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
   setupProposal?: SetupProposal;
+  /** Live interaction F3: a deep diagnosis's answer (the model's JSON text, cut). The broker reads it again; this copy is never trusted. */
+  diagnosisAnswer?: string;
   /** Meta repo lane D: the spec draft a spec-write run read, bounded and cleaned (the broker reads it again). */
   specDraft?: SpecDraft;
   /** Meta repo lane D (D3): the code review's walk of the spec's requirements (the broker reads it again). */
@@ -616,6 +619,8 @@ async function runTask(
   // The plan check (Rovara Code version 2) is a read-only model run like planning: no checks of the code, the planning deadline and stall limit, and a planning session's read-only tools.
   const critiquing = invocation.payload.workflowMode === "PLAN_CRITIQUE";
   const settingUpDraft = invocation.payload.workflowMode === "SETUP_DRAFT";
+  // Live interaction F3: the same read-only look, asked to diagnose an error (the invocation schema allows the marker only in this mode, with no context sources, agent step or redirect).
+  const diagnosing = settingUpDraft && invocation.payload.diagnosis !== undefined;
   // Meta repo lane D: writing the spec is a planning session too (read-only tools, one deadline); its prompt holds the approved plan as data.
   const specBinding = invocation.payload.workflowMode === "SPEC_WRITE" ? invocation.payload.specWrite : undefined;
   const writingSpec = specBinding !== undefined;
@@ -1206,7 +1211,7 @@ async function runTask(
         }
       };
       if (workflowDependencies === undefined) {
-        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : specBinding !== undefined ? `${invocation.payload.prompt}\n\n${specWriteInstructions(specBinding)}` : taskPrompt);
+        await promptAndSettle(diagnosing ? `${invocation.payload.prompt}\n\n${diagnosisInstructions(manifest.repositories)}` : settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : specBinding !== undefined ? `${invocation.payload.prompt}\n\n${specWriteInstructions(specBinding)}` : taskPrompt);
       } else {
         const graph = workflowDependencies.graph;
         findings.setOrder(taskGraphOrder(graph));
@@ -1298,6 +1303,18 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
+      } else if (diagnosing) {
+        // An answer that is not a JSON object gets one more try in the same session; whichever comes last is reported (the broker shows text it cannot read as one inert explanation).
+        if (!holdsJsonObject(finalText ?? "")) {
+          await emit("progress", { message: "The diagnosis could not be read; the agent is asked to answer again." });
+          await promptAndSettle(DIAGNOSIS_RETRY_PROMPT);
+        }
+        monitor.stop();
+        const diagnosisAnswer = (finalText ?? "").trim();
+        if (diagnosisAnswer === "") throw agentXError("OPERATION_INTERRUPTED", "the diagnosis run produced no answer");
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", diagnosisAnswer: cutDiagnosisAnswer(diagnosisAnswer) };
       } else if (settingUpDraft) {
         const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories, metaRepo: invocation.payload.setupMetaRepo };
         let read = await readSetupProposalAnswer(finalText ?? "", reading);

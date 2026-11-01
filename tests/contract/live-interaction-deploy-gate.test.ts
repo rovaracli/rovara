@@ -54,6 +54,21 @@ describe("the ask switch's hard deploy gates", () => {
     expect(PERSON_FIELDS.some((field) => field.step === "asks")).toBe(true);
   });
 
+  it("the fix switch's hard gate: the diagnoses erase step is registered and required, with a person-field row, before `fd` may be in any deploy file", () => {
+    expect(LIVE_INTERACTION_DEPLOY_GATES.fix).toEqual(["diagnoses_erase_step"]);
+    expect(LIVE_INTERACTION_FLAGS.fix).toEqual({ code: "fd", variable: "LIVE_FIX_ENABLED" });
+    expect(ERASE_STEPS).toContain("diagnoses");
+    expect(REQUIRED_ERASE_STEPS).toContain("diagnoses");
+    expect(PERSON_FIELDS.some((field) => field.step === "diagnoses")).toBe(true);
+    const names = (text: string): boolean => /LIVE_FIX_ENABLED|LiveFixEnabled|liveFix\.enabled/u.test(text);
+    expect(names('fix: { code: "fd", variable: "LIVE_FIX_ENABLED" }')).toBe(true);
+    expect(names('new CfnParameter(stack, "LiveFixEnabled", {})')).toBe(true);
+    expect(names("nothing here")).toBe(false);
+    const inDeploy = deployFiles().some((file) => names(readFileSync(file, "utf8")) && !file.endsWith("live-interaction.ts"));
+    const inSettings = (Object.values(BROKER_SETTINGS) as Array<{ variable: string; code: string }>).some((spec) => spec.variable === LIVE_INTERACTION_FLAGS.fix.variable || spec.code === LIVE_INTERACTION_FLAGS.fix.code);
+    if (inDeploy || inSettings) expect(REQUIRED_ERASE_STEPS, "the fix switch is in a deploy file").toContain("diagnoses");
+  });
+
   it("the ask switch is in no deploy file yet, or else BOTH gates hold: the erase step is wired and a production file calls the daily sweep", () => {
     const switchFiles = deployFiles().filter((file) => namesAskSwitch(readFileSync(file, "utf8")) && !file.endsWith("live-interaction.ts"));
     const switchInBrokerSettings = (Object.values(BROKER_SETTINGS) as Array<{ variable: string; code: string }>).some((spec) => spec.variable === LIVE_INTERACTION_FLAGS.ask.variable || spec.code === LIVE_INTERACTION_FLAGS.ask.code);

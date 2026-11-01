@@ -21,6 +21,7 @@ import { PrepareMetaSchema } from "./meta-project.js";
 import { LearnedContextSchema } from "./learned-context.js";
 import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
 import { OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, PEEK_FEATURE } from "./live-interaction.js";
+import { DIAGNOSIS_WORKER_FEATURE, DiagnosisInvocationSchema } from "./live-diagnosis.js";
 import { PeekPayloadSchema } from "./live-peek.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
@@ -32,7 +33,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -400,8 +401,19 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * without the re-approval stop the owner's instruction is bound by.
          */
         ownerRedirect: OwnerRedirectInvocationSchema.optional(),
+        /**
+         * Live interaction F3 (Fix with agent, deep tier): this read-only look is a diagnosis, not a setup draft. The worker adds the diagnosis instructions and answers with the diagnosis JSON. Setup-draft mode
+         * only (read, grep, find and ls: no shell, no write tool, no network, no MCP). Sent only to a worker whose /ping lists "task.diagnosis.v1"; never dropped, because an older worker would run it as a setup draft.
+         */
+        diagnosis: DiagnosisInvocationSchema.optional(),
       })
       .strict().superRefine((payload, context) => {
+        if (payload.diagnosis !== undefined && payload.workflowMode !== "SETUP_DRAFT") {
+          context.addIssue({ code: "custom", path: ["diagnosis"], message: "a diagnosis is a read-only look and requires the setup draft mode" });
+        }
+        if (payload.diagnosis !== undefined && (payload.agentStep !== undefined || payload.ownerRedirect !== undefined || payload.specWrite !== undefined || payload.contextSources !== undefined)) {
+          context.addIssue({ code: "custom", path: ["diagnosis"], message: "a diagnosis carries no agent step, redirect, spec write or context sources" });
+        }
         if (payload.ownerRedirect !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["ownerRedirect"], message: "an owner redirect requires implementation mode" });
         }
