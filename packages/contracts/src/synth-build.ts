@@ -44,6 +44,7 @@ export const SYNTH_CONTEXT_KEYS = [
   "rovaraMcpHostCertificateArn",
   "rovaraMcpHostName",
   "rovaraMcpHostedZoneId",
+  "rovaraMcpNpmRegistry",
   "agentxReservedConcurrency",
   "agentxRovaraOrgId",
   "evidenceRetentionDays",

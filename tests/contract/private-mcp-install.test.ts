@@ -22,7 +22,7 @@ describe("the private MCP context", () => {
   });
   it("refuses any of its settings outside an Enterprise install, so Public never carries a private network setting", () => {
     for (const edition of [undefined, "public"] as const) {
-      for (const [key, value] of [[KEYS.cidrs, "10.1.0.0/16"], [KEYS.certificateArn, CERT], [KEYS.hostName, "mcp.example.net"], [KEYS.hostedZoneId, "Z0123456789ABCDEFGHIJ"]] as const) {
+      for (const [key, value] of [[KEYS.cidrs, "10.1.0.0/16"], [KEYS.certificateArn, CERT], [KEYS.hostName, "mcp.example.net"], [KEYS.hostedZoneId, "Z0123456789ABCDEFGHIJ"], [KEYS.npmRegistry, "https://registry.corp.example.net/npm/"]] as const) {
         expect(() => parsePrivateMcpContext({ edition, get: context({ [key]: value }) }), `${edition} ${key}`).toThrow(/Enterprise/u);
       }
     }
@@ -61,9 +61,9 @@ describe("the private MCP context", () => {
 });
 
 describe("the MCP host's certificate", () => {
-  const full = { [KEYS.certificateArn]: CERT, [KEYS.hostName]: "mcp-host.example.net", [KEYS.hostedZoneId]: "Z0123456789ABCDEFGHIJ" };
+  const full = { [KEYS.certificateArn]: CERT, [KEYS.hostName]: "mcp-host.example.net", [KEYS.hostedZoneId]: "Z0123456789ABCDEFGHIJ", [KEYS.npmRegistry]: "https://registry.corp.example.net/npm/" };
   it("comes from the install's config: a host with a missing, partial or malformed one stops synth, naming the setting", () => {
-    expect(mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }))).toEqual({ certificateArn: CERT, hostName: "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ" });
+    expect(mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }))).toEqual({ certificateArn: CERT, hostName: "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ", npmRegistry: "https://registry.corp.example.net/npm/" });
     expect(() => mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context({}) }))).toThrow(new RegExp(KEYS.certificateArn, "u"));
     for (const key of Object.keys(full)) {
       const { [key]: _removed, ...rest } = full as Record<string, string>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the one setting left out
@@ -77,11 +77,20 @@ describe("the MCP host's certificate", () => {
     }
     expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ ...full, [KEYS.hostedZoneId]: "zone one" }) })).toThrow(new RegExp(KEYS.hostedZoneId, "u"));
   });
+  it("takes the package registry as an https address only: no http, credentials, query, fragment, bare address or non-string (T8)", () => {
+    for (const bad of ["", "http://registry.corp.example.net/", "https://u:p@registry.corp.example.net/", "https://registry.corp.example.net/?t=1", "https://registry.corp.example.net/#x", "https://10.0.0.5/npm/", "registry.corp.example.net", 5, ["https://registry.corp.example.net/"]]) {
+      expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.npmRegistry]: bad }) }), String(bad)).toThrow(new RegExp(KEYS.npmRegistry, "u"));
+    }
+    expect(parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.npmRegistry]: "https://registry.corp.example.net/npm" }) }).npmRegistry).toBe("https://registry.corp.example.net/npm");
+  });
   it("is what McpHost is built from, and McpHost itself refuses a certificate that is not an ACM one", () => {
     const props = mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }));
     const build = (certificateArn: string) => new McpHost(new Stack(new App(), "S", { env: { account: "111111111111", region: "us-east-1" } }), "H", {
-      vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], image: ecs.ContainerImage.fromRegistry("x"), clientSecurityGroupIds: [],
-      stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", privateEgressCidrs: ["10.0.0.0/16"], ...props, certificateArn,
+      vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], runnerSubnetCidrs: ["10.42.160.0/22"], region: "us-east-1",
+      image: ecs.ContainerImage.fromRegistry("x"), runnerImage: `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`, clientSecurityGroupIds: [],
+      endpointSecurityGroupId: "sg-0endpoints000000000", stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", agentxEnv: "ent",
+      registryEgressCidrs: ["10.60.0.0/24"], privateMcpCidrs: ["10.60.0.0/16"], vpcCidrs: ["10.42.0.0/16"],
+      controllerTlsSecretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/tls-AbCdEf", controllerDnsNamespace: "mcp.rovara.internal", ...props, certificateArn,
     });
     expect(build(props.certificateArn).url).toBe("https://mcp-host.example.net");
     expect(() => build("not-an-arn")).toThrow(/ACM certificate/u);

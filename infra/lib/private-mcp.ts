@@ -17,6 +17,7 @@ export const PRIVATE_MCP_CONTEXT_KEYS = {
   certificateArn: "rovaraMcpHostCertificateArn",
   hostName: "rovaraMcpHostName",
   hostedZoneId: "rovaraMcpHostedZoneId",
+  npmRegistry: "rovaraMcpNpmRegistry",
 } as const;
 const KEYS = PRIVATE_MCP_CONTEXT_KEYS;
 
@@ -30,6 +31,8 @@ export interface PrivateMcpInstall {
   certificateArn?: string;
   hostName?: string;
   hostedZoneId?: string;
+  /** The package registry (normalised, https, no credentials). Only recorded: it reaches the controller when package-run servers are on. */
+  npmRegistry?: string;
 }
 
 const ACM_CERTIFICATE_ARN = /^arn:aws(?:-[a-z]+)*:acm:[a-z]{2}(?:-[a-z]+)+-\d:\d{12}:certificate\/[0-9A-Za-z-]+$/u;
@@ -70,7 +73,7 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   const cidrsValue = input.get(KEYS.cidrs);
   const cidrsGiven = isSet(cidrsValue) && cidrsValue !== "";
   const stdioRequested = stdioOf(input.get(KEYS.stdio));
-  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId].filter((key) => isSet(input.get(key)));
+  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry].filter((key) => isSet(input.get(key)));
   if ((cidrsGiven || given.length > 0 || stdioRequested) && input.edition !== "enterprise") {
     throw new Error(`the private MCP settings (${[...(cidrsGiven ? [KEYS.cidrs] : []), ...given, ...(stdioRequested ? [KEYS.stdio] : [])].join(", ")}) apply only to an Enterprise install (rovaraEdition=enterprise)`);
   }
@@ -109,7 +112,19 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
     if (typeof hostedZoneId !== "string" || !HOSTED_ZONE_ID.test(hostedZoneId)) throw new Error(`${KEYS.hostedZoneId} must be a Route 53 hosted zone id such as Z0123456789ABCDEFGHIJ`);
     install.hostedZoneId = hostedZoneId;
   }
+  const npmRegistry = input.get(KEYS.npmRegistry);
+  if (isSet(npmRegistry)) install.npmRegistry = parseNpmRegistry(npmRegistry);
   return install;
+}
+
+/** An https address with no credentials, query or fragment: the install task sends package requests there and nowhere else. */
+export function parseNpmRegistry(value: unknown): string {
+  const fail = (): never => { throw new Error(`${KEYS.npmRegistry} must be an https address without credentials, such as https://registry.corp.example.net/npm/`); };
+  if (typeof value !== "string" || value.length > 2_000) return fail();
+  let url: URL;
+  try { url = new URL(value); } catch { return fail(); }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || url.hostname === "" || /^\d+\.\d+\.\d+\.\d+$/u.test(url.hostname) || url.hostname.includes(":")) return fail();
+  return url.href;
 }
 
 /** The environment variables the broker reads. Only what was set; package-run servers are never switched on from here. */
@@ -121,12 +136,13 @@ export function privateMcpBrokerEnvironment(install: PrivateMcpInstall): Record<
  * The part of `McpHostProps` that comes from the install's configuration. Whoever builds the host (it needs the network and the image) spreads this in. A missing setting stops
  * synth with its name: the host has no plain-HTTP mode.
  */
-export function mcpHostPropsFromInstall(install: PrivateMcpInstall): { certificateArn: string; hostName: string; hostedZoneId: string } {
-  const { certificateArn, hostName, hostedZoneId } = install;
+export function mcpHostPropsFromInstall(install: PrivateMcpInstall): { certificateArn: string; hostName: string; hostedZoneId: string; npmRegistry: string } {
+  const { certificateArn, hostName, hostedZoneId, npmRegistry } = install;
   if (certificateArn === undefined) throw new Error(`the MCP host needs a certificate for its HTTPS listener: set ${KEYS.certificateArn}`);
   if (hostName === undefined) throw new Error(`the MCP host needs the DNS name its certificate is for: set ${KEYS.hostName}`);
   if (hostedZoneId === undefined) throw new Error(`the MCP host needs the Route 53 zone for its DNS name: set ${KEYS.hostedZoneId}`);
-  return { certificateArn, hostName, hostedZoneId };
+  if (npmRegistry === undefined) throw new Error(`package-run servers need your package registry (the install task has no internet): set ${KEYS.npmRegistry}`);
+  return { certificateArn, hostName, hostedZoneId, npmRegistry };
 }
 
 /** The only variables an install's settings may add to the broker's environment. Anything else (a reserved variable such as the callback signing key) is refused, never overwritten. */

@@ -149,13 +149,18 @@ const ENDPOINT_HOSTS: Readonly<Record<string, readonly string[]>> = {
   "ecr.dkr": ["dkr.ecr", "*.dkr.ecr"], secretsmanager: ["secretsmanager"], ssm: ["ssm"], sqs: ["sqs"], states: ["states"], ec2: ["ec2"], s3: ["s3", "*.s3"], dynamodb: ["dynamodb"],
 };
 
+/** The extra AWS name a package-run MCP server host needs: the ECS API (Fargate tasks themselves need no ECS endpoint, but the controller calls RunTask and StopTask). */
+export const STDIO_MCP_ENDPOINT_HOSTS = ["ecs"] as const;
+
 /**
  * The DNS firewall allow-list of an Enterprise install: only the names of the endpoints it built, the load balancers inside the VPC (the model proxy), and the
  * install's own regional STS name. No public package, image, model or chat host. The customer's admin adds what they approve (the egress allow-list setting).
  */
-export function enterpriseAllowDomains(region: string): string[] {
+export function enterpriseAllowDomains(region: string, options: { stdioMcp?: boolean } = {}): string[] {
   const hosts = new Set<string>();
   for (const names of Object.values(ENDPOINT_HOSTS)) for (const name of names) hosts.add(`${name}.${region}.amazonaws.com`);
+  // Package-run MCP servers (register ME-14): the controller calls the ECS API through its own interface endpoint (the MCP host construct makes it).
+  if (options.stdioMcp === true) for (const name of STDIO_MCP_ENDPOINT_HOSTS) hosts.add(`${name}.${region}.amazonaws.com`);
   hosts.add(`*.elb.${region}.amazonaws.com`);
   hosts.add("sts.amazonaws.com");
   return [...hosts].sort();
