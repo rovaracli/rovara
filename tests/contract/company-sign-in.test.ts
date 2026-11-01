@@ -138,7 +138,7 @@ describe("refusals (fail closed, and before anything is written about the person
     expect(roleOf(first.tokens)).toBe("member");
     const id = ownerKeyForSubject(OIDC_ISSUER, "una");
     await h.orgs.removeMember({ orgId: TEST_ORG, developerId: id, emails: [], ban: true, by: { kind: "member", id: ownerId } });
-    vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" } as never);
+    vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" });
     const record = vi.spyOn(h.deps.sso!.slack, "record");
     const allowed = capture!.recordedBy("sso.sign_in").length;
     const refused = await signInAs(h, "una");

@@ -287,10 +287,10 @@ describe("a Slack requester who is not a current writer of the team's org is ref
       const { slackRequesterProjectRole } = await import("../../packages/broker/src/aws/broker/workspace-preparation.js");
       let reads = 0;
       const send = h.db.send.bind(h.db);
-      h.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+      h.db.send = async (command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
         if (command.constructor.name === "GetCommand" && (command.input?.Key?.pk === `SIGNIN_IDENTITY#${guestId}` || command.input?.Key?.pk === `DEVELOPER#${guestId}`)) reads += 1;
         return send(command as never);
-      }) as never;
+      };
       await slackRequesterProjectRole(h.brokerInput as never, TEST_ORG, GUEST, "payments");
       // One read of the Slack id's link and one of its record, by the single walk; the grant read reuses its ids.
       expect(reads).toBe(2);
