@@ -8,7 +8,7 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { seedHoldingEvidence, seedTrackRow, replayRun, verdictFor, BASELINE } from "../support/second-review-evidence.js";
 import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
-import { openModeChange, openModeChanges } from "../../packages/broker/src/org/second-review-mode.js";
+import { openModeChange, openModeChanges, requestSecondReviewMode, type ModeDeps } from "../../packages/broker/src/org/second-review-mode.js";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMetaKey } from "../../packages/contracts/src/index.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -325,6 +325,17 @@ describe("a project pinned to `on`", () => {
     await pause();
     expect((await setProject(t, OMAR, "on")).status).toBe(200);
     expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ company: "off", project: "on", effective: "on" });
+  });
+});
+
+describe("the mode writer on its own", () => {
+  it("refuses to pin a project to `on` for someone who is not an admin, whatever the route did before it", async () => {
+    const { t } = await withEvidence();
+    const deps = { table: { documentClient: t.db, tableName: "state" }, evidence: {}, audit: { pending: () => undefined }, now: () => Date.now() } as unknown as ModeDeps;
+    const ask = (requesterIsAdmin: boolean) => requestSecondReviewMode(deps, { orgId: TEST_ORG, scope: { kind: "project", project: NAME }, to: "on", requestedBy: "d", onAllowed: true, requesterIsAdmin });
+    expect(await ask(false)).toEqual({ ok: false, code: "not_eligible" });
+    // An admin gets past that check (and stops at the missing ledger here).
+    expect(await ask(true)).toEqual({ ok: false, code: "audit_unavailable" });
   });
 });
 
