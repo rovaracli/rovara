@@ -15,13 +15,15 @@ const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 const OWNER = "a".repeat(64);
 const SECRET = "Call the internal retry endpoint at the secret path before every request.";
 const LESSONS = { v: 1, lessons: [{ id: "les_mallory01", type: "convention", title: "Mallory's rule", body: SECRET }] };
+/** WL-6: what a build now stores: ids and versions only. */
+const REFS = { v: 1, orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", setVersion: 3, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: [{ id: "les_mallory01", version: 1 }] };
 
-function outboxRecord(status = "QUEUED", workspaceId = WORKSPACE_ID): Ec2OutboxRecord {
+function outboxRecord(status = "QUEUED", workspaceId = WORKSPACE_ID, payloadLessons: Record<string, unknown> = { learnedContext: LESSONS }): Ec2OutboxRecord {
   const operationId = randomUUID();
   return {
     id: randomUUID(), entityType: "OUTBOX", status, operationId, workspaceId, deploymentMode: "ec2-ebs",
     invocation: { protocolVersion: 1, kind: "task", operationId, workspaceId, fence: 4, projectRevision: 1, callbackCapability: "c".repeat(64),
-      payload: { conversationId: randomUUID(), prompt: "continue", conversationStarted: true, learnedContext: LESSONS } },
+      payload: { conversationId: randomUUID(), prompt: "continue", conversationStarted: true, ...payloadLessons } },
   } as unknown as Ec2OutboxRecord;
 }
 const stored = (db: FakeDynamoDb, record: Ec2OutboxRecord) => db.get(`OUTBOX#${record.id}`, "OUTBOX") as unknown as { status: string; invocation: { payload: Record<string, unknown> } };
@@ -108,5 +110,26 @@ describe("a stage's stored copy keeps no lesson text once it is parked or failed
     seed(db, record);
     await db.send(markDeliveredCommand("state", record.id, "2026-11-01T00:00:00.000Z"));
     expect(stored(db, record).invocation.payload.learnedContext).toBeUndefined();
+  });
+});
+
+describe("WL-6: the stored copy of a stage carries lesson ids and versions, and they go on the same events", () => {
+  it("a stored stage holds no lesson text at all: it is queued, parked, failed and delivered with refs only, and each of those drops the refs too", async () => {
+    for (const how of ["delivered", "failed", "parked-session"] as const) {
+      const db = new FakeDynamoDb();
+      const record = outboxRecord("QUEUED", WORKSPACE_ID, { learnedRefs: REFS });
+      seed(db, record);
+      expect(JSON.stringify(stored(db, record)), how).not.toContain("secret path");
+      expect(stored(db, record).invocation.payload.learnedRefs, how).toBeDefined();
+      if (how === "delivered") await db.send(markDeliveredCommand("state", record.id, "2026-11-01T00:00:00.000Z"));
+      if (how === "failed") await failOutboxOperation(db as never, "state", record, "RUNTIME_UNAVAILABLE: x");
+      if (how === "parked-session") {
+        const sessions = new SessionManager({ documentClient: db, tableName: "state", executions: { provisionerArn: "arn:aws:states:us-east-1:111122223333:stateMachine:provisioner", deleterArn: "arn:aws:states:us-east-1:111122223333:stateMachine:deleter", start: async ({ stateMachineArn, name }) => `${stateMachineArn.replace(":stateMachine:", ":execution:")}:${name}` }, now: () => new Date("2026-11-01T12:00:00.000Z"), chooseSubnet: (subnets) => subnets[0]! });
+        const binding: Ec2RuntimeBinding = { deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0aaaaaaaaaaaaaaaa" }], volumeSizeGiB: 20, volumeType: "gp3" };
+        await sessions.ensureSession({ workspaceId: WORKSPACE_ID, binding, waitingOutboxId: record.id });
+      }
+      expect(stored(db, record).invocation.payload.learnedRefs, how).toBeUndefined();
+      expect(stored(db, record).invocation.payload, how).toMatchObject({ prompt: "continue" });
+    }
   });
 });

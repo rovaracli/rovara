@@ -3,8 +3,10 @@
 // Team record is on), the operation is a stage of a Rovara Code task with an org, the project's learning mode allows loading (the loader's own check), and the task's owner can be told. It never
 // throws and never waits long: any failure, or a load slower than the deadline, sends nothing and the stage runs as it would without memory.
 //
-// The worker gets the field only if it lists "task.learnedContext.v1": delivery (`ec2-delivery.ts`) removes it for an older worker, so an older worker is never refused and never sees a lesson.
-import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, type LearnedContext, type LessonStage, type ProjectDefinition } from "@agentx/contracts";
+// What this returns is the lessons' IDS and VERSIONS (`learnedRefs`), never their text: the outbox row, the queue message, its dead-letter copy and a FAILED row carry only those, and the dispatcher builds the
+// `learnedContext` from the lesson store at delivery (`lessons/deliver.ts`), so a lesson erased or retired after the stage was queued is never delivered and no text sits in a stored copy (WL-6). The worker gets the
+// field only if it lists "task.learnedContext.v1": delivery removes it for an older worker, so an older worker is never refused and never sees a lesson.
+import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, learnedRefsOf, type LearnedRefs, type LessonStage, type ProjectDefinition } from "@agentx/contracts";
 import { effectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { learnedContextForDispatch, type TaskAudience } from "../../lessons/load.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
@@ -26,7 +28,7 @@ export async function learnedContextForOperation(
   host: LessonsHost,
   input: { orgId: string; task: DeveloperTaskRecord | undefined; workflowMode: string | undefined; legacyTask?: boolean | undefined; agentRun?: unknown; definition: Pick<ProjectDefinition, "repositories"> },
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ learnedContext?: LearnedContext; load?: LearnedLoadRef }> {
+): Promise<{ learnedRefs?: LearnedRefs; load?: LearnedLoadRef }> {
   // The install switch for lessons reaching an agent (lessons/switch.ts), apart from the Team record's: off, nothing is loaded, recorded or sent.
   if (!learnedLessonsEnabled(env)) return {};
   const lessons = host.lessons;
@@ -49,8 +51,10 @@ export async function learnedContextForOperation(
       repos: codeRepositoriesOf(input.definition as ProjectDefinition).map((repository) => repository.name), files: [], languages: [], taskAudience: audience,
       // The delivery removes the field for a worker that does not list the feature; the loader is asked as for a worker that does.
     }, [LEARNED_CONTEXT_FEATURE]);
-    const result = await Promise.race([run, new Promise<{ learnedContext?: LearnedContext }>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
-    return result.learnedContext === undefined ? {} : { learnedContext: result.learnedContext, load: { taskId: task.taskId, project: task.project, stage, round } };
+    const result = await Promise.race([run, new Promise<Awaited<typeof run>>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
+    if (result.learnedContext === undefined) return {};
+    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: audience.kind === "shared" ? { kind: "shared" } : { kind: "private", developerId: effectiveTaskOwner(task).developerId } });
+    return { learnedRefs: refs, load: { taskId: task.taskId, project: task.project, stage, round } };
   } catch {
     return {};
   } finally {

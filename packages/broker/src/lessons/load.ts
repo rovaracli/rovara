@@ -81,12 +81,12 @@ export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy): boolean 
 }
 
 /** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
-const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+export const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
 
 const isTierTwoApproved = (lesson: Lesson): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
 
 /** Which lesson types a stage may load (design §4.7). Reviewer stages get only tier-2-approved review checks. */
-function stageAllows(lesson: Lesson, stage: LessonStage): boolean {
+export function stageAllows(lesson: Lesson, stage: LessonStage): boolean {
   if (!lesson.stages.includes(stage)) return false;
   switch (stage) {
     case "UNDERSTAND": case "PLAN": return lesson.type !== "review_check";
@@ -97,7 +97,7 @@ function stageAllows(lesson: Lesson, stage: LessonStage): boolean {
 
 const scopeLabel = (lesson: Lesson): string => safeScopeLabel(lesson.scope);
 
-function toLearned(lesson: Lesson): LearnedLesson {
+export function toLearned(lesson: Lesson): LearnedLesson {
   return {
     id: lesson.id, version: lesson.version, type: lesson.type, title: lesson.title, description: lesson.description, body: lesson.body, scopeLabel: scopeLabel(lesson),
     citations: lesson.citations.filter((c): c is CodeCitation => c.kind === "code"),

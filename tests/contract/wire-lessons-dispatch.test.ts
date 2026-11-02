@@ -55,13 +55,20 @@ describe("the worker invocation of a coding stage", () => {
   it("carries the approved lessons for the stage, and the operation names the manifest the report belongs to", async () => {
     const t = await setup();
     // The planning stage that preparing started already asked the loader: only the approved lesson is in it.
-    const planned = t.planInvocation.payload.learnedContext as { stage: string; lessons: Array<{ id: string }> };
+    const planned = t.planInvocation.payload.learnedRefs as { stage: string; lessons: Array<{ id: string; version: number }> };
     expect(planned.stage).toBe("PLAN");
-    expect(planned.lessons.map((l) => l.id)).toEqual(["les_approved1"]);
+    expect(planned.lessons).toEqual([{ id: "les_approved1", version: 1 }]);
     const { invocation, operation } = await t.accept("IMPLEMENT");
-    const context = invocation.payload.learnedContext as { stage: string; lessons: Array<{ id: string }> };
+    const context = invocation.payload.learnedRefs as { stage: string; lessons: Array<{ id: string }> };
     expect(context.stage).toBe("IMPLEMENT");
     expect(context.lessons.map((l) => l.id)).toEqual(["les_approved1"]);
+    // WL-6: the stored stage (the outbox row the queue message is made from) holds ids and versions, never the lesson's words, and no `learnedContext`.
+    for (const payload of [t.planInvocation.payload, invocation.payload]) {
+      expect(payload).not.toHaveProperty("learnedContext");
+      const approved = lessonRecord({ id: "les_approved1" });
+      expect(JSON.stringify(payload)).not.toContain(approved.body);
+      expect(JSON.stringify(payload)).not.toContain(approved.title);
+    }
     expect(operation.learnedLoad).toMatchObject({ taskId: t.meta().taskId, project: PROJECT, stage: "IMPLEMENT" });
     const manifests = await t.store.manifests({ workspaceId: TEST_ORG, project: PROJECT }, t.meta().taskId);
     expect(manifests.map((m) => m.stage).sort()).toEqual(["IMPLEMENT", "PLAN"]);
@@ -70,77 +77,109 @@ describe("the worker invocation of a coding stage", () => {
 
   it("carries nothing, and records nothing, with learning Off for the project", async () => {
     const t = await setup({ mode: "Off" });
-    expect(t.planInvocation.payload).not.toHaveProperty("learnedContext");
+    expect(t.planInvocation.payload).not.toHaveProperty("learnedRefs");
     const { invocation, operation } = await t.accept("IMPLEMENT");
-    expect(invocation.payload).not.toHaveProperty("learnedContext");
+    expect(invocation.payload).not.toHaveProperty("learnedRefs");
     expect(operation).not.toHaveProperty("learnedLoad");
     expect(await t.store.manifests({ workspaceId: TEST_ORG, project: PROJECT }, t.meta().taskId)).toEqual([]);
   });
 
   it("carries nothing, and records nothing, with the install switch off even where lesson ports exist and learning is On (the default)", async () => {
     const t = await setup({ switch: "off" });
-    expect(t.planInvocation.payload).not.toHaveProperty("learnedContext");
+    expect(t.planInvocation.payload).not.toHaveProperty("learnedRefs");
     const { invocation, operation } = await t.accept("IMPLEMENT");
-    expect(invocation.payload).not.toHaveProperty("learnedContext");
+    expect(invocation.payload).not.toHaveProperty("learnedRefs");
     expect(operation).not.toHaveProperty("learnedLoad");
     expect(await t.store.manifests({ workspaceId: TEST_ORG, project: PROJECT }, t.meta().taskId)).toEqual([]);
   });
 
   it("carries nothing where the install has no lesson ports (the default)", async () => {
     const t = await setup({ withLessons: false });
-    expect(t.planInvocation.payload).not.toHaveProperty("learnedContext");
+    expect(t.planInvocation.payload).not.toHaveProperty("learnedRefs");
     const { invocation } = await t.accept("IMPLEMENT");
-    expect(invocation.payload).not.toHaveProperty("learnedContext");
+    expect(invocation.payload).not.toHaveProperty("learnedRefs");
   });
 });
 
-describe("delivery to an older worker", () => {
+describe("delivery: the stage's lessons are built from the lesson store at the moment it is sent (WL-6)", () => {
   const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const kmsSign = async (message: Uint8Array) => new Uint8Array(sign("sha256", message, keys.privateKey));
   const binding = { deploymentMode: "ec2-ebs" as const, launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0aaaaaaaaaaaaaaaa" }], volumeSizeGiB: 20, volumeType: "gp3" as const };
-  const context = { v: 1, setVersion: 1, stage: "IMPLEMENT", lessons: [] };
-  function record(): Ec2OutboxRecord {
+  const SECRET = "Call the internal retry endpoint at the secret path before every request.";
+  const refs = { v: 1, orgId: TEST_ORG, project: PROJECT, setVersion: 1, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: [{ id: "les_mallory01", version: 1 }] };
+  const built = { v: 1, setVersion: 1, stage: "IMPLEMENT", lessons: [{ id: "les_mallory01", version: 1, type: "convention", title: "Mallory's rule", description: "", body: SECRET, scopeLabel: "repo api", citations: [] }] };
+  function record(payload: Record<string, unknown> = { learnedRefs: refs }): Ec2OutboxRecord {
     const operationId = randomUUID(), workspaceId = randomUUID();
-    const invocation = { protocolVersion: 1, kind: "task", operationId, workspaceId, fence: 2, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "do it", learnedContext: context } } as WorkerInvocation;
+    const invocation = { protocolVersion: 1, kind: "task", operationId, workspaceId, fence: 2, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "do it", ...payload } } as WorkerInvocation;
     return { id: randomUUID(), entityType: "OUTBOX", status: "QUEUED", operationId, workspaceId, deploymentMode: "ec2-ebs", invocation };
   }
-  async function deliver(features: readonly string[]) {
-    const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
-    const deliverEc2 = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
-      sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
-      binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-11-01T12:00:00.000Z"), workerFeatures: async () => features,
-    });
-    const markFailed = vi.fn(async () => undefined), markDelivered = vi.fn(async () => undefined);
-    const handler = createDispatcherHandler({ markDispatching: async () => true, markDelivered, markFailed, deliverEc2, maxAttempts: 1, log: () => undefined });
-    await handler({ Records: [{ messageId: "m", body: JSON.stringify(record()) }] });
-    return { post, markFailed, markDelivered };
-  }
-  const sent = (post: ReturnType<typeof vi.fn>) => JSON.stringify(post.mock.calls[0]);
-
-  it("is sent the stage without the lessons, and the stage is delivered", async () => {
-    const old = await deliver(["task.workflowMode", "model.thinkingLevel"]);
-    expect(old.markFailed).not.toHaveBeenCalled();
-    expect(old.markDelivered).toHaveBeenCalledTimes(1);
-    expect(old.post).toHaveBeenCalledTimes(1);
-    expect(sent(old.post)).not.toContain("learnedContext");
-  });
-
-  it("a worker that lists the feature is sent them", async () => {
-    const current = await deliver([LEARNED_CONTEXT_FEATURE]);
-    expect(current.markDelivered).toHaveBeenCalledTimes(1);
-    expect(sent(current.post)).toContain("learnedContext");
-  });
-
-  it("a worker whose features could not be asked is treated as an old one", async () => {
+  async function deliver(features: readonly string[] | undefined, over: { payload?: Record<string, unknown>; learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"] } = {}) {
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
     const deliverEc2 = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-11-01T12:00:00.000Z"),
+      ...(features === undefined ? {} : { workerFeatures: async () => features }), ...(over.learnedFromRefs === undefined ? {} : { learnedFromRefs: over.learnedFromRefs }),
     });
-    const handler = createDispatcherHandler({ markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => undefined, deliverEc2, maxAttempts: 1, log: () => undefined });
-    await handler({ Records: [{ messageId: "m", body: JSON.stringify(record()) }] });
-    expect(JSON.stringify(post.mock.calls[0])).not.toContain("learnedContext");
+    const markFailed = vi.fn(async () => undefined), markDelivered = vi.fn(async () => undefined);
+    const handler = createDispatcherHandler({ markDispatching: async () => true, markDelivered, markFailed, deliverEc2, maxAttempts: 1, log: () => undefined });
+    const queued = record(over.payload);
+    await handler({ Records: [{ messageId: "m", body: JSON.stringify(queued) }] });
+    const body = post.mock.calls[0]?.[1]?.body;
+    return { post, markFailed, markDelivered, queued, sent: body === undefined ? undefined : (JSON.parse(body) as { payload: Record<string, unknown> }) };
+  }
+
+  it("the queue message holds ids and versions, not the lesson's words", async () => {
+    const { queued } = await deliver([LEARNED_CONTEXT_FEATURE], { learnedFromRefs: async () => built as never });
+    expect(JSON.stringify(queued)).not.toContain("secret path");
+    expect(JSON.stringify(queued)).not.toContain("Mallory");
+    expect(JSON.stringify(queued)).toContain("les_mallory01");
+  });
+
+  it("a worker that lists the feature is sent the context built from the store at that moment, and never the refs", async () => {
+    let asked = 0;
+    const current = await deliver([LEARNED_CONTEXT_FEATURE], { learnedFromRefs: async (asking) => { asked += 1; expect(asking).toEqual(refs); return built as never; } });
+    expect(current.markDelivered).toHaveBeenCalledTimes(1);
+    expect(asked).toBe(1);
+    expect(current.sent?.payload.learnedContext).toEqual(built);
+    expect(current.sent?.payload).not.toHaveProperty("learnedRefs");
+    expect(JSON.stringify(current.post.mock.calls[0])).not.toContain("learnedRefs");
+  });
+
+  it("a lesson erased, retired or edited after the stage was queued is not sent: the store says nothing, and the stage runs without lessons and is delivered", async () => {
+    const gone = await deliver([LEARNED_CONTEXT_FEATURE], { learnedFromRefs: async () => undefined });
+    expect(gone.markFailed).not.toHaveBeenCalled();
+    expect(gone.markDelivered).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(gone.post.mock.calls[0])).not.toMatch(/learnedContext|learnedRefs|secret path/u);
+  });
+
+  it("a lookup that fails sends no lessons and does not fail the stage", async () => {
+    const down = await deliver([LEARNED_CONTEXT_FEATURE], { learnedFromRefs: async () => { throw new Error("db down"); } });
+    expect(down.markFailed).not.toHaveBeenCalled();
+    expect(down.markDelivered).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(down.post.mock.calls[0])).not.toMatch(/learnedContext|learnedRefs/u);
+  });
+
+  it("no lookup is made, and nothing is sent, for an older worker, a worker whose features could not be asked, or an install with no lesson reader", async () => {
+    let asked = 0;
+    const lookup = async () => { asked += 1; return built as never; };
+    for (const features of [["task.workflowMode", "model.thinkingLevel"], undefined]) {
+      const old = await deliver(features, { learnedFromRefs: lookup });
+      expect(old.markFailed).not.toHaveBeenCalled();
+      expect(old.markDelivered).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(old.post.mock.calls[0])).not.toMatch(/learnedContext|learnedRefs/u);
+    }
+    expect(asked).toBe(0);
+    const noReader = await deliver([LEARNED_CONTEXT_FEATURE]);
+    expect(noReader.markDelivered).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(noReader.post.mock.calls[0])).not.toMatch(/learnedContext|learnedRefs/u);
+  });
+
+  it("a stage queued by an earlier build (stored learnedContext, no refs) keeps the old rule: sent to a worker that lists the feature, removed for one that does not", async () => {
+    const legacy = { learnedContext: { v: 1, setVersion: 1, stage: "IMPLEMENT", lessons: [] } };
+    const current = await deliver([LEARNED_CONTEXT_FEATURE], { payload: legacy });
+    expect(current.sent?.payload).toHaveProperty("learnedContext");
+    const old = await deliver(["task.workflowMode"], { payload: legacy });
+    expect(old.sent?.payload).not.toHaveProperty("learnedContext");
   });
 });
