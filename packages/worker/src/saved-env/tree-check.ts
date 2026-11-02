@@ -15,8 +15,13 @@ import path from "node:path";
 
 /** Paths inside a `.git` directory that change where Git reads history from or how it reads it. Any of them, in the trusted copy or the staged one, ends the build. */
 export const REFUSED_GIT_ENTRIES: readonly string[] = [
-  "objects/info/alternates", "objects/info/http-alternates", "refs/replace", "info/grafts", "modules", "worktrees", "commondir", "gitdir",
+  "objects/info/alternates", "objects/info/http-alternates", "refs/replace", "info/grafts", "info/attributes", "modules", "worktrees", "commondir", "gitdir",
 ];
+
+/** How many records of `git ls-files -v -z` carry a flag other than "H" (assume-unchanged, skip-worktree, and the like). */
+export function countNonStandardFlags(output: string): number {
+  return output.split("\u0000").filter((record) => record !== "" && !record.startsWith("H ")).length;
+}
 
 /** The refused entries that exist in `gitDirectory` (names only). Does not follow a link: a link is reported as present. */
 export async function unsafeGitEntries(gitDirectory: string): Promise<string[]> {
@@ -103,7 +108,15 @@ async function blobHash(file: string, size: number): Promise<string> {
  *   - a symbolic link whose target is not the committed target.
  * The staged tree must not change while this runs (the sandbox's processes are stopped first).
  */
-export async function compareTrackedFiles(entries: readonly TreeEntry[], root: string): Promise<TreeComparison> {
+export interface CompareOptions {
+  /**
+   * Git's own CLEAN conversion of working tree files (`git hash-object --stdin-paths` in the staged repository: end-of-line and ident attributes, no filter driver). Asked only for regular files whose raw hash
+   * differs, and only after every `.gitattributes` file matched byte for byte (the attributes that drive the conversion are themselves verified). Absent, or a path it does not return: the file fails.
+   */
+  convertedHashes?: (paths: string[]) => Promise<ReadonlyMap<string, string> | undefined>;
+}
+
+export async function compareTrackedFiles(entries: readonly TreeEntry[], root: string, options: CompareOptions = {}): Promise<TreeComparison> {
   let count = 0;
   let first: TreeMismatch | undefined;
   const fail = (reason: TreeMismatch): void => { count += 1; first ??= reason; };
@@ -124,6 +137,7 @@ export async function compareTrackedFiles(entries: readonly TreeEntry[], root: s
     return true;
   };
   let files = 0;
+  const converting: Array<{ path: string; sha: string }> = [];
   for (const entry of entries) {
     if (entry.type === "commit" || entry.mode === "160000") { fail("submodule"); continue; }
     if (entry.type !== "blob") { fail("wrong_kind"); continue; }
@@ -142,10 +156,20 @@ export async function compareTrackedFiles(entries: readonly TreeEntry[], root: s
       if (entry.mode !== "100644" && entry.mode !== "100755") { fail("wrong_kind"); continue; }
       if (!info.isFile() || info.isSymbolicLink()) { fail("wrong_kind"); continue; }
       if (((info.mode & 0o111) !== 0) !== (entry.mode === "100755")) { fail("mode"); continue; }
-      if (await blobHash(full, info.size) !== entry.sha) fail("content");
-      else files += 1;
+      if (await blobHash(full, info.size) === entry.sha) files += 1;
+      // A raw difference may be the end-of-line conversion the repository's attributes ask for. The attributes files themselves are never converted: they are compared raw.
+      else if (path.posix.basename(entry.path) === ".gitattributes" || entry.path.includes("\n")) fail("content");
+      else converting.push({ path: entry.path, sha: entry.sha });
     } catch {
       fail("unreadable");
+    }
+  }
+  if (converting.length > 0) {
+    // Only when every attributes file matched raw: otherwise the conversion would be driven by attributes nobody verified.
+    const converted = count === 0 && options.convertedHashes !== undefined ? await options.convertedHashes(converting.map((item) => item.path)).catch(() => undefined) : undefined;
+    for (const item of converting) {
+      if (converted?.get(item.path) === item.sha) files += 1;
+      else fail("content");
     }
   }
   return count === 0 ? { ok: true, files } : { ok: false, reason: first!, count };

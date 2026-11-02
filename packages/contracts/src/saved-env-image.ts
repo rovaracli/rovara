@@ -189,11 +189,14 @@ export const SavedEnvUseSchema = z.object({
 export type SavedEnvUse = z.infer<typeof SavedEnvUseSchema>;
 
 /** The steps a use can fail at; the evidence says "fresh setup (saved environment failed at <step>)" and the registry marks the image stale. */
-export const SAVED_ENV_USE_STEPS = ["input", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch"] as const;
+export const SAVED_ENV_USE_STEPS = ["input", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch", "checkout", "setup"] as const;
 export type SavedEnvUseStep = (typeof SAVED_ENV_USE_STEPS)[number];
 
 /** What is written into the image as `/rovara/manifest.json`: the manifest without the digest (an image cannot hold its own digest). The broker keeps the full manifest. */
-export const SavedEnvImageManifestSchema = SavedEnvManifestSchema.omit({ imageDigest: true });
+export const SavedEnvImageManifestSchema = SavedEnvManifestSchema.omit({ imageDigest: true }).extend({
+  /** Where the sandbox had the workspace mounted when the seed was built (a virtual environment writes absolute paths relative to it). */
+  workspaceRoot: z.string().startsWith("/").max(300).optional(),
+});
 export type SavedEnvImageManifest = z.infer<typeof SavedEnvImageManifestSchema>;
 
 export const SAVED_ENV_BUILD_FAILURES = [

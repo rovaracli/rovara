@@ -1,9 +1,9 @@
 // SH22: "no secrets in any layer". The scan finds the credentials a staged tree could hold, by exact value, by file, and by shape, reports kind and path only, and never follows a link or reads outside the tree.
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MAX_SCANNED_BYTES_PER_FILE, linkStaysInside, scanTreeForSecrets, type SecretScanResult } from "../../packages/worker/src/saved-env/secret-scan.js";
+import { MAX_SCANNED_BYTES_PER_FILE, scanTreeForSecrets, type SecretScanResult } from "../../packages/worker/src/saved-env/secret-scan.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -160,16 +160,15 @@ describe("secret scan", () => {
     expect((await scanTreeForSecrets(ok)).ok).toBe(true);
   });
 
-  it("linkStaysInside: relative inside the tree only", () => {
-    expect(linkStaysInside("svc/a", "b")).toBe(true);
-    expect(linkStaysInside("svc/dir/a", "../b")).toBe(true);
-    expect(linkStaysInside("svc/dir/a", "../../b")).toBe(true);
-    expect(linkStaysInside("svc/a", "../../b")).toBe(false);
-    expect(linkStaysInside("a", "../b")).toBe(false);
-    expect(linkStaysInside("svc/a", "/etc/passwd")).toBe(false);
-    expect(linkStaysInside("svc/a", "")).toBe(false);
-    expect(linkStaysInside("svc/a", "..")).toBe(true); // the tree's own root: inside
-    expect(linkStaysInside("svc/a", "../..")).toBe(false);
+  it("a link under .git is refused, and a file with a set-user-id or set-group-id bit ends the scan", async () => {
+    const underGit = await tree({ "svc/.git/HEAD": "ref: refs/heads/main\n", "svc/a.txt": "a" });
+    await symlink("../HEAD", join(underGit, "svc", ".git", "refs-link"));
+    expect(await scanTreeForSecrets(underGit)).toEqual({ ok: false, reason: "unscannable", detail: "unsafe_link" });
+    for (const mode of [0o4755, 0o2755]) {
+      const root = await tree({ "svc/tool": "x" });
+      await chmod(join(root, "svc", "tool"), mode);
+      expect(await scanTreeForSecrets(root), mode.toString(8)).toEqual({ ok: false, reason: "unscannable", detail: "unsafe_mode" });
+    }
   });
 
   it("a text file in .git/objects of a repository folder is not read; a log under .git is", async () => {

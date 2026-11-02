@@ -37,8 +37,9 @@ import {
 } from "@agentx/contracts";
 import { assertCredentialFreeRemote, runGitWithCredential, type GitCredential } from "../git-auth.js";
 import type { DockerCli } from "../swebench/containers.js";
-import { linkStaysInside } from "./secret-scan.js";
-import { minimalGitConfig, unsafeGitEntries } from "./tree-check.js";
+import { DEFAULT_LINK_POLICY, inspectLink, type LinkPolicy } from "./links.js";
+import { countNonStandardFlags, minimalGitConfig, unsafeGitEntries } from "./tree-check.js";
+import { runIsolatedGit } from "../isolated-repository.js";
 
 type Repository = StoredProjectDefinition["repositories"][number];
 type Materializer = (repository: Repository, destination: string, credential: GitCredential) => Promise<void>;
@@ -63,6 +64,10 @@ export interface SavedEnvUseOptions {
   /** Fetches the default branch into `refs/remotes/origin/<branch>` of the repository at `directory`. Default: `git fetch` with the clone credential, through the hardened runner. */
   fetch?: (input: { directory: string; branch: string; credential: GitCredential }) => Promise<void>;
   random?: () => string;
+  /** The canonical path of the workspace this seed is placed in. The image says where it was built; a different path is reported (setup repairs absolute paths in a virtual environment). */
+  workspaceRoot?: string;
+  /** Which links the seed may hold (links.ts); the same policy the build used. Default: virtual environment interpreters in `/usr/bin` and `/usr/local/bin`. */
+  links?: LinkPolicy;
 }
 
 class Fallback extends Error {
@@ -80,17 +85,21 @@ const defaultFetch: NonNullable<SavedEnvUseOptions["fetch"]> = async ({ director
   await runGitWithCredential({ directory, args: ["fetch", "--no-tags", "--", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], credential, timeout: 300_000, maxBuffer: 1_048_576 });
 };
 
-/** Walks the extracted seed: only files, folders and links that stay inside; no device file, no socket. */
-export async function checkSeedTree(root: string): Promise<"ok" | "special_file" | "unsafe_link"> {
+/**
+ * Walks the extracted seed: only files, folders and links that `links.ts` accepts, checked on the real tree; no device file or socket; no set-user-id or set-group-id file; no link at all under a `.git`.
+ * The folders are never entered through a link.
+ */
+export async function checkSeedTree(root: string, links: LinkPolicy = DEFAULT_LINK_POLICY): Promise<"ok" | "special_file" | "unsafe_link" | "unsafe_mode"> {
   const stack = [""];
   while (stack.length > 0) {
     const relativeDirectory = stack.pop()!;
     for (const entry of await readdir(path.join(root, relativeDirectory), { withFileTypes: true })) {
       const relative = relativeDirectory === "" ? entry.name : `${relativeDirectory}/${entry.name}`;
       const info = await lstat(path.join(root, relative));
-      if (info.isSymbolicLink()) { if (!linkStaysInside(relative, await readlink(path.join(root, relative)))) return "unsafe_link"; continue; }
+      if (info.isSymbolicLink()) { if (!(await inspectLink(root, relative, await readlink(path.join(root, relative)), links)).ok) return "unsafe_link"; continue; }
       if (info.isDirectory()) { stack.push(relative); continue; }
       if (!info.isFile()) return "special_file";
+      if ((info.mode & 0o6000) !== 0) return "unsafe_mode";
     }
   }
   return "ok";
@@ -149,18 +158,27 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
     try { manifest = SavedEnvImageManifestSchema.parse(JSON.parse(await readFile(manifestFile, "utf8"))); } catch { throw new Fallback("manifest"); }
     if (manifest.environmentKey !== use.environmentKey || manifest.testEnvRevision !== use.testEnvRevision || manifest.testEnvRevision !== options.taskTestEnvRevision) throw new Fallback("manifest");
     for (const repository of repositories) if (!manifest.commits.some((commit) => commit.repositoryId === repository.name)) throw new Fallback("manifest");
+    if (options.workspaceRoot !== undefined && manifest.workspaceRoot !== undefined && manifest.workspaceRoot !== options.workspaceRoot) {
+      options.onDiagnostic?.("the saved environment was built at another workspace path; the project's setup repairs paths written into it");
+    }
 
     // layout and links
     for (const repository of repositories) {
       try { if (!(await lstat(path.join(seed, repository.path))).isDirectory()) throw new Fallback("layout"); } catch (error) { throw error instanceof Fallback ? error : new Fallback("layout"); }
     }
-    const checked = await checkSeedTree(seed).catch(() => "special_file" as const);
+    const checked = await checkSeedTree(seed, options.links ?? DEFAULT_LINK_POLICY).catch(() => "special_file" as const);
     if (checked !== "ok") throw new Fallback("links");
     return { seed, manifest, remove: cleanup };
   } catch (error) {
     await cleanup();
     throw error instanceof Fallback ? error : new Fallback("extract");
   }
+}
+
+/** Replaces `file` with a new file holding `text`: the old one (or a link in its place) is removed, then the new one is created exclusively, so nothing is ever written THROUGH a link. */
+export async function replaceFileExclusively(file: string, text: string): Promise<void> {
+  await rm(file, { force: true });
+  await writeFile(file, text, { mode: 0o644, flag: "wx" });
 }
 
 /** The config of a seeded repository: only the origin URL (from the PROJECT, credential-free), hooks off. */
@@ -172,9 +190,10 @@ export function seededGitConfig(originUrl: string): string {
  * The preparation's materializer for a project with a saved environment. `fallback` is the ordinary fresh clone. A repository for which anything fails is cloned fresh (after what the attempt made is removed),
  * and the first failing step is reported once.
  */
-export function savedEnvMaterializer(options: SavedEnvUseOptions, repositories: readonly Repository[], fallback: Materializer): Materializer & { dispose(): Promise<void> } {
+export function savedEnvMaterializer(options: SavedEnvUseOptions, repositories: readonly Repository[], fallback: Materializer): Materializer & { dispose(): Promise<void>; used(): boolean } {
   let extracted: Promise<Extracted> | undefined;
   let reported = false;
+  let seeded = 0;
   const diagnostic = options.onDiagnostic ?? (() => undefined);
   const report = (step: SavedEnvUseStep): void => {
     if (reported) return;
@@ -199,6 +218,7 @@ export function savedEnvMaterializer(options: SavedEnvUseOptions, repositories: 
       const image = await extracted;
       try {
         await useRepository({ image, repository, destination, credential, fetch });
+        seeded += 1;
       } catch (error) {
         await rm(destination, { recursive: true, force: true });
         throw error;
@@ -212,14 +232,15 @@ export function savedEnvMaterializer(options: SavedEnvUseOptions, repositories: 
       if (remaining.size === 0) await release();
     }
   };
-  return Object.assign(materialize, { dispose: release });
+  return Object.assign(materialize, { dispose: release, used: () => seeded > 0 });
 }
 
 async function useRepository(input: { image: Extracted; repository: Repository; destination: string; credential: GitCredential; fetch: NonNullable<SavedEnvUseOptions["fetch"]> }): Promise<void> {
   const { image, repository, destination } = input;
   if (!BRANCH_NAME.test(repository.defaultBranch)) throw new Fallback("input");
   const source = path.join(image.seed, repository.path);
-  // the history the repository carries must not be redirected, and it carries no hooks
+  // `.git` must be a real folder (not a link or a file that points elsewhere); the history it carries must not be redirected, and it carries no hooks
+  try { const info = await lstat(path.join(source, ".git")); if (!info.isDirectory() || info.isSymbolicLink()) throw new Fallback("git"); } catch { throw new Fallback("git"); }
   if ((await unsafeGitEntries(path.join(source, ".git")).catch(() => ["unreadable"])).length > 0) throw new Fallback("git");
   let config: string;
   try {
@@ -231,7 +252,13 @@ async function useRepository(input: { image: Extracted; repository: Repository; 
     await cp(source, destination, { recursive: true, verbatimSymlinks: true, dereference: false, force: false, errorOnExist: true });
   } catch { throw new Fallback("copy"); }
   await rm(path.join(destination, ".git", "hooks"), { recursive: true, force: true });
-  await writeFile(path.join(destination, ".git", "config"), config, { mode: 0o644 });
+  // The generated config replaces the image's: removed first, then created exclusively (never written through a link that appeared in between).
+  try { await replaceFileExclusively(path.join(destination, ".git", "config"), config); } catch { throw new Fallback("git"); }
+  // No index entry may carry a flag that hides a change (assume-unchanged, skip-worktree): the index in the image was rebuilt at build, so any flag now is not ours.
+  try {
+    const flags = await runIsolatedGit(destination, ["ls-files", "-v", "-z"], { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+    if (countNonStandardFlags(flags) > 0) throw new Fallback("git");
+  } catch { throw new Fallback("git"); }
   try {
     await input.fetch({ directory: destination, branch: repository.defaultBranch, credential: input.credential });
   } catch { throw new Fallback("fetch"); }

@@ -2,15 +2,15 @@
 // the generated one with hooks off, and the default branch is fetched and checked out over the seed. ANY failure clones fresh, reports the step, and leaves nothing behind.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, savedEnvRepositoryName, type ProjectDefinition, type SavedEnvRegistryAuth, type SavedEnvUse, type SavedEnvUseStep } from "../../packages/contracts/src/index.js";
-import { prepareWorkspace, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";
+import { SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, parseCommandLine, savedEnvRepositoryName, type ProjectDefinition, type SavedEnvRegistryAuth, type SavedEnvUse, type SavedEnvUseStep } from "../../packages/contracts/src/index.js";
+import { prepareWorkspace, type PrepareWorkspaceOptions, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
-import { checkSeedTree, savedEnvMaterializer, seededGitConfig, type SavedEnvUseOptions } from "../../packages/worker/src/saved-env/use.js";
+import { checkSeedTree, replaceFileExclusively, savedEnvMaterializer, seededGitConfig, type SavedEnvUseOptions } from "../../packages/worker/src/saved-env/use.js";
 
 const cleanup: string[] = [];
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
@@ -106,21 +106,21 @@ function freshClone(f: Fixture, log: string[] = []): RepositoryMaterializer {
   return async (_repository, target) => { log.push("fresh clone"); execFileSync("git", ["clone", "-q", "--no-checkout", pathToFileURL(f.source).href, target], { env: gitEnv }); };
 }
 
-async function run(f: Fixture, docker: Docker, over: Partial<SavedEnvUseOptions> & { project?: ProjectDefinition; fail?: Error } = {}) {
+async function run(f: Fixture, docker: Docker, over: Partial<SavedEnvUseOptions> & { project?: ProjectDefinition; fail?: Error; prepare?: Partial<PrepareWorkspaceOptions> } = {}) {
   const fallbacks: SavedEnvUseStep[] = [];
   const diagnostics: string[] = [];
   const log: string[] = [];
   const rootPath = await scratch();
   const fetched: string[] = [];
   const manifestOut = await prepareWorkspace({
-    rootPath, project: over.project ?? project(), readOnly: true,
+    rootPath, project: over.project ?? project(), readOnly: over.prepare?.readOnly ?? true, ...over.prepare,
     credentialProvider: async () => ({ username: "x-access-token", password: "clone-credential-value" }),
     materializer: freshClone(f, log),
     savedEnv: {
       use: useOf(), taskTestEnvRevision: 4, docker: docker.cli, onFallback: (step) => fallbacks.push(step), onDiagnostic: (message) => diagnostics.push(message),
       fetch: async ({ directory, branch }) => { fetched.push(directory); if (over.fail !== undefined) throw over.fail; execFileSync("git", ["fetch", "-q", "--no-tags", pathToFileURL(f.source).href, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: directory, env: { ...gitEnv, HOME: directory } }); },
       random: () => "0123456789abcdef",
-      ...over,
+      ...Object.fromEntries(Object.entries(over).filter(([key]) => key !== "prepare" && key !== "project" && key !== "fail")),
     },
   });
   return { rootPath, manifest: manifestOut, fallbacks, diagnostics, log, fetched };
@@ -317,5 +317,166 @@ describe("pieces", () => {
     await symlink("/etc/passwd", join(root, "svc", "bad"));
     expect(await checkSeedTree(root)).toBe("unsafe_link");
     expect((await readdir(root)).length).toBe(1);
+  });
+});
+
+describe("links in the seed are checked on the real tree (review A1, A3)", () => {
+  it("a -> . with x -> a/a/a/a/../../../../.. is refused", async () => {
+    const f = await fixture();
+    const nm = join(f.image, "seed", "svc", "node_modules");
+    await symlink(".", join(nm, "a"));
+    await symlink("a/a/a/a/../../../../..", join(nm, "x"));
+    const r = await run(f, fakeDocker(f));
+    expect(r.fallbacks).toEqual(["links"]);
+    expect(r.log).toEqual(["fresh clone"]);
+  });
+
+  it("a virtual environment's interpreter links into the base image's interpreter folder are kept; an absolute link anywhere else is not", async () => {
+    const f = await fixture();
+    const bin = join(f.image, "seed", "svc", ".venv", "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "..", "pyvenv.cfg"), "home = /usr/bin\n");
+    await symlink("/usr/bin/python3.12", join(bin, "python"));
+    await symlink("python", join(bin, "python3"));
+    const r = await run(f, fakeDocker(f));
+    expect(r.fallbacks).toEqual([]);
+    expect(await readlink(join(r.rootPath, "svc", ".venv", "bin", "python"))).toBe("/usr/bin/python3.12");
+    const g = await fixture();
+    await mkdir(join(g.image, "seed", "svc", ".venv", "bin"), { recursive: true });
+    await writeFile(join(g.image, "seed", "svc", ".venv", "pyvenv.cfg"), "home = /opt/py\n");
+    await symlink("/opt/py/bin/python3.12", join(g.image, "seed", "svc", ".venv", "bin", "python"));
+    expect((await run(g, fakeDocker(g))).fallbacks).toEqual(["links"]);
+    expect((await run(g, fakeDocker(g), { links: { interpreterDirectories: ["/opt/py/bin"], interpreterTrees: [] } })).fallbacks).toEqual([]);
+  });
+
+  it("a real `python -m venv` tree is used when its interpreter folder is allowed", async () => {
+    const f = await fixture();
+    execFileSync("python3", ["-m", "venv", "--without-pip", join(f.image, "seed", "svc", ".venv")]);
+    const bin = join(f.image, "seed", "svc", ".venv", "bin");
+    let target = "";
+    for (const name of await readdir(bin)) { const link = await readlink(join(bin, name)).catch(() => ""); if (link.startsWith("/")) target = link; }
+    expect(target.startsWith("/")).toBe(true);
+    const folder = target.slice(0, target.lastIndexOf("/"));
+    const refused = folder === "/usr/bin" || folder === "/usr/local/bin" ? [] : ["links"];
+    expect((await run(f, fakeDocker(f))).fallbacks).toEqual(refused);
+    const g = await fixture();
+    execFileSync("python3", ["-m", "venv", "--without-pip", join(g.image, "seed", "svc", ".venv")]);
+    const r = await run(g, fakeDocker(g), { links: { interpreterDirectories: [folder], interpreterTrees: [] } });
+    expect(r.fallbacks).toEqual([]);
+    expect(existsSync(join(r.rootPath, "svc", ".venv", "pyvenv.cfg"))).toBe(true);
+  });
+
+  it("a seed built at another workspace path is used and the difference is reported", async () => {
+    const f = await fixture();
+    await writeFile(join(f.image, "manifest.json"), JSON.stringify(manifest(f.commit1, { workspaceRoot: "/mnt/other-workspace" })));
+    const r = await run(f, fakeDocker(f));
+    expect(r.fallbacks).toEqual([]);
+    expect(r.diagnostics.join(" ")).toContain("another workspace path");
+  });
+});
+
+describe("the git folder in the seed (review B2) and special modes (B3)", () => {
+  it("a .git that is a link, a link anywhere under .git, or a config that is a link is refused", async () => {
+    const asLink = await fixture();
+    await rm(join(asLink.image, "seed", "svc", ".git"), { recursive: true });
+    await symlink("/tmp", join(asLink.image, "seed", "svc", ".git"));
+    expect((await run(asLink, fakeDocker(asLink))).fallbacks).toHaveLength(1);
+    const inside = await fixture();
+    await symlink("../HEAD", join(inside.image, "seed", "svc", ".git", "refs", "heads-link"));
+    expect((await run(inside, fakeDocker(inside))).fallbacks).toEqual(["links"]);
+    const config = await fixture();
+    await rm(join(config.image, "seed", "svc", ".git", "config"));
+    await symlink("/tmp/evil-config", join(config.image, "seed", "svc", ".git", "config"));
+    const r = await run(config, fakeDocker(config));
+    expect(r.fallbacks).toEqual(["links"]);
+    expect(existsSync("/tmp/evil-config")).toBe(false);
+  });
+
+  it("an index flag that hides a change (assume-unchanged, skip-worktree) in the seed is refused", async () => {
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      const f = await fixture();
+      git(join(f.image, "seed", "svc"), "update-index", flag, "app.js");
+      const r = await run(f, fakeDocker(f));
+      expect(r.fallbacks, flag).toEqual(["git"]);
+      expect(r.log).toEqual(["fresh clone"]);
+    }
+  });
+
+  it("a set-user-id or set-group-id file in the seed is refused", async () => {
+    const f = await fixture();
+    for (const mode of [0o4755, 0o2755]) {
+      const file = join(f.image, "seed", "svc", "node_modules", "dep", `tool${mode.toString(8)}`);
+      await writeFile(file, "x");
+      await chmod(file, mode);
+      expect(await checkSeedTree(join(f.image, "seed")), mode.toString(8)).toBe("unsafe_mode");
+      await rm(file);
+    }
+    const g = await fixture();
+    const file = join(g.image, "seed", "svc", "node_modules", "dep", "tool");
+    await writeFile(file, "x");
+    await chmod(file, 0o4755);
+    expect((await run(g, fakeDocker(g))).fallbacks).toEqual(["links"]);
+  });
+});
+
+describe("the config is replaced, never written through (review B2)", () => {
+  it("a file, or a link in its place, is replaced by a new file; the link's target is untouched; an existing file is never appended to", async () => {
+    const dir = await scratch();
+    await writeFile(join(dir, "target"), "original");
+    await symlink(join(dir, "target"), join(dir, "config"));
+    await replaceFileExclusively(join(dir, "config"), "generated");
+    expect(readFileSync(join(dir, "target"), "utf8")).toBe("original");
+    expect((await lstat(join(dir, "config"))).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(dir, "config"), "utf8")).toBe("generated");
+    await replaceFileExclusively(join(dir, "config"), "again");
+    expect(readFileSync(join(dir, "config"), "utf8")).toBe("again");
+  });
+});
+
+describe("a failure after the seed was used starts over without it (review B1)", () => {
+  const withSetup = (): ProjectDefinition => ({ ...project(), setup: [parseCommandLine("npm ci", "svc", 900)] });
+  /** Setup that fails only on the seed: it finds the seed's dependency folder and refuses it. */
+  const runner = (calls: string[]) => async (_command: unknown, _index: number, rootPath: string) => {
+    const seeded = existsSync(join(rootPath, "svc", "node_modules"));
+    calls.push(seeded ? "setup on seed" : "setup fresh");
+    return { exitCode: seeded ? 1 : 0, stdout: "", stderr: seeded ? "dependency tree is stale" : "" };
+  };
+
+  it("setup fails only on the seed: the workspace is wiped, the step is reported, and the preparation runs again fresh and succeeds", async () => {
+    const f = await fixture();
+    const calls: string[] = [];
+    const docker = fakeDocker(f);
+    const r = await run(f, docker, { project: withSetup(), prepare: { readOnly: false, commandRunner: runner(calls) } });
+    expect(r.manifest.complete).toBe(true);
+    expect(calls).toEqual(["setup on seed", "setup fresh"]);
+    expect(r.fallbacks).toEqual(["setup"]);
+    expect(r.diagnostics).toContain("fresh setup (saved environment failed at setup)");
+    expect(r.log).toEqual(["fresh clone"]);
+    expect(existsSync(join(r.rootPath, "svc", "node_modules"))).toBe(false);
+    expect(docker.calls.filter((call) => call[0] === "rmi")).toHaveLength(1);
+  });
+
+  it("the checkout fails after the seed was placed: reported as checkout, then fresh", async () => {
+    const f = await fixture();
+    const r = await run(f, fakeDocker(f), {
+      fetch: async ({ directory }) => { execFileSync("git", ["update-ref", "-d", "refs/remotes/origin/main"], { cwd: directory, env: { ...gitEnv, HOME: directory } }); },
+    });
+    expect(r.manifest.complete).toBe(true);
+    expect(r.fallbacks).toEqual(["checkout"]);
+    expect(r.log).toEqual(["fresh clone"]);
+  });
+
+  it("a failure that is also the fresh run's own failure is thrown (no loop)", async () => {
+    const f = await fixture();
+    const calls: string[] = [];
+    await expect(run(f, fakeDocker(f), { project: withSetup(), prepare: { readOnly: false, commandRunner: async () => { calls.push("run"); return { exitCode: 1, stdout: "", stderr: "broken" }; } } })).rejects.toThrow();
+    expect(calls).toEqual(["run", "run"]);
+  });
+
+  it("a failure when the seed was NOT used (it fell back) is not retried a second time", async () => {
+    const f = await fixture();
+    const calls: string[] = [];
+    await expect(run(f, fakeDocker(f, { pull: 1 }), { project: withSetup(), prepare: { readOnly: false, commandRunner: async () => { calls.push("run"); return { exitCode: 1, stdout: "", stderr: "broken" }; } } })).rejects.toThrow();
+    expect(calls).toEqual(["run"]);
   });
 });

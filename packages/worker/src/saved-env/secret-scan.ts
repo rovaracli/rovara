@@ -12,8 +12,9 @@
 // The EXACT-VALUE check reads every file WHOLE, in overlapping chunks (a value split across two chunks is still found). The regular-expression checks read at most `MAX_SCANNED_BYTES_PER_FILE` of a file (a larger
 // file is almost always an archive or a binary).
 //
-// LINKS: a symbolic link is never followed, and one that is ABSOLUTE or that leaves the seed (more `..` than there are folders above it) ends the scan as `unsafe_link`: whatever it points at on the machine that
-// extracts the image is not the project's file. (A Python virtual environment's `bin/python -> /usr/bin/python3` is such a link: that project gets no saved image until its environment is made without them.)
+// LINKS: a symbolic link is never followed. `links.ts` decides which are acceptable, on the real tree: a relative link that stays inside the seed without passing through another link, a virtual
+// environment's interpreter link into the base image's interpreter folders, and nothing under `.git`. Any other link ends the scan as `unsafe_link`. A file with a set-user-id or set-group-id bit ends it as
+// `unsafe_mode`.
 //
 // What it does not do: read past `MAX_SCANNED_BYTES_PER_FILE` for shapes, look inside archives, decode text, or read `.git/objects` (compressed). Those are residual risks the report names; the exact-value check does
 // not depend on them being absent (except inside archives and compressed objects).
@@ -21,6 +22,7 @@
 // Findings carry the KIND and the PATH, never the matched text. Nothing here logs.
 import { lstat, open, readdir, readlink } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_LINK_POLICY, inspectLink, type LinkPolicy } from "./links.js";
 
 export const SECRET_FINDING_KINDS = ["forbidden_value", "credential_file", "private_key", "token", "url_password", "aws_secret", "git_config_credential"] as const;
 export type SecretFindingKind = (typeof SECRET_FINDING_KINDS)[number];
@@ -30,7 +32,7 @@ export interface SecretFinding { kind: SecretFindingKind; /** A path inside the 
 export type SecretScanResult =
   | { ok: true; files: number; bytes: number }
   | { ok: false; reason: "found"; findings: SecretFinding[]; truncated: boolean }
-  | { ok: false; reason: "unscannable"; detail: "too_many_files" | "too_many_bytes" | "deadline" | "special_file" | "unreadable" | "unsafe_link" };
+  | { ok: false; reason: "unscannable"; detail: "too_many_files" | "too_many_bytes" | "deadline" | "special_file" | "unreadable" | "unsafe_link" | "unsafe_mode" };
 
 export interface SecretScanOptions {
   /** Exact secret values to look for in every file (at least 8 characters each; shorter ones are ignored, since a short string matches by chance). */
@@ -42,6 +44,8 @@ export interface SecretScanOptions {
   now?: () => number;
   /** The most findings reported (the scan still stops at the first file that has one, per file). */
   maxFindings?: number;
+  /** Which links are acceptable (links.ts). Default: no absolute link but a virtual environment's interpreter in `/usr/bin` or `/usr/local/bin`. */
+  links?: LinkPolicy;
 }
 
 export const MAX_SCANNED_BYTES_PER_FILE = 4 * 1024 * 1024;
@@ -124,13 +128,6 @@ function fileNameFinding(parts: readonly string[], dependency: boolean): SecretF
 /** Whether `.docker/config.json` has a login (an `auths` entry with credentials) rather than only settings. */
 const DOCKER_AUTH = /"auths"\s*:\s*\{\s*"[^"]+"\s*:\s*\{[^}]*"(?:auth|identitytoken|registrytoken)"\s*:\s*"[^"]{6,}"/u;
 
-/** Whether a link at `relative` (POSIX, inside the scanned tree) pointing at `target` stays inside the tree: not absolute, and never above the tree's root. */
-export function linkStaysInside(relative: string, target: string): boolean {
-  if (target === "" || path.isAbsolute(target) || target.includes("\\") || target.startsWith("/")) return false;
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(relative), target));
-  return resolved !== ".." && !resolved.startsWith("../");
-}
-
 /**
  * Whether any of `values` is in the file from byte `from` on, reading in chunks that overlap by the longest value minus one byte, so a value cut by a chunk edge is still seen. (The part before `from` was
  * searched by the caller; the overlap starts there too, so a value across `from` is found.)
@@ -187,7 +184,7 @@ export async function scanTreeForSecrets(root: string, options: SecretScanOption
       if (info.isSymbolicLink()) {
         let target: string;
         try { target = await readlink(absolute); } catch { return { ok: false, reason: "unscannable", detail: "unreadable" }; }
-        if (!linkStaysInside(relative, target)) return { ok: false, reason: "unscannable", detail: "unsafe_link" };
+        if (!(await inspectLink(root, relative, target, options.links ?? DEFAULT_LINK_POLICY)).ok) return { ok: false, reason: "unscannable", detail: "unsafe_link" };
         continue;
       }
       const parts = relative.split("/");
@@ -201,6 +198,8 @@ export async function scanTreeForSecrets(root: string, options: SecretScanOption
         // A socket or a pipe is dropped by the copy and never reaches here; a device file is not something an image should hold.
         return { ok: false, reason: "unscannable", detail: "special_file" };
       }
+      // A set-user-id or set-group-id file is something a task could run with another identity: never in an image.
+      if ((info.mode & 0o6000) !== 0) return { ok: false, reason: "unscannable", detail: "unsafe_mode" };
       files += 1;
       if (files > maxFiles) return { ok: false, reason: "unscannable", detail: "too_many_files" };
       const dependency = isDependencyPath(parts.slice(0, -1));

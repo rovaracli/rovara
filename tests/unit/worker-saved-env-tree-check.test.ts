@@ -13,17 +13,19 @@ const blob = (content: string): string => createHash("sha1").update(`blob ${Stri
 
 describe("refused .git entries", () => {
   it("lists exactly the entries that redirect history", () => {
-    expect([...REFUSED_GIT_ENTRIES].sort()).toEqual(["commondir", "gitdir", "info/grafts", "modules", "objects/info/alternates", "objects/info/http-alternates", "refs/replace", "worktrees"]);
+    expect([...REFUSED_GIT_ENTRIES].sort()).toEqual(["commondir", "gitdir", "info/attributes", "info/grafts", "modules", "objects/info/alternates", "objects/info/http-alternates", "refs/replace", "worktrees"]);
   });
   it("finds each one that is present, even as a link, and nothing else", async () => {
     const git = await scratch();
     expect(await unsafeGitEntries(git)).toEqual([]);
     await mkdir(join(git, "objects", "info"), { recursive: true });
     await writeFile(join(git, "objects", "info", "alternates"), "/x");
+    await mkdir(join(git, "info"), { recursive: true });
+    await writeFile(join(git, "info", "attributes"), "* filter=evil\n");
     await symlink("/tmp", join(git, "modules"));
     await mkdir(join(git, "refs", "replace"), { recursive: true });
     await writeFile(join(git, "HEAD"), "ref: refs/heads/main");
-    expect((await unsafeGitEntries(git)).sort()).toEqual(["modules", "objects/info/alternates", "refs/replace"]);
+    expect((await unsafeGitEntries(git)).sort()).toEqual(["info/attributes", "modules", "objects/info/alternates", "refs/replace"]);
   });
 });
 

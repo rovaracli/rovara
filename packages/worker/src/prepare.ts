@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
@@ -44,6 +45,7 @@ import type {
 import { openRegistrySession, removeLeftoverRegistryConfigs, type RegistrySession } from "./registry-config.js";
 import { RegistryTokenLeakError, wipeWorkspaceForTaint } from "./registry-guard.js";
 import type { RegistryCredentialProvider } from "./registry-credentials.js";
+import { DEFAULT_LINK_POLICY, isVenvInterpreterLink } from "./saved-env/links.js";
 import { savedEnvMaterializer, type SavedEnvUseOptions } from "./saved-env/use.js";
 
 const MANIFEST_PATH = ".agentx/preparation-manifest.json";
@@ -241,13 +243,42 @@ function credentialSession(options: PrepareWorkspaceOptions, repository: { name:
   return session;
 }
 
+/**
+ * Prepares the workspace. With a saved environment, a failure AFTER it was used (the checkout over the seed, or the project's setup and readiness over its dependencies) is not the end: the workspace is wiped,
+ * the failed step is reported (`onFallback("checkout" | "setup")`), and the preparation runs once more WITHOUT the saved environment, as it always did. A failure of that second run is the real one.
+ */
 export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
+  if (options.savedEnv === undefined) return prepareWorkspaceOnce(options);
+  try {
+    return await prepareWorkspaceOnce(options);
+  } catch (error) {
+    if (!(error instanceof SeededPreparationFailure)) throw error;
+    const root = await realpath(resolve(options.rootPath));
+    await wipeWorkspaceForTaint(root);
+    await rm(resolve(root, MANIFEST_PATH), { force: true });
+    (options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic)(`fresh setup (saved environment failed at ${error.step})`);
+    options.savedEnv.onFallback?.(error.step);
+    const { savedEnv: _used, ...withoutSavedEnv } = options;
+    void _used;
+    return prepareWorkspaceOnce(withoutSavedEnv);
+  }
+}
+
+/** A preparation that failed after the saved environment had been used: the caller starts over without it. */
+class SeededPreparationFailure extends Error {
+  constructor(readonly step: "checkout" | "setup", readonly original: unknown) { super(original instanceof Error ? original.message : "workspace preparation failed"); }
+}
+
+async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
   const project = StoredProjectDefinitionSchema.parse(options.project);
   const rootPath = resolve(options.rootPath);
   await mkdir(rootPath, { recursive: true });
   const canonicalRoot = await realpath(rootPath);
-  const savedEnv = options.savedEnv === undefined ? undefined : savedEnvMaterializer({ ...options.savedEnv, onDiagnostic: options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic }, project.repositories, options.materializer ?? cloneRepository);
+  const savedEnv = options.savedEnv === undefined ? undefined : savedEnvMaterializer({ ...options.savedEnv, workspaceRoot: canonicalRoot, onDiagnostic: options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic }, project.repositories, options.materializer ?? cloneRepository);
   const materializer = savedEnv ?? options.materializer ?? cloneRepository;
+  // With a saved environment, a virtual environment's interpreter link into the base image (links.ts) is not a link out of the workspace: the same rule the build and the use apply.
+  const savedEnvLinks = options.savedEnv?.links ?? DEFAULT_LINK_POLICY;
+  const allowedLink: LinkAllowance | undefined = options.savedEnv === undefined ? undefined : (relativePath, target) => isVenvInterpreterLink(canonicalRoot, relativePath, target, savedEnvLinks);
   const readOnly = options.readOnly === true;
   const target = readOnly ? undefined : devcontainerTarget(canonicalRoot, project);
   const runtimeBackingPath = options.trustedRuntimeBackingOwner === undefined
@@ -291,7 +322,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
   }
   if (manifest.complete) {
-    await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+    await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, allowedLink);
     return manifest;
   }
 
@@ -335,7 +366,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
           `unrecorded checkout at ${repository.path} has HEAD ${head}; refusing to reset it`,
         );
       }
-      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, allowedLink);
       const now = new Date().toISOString();
       manifest.repositories.push({
         name: repository.name,
@@ -393,7 +424,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       if (result.exitCode !== 0 || result.timedOut === true) {
         throw new Error(describeCommandFailure("setup step", index, command, result));
       }
-      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, allowedLink);
       manifest.completedSetupSteps.push(index);
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
     }
@@ -426,6 +457,8 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     // The manifest is on the workspace disk: a clone, Git or devcontainer error can carry a secret (#170).
     // A leaked registry token taints the workspace: it is not resumed, and the next attempt clones again.
     await writeManifest(canonicalRoot, { ...manifest, complete: false, ...(error instanceof RegistryTokenLeakError ? { tainted: true } : {}), failure: registrySession === undefined ? redactText(message) : registrySession.scrub(redactText(message)) });
+    // After the saved environment was used, a failure to check out or to set up is reported to the caller, who wipes and starts over without it (`prepareWorkspace`). A leaked token is never retried.
+    if (savedEnv?.used() === true && !(error instanceof RegistryTokenLeakError)) throw new SeededPreparationFailure(manifest.repositories.length < project.repositories.length ? "checkout" : "setup", error);
     throw error;
   } finally {
     // The registries' config first: nothing that fails after it can leave a token on the disk. A config that cannot be removed fails the preparation and taints the workspace (S2).
@@ -753,10 +786,14 @@ async function assertTrustedRuntimeBacking(
   }
 }
 
+/** Whether a link (path relative to the workspace root, target text) is one the caller has already vouched for. */
+type LinkAllowance = (relativePath: string, target: string) => Promise<boolean>;
+
 async function assertContainedSymlinks(
   rootPath: string,
   directory = rootPath,
   runtimeBackingOwner?: Readonly<{ uid: number; gid: number }>,
+  allowedLink?: LinkAllowance,
 ): Promise<void> {
   let entries;
   try {
@@ -781,6 +818,7 @@ async function assertContainedSymlinks(
     const entryPath = resolve(directory, entry.name);
     const metadata = await lstat(entryPath);
     if (metadata.isSymbolicLink()) {
+      if (allowedLink !== undefined && await allowedLink(relative(rootPath, entryPath).split(sep).join("/"), await readlink(entryPath).catch(() => ""))) continue;
       let target: string;
       try {
         target = await realpath(entryPath);
@@ -789,7 +827,7 @@ async function assertContainedSymlinks(
       }
       containedPath(rootPath, relative(rootPath, target));
     } else if (metadata.isDirectory() && entry.name !== ".git") {
-      await assertContainedSymlinks(rootPath, entryPath, runtimeBackingOwner);
+      await assertContainedSymlinks(rootPath, entryPath, runtimeBackingOwner, allowedLink);
     }
   }
 }
