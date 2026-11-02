@@ -74,6 +74,8 @@ export interface TicketRecorderDependencies extends GateDependencies {
    */
   history?: RecordHistoryPort;
   log?: TapLog;
+  /** Called when an item is skipped because its editor is not a linked person (the author's own skip is counted by the sink). */
+  onUnlinked?: (workspaceId: string, project: string | undefined, source: TicketItem["source"]) => void;
 }
 
 export interface TicketContext {
@@ -135,6 +137,11 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
         const who = item.authorId === undefined ? { trust: "outsider" as const } : await resolve(item.authorId);
         const updater = item.updaterId === undefined || item.updaterId === item.authorId ? undefined : await resolve(item.updaterId);
+        // TRW-4: the words in the text are the author's and, after an edit, the editor's. Both must be people the company has linked (or a bot), or the row could not be erased with them.
+        if (updater !== undefined && updater.developerId === undefined && updater.trust !== "system") {
+          deps.onUnlinked?.(context.workspaceId, project, item.source);
+          return "skipped";
+        }
         let previous: TrustClass | undefined;
         if (deps.history !== undefined) {
           try {

@@ -15,6 +15,7 @@ import {
   type AuditEventInput,
   type DeveloperSignInMethod,
   type LinkedIdentity,
+  SLACK_OIDC_ISSUER,
 } from "@agentx/contracts";
 import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -675,6 +676,13 @@ export class DeveloperSignInStore {
   /** The Slack user ids (`U...`) of the developer's linked Slack sign-ins. For the Team record's person erase, which must reach the Slack rows the person wrote; the ids go no further than that. */
   async slackUserIdsOf(developerId: string): Promise<string[]> {
     return [...new Set((await this.activeIdentityItems(developerId)).filter((link) => link.provider === "slack" && /^[UW][A-Z0-9]{2,31}$/.test(link.subject)).map((link) => link.subject))];
+  }
+
+  /** The developer a Slack user id signed in as (the forward link of the Slack sign-in identity), or undefined. For the Team record: a Slack message is stored only for an author linked to a person. */
+  async developerOfSlackUser(slackUserId: string): Promise<string | undefined> {
+    if (!/^[UW][A-Z0-9]{2,31}$/.test(slackUserId)) return undefined;
+    const link = await this.getIdentityLink(ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId));
+    return link === undefined || (link.unlinkedFrom !== undefined && link.developerId !== ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId)) ? undefined : link.developerId;
   }
 
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
