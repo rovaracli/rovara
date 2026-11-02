@@ -9,7 +9,7 @@ import { guardPack } from "../../packages/broker/src/rovara-code/evidence-guard.
 import { evidenceRiskSignal, kindOfRawCheck } from "../../packages/broker/src/rovara-code/evidence-risk.js";
 import { assessRisk, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
-import { evidenceRiskOfTask, securityCheckExpected } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
+import { evidenceRiskOfTask, securityCheckIdsOf } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
 
 const DIGEST = "c".repeat(64);
 const OTHER = "e".repeat(64);
@@ -183,34 +183,53 @@ describe("the risk rule", () => {
     expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest)).toBeUndefined();
   });
 
-  // EV-2 (Sonnet re-check of evidence-p3p4): a missing pack (the 6 s read timed out, the store was down, nothing was kept) used to read as "no signal", so a change whose policy has a security check looked Low.
-  describe("a missing pack where the policy has a security check", () => {
-    it("is evidenceUnavailable: no pack, a failed read, or a pack for other code; the risk is at least Medium, in a fixed sentence", async () => {
-      const unavailable = { highNewFindings: 0, evidenceUnavailable: true as const };
-      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, true)).toEqual(unavailable);
-      expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest, true)).toEqual(unavailable);
-      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest, true)).toEqual(unavailable);
+  // EV-2 (Sonnet re-check of evidence-p3p4) and S-1 (Opus review of proof-fixes): when the approved policy has a security check, a scan that could not be checked must not leave the change Low.
+  describe("a security check whose scan could not be checked", () => {
+    const SEC = ["readiness:0"];
+    const unavailable = { highNewFindings: 0, evidenceUnavailable: true as const };
+    const withoutFindings = () => { const base = pack("security", {}); return { ...base, checks: base.checks.map(({ findings: _dropped, ...rest }) => rest) } as unknown as EvidencePack; };
+
+    it("is evidenceUnavailable when there is no pack, the read fails, or the pack is for other code; the risk is at least Medium, in a fixed sentence", async () => {
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, SEC)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest, SEC)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest, SEC)).toEqual(unavailable);
       const risk = assessRisk(input({ evidence: unavailable }));
       expect(risk.level).toBe("medium");
       expect(risk.reasons).toContain("The proof evidence for this code was not available, so a security scan could not be checked, and it needs review.");
     });
 
-    it("changes nothing when the policy has no security check, when there is no port or no candidate, or when the pack is there", async () => {
-      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, false)).toBeUndefined();
+    it("is evidenceUnavailable when the pack is there but the security check has no findings (dropped as inconsistent or untrusted, or the scan wrote nothing that could be read) or is not in the pack at all (S-1)", async () => {
+      expect(await evidenceRiskOfTask({ pack: async () => withoutFindings() }, TASK, code.digest, SEC)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", {}) }, TASK, code.digest, ["readiness:3"])).toEqual(unavailable);
+      // A new high finding in one security check still counts when another one is unavailable.
+      const two = { ...pack("security", { high: 1 }), checks: [...pack("security", { high: 1 }).checks, { ...withoutFindings().checks[0]!, checkId: "readiness:1" }] } as unknown as EvidencePack;
+      expect(await evidenceRiskOfTask({ pack: async () => two }, TASK, code.digest, ["readiness:0", "readiness:1"])).toEqual({ highNewFindings: 1, evidenceUnavailable: true });
+      expect(assessRisk(input({ evidence: { highNewFindings: 1, evidenceUnavailable: true } })).level).toBe("high");
+    });
+
+    it("changes nothing without a security check in the policy, with the pack and its findings there, or with no candidate", async () => {
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, [])).toBeUndefined();
       expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest)).toBeUndefined();
-      expect(await evidenceRiskOfTask(undefined, TASK, code.digest, true)).toBeUndefined();
-      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, undefined, true)).toBeUndefined();
-      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { medium: 1 }) }, TASK, code.digest, true)).toBeUndefined();
-      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 2 }) }, TASK, code.digest, true)).toEqual({ highNewFindings: 2 });
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, undefined, SEC)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => withoutFindings() }, TASK, code.digest, [])).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { medium: 1 }) }, TASK, code.digest, SEC)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 2 }) }, TASK, code.digest, SEC)).toEqual({ highNewFindings: 2 });
       expect(assessRisk(input({ evidence: { highNewFindings: 0, evidenceUnavailable: undefined } }))).toEqual(assessRisk(input()));
     });
 
-    it("a new high finding still wins over an unavailable pack in the same signal, and the policy's kinds decide whether a security check is expected", () => {
-      expect(assessRisk(input({ evidence: { highNewFindings: 1, evidenceUnavailable: true } })).level).toBe("high");
-      const policy = (kinds: Array<string | undefined>) => ({ required: kinds.map((kind, index) => ({ id: `readiness:${String(index)}`, label: `check ${String(index)}`, ...(kind === undefined ? {} : { kind }) })), optional: [], selectedOptionalIds: [] });
-      expect(securityCheckExpected(policy(["test", "security"]) as never)).toBe(true);
-      expect(securityCheckExpected(policy(["test", undefined]) as never)).toBe(false);
-      expect(securityCheckExpected(undefined)).toBe(false);
+    it("fails closed when the caller has no evidence port while the proof switch is on and a security check is expected; with the switch off there is no port and no signal", async () => {
+      expect(await evidenceRiskOfTask(undefined, TASK, code.digest, SEC, true)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask(undefined, TASK, code.digest, SEC, false)).toBeUndefined();
+      expect(await evidenceRiskOfTask(undefined, TASK, code.digest, [], true)).toBeUndefined();
+      expect(await evidenceRiskOfTask(undefined, TASK, undefined, SEC, true)).toBeUndefined();
+    });
+
+    it("the security checks of a policy are named by the id the worker reports (readiness:<index> in selected order)", () => {
+      const check = (id: string, kind?: string) => ({ id, label: id, ...(kind === undefined ? {} : { kind }) });
+      const policy = { required: [check("unit", "test"), check("sast", "security")], optional: [check("deps", "security"), check("lint", "lint")], selectedOptionalIds: ["deps", "lint"], proposed: [] };
+      expect(securityCheckIdsOf(policy as never)).toEqual(["readiness:1", "readiness:2"]);
+      expect(securityCheckIdsOf({ ...policy, required: [check("unit", "test")], optional: [], selectedOptionalIds: [] } as never)).toEqual([]);
+      expect(securityCheckIdsOf(undefined)).toEqual([]);
     });
   });
 

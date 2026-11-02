@@ -34,7 +34,8 @@ export type CoverageFormat = "cobertura" | "lcov";
 /** One file a report names: for each line the report lists, whether any test ran it. */
 export type ReportLines = Map<number, boolean>;
 export interface ParsedCoverage {
-  format: CoverageFormat;
+  /** `line`: a Go cover profile or a JaCoCo report, already placed in its repository (`line-coverage-join.ts`). */
+  format: CoverageFormat | "line";
   /** Cobertura's `<source>` directories, which its relative file names are relative to. */
   sources: string[];
   files: Map<string, ReportLines>;
@@ -151,7 +152,8 @@ export function parseLcov(text: string, limits: CoverageLimits = COVERAGE_LIMITS
 // ---- where a command's coverage report is
 
 export interface CoverageSpec {
-  format: CoverageFormat;
+  /** `named`: the approved `coveragePath`, whose format is told from its name and then its content (Cobertura, LCOV, JaCoCo, Go cover profile). */
+  format: CoverageFormat | "named";
   /** The file's path as the command line names it, relative to the command's cwd. */
   argument: string;
 }
@@ -186,7 +188,7 @@ const isReportPath = (value: string) => value.length <= NAME_MAX && !value.start
  * leaves is inherent: a report the named command writes proves what the project's tooling wrote, not that it measured the real code, since code that runs in the round (a test, a conftest, a coverage config the
  * agent changed) can forge that file too. The command is never altered.
  */
-export function coverageSpecsOf(command: ProjectCommand): CoverageSpec[] {
+export function coverageSpecsOf(command: ProjectCommand, approvedPath?: string): CoverageSpec[] {
   const args = command.args;
   const words = [command.executable.split("/").at(-1) ?? command.executable, ...args];
   const specs: CoverageSpec[] = [];
@@ -225,6 +227,9 @@ export function coverageSpecsOf(command: ProjectCommand): CoverageSpec[] {
     if (value !== undefined && !value.includes(":") && isReportPath(value)) add(/\.xml$/iu.test(value) ? "cobertura" : "lcov", value);
   }
   specs.sort((left, right) => Number(right.format === "cobertura") - Number(left.format === "cobertura"));
+  // The report the maintainer approved for this check (`coveragePath` of the approved test environment or setup): a named report like the ones above, tried after them. It is data a person approved, not a guess, which
+  // is why it meets the rule that no file name is guessed; the project's coverage may be set in a config (pytest addopts, jest, vitest, a JaCoCo build) and not on the command line.
+  if (approvedPath !== undefined && approvedPath !== "" && approvedPath.length <= NAME_MAX && !approvedPath.startsWith("-") && !approvedPath.includes("\0") && !specs.some((spec) => spec.argument === approvedPath)) specs.push({ format: "named", argument: approvedPath });
   return specs;
 }
 
@@ -422,6 +427,10 @@ export interface ReadCoverageInput {
   notBeforeMs: number | undefined;
   /** The real paths of reports already used by an earlier check of the round (one file is the evidence of one check). */
   used: Set<string>;
+  /** The `coveragePath` the maintainer approved for this check (relative to the check's directory). */
+  approvedPath?: string | undefined;
+  /** Places a Go cover profile or a JaCoCo report in the repository the check runs in (`line-coverage-join.ts`); absent: those formats are not read. */
+  lineCoverage?: ((text: string, repositories: readonly RepositoryChanges[]) => Promise<ParsedCoverage | undefined>) | undefined;
   /** Overrides for tests: the file size cap (default `COVERAGE_REPORT_MAX_BYTES`) and the parse limits. */
   maxBytes?: number;
   limits?: CoverageLimits;
@@ -430,7 +439,7 @@ export interface ReadCoverageInput {
 /** The changed-line coverage of the report a command's tool wrote in this round, or why there is none. Never throws. */
 export async function readChangedCoverage(input: ReadCoverageInput): Promise<{ coverage: ChangedCoverage } | { skip: CoverageSkip }> {
   try {
-    const specs = coverageSpecsOf(input.command);
+    const specs = coverageSpecsOf(input.command, input.approvedPath);
     if (specs.length === 0) return { skip: "no_spec" };
     let last: CoverageSkip = "missing";
     for (const spec of specs) {
@@ -444,13 +453,28 @@ export async function readChangedCoverage(input: ReadCoverageInput): Promise<{ c
         continue;
       }
       const text = read.bytes.toString("utf8");
-      const parsed = spec.format === "cobertura" ? parseCobertura(text, input.limits) : parseLcov(text, input.limits);
+      // The diff is read at most once, and only for a report that parsed (Go and JaCoCo are placed with the repository's files, so they need it first).
+      let changes: readonly RepositoryChanges[] | undefined;
+      let changesRead = false;
+      const diffs = async () => { if (!changesRead) { changes = await input.repositories(); changesRead = true; } return changes; };
+      let parsed: ParsedCoverage | undefined;
+      if (spec.format === "cobertura") parsed = parseCobertura(text, input.limits);
+      else if (spec.format === "lcov") parsed = parseLcov(text, input.limits);
+      else {
+        // The approved path: the format its name says first, then what its content is (Cobertura and JaCoCo are both `.xml`; a Go cover profile has any name).
+        const lcovName = /\.(?:info|lcov)$/iu.test(spec.argument);
+        parsed = lcovName ? parseLcov(text, input.limits) : parseCobertura(text, input.limits);
+        if (parsed === undefined && input.lineCoverage !== undefined) {
+          const repositories = await diffs();
+          parsed = repositories === undefined ? undefined : await input.lineCoverage(text, repositories);
+        }
+      }
       if (parsed === undefined) {
         last = "unparsable";
         continue;
       }
       const cwd = resolve(input.rootPath, input.command.cwd);
-      const repositories = await input.repositories();
+      const repositories = await diffs();
       const coverage = repositories === undefined ? undefined : await intersectCoverage(parsed, { repositories, bases: [cwd, resolve(input.rootPath)] });
       if (coverage === undefined) return { skip: "changes_unreadable" };
       input.used.add(read.path);
