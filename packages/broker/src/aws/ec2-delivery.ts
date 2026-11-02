@@ -1,5 +1,6 @@
 import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
 import { REGISTRY_FEATURE_MISSING } from "../project-registries/prepare.js";
+import { nonLegacyCredentialKindsOfGrant } from "../repository-access.js";
 import {
   AGENT_RUN_FEATURE,
   AGENT_STEP_FEATURE,
@@ -21,6 +22,7 @@ import {
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
+  credentialKindsOfWorkerFeatures,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -35,6 +37,8 @@ import {
   workflowPublicationContextDigest,
   type E2EWorkflowAdmissionRef,
   type Ec2RuntimeBinding,
+  type LearnedContext,
+  type LearnedRefs,
   type WorkerInvocation,
 } from "@agentx/contracts";
 import { asksForApplicationPlan, asksForCodeAnchors, asksForPlanQuality, withoutApplicationPlanText, withoutCodeAnchorText, withoutPlanQualityText } from "./broker-shared.js";
@@ -46,6 +50,8 @@ import type { SessionManager } from "./sessions.js";
 const WORKER_PORT = 8080;
 /** A token outlives one delivery attempt and nothing more (design in #76). */
 const TOKEN_LIFETIME_SECONDS = 60;
+/** P8: said when a repository's code host needs a credential kind the worker has not said it takes. Fixed; names no host and no credential. */
+export const CREDENTIAL_KIND_FEATURE_MISSING = "This repository's code host needs a newer worker. Ask an admin to upgrade Rovara.";
 export const STARTING_COMPUTE_MESSAGE = "Starting workspace compute";
 
 export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | { readinessGeneration: number };
@@ -111,6 +117,12 @@ export interface Ec2DeliveryDependencies {
   validateWorkflowE2EReadiness?: (record: Ec2OutboxRecord, invocation: WorkerInvocation) => Promise<"ORDINARY" | "READINESS" | "PARKED">;
   /** Rechecks stored project setup authority independently from feature-task access. */
   guardProjectSetupDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
+  /**
+   * Builds a stage's lessons from the lesson store at delivery (WL-6). The stored and queued stage carries only lesson ids and versions (`payload.learnedRefs`); this turns them into the
+   * `learnedContext` the worker gets, from the lessons as they are NOW: an erased, retired, expired or edited lesson is left out, a reader who lost access gets none, and an answer that cannot be had
+   * is no lessons (the stage still runs, as without memory). Without it no lessons are sent.
+   */
+  learnedFromRefs?: (refs: LearnedRefs) => Promise<LearnedContext | undefined>;
   remainingTimeMs?: () => number;
   now?: () => number;
 }
@@ -182,7 +194,7 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     const applicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application" ? invocation.payload.workflowE2EAdmission : undefined;
     const modelChoice = applicationAdmission === undefined || dependencies.workflowE2EAdmissionNeedsModelChoice === undefined ? undefined
       : () => dependencies.workflowE2EAdmissionNeedsModelChoice!(applicationAdmission);
-    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice);
+    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, dependencies.learnedFromRefs);
     if (invocation.kind === "task" && invocation.payload.workflowE2EPlanVersion !== undefined
       && !(sent.kind === "task" && sent.payload.workflowE2EPlanVersion !== undefined)) {
       // Without the recorder the operation record would keep saying version 2 was offered while the worker was sent a portable-only run, so the broker would
@@ -301,9 +313,10 @@ async function forWorker(
   admissionSchemaVersion?: string,
   needsModelFreeLimits = false,
   modelChoice?: () => Promise<boolean | undefined>,
+  learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"],
 ): Promise<WorkerInvocation> {
   // The CLI's stored model check results (`lastCheck`) are not for workers, and a worker built before them refuses the whole invocation for an unknown key: they never go out.
-  return forWorkerFeatures(withoutLastCheck(invocation), pingUrl, workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice);
+  return forWorkerFeatures(withoutLastCheck(invocation), pingUrl, workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, learnedFromRefs);
 }
 
 async function forWorkerFeatures(
@@ -313,6 +326,7 @@ async function forWorkerFeatures(
   admissionSchemaVersion?: string,
   needsModelFreeLimits = false,
   modelChoice?: () => Promise<boolean | undefined>,
+  learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"],
 ): Promise<WorkerInvocation> {
   const requestedThinkingLevel = carriedThinkingLevel(invocation);
   const carriesReadiness = invocation.kind === "task" && invocation.payload.readiness !== undefined;
@@ -355,13 +369,16 @@ async function forWorkerFeatures(
   // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
+  // P8: a grant that names a credential kind beyond the legacy two (an ssh key). A worker that does not list repository.credentialKinds.v1 would be sent a shape it cannot take, so the run is refused here.
+  const credentialKindsNeeded = invocation.kind === "prepare" || invocation.kind === "publish" || invocation.kind === "maintain" ? nonLegacyCredentialKindsOfGrant(invocation.payload.repositoryGrant) : [];
+  const carriesCredentialKinds = credentialKindsNeeded.length > 0;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
-  const carriesLearnedContext = invocation.kind === "task" && invocation.payload.learnedContext !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -441,6 +458,11 @@ async function forWorkerFeatures(
   // N9 (INTG2): a project's registries are never dropped for an older worker, which would run setup without them and fail on a 401 (or reach a public mirror): the run is refused.
   if (carriesRegistries && !features.includes(PREPARE_REGISTRIES_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", REGISTRY_FEATURE_MISSING);
+  }
+  // P8: the broker never dispatches a repository whose host hands out a credential kind the worker has not said it takes.
+  if (carriesCredentialKinds) {
+    const taken = credentialKindsOfWorkerFeatures(features);
+    if (!credentialKindsNeeded.every((kind) => (taken as readonly string[]).includes(kind))) throw agentXError("RUNTIME_UNAVAILABLE", CREDENTIAL_KIND_FEATURE_MISSING);
   }
   if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
@@ -737,11 +759,37 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const withLessons = withoutLearnedContext(sent, features);
-  if (withLessons !== sent) {
-    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.learned_context_omitted", reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  const withLessons = await withLearnedContext(sent, features, learnedFromRefs);
+  if (withLessons.omitted) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.learned_context_omitted", reason: withLessons.reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
-  return withLessons;
+  return withLessons.invocation;
+}
+
+/**
+ * The stage a worker is sent, with its lessons built NOW from the lesson store (WL-6). The stored copy holds `learnedRefs` (ids and versions); the worker never sees them. A worker that lists
+ * "task.learnedContext.v1" gets the `learnedContext` the refs resolve to, from the lessons as they are at this moment (erased, retired, expired or edited ones left out); anything else gets the stage
+ * without lessons, which is safe. A lookup that fails sends no lessons: the stage still runs, as without memory. A stage queued before this change may still carry a stored `learnedContext` (lesson text in the queue):
+ * it is dropped, never delivered unchecked.
+ */
+export async function withLearnedContext(invocation: WorkerInvocation, features: readonly string[], resolve?: Ec2DeliveryDependencies["learnedFromRefs"]): Promise<{ invocation: WorkerInvocation; omitted: boolean; reason: string }> {
+  if (invocation.kind !== "task") return { invocation, omitted: false, reason: "" };
+  const { learnedRefs: refs, ...payload } = invocation.payload;
+  if (refs === undefined) {
+    // Lesson text stored in the queue is never delivered unchecked: a stage queued by an older build with a stored `learnedContext` is sent without it (it runs as without memory, which is always allowed).
+    if (payload.learnedContext === undefined) return { invocation, omitted: false, reason: "" };
+    const { learnedContext: _legacy, ...bare } = payload;
+    void _legacy;
+    return { invocation: { ...invocation, payload: bare }, omitted: true, reason: "stored_text_dropped" };
+  }
+  // The refs never go to a worker, and nothing the refs replace is kept: the lessons are the resolved ones or none.
+  const { learnedContext: _stored, ...rest } = payload;
+  void _stored;
+  if (!features.includes(LEARNED_CONTEXT_FEATURE)) return { invocation: { ...invocation, payload: rest }, omitted: true, reason: "worker_lacks_feature" };
+  let context: LearnedContext | undefined;
+  try { context = resolve === undefined ? undefined : await resolve(refs); } catch { context = undefined; }
+  if (context === undefined || (context.lessons.length === 0 && (context.priorLoaded ?? []).length === 0)) return { invocation: { ...invocation, payload: rest }, omitted: true, reason: "no_lessons_at_delivery" };
+  return { invocation: { ...invocation, payload: { ...rest, learnedContext: context } }, omitted: false, reason: "" };
 }
 
 /** A stage without the lessons chosen for it, for a worker that does not list "task.learnedContext.v1": it would reject the field. Nothing is lost but the advice. */

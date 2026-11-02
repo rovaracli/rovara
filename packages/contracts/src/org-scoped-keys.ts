@@ -768,8 +768,8 @@ export function diagnosisOpenKey(orgId: OrgId, tier: "light" | "deep", errorKey:
   return { pk: orgScoped(orgId, "DIAGNOSISOPEN"), sk: `${tier}#${keyPart(errorKey, "an error key")}` };
 }
 
-/** The fixed-window counters of diagnoses: `light_person#<id>` (an hour), `light_project#<name>` (a day) and `deep_person#<id>` (a day). The partition is the org's. */
-export function diagnosisRateKey(orgId: OrgId, kind: "light_person" | "light_project" | "deep_person", subject: string): OrgKey {
+/** The fixed-window counters of diagnoses: `light_person#<id>` (an hour), `light_project#<name>` (a day), `deep_person#<id>` (a day) and `light_org#all` (a day: the turns Rovara pays for the whole org, with their worst-case cents). The partition is the org's. */
+export function diagnosisRateKey(orgId: OrgId, kind: "light_person" | "light_project" | "deep_person" | "light_org", subject: string): OrgKey {
   return { pk: orgScoped(orgId, "DIAGNOSISRATE"), sk: `${kind}#${keyPart(subject, "a rate subject")}` };
 }
 
@@ -884,7 +884,11 @@ export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey
     ? `SLACK#${keyPart(binding.teamId, "a Slack team")}#${keyPart(binding.channelId, "a Slack channel")}#${keyPart(binding.threadTs, "a thread")}`
     : binding.kind === "linear_issue"
       ? `LINEAR#${keyPart(binding.issueId, "an issue id")}`
-      : `TRACKER#${keyPart(binding.system, "a tracker system")}#${keyPart(binding.id, "a ticket id")}`;
+      // A Linear issue is one surface whichever door it came in by: the `linear_issue` binding and the `tracker_item` binding that names the `linear` system share this item, so one issue follows
+      // one session (P9). The key is the issue's key in capitals, as the Linear binder writes it.
+      : binding.system === "linear"
+        ? `LINEAR#${keyPart(binding.id.toUpperCase(), "an issue id")}`
+        : `TRACKER#${keyPart(binding.system, "a tracker system")}#${keyPart(binding.id, "a ticket id")}`;
   return { pk: orgScoped(orgId, "SESSION_SURFACE"), sk };
 }
 

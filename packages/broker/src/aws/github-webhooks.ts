@@ -2,12 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { verifyGithubWebhookSignature } from "../plugins/code-host/github/signature.js";
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId, projectMonthStatsKey } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type PluginKind, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId, projectMonthStatsKey } from "@agentx/contracts";
 import { auditOccurrence, auditPullRequestMerged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { findLegacyGithubLink, findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
+import { codeHostRepositoryKey } from "../plugins/events/repository-key.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
 import { failedIndexes, isTransactionConflict } from "../agents/table-writes.js";
@@ -143,6 +144,19 @@ export async function findLinkedGithubWorkflowPullRequest(input: {
   return findLegacyGithubLink({ documentClient: input.documentClient, tableName: input.tableName }, input);
 }
 
+/** What the reconcile needs of a link, whichever row it came from. */
+type LinkedWorkflowPullRequest = Pick<GithubWorkflowPullRequestRecord, "taskId" | "workspaceId" | "repositoryId" | "number" | "url" | "candidateDigest">;
+
+/**
+ * The link of one pull request being reconciled: GitHub's row as before, or (P10) the neutral row of the code host `kind` names. The kind is the PULL REQUEST's own host, so a task with
+ * pull requests on GitHub and on another host reads each one with its own.
+ */
+async function linkedForReconcile(input: Pick<ReconcileTaskPullRequestFeedbackInput, "documentClient" | "tableName">, key: { kind: PluginKind | undefined; repositoryFullName: string; repositoryAddress?: string | undefined; number: number }): Promise<LinkedWorkflowPullRequest | undefined> {
+  if (key.kind === undefined) return findLinkedGithubWorkflowPullRequest({ documentClient: input.documentClient, tableName: input.tableName, repositoryFullName: key.repositoryFullName, number: key.number });
+  if (key.repositoryAddress === undefined) return undefined;
+  return findLinkedChangeRequest({ documentClient: input.documentClient, tableName: input.tableName }, { hostKind: key.kind, repositoryAddress: key.repositoryAddress, id: String(key.number) });
+}
+
 /** Requires the PR index, live workflow snapshot, pinned project repo and GitHub App identity to agree. */
 export async function authorizeLinkedGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -197,6 +211,16 @@ export interface LandedFixPush {
 export interface ReconcileTaskPullRequestFeedbackInput {
   documentClient: { send(command: unknown): Promise<unknown> }; tableName: string;
   repositoryFullName: string; number: number; deliveryId: string;
+  /**
+   * P10: the pull request is a change request on a code host other than GitHub. `repositoryFullName` is then the neutral repository key (`<kind>:<address>`), `repositoryAddress` the repository's
+   * registered address, and the link is read from the neutral row. Only the merge observation is available on such a host (`observationMode: "merge"`); a feedback read is refused (fail closed).
+   */
+  neutralHost?: { kind: PluginKind; repositoryAddress: string };
+  /**
+   * P10: the code host of one of the task's repositories when it is not GitHub (its kind, and its merge observation in the words the reconcile reads a pull request in); undefined for a GitHub
+   * repository. Asked for every pull request, so a task with pull requests on GitHub and on another host reads each with its own host. Without it every pull request is read as `neutralHost` says.
+   */
+  hostOfRepository?(project: string, revision: number, repositoryId: string, orgId: OrgId | undefined): Promise<{ kind: PluginKind; observe(repositoryUrl: string, number: number, orgId: OrgId | undefined): Promise<GitHubPullRequestFeedback["pullRequest"]> } | undefined>;
   /** Broker-local bounded polling mode; omitted callers retain the full feedback behavior. */
   observationMode?: "feedback" | "merge";
   /** B8: in-memory identity only, after a successful reconcile commit; failures never fail delivery. */
@@ -352,8 +376,10 @@ async function saveRetryingConflicts(save: () => Promise<void>): Promise<void> {
 
 /** Event payloads are hints only. Recollect all linked PRs on every CAS retry. */
 export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullRequestFeedbackInput): Promise<boolean> {
-  const linked = await findLinkedGithubWorkflowPullRequest(input);
-  if (!linked) throw new GithubWebhookRefusal("GitHub pull request is not linked to an AgentX workflow");
+  // P10: a change request on another host is followed for its merge only; its feedback comes with the feedback port (left for P6's consumers), so it is refused here.
+  if (input.neutralHost !== undefined && input.observationMode !== "merge") throw new GithubWebhookRefusal("feedback review is not available for this code host yet");
+  const linked = await linkedForReconcile(input, { kind: input.neutralHost?.kind, repositoryFullName: input.repositoryFullName, repositoryAddress: input.neutralHost?.repositoryAddress, number: input.number });
+  if (!linked) throw new GithubWebhookRefusal(input.neutralHost === undefined ? "GitHub pull request is not linked to an AgentX workflow" : "the change request is not linked to an AgentX workflow");
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const task = await input.loadTask(linked.taskId);
     const current = task?.workflow;
@@ -385,15 +411,24 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     for (const pr of [...(current.pullRequests ?? [])].sort((a, b) => a.repositoryId.localeCompare(b.repositoryId) || a.number - b.number)) {
       const url = await input.repositoryUrl(task.project, task.startingRevision, pr.repositoryId, task.orgId);
       if (!url) throw new GithubWebhookRefusal("linked PR repository is missing from the pinned project");
-      const parsed = parseGitHubRepository(url);
-      const fullName = `${parsed.owner}/${parsed.name}`;
-      const index = await findLinkedGithubWorkflowPullRequest({ ...input, repositoryFullName: fullName, number: pr.number });
+      // Each pull request is read with its own repository's host. GitHub: the name from the repository's address, and the pull request's address must be that repository's. Another host (P10):
+      // the neutral key from the address, and the host's own read of the change request (its number and address, compared below) is what ties the record to the repository.
+      const home = input.hostOfRepository === undefined ? undefined : await input.hostOfRepository(task.project, task.startingRevision, pr.repositoryId, task.orgId);
+      const kind: PluginKind | undefined = input.hostOfRepository === undefined ? input.neutralHost?.kind : home?.kind;
+      if (kind !== undefined && input.observationMode !== "merge") throw new GithubWebhookRefusal("feedback review is not available for this code host yet");
+      const fullName = kind === undefined
+        ? (() => { const parsed = parseGitHubRepository(url); return `${parsed.owner}/${parsed.name}`; })()
+        : codeHostRepositoryKey(kind, url);
+      if (fullName === undefined) throw new GithubWebhookRefusal("linked PR repository cannot be keyed");
+      const index = await linkedForReconcile(input, { kind, repositoryFullName: fullName, repositoryAddress: url, number: pr.number });
       if (!index || index.taskId !== linked.taskId || index.repositoryId !== pr.repositoryId
         || index.url !== pr.url || index.candidateDigest !== pr.candidateDigest
-        || pr.url !== `https://github.com/${fullName}/pull/${pr.number}`) throw new GithubWebhookRefusal("linked task PR scope mismatch");
-      const feedback = await input.getCurrentFeedback(url, pr.number, task.orgId);
+        || (kind === undefined && pr.url !== `https://github.com/${fullName}/pull/${pr.number}`)) throw new GithubWebhookRefusal("linked task PR scope mismatch");
+      const feedback = home === undefined
+        ? await input.getCurrentFeedback(url, pr.number, task.orgId)
+        : { pullRequest: await home.observe(url, pr.number, task.orgId), comments: [], threads: [] };
       if (feedback.pullRequest.number !== pr.number || feedback.pullRequest.url !== pr.url
-        || feedback.comments.some(comment => !comment.url.startsWith(`${pr.url}#`))) throw new GithubWebhookRefusal("current GitHub feedback scope mismatch");
+        || (kind === undefined && feedback.comments.some(comment => !comment.url.startsWith(`${pr.url}#`)))) throw new GithubWebhookRefusal("current GitHub feedback scope mismatch");
       if (input.observationMode === "merge" && (feedback.comments.length !== 0 || feedback.threads.length !== 0)) {
         throw new GithubWebhookRefusal("merge observation contained feedback data");
       }
@@ -478,6 +513,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
      * or the head's only parent is the head the task recorded.
      */
     const landedFix = async ({ pr, feedback, url }: typeof reads[number]): Promise<boolean> => {
+      // P10: the landed-fix path files its rows under GitHub's name (`githubWorkflowPullRequestKey`), so it is not offered for a pull request on another host: a fix on such a host is not followed yet.
+      if (input.neutralHost !== undefined || input.hostOfRepository !== undefined && await input.hostOfRepository(task.project, task.startingRevision, pr.repositoryId, task.orgId) !== undefined) return false;
       const head = feedback.pullRequest.headCommit;
       const fixTree = current.candidate?.repositories.find(repo => repo.repositoryId === pr.repositoryId)?.treeSha;
       if (!fixPushed || pr.headSha === undefined || pr.state === "MERGED" || pr.candidateDigest === current.candidate?.digest

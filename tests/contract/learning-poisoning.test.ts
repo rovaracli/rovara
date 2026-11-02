@@ -777,15 +777,26 @@ describe("P11 a burst of member candidates", () => {
     expect(p.audit.actions()).toContain("lesson.volume_spike");
   });
 
-  // GAP-2 / OPEN OWNER QUESTION. This pins the SUPERSEDED design rule C10 / P11 ("a burst pauses the auto tier"), not a bug: the owner's "Lesson limits" decision (item 5) pauses only ONE
-  // source that spikes, and the code follows the owner (sources.ts noteProjectVolume only alerts). It stays as the executable form of the proposed project-wide brake (a project-volume
-  // alert sends tier 0 to the one-tap queue for a day, pausing no source), pending the owner's decision. If the owner accepts the brake, build it and flip this to `it`; if not, delete it.
-  it.fails("[open owner question, pins superseded rule C10] auto-apply switched on: 50 candidates spread over 50 members trip a project-wide brake once the volume alert fires (fewer than 30 go live)", async () => {
+  // GAP-2 / L7-2 (controller default, owner may change): the project-wide brake. A project-volume alert sends tier 0 to the one-tap queue for a day and pauses no source. The cold-start rule is switched
+  // off in this world so the brake is proven by itself; the next test shows what the default does with the same burst.
+  it("auto-apply switched on: 50 candidates spread over 50 members trip the project-wide brake once the volume alert fires (fewer than 30 go live, no source paused)", async () => {
+    openAutoApply();
+    const p = pipeline({ settings: { tier0Approval: "auto" } });
+    p.processDeps.coldStartLessons = 0;
+    for (let i = 0; i < 50; i += 1) await processDraft(p.processDeps, KEY, uniqueDraft(i, { sources: [`member:m${i}`], inputSources: [`member:m${i}`], authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true }));
+    expect(p.alerts.sent).toContain("project_volume_spike");
+    const active = await p.byStatus("active");
+    expect(active.length).toBeGreaterThan(0);
+    expect(active.length).toBeLessThan(30);
+    expect(Object.keys((await p.store.flags(KEY)).pausedSources ?? {})).toEqual([]);
+    expect((await p.byStatus("pending")).every((l) => l.reviewRequired === true)).toBe(true);
+  });
+
+  it("auto-apply switched on, default guards: 50 first-time members change nothing by themselves (cold start), a person decides each", async () => {
     openAutoApply();
     const p = pipeline({ settings: { tier0Approval: "auto" } });
     for (let i = 0; i < 50; i += 1) await processDraft(p.processDeps, KEY, uniqueDraft(i, { sources: [`member:m${i}`], inputSources: [`member:m${i}`], authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true }));
-    expect(p.alerts.sent).toContain("project_volume_spike");
-    expect((await p.byStatus("active")).length).toBeLessThan(30);
+    await noActive(p);
   });
 
   it("a reflector reply of more than 20 candidates is dropped whole (parse error), not trimmed to its first 20", async () => {

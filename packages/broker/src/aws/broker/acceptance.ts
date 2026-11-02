@@ -265,9 +265,9 @@ export async function acceptPullRequest(
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
   const repository = codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
-  // A workflow publication's result is recorded by GitHub-only code (the linked-pull-request rows are GitHub's, left for P6): on any other host it is refused here, before the idempotency row is
-  // written, the workspace claimed, the push sent or its grant issued. An unknown host kind is refused with the router's sentence.
-  if (candidate !== undefined) requireGithubHost(hostOfRepository(dependencies, repository));
+  // P10: a workflow publication is accepted for any host the repository's record names; an unknown host kind is refused with the router's sentence, before the idempotency row is written, the
+  // workspace claimed, the push sent or its grant issued.
+  if (candidate !== undefined) hostOfRepository(dependencies, repository);
   const body = await attributedBody(dependencies, identity, request.body);
   const draft = candidate === undefined ? request.draft : true;
 

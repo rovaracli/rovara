@@ -118,6 +118,12 @@ describe("the Slack handler goes through the server's friction and says what hap
     expect(t.said).toEqual([`${DECISION_SLACK_TEXT.notDecided} ${url}`]);
     expect(t.said.join(" ")).not.toContain("Approved");
   });
+  it("WEB-1: a merge outcome that names what is being merged says the same Slack words and link as before (the app's question never reaches Slack)", async () => {
+    const url = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
+    const t = setup([lowItem], { kind: "needs_confirmation", confirmUrl: url, merging: [{ repositoryId: "payments", number: 7, baseBranch: "main" }] });
+    await t.press(DECISION_SLACK_APPROVE_ACTION, "approve_plan:plan1");
+    expect(t.said).toEqual([`${DECISION_SLACK_TEXT.notDecided} ${url}`]);
+  });
   it("says a refusal in fixed words, never the endpoint's text", async () => {
     const t = setup([lowItem], { kind: "refused", reason: "forbidden" });
     await t.press(DECISION_SLACK_APPROVE_ACTION, "approve_plan:plan1");

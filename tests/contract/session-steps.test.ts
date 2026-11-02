@@ -182,6 +182,20 @@ describe("session steps", () => {
     expect(sessions.markDeleted).toHaveBeenCalledWith(workspaceId);
   });
 
+  it("passes the features the probe heard on to the session when it marks it ready (LR-1), and records none when the step carries none", async () => {
+    const { handler, sessions } = setup();
+    await handler({ action: "markReady", workspaceId, generation: 1, workerFeatures: ["task.ownerRedirect.v1"] });
+    expect(sessions.markReady).toHaveBeenLastCalledWith(workspaceId, 1, ["task.ownerRedirect.v1"]);
+    await handler({ action: "markReady", workspaceId, generation: 1, workerFeatures: [] });
+    expect(sessions.markReady).toHaveBeenLastCalledWith(workspaceId, 1, []);
+    // A step from a machine that predates the field still parses; it records an unknown list.
+    await handler({ action: "markReady", workspaceId, generation: 1 });
+    expect(sessions.markReady).toHaveBeenLastCalledWith(workspaceId, 1, undefined);
+    await expect(handler({ action: "markReady", workspaceId, generation: 1, workerFeatures: [""] })).rejects.toThrow();
+    await expect(handler({ action: "markReady", workspaceId, generation: 1, workerFeatures: ["x".repeat(101)] })).rejects.toThrow();
+    await expect(handler({ action: "markReady", workspaceId, generation: 1, workerFeatures: "task.ownerRedirect.v1" })).rejects.toThrow();
+  });
+
   it("records the instance type a named environment's provisioner reports, and refuses one that is not an instance type", async () => {
     const { handler, sessions } = setup();
     await handler({ action: "recordInstance", workspaceId, generation: 1, instanceId: "i-0123456789abcdef0", privateIp: "10.42.128.10", instanceType: "m7g.large" });
@@ -189,12 +203,13 @@ describe("session steps", () => {
     await expect(handler({ action: "recordInstance", workspaceId, generation: 1, instanceId: "i-0123456789abcdef0", privateIp: "10.42.128.10", instanceType: "not a type" })).rejects.toThrow();
   });
 
-  const pingCases: ReadonlyArray<[string, SessionStepsDependencies["ping"], { healthy: boolean; status: string }]> = [
-    ["Healthy", async () => ({ status: "Healthy" }), { healthy: true, status: "Healthy" }],
-    ["HealthyBusy", async () => ({ status: "HealthyBusy" }), { healthy: true, status: "HealthyBusy" }],
-    ["unreachable", async () => { throw new Error("connect ECONNREFUSED"); }, { healthy: false, status: "Unreachable" }],
-    ["no status", async () => undefined, { healthy: false, status: "Unreachable" }],
-    ["an empty answer", async () => ({}), { healthy: false, status: "Unreachable" }],
+  const pingCases: ReadonlyArray<[string, SessionStepsDependencies["ping"], { healthy: boolean; status: string; features: string[] }]> = [
+    ["Healthy", async () => ({ status: "Healthy" }), { healthy: true, status: "Healthy", features: [] }],
+    ["HealthyBusy", async () => ({ status: "HealthyBusy" }), { healthy: true, status: "HealthyBusy", features: [] }],
+    ["Healthy, listing features", async () => ({ status: "Healthy", features: ["task.ownerRedirect.v1", "task.liveSteer.v1"] }), { healthy: true, status: "Healthy", features: ["task.ownerRedirect.v1", "task.liveSteer.v1"] }],
+    ["unreachable", async () => { throw new Error("connect ECONNREFUSED"); }, { healthy: false, status: "Unreachable", features: [] }],
+    ["no status", async () => undefined, { healthy: false, status: "Unreachable", features: [] }],
+    ["an empty answer", async () => ({}), { healthy: false, status: "Unreachable", features: [] }],
   ];
   it.each(pingCases)("probes the worker's /ping on its private address: %s", async (_name, ping, expected) => {
     const { handler, ping: spy } = setup(ping);
@@ -241,6 +256,7 @@ describe("session steps", () => {
     const answers: Record<string, [number, string]> = {
       "/healthy": [200, JSON.stringify({ status: "Healthy" })],
       "/failed": [503, JSON.stringify({ status: "BootFailed", reason: "could not download the worker image after 5 tries" })],
+      "/featured": [200, JSON.stringify({ status: "Healthy", invocationFeatures: ["task.ownerRedirect.v1", "task.ownerRedirect.v1", 4, "", "x".repeat(101), "task.liveSteer.v1"] })],
       "/garbage": [500, "<html>"],
     };
     const server = createServer((request, response) => {
@@ -252,6 +268,8 @@ describe("session steps", () => {
     try {
       expect(await pingWorker(`${base}/healthy`)).toEqual({ status: "Healthy" });
       expect(await pingWorker(`${base}/failed`)).toEqual({ status: "BootFailed", reason: "could not download the worker image after 5 tries" });
+      // The features it lists, as the session records them (LR-1): strings only, once each, within the bound.
+      expect(await pingWorker(`${base}/featured`)).toEqual({ status: "Healthy", features: ["task.ownerRedirect.v1", "task.liveSteer.v1"] });
       await expect(pingWorker(`${base}/garbage`)).rejects.toThrow();
     } finally {
       await new Promise((resolve) => server.close(resolve));

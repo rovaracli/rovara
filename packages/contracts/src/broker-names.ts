@@ -53,6 +53,8 @@ export type BrokerNameKind =
   | "kmsKeyArn"
   /** A state machine's name; the variable gets its ARN. */
   | "stateMachineArn"
+  /** A Lambda function's name; the variable gets its ARN (`arn:<partition>:lambda:<region>:<account>:function:<name>`). */
+  | "lambdaFunctionArn"
   /** A role's name, in the environment's role path; the variable gets its ARN. */
   | "roleArn"
   /** A Cognito user pool's id; the variable gets the pool's issuer URL (`https://cognito-idp.<region>.amazonaws.com/<id>`). */
@@ -96,6 +98,8 @@ export const BROKER_NAMES = {
   slackThreadsTable: { code: "sl", variable: "SLACK_THREADS_TABLE_NAME", kind: "name" },
   turnRecordsTable: { code: "tr", variable: "TURN_RECORDS_TABLE_NAME", kind: "name" },
   planEvidenceFunction: { code: "pe", variable: "PLAN_EVIDENCE_FUNCTION_NAME", kind: "name" },
+  // Live interaction A2 (peek): the dispatcher the broker invokes to read a running task's working tree for an Ask. The broker holds lambda:InvokeFunction on this one function and nothing else (control-plane.ts).
+  dispatcherFunction: { code: "dp", variable: "DISPATCHER_FUNCTION_ARN", kind: "lambdaFunctionArn" },
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },
   slackRequestQueue: { code: "sq", variable: "SLACK_REQUEST_QUEUE_URL", kind: "queueUrl" },
   slackOrchestratorRole: { code: "so", variable: "SLACK_ORCHESTRATOR_ROLE_ARN", kind: "roleArn" },
@@ -112,8 +116,7 @@ export const BROKER_NAMES = {
   // Team record (wire-team-record; present only when the install is synthesised with `agentxTeamRecord=enabled`): the role the broker assumes, with a per-workspace session policy, for every vector call.
   teamRecordVectorsRole: { code: "vr", variable: "TEAM_RECORD_VECTORS_ROLE_ARN", kind: "roleArn" },
   // Team record, Enterprise: the customer's KMS key (its id; the broker builds the ARN in this account and region), named in each workspace's vector session policy.
-  // Team record: the dead-letter queue of the durable queue for removals and edits (listed on the health route as `team-record`).
-  teamRecordDeadLetters: { code: "tq", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "team-record" },
+  // (The Team record's dead-letter queue, listed on the health route as `team-record`, has a fixed name and is derived by the broker, not passed: `teamRecordOpsDeadLetterName`, ENV-ROOM. Code `tq` is retired.)
   teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 
@@ -170,6 +173,7 @@ export const BROKER_SETTINGS = {
   // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
   // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
+  // Passed only when it is not the default (amazon.titan-embed-text-v2:0): the broker reads an unset model as the default (team-record/runtime.ts), so the usual install passes nothing (ENV-ROOM).
   teamRecordEmbeddingModel: { code: "te", variable: "TEAM_RECORD_EMBEDDING_MODEL_ID" },
   teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },
   // Proof and evidence (wire-proof): the evidence of a task's checks is gathered, kept and shown (the PR's evidence lines and link, the task page's Evidence tab, the download route). Stack parameter ProofEvidenceEnabled, "0" by default: the broker reads it as PROOF_EVIDENCE_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
@@ -180,6 +184,8 @@ export const BROKER_SETTINGS = {
   testEnvironment: { code: "ev", variable: "TEST_ENVIRONMENT_ENABLED" },
   // Lessons reach the agent (follow-up S3 of the wire-lessons review): approved lessons are loaded into an agent's prompt only when this install switch is exactly "1". Stack parameter LearnedLessonsEnabled, "0" by default, SEPARATE from the Team record flag (`tn`): turning the record on to collect and show things does not, by itself, send a lesson to an agent. The broker reads it as LEARNED_LESSONS_ENABLED. Packed setting, not a Lambda variable (ENV-ROOM).
   learnedLessons: { code: "ll", variable: "LEARNED_LESSONS_ENABLED" },
+  // Four test results (setup and test health SH20): the result words on a task and its pull request, the Fix setup card and the Testing section. Stack parameter VerifyResultsEnabled, "0" by default: the broker reads it as VERIFY_RESULTS_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  verifyResults: { code: "vx", variable: "VERIFY_RESULTS_ENABLED" },
   // Project registries (N9, INTG2): a project's private package registries reach the worker's setup. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains` (infra/lib/registry-access.ts), which also grants the broker the one named CodeArtifact domain; absent otherwise, and the broker reads absence as OFF. On only when exactly "1" (project-registries/switch.ts). Packed setting, not a Lambda variable (ENV-ROOM).
   projectRegistries: { code: "pr", variable: "PROJECT_REGISTRIES_ENABLED" },
   // Second review by a different AI company (setup-test-health SH34): an added second opinion on a task's code from a model of another company, in shadow (never blocks) and then on. Stack parameter SecondReviewEnabled, "0" by default: the broker reads it as SECOND_REVIEW_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).

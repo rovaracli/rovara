@@ -8,6 +8,12 @@ import { Button } from "./Button.js";
 import { Tabs } from "./Tabs.js";
 import { VisibleText } from "./VisibleText.js";
 
+type Confirming = { url: string; merging: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> };
+/** "Merge #7 into main?"; with several pull requests each is named by its repository: "Merge payments #7 into main and billing #8 into develop?". */
+export function mergeQuestion(merging: Confirming["merging"]): string {
+ const parts = merging.map(pull => (merging.length > 1 ? pull.repositoryId + " " : "") + "#" + String(pull.number) + " into " + pull.baseBranch);
+ return "Merge " + (parts.length > 1 ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1]! : parts[0]!) + "? This can't be undone from Rovara.";
+}
 const RISK_WORDS: Record<string, string> = { low: "Low risk", medium: "Medium risk", high: "High risk" };
 const STATE_WORDS: Record<string, string> = { good: "", warning: " (check this)", bad: " (problem)", unknown: "" };
 const REASON_WORDS: Record<DecisionRejectReason, string> = { wrong_problem: "Wrong problem", wrong_approach: "Wrong approach", too_big: "Too big", missing_test: "Missing test", not_now: "Not now", other: "Other" };
@@ -37,7 +43,7 @@ function Chips({ chips }: { chips: ReadDecision["card"]["evidence"] }) {
 export function DecisionCard({ decision, actions }: { decision: ReadDecision; actions: DecisionCardActions }) {
  const { card, tabs, details, digest } = decision, host = useAppHost();
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [opened, setOpened] = useState<Record<string, string>>({}), [tab, setTab] = useState<DecisionTabId>("requirements");
- const [note, setNote] = useState<ReactNode>(null);
+ const [note, setNote] = useState<ReactNode>(null), [confirming, setConfirming] = useState<Confirming>();
  const touch = useRef<{ x: number; y: number } | undefined>(undefined);
  const target = decisionOpenTarget(card, host.origin);
  const canApprove = mayApproveHere(card);
@@ -49,7 +55,7 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
  const isOpened = (which: DecisionTabId | undefined) => opened[which ?? "card"] === digest;
  async function run(work: () => Promise<void>) {
   if (busy) return;
-  setBusy(true);setError(undefined);setNote(null);
+  setBusy(true);setError(undefined);setNote(null);setConfirming(undefined);
   try { await work(); } catch (failure) {
    if (failure instanceof ApiError && failure.code === "CHANGE_STALE") { setOpened({});actions.onStale();setError(failure.message); }
    else setError(failure instanceof Error && failure.message !== "" ? failure.message : "Couldn't complete this. Try again.");
@@ -57,6 +63,8 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
  }
  const settle = (result: DecisionResult) => {
   if (result.kind === "decided") return;
+  // A merge always asks once more, naming what it merges and where (WEB-1); only Confirm goes on to the confirmation page.
+  if (result.confirmUrl !== undefined && result.merging !== undefined && result.merging.length > 0) { setConfirming({ url: result.confirmUrl, merging: result.merging });return; }
   if (result.confirmUrl !== undefined) { const url = result.confirmUrl;setNote(<p role="status">Nothing is decided yet. <Button variant="quiet" onClick={() => host.openExternal(url)}>Confirm on the next page</Button></p>); }
   else setNote(<p role="status">Nothing is decided yet. Open the decision to confirm it.</p>);
  };
@@ -91,6 +99,8 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
   <div className="rv-decision-actions">
    {card.risk === "high" ? link : <>{approveButton(activeTab)}{canReject && <details className="rv-decision-reject"><summary>Not now</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
   </div>
+  {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>
+   <div className="rv-actions"><Button variant="primary" onClick={() => { const url = confirming.url;setConfirming(undefined);setNote(<p role="status">Nothing is merged until you confirm on the next page.</p>);host.openExternal(url); }}>Confirm</Button><Button onClick={() => { setConfirming(undefined);setNote(<p role="status">Nothing was merged.</p>); }}>Cancel</Button></div></div>}
   {note}
   {error && <p role="alert"><VisibleText text={error} /></p>}
  </article>;

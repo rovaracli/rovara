@@ -257,7 +257,10 @@ describe("diagnosis proposals", () => {
     // Replaces: the T0 playbook rows. No ordinary route changes a project's end-to-end capture, so nothing on the playbook target is prefilled.
     expect(ok("playbook", "e2e.traces", false, true)).toBe(false);
     expect(ok("playbook", "defaultProcess", null, "builtin")).toBe(false);
-    expect(ok("setup_item", "devcontainer.configPath", ".devcontainer/devcontainer.json", ".devcontainer/other.json")).toBe(true);
+    expect(ok("setup_item", "devcontainer.configPath", ".devcontainer/devcontainer.json", ".devcontainer/web/devcontainer.json")).toBe(true);
+    expect(ok("setup_item", "devcontainer.configPath", null, ".devcontainer.json")).toBe(true);
+    // DG-1 S2: a relative file that is not a dev container path is no longer a proposal, however plain it looks.
+    for (const notDevContainer of [".devcontainer/other.json", "scripts/ci/devcontainer.json", "package.json", ".devcontainer/a/b/devcontainer.json"]) expect(ok("setup_item", "devcontainer.configPath", null, notDevContainer), notDevContainer).toBe(false);
     for (const bad of ["https://evil.example.com/x.json", "/etc/passwd", "../../x", ".devcontainer/../../x", "a b", `ghp_${"a".repeat(36)}?x=1`]) expect(ok("setup_item", "devcontainer.configPath", null, bad), bad).toBe(false);
     // Prototype names are not paths or targets.
     for (const path of ["__proto__", "constructor", "toString", "hasOwnProperty"]) expect(diagnosisPrefillAllowed("code_settings", path, null, "merge"), path).toBe(false);
@@ -357,7 +360,7 @@ describe("a prefill value that looks like a secret is refused on every target (f
     `ghp_${"A1b2C3d4E5".repeat(4)}`, `AKIA${"ABCDEFGHIJKLMNOP"}`, `sk-ant-${"api03-A1b2C3d4E5f6G7h8".repeat(2)}`, `xoxb-${"1234567890"}-${"abcdefghijkl"}`, `github_pat_${"A1b2C3d4E5".repeat(6)}`,
     `-----BEGIN ${"PRIVATE"} KEY-----`, `https://user:${"hunter2hunter2"}@example.com/x`, `password=${"hunter2hunter2"}`, `Bearer ${"abcdefghijklmnopqrstuvwxyz012345"}`, `.env/${"AKIA"}${"ABCDEFGHIJKLMNOP"}`,
   ];
-  const settings = { kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: null, to: "x/y.json", citations: ["docs/x.md"] };
+  const settings = { kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: null, to: ".devcontainer/y/devcontainer.json", citations: ["docs/x.md"] };
 
   it("drops a settings change whose `to` or `from` is a secret-shaped string, even on an allowed path that takes a file path", () => {
     expect(parseDiagnosisProposals([settings]).proposals).toHaveLength(1);

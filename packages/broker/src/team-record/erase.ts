@@ -236,7 +236,7 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     }
     return false;
   },
-  // Live interaction Fix with agent (diagnosis/store.ts): the person-link row of each diagnosis they asked for is deleted (the diagnosis stays and names no one), then the index. Bounded passes; not done
+  // Live interaction Fix with agent (diagnosis/store.ts): each diagnosis they asked for is deleted (its model text can hold a name; DG-1 S5) with its person-link row, then the index. Bounded passes; not done
   // means the next run resumes it.
   async diagnoses(context) {
     if (context.who.developerId === undefined) return true;
@@ -312,7 +312,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "SKIPPED#", "EDITED#"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

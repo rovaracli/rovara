@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
+  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, PACKAGE_SERVER_ID_PREFIX, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
   type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
@@ -60,6 +60,11 @@ export interface McpServerStore {
   create(orgId: OrgId, entry: McpServerEntry): Promise<boolean>;
   /** Moves an entry from one status to another only if it still has `from` (and, for an approval, the tools hash that was shown). */
   decide(input: { orgId: OrgId; serverId: string; from: McpServerEntry["status"]; to: McpServerEntry["status"]; by: string; at: string; toolsHash?: string }): Promise<"ok" | "stale">;
+  /**
+   * Review M8: the controller's automatic pause. Moves an APPROVED entry that still has the tools hash the controller saw to `changed_needs_review` and records `pausedAt`. It does not touch
+   * `decidedBy` and `decidedAt`: the approving admin stays on the entry. "stale" when the entry is gone, is not approved, or carries another hash.
+   */
+  pause(input: { orgId: OrgId; serverId: string; toolsHash: string; at: string }): Promise<"ok" | "stale">;
   remove(orgId: OrgId, serverId: string): Promise<boolean>;
   /**
    * Fix round 1, S3: puts a paused entry (`changed_needs_review`) back to `approved` with the tools the admin was shown, only if it is still paused and still carries the tools hash it was paused with.
@@ -135,10 +140,24 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
         throw error;
       }
     },
+    async pause({ orgId, serverId, toolsHash, at }) {
+      try {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
+          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :paused, pausedAt = :at",
+          ConditionExpression: "#status = :approved AND #probe.toolsHash = :hash",
+          ExpressionAttributeNames: { "#status": "status", "#probe": "probe" },
+          ExpressionAttributeValues: { ":paused": "changed_needs_review", ":approved": "approved", ":hash": toolsHash, ":at": at },
+        } }] }));
+        return "ok";
+      } catch (error) {
+        if (cancelled(error)) return "stale";
+        throw error;
+      }
+    },
     async reapprove({ orgId, serverId, pausedToolsHash, probe, by, at }) {
       try {
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
-          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :approved, #probe = :probe, decidedBy = :by, decidedAt = :at",
+          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :approved, #probe = :probe, decidedBy = :by, decidedAt = :at REMOVE pausedAt",
           ConditionExpression: "#status = :paused AND #probe.toolsHash = :old",
           ExpressionAttributeNames: { "#status": "status", "#probe": "probe" },
           ExpressionAttributeValues: { ":approved": "approved", ":paused": "changed_needs_review", ":probe": probe, ":old": pausedToolsHash, ":by": by, ":at": at },
@@ -255,16 +274,52 @@ const told = async (deps: McpServerDependencies, event: McpServerAuditEvent): Pr
 };
 
 /**
+ * The description as it is hashed (stdio fixes lane, SR-7 H3): Unicode NFC, every run of whitespace as one space, and no space at either end. A server may re-wrap or re-encode a description
+ * between two probes without anyone changing what it says; that must not fail an approval or pause a server. Anything else is a change: other words, other case, punctuation, a lookalike
+ * letter, and an invisible character that is not whitespace (a zero-width space stays in, so hidden text is seen). The same function hashes the descriptions of every kind of server.
+ */
+export function normaliseDescription(description: string): string {
+  return description.normalize("NFC").replace(/\s+/gu, " ").trim();
+}
+
+/**
  * What the admin is shown, and what an approval is bound to. Fix round 2 (review N2, tool poisoning): the hash covers each tool's name, its schema and hints (`schemaHash`: the input schema and the
- * four standard hints) AND the whole description as the server gave it, so a changed description pauses the server like any other tool change. Replaces: a hash of names and schemas only
+ * four standard hints) AND the whole description as the server gave it, normalised (`normaliseDescription`), so a changed description pauses the server like any other tool change while a re-wrap or re-encoding does not. Replaces: a hash of names and schemas only
  * (still computed by `legacyToolsHash`, for approvals made before this).
  */
 export function summariseProbe(tools: readonly DiscoveredTool[], now: number): McpServerProbe {
   const shown = [...tools].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100).map((tool) => ({
     name: tool.name.slice(0, 64), description: inertSentence(tool.description ?? "", 300), annotation: annotationVerdict(tool), schemaHash: toolSchemaHash(tool),
-    descriptionHash: createHash("sha256").update(tool.description ?? "").digest("hex"),
+    descriptionHash: descriptionHashOf(tool.description),
   }));
-  return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash, tool.descriptionHash]))).digest("hex"), hashVersion: 2, tools: shown };
+  // Review B1: the hash covers EVERY tool the server listed, not only the first 100 that are kept for the card: a change past tool 100 changes the hash. (A proposal with more than 100 tools is
+  // refused, so an approved list is always whole; a later listing with more is a change.)
+  const every = [...tools].sort((a, b) => a.name.localeCompare(b.name)).map((tool) => [tool.name.slice(0, 64), toolSchemaHash(tool), descriptionHashOf(tool.description)]);
+  return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(every)).digest("hex"), hashVersion: 2, tools: shown };
+}
+
+/** The hash of a description after normalisation (what the approval binds). */
+export function descriptionHashOf(description: string | undefined): string {
+  return createHash("sha256").update(normaliseDescription(description ?? "")).digest("hex");
+}
+
+/**
+ * Review B1: whether the tools a registered server lists NOW are not exactly the ones the admin approved. Each live tool must be in the approved list with the same schema hash (its definition,
+ * hints included) and the same normalised description hash; a tool that is not, or that has changed, is a difference. With `all` the listing must also be the whole approved list (nothing
+ * removed, and no more than the 100 an approval can hold); with `ticked` the tools that were asked for must all be there. An approval from before descriptions were hashed has no description hash
+ * to hold a tool to, and is held to its names and definitions.
+ */
+export function toolsDifferFromApproved(approved: Pick<McpServerProbe, "tools">, live: readonly DiscoveredTool[], scope: "all" | readonly string[]): boolean {
+  const byName = new Map(approved.tools.map((tool) => [tool.name, tool]));
+  if (new Set(live.map((tool) => tool.name)).size !== live.length) return true;
+  for (const tool of live) {
+    const was = byName.get(tool.name.slice(0, 64));
+    if (was === undefined || was.schemaHash !== toolSchemaHash(tool)) return true;
+    if (was.descriptionHash !== undefined && was.descriptionHash !== descriptionHashOf(tool.description)) return true;
+  }
+  const names = new Set(live.map((tool) => tool.name.slice(0, 64)));
+  if (scope === "all") return live.length > 100 || approved.tools.some((tool) => !names.has(tool.name));
+  return scope.some((name) => byName.has(name.slice(0, 64)) && !names.has(name.slice(0, 64)));
 }
 
 /** The hash an approval made before descriptions were hashed carries: names and schemas only. Computed from what a probe holds, so an old and a new probe of the same tools can be compared. */
@@ -322,6 +377,8 @@ async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpSe
     // Only a fixed sentence is shown: a server's own error can hold addresses, banners and paths.
     throw agentXError("CONFIG_INVALID", error instanceof McpProbeError ? probeFailureSentence(error) : MCP_PROBE_FAILURES.unreachable);
   }
+  // Review B1: an approval holds at most 100 tools, so a server that lists more is refused rather than approved on its first 100.
+  if (tools.length > 100) throw agentXError("CONFIG_INVALID", "This server offers more than 100 tools. Rovara approves a server only when it can show every tool it offers.");
   return {
     probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }), ...(lockfileHash === undefined ? {} : { lockfileHash }), ...(bundleHash === undefined ? {} : { bundleHash }),
     ...(installed === undefined ? {} : { installed }),
@@ -370,7 +427,7 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
   if (transport.data.kind === "http" && body.secrets !== undefined) throw agentXError("CONFIG_INVALID", "secrets: a server with an address takes one token, not secrets by name");
   // The values of a package-run server's secrets, as the one JSON document the task reads (checked now; stored below, before the test, because the test task reads them too).
   const secretDocument = transport.data.kind === "stdio" ? stdioSecretDocument(transport.data.spec.secretEnv, body.secrets) : undefined;
-  const serverId = `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`;
+  const serverId = newServerId(transport.data.kind, (deps.newId ?? (() => randomBytes(8).toString("hex")))());
   // A package-run server's secrets are stored under the proposal's own id BEFORE the test (the probe task reads them like the serving task will); they are deleted again if the test fails
   // or the entry cannot be stored. If that delete fails the secret stays, unreferenced: only a test of THIS id can read it (the controller refuses it once the id has an approved or
   // other entry), nothing else is ever given the id, and the secret store's own recovery window applies when it is cleaned up.
@@ -407,6 +464,16 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     await told(deps, { action: "mcp_server.probed", actor, serverId: entry.serverId, purpose: "proposal", toolsHash: entry.probe.toolsHash, bundleHash: spec.bundleHash, toolCount: entry.probe.tools.length });
   }
   return entry;
+}
+
+/**
+ * Review S1. A package-run server's id starts `mcppkg`, and an address-based server's never does (a body that would start `pkg` is given a leading `x`): the id is the last part of the name of the
+ * server's secrets, and the runner execution role reads only `mcppkg*`, so no task can be given an address-based server's token.
+ */
+export function newServerId(kind: "http" | "stdio", random: string): string {
+  const body = random.replace(/[^a-z0-9]/gu, "");
+  if (kind === "stdio") return `${PACKAGE_SERVER_ID_PREFIX}${body.slice(0, 16 - (PACKAGE_SERVER_ID_PREFIX.length - 3))}`;
+  return `mcp${(body.startsWith("pkg") ? `x${body}` : body).slice(0, 16)}`;
 }
 
 /**
@@ -479,20 +546,33 @@ export function diffTools(before: McpServerProbe["tools"], after: McpServerProbe
   return diff;
 }
 
-/** The paused server's entry, with the checks every step of a re-approval makes: an admin, package-run servers on, a paused package-run entry whose install is pinned. */
-async function pausedEntry(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<{ entry: McpServerEntry; pinned: NonNullable<ReturnType<typeof stdioSpecIfComplete>> }> {
+/**
+ * The paused server's entry, with the checks every step of a re-approval makes: an admin, a paused entry, and for a package-run one: package-run servers on and an install that is pinned.
+ * Review B1: an address-based server paused for a tools change is reviewed and re-approved the same way (it has no install to pin).
+ */
+async function pausedEntry(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<{ entry: McpServerEntry; pinned: ReturnType<typeof stdioSpecIfComplete> }> {
   guard(deps, actor);
-  if (!stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
   const entry = await deps.store.get(actor.orgId, serverId);
-  if (entry === undefined || entry.status !== "changed_needs_review" || entry.transport.kind !== "stdio") throw agentXError("NOT_FOUND", "no MCP server is paused with that id");
+  if (entry === undefined || entry.status !== "changed_needs_review") throw agentXError("NOT_FOUND", "no MCP server is paused with that id");
+  if (entry.transport.kind === "http") return { entry, pinned: undefined };
+  if (!stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
   // The pause kept the approved install; it is read as an approved entry would be.
   const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
   if (pinned === undefined) throw agentXError("CHANGE_STALE", "This server's install is not pinned. Add the package again to look at it now.");
   return { entry, pinned };
 }
 
-/** Tests the pinned bundle again (nothing is installed) and returns the probe, after checking it is the bundle that was approved. */
-async function retest(deps: McpServerDependencies, actor: McpServerActor, entry: McpServerEntry, pinned: NonNullable<ReturnType<typeof stdioSpecIfComplete>>): Promise<Awaited<ReturnType<typeof probe>>> {
+/** Tests the server again and returns the probe. A package-run server: its pinned bundle (nothing is installed), checked to be the bundle that was approved. An address-based one: its address, with its own token. */
+async function retest(deps: McpServerDependencies, actor: McpServerActor, entry: McpServerEntry, pinned: ReturnType<typeof stdioSpecIfComplete>): Promise<Awaited<ReturnType<typeof probe>>> {
+  if (pinned === undefined) {
+    if (entry.transport.kind !== "http") throw agentXError("CHANGE_STALE", "This server's install is not pinned. Add the package again to look at it now.");
+    let token: string | undefined;
+    if (entry.hasSecret === true) {
+      token = await deps.secrets.read(actor.orgId, entry.serverId, entry.secretVersion).catch(() => undefined);
+      if (token === undefined) throw agentXError("CONFIG_INVALID", "This server's token can no longer be read. Add the server again.");
+    }
+    return probe(deps, actor.orgId, entry.transport, token);
+  }
   const again = await probe(deps, actor.orgId, { ...entry.transport, kind: "stdio", spec: pinned }, undefined, entry.hasSecret === true ? entry.serverId : undefined);
   if (again.integrity !== pinned.integrity || again.lockfileHash !== pinned.lockfileHash || again.bundleHash !== pinned.bundleHash) throw agentXError("CHANGE_STALE", "The package is not the one you approved. Add it again to look at it now.");
   return again;
@@ -521,15 +601,16 @@ export async function reapprovePausedMcpServer(deps: McpServerDependencies, acto
   if (again.probe.toolsHash !== shownToolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Review what it offers now.");
   const at = new Date(deps.now()).toISOString();
   if (await deps.store.reapprove({ orgId: actor.orgId, serverId, pausedToolsHash: entry.probe.toolsHash, probe: again.probe, by: actor.developerId, at }) === "stale") throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
-  await told(deps, { action: "mcp_server.probed", actor, serverId, purpose: "approval", toolsHash: again.probe.toolsHash, bundleHash: pinned.bundleHash, toolCount: again.probe.tools.length });
+  if (pinned !== undefined) await told(deps, { action: "mcp_server.probed", actor, serverId, purpose: "approval", toolsHash: again.probe.toolsHash, bundleHash: pinned.bundleHash, toolCount: again.probe.tools.length });
   await told(deps, {
-    action: "mcp_server.approved", actor, serverId, label: entry.label, transport: "stdio", hasToken: entry.hasSecret === true,
-    pin: {
+    action: "mcp_server.approved", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true,
+    ...(pinned === undefined ? {} : { pin: {
       integrity: pinned.integrity, lockfileHash: pinned.lockfileHash, bundleHash: pinned.bundleHash, toolsHash: again.probe.toolsHash, destinationCount: pinned.destinations.length, secretCount: pinned.secretEnv.length, secretVersion: entry.secretVersion,
       destinations: pinned.destinations.map((item) => `${item.host}:${item.port}`).join(", "), secretNames: pinned.secretEnv.join(", "),
-    },
+    } }),
   });
-  return { ...entry, status: "approved", probe: again.probe, decidedBy: actor.developerId, decidedAt: at };
+  const { pausedAt: _paused, ...kept } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- a re-approve ends the pause
+  return { ...kept, status: "approved", probe: again.probe, decidedBy: actor.developerId, decidedAt: at };
 }
 
 /** Takes an approved server out of the allow-list (or turns down one that waits). Any admin may, at once. */

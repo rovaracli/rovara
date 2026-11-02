@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent run, workflow and autofix dispatch.
 
+import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -43,6 +44,7 @@ import { blockEndedOperationKeys, tellTaskStop } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { specSeamsOf } from "./spec-wiring.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
+import { fixSetupDependencies } from "./fix-setup-wiring.js";
 
 /**
  * Plan 3, Task 22: the agent-step engine's row. It runs the engine for the task (the result of a step that ended, the next step, an end whose follow-up is not
@@ -272,6 +274,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
       // Proof and evidence: the system-run publish and update rows (the autonomous path) read the same evidence port as an owner's press, so the risk rule and the evidence lines apply here too; empty with the proof switch off.
       ...evidenceRouteDependencies(dependencies),
+    ...nightlyHeadDependencies(dependencies),
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       ...specSeamsOf(dependencies),
@@ -519,6 +522,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
       // Setup and test health (SH28): undefined while the `nh` switch is off.
       ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
+      ...fixSetupDependencies(dependencies),
       now: Date.now,
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     };

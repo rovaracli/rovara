@@ -6,10 +6,10 @@
 //   - an approved registered server over stdio (Enterprise): the MCP host, an operator-configured private URL with its own token. No server code runs here.
 // No other connection type is reached by this port yet: Linear and Jira are native connectors and are added behind this same port later (not in this lane).
 import { connectMcp, listMcpTools, type McpConnection, type McpToolResult } from "@agentx/gateway";
-import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type OrgId } from "@agentx/contracts";
+import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type McpServerEntry, type OrgId } from "@agentx/contracts";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { privateMcpEndpointGuard, probeMcpEndpointGuard } from "../connections/private-endpoints.js";
-import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, type McpHostControl, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
+import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, toolsDifferFromApproved, type McpHostControl, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
 import { MCP_INSTALL_FAILURES, type McpInstallFailureCode } from "@agentx/contracts";
 import type { ContextServerPort, ContextServerSession } from "./routes.js";
 import type { DiscoveredTool, SourceEnvironment } from "./settings.js";
@@ -41,7 +41,7 @@ export interface McpHostEndpoint {
 export interface ServerPortDependencies {
   edition: Edition;
   connections: ConnectionLookup;
-  servers: Pick<McpServerStore, "get" | "list">;
+  servers: Pick<McpServerStore, "get" | "list" | "pause">;
   mcpHost?: McpHostEndpoint | undefined;
   /** Each registered server's own token (write-only; read only here, to send to that server's checked host and port). */
   serverSecrets?: Pick<McpServerSecrets, "read"> | undefined;
@@ -62,11 +62,14 @@ export interface ServerPortDependencies {
    * The broker uses it to record the controller's events and move the entry to `changed_needs_review` at once, instead of waiting for an admin to open the list (fix round 1, S2).
    */
   onHostNeedsReview?: ((orgId: OrgId, serverId: string) => void) | undefined;
+  /** For the time a pause is recorded at. Default: the clock. */
+  now?: (() => number) | undefined;
 }
 
 const NO_TOKEN_AUTH: McpAuth = { header: "x-rovara-client", prefix: "rovara" };
 
-interface Target { endpoint: URL; token: string; auth: McpAuth | undefined; fetchImplementation: typeof fetch; hosts: string[] }
+/** `approved` is the tool list an admin approved, for a registered server (absent for a hosted connection, which has none of its own). */
+interface Target { endpoint: URL; token: string; auth: McpAuth | undefined; fetchImplementation: typeof fetch; hosts: string[]; approved?: { toolsHash: string; tools: McpServerEntry["probe"]["tools"] } | undefined }
 
 const NEEDS_REVIEW_EVERY_MS = 30_000;
 const noted = new Map<string, number>();
@@ -103,7 +106,7 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
       token = await deps.serverSecrets?.read(orgId, entry.serverId, entry.secretVersion);
       if (token === undefined) throw agentXError("FORBIDDEN", "this server's token cannot be read");
     }
-    return { endpoint, token: token ?? "", auth: token === undefined ? NO_TOKEN_AUTH : undefined, fetchImplementation: await guard(endpoint), hosts: [endpoint.hostname] };
+    return { endpoint, token: token ?? "", auth: token === undefined ? NO_TOKEN_AUTH : undefined, fetchImplementation: await guard(endpoint), hosts: [endpoint.hostname], approved: entry.probe };
   }
   // NOT FOR PRODUCTION until the host is redesigned: with the switch off the broker never calls the MCP host.
   if (!stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
@@ -115,7 +118,7 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
     if (response.status === 409) noteNeedsReview(deps.onHostNeedsReview!, orgId, server.serverId);
     return response;
   });
-  return { endpoint: new URL(`${assertSecureHostUrl(deps.mcpHost.url).href.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: hostFetch, hosts: [] };
+  return { endpoint: new URL(`${assertSecureHostUrl(deps.mcpHost.url).href.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: hostFetch, hosts: [], approved: entry.probe };
 }
 
 const toDiscovered = (tools: McpConnection["tools"]): DiscoveredTool[] => tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations }));
@@ -132,10 +135,22 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export function gatewayServerPort(deps: ServerPortDependencies): ContextServerPort {
   const connect = deps.connect ?? connectMcp;
   const list = deps.list ?? listMcpTools;
+  /**
+   * Review B1. The tools a registered server lists are checked against the list the admin approved on EVERY open and EVERY listing, not once when a task starts: a server that answered honestly
+   * first and then adds a tool or changes a description or a definition is paused (card and one-click re-approve) and nothing it said is offered or called. A tool that is not in the approved
+   * list, or has changed, is never returned. Paused even when the pause cannot be recorded: the refusal does not depend on it.
+   */
+  async function holdToApproved(orgId: OrgId, server: ContextSourceServer, target: Target, live: McpConnection["tools"], scope: "all" | readonly string[]): Promise<void> {
+    if (target.approved === undefined || server.kind !== "registered_server" || !toolsDifferFromApproved(target.approved, toDiscovered(live), scope)) return;
+    try { await deps.servers.pause({ orgId, serverId: server.serverId, toolsHash: target.approved.toolsHash, at: new Date((deps.now ?? Date.now)()).toISOString() }); } catch { /* the refusal below does not wait on it */ }
+    console.log(JSON.stringify({ component: "broker", event: "context_source.server_tools_changed", serverId: server.serverId }));
+    throw agentXError("FORBIDDEN", "that MCP server's tools are not the ones an admin approved, so it is paused until an admin looks at them");
+  }
   return {
     async open(orgId, server, signal, tools): Promise<ContextServerSession> {
       const target = await targetOf(deps, orgId, server);
       const connection = await connect({ endpoint: target.endpoint, token: target.token, tools, signal, ...(target.auth === undefined ? {} : { auth: target.auth }), fetchImplementation: target.fetchImplementation });
+      try { await holdToApproved(orgId, server, target, connection.tools, tools ?? []); } catch (error) { await connection.close().catch(() => undefined); throw error; }
       return {
         hosts: target.hosts, tools: toDiscovered(connection.tools),
         call: async (name, args, callSignal): Promise<McpToolResult> => abortable(connection.call(name, args), callSignal),
@@ -144,7 +159,9 @@ export function gatewayServerPort(deps: ServerPortDependencies): ContextServerPo
     },
     async listAll(orgId, server, signal): Promise<DiscoveredTool[]> {
       const target = await targetOf(deps, orgId, server);
-      return toDiscovered(await list({ endpoint: target.endpoint, token: target.token, signal, ...(target.auth === undefined ? {} : { auth: target.auth }), fetchImplementation: target.fetchImplementation }));
+      const live = await list({ endpoint: target.endpoint, token: target.token, signal, ...(target.auth === undefined ? {} : { auth: target.auth }), fetchImplementation: target.fetchImplementation });
+      await holdToApproved(orgId, server, target, live, "all");
+      return toDiscovered(live);
     },
   };
 }
@@ -273,19 +290,24 @@ export function hostControlClient(host: McpHostEndpoint, fetchImplementation: ty
 
 /**
  * Starts the tasks of the package-run servers a stage is about to use, so the first tool call does not wait for a cold start (design section 6, "Prewarm"). Called when a stage that has
- * package-run sources starts. Fire and forget: it never throws, never waits for a task to come up, and does at most 16 calls. Returns how many it asked for.
+ * package-run sources starts. It never throws, never waits for a task to come up, and does at most 16 calls. Review N3: the requests are SENT in parallel and then awaited for a short bound
+ * (2 seconds; the host answers 202 at once), because a Lambda invocation that returns is frozen and a request still in flight may never be sent. Returns how many it asked for.
  */
-export async function prewarmStdioServers(deps: { host: Pick<McpHostControl, "warm"> | undefined; servers: Pick<McpServerStore, "get">; edition: Edition; stdioEnabled: boolean | undefined }, orgId: OrgId, serverIds: readonly string[]): Promise<number> {
+export async function prewarmStdioServers(deps: { host: Pick<McpHostControl, "warm"> | undefined; servers: Pick<McpServerStore, "get">; edition: Edition; stdioEnabled: boolean | undefined; waitMs?: number | undefined }, orgId: OrgId, serverIds: readonly string[]): Promise<number> {
   if (deps.host === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) return 0;
-  let asked = 0;
+  const sent: Array<Promise<unknown>> = [];
   for (const serverId of [...new Set(serverIds)].slice(0, 16)) {
     try {
       const entry = await deps.servers.get(orgId, serverId);
       // Only an approved package-run server is warmed; the host checks this again from the registry.
       if (entry?.status !== "approved" || entry.transport.kind !== "stdio") continue;
-      asked += 1;
-      void deps.host.warm(serverId).catch(() => undefined);
+      sent.push(deps.host.warm(serverId).catch(() => undefined));
     } catch { /* a stage never fails because a server could not be warmed */ }
   }
-  return asked;
+  if (sent.length > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.all(sent), new Promise<void>((resolve) => { timer = setTimeout(resolve, deps.waitMs ?? 2_000); })]);
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  return sent.length;
 }

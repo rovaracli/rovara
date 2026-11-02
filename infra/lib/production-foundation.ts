@@ -61,6 +61,11 @@ export interface ProductionFoundationStackProps extends StackProps {
    * network team (for example the broker's address, an internal code host). Refused on any other edition.
    */
   enterpriseEgressCidrs?: readonly string[];
+  /**
+   * Enterprise only (review M6): the names an install with package-run MCP servers must let through its DNS firewall, from `mcpHostAllowDomains` (the controller's private name, the package registry's
+   * host and the ECS API). Plain host names only. Absent: the plain Enterprise list, which has none of them.
+   */
+  stdioMcpAllowDomains?: readonly string[];
 }
 
 export function defaultProductionAvailabilityZoneIds(
@@ -97,6 +102,10 @@ export class ProductionFoundationStack extends Stack {
     const naming = props.naming ?? legacyNaming();
     const enterprise = props.edition === "enterprise";
     // A network setting that would do nothing on this edition is refused, never ignored.
+    if (props.stdioMcpAllowDomains !== undefined) {
+      if (!enterprise) throw new Error("stdioMcpAllowDomains is an Enterprise edition setting");
+      for (const name of props.stdioMcpAllowDomains) if (!/^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/u.test(name)) throw new Error("a package-run MCP DNS name must be a plain host name");
+    }
     if (!enterprise && (props.internetEgress !== undefined || props.enterpriseEgressCidrs !== undefined)) {
       throw new Error("internetEgress and enterpriseEgressCidrs are Enterprise edition settings");
     }
@@ -276,8 +285,12 @@ export class ProductionFoundationStack extends Stack {
         env: naming.env,
         vpcId: vpc.ref,
         // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
-        ...(enterprise ? { baseAllowDomains: enterpriseAllowDomains(props.deploymentRegion) } : {}),
-        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion) : undefined),
+        ...(enterprise ? { baseAllowDomains: enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) } : {}),
+        extraAllowDomains: [
+          // The names an install with package-run servers needs (the ECS name is already in its base list).
+          ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: true }).includes(name)) : []),
+          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : undefined),
+        ],
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).
       new CfnOutput(this, "ProjectAllowListId", { value: dnsFirewall.projectAllowListId });

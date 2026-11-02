@@ -463,7 +463,7 @@ describe("SH28: recording a night drives the project health, only while nh is on
   it("on: a night whose setup failed makes the project need repair and opens the Fix setup card", async () => {
     const { h, p } = await record({ NIGHTLY_HEALTH_ENABLED: "1", TEST_ENVIRONMENT_ENABLED: "1" });
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "setup_failed" });
-    expect(p.opened).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [] }]);
+    expect(p.opened).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [], version: 1 }]);
   });
 
   it("off: the night is recorded exactly as before and no health item or card exists", async () => {

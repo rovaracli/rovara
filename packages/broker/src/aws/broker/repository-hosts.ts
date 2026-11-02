@@ -12,10 +12,11 @@ import type { GitHubPullRequestDetails } from "../../github-app.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { GITHUB_ONLY_MESSAGE } from "../../plugins/code-host/github-only.js";
 import { NO_HOST_MESSAGE } from "../../plugins/registry.js";
+import { codeHostRepositoryKey } from "../../plugins/events/repository-key.js";
 import { changeRequestRef } from "../../rovara-code/host-port.js";
 import { getItem } from "../cancellation.js";
 import { requireProject } from "../project-records.js";
-import { workspaceKey } from "./admin-and-helpers.js";
+import { githubRepositoryFullName, workspaceKey } from "./admin-and-helpers.js";
 import { consumerCodeHostRouter } from "./consumer-hosts.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { orgOfRecord } from "./scope-helpers.js";
@@ -54,6 +55,17 @@ export function githubProviderOfRecord(dependencies: HostDependencies, repositor
 /** Refuses (CONFIG_INVALID, fixed sentence) unless the host is GitHub; for a step whose every use is GitHub-only. */
 export function requireGithubHost(host: Pick<CodeHost, "kind">): void {
   if (host.kind !== GITHUB_HOST_KIND) throw agentXError("CONFIG_INVALID", GITHUB_ONLY_MESSAGE);
+}
+
+/**
+ * P10: the name a host's change requests are filed under for a repository (the link from a change request to its task, the head index): GitHub's `owner/name` exactly as before (and a
+ * repository that is not a GitHub address is refused as it always was), any other host's `<kind>:<address>` from the neutral key. An address the key cannot name is CONFIG_INVALID.
+ */
+export function changeRequestRepositoryKey(host: Pick<CodeHost, "kind">, repositoryUrl: string): string {
+  if (host.kind === GITHUB_HOST_KIND) return githubRepositoryFullName(repositoryUrl);
+  const key = codeHostRepositoryKey(host.kind, repositoryUrl);
+  if (key === undefined) throw agentXError("CONFIG_INVALID", "the code host's repository cannot be linked to this task");
+  return key;
 }
 
 /** How a caller names the repository it means: by the project's own name for it (better), or by its address. */

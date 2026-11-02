@@ -8,6 +8,13 @@ import { z } from "zod";
 export const McpServerIdSchema = z.string().regex(/^mcp[a-z0-9]{6,24}$/);
 
 /**
+ * Review S1. The id of a package-run server starts with this, and the id is the last part of the name of its secrets. The runner execution role may read only secrets whose name starts with it,
+ * so the tokens of address-based servers (ids that never start with it) are out of reach of any task. Address-based ids are made so that they cannot (see `newServerId`).
+ */
+export const PACKAGE_SERVER_ID_PREFIX = "mcppkg";
+export const isPackageServerId = (serverId: string): boolean => McpServerIdSchema.safeParse(serverId).success && serverId.startsWith(PACKAGE_SERVER_ID_PREFIX);
+
+/**
  * `needs_reapproval`: a package-run entry that was stored before the approval bound its install (no lockfile or bundle hash). It is never served and cannot be approved as it
  * is; an admin looks at it again by adding the package again. (Stdio never shipped switched on, so no running install has one; the status exists so that reading an old row
  * never throws and never serves.)
@@ -196,6 +203,8 @@ export const McpServerEntrySchema = z.object({
   requestedAt: z.string().max(40),
   decidedBy: z.string().max(200).optional(),
   decidedAt: z.string().max(40).optional(),
+  /** Review M8: when the controller's pause moved the entry to `changed_needs_review`. Kept apart from `decidedBy` and `decidedAt`, which stay with the admin who approved. Cleared by a re-approve. */
+  pausedAt: z.string().max(40).optional(),
 }).strict().superRefine((entry, context) => {
   // An approved or waiting package-run entry always carries both hashes: nobody can store (or approve) a server whose install is not pinned.
   if (entry.transport.kind !== "stdio" || (entry.status !== "approved" && entry.status !== "awaiting_approval")) return;

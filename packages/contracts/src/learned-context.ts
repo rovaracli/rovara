@@ -63,3 +63,26 @@ export function learnedLoadReportOfProgress(payload: unknown): LoadReport | unde
   const parsed = LoadReportSchema.safeParse((payload as Record<string, unknown>)[LEARNED_LOAD_REPORT_FIELD]);
   return parsed.success ? parsed.data : undefined;
 }
+
+/**
+ * What is STORED and QUEUED for a stage's lessons (WL-6): ids and versions only, never lesson text. The outbox row, the queue message, its dead-letter copy and a FAILED row carry this; the
+ * dispatcher builds the `learnedContext` from the lesson store at delivery, so a lesson erased, retired or edited after the stage was queued is never delivered, and no text sits in any
+ * stored copy. `orgId` and `project` name the lesson store; `audience` is who the load was for (a private task's owner, by canonical developer id), so delivery asks the access records for the same
+ * reader. Never sent to a worker (delivery removes it).
+ */
+export const LearnedRefsSchema = z.object({
+  v: z.literal(1), orgId: z.string().min(1).max(100), project: z.string().min(1).max(200), setVersion: z.number().int().min(0), stage: LessonStageSchema,
+  audience: z.discriminatedUnion("kind", [z.object({ kind: z.literal("shared") }).strict(), z.object({ kind: z.literal("private"), developerId: z.string().min(1).max(100) }).strict()]),
+  lessons: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u), version: z.number().int().min(1) }).strict()).max(LEARNED_CONTEXT_MAX_LESSONS),
+  priorLoaded: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u) }).strict()).max(40).optional(),
+}).strict();
+export type LearnedRefs = z.infer<typeof LearnedRefsSchema>;
+
+/** The ids and versions of a loaded context, with who it was loaded for. No text crosses into the result. */
+export function learnedRefsOf(context: LearnedContext, scope: { orgId: string; project: string; audience: LearnedRefs["audience"] }): LearnedRefs {
+  return {
+    v: 1, orgId: scope.orgId, project: scope.project, setVersion: context.setVersion, stage: context.stage, audience: scope.audience,
+    lessons: context.lessons.map((lesson) => ({ id: lesson.id, version: lesson.version })),
+    ...(context.priorLoaded === undefined ? {} : { priorLoaded: context.priorLoaded.map((prior) => ({ id: prior.id })) }),
+  };
+}

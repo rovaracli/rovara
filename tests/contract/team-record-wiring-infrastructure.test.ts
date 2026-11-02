@@ -3,10 +3,11 @@
 //    with a template built with the switch spelled `off`, and the resources are listed by type, so a resource added outside the switch fails here.
 //  - ON (Public cloud and Enterprise): the table, the vector bucket, the lake and the schedules exist, named from the environment; the broker is given the switch and the two install
 //    parameters in its packed settings, and the role it assumes for vectors in its packed names; the Slack ingress is told to hand events to the broker.
+import { readFileSync, writeFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_SETTINGS, teamRecordTableName } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_SETTINGS, TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordTableName } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
@@ -20,9 +21,15 @@ const ENTERPRISE = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterp
 const PUBLIC = { agentxEnv: "staging", agentxCloud: true } as const;
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
+const synthesised = new Map<string, Template>();
 const controlPlane = (context: Record<string, unknown>): Template => {
+  const key = JSON.stringify(context);
+  const hit = synthesised.get(key);
+  if (hit !== undefined) return hit;
   const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
-  return Template.fromStack(stack!);
+  const template = Template.fromStack(stack!);
+  synthesised.set(key, template);
+  return template;
 };
 const resourcesOf = (template: Template): Record<string, Resource> => template.toJSON().Resources as Record<string, Resource>;
 const typesOf = (template: Template): string[] => Object.values(resourcesOf(template)).map((resource) => resource.Type).sort();
@@ -51,6 +58,23 @@ describe("the switch is off by default and changes nothing", () => {
     expect(functionVariables(plain, /^SlackIngress[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_ENABLED");
     expect(JSON.stringify(plain.toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
   }, 180_000);
+
+  // TRW-2 S6: "the switch adds nothing when off" was only proved against the same branch's own template. This pins, in a committed file, the exact resources the switch adds. The off template must hold
+  // none of them, and the file must equal what the switch adds now: a resource added to the record fails here until the file is changed on purpose (UPDATE_FIXTURES=1), and a record resource that
+  // leaks out of the switch fails whatever else changed in the stack.
+  it("the resources the switch adds are exactly the committed list, and none of them is in the off template", () => {
+    const off = resourcesOf(plain);
+    const on = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" }));
+    const pairs: Array<[string, string]> = Object.entries(on).filter(([id]) => !(id in off)).map(([id, resource]): [string, string] => [id, resource.Type]).sort(([a], [b]) => a.localeCompare(b));
+    const added: Record<string, string> = Object.fromEntries(pairs);
+    const file = new URL("../fixtures/team-record-switch-resources.json", import.meta.url);
+    if (process.env.UPDATE_FIXTURES === "1") writeFileSync(file, `${JSON.stringify(added, null, 2)}\n`);
+    const committed = JSON.parse(readFileSync(file, "utf8")) as Record<string, string>;
+    expect(added).toStrictEqual(committed);
+    expect(Object.keys(committed).length).toBeGreaterThan(10);
+    for (const [id, type] of Object.entries(committed)) expect(off[id]?.Type ?? "absent", id).not.toBe(type);
+    for (const id of Object.keys(committed)) expect(id in off, id).toBe(false);
+  }, 360_000);
 
   it("is off in the legacy install and in a self-hosted install with no edition, and a wrong value stops the synth", () => {
     expect(JSON.stringify(controlPlane({}).toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
@@ -88,10 +112,17 @@ describe("the switch on: Public cloud", () => {
     const variables = functionVariables(on, /^Broker[0-9A-F]{8}$/);
     const settings = brokerSettingsIn(variables);
     expect(settings.teamRecord).toBe("1");
-    expect(settings.teamRecordEmbeddingModel).toBe("amazon.titan-embed-text-v2:0");
+    // ENV-ROOM: the default embedding model is not passed (the broker reads an unset model as the default), and the record's dead-letter queue has a fixed name the broker derives.
+    expect(settings).not.toHaveProperty("teamRecordEmbeddingModel");
     expect(settings.teamRecordLake).toBe("1");
     expect(brokerNamesIn(variables).teamRecordVectorsRole).toStrictEqual({ Ref: expect.stringMatching(/^TeamRecordVectorsDataRole/) as string });
+    expect(Object.keys(BROKER_NAMES)).not.toContain("teamRecordDeadLetters");
     for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordEmbeddingModel, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
+  }, 180_000);
+
+  it("passes the embedding model in the packed settings when the install chooses another one", () => {
+    const other = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" });
+    expect(brokerSettingsIn(functionVariables(other, /^Broker[0-9A-F]{8}$/)).teamRecordEmbeddingModel).toBe("cohere.embed-english-v3");
   }, 180_000);
 
   it("schedules the hourly and the nightly job through the recovery role, with no retries, and nothing else", () => {
@@ -117,12 +148,44 @@ describe("the switch on: Public cloud", () => {
     expect(statementsOf(off).every((existing) => statementsOf(on).includes(existing))).toBe(true);
   }, 180_000);
 
+  it("WL-6: the dispatcher builds a stage's lessons at delivery, so it is told the record's table and may only READ the lesson rows (no write, no scan)", () => {
+    expect(functionVariables(on, /^Dispatcher[0-9A-F]{8}$/)).toMatchObject({ TEAM_RECORD_TABLE_NAME: teamRecordTableName("staging") });
+    expect(functionVariables(controlPlane(PUBLIC), /^Dispatcher[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_TABLE_NAME");
+    // S1: the dispatcher honours the install switch for lessons reaching an agent (the same stack parameter the broker's packed setting takes), so turning it off stops lessons for queued stages too.
+    expect(functionVariables(on, /^Dispatcher[0-9A-F]{8}$/)).toMatchObject({ [BROKER_SETTINGS.learnedLessons.variable]: { Ref: "LearnedLessonsEnabled" } });
+    type Statement = { Sid?: string; Action: string | string[]; Resource: unknown };
+    const statements = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^Dispatcher/.test(id))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+    const reads = statements.filter((statement) => statement.Sid === "TeamRecordLessonReads");
+    expect(reads).toHaveLength(1);
+    expect([reads[0]!.Action].flat().sort()).toStrictEqual(["dynamodb:BatchGetItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    expect(JSON.stringify(reads[0]!.Resource)).toMatch(/TeamRecordTable/);
+    // Nothing else of the record is the dispatcher's: no write action on the record table, and no vector, lake or queue right.
+    const recordRelated = statements.filter((statement) => /TeamRecord/.test(JSON.stringify(statement.Resource)));
+    expect(recordRelated.map((statement) => statement.Sid)).toStrictEqual(["TeamRecordLessonReads"]);
+  }, 180_000);
+
   it("creates the durable queue with a dead-letter queue (five tries), a visibility timeout above the broker's, and drains it with partial-batch answers", () => {
     const queues = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::SQS::Queue" && /^TeamRecordOps/.test(String(Object.keys(resources).find((id) => resources[id] === resource))));
     const ops = queues.find(([id]) => /^TeamRecordOps[0-9A-F]{8}$/.test(id))![1].Properties;
-    expect(ops).toMatchObject({ QueueName: "agentx-staging-team-record-ops", MessageRetentionPeriod: 345600, VisibilityTimeout: 180, RedrivePolicy: { maxReceiveCount: 5 } });
+    expect(ops).toMatchObject({ QueueName: "agentx-staging-team-record-ops", MessageRetentionPeriod: 345600, VisibilityTimeout: 180, RedrivePolicy: { maxReceiveCount: TEAM_RECORD_OPS_MAX_RECEIVES } });
+    // The consumer drops a text-carrying put at THIS delivery, so the dead-letter queue never holds its text (TRW-3 R4): the two numbers are one constant.
+    expect(TEAM_RECORD_OPS_MAX_RECEIVES).toBe(5);
     const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("TeamRecordOps"));
     expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 10 });
+  }, 180_000);
+
+  // TRW-5: the broker reads the dead-letter queue only to delete text out of it, may send a delete to itself as an Event, and every asynchronous invoke it cannot run lands in the failure queue that alarms.
+  it("the broker may receive from and delete in the dead-letter queue, invoke itself, and its asynchronous failures go to a queue", () => {
+    const statements = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement) : []));
+    const dlq = statements.filter((statement) => JSON.stringify(statement.Resource).includes("TeamRecordOpsDeadLetters") && [statement.Action].flat().includes("sqs:ReceiveMessage"));
+    expect(dlq.length, JSON.stringify(statements.filter((statement) => JSON.stringify(statement).includes("DeadLetters")))).toBeGreaterThan(0);
+    expect([dlq[0]!.Action].flat()).toContain("sqs:DeleteMessage");
+    const selfInvoke = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^TeamRecordBrokerSelfInvoke/.test(id));
+    expect(selfInvoke).toHaveLength(1);
+    expect(JSON.stringify(selfInvoke[0]![1].Properties)).toMatch(/lambda:InvokeFunction/);
+    const configs = Object.values(resources).filter((resource) => resource.Type === "AWS::Lambda::EventInvokeConfig" && JSON.stringify(resource.Properties.FunctionName).includes("Broker"));
+    expect(configs.some((config) => JSON.stringify((config.Properties.DestinationConfig as { OnFailure?: unknown } | undefined)?.OnFailure).includes("SlackHandOffFailureQueue"))).toBe(true);
   }, 180_000);
 
   it("S2: the vector data role names its indexes by the session TAG, never `index/*`, and only lets the broker tag a session with an index name", () => {
@@ -174,6 +237,15 @@ describe("the switch on: Enterprise", () => {
     const table = Object.values(resourcesOf(on)).find((resource) => resource.Type === "AWS::DynamoDB::Table" && resource.Properties.TableName === teamRecordTableName("ent"));
     expect(table?.Properties.SSESpecification).toMatchObject({ SSEEnabled: true, SSEType: "KMS", KMSMasterKeyId: KMS });
     expect(brokerSettingsIn(functionVariables(on, /^Broker[0-9A-F]{8}$/)).teamRecordLake).toBe("0");
+    // WL-6: the dispatcher's lesson reads include the customer's key (decrypt only).
+    const kms = Object.entries(resourcesOf(on)).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^Dispatcher/.test(id))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement).filter((statement) => statement.Sid === "TeamRecordLessonReadsKms");
+    expect(kms).toHaveLength(1);
+    expect([kms[0]!.Action].flat().sort()).toStrictEqual(["kms:DescribeKey", "kms:Decrypt"].sort());
+    expect(kms[0]!.Resource).toBe(KMS);
+    // N1: only through DynamoDB, so the dispatcher cannot decrypt anything else sealed under the customer's key.
+    expect((kms[0] as unknown as { Condition: unknown }).Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() as unknown } });
+    expect(JSON.stringify((kms[0] as unknown as { Condition: unknown }).Condition)).toMatch(/dynamodb\..*\.amazonaws\.com/);
   }, 240_000);
 });
 

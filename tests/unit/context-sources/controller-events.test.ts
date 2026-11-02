@@ -200,7 +200,9 @@ describe("T10: pausing a server whose tools changed", () => {
     await w.drain();
     const after = (await w.deps.store.get(ORG, w.entry.serverId))!;
     expect(after.status).toBe("changed_needs_review");
-    expect(after.decidedBy).toBe("rovara");
+    // review M8: the approver stays on the entry; the pause is recorded as its own time
+    expect(after.decidedBy).toBe(admin.developerId);
+    expect(after.pausedAt).toBe(new Date(NOW).toISOString());
     const recorded = w.capture.recordedBy("mcp_server.changed_needs_review")[0]!;
     expect(recorded.facts).toEqual({ approvedToolsHash: w.entry.probe.toolsHash, observedToolsHash: HASH_B });
     // a paused entry cannot be approved as it is, and says what to do

@@ -207,27 +207,40 @@ describe("the exported tree is held to the tree the repository's host has for th
 
 describe("acceptance of a workflow's publication, on a host that is not GitHub", () => {
   const P = "9".repeat(64);
-  it.each([
-    ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
-    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
-  ])("%s: refused before the idempotency row is written, the workspace claimed, the push sent or its grant issued", async (_name, host, message) => {
+  // Replaces (P10): a registered other host was refused here because the publication's result was recorded by GitHub-only code; the link is the host's own neutral row now, so a
+  // registered host's publication is accepted, and only a host this install has not registered is refused (with the router's sentence).
+  const candidate = {
+    repositoryId: "demo", treeSha: TREE, candidateDigest: "c".repeat(64), baseCommitSha: BASE, publicationMode: "CHECKED_TREE" as const,
+    admittedPinnedRevision: 1, admittedLatestRevision: 1, admittedMaterialDigest: "a".repeat(64), admittedWorkflowRevision: 3,
+    admittedPlanArtifact: { id: "plan-1", sha256: P }, admittedOwnerApproval: { artifactDigest: P }, admittedWorkflowAuthorityDigest: "b".repeat(64),
+  };
+  const prepared = async (host: { kind: string; ref?: string }) => {
     const w = await world();
     w.setHost(host);
     // The workspace is free (setup done, nothing running), as it is when a publication is due.
     w.h.db.set({ ...(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META") as object), status: "READY", activeOperationId: undefined });
-    const workspaceBefore = JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"));
     const identity = { issuer: "test", subject: MAYA.developerId, ownerKey: String(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META")!.ownerKey), orgId: TEST_ORG, isAdministrator: false, claims: {} } as never;
-    const issue = vi.spyOn(w.dependencies.repositoryGrants, "issue");
     const rows = () => w.h.db.find((item) => String(item.pk).startsWith("IDEMPOTENCY#") || item.entityType === "OPERATION" && item.kind === "publish" || item.entityType === "OUTBOX");
+    return { w, identity, rows };
+  };
+
+  it("a host this install has not registered: refused before the idempotency row is written, the workspace claimed, the push sent or its grant issued", async () => {
+    const { w, identity, rows } = await prepared({ kind: "gitfarm" });
+    const workspaceBefore = JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"));
+    const issue = vi.spyOn(w.dependencies.repositoryGrants, "issue");
     const before = rows().length;
-    const candidate = {
-      repositoryId: "demo", treeSha: TREE, candidateDigest: "c".repeat(64), baseCommitSha: BASE, publicationMode: "CHECKED_TREE" as const,
-      admittedPinnedRevision: 1, admittedLatestRevision: 1, admittedMaterialDigest: "a".repeat(64), admittedWorkflowRevision: 3,
-      admittedPlanArtifact: { id: "plan-1", sha256: P }, admittedOwnerApproval: { artifactDigest: P }, admittedWorkflowAuthorityDigest: "b".repeat(64),
-    };
-    await expect(acceptPullRequest(w.dependencies, identity, w.workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix it" }, undefined, { workflowCandidate: candidate } as never)).rejects.toThrow(refusal(message));
+    await expect(acceptPullRequest(w.dependencies, identity, w.workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix it" }, undefined, { workflowCandidate: candidate } as never)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
     expect(rows()).toHaveLength(before);
     expect(JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"))).toBe(workspaceBefore);
     expect(issue).not.toHaveBeenCalled();
+  });
+
+  it("a registered other host: accepted, the publication operation is written, and GitHub is never asked", async () => {
+    const { w, identity, rows } = await prepared({ kind: "fake", ref: "r1" });
+    const before = rows().length;
+    await expect(acceptPullRequest(w.dependencies, identity, w.workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix it" }, undefined, { workflowCandidate: candidate } as never)).resolves.toMatchObject({ operation: { kind: "publish" } });
+    expect(rows().length).toBeGreaterThan(before);
+    expect(w.github.getPullRequest).not.toHaveBeenCalled();
+    expect(w.github.reconcilePullRequest).not.toHaveBeenCalled();
   });
 });

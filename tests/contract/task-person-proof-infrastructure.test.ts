@@ -107,6 +107,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Company setup recipes (SH30): one switch, a parameter and a packed setting.
   delete remainder.Parameters?.SetupRecipesEnabled;
   delete remainder.Parameters?.NightlyHealthEnabled;
+  // Four test results: its own switch, a parameter and a packed setting, no part of the proof-only addition.
+  delete remainder.Parameters?.VerifyResultsEnabled;
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.SetupAgentEnabled;
   const conditions = remainder.Conditions ?? {};
@@ -141,7 +143,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "setupAgent", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -317,24 +319,28 @@ describe("the named TEST proof-only installation gate", () => {
     // (01eabca8b) and now and comparing the parent remainders (asset hashes aside, nothing else moved): the `ReadEditionRecord` statement (ssm:GetParameter on the install's edition record and
     // its backup) on the broker's policy and on the sign-in function's policy (Enterprise foundations I-2, `grantEditionRecordRead`), and `SPEC_STATE` in the notifier's stream filter (wire lane D).
     // The legacy digests did not move (named environments only), which is the check that its template is untouched.
+    // 2026-11-02, cloud/next after the switch-on fix lanes: all six digests were retaken. Compared against 5a519496e (which reproduces the old pins), the parent remainders differ only by:
+    // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
+    // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
+    // worker-features record apply to every install. Controller 37 accepted the legacy move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "65b51951d0c039c5f1502e2bce773ee41c79cac7ec44db4e35d9eb61726695e0",
-        withoutRoute: "44a1860493231beae8acc4ec0e23719e08bb608c73519668ee13ddb3b62e10a1",
+        withRoute: "4eb11f80907e9a77d8b9a5a0d24f760e2100e0725035b689f086dbf13512c3d4",
+        withoutRoute: "dafcc5a1bebbbc6c17cf99d28adb3281bb78b507a59e7025b7838141c793aa11",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "1d40cfff0db6c4fdd60f73588e3a6f88b7334586fb0c34db300f3b5a4362787f",
-        withoutRoute: "2dd13ddd9349f68bcfaee13fcbf64424c2b59708bf61108f7b751d9a5ac046d9",
+        withRoute: "7831380a195694131dfe7ae5aae6d01718d3c4798b04d432b0549a1f313e95a7",
+        withoutRoute: "b2575d646bf959c749d4d27992e584df48e7a4e52c94d4483685007c8d6c18eb",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "ca953d736cf5102d9dfb0779215fed9175e7763a0fbe21379706561eb2a75f42",
-        withoutRoute: "25d3a6bd95423e5758293ece7225df8d8f204bafa6c08d5e29e1538a0322ff0a",
+        withRoute: "78282844236d0c6c124f4597de047d7f66cb3080b24aaa72c116393e72b15df6",
+        withoutRoute: "c9cef330a90941527ceaf6b43d405e8aa2bb21a12ee3f0ae32ccb65b51ed64cf",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {

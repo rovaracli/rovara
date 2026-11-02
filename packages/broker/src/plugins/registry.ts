@@ -5,7 +5,7 @@
 // The edition decides what may be registered: GitHub, GitHub Actions and CodeBuild are the install's own; any other kind is an Enterprise plug-in.
 import {
   ENTERPRISE_ONLY_MESSAGE, PluginKindSchema, agentXError, repositoryHostOf, requireFeature,
-  type CheckRunner, type CodeHost, type EditionPolicy, type PluginKind, type RepositoryDefinition, type RepositoryHost, type RepositoryRef,
+  type CheckRunner, type CodeHost, type EditionPolicy, type PluginKind, type RepositoryDefinition, type RepositoryHost, type RepositoryRef, type Tracker,
 } from "@agentx/contracts";
 
 /** The code host every install has. */
@@ -17,6 +17,9 @@ export const NO_CODE_HOST_MESSAGE = "No code host is set up for this repository.
 /** P7: said when a repository record names a code host this install has not registered (the kind is not echoed). */
 export const NO_HOST_MESSAGE = "This repository's code host is not available in this install.";
 const AMBIGUOUS_HOST_MESSAGE = "This install registers more than one code host of the same kind.";
+/** The trackers every install has: Linear is built in (P9). Any other tracker is an Enterprise plug-in. */
+export const BUILT_IN_TRACKER_KINDS: readonly PluginKind[] = ["linear"];
+export const NO_TRACKER_MESSAGE = "No tracker is set up for this kind of item.";
 export const NO_CHECK_RUNNER_MESSAGE = "No check runner is set up for this kind of build.";
 
 export interface CodeHostRouter {
@@ -45,6 +48,8 @@ export interface CheckRunnerRegistration {
 export interface PluginRegistryInput {
   codeHosts: readonly CodeHost[];
   checkRunners: readonly CheckRunnerRegistration[];
+  /** P9: the trackers (Linear, then a customer's). Absent: none is registered. */
+  trackers?: readonly Tracker[];
   /** The edition's feature table. Absent (an install deployed before editions): only the built-in plug-ins may be registered. */
   policy?: EditionPolicy;
   /** The kind of code host a repository uses. Today every repository is GitHub; task P7 reads the repository's `host.kind`. */
@@ -55,6 +60,10 @@ export interface PluginRegistry {
   codeHost: CodeHostRouter;
   /** A check runner of this kind, built for the given context. */
   checkRunner: (kind: PluginKind, context: CheckRunnerContext) => CheckRunner;
+  /** P9: the tracker of this kind; throws CONFIG_INVALID (a fixed sentence, the kind not echoed) when none is registered. Never falls back to another tracker. */
+  tracker: (kind: PluginKind) => Tracker;
+  /** P9: the kinds of tracker registered, sorted. */
+  trackerKinds: () => readonly PluginKind[];
 }
 
 function requireAllowedKind(kind: PluginKind, builtIn: readonly PluginKind[], policy: EditionPolicy | undefined): void {
@@ -82,6 +91,13 @@ export function createPluginRegistry(input: PluginRegistryInput): PluginRegistry
     runners.set(registration.kind, registration);
   }
 
+  const trackers = new Map<PluginKind, Tracker>();
+  for (const tracker of input.trackers ?? []) {
+    requireAllowedKind(tracker.kind, BUILT_IN_TRACKER_KINDS, input.policy);
+    if (trackers.has(tracker.kind)) throw agentXError("CONFIG_INVALID", "Two trackers are registered under one name.");
+    trackers.set(tracker.kind, tracker);
+  }
+
   const hostKindOf = input.hostKindOf ?? ((): PluginKind => BUILT_IN_CODE_HOST_KIND);
   const forKind = (kind: PluginKind): CodeHost => {
     const host = hosts.get(kind);
@@ -99,6 +115,12 @@ export function createPluginRegistry(input: PluginRegistryInput): PluginRegistry
       },
       kinds: () => [...hosts.keys()].sort(),
     },
+    tracker(kind) {
+      const tracker = trackers.get(kind);
+      if (tracker === undefined) throw agentXError("CONFIG_INVALID", NO_TRACKER_MESSAGE);
+      return tracker;
+    },
+    trackerKinds: () => [...trackers.keys()].sort(),
     checkRunner(kind, context) {
       const registration = runners.get(kind);
       if (registration === undefined) throw agentXError("CONFIG_INVALID", NO_CHECK_RUNNER_MESSAGE);

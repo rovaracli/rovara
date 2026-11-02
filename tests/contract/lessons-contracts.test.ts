@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LearnedSkillSchema, LessonCandidateSchema, LessonSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, ReflectorOutputSchema,
+  LearnedRefsSchema, LearnedSkillSchema, LessonCandidateSchema, LessonSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, ReflectorOutputSchema,
   WorkerInvocationSchema, skillFrontMatterRefusal, type OrgId,
 } from "@agentx/contracts";
 
@@ -113,6 +113,21 @@ describe("load manifest, memory input, snapshot and learned context", () => {
     const snapshot = { snapshotId: "snp_0123456789abcdef0123", workspaceId: ORG, project: "web", createdAt: "2026-10-30T10:00:00.000Z", createdBy: "dev-1", lessonSetVersion: 3, lessons: [{ id: "les_0123456789abcdef0123", version: 2 }], skills: [], embeddingModelId: "amazon.titan-embed-text-v2:0", contentDigest: "b".repeat(64) };
     expect(MemorySnapshotSchema.safeParse(snapshot).success).toBe(true);
     expect(MemorySnapshotSchema.safeParse({ ...snapshot, lessons: [{ id: "les_0123456789abcdef0123", version: 2, body: "text" }] }).success).toBe(false);
+  });
+  it("WL-6: the stored/queued form of a stage's lessons holds ids and versions only (no lesson text), strict, and rides on a task invocation", () => {
+    const refs = { v: 1, orgId: ORG, project: "web", setVersion: 2, stage: "PLAN", audience: { kind: "shared" }, lessons: [{ id: "les_0123456789abcdef0123", version: 3 }], priorLoaded: [{ id: "les_0123456789abcdef0124" }] };
+    expect(LearnedRefsSchema.safeParse(refs).success).toBe(true);
+    expect(LearnedRefsSchema.safeParse({ ...refs, audience: { kind: "private", developerId: "d".repeat(64) } }).success).toBe(true);
+    expect(LearnedRefsSchema.safeParse({ ...refs, lessons: [{ id: "les_0123456789abcdef0123", version: 3, body: "text" }] }).success).toBe(false);
+    expect(LearnedRefsSchema.safeParse({ ...refs, priorLoaded: [{ id: "les_0123456789abcdef0124", title: "text" }] }).success).toBe(false);
+    expect(LearnedRefsSchema.safeParse({ ...refs, lessons: Array.from({ length: 13 }, () => ({ id: "les_0123456789abcdef0123", version: 1 })) }).success).toBe(false);
+    expect(LearnedRefsSchema.safeParse({ ...refs, extra: 1 }).success).toBe(false);
+    const base = {
+      protocolVersion: 1, kind: "task", operationId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222", fence: 1, projectRevision: 1,
+      callbackCapability: "c".repeat(32), payload: { conversationId: "33333333-3333-4333-8333-333333333333", prompt: "Plan it.", workflowMode: "PLAN" },
+    };
+    expect(WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, learnedRefs: refs } }).success).toBe(true);
+    expect(WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, learnedRefs: { ...refs, lessons: [{ id: "les_0123456789abcdef0123", version: 3, body: "text" }] } } }).success).toBe(false);
   });
   it("rides on a task invocation as an optional, strict field", () => {
     const base = {

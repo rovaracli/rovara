@@ -29,7 +29,7 @@ export const TESTING_RESULT_LABELS: Readonly<Record<TestingResult, string>> = {
 // ---- fixed reasons
 
 /** Why a result is "Code failed": what the change broke. */
-export const TESTING_CODE_REASONS = ["check_failed", "regression_found", "e2e_assertion_failed", "app_failed", "round_refused"] as const;
+export const TESTING_CODE_REASONS = ["check_failed", "regression_found", "new_failing_test", "e2e_assertion_failed", "app_failed", "round_refused"] as const;
 /** Why a check was "Blocked by environment": the environment, not the code, gave no verdict. */
 export const TESTING_BLOCKED_REASONS = [
   "check_could_not_start", "check_runner_failed", "check_command_broken", "timed_out", "executor_failed", "mock_unavailable", "provider_outage", "runner_busy",
@@ -52,6 +52,7 @@ export const TestingReasonSchema = z.enum(TESTING_REASONS);
 export const TESTING_REASON_TEXT: Readonly<Record<TestingReason, string>> = {
   check_failed: "a check fails on this change and passed before it",
   regression_found: "a test that passed before this change fails now",
+  new_failing_test: "a check that also failed before has a failing test that was not failing before this change",
   e2e_assertion_failed: "an end-to-end check does not see what the plan said",
   app_failed: "the application did not build or start with this change",
   round_refused: "the end-to-end round could not start from this build",

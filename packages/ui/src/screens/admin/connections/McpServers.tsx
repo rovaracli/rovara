@@ -93,7 +93,7 @@ export function McpServers() {
   {servers === undefined ? <p role="status">Loading MCP servers.</p> : servers.length === 0 ? <p>No MCP servers added yet.</p> : <ul>{servers.map(server => <li key={server.serverId}>
    <strong><VisibleText text={server.label} /></strong> · {statusWords[server.status]}{server.hasSecret === true ? " · has its own token" : ""} · {server.transport.kind === "http" ? <VisibleText text={server.transport.address} /> : <VisibleText text={`${server.transport.spec.name}@${server.transport.spec.version}`} />}
    {server.transport.kind === "stdio" && activity[server.serverId] !== undefined && <Activity activity={activity[server.serverId]!} />}
-   {server.status === "changed_needs_review" && <p role="note">Its tools are not the ones you allowed, so Rovara stopped using it. Review what changed, then re-approve it or keep it paused.</p>}
+   {server.status === "changed_needs_review" && <p role="note">Its tools are not the ones you allowed, so Rovara stopped using it.{server.pausedAt === undefined || Number.isNaN(Date.parse(server.pausedAt)) ? "" : ` It was paused on ${new Date(server.pausedAt).toLocaleString()}.`} Review what changed, then re-approve it or keep it paused.</p>}
    <Offers server={server} />
    {server.status === "awaiting_approval" && <Button disabled={busy} onClick={() => setWaiting(server)}>Review</Button>}
    {server.status === "changed_needs_review" && <Button variant="primary" disabled={busy} onClick={() => { void run(async () => { setReviewing(await api.reviewServer(server.serverId)); }); }}>Review what changed</Button>}

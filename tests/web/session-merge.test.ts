@@ -57,6 +57,8 @@ function setup(initial: ReturnType<typeof sessionFixture>, mergeReply?: (request
   let session = initial;
   const f = fakeHost(async (request) => {
     const path = request.path.split("?", 1)[0]!;
+    // The decision cards are not switched on in these worlds (the route does not exist): "no cards".
+    if (path === "/v1/app/decisions") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
     if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
@@ -185,6 +187,8 @@ it("round trip: against the real broker, the page reads the task view's merge, t
   const broker = await mergeButtonBroker();
   const f = fakeHost(async (request) => {
     const path = request.path.split("?", 1)[0]!;
+    // The decision cards are not switched on in these worlds (the route does not exist): "no cards".
+    if (path === "/v1/app/decisions") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
     const response = await broker.handler({

@@ -1,4 +1,4 @@
-// Live interaction F4: "Propose this change". A diagnosis never changes a setting: its `settings_change` proposal is text. When a person with the right role presses "Propose this change", the broker
+// Live interaction F4: "Apply this change". A diagnosis never changes a setting: its `settings_change` proposal is text. When a person with the right role presses "Apply this change", the broker
 // raises that one change through the ORDINARY settings route, as that person, after it has read everything again:
 //   - the proposal is read from the stored diagnosis (never from the request) and is checked against the allow-list and the deny-list AGAIN (owner Q8: never secrets, budgets, roles, approval rules,
 //     tier-0 included, egress, model endpoints or MCP servers), whatever was stored;
@@ -6,6 +6,9 @@
 //   - `from` must still be what the setting is NOW (a stale proposal is refused: nothing is applied from a diagnosis that has been overtaken);
 //   - every citation is read again: a runbook Rovara ships, or a file of one of the project's repositories at the commit named, and its quote must be there. One that cannot be read, or that does not
 //     hold, refuses the change (fail closed: an unchecked claim is not evidence).
+// DG-2 (Replaces: the design's "pending change card"): the press applies the change at once, as the maintainer's own ordinary save, so the button says "Apply this change" and shows from -> to. DG-1 S3: the
+// request echoes the change shown (target, path, from, to) and is refused on any difference from the stored proposal. DG-1 S2: a dev container path must be a devcontainer path and a file that is in the
+// container's repository now.
 // Where the ordinary route applies a change at once for a maintainer, so does the press, as the maintainer, under the revision just read; where it asks an administrator, it would ask here too (the
 // settings a diagnosis may name never need one). Each target has one path into its route; a target with none (the whole `playbook`, `connector` and `model_access`) cannot be proposed.
 import {
@@ -36,6 +39,8 @@ export interface DiagnosisProposePorts {
   updateSettings(caller: DeveloperCaller, project: string, body: ProjectSettingsBody, options: UpdateProjectSettingsOptions): Promise<unknown>;
   /** A file of one of the project's repositories at a commit (undefined: not there; throws: GitHub could not answer). Absent: a repository citation cannot be read again. */
   readFile?: ((orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { timeoutMs: number }) => Promise<string | undefined>) | undefined;
+  /** DG-1 S2: a file of one of the project's repositories at the head of its default branch, read now (undefined: not there; throws: GitHub could not answer). Absent: a dev container path cannot be proposed. */
+  readDefaultBranchFile?: ((orgId: OrgId, repositoryUrl: string, path: string, options: { timeoutMs: number }) => Promise<string | undefined>) | undefined;
 }
 
 /** How long a citation's file read may take. */
@@ -93,6 +98,9 @@ export async function proposeDiagnosisChange(
   const record = await readDiagnosisRecord(deps, orgId, diagnosisId);
   const proposal = record?.proposals[body.data.index];
   if (proposal === undefined || proposal.kind !== "settings_change") throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.notProposal);
+  // DG-1 S3: the press must be for the change the person was shown (target, path, from and to), not just a number: a wrong index or a screen that is out of date applies nothing.
+  const shown = body.data;
+  if (shown.target !== proposal.target || shown.path !== proposal.path || shown.from !== proposal.from || shown.to !== proposal.to) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.notShown);
 
   // Read again, whatever was stored: the allow-list (path and value), the deny-list, and a path into an ordinary route.
   if (!diagnosisPrefillAllowed(proposal.target, proposal.path, proposal.from, proposal.to) || diagnosisPathDenied(proposal.path)) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.notProposal);
@@ -111,6 +119,16 @@ export async function proposeDiagnosisChange(
   } else {
     const container = project.devcontainer;
     if (container === undefined || (container.configPath ?? null) !== proposal.from || typeof proposal.to !== "string") throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.staleProposal);
+    // DG-1 S2: the new path must be a file that is really in the container's repository, on its default branch, as of now. (The allow-list already refused any path that is not a dev container path.)
+    const repository = project.repositories.find((candidate) => candidate.name === container.repository);
+    if (repository === undefined || ports.readDefaultBranchFile === undefined) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.fileUnchecked);
+    let present: string | undefined;
+    try {
+      present = await ports.readDefaultBranchFile(orgId, repository.url, proposal.to, { timeoutMs: CITATION_READ_TIMEOUT_MS });
+    } catch {
+      throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.fileUnchecked);
+    }
+    if (present === undefined) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.fileMissing);
     apply = () => ports.updateSettings(caller, subject.project, { requestId: body.data.requestId, expectedRevision: project.revision, devcontainer: { repository: container.repository, configPath: proposal.to as string } }, { origin: "agent" });
   }
   // Every citation is read again, the last thing before the change is raised.

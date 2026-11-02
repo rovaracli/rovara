@@ -4,7 +4,7 @@ import { type prepareTurnModelFallback, type prepareTaskModelFallback, joinTaskM
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type CodeHost, type MergeObservation, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { queryAllItems } from "../admin-reads.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -15,6 +15,9 @@ import { OrgStore } from "../../org/store.js";
 import { TERMINAL, getItem, operationKey, type OperationRecord } from "../cancellation.js";
 import { aiToolTurn, completedTurn, githubWorkflowPullRequestKey, OUTCOME, partyOfTask, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type StoredEvent } from "../../developer/task-records.js";
 import { findLinkedChangeRequest } from "../../rovara-code/linked-change-requests.js";
+import type { GitHubPullRequestFeedback } from "../../github-app.js";
+import { codeHostRepositoryKey } from "../../plugins/events/repository-key.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { isConditional, isTemporaryAwsError } from "../broker-shared.js";
 import { readTaskRecipe } from "../../agents/runs.js";
 import { developerTaskRouteDependencies } from "../developer-routes.js";
@@ -378,20 +381,34 @@ export async function refreshTaskFeedbackForOwnerDecision(dependencies: AwsBroke
   }, `owner-decision-${randomUUID()}`);
 }
 
+/** P10: the change request a merge observation reads is on this code host (not GitHub) at this registered repository address. */
+export interface NeutralMergeObservation { host: CodeHost; repositoryAddress: string }
+
+/** A host's merge observation in the words the reconcile reads a pull request in. */
+function mergeObservationFacts(observation: MergeObservation): GitHubPullRequestFeedback["pullRequest"] {
+  return {
+    number: Number(observation.ref.id), url: observation.ref.url, state: observation.state, headBranch: observation.sourceBranch, baseBranch: observation.targetBranch,
+    headCommit: observation.headRevision, headTreeSha: observation.headTreeRevision, title: observation.title, body: observation.body,
+    ...(observation.mergeRevision === undefined ? {} : { mergeCommit: observation.mergeRevision }), ...(observation.mergedAt === undefined ? {} : { mergedAt: observation.mergedAt }),
+    ...(observation.mergedBy === undefined ? {} : { mergedBy: observation.mergedBy }),
+  };
+}
+
 /** Reconcile every PR webhook against GitHub; comments and delivery order never grant authority. */
 export async function processGithubWorkflowEvent(
   dependencies: AwsBrokerDependencies,
   event: ReceivedGithubWebhook["event"],
   deliveryId: string,
-  options?: { observationMode: "merge"; budget: GithubMergeReadBudget; release: "queue" },
+  options?: { observationMode: "merge"; budget: GithubMergeReadBudget; release: "queue"; neutral?: NeutralMergeObservation },
 ): Promise<void> {
   // A check or status event only wakes the task's tracking row; the pass that follows reads GitHub (Plan 6 Task 14).
   if (event.kind === "HEAD_STATUS") {
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
   }
+  const neutral = options?.neutral;
   // Meta repo lane D (D4): a person editing or approving a task's spec pull request. One read for any other pull request; a failure here never fails the delivery.
-  await handleSpecPullRequestEvent(dependencies, event);
+  if (neutral === undefined) await handleSpecPullRequestEvent(dependencies, event);
   // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
   // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
   if (options === undefined && wakesTrackingRow(event)) {
@@ -399,19 +416,35 @@ export async function processGithubWorkflowEvent(
       console.log(JSON.stringify({ component: "broker", event: "tracking.wake_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
     });
   }
-  const getFeedback = options === undefined
-    ? dependencies.githubPullRequests.getPullRequestFeedback
-    : dependencies.githubPullRequests.getPullRequestMergeObservation;
-  if (getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", options === undefined
+  const hasRead = neutral !== undefined ? neutral.host.mergeObservation !== undefined
+    : options === undefined
+    ? dependencies.githubPullRequests.getPullRequestFeedback !== undefined
+    : dependencies.githubPullRequests.getPullRequestMergeObservation !== undefined;
+  if (!hasRead) throw agentXError("RUNTIME_UNAVAILABLE", options === undefined
     ? "current GitHub feedback collection is not configured"
     : "current GitHub merge observation is not configured");
   const learningBudget = { remaining: 20, skipped: 0 };
   const changed = await reconcileTaskPullRequestFeedback({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: event.fullName, number: event.number, deliveryId,
+    ...(neutral === undefined ? {} : { neutralHost: { kind: neutral.host.kind, repositoryAddress: neutral.repositoryAddress } }),
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
+    // P10: each repository's own host decides how its pull request is read: GitHub's below, another host's merge observation here (merge mode only; nothing else is read from such a host).
+    hostOfRepository: async (project, revision, repositoryId, orgId) => {
+      if (orgId === undefined) return undefined;
+      const home = await consumerRepositoryResolver(dependencies)(project, revision, repositoryId, orgId).catch(() => undefined);
+      if (home === undefined || home.codeHost.kind === GITHUB_HOST_KIND) return undefined;
+      const host = home.codeHost;
+      return {
+        kind: host.kind,
+        observe: async (repositoryUrl, number, scopeOrg) => {
+          if (options === undefined || host.mergeObservation === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the code host cannot show a merge");
+          return mergeObservationFacts(await host.mergeObservation(changeRequestRef(repositoryUrl, number), githubScope(dependencies, scopeOrg), options.budget));
+        },
+      };
+    },
     getCurrentFeedback: async (url, number, orgId) => options === undefined
       ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId))
       : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget, githubScope(dependencies, orgId)), comments: [], threads: [] },
@@ -423,7 +456,7 @@ export async function processGithubWorkflowEvent(
       await capturePullRequestCorrections({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => Date.now(), ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, { task: { taskId: task.taskId, orgId: task.orgId, project: task.project }, installationOrgId, repositoryId: task.repositoryId, comments, budget: learningBudget });
     } } : {}),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
-    ...(dependencies.githubPullRequests.getCommitParents === undefined ? {} : {
+    ...(neutral !== undefined || dependencies.githubPullRequests.getCommitParents === undefined ? {} : {
       commitParents: (url: string, commit: string, orgId: OrgId | undefined) => dependencies.githubPullRequests.getCommitParents!(url, commit, githubScope(dependencies, orgId)),
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
@@ -510,7 +543,9 @@ export async function processGithubWorkflowEvent(
     now: new Date().toISOString(),
   });
   // P6: the link is read from the neutral row, then the old GitHub row.
-  const linked = await findLinkedChangeRequest(dependencies, { hostKind: "github", repositoryAddress: `https://github.com/${event.fullName}`, id: String(event.number) });
+  const linked = await findLinkedChangeRequest(dependencies, neutral === undefined
+    ? { hostKind: "github", repositoryAddress: `https://github.com/${event.fullName}`, id: String(event.number) }
+    : { hostKind: neutral.host.kind, repositoryAddress: neutral.repositoryAddress, id: String(event.number) });
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
   // Track record: after the release, which never waits on it, and never throwing.
@@ -744,8 +779,20 @@ export async function reconcileWorkflowMergeRecoveryTask(
     return await mergeRecoveryReleaseConfirmed(dependencies, task) ? { kind: "TERMINAL", release: "confirmed" } : retry();
   }
   const pullRequests = task.workflow?.pullRequests ?? [];
-  let selected: { fullName: string; number: number } | undefined;
+  let selected: { fullName: string; number: number; neutral?: NeutralMergeObservation } | undefined;
   for (const pullRequest of pullRequests) {
+    // P10: a change request on a code host other than GitHub is found by the repository's own record (its host and address), then by the neutral link; GitHub's is found by its address as before.
+    const home = task.orgId === undefined ? undefined : await consumerRepositoryResolver(dependencies)(task.project, task.startingRevision, pullRequest.repositoryId, task.orgId).catch(() => undefined);
+    if (home !== undefined && home.codeHost.kind !== GITHUB_HOST_KIND) {
+      const key = codeHostRepositoryKey(home.codeHost.kind, home.url);
+      const neutralLink = key === undefined ? undefined : await findLinkedChangeRequest(dependencies, { hostKind: home.codeHost.kind, repositoryAddress: home.url, id: String(pullRequest.number) });
+      if (key !== undefined && neutralLink?.taskId === task.taskId && neutralLink.workspaceId === task.workspaceId && neutralLink.repositoryId === pullRequest.repositoryId
+        && neutralLink.number === pullRequest.number && neutralLink.url === pullRequest.url && neutralLink.candidateDigest === pullRequest.candidateDigest) {
+        selected = { fullName: key, number: pullRequest.number, neutral: { host: home.codeHost, repositoryAddress: home.url } };
+        break;
+      }
+      continue;
+    }
     const parsed = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(pullRequest.url);
     if (parsed === null || Number(parsed[2]) !== pullRequest.number) continue;
     const linked = await findLinkedChangeRequest(dependencies, { hostKind: "github", repositoryAddress: `https://github.com/${parsed[1]!}`, id: String(pullRequest.number) });
@@ -764,7 +811,7 @@ export async function reconcileWorkflowMergeRecoveryTask(
       repositoryId: 0,
       fullName: selected.fullName,
       number: selected.number,
-    }, `merge-recovery-${taskId}`, { observationMode: "merge", budget, release: "queue" });
+    }, `merge-recovery-${taskId}`, { observationMode: "merge", budget, release: "queue", ...(selected.neutral === undefined ? {} : { neutral: selected.neutral }) });
   } catch (error) {
     const limitedUntil = hostRateLimitRetryAt(error);
     if (limitedUntil !== undefined) return { kind: "RETRY", retryAt: limitedUntil, scope: "github-global" };

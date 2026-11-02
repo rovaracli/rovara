@@ -13,7 +13,7 @@ import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
 import { reviewModelLines } from "../rovara-code/review-model-lines.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
 import { PLAN_UNREADABLE_SENTENCES, type PlanUnreadableCategory } from "./plan-check-summary.js";
-import { autoFixCardLines, type AutoFixAsk } from "./autofix-messages.js";
+import { autoFixCardLines, fixSetupWording, type AutoFixAsk } from "./autofix-messages.js";
 import { maskForSlack, noCodeChangedText } from "./no-change-findings-text.js";
 
 export interface WorkflowMessageContext {
@@ -804,7 +804,7 @@ function checksRunBefore(workflow: WorkflowSnapshot): boolean {
 }
 
 function withAutoFix(context: WorkflowMessageContext, copy: { text: string; buttons: Button[] }): { text: string; buttons: Button[] } {
-  const lines = context.autoFix === undefined ? [] : autoFixCardLines(context.workflow, context.autoFix.ask);
+  const lines = context.autoFix === undefined ? [] : autoFixCardLines(context.workflow, context.autoFix.ask, fixSetupWording(context.workflow));
   return lines.length === 0 ? copy : { ...copy, text: `${copy.text}\n${lines.map(slackText).join("\n")}` };
 }
 

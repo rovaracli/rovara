@@ -11,7 +11,6 @@
 //
 // Before it returns, the step runs the finished kit the way approval will (in the same sandbox where the computer has one) and requires: (1) the same context twice, in two different
 // directories, gives byte-identical output (the same inputs are the same hash); (2) the release's own placeholder context gives the release's own templates and packages.
-import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,6 +21,7 @@ import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { createNodeSynthRunner, runKitProcess, systemSandboxEnvironment, type SandboxEnvironment, type SynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";
 import { RELEASE_SYNTH_ROOT, synthReleaseProfile, type FunctionCode } from "./build.js";
 import { sha256Hex } from "./hash.js";
+import { assertSourceIsRelease, gitSourceState, type SourceState } from "./source-state.js";
 import { ReleaseManifestSchema, type ReleaseManifest } from "./manifest.js";
 import { enterpriseReleaseProfiles } from "./profiles.js";
 import { CodeMapSchema, KIT_CODE_MAP_FILE, kitCodeFile } from "./synth-kit/code-map.js";
@@ -122,22 +122,7 @@ export function releaseCheckRunner(options: { allowUnsandboxed?: boolean; enviro
   return { runner: { confined: false, sandbox: "none (release check, no sandbox on this computer; the kit had network access)", run: (input) => runKitProcess(input, undefined) }, sandboxed: false };
 }
 
-/** Where the working tree stands: the commit it is at and the files that differ from it (modified, staged or untracked and not ignored). */
-export interface SourceState {
-  head(): string;
-  dirtyFiles(): string[];
-}
-export function gitSourceState(cwd: string): SourceState {
-  const git = (...args: string[]): string => execFileSync("git", args, { cwd, encoding: "utf8" });
-  return { head: () => git("rev-parse", "HEAD").trim(), dirtyFiles: () => git("status", "--porcelain").split("\n").filter((line) => line !== "") };
-}
-/** A kit is made from the release's own commit, from a clean tree: otherwise the kit holds infrastructure that is in no release. */
-export function assertSourceIsRelease(source: SourceState, release: { gitCommit: string }): void {
-  const head = source.head();
-  if (head !== release.gitCommit) throw new Error(`the working tree is at ${head.slice(0, 12)} but the release was built from ${release.gitCommit.slice(0, 12)}; check out the release's commit before making its kit`);
-  const dirty = source.dirtyFiles();
-  if (dirty.length > 0) throw new Error(`the working tree has ${String(dirty.length)} changed file(s) (${dirty.slice(0, 3).join(", ")}); a kit is made from a clean checkout of the release's commit`);
-}
+export { assertSourceIsRelease, gitSourceState, type SourceState };
 
 /** Every file under `root`, relative and "/"-separated, sorted. */
 async function listFiles(root: string, relative = ""): Promise<string[]> {
@@ -148,6 +133,15 @@ async function listFiles(root: string, relative = ""): Promise<string[]> {
     else found.push(path);
   }
   return found;
+}
+
+/** The SHA-256 of every file in a kit directory (kit.json aside), by path inside the kit. */
+export async function kitFileHashes(root: string): Promise<Record<string, string>> {
+  const hashes: Record<string, string> = {};
+  for (const file of await listFiles(root)) {
+    if (file !== "kit.json") hashes[file] = sha256Hex(await readFile(join(root, file)));
+  }
+  return hashes;
 }
 
 /** The first difference between two output trees, or undefined when they hold the same files with the same bytes. */
@@ -231,7 +225,11 @@ export async function buildSynthKit(input: BuildSynthKitInput): Promise<BuildSyn
     for (const assetId of [...used].sort()) await copyFile(join(releaseDir, listed.get(assetId)!.file), join(out, kitCodeFile(assetId)));
     await writeFile(join(out, KIT_CODE_MAP_FILE), `${JSON.stringify(CodeMapSchema.parse({ schemaVersion: 1, functions }), null, 2)}\n`, "utf8");
     const { bytes } = await bundleKitEntry(join(out, "synth.mjs"));
-    const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: SYNTH_KIT_NODE_MAJOR, releaseSha256: sha256Hex(releaseBytes), gitCommit: release.gitCommit });
+    // SK-4: kit.json names the hash of every other file, so the signing step can refuse a kit that was edited (or written) after these checks.
+    const manifest = SynthKitManifestSchema.parse({
+      schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: SYNTH_KIT_NODE_MAJOR, releaseSha256: sha256Hex(releaseBytes), gitCommit: release.gitCommit,
+      files: await kitFileHashes(out),
+    });
     await writeFile(join(out, "kit.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
     await selfCheck({ kitRoot: out, release, releaseDir, runner });
@@ -307,6 +305,16 @@ export async function selfCheck(input: { kitRoot: string; release: ReleaseManife
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * SK-4: what the signing step runs on the kit it is about to sign, in the folder it will sign from: the checkout is the release's commit and clean, and the self-checks run again in the sandbox
+ * (they refuse without one). A kit that did not come out of `release:kit` unchanged, or was made from other source, fails here and is never signed.
+ */
+export async function verifyKitForSigning(input: { kitRoot: string; releaseDir: string; release: ReleaseManifest; source?: SourceState; runner?: SynthRunner; sandboxEnvironment?: SandboxEnvironment }): Promise<void> {
+  assertSourceIsRelease(input.source ?? gitSourceState(REPO_ROOT), input.release);
+  const { runner } = input.runner === undefined ? releaseCheckRunner({ ...(input.sandboxEnvironment === undefined ? {} : { environment: input.sandboxEnvironment }) }) : { runner: input.runner };
+  await selfCheck({ kitRoot: input.kitRoot, release: input.release, releaseDir: input.releaseDir, runner });
 }
 
 function usage(): string {

@@ -17,6 +17,7 @@ import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
+import { memberView, type MemberOf } from "./members.js";
 import { distinctIds, idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps {
@@ -133,11 +134,14 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       approvals = approvals.filter((a) => !gone.includes(a));
       await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { dropped: gone.length, reason: "approver_not_eligible" } });
     }
-    if (approvals.some((a) => sameId(a.by, input.approverId))) return { ok: false, code: "already_approved" };
+    // The author rules compare MEMBERS: a developer merged into another reads as that other (an author recorded under the old id is the member now, and two approvers who are one member are one person).
+    const member = await memberViewOf(deps.directory, key.workspaceId, [...working.provenance.authors, input.approverId, ...approvals.map((a) => a.by)]);
+    if (member === undefined) return { ok: false, code: "eligibility_unavailable" };
+    if (approvals.some((a) => member(a.by) === member(input.approverId))) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
     // A lesson sent back to a person (review required) needs at least one person even if the policy would let its tier apply by itself.
     const required = Math.max(approversRequired(tier, resolved.approval), working.reviewRequired === true ? 1 : 0) as 0 | 1 | 2;
-    const isAuthor = idIn(working.provenance.authors, input.approverId);
+    const isAuthor = isAuthorOf(member, working.provenance.authors, input.approverId);
     let mode: Lesson["approvals"][number]["mode"] = "one";
 
     if (required === 0) {
@@ -163,7 +167,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       if (!decision.ok) return decision;
       mode = decision.mode;
       // A reviewer, check or security lesson is read by someone who did not write the evidence: two of its own authors are not enough (the sole-owner exception above keeps its own rules).
-      if (mode !== "sole_owner_exception" && !hasNonAuthor([first.by, input.approverId], working.provenance.authors)) return { ok: false, code: "second_person_required" };
+      if (mode !== "sole_owner_exception" && !hasNonAuthor(member, [first.by, input.approverId], working.provenance.authors)) return { ok: false, code: "second_person_required" };
     }
 
     const now = deps.now();
@@ -200,8 +204,13 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   return { ok: false, code: "conflict" };
 }
 
-/** True when at least one of these people is not among the lesson's authors. */
-function hasNonAuthor(people: readonly string[], authors: readonly string[]): boolean { return people.some((person) => !idIn(authors, person)); }
+/** The members behind these ids (see members.ts), asked of the directory. `undefined`: the merge record could not be read. */
+const memberViewOf = (directory: ApproverDirectory, workspaceId: string, ids: readonly string[]): Promise<MemberOf | undefined> =>
+  memberView(directory.resolveMember?.bind(directory), workspaceId, ids);
+/** True when this person is one of the lesson's authors, as members. */
+const isAuthorOf = (member: MemberOf, authors: readonly string[], person: string): boolean => authors.some((author) => member(author) === member(person));
+/** True when at least one of these people is not among the lesson's authors, as members. */
+function hasNonAuthor(member: MemberOf, people: readonly string[], authors: readonly string[]): boolean { return people.some((person) => !isAuthorOf(member, authors, person)); }
 
 export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
   | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure } {
@@ -303,7 +312,10 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const sole = group.eligibleIds.length === 1 && valid.some((a) => a.mode === "sole_owner_exception" && trySecondPerson(group, a.by, a.by, deps.now()).ok);
   // The author rule applies to a restored approval as it does to a new one: an author\'s own approval does not count while someone else could give it.
   const authors = lesson.provenance.authors;
-  const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !idIn(authors, a.by) || a.mode === "second_person") : valid;
+  // Members, not raw ids (a merged developer is the member they became); a merge record that cannot be read leaves the lesson pending for a person.
+  const member = await memberViewOf(deps.directory, key.workspaceId, [...authors, ...valid.map((a) => a.by)]);
+  if (member === undefined) return;
+  const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !isAuthorOf(member, authors, a.by) || a.mode === "second_person") : valid;
   if (countable.length !== valid.length) {
     const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() };
     const kept = await deps.store.commit(key, setVersion, [next], deps.now(), group.fence);
@@ -312,10 +324,10 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   }
   // A team of one: the author's own approval (made when a person deciding anyway was accepted under "auto") is the sole-owner exception in all but name, so it needs the same
   // cool-off as a new one. An approval that does not pass the shared rule does not count; it stays on the record, and the lesson waits for a person.
-  const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && idIn(authors, a.by);
+  const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && isAuthorOf(member, authors, a.by);
   const standing = countable.filter((a) => !soloAuthored(a) || trySecondPerson(group, a.by, a.by, deps.now()).ok);
   // A tier-2 lesson that two of its own authors approved before the rule existed does not go live on a restore either.
-  const enough = sole || (new Set(standing.map((a) => normId(a.by))).size >= required && (required < 2 || hasNonAuthor(standing.map((a) => a.by), authors)));
+  const enough = sole || (new Set(standing.map((a) => member(a.by))).size >= required && (required < 2 || hasNonAuthor(member, standing.map((a) => a.by), authors)));
   const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
   if (standing.length === 0 || !enough || !groupsOk) return;
   // Pinned to the version these approvals were judged on (the one this function read or wrote last) and the set version that goes with it.

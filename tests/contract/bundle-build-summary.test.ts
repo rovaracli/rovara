@@ -91,6 +91,8 @@ describe("the summary", () => {
     expect(text).toContain("*** IAM runtime: - Role (AWS::IAM::Role)");
     expect(text).toContain("    ~ Marker (AWS::SSM::Parameter): Properties.Value");
     expect(text).toContain("The kit ran inside test sandbox.");
+    // SK-4 minor 2: the approver is told CDK's own template validation did not run for this build.
+    expect(text).toContain("CDK's own template validation was not run for this build");
     // Every stack is compared with what is deployed, not only the access stack.
     expect(summary.diffs.map((d) => [d.part, d.status])).toEqual([["access", "unchanged"], ["foundation", "changed"], ["identity", "unchanged"], ["runtime", "changed"], ["control-plane", "unchanged"], ["slack", "unchanged"]]);
   });

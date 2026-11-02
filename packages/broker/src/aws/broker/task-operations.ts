@@ -65,6 +65,7 @@ import { testEnvPlanFor } from "../../test-env/task-plan.js";
 import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
+import { prewarmStageServers } from "../../context-sources/prewarm-stage.js";
 import { MAX_SETUP_PROPOSAL_BYTES, type AwsBrokerDependencies, type RegisteredProjectRecord } from "./definitions.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { ROVARA_CODE_NAME } from "./model-access.js";
@@ -498,6 +499,9 @@ export async function taskOperationParts(
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
   // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
   const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
+  // Review M9, N3: the stage is about to start, so the package-run servers it reads are started now. The requests are awaited for a few seconds at most (this runs in a Lambda that is frozen when it
+  // returns); a failure or a slow host changes nothing.
+  if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
     ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
@@ -528,7 +532,7 @@ export async function taskOperationParts(
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
-      // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is refused the run at delivery, never sent it without the field.
+      // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
       // SH14: the limits the setup run started with, read again through the contract (a damaged value is held to the defaults). A worker without "task.setupAgent.v1" is refused the run at delivery, never sent it without the field.
       ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: { limits: effectiveSetupAgentLimits(task?.setupAgentLimits) } } : {}),
@@ -555,7 +559,7 @@ export async function taskOperationParts(
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
-      // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is refused the run at delivery, never sent it without the field.
+      // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is sent the run without the field at delivery (no evidence is captured, and the omission is logged).
       ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled() ? { evidenceCapture: true as const } : {}),
       // Test environment (wire-testenv): a worker without "task.testEnvironment.v1" is refused the run at delivery, never sent it without the field.
       ...(testEnvironment === undefined ? {} : { testEnvironment }),

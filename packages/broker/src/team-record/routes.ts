@@ -79,7 +79,9 @@ export async function handleRecordRoute(deps: RecordQueryDependencies, request: 
       if (request.caller.projectRole === undefined) throw agentXError("PROJECT_ACCESS_DENIED", "You don't have access to this project.");
       const rows = await listSourceConfigs(deps.table, request.caller.orgId, project.data);
       // The approval and who added a source are the maintainers' business; a member reads what is kept and how.
-      return { status: 200, body: { sources: rows.map(({ approval: _approval, addedBy: _addedBy, ...row }) => row) } }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      // What the record left out because the author is not a linked Rovara person, per source: for the project's maintainers (TRW-4). Counts only.
+      const skippedUnlinked = request.caller.projectRole === "maintainer" && deps.skipped !== undefined ? await deps.skipped.read(request.caller.orgId, project.data) : undefined;
+      return { status: 200, body: { sources: rows.map(({ approval: _approval, addedBy: _addedBy, ...row }) => row), ...(skippedUnlinked === undefined ? {} : { skippedUnlinked }) } }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
     }
     const template = route.slice("stats/".length);
     return { status: 200, body: await recordStats(deps, audience, project.data, { template, params: Object.fromEntries(Object.entries(request.query).filter((entry): entry is [string, string] => typeof entry[1] === "string")) }) };

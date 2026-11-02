@@ -339,10 +339,11 @@ import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } fr
 import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
-import { opsQueueUrlOf, sqsOpsQueue } from "../team-record/ops-queue.js";
+import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../team-record/ops-queue.js";
+import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
 import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
 import { personErasureStep } from "./broker/evidence-wiring.js";
-import { recordAuditSinkOf } from "./broker/team-record-wiring.js";
+import { recordAuditSinkOf, removalFallbackThroughLambda, slackLinksOf } from "./broker/team-record-wiring.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
 export { swebenchDependencies } from "./broker/admin-and-helpers.js";
@@ -409,6 +410,8 @@ const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
   // Enterprise foundations N-3: the credential comes from the repository's code host and must pass workerGitCredentialUsable before a worker gets it.
   portCredentialResolver({ codeHost: plugins.codeHost, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF") }),
+  // P8: the credential kinds the repository's host can hand out, written into each grant only when one needs a worker feature (an ssh key), so the dispatcher can refuse an older worker early.
+  (hostKind) => plugins.codeHost.forKind(hostKind).capabilities.credentialKinds,
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);
@@ -511,7 +514,8 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
 
 // Team record (wire-team-record): `undefined` unless the install was deployed with the record's switch on (TEAM_RECORD_ENABLED is exactly "1"). With it off nothing below is built or called.
 const recordOpsQueueUrl = opsQueueUrlOf(process.env);
-const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { slackUserIdsOf: (developerId: string) => new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).slackUserIdsOf(developerId) }), ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+const recordDeadLetterUrl = deadLetterUrlOf(process.env);
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { ...slackLinksOf(new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now })) , namesOf: async (developerId: string) => { const record = await new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).getDeveloper(developerId); return record === undefined ? [] : [record.displayName]; } }), askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY")), ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), ...(recordDeadLetterUrl === undefined ? {} : { deadLetters: sqsDeadLetters(sqs, recordDeadLetterUrl) }), ...(process.env.AWS_LAMBDA_FUNCTION_NAME === undefined ? {} : { removalFallback: removalFallbackThroughLambda((request) => lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!, ...request }))) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
 
 // Proof and evidence (wire-proof fix round 1): a person's erase also deletes the stored evidence of the tasks they created or own (not behind the proof switch).
 const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });

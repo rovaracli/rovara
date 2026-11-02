@@ -21,7 +21,7 @@ function pipeline(store = new InMemoryLessonStore(), clock = new Clock()) {
   let n = 0;
   const alerts = new Alerts();
   const audit = new Audit();
-  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_r3${String(++n).padStart(5, "0")}` };
+  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now, verifier: verifier("valid"), coldStartLessons: 0, facts: facts(), settings: autoSettings(), newId: () => `les_r3${String(++n).padStart(5, "0")}` };
   return { deps, store, alerts, audit, clock };
 }
 const run = (spans: EvidenceSpan[], ids: string[], over: Parameters<typeof subject>[1] = {}) => reflectSubject(

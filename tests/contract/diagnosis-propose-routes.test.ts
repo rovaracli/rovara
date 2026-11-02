@@ -1,4 +1,4 @@
-// Live interaction F4 on the real broker: "Propose this change" goes through the project's ordinary settings routes, as the person. The merge method is the code-settings save; the dev container's path
+// Live interaction F4 on the real broker: "Apply this change" goes through the project's ordinary settings routes, as the person. The merge method is the code-settings save; the dev container's path
 // is the project settings save. A stale `from`, a citation that does not hold, a person who is not a maintainer and the switch off each leave the settings exactly as they were.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,7 +36,7 @@ async function setup(files: Record<string, string> = { ".devcontainer/web/devcon
     register: false,
     brokerExtra: {
       cloud: true, agents: {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
-      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit, getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
+      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(async () => ({ repositoryId: 1, fullName: "acme/web", defaultBranch: "main" })), getFileAtCommit, getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
     },
   });
@@ -77,7 +77,12 @@ async function setup(files: Record<string, string> = { ".devcontainer/web/devcon
     await settleDiagnosis(store, TEST_ORG, { diagnosisId: admitted.diagnosisId, tier: "light", errorRef }, { state: "ready", record });
     return admitted.diagnosisId;
   };
-  const propose = (who: Developer, id: string, index = 1) => h.dev(who, "POST", `/v1/app/diagnoses/${id}/propose`, { requestId: randomUUID(), index });
+  const propose = async (who: Developer, id: string, index = 1) => {
+    const shown = ((await h.dev(OMAR, "GET", `/v1/app/diagnoses/${id}`)).body.proposals ?? []) as DiagnosisProposal[];
+    const change = shown[index];
+    const echo = change?.kind === "settings_change" ? { target: change.target, path: change.path, from: change.from, to: change.to } : { target: "code_settings", path: "mergeMethod", from: "squash", to: "merge" };
+    return h.dev(who, "POST", `/v1/app/diagnoses/${id}/propose`, { requestId: randomUUID(), index, ...echo });
+  };
   const codeSettings = async () => (await h.dev(OMAR, "GET", `/v1/app/projects/${NAME}/code-settings`)).body.settings as { mergeMethod: string; revision: number };
   const definition = () => (h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(TEST_ORG, NAME, 1).pk)
     .sort((a, b) => Number((a.definition as { revision: number }).revision) - Number((b.definition as { revision: number }).revision)).at(-1)!.definition) as { revision: number; devcontainer?: { repository: string; configPath?: string } };
@@ -87,7 +92,7 @@ async function setup(files: Record<string, string> = { ".devcontainer/web/devcon
 const mergeChange = (extra: Record<string, unknown> = {}): DiagnosisProposal => ({ kind: "settings_change", target: "code_settings", path: "mergeMethod", from: "squash", to: "merge", citations: ['doc:merge-method "merge commit"'], ...extra });
 const deviceChange = (extra: Record<string, unknown> = {}): DiagnosisProposal => ({ kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: ".devcontainer/devcontainer.json", to: ".devcontainer/web/devcontainer.json", citations: [`repo:web:.devcontainer/web/devcontainer.json@${COMMIT} "node:22"`], ...extra });
 
-describe("Propose this change, on the real broker", () => {
+describe("Apply this change, on the real broker", () => {
   it("the merge method: a maintainer presses it and the project's code settings change, once, through the ordinary save", async () => {
     const t = await setup();
     const id = await t.diagnosis([mergeChange()]);

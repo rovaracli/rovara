@@ -1,5 +1,5 @@
 import { sqsOpsQueue } from "../team-record/ops-queue.js";
-import { createSlackForwarder } from "../team-record/slack-forward.js";
+import { createSlackForwarder, removalPayload } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -270,7 +270,7 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
   const log: SlackIngressLog = dependencies.log ?? (() => undefined);
   // The Team record tap (R6) runs alongside the mention path, never before it: its own budget runs in parallel with the work below, and the answer waits for it
   // only if it is still running when that work is done (so the Lambda is not frozen mid-write). A normal tap only queues, and takes a few milliseconds.
-  const handleEvent = async (event: HttpApiV2Event, recording: { done?: Promise<void> }): Promise<HttpResponse> => {
+  const handleEvent = async (event: HttpApiV2Event, recording: { done?: Promise<"ok" | "lost"> }): Promise<HttpResponse> => {
     const rawBody = event.body === undefined
       ? ""
       : event.isBase64Encoded ? Buffer.from(event.body, "base64").toString("utf8") : event.body;
@@ -511,12 +511,15 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
     return queueRequest(dependencies, log, mention, chatText, countedWindowStart, now, false);
   };
   return async (event: HttpApiV2Event): Promise<HttpResponse> => {
-    const recording: { done?: Promise<void> } = {};
+    const recording: { done?: Promise<"ok" | "lost"> } = {};
+    let response: HttpResponse | undefined;
     try {
-      return await handleEvent(event, recording);
+      response = await handleEvent(event, recording);
     } finally {
-      await recording.done;
+      // After the mention path: a removal the Team record did not accept is answered 500 (Slack redelivers; the record's removals are idempotent). Nothing else changes the answer.
+      if (await recording.done === "lost" && response !== undefined) response = respond(500, { error: "the record could not take this removal" });
     }
+    return response;
   };
 }
 
@@ -845,19 +848,34 @@ const THREAD_REPLY_SUBTYPES: ReadonlySet<string> = new Set(["thread_broadcast", 
 /** Time the Team record tap may take before the ingress goes on without it. */
 export const RECORD_TAP_BUDGET_MS = 500;
 
-async function offerToRecord(tap: (payload: unknown) => Promise<unknown>, payload: Record<string, unknown>, log: SlackIngressLog): Promise<void> {
+/**
+ * A removal (a deleted message or channel, an uninstall) must not be lost, so its tap gets a longer budget: the forwarder tries the durable queue, then an Event invoke of the broker, and needs the time.
+ * Still well inside Slack's three seconds.
+ */
+export const RECORD_REMOVAL_BUDGET_MS = 1_500;
+
+/** Offers the verified event to the Team record. `"lost"` only for a removal whose tap failed or did not finish in its budget: the caller answers Slack 500, so Slack sends the event again. */
+async function offerToRecord(tap: (payload: unknown) => Promise<unknown>, payload: Record<string, unknown>, log: SlackIngressLog): Promise<"ok" | "lost"> {
+  const removal = removalPayload(payload) !== undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let outcome: "ok" | "lost" = "ok";
   try {
     await Promise.race([
       tap(payload),
-      new Promise<void>((resolve) => { timer = setTimeout(() => { log("record.tap_slow", {}); resolve(); }, RECORD_TAP_BUDGET_MS); }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          if (removal) { outcome = "lost"; log("record.removal_failed", {}); } else log("record.tap_slow", {});
+          resolve();
+        }, removal ? RECORD_REMOVAL_BUDGET_MS : RECORD_TAP_BUDGET_MS);
+      }),
     ]);
   } catch {
-    // Recording never changes how Slack's event is answered, and no error text is logged.
-    log("record.tap_failed", {});
+    // Recording never changes how Slack's event is answered (no error text is logged), except that a removal nobody accepted is answered 500 so that Slack redelivers it.
+    if (removal) { outcome = "lost"; log("record.removal_failed", {}); } else log("record.tap_failed", {});
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+  return outcome;
 }
 
 function parseMention(payload: Record<string, unknown>): Mention | { reason: string } {

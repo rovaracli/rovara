@@ -3,7 +3,7 @@
 // the service asks the broker for the turn's context and a model key by the diagnosis id, runs a no-tools answer turn and writes the answer back. Nothing in a message, a request or an answer can
 // name a tool, a budget, a role or an approval: every schema here is strict. The message carries ids only; the context text never travels in the queue.
 import { z } from "zod";
-import { DIAGNOSIS_PREFILL_ALLOW, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_TIERS, DiagnosisProposalSchema, DiagnosisTierSchema, ErrorRefSchema } from "./live-interaction.js";
+import { DIAGNOSIS_PREFILL_ALLOW, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_SETTINGS_TARGETS, DIAGNOSIS_TIERS, DiagnosisProposalSchema, DiagnosisTierSchema, ErrorRefSchema, SettingValueSchema } from "./live-interaction.js";
 import { ASK_ROUTE_ATTRIBUTE_NAME } from "./live-ask.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
@@ -71,8 +71,14 @@ export const DiagnosisStartBodySchema = z.object({ requestId: z.string().uuid(),
 export type DiagnosisStartBody = z.infer<typeof DiagnosisStartBodySchema>;
 /** `POST /v1/app/diagnoses/{id}/deep`: asks for the deep tier of a light diagnosis that said it needs the code. */
 export const DiagnosisDeepBodySchema = z.object({ requestId: z.string().uuid() }).strict();
-/** `POST /v1/app/diagnoses/{id}/propose`: "Propose this change" for the proposal at `index` (a settings change). */
-export const DiagnosisProposeBodySchema = z.object({ requestId: z.string().uuid(), index: z.number().int().min(0).max(DIAGNOSIS_PROPOSALS_MAX - 1) }).strict();
+/**
+ * `POST /v1/app/diagnoses/{id}/propose`: "Apply this change" for the proposal at `index` (a settings change). DG-1 S3: the press carries the change as the person SAW it (target, path, from, to) and
+ * the broker refuses when it is not the stored proposal at `index`, so a wrong index or a stale screen can never apply a different change from the one shown.
+ */
+export const DiagnosisProposeBodySchema = z.object({
+  requestId: z.string().uuid(), index: z.number().int().min(0).max(DIAGNOSIS_PROPOSALS_MAX - 1),
+  target: z.enum(DIAGNOSIS_SETTINGS_TARGETS), path: z.string().regex(/^[A-Za-z0-9_.[\]-]{1,200}$/), from: SettingValueSchema, to: SettingValueSchema,
+}).strict();
 export type DiagnosisProposeBody = z.infer<typeof DiagnosisProposeBodySchema>;
 
 export const DIAGNOSIS_STATES = ["queued", "ready", "failed"] as const;
@@ -91,7 +97,7 @@ export const DiagnosisStatusSchema = z.object({
 }).strict();
 export type DiagnosisStatus = z.infer<typeof DiagnosisStatusSchema>;
 
-/** What "Propose this change" answers: what was raised and where to look; never the setting's value. */
+/** What "Apply this change" answers: what was raised and where to look; never the setting's value. */
 export const DiagnosisProposalOutcomeSchema = z.object({
   diagnosisId: DiagnosisIdSchema,
   index: z.number().int().min(0),
@@ -107,12 +113,15 @@ export type DiagnosisProposalOutcome = z.infer<typeof DiagnosisProposalOutcomeSc
 // Fixed words
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+/** DG-2: the button that applies a proposed settings change. It applies the change at once, as the maintainer's own save; it does not create a pending card. */
+export const DIAGNOSIS_APPLY_BUTTON_LABEL = "Apply this change" as const;
 export const DIAGNOSIS_ANSWER_LABEL = "AI diagnosis from this error's data; it can be wrong, and it has changed nothing." as const;
 export const DIAGNOSIS_REFUSALS = {
   notAvailable: "Fix with agent isn't available for this error.",
   notCurrent: "This error has changed since it was shown. Look at where it is now and try again.",
   notAllowed: "You can't ask for a diagnosis of this error.",
   rateLimited: "You've asked for a lot of diagnoses lately. Try again a little later.",
+  orgRateLimited: "Fix with agent has reached today's limit for your company. Try again tomorrow, or ask for help from Rovara support.",
   deepRateLimited: "You've used today's deep diagnoses. Try again tomorrow.",
   notReady: "That diagnosis isn't ready.",
   noDeepNeeded: "That diagnosis didn't ask for the code to be read.",
@@ -121,6 +130,9 @@ export const DIAGNOSIS_REFUSALS = {
   citationsUnchecked: "Rovara could not read again what this proposal quotes, so it can't be proposed. Ask for a new diagnosis.",
   citationsWrong: "Rovara read again what this proposal quotes and did not find it, so it can't be proposed. Ask for a new diagnosis.",
   notProposal: "That is not a change that can be proposed.",
+  notShown: "The change on your screen is not the one on record. Reload the diagnosis and look at it again.",
+  fileMissing: "That dev container file isn't in the repository, so the path can't be changed to it.",
+  fileUnchecked: "Rovara could not check that this dev container file is in the repository, so the path can't be changed. Try again, or change it in the project settings.",
   roleNeeded: "Only a project maintainer can propose a change to these settings.",
 } as const;
 

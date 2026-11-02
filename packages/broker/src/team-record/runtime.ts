@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { OrgStore } from "../org/store.js";
@@ -40,7 +40,10 @@ import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./r
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { createCaptureModePort, createRecordHistoryPort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
-import type { OpsQueue } from "./ops-queue.js";
+import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
+import { createEditedItemsPort } from "./edited-items.js";
+import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, removeTrackerLinks, trackerLinksOf, type TrackerLink, type TrackerLinkVia } from "./identity-links.js";
+import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
@@ -70,6 +73,20 @@ export interface TeamRecordRuntimeInput {
    * reachable only once such a link exists; the DPA wording says so.)
    */
   slackUserIdsOf?: (developerId: string) => Promise<string[]>;
+  /** The Rovara person a Slack user id belongs to (the sign-in store's Slack identity link), or undefined. A Slack message is stored only when its author resolves to a member of the org here (TRW-4). */
+  developerOfSlackUser?: (slackUserId: string) => Promise<string | undefined>;
+  /** The dead-letter queue, read only to delete PUT messages (their text) out of it every hour (TRW-5 S1). Absent: no sweep. */
+  deadLetters?: DeadLetterPort;
+  /** A delete that neither the table nor the durable queue accepted goes here: an asynchronous Event invoke of the broker itself (TRW-5 S2). Absent: the failure is thrown, as before. */
+  removalFallback?: RemovalFallback;
+  /**
+   * The names a developer is known by (their sign-in name, or the one they chose). A person erase passes them as `ErasedPerson.names` so an Ask still being answered does not write them: they are kept for at
+   * most 30 days, and only as keyed hashes (LI-2). Read again on each pass of the erase and never stored in its job. Absent, or a read that fails: the erase goes on without them (the Ask scrub then
+   * keeps only the person's label tag).
+   */
+  namesOf?: (developerId: string) => Promise<string[]>;
+  /** The key the erased person's aliases are hashed with (`askAliasHashKey(callbackSigningKey)`, LA-5). Absent: only the person's label tag is kept for Ask scrubbing, never a raw alias. */
+  askAliasKey?: string;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
   audit?: RecordAuditSink;
   /** A model for the distiller (retention B / nightly). Absent: no distiller, B text is dropped. */
@@ -98,7 +115,14 @@ export interface TeamRecordRuntime {
    */
   readonly sink: RecordSink;
   /** Applies a batch of messages from the durable queue (SQS partial-batch answer). A message that fails stays on the queue and is retried, then dead-lettered. */
-  drain(records: ReadonlyArray<QueueRecord>): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }>;
+  drain(records: ReadonlyArray<QueueRecord>, options?: { remainingMs?: () => number }): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }>;
+  /** Applies a delete the broker sent to itself (`agentx.team-record-removal`). Throws when it could not: Lambda retries the Event invoke twice and then hands it to the failure destination. */
+  removal(event: RemovalFallbackEvent): Promise<void>;
+  /** TRW-4: tracker author links. Called by the connect and sign-in flows, and by an adapter that holds an email its tracker reports as verified. */
+  readonly links: {
+    link(orgId: OrgId, input: TrackerLink & { developerId: string; via: Exclude<TrackerLinkVia, "verified_email"> }): Promise<boolean>;
+    linkByVerifiedEmail(orgId: OrgId, input: TrackerLink & { email: string; emailVerified: boolean | undefined }): Promise<boolean>;
+  };
   readonly emitter: RovaraEmitter;
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
@@ -135,6 +159,14 @@ const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
+/** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
+const DLQ_SWEEP_MS = 6_000;
+/**
+ * TRW-5 S4 (fix round 1): a put that read the "open" answer just before an archive or a close can land up to the cache's minute afterwards. So an archive's or a close's erase is run a SECOND time once that
+ * minute has passed (with margin), and only that second pass finishes the job (and writes the project's stamp). Until then the hourly job resumes the marker.
+ */
+const OPEN_CACHE_MS = 60_000;
+const SETTLE_MS = 2 * OPEN_CACHE_MS;
 
 const unavailable = (): Error => Object.assign(new Error("the team record could not finish this just now"), { name: "TeamRecordUnfinished" });
 
@@ -204,15 +236,39 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const lakeQueue = tableLakeDeleteQueue(table, now);
 
   // ---- people: a GitHub account linked to a company member with a live project role is `member`; every other source identity is `outsider` until an identity link exists for it
+  const orgStore = new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now });
+  /** A person linked to a source identity, kept only while they belong to this org. Their standing in the project decides the trust; the link alone decides that the row is theirs to erase. */
+  async function linkedActor(orgId: OrgId, project: string | undefined, developerId: string): Promise<{ developerId: string; trust: "member" | "outsider" }> {
+    const standing = project === undefined ? "outsider" : await readStanding(state, orgId, developerId, project);
+    return { developerId, trust: standing === "member" ? "member" : "outsider" };
+  }
   const actors: ActorResolverPort = {
     async resolve({ workspaceId, project, system, sourceId, isBot }) {
       if (isBot === true) return { trust: "system" };
       const parsed = OrgIdSchema.safeParse(workspaceId);
-      if (!parsed.success || project === undefined || (system !== "github" && !system.startsWith("codehost:"))) return { trust: "outsider" };
-      const link = (await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: githubMemberKey(parsed.data, sourceId), ConsistentRead: true }))) as { Item?: { developerId?: unknown; orgId?: unknown } };
-      const developerId = link.Item?.developerId;
-      if (typeof developerId !== "string" || (link.Item?.orgId !== undefined && link.Item.orgId !== parsed.data)) return { trust: "outsider" };
-      return (await readStanding(state, parsed.data, developerId, project)) === "member" ? { developerId, trust: "member" } : { trust: "outsider" };
+      if (!parsed.success) return { trust: "outsider" };
+      const orgId = parsed.data;
+      // A GitHub (or other code host) account linked to a company member.
+      if (system === "github" || system.startsWith("codehost:")) {
+        const link = (await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: githubMemberKey(orgId, sourceId), ConsistentRead: true }))) as { Item?: { developerId?: unknown; orgId?: unknown } };
+        const developerId = link.Item?.developerId;
+        if (typeof developerId !== "string" || (link.Item?.orgId !== undefined && link.Item.orgId !== orgId)) return { trust: "outsider" };
+        return linkedActor(orgId, project, developerId);
+      }
+      // A Slack user who signed in to Rovara with Slack, and belongs to this org.
+      if (system.startsWith("slack:") && input.developerOfSlackUser !== undefined) {
+        const developerId = await input.developerOfSlackUser(sourceId);
+        if (developerId === undefined || (await orgStore.orgForDeveloper(developerId))?.orgId !== orgId) return { trust: "outsider" };
+        return linkedActor(orgId, project, developerId);
+      }
+      // A Linear or Jira author the company linked (at connect or sign-in, or by an email the tracker reported as verified).
+      if (isTrackerSystem(system)) {
+        const developerId = await developerOfTrackerAuthor(table, orgId, { system, sourceId });
+        // Checked again at use, as for Slack: a link outlives a person who has since left the org.
+        if (developerId === undefined || (await orgStore.orgForDeveloper(developerId))?.orgId !== orgId) return { trust: "outsider" };
+        return linkedActor(orgId, project, developerId);
+      }
+      return { trust: "outsider" };
     },
     async resolveDeveloper({ workspaceId, project, developerId }) {
       const parsed = OrgIdSchema.safeParse(workspaceId);
@@ -220,6 +276,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       return { trust: (await readStanding(state, parsed.data, developerId, project)) === "member" ? "member" : "outsider" };
     },
   };
+  const skipped = unlinkedCounter(table, now);
 
   // ---- the router sink
   const sinks = new Map<OrgId, RecordSink>();
@@ -245,8 +302,28 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (vectors !== undefined || vectorPorts === undefined) sinks.set(orgId, made);
     return made;
   }
+  // TRW-5 S4: nothing is written for a company that is closing or closed, or into an archived project. A put that waited in the queue across a close or an archive is refused here when it is replayed;
+  // the erase does not close scopes, and a row written after it would sit outside the directory the hourly text expiry walks. Live writes use a short cache (a minute); a replay reads fresh.
+  const openCache = new Map<string, { until: number; reason: string | undefined }>();
+  async function whyClosed(orgId: OrgId, project: string | undefined, fresh: boolean): Promise<string | undefined> {
+    const key = `${orgId}/${project ?? ""}`;
+    const hit = openCache.get(key);
+    if (!fresh && hit !== undefined && hit.until > now()) return hit.reason;
+    const org = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: orgMetaKey(orgId), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+    let reason: string | undefined = org !== undefined && (org.closingAt !== undefined || org.closedAt !== undefined) ? "company_closed" : undefined;
+    if (reason === undefined && project !== undefined && (await readProjectMeta(state, orgId, project))?.status === "archived") reason = "project_archived";
+    if (openCache.size > 1_000) openCache.clear();
+    openCache.set(key, { until: now() + OPEN_CACHE_MS, reason });
+    return reason;
+  }
+  const guardedPut = (fresh: boolean) => async (draft: Parameters<RecordSink["put"]>[0]) => {
+    const orgId = OrgIdSchema.parse(draft.workspaceId);
+    const reason = await whyClosed(orgId, draft.project, fresh);
+    if (reason !== undefined) { log("record.put_refused", { why: reason }); return { status: "refused", reason } as never; }
+    return (await sinkFor(draft.workspaceId)).put(draft);
+  };
   const directSink: RecordSink = {
-    put: async (draft) => (await sinkFor(draft.workspaceId)).put(draft),
+    put: guardedPut(false),
     tombstone: async (call) => (await sinkFor(call.workspaceId)).tombstone(call),
     changePrincipals: async (call) => (await sinkFor(call.workspaceId)).changePrincipals(call),
     replaceScopeAudience: async (call) => (await sinkFor(call.workspaceId)).replaceScopeAudience(call),
@@ -256,13 +333,26 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   // A workspace that is not an org is refused BEFORE anything is tried or queued. A new version of an item may carry text, so it is queued only where the text may be kept: never a Slack message
   // (or a row made from one) in the Public edition, whose text must never be parked anywhere.
   const queue: OpsQueue | undefined = input.opsQueue;
+  /** The durable path for a delete: the queue, then (TRW-5 S2) an ids-only Event invoke of the broker. Throws only when neither took it. */
+  async function queueOrFallback(op: Parameters<OpsQueue["send"]>[0], removal: RemovalFallbackEvent | undefined, error: unknown): Promise<void> {
+    if (queue !== undefined) { try { await queue.send(op); return; } catch { /* the Event invoke next */ } }
+    if (removal === undefined || input.removalFallback === undefined) throw error;
+    try { await input.removalFallback(removal); } catch { throw error; }
+    log("record.removal_fallback", {});
+  }
   const keepsText = (draft: { source: string; origin?: string | undefined }): boolean => !(edition === "public" && (draft.source === "slack" || draft.origin === "slack"));
   const durableSink: RecordSink = {
     async put(draft) {
-      OrgIdSchema.parse(draft.workspaceId);
+      const orgId = OrgIdSchema.parse(draft.workspaceId);
+      // TRW-4: a row is stored only when its author is a linked Rovara person, because only then can a person erase reach it. The skip is counted per project and source, for the maintainers.
+      if (needsLinkedAuthor(draft)) {
+        log("record.unlinked_skipped", { source: draft.source });
+        await skipped.count(orgId, draft.project, draft.source).catch(() => log("record.unlinked_count_failed", {}));
+        return { status: "refused", reason: "author_not_linked" } as never;
+      }
       try { return await directSink.put(draft); } catch (error) {
         if (queue === undefined || !keepsText(draft)) throw error;
-        await queue.send({ v: 1, op: "put", draft } as never);
+        await queue.send({ v: 1, op: "put", draft, queuedAt: new Date(now()).toISOString() } as never);
         log("record.put_queued", {});
         return { status: "queued" } as never;
       }
@@ -270,8 +360,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     async tombstone(call) {
       OrgIdSchema.parse(call.workspaceId);
       try { return await directSink.tombstone(call); } catch (error) {
-        if (queue === undefined) throw error;
-        await queue.send({ v: 1, op: "tombstone", workspaceId: call.workspaceId, system: call.system, ...(call.sourceIds === undefined ? {} : { sourceIds: [...call.sourceIds] }), ...(call.scope === undefined ? {} : { scope: call.scope }), cause: call.cause } as never);
+        const removal: RemovalFallbackEvent = { source: TEAM_RECORD_REMOVAL_SOURCE, workspaceId: call.workspaceId, system: call.system, ...(call.sourceIds === undefined ? {} : { sourceIds: [...call.sourceIds] }), ...(call.scope === undefined ? {} : { scope: call.scope }), cause: call.cause };
+        await queueOrFallback({ v: 1, op: "tombstone", workspaceId: call.workspaceId, system: call.system, ...(call.sourceIds === undefined ? {} : { sourceIds: [...call.sourceIds] }), ...(call.scope === undefined ? {} : { scope: call.scope }), cause: call.cause } as never, removal, error);
         log("record.tombstone_queued", {});
         return { hidden: 0 };
       }
@@ -311,6 +401,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return {
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
+      ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
     };
   }
 
@@ -329,12 +420,25 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
 
   // ---- the taps
-  const distiller = input.distillModel === undefined
+  const transientDistiller = input.distillModel === undefined
     ? { distillTransient: async () => ({ accepted: false }) }
     : createTransientDistiller({
       ingest: { table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), embedder, now, log },
       distill: { model: input.distillModel, now: () => new Date(now()).toISOString(), newId: () => `fact_${randomUUID().replace(/-/g, "")}` },
     });
+  // Retention B writes facts (not rows) straight to the table, so it passes the SAME author gate a stored row passes (TRW-4): a note made from an unlinked author's words could not be erased with them.
+  // Checked before the model is called. The skip is counted like any other. (Queued "distill" messages go through the same wrapper.)
+  const distiller: typeof transientDistiller = {
+    async distillTransient(draft) {
+      if (needsLinkedAuthor(draft)) {
+        const orgId = OrgIdSchema.safeParse(draft.workspaceId);
+        log("record.unlinked_skipped", { source: draft.source });
+        if (orgId.success) await skipped.count(orgId.data, draft.project, draft.source).catch(() => log("record.unlinked_count_failed", {}));
+        return { accepted: false };
+      }
+      return transientDistiller.distillTransient(draft);
+    },
+  };
 
   const resolveRepo = async (repository: { installationId: number; repositoryId: number; fullName: string }): Promise<{ workspaceId: string; project?: string } | undefined> => {
     const orgId = await orgOfInstallation(state, repository.installationId);
@@ -359,8 +463,10 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
     async byMergeCommit() { return undefined; },
   };
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now });
-  const recorder = createTicketRecorder({ sink, actors, mode, config, history, log: tapLog });
+  const countUnlinked = (workspaceId: string, project: string | undefined, source: string): void => { const parsed = OrgIdSchema.safeParse(workspaceId); if (parsed.success) void skipped.count(parsed.data, project, source).catch(() => undefined); };
+  const edited = createEditedItemsPort(table, now);
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, onUnlinked: countUnlinked, edited });
+  const recorder = createTicketRecorder({ sink, actors, mode, config, history, log: tapLog, onUnlinked: countUnlinked, edited });
   const hook = createHookRecordTap({ recorder });
   const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
 
@@ -373,6 +479,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return {
       table, modes, embedder, now, log,
       limiter: dynamoRateLimiter(table, now),
+      skipped: { read: (org, project) => skipped.read(org, project) },
       ...(vectors === undefined ? {} : { vectorSearch: { query: (request) => (vectors as VectorIndex).query(request) } }),
       ...(stats === undefined ? {} : { stats: { run: async ({ template, workspaceId, project, params }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params)).rows } }),
     };
@@ -412,8 +519,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   // ---- erase. Every erase writes an "erase in progress" marker FIRST (in the org directory's partition, so it survives the erase of the org's own partition), then does ONE bounded pass inline. What does not
   // finish is finished by the hourly job, which resumes each marker a pass at a time until it is done; a company's marker then waits for the lake delete to run before the org leaves the directory.
   type EraseJob =
-    | { kind: "workspace"; phase: "hot" | "lake"; projects: string[] }
-    | { kind: "project"; project: string; cause: "project_archived" | "org_closed" }
+    | { kind: "workspace"; phase: "hot" | "lake"; projects: string[]; settleAt?: number; again?: string[] }
+    | { kind: "project"; project: string; cause: "project_archived" | "org_closed"; settleAt?: number }
     | { kind: "person"; developerId: string; identities: Array<{ system: string; sourceId: string }>; projects: string[] };
   type StoredJob = EraseJob & { sk: string };
   const jobKey = (orgId: OrgId, job: EraseJob): { pk: string; sk: string } => ({ pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: `ERASE#${orgId}#${job.kind}#${job.kind === "workspace" ? "all" : job.kind === "project" ? job.project : job.developerId}` });
@@ -439,14 +546,47 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return (read.Items ?? []).flatMap((item) => (typeof item.sk === "string" && item.job !== undefined ? [{ ...item.job, sk: item.sk }] : []));
   }
 
+  // TRW-5 S3: `ERASEDONE#<org>#project#<name>` in the directory partition (which an org's own erase does not empty) says which archive of a project was erased; the company's finish removes them.
+  const stampKey = (orgId: OrgId, project: string): { pk: string; sk: string } => ({ pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: `ERASEDONE#${orgId}#project#${project}` });
+  async function stampProjectErased(orgId: OrgId, project: string): Promise<void> {
+    const archivedAt = (await readProjectMeta(state, orgId, project))?.archivedAt ?? "";
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...stampKey(orgId, project), entityType: "TEAM_RECORD_ERASE_DONE", orgId, archivedAt: String(archivedAt), at: new Date(now()).toISOString() } }));
+  }
+  async function clearStamps(orgId: OrgId): Promise<void> {
+    const read = (await table.documentClient.send(new QueryCommand({ TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": TEAM_RECORD_ORG_DIRECTORY_PK, ":prefix": `ERASEDONE#${orgId}#` } }))) as { Items?: Array<{ sk?: unknown }> };
+    for (const item of read.Items ?? []) if (typeof item.sk === "string") await dropJob(item.sk);
+  }
+  /** Archived projects whose erase never started or never finished (the marker write and the queue both failed at the archive, TRW-5 S3): started here, a few per run. */
+  async function sweepArchivedProjects(orgId: OrgId, budgetMs: number): Promise<number> {
+    const started = now();
+    let begun = 0;
+    const pending = new Set((await jobsOf(orgId)).flatMap((job) => (job.kind === "project" ? [job.project] : [])));
+    for (const project of (await projectsOf(orgId)).slice(0, 200)) {
+      if (begun >= 10 || now() - started > budgetMs) break;
+      const meta = await readProjectMeta(state, orgId, project);
+      if (meta?.status !== "archived" || pending.has(project)) continue;
+      const stamp = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: stampKey(orgId, project), ConsistentRead: true }))) as { Item?: { archivedAt?: unknown } }).Item;
+      if (stamp !== undefined && stamp.archivedAt === String(meta.archivedAt ?? "")) continue;
+      // The erase gets what is left of this sweep's share, never its full default: a slow one must not carry the hourly run past its timeout.
+      await eraseProjectNow(orgId, project, "project_archived", Math.max(1_000, Math.min(INLINE_ERASE.maxMs ?? 8_000, budgetMs - (now() - started))));
+      begun += 1;
+    }
+    return begun;
+  }
+
   /** One bounded step of a job. `true` when the job is finished (its marker is gone). Never runs past `budget`. */
   async function advance(orgId: OrgId, job: StoredJob, budget: EraseBudget, lakeMs: number): Promise<boolean> {
     const deps = await purgeFor(orgId);
     if (job.kind === "workspace") {
       if (job.phase === "hot") {
-        const result = await eraseWorkspace(deps, orgId, job.projects, `org_closed:${orgId}`, budget);
-        if (!(result.complete && result.remainingProjects.length === 0)) { await saveJob(orgId, { ...job, projects: result.remainingProjects }); return false; }
-        job = { ...job, phase: "lake", projects: [] };
+        // Settling: the first pass finished; the second waits until a put that read the cache before the close can no longer land (TRW-5 S4).
+        if (job.settleAt !== undefined && now() < job.settleAt) return false;
+        const second = job.settleAt !== undefined;
+        const result = await eraseWorkspace(deps, orgId, second ? (job.again ?? await projectsOf(orgId)) : job.projects, `org_closed:${orgId}`, budget);
+        if (!(result.complete && result.remainingProjects.length === 0)) { await saveJob(orgId, second ? { ...job, again: result.remainingProjects } : { ...job, projects: result.remainingProjects }); return false; }
+        // The second pass looks at every project the company has, not only those the first one still had left.
+        if (!second) { await saveJob(orgId, { ...job, projects: [], again: await projectsOf(orgId), settleAt: now() + SETTLE_MS }); return false; }
+        job = { kind: "workspace", sk: job.sk, phase: "lake", projects: [] };
         await saveJob(orgId, job);
       }
       // The lake: the whole-workspace delete queued by the erase is run here, and the org stays in the directory until nothing is left in the queue. Without a lake there is nothing to wait for.
@@ -456,6 +596,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if ((await lakeQueue.listPending(orgId, 1)).length > 0) return false;
       }
       await dropJob(job.sk);
+      await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {
         await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
         listed.delete(orgId);
@@ -463,11 +604,31 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       }
       return true;
     }
-    const complete = job.kind === "project"
+    // A project's erase also settles first (TRW-5 S4): done once, then done again after the cache's minute, and only then finished.
+    if (job.kind === "project" && job.settleAt !== undefined && now() < job.settleAt) return false;
+    const names = job.kind === "person" ? await personNames(job.developerId) : [];
+    let complete = job.kind === "project"
       ? (await eraseProject(deps, orgId, job.project, job.cause, `${job.cause}:${job.project}`, budget)).complete
-      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }) }, `erase:${job.developerId}`, budget)).complete;
-    if (complete) await dropJob(job.sk);
+      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }) }, `erase:${job.developerId}`, budget)).complete;
+    if (complete && job.kind === "project" && job.settleAt === undefined) { await saveJob(orgId, { ...job, settleAt: now() + SETTLE_MS }); complete = false; }
+    if (complete) {
+      // TRW-4: the person's links go with their rows. Only when the whole erase finished, so a pass that did not finish still knows which author ids to look for.
+      if (job.kind === "person" && !(await removeTrackerLinks(table, orgId, job.developerId))) return false;
+      // TRW-5 S3: a finished project erase leaves a stamp naming the archive it answered, so the hourly sweep knows which archived projects were never erased.
+      if (job.kind === "project" && job.cause === "project_archived") await stampProjectErased(orgId, job.project);
+      await dropJob(job.sk);
+    }
     return complete;
+  }
+  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none (the erase is never held up for it). */
+  async function personNames(developerId: string): Promise<string[]> {
+    if (input.namesOf === undefined) return [];
+    try {
+      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name.length <= 200))].slice(0, 10);
+    } catch {
+      log("record.erase_names_unreadable", {});
+      return [];
+    }
   }
   /** The source identities a person has: their linked GitHub account, and each Slack user id they signed in with in every Slack team bound to the org (a Slack row is indexed under `slack:<team>`). */
   async function personIdentities(orgId: OrgId, developerId: string): Promise<Array<{ system: string; sourceId: string }>> {
@@ -484,9 +645,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if (/^[TE][A-Z0-9]{2,31}$/.test(teamId)) for (const slackId of slackIds) identities.push({ system: `slack:${teamId}`, sourceId: slackId });
       }
     }
+    // Their Linear and Jira author ids (TRW-4): linked at connect or sign-in, or by a verified email.
+    for (const link of await trackerLinksOf(table, orgId, developerId)) identities.push(link);
     return identities.slice(0, 50);
   }
   const INLINE_ERASE: EraseBudget = { maxItems: 500, maxMs: 8_000 };
+  /** The queue consumer's own start of a project erase: the same marker and bounded pass, but a marker that cannot be written THROWS (the message is retried), it is never handed back to the queue. */
+  async function eraseProjectNow(orgId: OrgId, project: string, cause: "project_archived" | "org_closed", maxMs: number = INLINE_ERASE.maxMs ?? 8_000): Promise<void> {
+    await advance(orgId, await putJob(orgId, { kind: "project", project, cause }), { ...INLINE_ERASE, maxMs }, Math.min(2_000, maxMs));
+  }
   const erase: TeamRecordRuntime["erase"] = {
     async person(orgId, developerId) {
       const parsed = OrgIdSchema.parse(orgId);
@@ -497,7 +664,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     async project(orgId, project, cause) {
       const parsed = OrgIdSchema.parse(orgId);
-      const job = await putJob(parsed, { kind: "project", project, cause });
+      let job: StoredJob;
+      try { job = await putJob(parsed, { kind: "project", project, cause }); } catch (error) {
+        // The marker is what the hourly job resumes, and it could not be written. Hand the erase to the durable queue (ids only): its consumer repeats this until the marker is written, then dead-letters
+        // it for a person. With no queue the failure is thrown to the archive, which logs it.
+        if (queue === undefined) throw error;
+        await queue.send({ v: 1, op: "erase_project", workspaceId: parsed, project, cause });
+        log("record.erase_queued", { kind: "project" });
+        return;
+      }
       await advance(parsed, job, INLINE_ERASE, 2_000);
     },
     async workspace(orgId) {
@@ -519,7 +694,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
 
   // ---- the scheduled jobs: bounded in orgs, in time and (inside each module) in items
-  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>): Promise<TeamRecordJobSummary> {
+  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>, totalMs: number = JOB_BUDGET_MS): Promise<TeamRecordJobSummary> {
     const started = now();
     const summary: TeamRecordJobSummary = { orgs: 0, skippedOrgs: 0, details: {} };
     let after: Record<string, unknown> | undefined;
@@ -530,7 +705,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       }))) as { Items?: Array<{ sk?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
       const page = (read.Items ?? []).flatMap((item) => { const parsed = OrgIdSchema.safeParse(item.sk); return parsed.success ? [parsed.data] : []; });
       for (const orgId of page) {
-        const left = JOB_BUDGET_MS - (now() - started);
+        const left = totalMs - (now() - started);
         if (left < 1_000 || summary.orgs >= MAX_ORGS_PER_RUN) { summary.skippedOrgs += 1; continue; }
         try {
           for (const [key, value] of Object.entries(await work(orgId, Math.min(PER_ORG_MS, left)))) summary.details[key] = (summary.details[key] ?? 0) + value;
@@ -546,18 +721,49 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
   }
 
+  /** Deletes the PUT (and distill) messages in the dead-letter queue: they hold a draft's text, which must not outlive retention or an erase for 14 days. Messages without text are left. Bounded. */
+  async function sweepDeadLetterText(budgetMs: number): Promise<number> {
+    const port = input.deadLetters;
+    if (port === undefined) return 0;
+    const started = now();
+    let deleted = 0;
+    try {
+      for (let round = 0; round < 20 && now() - started < budgetMs; round += 1) {
+        const batch = await port.receive(10);
+        if (batch.length === 0) break;
+        for (const message of batch) {
+          let op: unknown;
+          try { op = (JSON.parse(message.body) as { op?: unknown }).op; } catch { op = undefined; }
+          if (op === "put" || op === "distill") { await port.remove(message.handle); deleted += 1; }
+        }
+      }
+    } catch {
+      log("record.dlq_sweep_failed", {});
+    }
+    if (deleted > 0) log("record.dlq_text_deleted", { count: deleted });
+    return deleted;
+  }
+
   const jobs: TeamRecordRuntime["jobs"] = {
     async run(job) {
       if (job === "hourly") {
-        return eachOrg(async (orgId, budgetMs) => {
+        // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
+        // The whole run shares ONE budget (the broker's timeout is 30 s): what the dead-letter sweep takes, the orgs do not get.
+        const startedAt = now();
+        const swept = await sweepDeadLetterText(DLQ_SWEEP_MS);
+        const summary = await eachOrg(async (orgId, budgetMs) => {
           const deleteBudget: DeleteBudget = { maxRequests: 50, maxItems: 5_000, maxMs: budgetMs };
           const done = await runDeleteWorker(await purgeFor(orgId), orgId, deleteBudget);
           const lakeNow = lakeClient();
           const lakeDeletes = lakeNow === undefined ? undefined : await runLakeDeletes({ queue: lakeQueue, lake: lakeNow, tableBucket }, { workspaceId: orgId, budget: { maxStatements: 5, maxMs: Math.max(1_000, budgetMs / 2) } });
           // Erases that did not finish where they were asked for (a person, a project, a whole company): one bounded step each, then the company's lake delete is waited for.
           const erased = await resumeErases(orgId, budgetMs);
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased };
-        });
+          // TRW-5 S3: archived projects whose erase was never recorded or finished.
+          const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept };
+        }, JOB_BUDGET_MS - (now() - startedAt));
+        summary.details.deadLetterTextDeleted = swept;
+        return summary;
       }
       return eachOrg(async (orgId, budgetMs) => {
         const vectors = await indexFor(orgId);
@@ -598,20 +804,50 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
 
   // ---- the durable queue's consumer. A message the queue's own consumer cannot apply throws and is retried by SQS (then dead-lettered); a Slack removal goes through the strict tap.
-  const consumer = createOpConsumer({ sink: directSink, distiller, log: tapLog });
-  const drain: TeamRecordRuntime["drain"] = async (records) => {
+  // A replayed put reads the company's and the project's state fresh (TRW-5 S4).
+  const consumer = createOpConsumer({ sink: { ...directSink, put: guardedPut(true) }, distiller, log: tapLog, now });
+  /** The most one drain may spend (the broker's timeout is 30 s) when the caller gives no clock of its own. */
+  const DRAIN_MS = 24_000;
+  /** Time kept back for the answer: a batch the function times out in raises every message's receive count without any code having run (TRW-5 S1). */
+  const DRAIN_RESERVE_MS = 5_000;
+  const drain: TeamRecordRuntime["drain"] = async (records, options) => {
     const failures: Array<{ itemIdentifier: string }> = [];
-    const rest: QueueRecord[] = [];
-    for (const record of records) {
+    const started = now();
+    const remaining = options?.remainingMs ?? (() => DRAIN_MS - (now() - started));
+    for (const [index, record] of records.entries()) {
+      if (remaining() < DRAIN_RESERVE_MS) {
+        // Out of time: what is left is answered as "retry" without being touched, so the invocation ends cleanly instead of timing out.
+        for (const left of records.slice(index)) failures.push({ itemIdentifier: left.messageId });
+        log("record.drain_out_of_time", { left: records.length - index });
+        break;
+      }
       let parsed: { v?: unknown; op?: unknown; payload?: unknown } | undefined;
       try { parsed = JSON.parse(record.body) as typeof parsed; } catch { parsed = undefined; }
       if (parsed?.v === 1 && parsed.op === "slack_removal") {
         try { await slackStrict({ payload: parsed.payload }); } catch { log("record.op_failed", { op: "slack_removal", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
-      } else rest.push(record);
+      } else if (parsed?.v === 1 && parsed.op === "erase_project") {
+        // The org comes from the broker's own message and is parsed; a project that is not archived any more (restored, or never archived) is stale and dropped, like a stale marker.
+        const message = parsed as { workspaceId?: unknown; project?: unknown; cause?: unknown };
+        const orgId = OrgIdSchema.safeParse(message.workspaceId);
+        if (!orgId.success || typeof message.project !== "string" || (message.cause !== "project_archived" && message.cause !== "org_closed")) { log("record.op_invalid", {}); continue; }
+        try {
+          if ((await readProjectMeta(state, orgId.data, message.project))?.status === "archived") await eraseProjectNow(orgId.data, message.project, message.cause, Math.min(INLINE_ERASE.maxMs ?? 8_000, Math.max(1_000, remaining() - DRAIN_RESERVE_MS)));
+        } catch { log("record.op_failed", { op: "erase_project", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
+      } else {
+        failures.push(...(await consumer.processBatch([record])).batchItemFailures);
+      }
     }
-    failures.push(...(await consumer.processBatch(rest)).batchItemFailures);
     return { batchItemFailures: failures };
   };
 
-  return { edition, table, sink, drain, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+  /** A delete the broker sent to itself. Written straight to the table: a failure is thrown so Lambda's retries (and then the failure destination) take over. */
+  const removal: TeamRecordRuntime["removal"] = async (event) => {
+    await directSink.tombstone({ workspaceId: event.workspaceId, system: event.system, ...(event.sourceIds === undefined ? {} : { sourceIds: event.sourceIds }), ...(event.scope === undefined ? {} : { scope: event.scope }), cause: event.cause });
+  };
+  const orgOfDeveloper = async (developerId: string): Promise<OrgId | undefined> => (await orgStore.orgForDeveloper(developerId))?.orgId;
+  const links: TeamRecordRuntime["links"] = {
+    link: (orgId, link) => linkTrackerIdentity(table, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }, { orgOfDeveloper }),
+    linkByVerifiedEmail: (orgId, link) => linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email), orgOfDeveloper }, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }),
+  };
+  return { edition, table, sink, drain, removal, links, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

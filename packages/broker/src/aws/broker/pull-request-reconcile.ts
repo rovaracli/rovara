@@ -11,6 +11,8 @@ import { parseGitHubRepository, pullRequestBodyWithDraftNote } from "../../githu
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
+import { loadTestingView } from "../developer-tasks/testing-view.js";
+import { nightlyHeadReaderOf } from "./nightly-head.js";
 import { evidenceRiskOfTask } from "../developer-tasks/evidence-risk-input.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../../rovara-code/pull-request-body.js";
@@ -33,7 +35,7 @@ import { readObjectText } from "./plan-answers.js";
 import { requirePullRequest, requireWorkspace } from "./records.js";
 import { githubScopeOf, githubScopeOfWorkspace, orgOfRecord } from "./scope-helpers.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
-import { requireGithubHost, canReadParents, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
+import { canReadParents, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
 import { workspaceStandingFailures } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults } from "./workflow-e2e-verification.js";
 
@@ -184,7 +186,11 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
     const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined ? undefined : {
+    // Setup and test health SH18: the Testing view of the code now on the pull request (only while `vx` is on).
+    const testing = pushedChecked && workflow.definitionVersion === "1.1.0"
+      ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined && testing === undefined ? undefined : {
+      ...(testing === undefined ? {} : { testing }),
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(secondReviewLines.length === 0 ? {} : { secondReviewLines }), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }),
     };
@@ -286,9 +292,7 @@ export async function reconcilePullRequest(
   // only to see whether a harness built it without the reads this check needs.
   const host = await hostOfWorkspaceRepository(dependencies, operation.workspaceId, { name: expected.repository, url: expected.repositoryUrl });
   const github = host.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
-  // A workflow publication's result is recorded by GitHub-only code (the linked-pull-request rows are GitHub's, left for P6), so on any other host it is refused here, before the pull request is
-  // opened or recorded: nothing is left open on a host the task cannot follow.
-  if (operation.publication.expectedTreeSha !== undefined) requireGithubHost(host);
+  // P10: a workflow publication's result is recorded for any host (the link from the change request to its task is the host's own neutral row, `workflow-items.ts`), so there is no GitHub-only gate here.
   const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
   const expectedTree = expected.expectedTreeSha;
   const expectedCommit = expected.expectedCommitSha;

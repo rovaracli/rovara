@@ -231,6 +231,26 @@ describe("with the switch on", () => {
     });
   });
 
+  it("the run's stored result never carries the draft (it lives in its own item), so a huge report cannot make the terminal write too big", async () => {
+    const t = await setup();
+    const storedResults = () => t.db.find((item) => item.entityType === "OPERATION" && item.workflowMode === "SETUP_DRAFT") as Array<{ result?: Record<string, unknown> }>;
+    await withSwitch("1", async () => {
+      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() });
+      expect(drafts(t)).toHaveLength(1);
+      expect(storedResults()).toHaveLength(1);
+      expect(storedResults()[0]!.result).toMatchObject({ workflowMode: "SETUP_DRAFT", setupProposal: SETUP_PROPOSAL });
+      expect(storedResults()[0]!.result).not.toHaveProperty(TEST_ENV_DRAFT_RESULT_KEY);
+    });
+    const hostile = await setup();
+    await withSwitch("1", async () => {
+      // A worker that ignores the cap and reports 600 KB: nothing of it is stored on the operation, the draft is refused with the marker, and the setup draft still finishes.
+      await hostile.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: { ...draftOf(), notes: ["x".repeat(600 * 1_024)] } });
+      const stored = hostile.db.find((item) => item.entityType === "OPERATION" && item.workflowMode === "SETUP_DRAFT")[0]!;
+      expect(Buffer.byteLength(JSON.stringify(stored), "utf8")).toBeLessThan(100 * 1_024);
+      expect(((await hostile.dev(OMAR, "GET", `/v1/app/projects/${NAME}/setup-draft`)).body)).toMatchObject({ status: "ready" });
+    });
+  });
+
   it("a person who is not a project maintainer can read where it stands but cannot propose, prove or approve", async () => {
     const t = await setup();
     await t.contributor(MAYA);

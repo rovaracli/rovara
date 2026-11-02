@@ -559,7 +559,7 @@ export async function mintChatTurnKey(
       }
       const support = await mintKeyHealing(
         { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-        { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models },
+        { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models, rovaraPaid: true },
       );
       return { baseUrl: modelAccess.proxyUrl, apiKey: support.key, expiresAt: support.expiresAt, ...(routed.wire === undefined ? {} : { route: routed.wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
     }

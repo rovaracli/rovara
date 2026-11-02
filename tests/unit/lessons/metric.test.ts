@@ -1,8 +1,9 @@
 // L7: the "same mistake twice" measure (lessons/metric.ts). Counts, per project and over a window, how often a correction given once had to be given again on a later task, split into
 // "the lesson was loaded", "the lesson existed but was not loaded" and "there was no lesson". Read-only.
 import { describe, expect, it } from "vitest";
+import { embeddingMatcher } from "../../../packages/broker/src/lessons/metric-source.js";
 import {
-  METRIC_MIN_CORRECTIONS, REPEAT_LOOKBACK_DAYS, sameMistakeTwice, type CorrectionMatcher, type CorrectionRecord, type CorrectionSource, type MetricDeps, type MetricStore,
+  METRIC_MAX_EMBEDDING_CALLS, METRIC_MIN_CORRECTIONS, REPEAT_LOOKBACK_DAYS, sameMistakeTwice, type EmbeddingBudget, type CorrectionMatcher, type CorrectionRecord, type CorrectionSource, type MetricDeps, type MetricStore,
 } from "../../../packages/broker/src/lessons/metric.js";
 import { InMemoryLessonStore, type LoadManifestEntry } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
@@ -302,7 +303,7 @@ describe("read only, and counts only", () => {
     expect([...new Set(called)].sort()).toEqual(["listAllHeads", "manifests", "versions"]);
     expect(await snapshot()).toBe(before);
     expect(JSON.stringify(result)).not.toContain("secret-marker");
-    expect(Object.keys(result).sort()).toEqual(["corrections", "enoughData", "rate", "repeats", "split", "truncated", "unjudged", "window"]);
+    expect(Object.keys(result).sort()).toEqual(["corrections", "embeddingBudget", "embeddingCalls", "enoughData", "rate", "repeats", "split", "truncated", "unjudged", "window"]);
   });
 
   it("a bad window is refused", async () => {
@@ -311,5 +312,69 @@ describe("read only, and counts only", () => {
     await expect(run(deps, { sinceMs: NOW, untilMs: NOW - DAY })).rejects.toThrow(RangeError);
     await expect(run(deps, { sinceMs: Number.NaN, untilMs: NOW })).rejects.toThrow(RangeError);
     await expect(run(deps, { sinceMs: NOW - 500 * DAY, untilMs: NOW })).rejects.toThrow(RangeError);
+  });
+});
+
+describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is recorded)", () => {
+  /** An embedder that counts, and gives the same vector for the same text. */
+  const counting = () => {
+    const seen: string[] = [];
+    return { seen, embed: async (text: string) => { seen.push(text); return [text.length, text.charCodeAt(0) || 0]; } };
+  };
+
+  it("embeds each distinct text once: 39 corrections compared over and over cost one call per distinct text, and the count is recorded", async () => {
+    n = 0;
+    const list = Array.from({ length: 39 }, (_, i) => correction(`distinct advice number ${i}`));
+    const embedder = counting();
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.99999 }) });
+    const result = await run(deps);
+    expect(result.corrections).toBe(39);
+    expect(embedder.seen.length).toBe(new Set(embedder.seen).size);
+    expect(embedder.seen.length).toBeLessThanOrEqual(39);
+    expect(result.embeddingCalls).toBe(embedder.seen.length);
+    expect(result.embeddingBudget).toBe(METRIC_MAX_EMBEDDING_CALLS);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("past the hard cap no further embedding call is made; those corrections are unjudged (they never lower the rate) and the answer says it was cut short", async () => {
+    n = 0;
+    const list = Array.from({ length: 30 }, (_, i) => correction(`distinct advice number ${i}`));
+    const embedder = counting();
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.99999 }) });
+    const result = await run(deps, WINDOW, { maxEmbeddingCalls: 5 });
+    expect(embedder.seen.length).toBe(5);
+    expect(result.embeddingCalls).toBe(5);
+    expect(result.truncated).toBe(true);
+    expect(result.unjudged).toBeGreaterThan(0);
+    expect(result.corrections + result.unjudged).toBe(30);
+  });
+
+  it("an embedder that fails leaves the correction unjudged and still counts the attempt", async () => {
+    n = 0;
+    const list = [correction("a"), correction("b"), correction("c")];
+    let calls = 0;
+    const embedder = { embed: async () => { calls += 1; throw new Error("down"); } };
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.9 }) });
+    const result = await run(deps);
+    // The first correction has nothing earlier to be compared with; the other two each try to embed and fail.
+    expect(result.unjudged).toBe(2);
+    expect(result.corrections).toBe(1);
+    expect(result.embeddingCalls).toBe(calls);
+    expect(calls).toBe(2);
+  });
+
+  it("a plain matcher (no embeddings) records zero calls", async () => {
+    n = 0;
+    const { deps } = setup([correction("x")]);
+    expect((await run(deps)).embeddingCalls).toBe(0);
+  });
+
+  it("a text that is gone cannot be embedded: the correction is unjudged, with no call made", async () => {
+    n = 0;
+    const embedder = counting();
+    const list = [{ ...correction("t"), text: undefined } as unknown as CorrectionRecord, correction("u")];
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.9 }) });
+    const result = await run(deps);
+    expect(result.unjudged).toBeGreaterThanOrEqual(1);
   });
 });

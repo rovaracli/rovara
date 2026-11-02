@@ -27,7 +27,7 @@ const McpServerReader = z.object({
     destinations: z.array(z.object({ host: z.string().max(253), port: z.number() })).max(8).default([]), secretEnv: z.array(z.string().max(64)).max(8).default([]),
     size: z.object({ cpu: z.number(), memoryMiB: z.number() }).optional(),
   }) })]),
-  probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40),
+  probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40), pausedAt: z.string().max(40).optional(),
   install: z.object({ packageCount: z.number(), unpackedBytes: z.number() }).optional(),
 });
 export type McpServerView = z.infer<typeof McpServerReader>;

@@ -46,6 +46,7 @@ import { syncIndex } from "./task-index.js";
 import { actionableWorkspace, busyOrClosing, extraItemsCancelled } from "./task-window.js";
 import { specPublicationGate } from "./spec-wiring.js";
 import { withSpecLink } from "../../spec/link.js";
+import { loadTestingView } from "./testing-view.js";
 import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, workflowPullRequestBody } from "./pull-request-body.js";
 import { recordPublishedCandidateOutcomes } from "./decide.js";
 
@@ -240,8 +241,10 @@ export async function startTaskWorkflowPublicationFromSystem(
   );
   // Proof and evidence P4: a security scan's new high findings on this code raise the risk (only while the proof switch is on; otherwise there is no port and no signal).
   const evidenceRisk = rovaraV2 ? await evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest) : undefined;
+  // Setup and test health SH18: the Testing view of this code (only while `vx` is on; otherwise undefined and the description is what it was).
+  const testing = rovaraV2 ? await loadTestingView(deps, task, workflow) : undefined;
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2
-    ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
+    ? { changedFiles: await candidateChangedFiles(deps, task), ...(testing === undefined ? {} : { testing }), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
     : { attribution: resolvedAttribution.attribution };
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.

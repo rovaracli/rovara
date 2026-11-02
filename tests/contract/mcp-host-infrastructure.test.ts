@@ -5,7 +5,7 @@ import { App, Stack, aws_ecs as ecs } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { McpHost, mcpHostAllowDomains, type McpHostProps } from "../../infra/lib/mcp-host.js";
-import { enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
+import { BROKER_IN_VPC_ENDPOINT_SERVICES, ENTERPRISE_INTERFACE_ENDPOINT_SERVICES, enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource?: unknown; Condition?: Record<string, unknown> };
@@ -281,7 +281,7 @@ describe("no task has a task role, and the install task is a static, locked-down
 });
 
 describe("the runner execution role", () => {
-  it("is assumed by ECS tasks of this account only and reads only this org's `mcp*` secrets that carry the org's tag, pulls only the runner repository, and writes only the runner log group", () => {
+  it("is assumed by ECS tasks of this account only and reads only this org's package-run (`mcppkg*`) secrets that carry the org's tag, pulls only the runner repository, and writes only the runner log group", () => {
     const { json, statementsOf, actionsOf } = synth();
     const role = Object.values(json.Resources).find((resource) => resource.Type === "AWS::IAM::Role" && JSON.stringify(resource.Properties).includes("RunnerExecution") === false && String(at(resource.Properties, "Description")).startsWith("Rovara MCP runner tasks"))!;
     expect(at(role.Properties, "AssumeRolePolicyDocument", "Statement", 0, "Principal", "Service")).toBe("ecs-tasks.amazonaws.com");
@@ -289,7 +289,15 @@ describe("the runner execution role", () => {
     const statements = statementsOf("RunnerExecutionRole");
     const secrets = statements.find((statement) => statement.Sid === "ReadApprovedServerSecrets")!;
     expect(actionsOf(secrets)).toEqual(["secretsmanager:GetSecretValue"]);
-    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcp*`);
+    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcppkg*`);
+    // review S1: what IAM would match. A package-run server's secret, and not an address-based server's token, a connection's key, a hook's secret or another org's secret.
+    const matches = (resource: unknown, arn: string): boolean => {
+      const pattern = ((resource as { "Fn::Join": [string, unknown[]] })["Fn::Join"][1]).map((part) => (typeof part === "string" ? part : "aws")).join("");
+      return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u").test(arn);
+    };
+    const own = (leaf: string): string => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/${ORG}/${leaf}`;
+    expect(matches(secrets.Resource, own("mcppkg0123456789abc-AbCdEf"))).toBe(true);
+    for (const other of [own("mcp0123456789abcdef-AbCdEf"), own("mcpsim000001-AbCdEf"), own("mcpxpkg0123456789-AbCdEf"), own("con_aaaaaaaaaaaaaaaaaaaa-AbCdEf"), `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/org_bbbbbbbbbbbbbbbbbbbb/mcppkg0123456789abc-AbCdEf`, `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-hooks/${ORG}/mcppkg0123456789abc-AbCdEf`]) expect(matches(secrets.Resource, other), other).toBe(false);
     expect(at(secrets, "Condition", "StringEquals", "secretsmanager:ResourceTag/rovara:org")).toBe(ORG);
     const pull = statements.find((statement) => statement.Sid === "PullTheRunnerImage")!;
     expect(JSON.stringify(pull.Resource)).toContain("repository/rovara/mcp-runner");
@@ -331,6 +339,12 @@ describe("the controller's task role is scoped to what the controller makes", ()
     expect(actionsOf(find(statements, "ReadAndRetireTaskDefinitions")).sort()).toEqual(["ecs:DeregisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitionFamilies", "ecs:ListTaskDefinitions"]);
     const tagging = find(statements, "TagOnCreateOnly");
     expect(at(tagging, "Condition", "StringEquals", "ecs:CreateAction")).toEqual(["RunTask", "RegisterTaskDefinition"]);
+  });
+  it("review M2: the only statements on \"*\" are the ones IAM cannot scope (reads and the definition actions, the task list in the cluster, the group lookup); nothing that runs, passes or writes outside a family is on \"*\"", () => {
+    const { statementsOf, actionsOf } = synth();
+    const wild = statementsOf("ControllerTaskRole").filter((statement) => JSON.stringify(statement.Resource) === '"*"');
+    expect(wild.map((statement) => statement.Sid).sort()).toEqual(["FindSecurityGroups", "ListTasksInTheCluster", "ReadAndRetireTaskDefinitions"]);
+    expect(wild.flatMap(actionsOf).sort()).toEqual(["ec2:DescribeSecurityGroups", "ecs:DeregisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitionFamilies", "ecs:ListTaskDefinitions", "ecs:ListTasks"]);
   });
   it("may pass the runner execution role and no other, and only to ECS tasks", () => {
     const { statementsOf } = synth();
@@ -374,12 +388,12 @@ describe("the controller's task role is scoped to what the controller makes", ()
     // no write to the registry partition, and no other DynamoDB action anywhere
     expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("dynamodb:")).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query"]);
   });
-  it("reaches Secrets Manager only to find the ARN of this org's `mcp*` secrets, never to read one", () => {
+  it("reaches Secrets Manager only to find the ARN of this org's package-run (`mcppkg*`) secrets, never to read one", () => {
     const { statementsOf, actionsOf } = synth();
     const statements = statementsOf("ControllerTaskRole");
     const describe = find(statements, "ResolveServerSecretArns");
     expect(actionsOf(describe)).toEqual(["secretsmanager:DescribeSecret"]);
-    expect(JSON.stringify(describe.Resource)).toContain(`org-connectors/${ORG}/mcp*`);
+    expect(JSON.stringify(describe.Resource)).toContain(`org-connectors/${ORG}/mcppkg*`);
     expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("secretsmanager:") && action !== "secretsmanager:DescribeSecret")).toEqual([]);
   });
   it("reads and writes only the `bundles/` objects of the bundle bucket, lists that bucket, and uses only its own key", () => {
@@ -390,7 +404,14 @@ describe("the controller's task role is scoped to what the controller makes", ()
     expect(JSON.stringify(objects.Resource)).toContain("/bundles/*");
     expect(JSON.stringify(objects.Resource)).toContain("Bundles");
     expect(actionsOf(find(statements, "SeeWhichBundlesExist"))).toEqual(["s3:ListBucket"]);
-    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]);
+    // review M10: the sweep removes a bundle (a delete marker, in a versioned bucket) under `bundles/` only; it may not delete a version, so an earlier version stays for the lifecycle's 30 days
+    const remove = find(statements, "RemoveUnreferencedBundles");
+    expect(actionsOf(remove)).toEqual(["s3:DeleteObject"]);
+    expect(JSON.stringify(remove.Resource)).toContain("/bundles/*");
+    expect(JSON.stringify(remove.Resource)).toContain("Bundles");
+    expect(Array.isArray(remove.Resource)).toBe(false);
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]);
+    expect(statements.flatMap(actionsOf).filter((action) => /DeleteObjectVersion|PutBucket|DeleteBucket|PutLifecycle|PutObjectVersion/u.test(action))).toEqual([]);
     const key = find(statements, "UseTheBundleKey");
     expect(actionsOf(key)).toEqual(["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]);
     expect(JSON.stringify(key.Resource)).toContain("BundleKey");
@@ -408,7 +429,9 @@ describe("the bundle bucket", () => {
     expect(at(bucket, "VersioningConfiguration", "Status")).toBe("Enabled");
     const rules = at(bucket, "LifecycleConfiguration", "Rules") as Array<Record<string, unknown>>;
     expect(rules.map((rule) => [rule.Id, at(rule, "AbortIncompleteMultipartUpload", "DaysAfterInitiation"), at(rule, "NoncurrentVersionExpiration", "NoncurrentDays")])).toEqual([["abort-incomplete-uploads", 1, undefined], ["expire-replaced-versions", undefined, 30]]);
-    expect(rules.some((rule) => rule.ExpirationInDays !== undefined)).toBe(false);
+    // a current bundle is never expired by age (the controller's sweep decides, from the registry); only the delete marker a sweep leaves is cleaned, once its versions are gone (review M10)
+    expect(rules.some((rule) => rule.ExpirationInDays !== undefined || rule.ExpirationDate !== undefined)).toBe(false);
+    expect(rules.map((rule) => rule.ExpiredObjectDeleteMarker)).toEqual([undefined, true]);
     expect(json.Resources[String(bucket.id)]).toMatchObject({ DeletionPolicy: "Retain" });
     expect(JSON.stringify(of("AWS::S3::BucketPolicy"))).toContain("aws:SecureTransport");
     const key = of("AWS::KMS::Key")[0]!;
@@ -423,6 +446,13 @@ describe("the names the install's DNS firewall must let through", () => {
     expect(enterpriseAllowDomains("us-east-1")).not.toContain("ecs.us-east-1.amazonaws.com");
     expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true })).toContain("ecs.us-east-1.amazonaws.com");
     expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true }).filter((name) => name !== "ecs.us-east-1.amazonaws.com")).toEqual(enterpriseAllowDomains("us-east-1"));
+  });
+  it("review M7: the ECS interface endpoint (private DNS on) is made here only; neither of the foundation's endpoint lists may name `ecs`, or the deploy fails on a duplicate private DNS name", () => {
+    expect((ENTERPRISE_INTERFACE_ENDPOINT_SERVICES as readonly string[]).includes("ecs")).toBe(false);
+    expect((BROKER_IN_VPC_ENDPOINT_SERVICES as readonly string[]).includes("ecs")).toBe(false);
+    const ecsEndpoints = synth().of("AWS::EC2::VPCEndpoint").filter((endpoint) => /\.ecs$/u.test(JSON.stringify(endpoint.ServiceName)) || String(endpoint.ServiceName).endsWith(".ecs"));
+    expect(ecsEndpoints).toHaveLength(1);
+    expect(ecsEndpoints[0]).toMatchObject({ VpcEndpointType: "Interface", PrivateDnsEnabled: true });
   });
   it("refuses a registry that is not an https address without credentials", () => {
     for (const registry of ["http://registry.corp.example.net/", "https://user:pw@registry.corp.example.net/", "not a url", "https://registry.corp.example.net/?token=x"]) expect(() => synth({ npmRegistry: registry }), registry).toThrow(/registry/u);

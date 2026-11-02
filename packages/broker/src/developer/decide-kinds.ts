@@ -49,6 +49,8 @@ export interface DecideKind {
    * `proof` is the session's (`requireDecideSession`): the kind sets it as `caller.decideProof`, so the decision's audit event carries it.
    */
   decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome>;
+  /** Called only when the confirmation page is rendered (GET) for this member after `inspect` said "open": a kind that needs the member to have read the page records it here. */
+  opened?(target: DecideTarget): Promise<void>;
 }
 
 export type DecideKinds = Partial<Record<DecideKindPrefix, DecideKind>>;

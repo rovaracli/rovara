@@ -2,7 +2,7 @@
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf, repositoryHostOf } from "@agentx/contracts";
+import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf, repositoryHostOf, parseWorkerCredentialKindsHeader, WORKER_CREDENTIAL_KINDS_HEADER } from "@agentx/contracts";
 import { listWorkflowE2EReplayRecords, type ReplayRecord } from "../workflow-e2e-replay.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { z } from "zod";
@@ -373,6 +373,8 @@ export async function exchangeRepositoryCredential(
     credentialRef,
     repositoryUrl: input.repositoryUrl,
     access,
+    // P8: the kinds the worker said it takes (a header; absent means the legacy two).
+    acceptedCredentialKinds: parseWorkerCredentialKindsHeader(request.headers[WORKER_CREDENTIAL_KINDS_HEADER]),
   }, await githubScopeOfWorkspace(dependencies, workspaceId));
 }
 

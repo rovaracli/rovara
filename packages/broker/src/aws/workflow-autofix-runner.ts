@@ -1,6 +1,6 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
+  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
   type AutoFixAskReason, type AutoFixBlockCause, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
 } from "@agentx/contracts";
 import { AUTOFIX_ASK_GROUPS_MAX, AutoFixAskSchema, autoFixRetryReason, autoFixSendBackReason, type AutoFixAsk } from "../developer/autofix-messages.js";
@@ -69,6 +69,13 @@ export interface AutofixDependencies {
   blockedByEnvironment?(task: DeveloperTaskRecord, codes: readonly AutoFixCode[]): Promise<void>;
   /** AUTOREQUALIFY: stops the task's idle worker so the retry runs on a fresh one (used when the block is a kernel mismatch between worker and test machine). */
   recycleWorker?(task: DeveloperTaskRecord): Promise<unknown>;
+  /** Setup and test health (owner decision, M2): the checks (by ID) that failed on the original code too but have a failing test that was not failing before, from the broker's evidence pack. Absent while `vx` is off. */
+  newFailingChecks?(task: DeveloperTaskRecord, checkOriginal: Readonly<Record<string, string>> | undefined): Promise<readonly string[]>;
+  /**
+   * Setup and test health (SH17): when Rovara asks about a fault of the test environment, the ask is also a Fix setup card for the project's maintainers. Absent while `vx` is off, so the ask is exactly what it
+   * was. A failure here never changes the outcome: the ask itself is already stored.
+   */
+  fixSetup?: { record(task: DeveloperTaskRecord, ask: { reason: AutoFixAskReason; codes: readonly AutoFixCode[]; stage: "VERIFY" | "REVIEW" }): Promise<void> };
   now(): number;
   log(entry: Record<string, unknown>): void;
 }
@@ -107,7 +114,7 @@ async function proposedCheckOriginals(deps: AutofixDependencies, task: Developer
   return Object.fromEntries(Object.entries(view.tried).map(([checkId, result]) => [checkId, result === "passed" ? "passed" as const : result === "failed" ? "failed" as const : "cannot-run" as const]));
 }
 
-async function writeAsk(deps: AutofixDependencies, task: DeveloperTaskRecord, ask: AutoFixAsk): Promise<void> {
+async function writeAsk(deps: AutofixDependencies, task: DeveloperTaskRecord, ask: AutoFixAsk): Promise<boolean> {
   const parsed = AutoFixAskSchema.parse(ask);
   try {
     await deps.store.documentClient.send(new UpdateCommand({
@@ -117,9 +124,11 @@ async function writeAsk(deps: AutofixDependencies, task: DeveloperTaskRecord, as
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":ask": parsed, ":revision": parsed.workflowRevision, ":blocked": "BLOCKED" },
     }));
+    return true;
   } catch (error) {
     // The task moved on (the owner acted first): there is nothing left to ask about.
     if (!isConditional(error)) throw error;
+    return false;
   }
 }
 
@@ -159,6 +168,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
   if (!config.enabled) return "DISABLED";
   const workflow = task.workflow;
   if (workflow === undefined || task.closedAt !== undefined || workflow.state !== "BLOCKED" || (workflow.stage !== "VERIFY" && workflow.stage !== "REVIEW") || workflow.revision !== input.expectedRevision) return "STALE";
+  const stage: "VERIFY" | "REVIEW" = workflow.stage;
   // Only blocks committed after the feature shipped: an older blocked task waits for its owner as it always did.
   if (config.since !== undefined && !(Date.parse(workflow.updatedAt) >= Date.parse(config.since))) return "STALE";
 
@@ -181,6 +191,12 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     baselineRequests = (await readWorkflowE2EBaselineRecord(deps.store, task)) === undefined ? 0 : 1;
   }
   if (codes.has("check-failed-cause-unknown")) facts.checkOriginal = await proposedCheckOriginals(deps, task);
+  // Setup and test health (owner decision, M2): a check that failed on the original code too but has a failing test that was not failing before is the code's fault, so it is sent back like any code fault. The port
+  // exists only while `vx` is on (and reads the broker's own evidence pack); a failure to read it leaves the facts as they were.
+  if (deps.newFailingChecks !== undefined && (codes.has("check-failed-cause-unknown") || codes.has("fails-on-original-code") || codes.has("check-failed"))) {
+    const ids = await deps.newFailingChecks(task, facts.checkOriginal).catch(() => undefined);
+    if (ids !== undefined && ids.length > 0) facts.newFailingChecks = ids;
+  }
   if (codes.has("cancelled") || classes.some((entry) => entry.code === "cancelled-by-owner")) facts.ownerCancelled = await deps.ownerCancelledChecks(task);
   // A `cancelled` group is the owner's doing when the owner stopped the checks.
   if (facts.ownerCancelled === undefined && workflow.e2e?.required === true) facts.ownerCancelled = await deps.ownerCancelledChecks(task);
@@ -196,7 +212,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
   const log = (action: string, extra: Record<string, unknown> = {}) => deps.log({ event: "autofix.decided", taskId: task.taskId, stage: workflow.stage, revision: workflow.revision, action, ...extra });
   const ask = async (reason: AutoFixAskReason, askCodes: readonly AutoFixCode[]): Promise<AutofixOutcome> => {
     const entries = Object.entries(groups);
-    await writeAsk(deps, task, {
+    const written = await writeAsk(deps, task, {
       workflowRevision: workflow.revision, reason, codes: [...askCodes].slice(0, 30),
       ...(reason === "spend-cap" ? { capUsd: config.capUsd } : {}),
       ...(entries.length === 0 ? {} : { groups: entries.slice(0, AUTOFIX_ASK_GROUPS_MAX).map(([id, original]) => ({ id, original })), groupCount: entries.length }),
@@ -204,6 +220,11 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     });
     if (deps.blockedByEnvironment !== undefined) await deps.blockedByEnvironment(task, askCodes).catch((error: unknown) => deps.log({ event: "autofix.health_note_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     log("ASK", { reason, codes: [...askCodes] });
+    // Setup and test health (SH17): an ask about the test environment is also the project's Fix setup card (only while `vx` is on: `fixSetup` is absent otherwise). Never changes the outcome.
+    if (written && deps.fixSetup !== undefined && autoFixAskCard({ reason, codes: askCodes }, stage) === "fix_setup") {
+      try { await deps.fixSetup.record(task, { reason, codes: askCodes, stage }); }
+      catch (error) { deps.log({ event: "fixsetup.record_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }); }
+    }
     return "ASKED";
   };
   const blockedHere = async (): Promise<boolean> => {

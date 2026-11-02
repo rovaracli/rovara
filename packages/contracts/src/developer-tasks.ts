@@ -8,6 +8,7 @@ import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotRe
 import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
+import { TestingViewSchema } from "./verification-result.js";
 import { EvidenceViewSchema } from "./evidence.js";
 import { PlanOneScreenSchema } from "./plan-one-screen.js";
 import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
@@ -169,6 +170,8 @@ export const DeveloperTaskViewSchema = z.object({
   proofTable: ProofTableViewSchema.optional(),
   /** Proof and evidence P1 (version 2 only, full reads only, like `proofTable`): the evidence of the code now on the task, with every artifact as a link behind sign-in. Absent until the broker has built one for the current candidate. */
   evidence: EvidenceViewSchema.optional(),
+  /** Setup and test health SH19 (version 2 only, full reads only, only while the four-results switch is on): one of Verified, Code failed, Partially verified or Blocked by environment for the code now on the task, with one row per check. Absent while the switch is off or the result is not decided yet. */
+  testing: TestingViewSchema.optional(),
   /** Decisions D5 (version 2 only): the coding plan under review on one screen (about 1,500 characters), derived from the plan document with no model call. Absent when there is no readable plan. */
   planOneScreen: PlanOneScreenSchema.optional(),
   /**

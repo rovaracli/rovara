@@ -9,6 +9,8 @@
 //   approve_test_env    a project's proved test environment proposal waiting for a maintainer (decisions/test-env-source.ts). Approve is the setup wizard's own approval; a high-risk or less-safe one has no approve
 //                       action and opens the setup page, where the fresh sign-in and the second person are asked for.
 //   confirm_env_change  a running task's owner moves the task onto a newer approved test environment, when the change is one a running task takes; "Not now" keeps the task where it is.
+//   fix_setup           (SH17, only while `vx` is on) a project's test environment, not its code, kept tasks' checks from giving a verdict (test-env/fix-setup.ts). The card is for the project's maintainers. Approve is "Mark as
+//                       known failing" (adds the record's own tests to the project's already-failing set), "Not now" puts the card away; Run setup agent, Fix with agent and Retry task checks are on the pages it opens.
 //   setup_host   a website the setup agent needs (SH12, only while the `su` switch is on): one card per host per project for a company admin; approve is the project's own website change (propose, then the
 //                approver's commit with the second-person rule), "Not now" refuses the host for a week.
 //   NOT connected: spend requests (`decideSpendRequest` is reachable only through the decide page's fresh sign-in; a card press would decide one with no sign-in proof, so Home's own card stays), and plan,
@@ -17,12 +19,14 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { projectAllows } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
-import { createDecisionPerformer, envChangeHandler, mergeHandler, testEnvHandler } from "../../decisions/performer.js";
+import { createDecisionPerformer, envChangeHandler, fixSetupHandler, mergeHandler, testEnvHandler } from "../../decisions/performer.js";
+import { dismissFixSetup, fixSetupItemsFor, markKnownFailing } from "../../test-env/fix-setup.js";
 import { answerEnvChange, approveTestEnvItemsFor, envChangeItemsFor } from "../../decisions/test-env-source.js";
 import { liveTestEnvCard } from "../../org/test-env-approval.js";
 import { mayDecideApproval } from "../../agents/approvals.js";
 import { nightlyHooks } from "../../test-env/nightly-wiring.js";
-import { approveChecked, testEnvStoreOf } from "./test-environment.js";
+import { approveChecked, testEnvApprovalStoreOf, testEnvStoreOf } from "./test-environment.js";
+import { alwaysTwoPeople } from "../../org/known-failing-policy.js";
 import { visibleProjectRoles } from "./project-list.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
 import { mergeItemsFor } from "../../decisions/merge-source.js";
@@ -60,6 +64,18 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       return card.state === "pending" && card.record !== undefined && card.approvalId !== undefined && await mayDecideApproval(deps.agents, who as DeveloperCaller, card.record) ? `/v1/app/approve/${card.approvalId}` : undefined;
     },
   };
+  // Setup and test health (SH17): the Fix setup cards of the projects the caller maintains, and the live check of that authority when one is decided. Empty while `vx` is off.
+  const mayEditSettings = async (who: { orgId: string; developerId: string }, project: string): Promise<boolean> => {
+    const role = (await visibleProjectRoles(deps, who as DeveloperCaller)).get(project);
+    return role !== undefined && projectAllows(role, "edit_settings");
+  };
+  // The second person for a mark (owner decision F4): who owns the affected tasks, the company's "always two people" setting, and the approval cards and company-records check the test-environment approvals use.
+  const secondPerson = testEnvApprovalStoreOf(deps).secondPerson;
+  const fixSetupPorts = {
+    store, mayEditSettings,
+    policy: { task: loadTask, alwaysTwoPeople: (orgId: string) => alwaysTwoPeople(table, orgId) },
+    ...(secondPerson === undefined ? {} : { approvals: { deps: agents, secondPerson } }),
+  };
   // Setup agent (SH12): the host-ask cards and their handler exist only while `su` is on; with it off nothing here reads or writes anything.
   // Cloud only (F5): the website change the card runs is Cloud's (proposal, second person, staff step). On a private install a person adds a website the way they do today (an administrator runs
   // `agentx project add`), so no card exists and no handler is registered there.
@@ -72,7 +88,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   return {
     sources: {
       async list(who) {
-        const [merges, specs, testEnv, envChanges, hosts] = await Promise.all([
+        const [merges, specs, testEnv, envChanges, fixSetup, hosts] = await Promise.all([
           mergeItemsFor({
             ...table, now: deps.now,
             sessionIdOf: async (task) => (await new AgentSessionStore(sessions).getForTask(who.orgId, task))?.sessionId,
@@ -82,9 +98,10 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           specChoiceItemsFor(taskDeps(who), who),
           approveTestEnvItemsFor(testEnvCards, who),
           envChangeItemsFor({ store, task: loadTask }, who),
+          fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
           hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true }, who) : Promise.resolve([]),
         ]);
-        return [...merges, ...specs, ...testEnv, ...envChanges, ...hosts];
+        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts];
       },
       // Company locks that raise a card's tier are not stored anywhere yet: none apply, so the tiers are the projector's own.
       async locks() { return {}; },
@@ -96,6 +113,10 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
         await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
       }),
       confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer)),
+      fix_setup: fixSetupHandler({
+        markKnownFailing: (who, item, requestId) => markKnownFailing(fixSetupPorts, who, item, requestId),
+        dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),
+      }),
       ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     store: dynamoDecisionStore({ ...table, now: deps.now }),

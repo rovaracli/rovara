@@ -122,7 +122,7 @@ describe("browser API boundary", () => {
   for (const headers of [{ cookie: COOKIE, "Sec-Fetch-Site": "same-origin" }, { cookie: COOKIE }]) expect((await h.call("GET", "/v1/web/org/audit/records", headers)).status).toBe(200);
   expect(b.sqs.calls.length).toBeGreaterThan(0);
  });
- it("keeps decisions, token-only identity management and unknown families out of web", async () => {
+ it("keeps approval pages, decide endpoints, token-only identity management and unknown families out of web", async () => {
   const h = await broker();
   for (const [method, path] of [["GET", "/approve/apr_aaaaaaaaaaaaaaaaaaaa"], ["POST", "/approvals/apr_aaaaaaaaaaaaaaaaaaaa/decide"], ["POST", "/spend-requests/spr_aaaaaaaaaaaaaaaaaaaa/decide"], ["POST", "/devices/dvc_aaaaaaaaaaaaaaaaaaaa"], ["DELETE", "/me/identities/cloud"], ["GET", "/admin/keys"]]) expect((await h.call(method!, "/v1/web" + path!, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) })).status, path).toBe(404);
  });

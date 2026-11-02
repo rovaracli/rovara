@@ -15,7 +15,8 @@ import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@a
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
-import { assertStdioHostStackBuilt, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
+import { mcpHostAllowDomains } from "./mcp-host.js";
+import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
@@ -182,6 +183,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });
+  // Review M6: an install with package-run servers lets the controller, its registry and the ECS API through the DNS firewall. Unreachable until the release flag is on (the assert above stops it).
+  const mcpHostProps = privateMcp.stdioRequested ? mcpHostPropsFromInstall(privateMcp) : undefined;
   new ProductionFoundationStack(app, "AgentXProductionFoundation", {
     description: "Stable AgentX production network, encryption, and persistent workspace capacity",
     deploymentRegion: deploymentRegion ?? "us-east-1",
@@ -192,6 +195,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(edition === undefined ? {} : { edition }),
     ...(parseInternetEgress(enterpriseInternetEgressContext) === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext)! }),
     ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
+    ...(mcpHostProps === undefined ? {} : { stdioMcpAllowDomains: mcpHostAllowDomains({ controllerDnsNamespace: mcpHostProps.controllerDnsNamespace, npmRegistry: mcpHostProps.npmRegistry, region: deploymentRegion ?? "us-east-1" }) }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });
   // The identity stack is new with named environments; the legacy deployment brings its own OIDC

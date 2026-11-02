@@ -1,9 +1,24 @@
+import { TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, testingSummary } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { DataTable } from "../../design/DataTable.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadTask } from "./workspace-types.js";
 const resultWords: Record<string, string> = { PASS: "Passed", FAILED: "Failed", UNKNOWN: "Not verified" };
 type ProofTable = NonNullable<ReadTask["proofTable"]>;
+type Testing = NonNullable<ReadTask["testing"]>;
+// Setup and test health SH19: the four test results with one row per check, in the contract's fixed words (the pull request's Testing section says the same). Every word is fixed; a check's label and command are the approved check's own.
+function TestingSection({ testing }: { testing: Testing }) {
+ // A reader that meets a word it does not know (a newer server) says "unavailable" instead of guessing.
+ const words = (map: Readonly<Record<string, string>>, key: string, fallback: string) => map[key] ?? fallback;
+ const resultOf = (row: Testing["rows"][number]) => words(TESTING_ROW_STATUS_LABELS, row.status, "status unavailable") + (row.status === "passed" && row.passedTests !== undefined ? " (" + row.passedTests + " tests)" : "") + (row.reason === undefined ? "" : ": " + words(TESTING_REASON_TEXT, row.reason, "reason unavailable"));
+ const known = testing.result !== "unknown" && testing.rows.every(row => row.status !== "unknown");
+ return <section aria-label="Test result"><h2>{"Testing: " + words(TESTING_RESULT_LABELS, testing.result, "Result unavailable")}</h2>{known && <p>{testingSummary(testing as Parameters<typeof testingSummary>[0])}</p>}
+  {testing.rows.length > 0 && <DataTable caption="Checks and their results" rowKey={row => row.label + ":" + row.command} rows={testing.rows} columns={[
+   { key: "check", title: "Check", render: row => <VisibleText text={row.label} /> },
+   { key: "command", title: "Command", render: row => <VisibleText text={row.command} /> },
+   { key: "result", title: "Result", render: row => resultOf(row) },
+  ]} />}</section>;
+}
 const proofResultWords: Record<string, string> = { proven: "Proven", passed: "Passed", failed: "Failed", partly_tested: "Partly tested", not_tested: "Not tested" };
 const proofEvidenceWords: Record<string, string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 const notTestedNouns: Record<string, string> = { claim: "Requirement", scenario: "Scenario", check: "Check" };
@@ -106,10 +121,11 @@ export function EvidenceTab({ task }: { task: ReadTask }) {
  // Playbook P2: the reviewer model lines are the pull request's (Trust fix A2's), carried by the view; this page chooses and counts nothing.
  // RULING Q34: use the real aggregate and canonical workflow receipts; pageHtml and invented per-case notes never enter the UI.
  return <section aria-label="Test evidence">{shared && <><h2>End-to-end evidence</h2><p><VisibleText text={shared.e2e.label} /></p><p>{resultWords[shared.e2e.status] ?? "Status unavailable"}</p><dl className="rv-evidence-counts"><div><dt>Cases executed</dt><dd>{shared.e2e.executedCases}</dd></div><div><dt>Required criteria verified</dt><dd>{shared.e2e.qualifiedCriteria} of {shared.e2e.requiredCriteria}</dd></div><div><dt>Result groups received</dt><dd>{shared.e2e.receivedGroups} of {shared.e2e.expectedGroups}</dd></div></dl>{shared.e2e.unexercisedBehaviors.length > 0 && <><h3>Not exercised</h3><ul>{shared.e2e.unexercisedBehaviors.map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul></>}</>}
+ {task.testing && <TestingSection testing={task.testing} />}
  {task.proofTable && <ProofSection proof={task.proofTable} earlier={verification !== undefined && !current} />}
  {task.evidence && <EvidenceSections evidence={task.evidence} />}
  {verification && <><h2>{current ? "Recorded checks" : "Earlier check results"}</h2>{!current && <p className="rv-muted">These checks have not been matched to the current code.</p>}<ul className="rv-check-results">{verification.results.map((result, index) => <li key={result.checkId + ":" + String(index)}><VisibleText text={labels.get(result.checkId) ?? result.checkId} /><span>{result.broken || result.neverStarted || result.programNotFound ? "Couldn't run" : resultWords[result.status] ?? "Status unavailable"}</span></li>)}</ul></>}
  {task.reviewModelLines && <><h2>Reviews</h2><ul className="rv-review-models">{task.reviewModelLines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></>}
  {task.secondReview && <><h2>Second review</h2><ul className="rv-second-review">{task.secondReview.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>{task.secondReview.needsAcknowledgement && !task.secondReview.acknowledged && <p className="rv-muted">The task owner is asked to acknowledge this before the pull request is merged.</p>}</>}
- {!shared && !verification && !task.proofTable && !task.evidence && !task.reviewModelLines && !task.secondReview && <p>No test results are available yet.</p>}</section>;
+ {!shared && !verification && !task.proofTable && !task.evidence && !task.testing && !task.reviewModelLines && !task.secondReview && <p>No test results are available yet.</p>}</section>;
 }

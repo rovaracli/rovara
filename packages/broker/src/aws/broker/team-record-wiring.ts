@@ -3,6 +3,7 @@
 import { teamRecordOpsQueueName } from "@agentx/contracts";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";
 import { TEAM_RECORD_SLACK_SOURCE, type SlackForwardEvent } from "../../team-record/slack-forward.js";
+import { TEAM_RECORD_REMOVAL_SOURCE, type RemovalFallback, type RemovalFallbackEvent } from "../../team-record/ops-queue.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { auditPending, type AuditDeps } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -95,7 +96,38 @@ export function isTeamRecordQueueEvent(event: unknown, environment: Record<strin
 }
 
 /** Drains the batch. Where the record is off the whole batch is reported as failed, so no message is lost to a broker that cannot apply it. */
-export async function drainTeamRecordQueue(dependencies: HasTeamRecord, event: QueueBatchEvent): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> {
+export async function drainTeamRecordQueue(dependencies: HasTeamRecord, event: QueueBatchEvent, context?: { getRemainingTimeInMillis?: () => number }): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> {
   if (dependencies.teamRecord === undefined) return { batchItemFailures: event.Records.map((record) => ({ itemIdentifier: record.messageId })) };
-  return dependencies.teamRecord.drain(event.Records.map((record) => ({ messageId: record.messageId, body: record.body, receiveCount: Number(record.attributes?.ApproximateReceiveCount ?? "1") || 1 })));
+  // The drain stops with time to spare (TRW-5 S1): a batch the function times out in would raise every message's receive count with no code run.
+  const remainingMs = context?.getRemainingTimeInMillis;
+  return dependencies.teamRecord.drain(
+    event.Records.map((record) => ({ messageId: record.messageId, body: record.body, receiveCount: Number(record.attributes?.ApproximateReceiveCount ?? "1") || 1 })),
+    remainingMs === undefined ? {} : { remainingMs: () => remainingMs.call(context) },
+  );
+}
+
+/** A delete the broker sent to itself because neither the table nor the durable queue took it (TRW-5 S2). Never an HTTP request. */
+export function isTeamRecordRemovalEvent(event: unknown): event is RemovalFallbackEvent {
+  return event !== null && typeof event === "object" && !("requestContext" in event) && (event as { source?: unknown }).source === TEAM_RECORD_REMOVAL_SOURCE
+    && typeof (event as { workspaceId?: unknown }).workspaceId === "string" && typeof (event as { system?: unknown }).system === "string";
+}
+
+/** Applies it. THROWS when it could not (a handler that returns is never retried; Lambda retries a thrown asynchronous invoke twice, then the failure destination keeps it). Answers off where the record is off. */
+export async function applyTeamRecordRemoval(dependencies: HasTeamRecord, event: RemovalFallbackEvent): Promise<{ skipped: true; reason: "off" } | { applied: true }> {
+  if (dependencies.teamRecord === undefined) return { skipped: true, reason: "off" };
+  await dependencies.teamRecord.removal(event);
+  return { applied: true };
+}
+
+/** The broker's side of the fallback: sends the removal to this same function as an asynchronous Event (ids and fixed words only). `send` is the Lambda client's invoke. */
+export function removalFallbackThroughLambda(send: (input: { InvocationType: "Event"; Payload: Uint8Array }) => Promise<{ StatusCode?: number | undefined }>): RemovalFallback {
+  return async (event) => {
+    const response = await send({ InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) });
+    if (response.StatusCode !== 202) throw new Error("the removal was not handed over");
+  };
+}
+
+/** The Slack side of the Team record's links (TRW-4): a person's Slack user ids (for erase) and the person a Slack user id is (for the rule that a row is stored only for a linked author). Both read the sign-in store's Slack identity links. */
+export function slackLinksOf(store: { slackUserIdsOf(developerId: string): Promise<string[]>; developerOfSlackUser(slackUserId: string): Promise<string | undefined> }): { slackUserIdsOf: (developerId: string) => Promise<string[]>; developerOfSlackUser: (slackUserId: string) => Promise<string | undefined> } {
+  return { slackUserIdsOf: (developerId) => store.slackUserIdsOf(developerId), developerOfSlackUser: (slackUserId) => store.developerOfSlackUser(slackUserId) };
 }

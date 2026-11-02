@@ -21,7 +21,8 @@ import { SETUP_AGENT_FEATURE, SetupAgentWireSchema } from "./setup-run.js";
 import { SETUP_RECIPES_FEATURE, SETUP_RECIPE_OFFERS_MAX, SetupRecipeOfferSchema } from "./setup-recipe.js";
 import { PrepareMetaSchema } from "./meta-project.js";
 import { PREPARE_REGISTRIES_FEATURE, PrepareRegistriesSchema } from "./project-registries.js";
-import { LearnedContextSchema } from "./learned-context.js";
+import { WORKER_CREDENTIAL_KINDS_FEATURE } from "./plugins/code-host.js";
+import { LearnedContextSchema, LearnedRefsSchema } from "./learned-context.js";
 import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
 import { OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, PEEK_FEATURE } from "./live-interaction.js";
 import { DIAGNOSIS_WORKER_FEATURE, DiagnosisInvocationSchema } from "./live-diagnosis.js";
@@ -38,7 +39,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE, WORKER_CREDENTIAL_KINDS_FEATURE] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -405,6 +406,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          */
         learnedContext: LearnedContextSchema.optional(),
         /**
+         * The stored and queued form of `learnedContext` (WL-6): lesson ids and versions only. The dispatcher turns it into `learnedContext` from the lesson store at delivery and never sends it on
+         * to a worker, so no lesson text sits in an outbox row, a queue message or a dead-letter copy.
+         */
+        learnedRefs: LearnedRefsSchema.optional(),
+        /**
          * Live interaction, Stop & redirect (keep the plan): the owner's instruction that stopped the previous run of this coding step. The worker records it as taken from the owner (so the re-approval stop applies) and
          * puts it in the prompt, framed and untrusted. Implementation mode only. Sent only to a worker whose /ping lists "task.ownerRedirect.v1"; never dropped, because an older worker would run the step
          * without the re-approval stop the owner's instruction is bound by.
@@ -417,12 +423,12 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         diagnosis: DiagnosisInvocationSchema.optional(),
         /**
          * Proof and evidence (wire-proof): this verification run also writes `evidence-raw.json` (the test report of each check that names one, read in the workspace; never a change to any command). Verification mode
-         * only. Sent only while the proof switch is on, and only to a worker whose /ping lists "task.evidenceCapture.v1"; never dropped, because an older worker's strict parse would refuse the field.
+         * only. Sent only while the proof switch is on, and only to a worker whose /ping lists "task.evidenceCapture.v1"; the dispatcher drops the field for an older worker (no evidence is captured and the omission is logged), because its strict parse would refuse it.
          */
         evidenceCapture: z.literal(true).optional(),
         /**
          * Test environment (wire-testenv): this setup draft also runs the environment detectors over the default branch's files and reports the environment it would propose (a draft, never approved or run). Setup-draft
-         * mode only. Sent only while the test environment switch is on, and only to a worker whose /ping lists "task.testEnvDetect.v1"; never dropped, because an older worker's strict parse would refuse the field.
+         * mode only. Sent only while the test environment switch is on, and only to a worker whose /ping lists "task.testEnvDetect.v1"; the dispatcher drops the field for an older worker (the setup draft then has no environment draft and the omission is logged), because its strict parse would refuse it.
          */
         testEnvDetect: z.literal(true).optional(),
         /** SH30 (switch `sp`): the company recipes offered to the detectors' proposal. Only with `testEnvDetect`; only to a worker whose /ping lists "task.setupRecipes.v1". */

@@ -180,6 +180,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { routeIntake } from "./developer-routes/intake.js";
 import { routeTestEnvironment, testEnvStoreOf } from "./developer-routes/test-environment.js";
 import { routeTestHealth } from "./developer-routes/test-health.js";
+import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
@@ -305,6 +306,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
+  if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -518,6 +521,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
+  if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);

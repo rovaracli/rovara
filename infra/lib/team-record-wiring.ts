@@ -14,11 +14,11 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
-import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, type aws_iam as iam } from "aws-cdk-lib";
+import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
-import { teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
-import type { TeamRecordContext } from "./team-record-edition.js";
+import { DEFAULT_EMBEDDING_MODEL_ID, type TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
 import { TeamRecordTable } from "./team-record-table.js";
 
@@ -58,6 +58,11 @@ export interface TeamRecordWiringProps {
   readonly context: TeamRecordContext;
   readonly broker: lambda.Function;
   readonly slackIngress: lambda.Function;
+  /**
+   * The dispatcher (WL-6): a stage is queued with lesson ids and versions only, and the dispatcher builds the lessons' text from the record's table at delivery. It gets read access to the lesson
+   * rows and the table's name (`TEAM_RECORD_TABLE_NAME`); without that name it delivers no lessons. Optional so a caller without a dispatcher still synthesises.
+   */
+  readonly dispatcher?: lambda.Function;
   /** The role the other recovery schedules use to invoke the broker. */
   readonly scheduleRole: iam.IRole;
 }
@@ -89,10 +94,20 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   // workspace), Bedrock InvokeModel for the embedding model only, and the lake (Athena, S3 Tables, Glue) where the lake exists.
   for (const statement of [...table.brokerStatements(), ...storage.brokerStatements()]) broker.addToRolePolicy(statement);
 
+  // WL-6: the dispatcher reads the lesson rows at delivery (no write), and the customer's key where there is one.
+  if (props.dispatcher !== undefined) {
+    for (const statement of table.dispatcherStatements()) props.dispatcher.addToRolePolicy(statement);
+    if (typeof props.context.kmsKeyArn === "string") props.dispatcher.addToRolePolicy(new iam.PolicyStatement({ sid: "TeamRecordLessonReadsKms", actions: ["kms:Decrypt", "kms:DescribeKey"], resources: [props.context.kmsKeyArn],
+      // Only through DynamoDB: the dispatcher cannot decrypt anything else that is sealed under the customer's key.
+      conditions: { StringEquals: { "kms:ViaService": `dynamodb.${stack.region}.amazonaws.com` } } }));
+    props.dispatcher.addEnvironment("TEAM_RECORD_TABLE_NAME", teamRecordTableName(props.env));
+  }
+
   // The switch and the two install parameters the broker cannot derive from the environment's name. The names of the resources are derived (derived-names.ts).
   const settings = BrokerSettings.of(broker);
   settings.add("teamRecord", "1");
-  settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
+  // The default model is not passed: the broker reads an unset model as the default (team-record/runtime.ts), which keeps 36 bytes of the broker's 4 KB environment.
+  if (storage.parameters.embeddingModelId !== DEFAULT_EMBEDDING_MODEL_ID) settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
   settings.add("teamRecordLake", storage.lake === undefined ? "0" : "1");
   if (storage.vectors.dataRole !== undefined) BrokerNames.of(broker).add("teamRecordVectorsRole", storage.vectors.dataRole.roleName);
   // The customer's key (Enterprise) must be in this account and region: the broker builds its ARN from the key id, the region and the account.
@@ -108,11 +123,16 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   const deadLetters = new sqs.Queue(stack, "TeamRecordOpsDeadLetters", { queueName: teamRecordOpsDeadLetterName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
   const ops = new sqs.Queue(stack, "TeamRecordOps", {
     queueName: teamRecordOpsQueueName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(4), visibilityTimeout: Duration.seconds(180),
-    deadLetterQueue: { queue: deadLetters, maxReceiveCount: 5 },
+    deadLetterQueue: { queue: deadLetters, maxReceiveCount: TEAM_RECORD_OPS_MAX_RECEIVES },
   });
   broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
   ops.grantSendMessages(broker);
-  BrokerNames.of(broker).add("teamRecordDeadLetters", deadLetters.queueName);
+  // Not passed to the broker: its name is fixed (`teamRecordOpsDeadLetterName`) and the broker derives its URL for the health route (broker-environment.ts).
+  // The hourly job deletes PUT messages out of the dead-letter queue (they hold a draft's text, TRW-5 S1): receive and delete on that one queue.
+  deadLetters.grantConsumeMessages(broker);
+  // A delete that neither the table nor the queue took is sent to the broker itself as an asynchronous Event (TRW-5 S2). A policy of its own, so the function does not wait on its own role (no cycle).
+  // A removal Lambda could not run lands in the stack's failure queue, which alarms (the broker's `configureAsyncInvoke`, control-plane.ts).
+  new iam.Policy(stack, "TeamRecordBrokerSelfInvoke", { roles: [broker.role!], statements: [new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] })] });
 
   // The Slack ingress hands a verified event to the broker (direct invoke, which it is already allowed to do) and sends removals (ids only) to the durable queue: this tells it to, and where.
   props.slackIngress.addEnvironment("TEAM_RECORD_ENABLED", "1");

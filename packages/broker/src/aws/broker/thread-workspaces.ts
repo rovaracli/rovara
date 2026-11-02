@@ -2,7 +2,7 @@
 
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
-import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, plainPageRefs, githubConnectorOf, SlackTaskAnswerRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackCommentAnsweredRequestSchema, WorkspaceClosePreflightResultSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, unhandledDeploymentMode, type OperationRequester, type ProjectDefinition, type SlackRequester, type SlackThread, type SlackThreadPrepareResult, type SlackThreadWorkspaceResult, type SlackWorkspaceCloseCompleteResult, type SlackWorkspaceCloseStartResult, type ThreadConnector, type WorkerInvocation, type WorkspaceInstance, emailSafeName, defaultWorkspaceKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, workerProjectDefinition, ROVARA_CODE_AGENT_ID, type Payer } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { authorizeWorkspace } from "../../authorization.js";
@@ -450,7 +450,7 @@ export async function ensureThreadWorkspace(
     const taskAnswer = input.taskAnswer === undefined ? undefined : SlackTaskAnswerRequestSchema.safeParse(input.taskAnswer);
     if (taskAnswer !== undefined && !taskAnswer.success) throw agentXError("CONFIG_INVALID", "taskAnswer needs the task's ID");
     if (taskAnswer?.data.taskId === identity.sharedTask.taskId && identity.sharedTask.taskAnswer === true) {
-      const answer = await taskAnswerWorkspace(dependencies, requireOrgId(identity.orgId), slack.thread, identity.sharedTask, slack.requester, taskAnswer.data.commentId);
+      const answer = await taskAnswerWorkspace(dependencies, requireOrgId(identity.orgId), slack.thread, identity.sharedTask, slack.requester, taskAnswer.data.commentId, taskAnswer.data.noteTs);
       if (answer !== undefined) return answer;
     }
     return sharedThreadWorkspace(dependencies, identity, identity.sharedTask, input.includeSharedTask === true, include, includeSettingsRevision);
@@ -884,6 +884,17 @@ const SLACK_TASK_CONTEXT_CHARS = 39_000;
 export const slackAskRefusalContext = (words: string): string => `This question cannot be answered. Do not use any other information. Reply with exactly this sentence and nothing else: "${words}"`;
 export const SLACK_ASK_NOT_ALLOWED_WORDS = "This question can't be answered here.";
 
+/** The marker a refused Slack question leaves on its saved reply (`noteTs`): ids and an expiry, never the words. The "answered" call finds it and records no Ask for that reply (LA-6, N5). */
+const slackAskRefusedKey = (taskId: string, noteTs: string) => ({ pk: `DEVTASK#${taskId}`, sk: `ASKREFUSED#${noteTs}` });
+async function markSlackAskRefused(dependencies: AwsBrokerDependencies, taskId: string, noteTs: string | undefined): Promise<void> {
+  if (noteTs === undefined) return;
+  try {
+    await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: { ...slackAskRefusedKey(taskId, noteTs), entityType: "SLACK_ASK_REFUSED", [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) + 2 * 86_400 } }));
+  } catch {
+    // Best effort: the refusal is answered either way; without the marker that reply is recorded as before.
+  }
+}
+
 /**
  * Task mode for the chat agent in a Slack-started task's own thread: a read-only view. No repositories, connectors or actions, no operation and no compute (nothing is created, prepared or
  * charged); `taskContext` is the broker's untrusted-data text about the task. Undefined (the thread stays closed) when the task is closed or its context cannot be built.
@@ -900,6 +911,7 @@ async function taskAnswerWorkspace(
   shared: NonNullable<AuthenticatedIdentity["sharedTask"]>,
   requester: SlackRequester,
   commentId?: string,
+  noteTs?: string,
 ): Promise<SlackThreadWorkspaceResult | undefined> {
   const workspace = await requireWorkspace(dependencies, shared.workspaceId);
   // A merged (or rejected) task gave back its workspace but is not closed: its thread is still answered, which needs no
@@ -926,20 +938,25 @@ async function taskAnswerWorkspace(
   // user with no member link under their Slack workspace and user id. What they see is the Slack tier's alone.
   const developerId = await linkedRequester(dependencies, orgId, requester);
   const context = await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, ...(developerId === undefined ? {} : { asker: { developerId } }) }, shared.taskId, slackAsk.readers);
-  if (context === undefined) return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
+  const refuse = async (words: string): Promise<SlackThreadWorkspaceResult> => { await markSlackAskRefused(dependencies, shared.taskId, noteTs); return reply(slackAskRefusalContext(words)); };
+  if (context === undefined) return refuse(SLACK_ASK_NOT_ALLOWED_WORDS);
+  // A page-comment answer whose section is gone is not answered, and spends nothing: the section is read before the rates are taken (LA-5, M3).
+  let section: string[] | undefined;
+  if (commentId !== undefined) {
+    section = await taskCommentSection({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions }, shared.taskId, commentId);
+    if (section === undefined) return undefined;
+  }
   try {
     await takeSlackAskRates(slackAsk.ask, task, developerId ?? slackAskerKey(thread.teamId, requester.userId));
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === "TOO_MANY_REQUESTS") return reply(slackAskRefusalContext(ASK_RATE_TEXT));
+    if (code === "TOO_MANY_REQUESTS") return refuse(ASK_RATE_TEXT);
     // A task with no session has nothing to rate on: answered in fixed words, never left as a note.
-    if (code === "RUNTIME_UNAVAILABLE") return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
+    if (code === "RUNTIME_UNAVAILABLE") return refuse(SLACK_ASK_NOT_ALLOWED_WORDS);
     throw error;
   }
   let taskContext = context.text;
-  if (commentId !== undefined) {
-    const section = await taskCommentSection({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions }, shared.taskId, commentId);
-    if (section === undefined) return undefined;
+  if (section !== undefined) {
     // The answer is shown on the task page, not in the thread: the context says so (the audience's limits are the Slack tier's all the same).
     taskContext = [taskContext.replace(/^This Slack thread is an AgentX task/u, "This is an AgentX task"), ...section].join("\n");
   }
@@ -971,7 +988,9 @@ export async function markThreadNoteAnswered(dependencies: AwsBrokerDependencies
   if (slackAsk !== undefined && body.ask !== undefined && identity.orgId !== undefined) {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(body.taskId));
     const askedBy = await linkedRequester(dependencies, identity.orgId, identity.slack.requester);
-    if (task !== undefined) await recordSlackAsk(slackAsk, { task, messageTs: body.messageTs, askedBy, question: body.ask.question, answer: body.ask.answer, contextBytes: body.ask.contextBytes ?? 0 });
+    // A question the broker refused in fixed words (its reply carries the marker) is not an Ask: nothing is recorded or counted for it.
+    const refused = await getItem(dependencies, slackAskRefusedKey(body.taskId, body.messageTs)) !== undefined;
+    if (task !== undefined && !refused) await recordSlackAsk(slackAsk, { task, messageTs: body.messageTs, askedBy, question: body.ask.question, answer: body.ask.answer, contextBytes: body.ask.contextBytes ?? 0 });
   }
   return { outcome: "ANSWERED" };
 }

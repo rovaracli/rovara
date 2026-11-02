@@ -31,6 +31,7 @@ export interface TierInputs {
   setting?: { secondPerson: boolean };
   spend?: { amountUsd: number };
   testEnv?: { risk: DecisionRisk; reasons: readonly string[] };
+  fixSetup?: { knownFailingTests: number };
 }
 
 class Tally {
@@ -110,6 +111,9 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
       if (inputs.testEnv === undefined) throw new Error("test environment inputs missing");
       tally.raise(inputs.testEnv.risk, inputs.testEnv.risk === "high" ? "Adds pre-production access, a shared or preview environment, video or traces." : "Sets how tests run for this project.");
       for (const reason of inputs.testEnv.reasons.slice(0, 3)) tally.raise(inputs.testEnv.risk, reason);
+      break;
+    case "fix_setup":
+      if ((inputs.fixSetup?.knownFailingTests ?? 0) > 0) tally.raise("medium", "Marking tests as already failing changes how later results are judged.");
       break;
     case "setup_host":
       tally.raise("medium", "Lets this project's machines reach a new website.");

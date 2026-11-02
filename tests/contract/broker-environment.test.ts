@@ -36,12 +36,12 @@ const NAMES = {
   turnRecordsTable: "agentx-staging-control-plane-TurnRecords69ECFCD9-1A2B3C4D5E6F7",
   planEvidenceFunction: "agentx-staging-control-plane-PlanEvidence3615C4CB-1A2B3C4D5E6F7",
   modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
+  dispatcherFunction: "agentx-staging-control-plane-Dispatcher6C5A7D1F-1A2B3C4D5E6F7",
   slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
   slackOrchestratorRole: "agentx-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
   // wire-team-record: present only in an install synthesised with the Team record switched on.
   teamRecordVectorsRole: "agentx-staging-control-plane-TeamRecordVectorsDataRole8A1B2C3D-1A2B3C4D5E6F7",
   teamRecordKmsKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
-  teamRecordDeadLetters: "agentx-staging-control-plane-TeamRecordOpsDeadLetters4C5D6E7F-1A2B3C4D5E6F7",
   chatGptConnectionKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   provisionerStateMachine: "agentx-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
   deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
@@ -66,7 +66,7 @@ describe("the table of names", () => {
     const variables = specs.filter((spec) => spec.kind !== "deadLetterQueue").map((spec) => spec.variable);
     expect(new Set(variables).size).toBe(variables.length);
     expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.variable))).toEqual(new Set(["HEALTH_DEAD_LETTER_QUEUES"]));
-    expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.label)).size).toBe(5);
+    expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.label)).size).toBe(4);
     for (const spec of specs) expect(spec.code).toMatch(/^[a-z]{2}$/);
   });
 });
@@ -121,6 +121,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       TURN_RECORDS_TABLE_NAME: NAMES.turnRecordsTable,
       PLAN_EVIDENCE_FUNCTION_NAME: NAMES.planEvidenceFunction,
       MODEL_ACCESS_FUNCTION_NAME: NAMES.modelAccessFunction,
+      // LA-1 (peek): the dispatcher's name becomes its function ARN.
+      DISPATCHER_FUNCTION_ARN: `arn:aws:lambda:us-west-2:123456789012:function:${NAMES.dispatcherFunction}`,
       SLACK_REQUEST_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestQueue}`,
       SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
       TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.teamRecordVectorsRole}`,
@@ -139,9 +141,16 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       "slack-requests": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestDeadLetters}`,
       "developer-notices": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeDeadLetters}`,
       "developer-notice-stream": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeStreamFailures}`,
-      // wire-team-record: the record's operations queue's dead letters, present only where the record is switched on.
-      "team-record": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.teamRecordDeadLetters}`,
     });
+    // wire-team-record: the record's operations queue's dead letters have a fixed name, so they are listed last and only where the record is switched on, without being passed (ENV-ROOM).
+    expect(JSON.parse(hydrated({ ...SCOPE, TEAM_RECORD_ENABLED: "1", [BROKER_NAMES_VARIABLE]: bag() }).HEALTH_DEAD_LETTER_QUEUES!)).toStrictEqual({
+      dispatch: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.dispatchDeadLetters}`,
+      "slack-requests": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestDeadLetters}`,
+      "developer-notices": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeDeadLetters}`,
+      "developer-notice-stream": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeStreamFailures}`,
+      "team-record": "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-team-record-ops-dead",
+    });
+    expect(Object.keys(JSON.parse(hydrated({ ...SCOPE, TEAM_RECORD_ENABLED: "1", [BROKER_NAMES_VARIABLE]: bag() }).HEALTH_DEAD_LETTER_QUEUES!) as object).at(-1)).toBe("team-record");
     // Every name in the table came back under its variable.
     for (const spec of Object.values(BROKER_NAMES)) expect(env[spec.variable], spec.variable).toBeTruthy();
   });

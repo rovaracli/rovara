@@ -134,6 +134,17 @@ export interface RecordHistoryPort {
   lowestTrust(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<TrustClass | undefined>;
 }
 
+/**
+ * TRW-4 fix round 1 (B1). A row is indexed under its AUTHOR only, so an erase of another person cannot find it. When someone other than the author edits an item, their words may be in the text, so that
+ * version is not stored, and the item is marked: no later version of it is stored either (a later touch by the author would carry the editor's words under the author's name). The row stays at the
+ * author's last version. The mark holds a hash of the item and nothing else.
+ */
+export interface EditedByOtherPort {
+  mark(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<void>;
+  /** Whether the item was marked. A read that fails THROWS: the caller treats the item as marked. */
+  isMarked(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<boolean>;
+}
+
 /** One authenticated push to a branch: the minimum needed to say who put a range of commits on it. No content. Held for a short time (30 days). */
 export interface PushRecord {
   repo: string;

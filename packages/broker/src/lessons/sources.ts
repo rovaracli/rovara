@@ -3,10 +3,10 @@
 // baseline (and at least ten that day) is paused alone. Its candidates are still collected, but held out of auto-apply and out of the people's queue until a
 // maintainer resumes the source. Other sources, and other people, carry on. Because the unit is the source and not the author, a flood from text that has no
 // author (CI output, a ticket feed) is caught too.
-import { SPIKE, emitAudit } from "./policy.js";
+import { AUTO_APPLY_GUARDS, SPIKE, emitAudit } from "./policy.js";
 import type { AlertSink, LessonDeps } from "./ports.js";
 import type { LessonStore, ProjectFlags, ScopeKey } from "./store.js";
-import { memberOfSource, normSource } from "./types.js";
+import { memberOfSource, normSource, sameSource } from "./types.js";
 
 /** The most a source's learned baseline may grow in one day. A steady source is followed; an exponential ramp outruns its baseline and is caught. */
 export const BASELINE_DAILY_GROWTH = 1.25;
@@ -97,4 +97,29 @@ export async function clearSourcePause(deps: LessonDeps, store: LessonStore, key
   await store.setFlags(key, { ...flags, pausedSources: rest });
   await emitAudit(deps.audit, { action: "lesson.source_resumed", workspaceId: key.workspaceId, project: key.project, actor, facts: { source } });
   return true;
+}
+
+/**
+ * The project brake (L7-2): true for `AUTO_APPLY_GUARDS.brakeMs` after the project's volume alert fired. While it is on, a tier-0 lesson never goes live by itself; it waits for a person.
+ * It pauses no source. A clock that reads before the alert counts as on (fail closed).
+ */
+export const projectBrakeOn = (flags: ProjectFlags, now: number): boolean =>
+  flags.volumeAlertedAt !== undefined && (now < flags.volumeAlertedAt || now - flags.volumeAlertedAt < AUTO_APPLY_GUARDS.brakeMs);
+
+/**
+ * The cold-start rule (L7-2): the sources of a lesson that have not yet had `needed` lessons approved by a PERSON (an automatic go-live proves nothing). A lesson with no attributable source
+ * has nothing to vouch for it, so every call answers cold for it (fail closed: the source list is empty and `cold` says so). `selfId` is left out of the count.
+ */
+export async function coldSourcesOf(store: LessonStore, key: ScopeKey, sources: readonly string[], selfId: string, needed: number = AUTO_APPLY_GUARDS.coldStartLessons): Promise<{ cold: string[]; unattributed: boolean }> {
+  if (sources.length === 0) return { cold: [], unattributed: true };
+  if (needed <= 0) return { cold: [], unattributed: false };
+  // Heads of every stored lesson (a retired or expired one was approved by a person too), counted by the people-approved ones that name the source.
+  const heads = await store.listAllHeads(key);
+  const proven = heads.filter((lesson) => lesson.id !== selfId && lesson.approvals.some((a) => a.mode !== "auto"));
+  const cold: string[] = [];
+  for (const source of sources) {
+    const count = proven.filter((lesson) => attributableSources(lesson.provenance).some((s) => sameSource(s, source))).length;
+    if (count < needed) cold.push(source);
+  }
+  return { cold, unattributed: false };
 }

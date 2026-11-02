@@ -8,14 +8,14 @@
 // task) comes from the broker's own record of that Ask, never from the request. The switch is OFF by default: with it off (`LIVE_ASK_ENABLED` not exactly "1") nothing is built, every route
 // answers NOT_FOUND, and a queued Ask cannot exist.
 import { LambdaClient } from "@aws-sdk/client-lambda";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
 import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
 import { loadTaskPeople } from "../../developer/task-people.js";
 import { chosenOwnerNames } from "../../agent-sessions/owner-names.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { type AskDependencies, completeAsk, prepareAskTurn, sessionLevelPort } from "../../agent-sessions/ask.js";
+import { ASK_LOCK_SECONDS, type AskDependencies, completeAsk, prepareAskTurn, requireProjectNotArchived, sessionLevelPort } from "../../agent-sessions/ask.js";
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
 import { flushDailyAskCounts } from "../../agent-sessions/ask-audit.js";
 import { createAskReaders } from "../../agent-sessions/ask-readers.js";
@@ -146,15 +146,55 @@ export async function handleAskServiceRoute(
   if (item === undefined || item["orgId"] !== named.orgId || item["state"] !== "queued" || typeof item["taskId"] !== "string") throw agentXError("NOT_FOUND", "route not found");
   const task = (await ask.documentClient.send(new GetCommand({ TableName: ask.tableName, Key: taskKey(item["taskId"]), ConsistentRead: true })) as { Item?: DeveloperTaskRecord }).Item;
   if (task === undefined || task.orgId !== named.orgId || task.closedAt !== undefined) throw agentXError("NOT_FOUND", "route not found");
+  // An Ask is answered within its lock (15 minutes); the request item keeps its "queued" state for up to a day, so the key's own age limit is what stops an old Ask from minting (LA-5, M2).
+  if (typeof item["createdAt"] !== "string" || !(ask.now() - Date.parse(item["createdAt"]) <= ASK_LOCK_SECONDS * 1000)) throw agentXError("NOT_FOUND", "route not found");
+  // An archived project takes no new work, and the key is what the payer is charged for (LA-5, M5).
+  await requireProjectNotArchived(ask, named.orgId, task.project);
   const askedBy = typeof item["askedBy"] === "string" ? item["askedBy"] : undefined;
   if (askedBy !== undefined) {
     const level = await sessionLevelPort(ask.access)({ orgId: named.orgId, developerId: askedBy }, named.sessionId);
     if (level !== "use" && level !== "edit") throw agentXError("FORBIDDEN", "this question can't be answered now");
   }
+  // At most ASK_KEYS_PER_ASK keys for one Ask (the service asks once per turn, and again only when a turn is delivered again): counted in the request item, conditional on the count read, before the key is made.
+  await takeKeyPlace(ask, named, item);
   const requester = askedBy === undefined ? undefined : { kind: "developer" as const, developerId: askedBy, provider: task.provider };
   // SY-7: the asker's standing is read after the level check and asserted again in the write that records the key, so a removal or ban in between refuses the key.
   const guard = askedBy === undefined ? undefined : requesterStandingGuard(dependencies.tableName, await developerStanding(dependencies, named.orgId, askedBy));
-  return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }, guard), request.requestId);
+  try {
+    return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }, guard), request.requestId);
+  } catch (error) {
+    // No key was made, so the place is given back (N3): a refused standing or a model-access fault does not use up one of the Ask's places.
+    await releaseKeyPlace(ask, named).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** The keys one Ask may have: its turn's, and one more for a turn the queue delivered again. */
+export const ASK_KEYS_PER_ASK = 2;
+
+/** Takes one of the Ask's key places in its request item (atomic: conditional on the count), or refuses. A mint that then fails gives the place back (`releaseKeyPlace`). A refusal is the route's own "not found", as for an Ask that is no longer waiting. */
+async function takeKeyPlace(ask: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }, item: Record<string, unknown>): Promise<void> {
+  const taken = typeof item["keysTaken"] === "number" ? item["keysTaken"] : 0;
+  if (taken >= ASK_KEYS_PER_ASK) throw agentXError("NOT_FOUND", "route not found");
+  try {
+    await ask.documentClient.send(new UpdateCommand({
+      TableName: ask.tableName, Key: askRequestKey(ref.orgId, ref.sessionId, ref.askId), UpdateExpression: "SET keysTaken = :next",
+      ConditionExpression: "#state = :queued AND (attribute_not_exists(keysTaken) OR keysTaken = :taken)", ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":next": taken + 1, ":taken": taken, ":queued": "queued" },
+    }));
+  } catch (error) {
+    // Another request took the place first (or the Ask settled): this one is refused, as an Ask that is not waiting is.
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("NOT_FOUND", "route not found");
+    throw error;
+  }
+}
+
+/** Gives back a key place taken for a mint that failed. Never below zero. */
+async function releaseKeyPlace(ask: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }): Promise<void> {
+  await ask.documentClient.send(new UpdateCommand({
+    TableName: ask.tableName, Key: askRequestKey(ref.orgId, ref.sessionId, ref.askId), UpdateExpression: "SET keysTaken = keysTaken - :one",
+    ConditionExpression: "attribute_exists(keysTaken) AND keysTaken > :zero", ExpressionAttributeValues: { ":one": 1, ":zero": 0 },
+  }));
 }
 
 /** Where the upkeep got to today: the day, the last org done (orgs are walked in id order), and whether the whole walk is finished. */

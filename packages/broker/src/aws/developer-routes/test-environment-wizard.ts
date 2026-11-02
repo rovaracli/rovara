@@ -39,7 +39,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export const TEST_ENV_EDIT_WORDS = {
   unchanged: "This is already the approved test environment.",
-  selection: "A way of narrowing the tests other than the approved placeholder is not accepted: a check's arguments are `{tests}` and nothing else, and the selection method is full or a coverage map.",
+  selection: "A way of narrowing the tests other than the approved placeholder is not accepted: a check's arguments are `{tests}` and nothing else, only on a test runner that takes test ids (pytest, jest, vitest or mocha, run directly, through `python -m pytest`, `npx`, `bunx`, or `pnpm`/`yarn` `exec` or `dlx`) and never with a flag that lets a run with no tests pass, and the selection method is full or a coverage map.",
   remoteCode: "A command downloads and runs code, or holds something secret-shaped, so it can't be part of a test environment.",
   oneDirectory: "The project's commands run in more than one directory, so they can't be changed from here. Ask an administrator.",
   secondPersonNotNeeded: "This change doesn't need a second person's confirmation.",

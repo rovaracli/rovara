@@ -44,6 +44,9 @@ export const fakeExporter: ImageExporter = async (sourceRef, destFile) => {
   await writeFile(destFile, ociArchive(/@(sha256:[a-f0-9]{64})$/.exec(sourceRef)![1]!));
 };
 
+/** A fake kit cannot pass the real self-checks (it is a stand-in, not the CDK app); the real ones run in synth-kit.test.ts on the real kit. */
+export const NO_KIT_CHECK = async (): Promise<void> => undefined;
+
 /** A small, schema-valid release directory. */
 export async function writeRelease(dir: string, version = "1.4.0", templates: Partial<Record<string, object>> = {}, extraPackage = false): Promise<void> {
   const templateText = (part: string): string => `${JSON.stringify(templates[part] ?? { Resources: {} })}\n`;
@@ -78,6 +81,6 @@ export async function builtBundle(options: { version?: string; key?: TestKey; te
   const dir = join(root, "bundle");
   const kitDir = join(root, "kit");
   if (options.kit !== undefined) await writeFakeKit(kitDir, { releaseSha256: sha(await readFile(join(release, "release.json"))), ...options.kit });
-  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir }) });
+  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir, kitCheck: NO_KIT_CHECK }) });
   return { root, dir, bundleSha256, key, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

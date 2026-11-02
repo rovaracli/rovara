@@ -14,8 +14,8 @@ type Edition = "enterprise" | "public";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Switches. Three packed settings in the design (`rd`, `ak`, and the fix switch), all OFF by default. The design named the third `fx`, but `fx` is already the autofix
-// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. `ak` is in BROKER_SETTINGS (as `liveAsk`, stack parameter LiveAskEnabled; A3, once both deploy gates below held). `rd` and `fd`
-// are NOT yet: adding one needs the stack parameter, the CLI key and the broker-settings test table in one change (wiring pending in the lane report).
+// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. All three are in BROKER_SETTINGS (`liveRedirect`, `liveAsk`, `liveFix`), each with its stack parameter,
+// CLI key and a row in the broker-settings test table; `ak` and `fd` are held by the deploy gates below.
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export const LIVE_INTERACTION_FLAGS = {
@@ -39,7 +39,7 @@ export function liveInteractionFlagOn(value: string | undefined): boolean {
   return value === "1";
 }
 
-/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker; an older one gets an ordinary owner note and the outcome says so. */
+/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker: for an older one a coding redirect is refused before anything is stopped (it is never degraded to a note). */
 export const OWNER_REDIRECT_FEATURE = "task.ownerRedirect.v1" as const;
 /** A worker that lists this answers the read-only `peek` call (diff stat and patch of the working tree). Optional for the pilot (A2). */
 export const PEEK_FEATURE = "task.peek.v1" as const;
@@ -82,7 +82,7 @@ export type RedirectState = (typeof REDIRECT_STATES)[number];
 export const REDIRECT_OUTCOMES = ["restarted", "revise_started", "left_blocked", "refused"] as const;
 export type RedirectOutcome = (typeof REDIRECT_OUTCOMES)[number];
 /** Why a redirect is refused or fell back, as fixed words (never the instruction). */
-export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available", "nothing_to_send_back"] as const;
+export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available", "nothing_to_send_back", "step_not_redirectable"] as const;
 export type RedirectRefusal = (typeof REDIRECT_REFUSALS)[number];
 
 /** The `reason` a steer message carries when it is a redirect's instruction. */
@@ -113,6 +113,8 @@ export const REDIRECT_REFUSAL_MESSAGES: Readonly<Record<Exclude<RedirectRefusal,
   not_available: "Stop & redirect isn't available for this task right now. You can stop it, or send the agent a message.",
   /** The same sentence a send-back to coding gives: a blocked check or review restarts coding only when there is a failed check or a review finding to send back (fix round 1, S3). */
   nothing_to_send_back: "there is no current failed check or review finding to send back to coding",
+  /** The two steps that are advice or a later stage, not work to redirect: the check of a plan, and the review of a pull request's comments (LR-2). The page shows this sentence where it would offer the redirect. */
+  step_not_redirectable: "The check of a plan and the review of a pull request's comments can't be redirected. You can stop it, or send the agent a message.",
 };
 /** The line a restarted step always starts with: the stopped run may have left a file half written. */
 export const REDIRECT_RESTART_NOTE = "The previous run was stopped in the middle of a step; check the current state of the files before going on." as const;
@@ -338,6 +340,12 @@ export type DiagnosisTier = z.infer<typeof DiagnosisTierSchema>;
 
 /** Light: 10 per person per hour, 50 per project per day. Deep: 3 per person per day. */
 export const DIAGNOSIS_RATE = { lightPerPersonPerHour: 10, lightPerProjectPerDay: 50, deepPerPersonPerDay: 3 } as const;
+/**
+ * DG-1 S1: the most light diagnoses ROVARA pays for (Public) for one organization in a day, whoever asks and whichever project. `turns` is the count; `cents` is the worst case Rovara can owe for them (each
+ * turn's key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, so a turn is counted at that cap). Either one full refuses the next request with the ordinary "asked a lot lately" words. Per person and per project
+ * limits still apply. Raising these is a reviewed code change.
+ */
+export const DIAGNOSIS_ROVARA_PAID_ORG_LIMITS = { turnsPerDay: 100, centsPerDay: 1_500 } as const;
 /** `DIAGNOSIS#<id>` is kept this long (days). */
 export const DIAGNOSIS_RETENTION_DAYS = 30;
 /** The same ErrorRef answers the existing diagnosis for this long (seconds). */
@@ -354,7 +362,7 @@ export const DIAGNOSIS_SETTINGS_TARGETS = ["code_settings", "setup_item", "playb
 
 const ProposalText = (max: number) => z.string().min(1).max(max);
 /** A value a settings change moves from or to: a small primitive, never an object (so nothing structured can ride in it). */
-const SettingValueSchema = z.union([z.string().max(500), z.number().finite(), z.boolean(), z.null()]);
+export const SettingValueSchema = z.union([z.string().max(500), z.number().finite(), z.boolean(), z.null()]);
 
 export const DiagnosisProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("explain"), text: ProposalText(2_000) }).strict(),
@@ -381,24 +389,28 @@ export const DIAGNOSIS_PROPOSAL_KINDS = ["explain", "retry_with_note", "redirect
  * egress, model endpoints and MCP servers, so this is an allow-list of safe, named settings and not a list of forbidden words: a deny-list is bypassed by the next spelling
  * (`tierZero`, `toolServers`, `model.url`). Adding a path here is a reviewed one-line change. Values are checked too: an enum word, a boolean or a plain relative file path, never free text.
  */
-type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boolean" } | { kind: "relative_path" };
+type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boolean" } | { kind: "relative_path" } | { kind: "devcontainer_path" };
 export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS_TARGETS)[number], Readonly<Record<string, PrefillValue>>>> = {
   code_settings: { mergeMethod: { kind: "enum", values: ["squash", "merge"] } },
-  setup_item: { "devcontainer.configPath": { kind: "relative_path" } },
+  // DG-1 S2: only a path a dev container can really be read from (the setup proposal's own pattern), never any relative file.
+  setup_item: { "devcontainer.configPath": { kind: "devcontainer_path" } },
   // Replaces: the T0 rows `e2e.screenshots` and `e2e.traces`. No ordinary route changes a project's end-to-end capture (the project definition's `e2e` policy is changed by an administrator with
-  // `agentx admin project register`), so a "Propose this change" for it would have no path to raise it into. Until a How-we-work route exists for a path, it is explain-and-link only.
+  // `agentx admin project register`), so a "Apply this change" for it would have no path to raise it into. Until a How-we-work route exists for a path, it is explain-and-link only.
   playbook: {},
   connector: {},
   model_access: {},
 };
 
 const RELATIVE_PATH = /^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,199}$/u;
+/** The setup proposal's `DEVCONTAINER_PATH_PATTERN`, repeated: this file is part of the browser entry and imports nothing heavy. A test keeps the two the same. */
+export const DIAGNOSIS_DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
 
 function prefillValueOk(rule: PrefillValue, value: unknown): boolean {
   // A value that redaction would change looks like a secret (a token, a key, a credential in a URL): never prefilled, on any target or path.
   if (typeof value === "string" && redactText(value) !== value) return false;
   if (rule.kind === "boolean") return typeof value === "boolean";
   if (rule.kind === "enum") return typeof value === "string" && rule.values.includes(value);
+  if (rule.kind === "devcontainer_path") return typeof value === "string" && DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.test(value);
   return typeof value === "string" && RELATIVE_PATH.test(value) && !value.startsWith("/");
 }
 

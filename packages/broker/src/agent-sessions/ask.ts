@@ -9,11 +9,12 @@ import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
-  agentXError, askLockKey, askRequestKey, askRouteAttributes, sessionAskKey, sessionRateKey,
+  agentXError, askLockKey, askRequestKey, projectArchivedMessage, askRouteAttributes, sessionAskKey, sessionRateKey,
   type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel,
 } from "@agentx/contracts";
 import { failedIndexes } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { readProjectMeta } from "../developer/project-roles.js";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
 import { requireSessionLevel, sessionLevelOf, type SessionAccessDependencies, type SessionCaller } from "./access.js";
@@ -39,6 +40,8 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 /** How long a waiting Ask holds its person's lock (a turn holds a queue message for at most 15 minutes; the service answers or fails it well within). */
 const LOCK_SECONDS = 15 * 60;
+/** How long an Ask may be answered, and so how old it may be when a model key is made for it (LA-5, M2). */
+export const ASK_LOCK_SECONDS = LOCK_SECONDS;
 /** A request item is kept a day: long enough to answer a repeat, short enough that nothing about the Ask lingers. */
 const REQUEST_TTL_SECONDS = 86_400;
 
@@ -96,6 +99,17 @@ export function askIdFor(orgId: string, developerId: string, requestId: string):
 export const askEventId = (askId: string): string => `Ev${createHash("sha256").update(askId, "utf8").digest("hex").slice(0, 32)}`;
 
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", ASK_UNAVAILABLE_MESSAGE);
+
+/** Refuses with `PROJECT_ARCHIVED` (the project's one archived sentence) when the project is archived; any other read failure is the Ask's own retryable fault. */
+export async function requireProjectNotArchived(deps: Pick<AskDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<void> {
+  let archived: boolean;
+  try {
+    archived = (await readProjectMeta(deps, orgId, project))?.status === "archived";
+  } catch {
+    throw unavailable();
+  }
+  if (archived) throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(project));
+}
 const notFound = () => agentXError("NOT_FOUND", "route not found");
 
 // ---- the rates
@@ -157,6 +171,8 @@ export async function admitAsk(deps: AskDependencies, adm: AskAdmission): Promis
   const requestKey = askRequestKey(orgId, adm.sessionId, askId);
   const earlier = await getItem(deps, requestKey);
   if (earlier !== undefined) return statusOfRequest(deps, orgId, adm.sessionId, askId, earlier, adm.askerKey);
+  // An archived project takes no new work, and an Ask costs its payer money (LA-5, M5): refused in the project's own fixed words, before anything is spent or written. A project that cannot be read is not guessed at.
+  await requireProjectNotArchived(deps, orgId, task.project);
 
   const nowMs = deps.now();
   const scope = { orgId, sessionId: adm.sessionId };

@@ -247,6 +247,16 @@ describe("the plan a verification run is sent", () => {
     expect(await planOf(h, readiness, {})).toBeUndefined();
   });
 
+  it("re-checks the narrowing rule at dispatch: an approved environment with `{tests}` on a command that is not a test runner, or that passes with no tests, gets no plan", async () => {
+    for (const unsafe of [cmd("make", ["old-test"]), cmd("pnpm", ["run", "jest"]), cmd("jest", ["--passWithNoTests"])]) {
+      const h = harness();
+      await h.approve(body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: unsafe, kind: "test", selectArgs: ["{tests}"] }] }], selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } }));
+      const start = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
+      h.db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
+      expect(await planOf(h, [unsafe]), JSON.stringify(unsafe.args)).toBeUndefined();
+    }
+  });
+
   it("is not built when the pinned revision can no longer be used (it names production now)", async () => {
     const h = await pinned();
     const stored = h.db.find((entry) => String(entry.sk).startsWith("TESTENV#REV#"))[0]!;

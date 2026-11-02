@@ -56,6 +56,9 @@ async function showPage(context: DecideRequestContext, request: DecideRequest, a
   if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
   if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
   const cookie = cookieOf(request.headers, DECIDE_COOKIE)!;
+  // The page is about to be shown to this member: that, and only that, is what "opened" means for a kind that needs the member to have read it.
+  const prefix = kindPrefixOf(approvalId);
+  await (prefix === undefined ? undefined : context.kinds[prefix])?.opened?.(target);
   return confirmPage(inspection.view, { approvalId, csrf: csrfTokenFor(cookie) });
 }
 

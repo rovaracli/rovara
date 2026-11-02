@@ -22,7 +22,7 @@ export const errorOf = (reply: Reply) => reply.body.error as { code: string; mes
 
 export const draftBody = (over: Record<string, unknown> = {}): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
   tier: "sandbox",
-  repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test", selectArgs: ["{tests}"] }] }],
+  repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }],
   roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [".github/**"] }, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
   services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
   ...over,

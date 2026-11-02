@@ -4,6 +4,12 @@
 import { generateKeyPairSync } from "node:crypto";
 import { SYNTH_CONTEXT_KEYS } from "@agentx/contracts";
 
+// Limits of what the profiles cover (SK-4 minors 3 and 5, written down so a reader does not assume more):
+//  - The code map is made with the release's placeholder environment, so the live-test environment name (infra/lib/control-plane.ts adds `TaskPersonProof` only for `agentxlivetest123`) is not in it:
+//    a kit refuses that environment (it fails closed; that environment is a test one and is built from source).
+//  - Every setting KEY is switched on, but not every VALUE: the other values of `agentxAuditTsa` and `rovaraEnterpriseInternetEgress` are not synthesised. Functions do not depend on those values
+//    today (Lambda code does not depend on settings), and a function missing from the code map stops an approval with a plain message; but a customer would then wait for a new release. A new
+//    function behind one of those values must add a profile for it here.
 export interface ReleaseProfile {
   name: string;
   /** CDK context besides the environment, region and synthesizer, which the release sets itself. All values are text, as an install's recorded settings are. */
