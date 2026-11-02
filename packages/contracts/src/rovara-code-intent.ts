@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { RunInputSchema } from "./agent-run.js";
-import { SessionBindingSchema } from "./browser-ids.js";
+import { SessionBindingSchema, type SessionBinding } from "./browser-ids.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
 
 /** Where an intent came from. The first three are a person's own client; the rest are Plan 9's surfaces. `jira`, `github_issue` and `tracker` are a ticket in an outside tracker (meta repo lane F). */
@@ -15,6 +15,20 @@ export type CodeIntentSource = (typeof CODE_INTENT_SOURCES)[number];
 
 const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
 const RequestIdSchema = z.string().uuid();
+
+/**
+ * Enterprise foundations P9: the sources that are a ticket in an outside tracker. `tracker` is the one neutral source (its binding names the tracker and the item); `linear`, `jira` and
+ * `github_issue` are older spellings that stay valid (dual read, no migration): a stored intent, session or task that says `linear` is read as the `linear` tracker's.
+ */
+export const TRACKER_INTENT_SOURCES = ["tracker", "linear", "jira", "github_issue"] as const;
+export const isTrackerIntentSource = (source: string): boolean => (TRACKER_INTENT_SOURCES as readonly string[]).includes(source);
+
+/** The tracker (a plug-in kind) and the item a session binding follows, whichever spelling it came in; undefined for a Slack thread. */
+export function trackerItemOfBinding(binding: SessionBinding): { tracker: string; id: string; url: string } | undefined {
+  if (binding.kind === "linear_issue") return { tracker: "linear", id: binding.issueId, url: binding.url };
+  if (binding.kind === "tracker_item") return { tracker: binding.system, id: binding.id, url: binding.url };
+  return undefined;
+}
 
 /** The kind of outside place each source may bind its session to. */
 export const CODE_INTENT_BINDING_OF_SOURCE = { slack: "slack_thread", linear: "linear_issue", jira: "tracker_item", github_issue: "tracker_item", tracker: "tracker_item" } as const;
@@ -57,6 +71,16 @@ export const CodeIntentRequestSchema = z
     if (request.offerId !== undefined && request.source !== "offer") context.addIssue({ code: "custom", path: ["offerId"], message: "only an offer has an offer id" });
   });
 export type CodeIntentRequest = z.infer<typeof CodeIntentRequestSchema>;
+
+/**
+ * P9: the tracker an intent is for and the item in it, read the same from the neutral spelling (`tracker`, its binding names the tracker) and from the older ones (`linear` is the
+ * `linear` tracker's, `jira` and `github_issue` are fixed systems). Undefined for a source that is not a ticket, or for a ticket intent with no binding (the schema refuses that one).
+ */
+export function trackerOfCodeIntent(request: Pick<CodeIntentRequest, "source" | "binding">): { tracker: string; id: string } | undefined {
+  if (!isTrackerIntentSource(request.source) || request.binding === undefined) return undefined;
+  const item = trackerItemOfBinding(request.binding);
+  return item === undefined ? undefined : { tracker: item.tracker, id: item.id };
+}
 
 /** `POST /v1/app/projects/{project}/code`: the person's request, and nothing that names a source, a payer or a binding. */
 export const CodeIntentBodySchema = z.object({ requestId: RequestIdSchema, input: RunInputSchema, path: WorkflowPathSchema.optional() }).strict();

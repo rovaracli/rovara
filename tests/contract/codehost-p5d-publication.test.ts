@@ -8,7 +8,6 @@ import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/gith
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { NO_HOST_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
-import { GITHUB_ONLY_MESSAGE } from "../../packages/broker/src/plugins/code-host/github-only.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectRow, pullRequestDetails } from "../support/p5-world.js";
@@ -97,17 +96,25 @@ describe("a workflow publication on a fake host", () => {
   });
 });
 
-describe("a workflow publication on a host that is not GitHub is refused before anything is opened", () => {
-  it.each([
-    ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
-    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
-  ])("%s: no change request is opened, no pull request row is written, and no read of the branch is made", async (_name, recordHost, message) => {
-    const w = world({ recordHost, asGithub: false });
+describe("a workflow publication on a host that is not GitHub", () => {
+  // Replaces (P10): a registered other host was refused before anything was opened, because the result was recorded by GitHub-only code. The result is recorded for any host now
+  // (workflow-items.ts), so a registered other host's change request is opened there; a host this install has not registered is still refused first.
+  it("a host this install has not registered: no change request is opened, no pull request row is written, and no read of the branch is made", async () => {
+    const w = world({ recordHost: { kind: "gitfarm" }, asGithub: false });
     const branchHead = vi.spyOn(w.model, "headOf");
-    await expect(reconcilePullRequest(w.dependencies, w.operation(), w.body(w.commit))).rejects.toThrow(message);
+    await expect(reconcilePullRequest(w.dependencies, w.operation(), w.body(w.commit))).rejects.toThrow(NO_HOST_MESSAGE);
     expect(w.model.changeRequests).toHaveLength(0);
     expect(w.db.get(`WORKSPACE#${WORKSPACE}`, "PULL_REQUEST#api#000000000001")).toBeUndefined();
     expect(branchHead).not.toHaveBeenCalled();
     expect(w.github.reconcilePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("a registered other host: the change request is opened on that host, the pull request row is written, and GitHub is never asked", async () => {
+    const w = world({ recordHost: { kind: "fake", ref: "r1" }, asGithub: false });
+    await expect(reconcilePullRequest(w.dependencies, w.operation(), w.body(w.commit))).resolves.toMatchObject({ number: 1 });
+    expect(w.model.changeRequests).toHaveLength(1);
+    expect(w.db.get(`WORKSPACE#${WORKSPACE}`, "PULL_REQUEST#api#000000000001")).toBeDefined();
+    expect(w.github.reconcilePullRequest).not.toHaveBeenCalled();
+    expect(w.github.getPullRequest).not.toHaveBeenCalled();
   });
 });

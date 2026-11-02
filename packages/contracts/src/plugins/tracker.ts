@@ -45,6 +45,11 @@ export type TrackerEvent = z.infer<typeof TrackerEventSchema>;
 
 export interface TrackerEvents {
   readonly mode: "webhook" | "poll" | "none";
+  /**
+   * The project the tracker's hook for this scope is bound to. A delivery verified with one project's hook may start work in that project only: the start refuses any other, and a tracker
+   * that cannot say (returns undefined) starts nothing.
+   */
+  projectOf?(scope: HostScope): Promise<string | undefined>;
   /** Verifies a delivery and maps it to neutral events. Throws on a delivery it cannot verify. */
   normalise?(delivery: { headers: Readonly<Record<string, string>>; rawBody: string }, scope: HostScope): Promise<TrackerEvent[]>;
 }

@@ -1,5 +1,6 @@
 import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
 import { REGISTRY_FEATURE_MISSING } from "../project-registries/prepare.js";
+import { nonLegacyCredentialKindsOfGrant } from "../repository-access.js";
 import {
   AGENT_RUN_FEATURE,
   AGENT_STEP_FEATURE,
@@ -19,6 +20,7 @@ import {
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
+  credentialKindsOfWorkerFeatures,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -46,6 +48,8 @@ import type { SessionManager } from "./sessions.js";
 const WORKER_PORT = 8080;
 /** A token outlives one delivery attempt and nothing more (design in #76). */
 const TOKEN_LIFETIME_SECONDS = 60;
+/** P8: said when a repository's code host needs a credential kind the worker has not said it takes. Fixed; names no host and no credential. */
+export const CREDENTIAL_KIND_FEATURE_MISSING = "This repository's code host needs a newer worker. Ask an admin to upgrade Rovara.";
 export const STARTING_COMPUTE_MESSAGE = "Starting workspace compute";
 
 export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | { readinessGeneration: number };
@@ -363,13 +367,16 @@ async function forWorkerFeatures(
   // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
+  // P8: a grant that names a credential kind beyond the legacy two (an ssh key). A worker that does not list repository.credentialKinds.v1 would be sent a shape it cannot take, so the run is refused here.
+  const credentialKindsNeeded = invocation.kind === "prepare" || invocation.kind === "publish" || invocation.kind === "maintain" ? nonLegacyCredentialKindsOfGrant(invocation.payload.repositoryGrant) : [];
+  const carriesCredentialKinds = credentialKindsNeeded.length > 0;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -441,6 +448,11 @@ async function forWorkerFeatures(
   // N9 (INTG2): a project's registries are never dropped for an older worker, which would run setup without them and fail on a 401 (or reach a public mirror): the run is refused.
   if (carriesRegistries && !features.includes(PREPARE_REGISTRIES_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", REGISTRY_FEATURE_MISSING);
+  }
+  // P8: the broker never dispatches a repository whose host hands out a credential kind the worker has not said it takes.
+  if (carriesCredentialKinds) {
+    const taken = credentialKindsOfWorkerFeatures(features);
+    if (!credentialKindsNeeded.every((kind) => (taken as readonly string[]).includes(kind))) throw agentXError("RUNTIME_UNAVAILABLE", CREDENTIAL_KIND_FEATURE_MISSING);
   }
   if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {

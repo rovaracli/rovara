@@ -12,6 +12,38 @@ export const GIT_CREDENTIAL_KINDS = ["token", "basic", "ssh-key", "helper"] as c
 export const GitCredentialKindSchema = z.enum(GIT_CREDENTIAL_KINDS);
 export type GitCredentialKind = z.infer<typeof GitCredentialKindSchema>;
 
+/** The kinds every worker takes: the wire shapes `{username, password}` and `{token}`. A worker that says nothing about kinds takes these and no others. */
+export const LEGACY_WORKER_CREDENTIAL_KINDS: readonly GitCredentialKind[] = ["token", "basic"];
+/**
+ * The feature a worker lists on /ping when it takes a credential kind beyond the legacy two (today: an ssh key, `ssh-key`). Without it the broker neither dispatches a repository whose host
+ * hands out such a kind nor sends one at the exchange (Enterprise foundations P8). A kind no worker takes yet (`helper`) is never sent.
+ */
+export const WORKER_CREDENTIAL_KINDS_FEATURE = "repository.credentialKinds.v1" as const;
+/** The request header a worker sends at `/repository-credentials` to say which kinds it takes: a comma-separated list. Absent or unreadable means the legacy two. */
+export const WORKER_CREDENTIAL_KINDS_HEADER = "x-agentx-credential-kinds";
+/** The kinds a worker with these /ping features takes. */
+export function credentialKindsOfWorkerFeatures(features: readonly string[]): GitCredentialKind[] {
+  return features.includes(WORKER_CREDENTIAL_KINDS_FEATURE) ? [...LEGACY_WORKER_CREDENTIAL_KINDS, "ssh-key"] : [...LEGACY_WORKER_CREDENTIAL_KINDS];
+}
+/** The kinds a request header names. Unknown names are dropped, the list is bounded, and a header that is missing or empty names the legacy two (never more than was said). */
+export function parseWorkerCredentialKindsHeader(value: string | undefined): GitCredentialKind[] {
+  if (value === undefined || value.length > 128) return [...LEGACY_WORKER_CREDENTIAL_KINDS];
+  const named = new Set<GitCredentialKind>();
+  for (const part of value.split(",")) {
+    const parsed = GitCredentialKindSchema.safeParse(part.trim());
+    if (parsed.success) named.add(parsed.data);
+  }
+  return named.size === 0 ? [...LEGACY_WORKER_CREDENTIAL_KINDS] : GIT_CREDENTIAL_KINDS.filter((kind) => named.has(kind));
+}
+/** The kinds a worker can be sent on the wire: the legacy two and an ssh key. A `helper` has no wire shape, so it is never sent and never asked of a worker. */
+export const SENDABLE_WORKER_CREDENTIAL_KINDS: readonly GitCredentialKind[] = ["token", "basic", "ssh-key"];
+/** Whether a kind is one the exchange can send; the dispatcher requires the worker's feature only for these. */
+export const credentialKindIsSendable = (kind: string): boolean => (SENDABLE_WORKER_CREDENTIAL_KINDS as readonly string[]).includes(kind);
+/** Whether a credential kind needs the worker feature (every kind beyond the legacy two does). */
+export function credentialKindNeedsWorkerFeature(kind: string): boolean {
+  return !(LEGACY_WORKER_CREDENTIAL_KINDS as readonly string[]).includes(kind);
+}
+
 export const CodeHostCapabilitiesSchema = z.object({
   /** Change requests can be opened as drafts. */
   drafts: z.boolean(),
@@ -52,6 +84,46 @@ export const GitCredentialHelperSchema = z.enum(GIT_CREDENTIAL_HELPERS);
 /** A credential handed to a worker lives at most this long (GitHub's installation tokens last an hour). */
 export const GIT_CREDENTIAL_MAX_LIFETIME_MS = 60 * 60 * 1_000;
 
+/** An OpenSSH-format private key (never printed or logged; it goes to a file only the worker's user can read). */
+export const SshPrivateKeySchema = z.string().min(1).max(16_384).regex(/^-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n: ,.-]+\r?\n-----END (?:OPENSSH|RSA|EC) PRIVATE KEY-----\r?\n?$/, "an OpenSSH private key");
+/**
+ * Where an ssh credential clones and pushes: `ssh://[user@]host[:port]/path`. The host starts with a letter or digit, so it can never be read as an ssh option, and the path has no
+ * space, quote or `$`, so it can never be read by the remote shell as more than a path.
+ */
+export const SshRemoteUrlSchema = z.string().min(1).max(512).regex(/^ssh:\/\/(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?\/[A-Za-z0-9._~+/-]{1,300}$/, "an ssh:// address");
+// A host pattern is a literal name or address, or `[host]:port`: no `*`, `?` or `!`, so a line can never vouch for hosts it does not name.
+const KNOWN_HOSTS_LINE = /^[A-Za-z0-9.\-[\]:]+(?:,[A-Za-z0-9.\-[\]:]+)* (?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]{20,1000}={0,2}$/;
+/**
+ * The host keys the ssh server is trusted under, as `known_hosts` lines (plain host patterns, no marker, no hashed host). The worker pins them and never accepts an unknown host,
+ * so a credential with no host key is refused rather than trusting the first server that answers.
+ */
+export const SshKnownHostsSchema = z.string().min(1).max(8_192).refine((value) => {
+  const lines = value.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  return lines.length > 0 && lines.length <= 16 && lines.every((line) => KNOWN_HOSTS_LINE.test(line));
+}, "known_hosts lines");
+
+/** The host and port an `ssh://` address names (the user is not part of it), or undefined for an address that is not one. */
+function sshHostOf(sshUrl: string): { host: string; port: number } | undefined {
+  const match = /^ssh:\/\/(?:[^@/]+@)?([^:/]+)(?::([0-9]{1,5}))?\//u.exec(sshUrl);
+  return match?.[1] === undefined ? undefined : { host: match[1].toLowerCase(), port: match[2] === undefined ? 22 : Number(match[2]) };
+}
+
+/**
+ * Whether the host keys are for the server the address names: every `known_hosts` line must list that host (`host`, or `[host]:port` for another port than 22), so a key for some other server can
+ * never stand in, and a line that names only other hosts is refused. Names compare in lower case; there are no wildcards to match (the line check refuses them).
+ */
+export function sshKnownHostsMatchAddress(sshUrl: string, knownHosts: string): boolean {
+  const target = sshHostOf(sshUrl);
+  if (target === undefined) return false;
+  const wanted = target.port === 22 ? target.host : `[${target.host}]:${String(target.port)}`;
+  const lines = knownHosts.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  return lines.length > 0 && lines.every((line) => (line.split(" ")[0] ?? "").split(",").some((pattern) => pattern.toLowerCase() === wanted));
+}
+
+/** What the worker is sent for an ssh key: the key, the address and the pinned host keys, held to the same rules on both sides of the wire. */
+export const SshCredentialMaterialSchema = z.object({ privateKey: SshPrivateKeySchema, url: SshRemoteUrlSchema, knownHosts: SshKnownHostsSchema }).strict()
+  .refine((value) => sshKnownHostsMatchAddress(value.url, value.knownHosts), "the host keys are not for the address's host");
+
 const ExpiresAt = z.string().min(1).max(64).refine((value) => Number.isFinite(Date.parse(value)), "an ISO time");
 
 /**
@@ -62,7 +134,8 @@ const ExpiresAt = z.string().min(1).max(64).refine((value) => Number.isFinite(Da
 export const GitCredentialSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("token"), username: z.string().min(1).max(200).optional(), token: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
   z.object({ kind: z.literal("basic"), username: z.string().min(1).max(200), password: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
-  z.object({ kind: z.literal("ssh-key"), privateKey: z.string().min(1).max(16_384), expiresAt: ExpiresAt }).strict(),
+  z.object({ kind: z.literal("ssh-key"), privateKey: SshPrivateKeySchema, sshUrl: SshRemoteUrlSchema, knownHosts: SshKnownHostsSchema, expiresAt: ExpiresAt }).strict()
+    .refine((value) => sshKnownHostsMatchAddress(value.sshUrl, value.knownHosts), "the host keys are not for the address's host"),
   z.object({ kind: z.literal("helper"), helper: GitCredentialHelperSchema, expiresAt: ExpiresAt }).strict(),
 ]);
 export type GitCredential = z.infer<typeof GitCredentialSchema>;

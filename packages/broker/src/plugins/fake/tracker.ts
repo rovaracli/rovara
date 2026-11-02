@@ -22,6 +22,8 @@ export interface FakeTrackerOptions {
   /** The statuses Rovara may move an item to (an admin-chosen set). Default: all. */
   allowedStatuses?: readonly NeutralStatus[];
   secret?: string;
+  /** The project the fake's "hook" is bound to (a delivery may start work in that project only). Default: none, so a start through it is refused. */
+  project?: string;
 }
 
 export class FakeTracker implements Tracker {
@@ -37,12 +39,12 @@ export class FakeTracker implements Tracker {
   constructor(options: FakeTrackerOptions = {}) {
     this.allowed = new Set(options.allowedStatuses ?? NeutralStatusSchema.options);
     this.secret = options.secret ?? FAKE_TRACKER_SECRET;
-    this.events = { mode: "webhook", normalise: (delivery, scope) => this.normalise(delivery, scope) };
+    this.events = { mode: "webhook", projectOf: async () => options.project, normalise: (delivery, scope) => this.normalise(delivery, scope) };
   }
 
   /** Test driver: an item exists. */
   addItem(id: string, input: Partial<Omit<TrackerItem, "ref">> = {}): TrackerItem {
-    const item: TrackerItem = { ref: { tracker: FAKE_TRACKER_KIND, id }, title: input.title ?? `Item ${id}`, body: input.body ?? "", status: input.status ?? "open", labels: input.labels ?? [], ...(input.assignee === undefined ? {} : { assignee: input.assignee }) };
+    const item: TrackerItem = { ref: { tracker: FAKE_TRACKER_KIND, id, url: `https://host.example.test/items/${encodeURIComponent(id)}` }, title: input.title ?? `Item ${id}`, body: input.body ?? "", status: input.status ?? "open", labels: input.labels ?? [], ...(input.assignee === undefined ? {} : { assignee: input.assignee }) };
     this.items.set(id, item);
     return item;
   }

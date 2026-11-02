@@ -229,8 +229,9 @@ describe("P5d: a pushed fix to an open pull request (the update callback)", () =
   });
 });
 
-describe("P5d: a workflow's published pull request is recorded only for GitHub (the linked-pull-request rows are GitHub's, left for P6)", () => {
-  it("stops, with the fixed sentence, for a repository on another registered host, and with the router's sentence for an unknown one; GitHub's goes on to its own checks", async () => {
+describe("P5d: a workflow's published pull request is recorded for the host the repository's record names", () => {
+  // Replaces (P10): another registered host was stopped here with GITHUB_ONLY_MESSAGE; the link is that host's own neutral row now (the host's change request is checked below, as GitHub's is).
+  it("goes on to its own checks for a repository on another registered host or on GitHub, and stops with the router's sentence for an unknown one", async () => {
     const w = world();
     const commit = "c".repeat(40);
     const candidate = createCandidateManifest([{ repositoryId: "api", commitSha: commit, treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
@@ -242,9 +243,9 @@ describe("P5d: a workflow's published pull request is recorded only for GitHub (
       repository, number: 3, url, headBranch: "agentx/10000000-0000-4000-8000-000000000001", baseBranch: "main", commit, checks: [], codeBuildChecks: [], reconciled: false,
     });
     const run = (repository: string, url: string) => completedWorkflowItems(w.dependencies, operation, { taskId: TASK } as never, "SUCCEEDED", "2026-10-31T10:01:00.000Z", result(repository, url));
-    await expect(run("api", `${FAKE_URL}/pull/3`)).rejects.toThrow(refusal(GITHUB_ONLY_MESSAGE));
     await expect(run("mystery", `${MYSTERY_URL}/pull/3`)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
-    // A GitHub repository is not stopped by the host check: it goes on, and (no pull request record here) is stopped by the next check instead.
+    // Neither GitHub's repository nor another registered host's is stopped by the host check: each goes on, and (no pull request record here) is stopped by the next check instead.
+    await expect(run("api", `${FAKE_URL}/pull/3`)).rejects.not.toThrow(refusal(GITHUB_ONLY_MESSAGE));
     await expect(run("web", "https://github.com/acme/web/pull/3")).rejects.not.toThrow(refusal(GITHUB_ONLY_MESSAGE));
     expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
   });

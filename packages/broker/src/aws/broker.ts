@@ -409,6 +409,8 @@ const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
   // Enterprise foundations N-3: the credential comes from the repository's code host and must pass workerGitCredentialUsable before a worker gets it.
   portCredentialResolver({ codeHost: plugins.codeHost, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF") }),
+  // P8: the credential kinds the repository's host can hand out, written into each grant only when one needs a worker feature (an ssh key), so the dispatcher can refuse an older worker early.
+  (hostKind) => plugins.codeHost.forKind(hostKind).capabilities.credentialKinds,
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);

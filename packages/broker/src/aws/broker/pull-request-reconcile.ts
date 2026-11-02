@@ -33,7 +33,7 @@ import { readObjectText } from "./plan-answers.js";
 import { requirePullRequest, requireWorkspace } from "./records.js";
 import { githubScopeOf, githubScopeOfWorkspace, orgOfRecord } from "./scope-helpers.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
-import { requireGithubHost, canReadParents, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
+import { canReadParents, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
 import { workspaceStandingFailures } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults } from "./workflow-e2e-verification.js";
 
@@ -286,9 +286,7 @@ export async function reconcilePullRequest(
   // only to see whether a harness built it without the reads this check needs.
   const host = await hostOfWorkspaceRepository(dependencies, operation.workspaceId, { name: expected.repository, url: expected.repositoryUrl });
   const github = host.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
-  // A workflow publication's result is recorded by GitHub-only code (the linked-pull-request rows are GitHub's, left for P6), so on any other host it is refused here, before the pull request is
-  // opened or recorded: nothing is left open on a host the task cannot follow.
-  if (operation.publication.expectedTreeSha !== undefined) requireGithubHost(host);
+  // P10: a workflow publication's result is recorded for any host (the link from the change request to its task is the host's own neutral row, `workflow-items.ts`), so there is no GitHub-only gate here.
   const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
   const expectedTree = expected.expectedTreeSha;
   const expectedCommit = expected.expectedCommitSha;
