@@ -10,7 +10,7 @@ import type { LessonsRuntime } from "../../lessons/runtime.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { RegistryTokenSource } from "../../project-registries/mint.js";
-import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
+import { E2EPolicySchema, type PrepareSavedEnv, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
@@ -200,6 +200,8 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
+  /** Saved environments (SH25): what a preparation's `savedEnv` field is, for a project (installed with the registry wiring; absent while the `sv` switch is off, so nothing is sent). Never throws. */
+  savedEnvPrepare?: (input: { orgId: string; projectName: string }) => Promise<{ savedEnv?: PrepareSavedEnv }>;
   /** Injectable clock for funding evidence and its durable audit. */
   now?: () => number;
   documentClient: DynamoDBDocumentClient;

@@ -3157,6 +3157,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)",
       "Type": "String",
     },
+    "SavedEnvEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a project's proven setup can be built into a saved image and used by tasks (deploy the worker image and the registry roles first); 0: nothing is built, pushed, pulled or sent to a worker (agentx config set savedEnv.enabled 1)",
+      "Type": "String",
+    },
     "SecondReviewEnabled": {
       "AllowedValues": [
         "0",
@@ -3752,6 +3761,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",su=",
                   {
                     "Ref": "SetupAgentEnabled",
+                  },
+                  ",sv=",
+                  {
+                    "Ref": "SavedEnvEnabled",
                   },
                   ",tm=",
                   {
@@ -10232,7 +10245,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           },
         },
         "ImageTagMutability": "IMMUTABLE",
-        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep the last 3 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}",
+        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 6 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":6},"action":{"type":"expire"}}]}",
         "Prefix": "rovara-env/staging",
         "RepositoryPolicy": {
           "Fn::Join": [

@@ -111,6 +111,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.VerifyResultsEnabled;
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.SetupAgentEnabled;
+  delete remainder.Parameters?.SavedEnvEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -325,19 +326,19 @@ describe("the named TEST proof-only installation gate", () => {
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
     // 2026-11-02, saved-env-build (SH22 and its review fixes): the four named and foreign digests were retaken after the saved environment images were added to the named control plane (legacy did not move): the key,
     // the repository creation template, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the fixed-name role ECR assumes to create a repository) and their
-    // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. Nothing else in the control plane moved.
+    // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. SH25 added the SavedEnvEnabled parameter and its packed `sv` setting (the parameter is taken out of the remainder like the other switches). The lifecycle count backstop is keep + 3. Nothing else in the control plane moved.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "1b440de1f9c48301bd547018efdeb98e9fbce0d968a9ae6a1fb3a0398dc571c2",
-        withoutRoute: "0b4a7a59e6a18f782b80a92db1ec172668c768111bbcb55b860d71dc218d0f9a",
+        withRoute: "91232ac68a6cb0adddb520695fb53caaaa07ca77ddc0bafc4e984a23c6dacd7b",
+        withoutRoute: "bdb90886cdb1a0f7bf84d6eca687f2e13482e9aa7dc0e3ba8f69a9ac159a5798",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "d86a692b774d674564c37ad55c422fa953a8b35c6c127622f04db4e2264862af",
-        withoutRoute: "5d73a939d02042f4d264d84aae9fcd582f6951c1049bce3d571a1ce1bf713f0f",
+        withRoute: "1a5837e2f613267fe7071081cafc4c786569bd170973708aea3fe856dd6e8b70",
+        withoutRoute: "880b116f19294330a0642dae92d8601764be55a7a112e6cf889d68532886bb5c",
       },
       {
         label: "legacy",

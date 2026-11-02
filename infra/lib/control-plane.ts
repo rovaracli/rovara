@@ -1304,6 +1304,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("secondReview", signInParameters.secondReviewEnabled.valueAsString);
       // Company setup recipes as a proposal source (setup-test-health SH30): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
+      // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).

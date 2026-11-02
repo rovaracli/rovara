@@ -30,13 +30,14 @@ import {
   SAVED_ENV_LABEL_REVISION,
   SavedEnvImageManifestSchema,
   SavedEnvUseSchema,
+  type PrepareSavedEnv,
   type SavedEnvImageManifest,
   type SavedEnvUse,
   type SavedEnvUseStep,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
 import { assertCredentialFreeRemote, runGitWithCredential, type GitCredential } from "../git-auth.js";
-import type { DockerCli } from "../swebench/containers.js";
+import { createDockerCli, type DockerCli } from "../swebench/containers.js";
 import { DEFAULT_LINK_POLICY, inspectLink, type LinkPolicy } from "./links.js";
 import { countNonStandardFlags, minimalGitConfig, unsafeGitEntries } from "./tree-check.js";
 import { runIsolatedGit } from "../isolated-repository.js";
@@ -173,6 +174,17 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
     await cleanup();
     throw error instanceof Fallback ? error : new Fallback("extract");
   }
+}
+
+/**
+ * The preparation's saved environment options from the prepare invocation's `savedEnv` (SH25): the machine's docker, and a fallback that is written to the worker log as a JSON line with the digest and the step
+ * (the broker marks the image stale from the operation's result; no credential is in the line).
+ */
+export function savedEnvOptionsOf(payload: PrepareSavedEnv, docker: DockerCli = createDockerCli()): SavedEnvUseOptions {
+  return {
+    use: payload.use, taskTestEnvRevision: payload.taskTestEnvRevision, docker,
+    onFallback: (step) => { console.log(JSON.stringify({ component: "worker", event: "saved-env.fallback", digest: payload.use.digest, step })); },
+  };
 }
 
 /** Replaces `file` with a new file holding `text`: the old one (or a link in its place) is removed, then the new one is created exclusively, so nothing is ever written THROUGH a link. */
