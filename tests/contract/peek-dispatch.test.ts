@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // Live interaction A2, broker side: the dispatcher answers a direct `task-peek` event (it, not the broker, holds the signing permission), the broker's client asks it synchronously, and an Ask
 // falls back to the pull request's diff whenever there is no peek. The dispatcher signs only a `peek`, only for a workspace that is up with the same fence, and only for a worker that lists
 // the feature; nothing is ever woken, written or repeated.
@@ -138,6 +139,49 @@ describe("the dispatcher answering a task-peek event", () => {
     // A dispatcher built without it answers a fixed word and touches nothing.
     const without = createDispatcherHandler({ markDispatching, markDelivered: async () => undefined, markFailed: async () => undefined });
     expect(await without(peekEvent() as never)).toEqual({ outcome: "unavailable" });
+  });
+});
+
+describe("a direct invoke of the dispatcher is a peek or the dispatch queue's own batch, nothing else (S2)", () => {
+  const QUEUE = "arn:aws:sqs:us-west-2:123456789012:agentx-staging-dispatch";
+  const forged = { Records: [{ messageId: "m1", body: JSON.stringify({ id: "x", invocation: { kind: "steer" } }), attributes: { ApproximateReceiveCount: "1" } }] };
+  const build = () => {
+    const markDispatching = vi.fn(async () => true);
+    const liveSteer = { deliver: vi.fn(async () => undefined) };
+    const handler = createDispatcherHandler({ markDispatching, markDelivered: async () => undefined, markFailed: async () => undefined, liveSteer: liveSteer as never, queueArn: QUEUE });
+    return { handler, markDispatching, liveSteer };
+  };
+
+  it("refuses an SQS-shaped event with no source, another source, or another queue's ARN, and delivers nothing", async () => {
+    const { handler, markDispatching, liveSteer } = build();
+    const record = forged.Records[0]!;
+    for (const event of [
+      forged,
+      { Records: [{ ...record, eventSource: "aws:sns", eventSourceARN: QUEUE }] },
+      { Records: [{ ...record, eventSource: "aws:sqs", eventSourceARN: "arn:aws:sqs:us-west-2:123456789012:another-queue" }] },
+      { Records: [{ ...record, eventSource: "aws:sqs" }] },
+      { Records: [{ ...record, eventSource: "aws:sqs", eventSourceARN: QUEUE }, { ...record, messageId: "m2" }] },
+      { nothing: true },
+    ]) await expect(handler(event as never)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(markDispatching).not.toHaveBeenCalled();
+    expect(liveSteer.deliver).not.toHaveBeenCalled();
+  });
+
+  it("takes the queue's own batch, and still answers a peek", async () => {
+    const { handler, liveSteer } = build();
+    await expect(handler({ Records: [] } as never)).resolves.toEqual({ batchItemFailures: [] });
+    const own = { Records: [{ ...forged.Records[0]!, eventSource: "aws:sqs", eventSourceARN: QUEUE }] };
+    // The record is taken and processed as a queued one is (this one is not a valid invocation, so it fails the way a bad queued record does, for the queue to retry), not refused.
+    await expect(handler(own as never)).resolves.toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(liveSteer.deliver).not.toHaveBeenCalled();
+    const s = dispatcherSetup();
+    const withPeek = createDispatcherHandler({ markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => undefined, peek: s.peek, queueArn: QUEUE });
+    expect(await withPeek(peekEvent() as never)).toEqual({ outcome: "peeked", answer });
+  });
+
+  it("fails closed when the production entry has no queue ARN: the entry passes the environment's, and an empty one matches nothing", () => {
+    const source = readFileSync(new URL("../../packages/broker/src/aws/dispatcher.ts", import.meta.url), "utf8");
+    expect(source).toContain('queueArn: process.env.DISPATCH_QUEUE_ARN ?? ""');
   });
 });
 

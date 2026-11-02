@@ -28,6 +28,9 @@ const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 interface SqsRecord {
   messageId: string;
   body: string;
+  /** Set by Lambda for a record that came from a queue: `aws:sqs`, and the queue's ARN. A direct invoke can say anything, so the dispatcher checks both. */
+  eventSource?: string;
+  eventSourceARN?: string;
   attributes?: { ApproximateReceiveCount?: string };
 }
 
@@ -230,9 +233,21 @@ export function createDispatcherHandler(dependencies: {
   /** Live interaction A2 (agent-sessions/peek-dispatch.ts): answers a direct `task-peek` invoke from the broker, on the same request. Absent: such an event is answered `unavailable`. */
   peek?: ReturnType<typeof createPeekDispatch>;
   maxAttempts?: number;
+  /**
+   * The dispatch queue's ARN. When it is given, an event that is not a peek is taken only if it is a batch whose every record says it came from `aws:sqs` and from this queue; anything else (the broker may
+   * invoke this function directly, for a peek) is refused (S2). The production entry always passes it, empty when the environment has none, which matches nothing.
+   */
+  queueArn?: string;
   log?: (entry: DispatchLogEntry) => void;
 }) {
   const handleBatch = async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
+    if (dependencies.queueArn !== undefined) {
+      const queueArn = dependencies.queueArn;
+      const records = (event as { Records?: unknown } | null)?.Records;
+      if (!Array.isArray(records) || !(records as SqsRecord[]).every((record) => record?.eventSource === "aws:sqs" && queueArn !== "" && record.eventSourceARN === queueArn)) {
+        throw agentXError("FORBIDDEN", "the dispatcher takes a peek, or a batch from its own queue");
+      }
+    }
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
     const records = event.Records ?? [];
     const remainingTimeMs = () => context?.getRemainingTimeInMillis() ?? 60_000;
@@ -685,6 +700,7 @@ const deliverEc2 = createEc2Delivery({
 });
 
 export const handler = createDispatcherHandler({
+  queueArn: process.env.DISPATCH_QUEUE_ARN ?? "",
   guardTaskDispatch: taskDispatchGuard,
   guardProjectSetupDispatch,
   projectSetupLifecycle: {

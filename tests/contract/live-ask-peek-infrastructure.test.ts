@@ -57,6 +57,13 @@ describe("the broker may invoke the dispatcher to peek (LA-1)", () => {
     expect(env["DISPATCHER_FUNCTION_ARN"]).toBe("arn:aws:lambda:us-west-2:944937319445:function:agentx-staging-Dispatcher-AbCd1234");
   });
 
+  it("tells the dispatcher its dispatch queue's ARN, so it takes a batch only from that queue (S2)", () => {
+    for (const template of [named, legacy]) {
+      const variables = functionNamed(template, "Dispatcher")[1].Properties.Environment?.Variables ?? {};
+      expect(variables["DISPATCH_QUEUE_ARN"]).toEqual({ "Fn::GetAtt": [expect.stringMatching(/^DispatchQueue/u), "Arn"] });
+    }
+  });
+
   it("adds nothing to the released (legacy) template: no name, no variable, no invoke grant on the dispatcher", () => {
     const legacyDispatcher = functionNamed(legacy, "Dispatcher");
     expect(JSON.stringify(legacy.toJSON())).not.toContain("DISPATCHER_FUNCTION_ARN");
