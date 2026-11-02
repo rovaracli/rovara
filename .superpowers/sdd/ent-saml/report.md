@@ -94,3 +94,21 @@ The scratchpad directory is shared by sessions. My second mutation run started a
 
 ## Checklist (rovara-task-checklist) how checked
 1 Credentials: the response, assertion, groups and certificate are in no log or audit record (tests assert it; refusals log a fixed word). 2 Linux: no shell code, no Docker; fixtures use node:crypto only. 3 Stored data: no existing record changes; new keys `SSO_SAML_*` only. 4 Tests fail without the fix: section 4. 5 Fail closed and bounded: every refusal path above; stash 2 min, replay TTL, size and element bounds. 7 No subagents used.
+
+---
+# Fix round 1 (after the Opus review, review-opus.md)
+
+Each fix has a test that failed first (about 45 of the new tests failed before any fix) and a mutation check that fails with the fix removed (log: scratchpad `ent-saml-i4/saml-fix1*.log`; every row killed, S5 after the test was sharpened).
+
+- **B1** `providers.ts`: SAML identities carry issuer `saml:<entity id>`, so the account key names the method (`ownerKeyForSubject("saml:...", sub)`). The PUT also refuses an entity id equal to the sign-in issuer, the company OIDC issuer, the cloud issuer, Slack's or GitHub's (`reservedIssuers`, from the environment in `workflow-dependencies-configuration.ts`). Test: SAML saved with the OIDC issuer, NameID = an existing OIDC owner's sub, lands on a new account; the owner's account, role and sessions are untouched.
+- **B2** the PUT is owner-only (an admin gets 403 and nothing is written or mailed). After the commit every owner is emailed (the sign-in notices' SES sender, `ownerNotice`, wired from `githubConnectedNotice` in `broker/handler.ts`): who changed it and what kind of change, never the values. A failed mail is logged and never undoes the save.
+- **S1** new owner-only setting `trustEmail` (default off; leaving it out of a save turns it off). Off: no email at all comes from the assertion, so no Slack link, no address on the account, no invite matched by address. Decision for the owner. **Replaces: "SAML email always verified".**
+- **S2** the algorithms, status and request match are read from the parsed DOM (the library's own `parseDomFromString`, via the deep import `@node-saml/node-saml/lib/xml.js`, so no new package; importing `@xmldom/xmldom` directly pulled in the DOM typings and broke the broker build). Signature algorithms must be RSA-SHA256/384/512 and digests SHA-256/384/512 (allow-list); the top status must be one Success. Tests: `rsa-sh&#x61;1`, `sh&#97;1`, an unlisted algorithm, a Success status inside a comment.
+- **S3** `sessionsValidFrom` on the saved settings is set (rounded up) when SAML is turned off or the certificate or entity id changes. It is checked at every broker request (`authentication.ts`) and at refresh (`server.ts`); unreadable settings end the session. A code redeemed after the cutoff is not covered (it is minutes old at most).
+- **S4** the stash is keyed by the auth request id (one conditional put per request), opened only with the random handle (stored as a hash, compared in constant time). Tests: 25 POSTs for one request keep one record; 25 POSTs for requests that do not exist keep none; another request's handle does not open it. The per-request cap is the rate cap; API Gateway's stage throttle covers the rest.
+- **S5** a non-RSA certificate is refused at save with its own sentence.
+- **N1** a response with no usable AuthnInstant gives `authTime: 0`: the session is never fresh. **N2** the session ends no later than the provider's `SessionNotOnOrAfter`. **N3** a NameID with surrounding whitespace is refused. **N5** a signed response must carry its Destination. **N6** the route uses `deps.now()`.
+- **N4** the settings route refuses a caller whose org is not the install's single org (`singleOrgIdForEnv(env)`), the org sign-in reads.
+- **N7, N8** noted: the library settings stand; the missing tests are added.
+- Entity-id change stays refused (accounts are keyed on it); the cutoff also covers it if that ever changes.
+- Not done: UI/CLI for the settings, as before. No new package (lockfile and package.json unchanged in this round).

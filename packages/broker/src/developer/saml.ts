@@ -10,8 +10,10 @@
 //     audience, the subject;
 //   - an assertion id is accepted once (a replay store with a time to live that outlasts the assertion).
 // A refusal is one of the fixed words in SAML_REFUSALS; nothing the response said is echoed.
-import { createHash, X509Certificate } from "node:crypto";
+import { createHash, timingSafeEqual, X509Certificate } from "node:crypto";
 import { SAML, ValidateInResponseTo, type CacheProvider } from "@node-saml/node-saml";
+// The library's own parser (xmldom, with its error handling), so the document these checks read is the document it verifies. A deep import: the package has no exports map.
+import { parseDomFromString } from "@node-saml/node-saml/lib/xml.js";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SAML_CLOCK_SKEW_SECONDS, SAML_RESPONSE_MAX_BYTES, SamlIdpConfigSchema, samlIdpConfigKey, samlSeenKey, samlStashKey, agentXError, requireFeature,
@@ -50,6 +52,8 @@ export interface VerifiedSamlAssertion {
   assertionId: string;
   /** Epoch seconds: the assertion is useless after this, so the replay record may be dropped then (plus the skew). */
   notOnOrAfter: number;
+  /** Epoch seconds: the provider's own end for this sign-in session (the earliest SessionNotOnOrAfter), when it names one. The sign-in session ends no later. */
+  sessionNotOnOrAfter?: number;
 }
 
 export type SamlVerification = { ok: true; assertion: VerifiedSamlAssertion } | { ok: false; reason: SamlRefusal };
@@ -120,24 +124,65 @@ export function samlServiceProviderMetadata(sp: SamlServiceProvider): string {
 // ---- reading a response
 
 const LOWER_B64 = /^[A-Za-z0-9+/=\r\n\t ]*$/;
-// The root element's start tag, with an XML declaration, comments and whitespace allowed before it. Only attribute NAMES and quoted values may follow the element name.
-const ROOT_START = /^\uFEFF?\s*(?:<\?xml\b[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:([A-Za-z_][\w.-]*):)?([A-Za-z_][\w.-]*)((?:\s+[A-Za-z_][\w:.-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*\/?>/;
-const ATTRIBUTE = /\s+([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 const MAX_ELEMENTS = 5000;
 // An ID/NCName: letters, digits, `.`, `-`, `_`, not starting with a digit, `-` or `.`.
 const NCNAME = /^[A-Za-z_][A-Za-z0-9._-]{0,255}$/;
 
-/** The attributes of the root element's start tag, read from the unsigned text. Used only for checks that refuse; nothing trusted is taken from it. */
-function rootAttributes(xml: string): { localName: string; attributes: Map<string, string> } | undefined {
-  const match = ROOT_START.exec(xml);
-  if (match === null) return undefined;
-  const attributes = new Map<string, string>();
-  for (const [, name, double, single] of (match[3] ?? "").matchAll(ATTRIBUTE)) {
-    if (name === undefined) continue;
-    if (attributes.has(name)) return undefined;
-    attributes.set(name, double ?? single ?? "");
+const NS_SAMLP = "urn:oasis:names:tc:SAML:2.0:protocol";
+const NS_DSIG = "http://www.w3.org/2000/09/xmldsig#";
+const STATUS_SUCCESS = "urn:oasis:names:tc:SAML:2.0:status:Success";
+/** Only these signature and digest algorithms are accepted (SHA-1 and MD5 are not; neither is anything not listed). */
+const SIGNATURE_ALGORITHMS: ReadonlySet<string> = new Set([
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512",
+]);
+const DIGEST_ALGORITHMS: ReadonlySet<string> = new Set([
+  "http://www.w3.org/2001/04/xmlenc#sha256", "http://www.w3.org/2001/04/xmldsig-more#sha384", "http://www.w3.org/2001/04/xmlenc#sha512",
+]);
+
+/** The few DOM members these checks use (this project compiles without the DOM library). */
+interface XmlElement {
+  localName: string; namespaceURI: string | null; nodeType: number; firstChild: XmlElement | null; nextSibling: XmlElement | null;
+  getAttribute(name: string): string | null; hasAttribute(name: string): boolean;
+}
+interface XmlDocument { documentElement: XmlElement | null; getElementsByTagNameNS(namespace: string, name: string): ArrayLike<XmlElement> }
+
+const childElements = (node: XmlElement): XmlElement[] => {
+  const found: XmlElement[] = [];
+  for (let child = node.firstChild; child !== null; child = child.nextSibling) if (child.nodeType === 1) found.push(child);
+  return found;
+};
+
+async function inspectDocument(xml: string, sp: SamlServiceProvider, requestId: string): Promise<{ ok: true } | { ok: false; reason: SamlRefusal }> {
+  let doc: XmlDocument;
+  try {
+    doc = await parseDomFromString(xml) as unknown as XmlDocument;
+  } catch {
+    return refuse("response_unreadable");
   }
-  return { localName: match[2]!, attributes };
+  try {
+    const root = doc.documentElement;
+    if (root === null || root.localName !== "Response" || root.namespaceURI !== NS_SAMLP) return refuse("response_unreadable");
+    // The response's own status must be Success: exactly one Status, whose top status code is Success. A failure with an assertion in it is not a sign-in.
+    const statuses = childElements(root).filter((child) => child.localName === "Status" && child.namespaceURI === NS_SAMLP);
+    const code = statuses.length === 1 ? childElements(statuses[0]!).find((child) => child.localName === "StatusCode" && child.namespaceURI === NS_SAMLP) : undefined;
+    if (code === undefined || code.getAttribute("Value") !== STATUS_SUCCESS) return refuse("bad_status");
+    // Every signature and digest method in the document is on the allow-list (the library accepts SHA-1 by default).
+    for (const method of Array.from(doc.getElementsByTagNameNS(NS_DSIG, "SignatureMethod"))) if (!SIGNATURE_ALGORITHMS.has(method.getAttribute("Algorithm") ?? "")) return refuse("weak_algorithm");
+    for (const method of Array.from(doc.getElementsByTagNameNS(NS_DSIG, "DigestMethod"))) if (!DIGEST_ALGORITHMS.has(method.getAttribute("Algorithm") ?? "")) return refuse("weak_algorithm");
+    // Nothing signed at all: refused with its own word (the most common mistake, and the most dangerous to accept).
+    if (doc.getElementsByTagNameNS(NS_DSIG, "Signature").length === 0) return refuse("not_signed");
+    // SP-initiated only: the response answers the request this browser started.
+    const inResponseTo = root.getAttribute("InResponseTo");
+    if (inResponseTo === "") return refuse("unsolicited");
+    if (!root.hasAttribute("InResponseTo")) return refuse("unsolicited");
+    if (inResponseTo !== requestId) return refuse("not_for_this_request");
+    // Destination: equal to our consumer address when present, and required when the response itself is signed (SAML core 3.2.2).
+    const responseSigned = childElements(root).some((child) => child.localName === "Signature" && child.namespaceURI === NS_DSIG);
+    if (root.hasAttribute("Destination") ? root.getAttribute("Destination") !== sp.acsUrl : responseSigned) return refuse("wrong_destination");
+    return { ok: true };
+  } catch {
+    return refuse("response_unreadable");
+  }
 }
 
 function decodeResponse(samlResponse: string): { ok: true; xml: string } | { ok: false; reason: SamlRefusal } {
@@ -159,13 +204,6 @@ function decodeResponse(samlResponse: string): { ok: true; xml: string } | { ok:
   if (declaration !== undefined && /\bencoding\s*=\s*["'](?!utf-8["'])/i.test(declaration)) return refuse("response_unreadable");
   // XXE and entity expansion start with a document type declaration; a response never has one. Refused before any parser sees the text.
   if (/<!\s*(?:DOCTYPE|ENTITY|ELEMENT|ATTLIST|NOTATION)/i.test(xml)) return refuse("forbidden_markup");
-  // The response's own status must be Success (the first status code is the top-level one). A failure status with an assertion in it is not a sign-in.
-  const status = /<(?:[A-Za-z_][\w.-]*:)?StatusCode\s[^>]*?\bValue\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(xml);
-  if ((status?.[1] ?? status?.[2]) !== "urn:oasis:names:tc:SAML:2.0:status:Success") return refuse("bad_status");
-  // A SHA-1 or MD5 signature or digest is not accepted.
-  if (/(?:rsa-sha1|dsa-sha1|ecdsa-sha1|xmldsig#sha1|xmldsig-more#md5|xmldsig-more#rsa-md5|enc#sha1)/i.test(xml)) return refuse("weak_algorithm");
-  // Nothing signed at all: refused with its own word (an unsigned response is the most common mistake, and the most dangerous to accept).
-  if (!/<(?:[A-Za-z_][\w.-]*:)?Signature[\s>]/.test(xml)) return refuse("not_signed");
   // A bounded element count, so a deeply nested or huge document cannot exhaust a parser.
   let elements = 0;
   for (let at = xml.indexOf("<"); at !== -1; at = xml.indexOf("<", at + 1)) if (++elements > MAX_ELEMENTS) return refuse("response_too_large");
@@ -211,14 +249,10 @@ export async function verifySamlResponse(input: {
   if (!decoded.ok) return refuse(decoded.reason);
   const xml = decoded.xml;
 
-  // The unsigned root: only refusals come from it (the signed assertion is read below, and says the same things again).
-  const root = rootAttributes(xml);
-  if (root === undefined || root.localName !== "Response") return refuse("response_unreadable");
-  const rootInResponseTo = root.attributes.get("InResponseTo");
-  if (rootInResponseTo === undefined || rootInResponseTo === "") return refuse("unsolicited");
-  if (rootInResponseTo !== requestId) return refuse("not_for_this_request");
-  const destination = root.attributes.get("Destination");
-  if (destination !== undefined && destination !== sp.acsUrl) return refuse("wrong_destination");
+  // The parsed, still unverified document. Only refusals come from it (the signed assertion is read below and says the same things again): the algorithms, the status and the
+  // request this answers are read from the DOM, never from the text, so a character reference or a comment cannot hide them.
+  const inspected = await inspectDocument(xml, sp, requestId);
+  if (!inspected.ok) return refuse(inspected.reason);
 
   let profile;
   try {
@@ -286,8 +320,9 @@ function readSignedAssertion(assertion: Xml2Js, ctx: { sp: SamlServiceProvider; 
   const nameIds = asArray(subject.NameID);
   if (nameIds.length !== 1) return refuse("no_subject");
   const nameId = nameIds[0];
-  const nameIdValue = textOf(nameId)?.trim();
-  if (nameIdValue === undefined || nameIdValue === "" || nameIdValue.length > SUBJECT_MAX_CHARS) return refuse("no_subject");
+  // Exactly as the provider wrote it: surrounding whitespace is refused, never trimmed (" alice" and "alice" must not be one account).
+  const nameIdValue = textOf(nameId);
+  if (nameIdValue === undefined || nameIdValue === "" || nameIdValue !== nameIdValue.trim() || nameIdValue.length > SUBJECT_MAX_CHARS) return refuse("no_subject");
   if (attrOf(nameId, "Format") === TRANSIENT) return refuse("transient_subject");
 
   const confirmations = asArray(subject.SubjectConfirmation).filter((entry) => attrOf(entry, "Method") === BEARER);
@@ -315,11 +350,13 @@ function readSignedAssertion(assertion: Xml2Js, ctx: { sp: SamlServiceProvider; 
   // The provider's own session end, when it names one, is the end of this sign-in too.
   const statements = asArray(assertion.AuthnStatement);
   let authTime: number | undefined;
+  let sessionEndMs: number | undefined;
   for (const statement of statements) {
     const sessionEnd = attrOf(statement, "SessionNotOnOrAfter");
     if (sessionEnd !== undefined) {
       const end = parseInstant(sessionEnd);
       if (end === undefined || nowMs - skewMs >= end) return refuse("expired");
+      sessionEndMs = sessionEndMs === undefined ? end : Math.min(sessionEndMs, end);
     }
     const instant = parseInstant(attrOf(statement, "AuthnInstant"));
     // A time in the future is not a time the sign-in can use.
@@ -334,6 +371,7 @@ function readSignedAssertion(assertion: Xml2Js, ctx: { sp: SamlServiceProvider; 
       ...(attrOf(nameId, "Format") === undefined ? {} : { nameIdFormat: attrOf(nameId, "Format")! }),
       notOnOrAfter: Math.floor(Math.min(conditionsEnd, confirmedEnd) / 1000),
       ...(authTime === undefined ? {} : { authTime }),
+      ...(sessionEndMs === undefined ? {} : { sessionNotOnOrAfter: Math.floor(sessionEndMs / 1000) }),
     },
   };
 }
@@ -408,30 +446,44 @@ export async function claimAssertion(store: SamlReplayStore, orgId: OrgId, asser
 // ---- the posted response, kept for one redirect
 //
 // The identity provider POSTs the response from another site, and a browser does not send a SameSite=Lax cookie on a cross-site POST, so the sign-in's cookie checks would fail.
-// The POST handler therefore keeps the response (bounded, unread) under a random single-use handle for two minutes and redirects the browser to a GET, which carries the cookies.
+// The POST handler therefore keeps the response (bounded, unread) for two minutes and redirects the browser to a GET, which carries the cookies. The record is keyed by the sign-in
+// request it answers (one per request: a second POST for the same request writes nothing) and opened only with a random handle that goes back to that browser alone.
 
 export interface SamlResponseStash {
-  put(orgId: OrgId, handle: string, response: string, expiresAtSeconds: number): Promise<void>;
-  /** Returns the response once and removes it; undefined when there is none, it was taken, or it has expired. */
-  take(orgId: OrgId, handle: string, nowMs: number): Promise<string | undefined>;
+  /** Keeps the response for the auth request `requestId`. False when one is already kept for it (the first POST wins; a flood writes once). */
+  put(orgId: OrgId, requestId: string, handle: string, response: string, expiresAtSeconds: number): Promise<boolean>;
+  /** Returns the response once and removes it; undefined when there is none, the handle is not the one it was kept under, or it has expired. A wrong handle still removes it. */
+  take(orgId: OrgId, requestId: string, handle: string, nowMs: number): Promise<string | undefined>;
 }
 
 export const SAML_STASH_TTL_SECONDS = 120;
 export const SAML_HANDLE = /^[A-Za-z0-9_-]{43}$/;
+const STASH_REQUEST_ID = /^[A-Za-z0-9_-]{43}$/;
 
 export function dynamoSamlResponseStash(input: { documentClient: DocumentClient; tableName: string }): SamlResponseStash {
   return {
-    async put(orgId, handle, response, expiresAtSeconds) {
-      await input.documentClient.send(new PutCommand({
-        TableName: input.tableName, Item: { ...samlStashKey(orgId, handle), entityType: "SSO_SAML_RESP", response, expiresAt: expiresAtSeconds + 3600 },
-        ConditionExpression: "attribute_not_exists(pk)",
-      }));
+    async put(orgId, requestId, handle, response, expiresAtSeconds) {
+      if (!STASH_REQUEST_ID.test(requestId) || !SAML_HANDLE.test(handle)) return false;
+      try {
+        await input.documentClient.send(new PutCommand({
+          TableName: input.tableName,
+          Item: { ...samlStashKey(orgId, requestId), entityType: "SSO_SAML_RESP", handleSha256: sha256(handle), response, expiresAt: expiresAtSeconds + 3600 },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }));
+        return true;
+      } catch (error) {
+        if (conditionalFailed(error)) return false;
+        throw error;
+      }
     },
-    async take(orgId, handle, nowMs) {
-      if (!SAML_HANDLE.test(handle)) return undefined;
-      const removed = await input.documentClient.send(new DeleteCommand({ TableName: input.tableName, Key: samlStashKey(orgId, handle), ReturnValues: "ALL_OLD" })) as { Attributes?: { response?: unknown; expiresAt?: unknown } };
+    async take(orgId, requestId, handle, nowMs) {
+      if (!STASH_REQUEST_ID.test(requestId) || !SAML_HANDLE.test(handle)) return undefined;
+      const removed = await input.documentClient.send(new DeleteCommand({ TableName: input.tableName, Key: samlStashKey(orgId, requestId), ReturnValues: "ALL_OLD" })) as { Attributes?: { response?: unknown; expiresAt?: unknown; handleSha256?: unknown } };
       const item = removed.Attributes;
-      if (item === undefined || typeof item.response !== "string" || typeof item.expiresAt !== "number") return undefined;
+      if (item === undefined || typeof item.response !== "string" || typeof item.expiresAt !== "number" || typeof item.handleSha256 !== "string") return undefined;
+      const given = Buffer.from(sha256(handle), "hex");
+      const kept = Buffer.from(item.handleSha256, "hex");
+      if (given.length !== kept.length || !timingSafeEqual(given, kept)) return undefined;
       // `expiresAt` carries a one-hour table margin; the handle's own life is the stash TTL.
       return item.expiresAt - 3600 > Math.floor(nowMs / 1000) ? item.response : undefined;
     },
@@ -441,7 +493,7 @@ export function dynamoSamlResponseStash(input: { documentClient: DocumentClient;
 // ---- the saved configuration
 
 /** Checks the certificate the admin pasted: a real X.509 certificate with a usable public key, not already expired. Fixed words; the parser's text never leaves. */
-export function checkSamlCertificate(pem: string, nowMs: number): "ok" | "unreadable" | "expired" | "weak_key" | "not_yet_valid" {
+export function checkSamlCertificate(pem: string, nowMs: number): "ok" | "unreadable" | "expired" | "weak_key" | "not_yet_valid" | "unsupported_key" {
   let cert: X509Certificate;
   try {
     cert = new X509Certificate(pem);
@@ -451,8 +503,9 @@ export function checkSamlCertificate(pem: string, nowMs: number): "ok" | "unread
   if (Date.parse(cert.validTo) <= nowMs) return "expired";
   if (Date.parse(cert.validFrom) > nowMs + 24 * 3600_000) return "not_yet_valid";
   const key = cert.publicKey;
-  if (key.asymmetricKeyType === "rsa" && (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) return "weak_key";
-  if (key.asymmetricKeyType !== "rsa" && key.asymmetricKeyType !== "ec") return "weak_key";
+  // The library (xml-crypto 6.4) verifies RSA signatures only: a certificate it cannot verify with would refuse every sign-in, so it is refused here, with its reason.
+  if (key.asymmetricKeyType !== "rsa") return "unsupported_key";
+  if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) return "weak_key";
   return "ok";
 }
 
@@ -460,7 +513,8 @@ export const SAML_CERTIFICATE_MESSAGES = {
   unreadable: "That certificate could not be read. Paste the identity provider's signing certificate in PEM form.",
   expired: "That certificate has expired. Download the current signing certificate from your identity provider.",
   not_yet_valid: "That certificate is not valid yet. Check that you copied the current signing certificate.",
-  weak_key: "That certificate's key is too weak. Rovara needs RSA of 2048 bits or more, or an elliptic curve key.",
+  weak_key: "That certificate's key is too weak. Rovara needs an RSA key of 2048 bits or more.",
+  unsupported_key: "That certificate's key type is not supported. Rovara verifies SAML signatures made with RSA keys of 2048 bits or more; ask your identity provider for an RSA signing certificate.",
 } as const;
 
 type SaveEvents = readonly AuditEventInput[];
@@ -469,7 +523,7 @@ export interface SamlConfigStore {
   /** The org's SAML settings, or undefined when none is saved. A stored record that does not parse throws. */
   get(orgId: OrgId): Promise<SamlIdpConfig | undefined>;
   /** Saves them (compare and set on the version the admin read; 0 when none is saved). The audit events commit with the save. */
-  put(orgId: OrgId, settings: SamlIdpSettings, by: string, expectedVersion: number, nowMs: number, events?: SaveEvents): Promise<SamlIdpConfig>;
+  put(orgId: OrgId, settings: SamlIdpSettings & { sessionsValidFrom?: number }, by: string, expectedVersion: number, nowMs: number, events?: SaveEvents): Promise<SamlIdpConfig>;
 }
 
 export function dynamoSamlConfigStore(input: { documentClient: DocumentClient; tableName: string; policy: EditionPolicy; audit?: AuditRuntime }): SamlConfigStore {

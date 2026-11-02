@@ -12,20 +12,22 @@ const oid = (bytes: number[]): Buffer => der(0x06, Buffer.from(bytes));
 const utf8 = (text: string): Buffer => der(0x0c, Buffer.from(text, "utf8"));
 const utcTime = (date: Date): Buffer => der(0x17, Buffer.from(date.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z", "ascii"));
 const SHA256_RSA = der(0x30, oid([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b]), der(0x05));
+const SHA256_ECDSA = der(0x30, oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
 
 export interface IdpKey { privateKey: KeyObject; certificate: string }
 
 /** A self-signed X.509 certificate for a fresh RSA key. `validDays` negative makes an expired one. */
-export function makeIdpKey(options: { bits?: number; notBefore?: Date; notAfter?: Date; commonName?: string } = {}): IdpKey {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: options.bits ?? 2048 });
+export function makeIdpKey(options: { bits?: number; kind?: "rsa" | "ec"; notBefore?: Date; notAfter?: Date; commonName?: string } = {}): IdpKey {
+  const { privateKey, publicKey } = options.kind === "ec" ? generateKeyPairSync("ec", { namedCurve: "P-256" }) : generateKeyPairSync("rsa", { modulusLength: options.bits ?? 2048 });
+  const signatureAlgorithm = options.kind === "ec" ? SHA256_ECDSA : SHA256_RSA;
   const notBefore = options.notBefore ?? new Date(Date.now() - 86_400_000);
   const notAfter = options.notAfter ?? new Date(Date.now() + 365 * 86_400_000);
   const name = der(0x30, der(0x31, der(0x30, oid([0x55, 0x04, 0x03]), utf8(options.commonName ?? "test idp"))));
   const tbs = der(0x30,
-    der(0xa0, der(0x02, Buffer.from([2]))), der(0x02, Buffer.from([1])), SHA256_RSA, name,
+    der(0xa0, der(0x02, Buffer.from([2]))), der(0x02, Buffer.from([1])), signatureAlgorithm, name,
     der(0x30, utcTime(notBefore), utcTime(notAfter)), name, Buffer.from(publicKey.export({ type: "spki", format: "der" })));
   const signature = createSign("sha256").update(tbs).sign(privateKey);
-  const certificate = der(0x30, tbs, SHA256_RSA, der(0x03, Buffer.concat([Buffer.from([0]), signature])));
+  const certificate = der(0x30, tbs, signatureAlgorithm, der(0x03, Buffer.concat([Buffer.from([0]), signature])));
   const body = certificate.toString("base64").match(/.{1,64}/g)!.join("\n");
   return { privateKey, certificate: `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n` };
 }
@@ -79,6 +81,7 @@ export interface ResponseOptions {
   extraAssertion?: boolean;
   assertionVersion?: string;
   omitSubject?: boolean;
+  omitAuthnStatement?: boolean;
   /** A second Conditions element, valid, beside the first. */
   secondConditions?: boolean;
   secondNameId?: boolean;
@@ -106,7 +109,7 @@ function assertionXml(o: ResponseOptions, now: number, id: string, nameId: strin
   const confirmation = `<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:${o.bearer === false ? "holder-of-key" : "bearer"}"><saml:SubjectConfirmationData${subjectRequest === null ? "" : ` InResponseTo="${subjectRequest}"`}${recipient === null ? "" : ` Recipient="${recipient}"`}${subjectEnd === undefined ? "" : ` NotOnOrAfter="${subjectEnd}"`}/></saml:SubjectConfirmation>`;
   const format = o.nameIdFormat === undefined ? "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" : o.nameIdFormat;
   const conditions = o.conditionsElement === false ? "" : `<saml:Conditions${notBefore === undefined ? "" : ` NotBefore="${notBefore}"`}${notOnOrAfter === undefined ? "" : ` NotOnOrAfter="${notOnOrAfter}"`}>${audience === null ? "" : `<saml:AudienceRestriction><saml:Audience>${audience}</saml:Audience></saml:AudienceRestriction>`}</saml:Conditions>`;
-  return `<saml:Assertion ID="${id}" Version="${o.assertionVersion ?? "2.0"}" IssueInstant="${iso(now)}"><saml:Issuer>${o.issuer ?? TEST_IDP_ENTITY}</saml:Issuer>${o.omitSubject === true ? "" : `<saml:Subject><saml:NameID${format === null ? "" : ` Format="${format}"`}>${escapeXml(nameId)}</saml:NameID>${o.secondNameId === true ? "<saml:NameID>person-admin</saml:NameID>" : ""}${confirmation}</saml:Subject>`}${conditions}${o.secondConditions === true ? `<saml:Conditions NotOnOrAfter="${iso(now + 300_000)}"/>` : ""}<saml:AuthnStatement AuthnInstant="${iso(now + (o.authnInstantOffsetMs ?? -5_000))}"${sessionEnd === undefined ? "" : ` SessionNotOnOrAfter="${sessionEnd}"`} SessionIndex="s1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>${attributeXml}${o.attributesRaw ?? ""}</saml:AttributeStatement></saml:Assertion>`;
+  return `<saml:Assertion ID="${id}" Version="${o.assertionVersion ?? "2.0"}" IssueInstant="${iso(now)}"><saml:Issuer>${o.issuer ?? TEST_IDP_ENTITY}</saml:Issuer>${o.omitSubject === true ? "" : `<saml:Subject><saml:NameID${format === null ? "" : ` Format="${format}"`}>${escapeXml(nameId)}</saml:NameID>${o.secondNameId === true ? "<saml:NameID>person-admin</saml:NameID>" : ""}${confirmation}</saml:Subject>`}${conditions}${o.secondConditions === true ? `<saml:Conditions NotOnOrAfter="${iso(now + 300_000)}"/>` : ""}${o.omitAuthnStatement === true ? "" : `<saml:AuthnStatement AuthnInstant="${iso(now + (o.authnInstantOffsetMs ?? -5_000))}"${sessionEnd === undefined ? "" : ` SessionNotOnOrAfter="${sessionEnd}"`} SessionIndex="s1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement>`}<saml:AttributeStatement>${attributeXml}${o.attributesRaw ?? ""}</saml:AttributeStatement></saml:Assertion>`;
 }
 
 function sign(xml: string, target: "Assertion" | "Response", o: ResponseOptions): string {

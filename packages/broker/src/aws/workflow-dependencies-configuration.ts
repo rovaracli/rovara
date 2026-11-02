@@ -1,6 +1,8 @@
 import type { DeveloperApiConfiguration } from "./developer-routes.js";
 import { developerSinceFromEnvironment } from "./developer-routes.js";
 import { webOriginFromEnvironment } from "../org/invite-url.js";
+import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { GITHUB_ISSUER } from "../developer/providers.js";
 
 export function workflowDependenciesConfigurationFromEnvironment(environment: Record<string, string | undefined>): {
   workflowDependenciesEnabled: boolean;
@@ -31,6 +33,7 @@ export function createDeveloperApiConfiguration(
   const slackTeamId = environment.SLACK_TEAM_ID ?? "";
   return {
     ...integrations(issuer, identityFunctionName),
+    reservedIssuers: [issuer, environment.DEVELOPER_OIDC_ISSUER, environment.DEVELOPER_CLOUD_ISSUER, SLACK_OIDC_ISSUER, GITHUB_ISSUER].filter((value): value is string => value !== undefined && value !== ""),
     issuer,
     env,
     methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "",

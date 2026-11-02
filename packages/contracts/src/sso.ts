@@ -174,10 +174,17 @@ export const SamlIdpSettingsSchema = z.object({
   /** The provider's signing certificate, PEM. Public; never a private key (the pattern admits only a certificate block). */
   certificate: z.string().min(1).max(SAML_CERTIFICATE_MAX_CHARS).regex(PEM_CERTIFICATE, "a PEM certificate"),
   enabled: z.boolean(),
+  /**
+   * Whether the email address in an assertion counts as verified (the Slack link, invites by address). Off unless an owner turns it on, because on many providers people can edit
+   * their own profile email. Leaving it out of a save turns it off.
+   */
+  trustEmail: z.boolean().default(false),
 }).strict();
 export type SamlIdpSettings = z.infer<typeof SamlIdpSettingsSchema>;
 
 export const SamlIdpConfigSchema = SamlIdpSettingsSchema.extend({
+  /** SAML sessions that started before this (epoch seconds) are over: set when SAML is turned off, the certificate changes or the entity id changes. */
+  sessionsValidFrom: z.number().int().min(0).default(0),
   version: z.number().int().min(1),
   updatedAt: z.string().min(1).max(64),
   updatedBy: z.string().regex(/^[a-f0-9]{64}$/),

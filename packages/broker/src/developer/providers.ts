@@ -31,6 +31,8 @@ export interface ProviderIdentity {
    * that carries groups (GroupClaimNameSchema) are kept, so a claim a person can edit about themselves (email, name) never reaches the mapping. Company sign-in only.
    */
   claims?: Record<string, unknown>;
+  /** The SAML provider's own end for this sign-in session (epoch seconds): the session never outlasts it. */
+  sessionNotOnOrAfter?: number;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -60,7 +62,8 @@ export interface SignInProvider {
      */
     decide?: { loginHint: string };
   }): Promise<string>;
-  complete(input: { code: string; nonce: string; redirectUri: string }): Promise<ProviderResult>;
+  /** `state` is the auth request's id (the relay state): the SAML sign-in keeps the posted response under it. */
+  complete(input: { code: string; nonce: string; redirectUri: string; state?: string }): Promise<ProviderResult>;
 }
 
 const SCOPES = "openid email profile";
@@ -276,7 +279,7 @@ export function oidcSignInProvider(input: {
   };
 }
 
-const GITHUB_ISSUER = "https://github.com";
+export const GITHUB_ISSUER = "https://github.com";
 const GITHUB_SCOPES = "read:user user:email";
 const GITHUB_API_HEADERS = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "rovara-sign-in" } as const;
 
@@ -347,8 +350,13 @@ export function githubSignInProvider(input: {
 export interface SamlSignInProvider extends SignInProvider {
   /** Whether an administrator has saved and enabled the identity provider's settings. */
   configured(): Promise<boolean>;
-  /** Keeps a posted `SAMLResponse` for one redirect (see developer/saml.ts) and returns the single-use handle that `complete` takes as its `code`. Undefined when SAML is not set up. */
-  accept(samlResponse: string): Promise<string | undefined>;
+  /**
+   * Keeps a posted `SAMLResponse` for one redirect (see developer/saml.ts), under the sign-in request `requestId` it answers, and returns the single-use handle that `complete` takes as its
+   * `code`. Undefined when a response is already kept for that request, or it is too large. Throws ProviderNotConfiguredError when SAML is not set up.
+   */
+  accept(requestId: string, samlResponse: string): Promise<string | undefined>;
+  /** The time (epoch seconds) before which SAML sessions are over: set when SAML is turned off or the certificate or entity id changes. 0: none. */
+  sessionsValidFrom(): Promise<number>;
   /** Our service provider metadata, to give the identity provider. */
   metadata(): string;
 }
@@ -388,19 +396,23 @@ export function samlSignInProvider(input: {
       const { config } = await settings();
       return samlAuthorizeUrl({ sp: input.sp, idp: idpOf(config), state, nonce, ...(freshSignIn === true ? { freshSignIn } : {}) });
     },
-    async accept(samlResponse) {
+    async sessionsValidFrom() {
+      // Fail closed: settings that cannot be read end every SAML session, and so does an install with no org to read them from.
+      if (input.orgId === undefined) return Number.MAX_SAFE_INTEGER;
+      return (await input.load(input.orgId))?.sessionsValidFrom ?? Number.MAX_SAFE_INTEGER;
+    },
+    async accept(requestId, samlResponse) {
       const { orgId } = await settings();
       // The size bound, before anything is stored (verifySamlResponse bounds it again before it is read).
       if (samlResponse.length > Math.ceil((SAML_RESPONSE_MAX_BYTES * 4) / 3) + 64) return undefined;
       const handle = randomBytes(32).toString("base64url");
-      await input.stash.put(orgId, handle, samlResponse, Math.floor(input.now() / 1000) + SAML_STASH_TTL_SECONDS);
-      return handle;
+      return await input.stash.put(orgId, requestId, handle, samlResponse, Math.floor(input.now() / 1000) + SAML_STASH_TTL_SECONDS) ? handle : undefined;
     },
     metadata: () => samlServiceProviderMetadata(input.sp),
-    async complete({ code, nonce }) {
+    async complete({ code, nonce, state }) {
       const { orgId, config } = await settings();
-      if (!SAML_HANDLE.test(code)) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: "response_unreadable" };
-      const response = await input.stash.take(orgId, code, input.now());
+      if (state === undefined || !SAML_HANDLE.test(code)) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: "response_unreadable" };
+      const response = await input.stash.take(orgId, state, code, input.now());
       if (response === undefined) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: "response_unreadable" };
       const verified = await verifySamlResponse({ samlResponse: response, sp: input.sp, idp: idpOf(config), nonce, nowMs: input.now() });
       if (!verified.ok) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: verified.reason };
@@ -410,8 +422,9 @@ export function samlSignInProvider(input: {
       const { assertion } = claimed;
       const attributeOf = (names: readonly string[]) => names.flatMap((name) => assertion.attributes[name] ?? []).find((value) => value !== "" && !value.includes("\u0000"));
       const emailOf = (candidate: string | undefined) => (candidate !== undefined && candidate.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(candidate) ? candidate : undefined);
-      // The email the identity provider vouches for: its email attribute, else a NameID in email format. The provider is the company's own and signs the assertion, so the address counts as verified.
-      const email = emailOf(attributeOf(SAML_EMAIL_ATTRIBUTES)) ?? (NAME_ID_EMAIL_FORMAT.test(assertion.nameIdFormat ?? "") ? emailOf(assertion.subject) : undefined);
+      // The email is used only when an owner has said to trust the provider's addresses (review S1): on many providers people can edit their own profile email, and an address used
+      // for the Slack link or an invite is a claim to be someone else. Off: no address at all, as for an OpenID Connect token whose email is not verified.
+      const email = !config.trustEmail ? undefined : emailOf(attributeOf(SAML_EMAIL_ATTRIBUTES)) ?? (NAME_ID_EMAIL_FORMAT.test(assertion.nameIdFormat ?? "") ? emailOf(assertion.subject) : undefined);
       const name = [attributeOf(SAML_NAME_ATTRIBUTES)].find((value): value is string => value !== undefined && !containsEmailAddress(value));
       // Only the attributes that carry groups reach the group mapping; a person-editable one (email, name) never does. The value is the list as the assertion gave it.
       const claims: Record<string, unknown> = {};
@@ -419,10 +432,13 @@ export function samlSignInProvider(input: {
       return {
         ok: true,
         identity: {
-          method: "saml", issuer: assertion.issuer, subject: assertion.subject,
+          // The method is part of the account key (review B1): a SAML entity id that equals another method's issuer must not reach that method's accounts.
+          method: "saml", issuer: `saml:${assertion.issuer}`, subject: assertion.subject,
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? "",
           ...(email === undefined ? {} : { email, emailVerified: true }),
-          ...(assertion.authTime === undefined ? {} : { authTime: assertion.authTime }),
+          // No usable authentication time is the oldest one, never "now": the session is then not fresh, whatever the provider did with ForceAuthn (review N1).
+          authTime: assertion.authTime ?? 0,
+          ...(assertion.sessionNotOnOrAfter === undefined ? {} : { sessionNotOnOrAfter: assertion.sessionNotOnOrAfter }),
           claims,
         },
       };

@@ -145,6 +145,49 @@ describe("the subject", () => {
   });
 });
 
+describe("the algorithms and the status are read from the parsed document, not from its text (review S2)", () => {
+  it("a SHA-1 algorithm spelled with a character reference is still SHA-1 and is refused", async () => {
+    const xml = responseXml({ key });
+    const spelled = xml.replace("xmldsig-more#rsa-sha256", "xmldsig-more#rsa-sh&#x61;256").replace(/#rsa-sh&#x61;256/, "#rsa-sh&#x61;1").replace("xmldsig-more#rsa-sh&#x61;1", "xmldsig#rsa-sh&#x61;1");
+    expect(spelled).toContain("&#x61;1");
+    expect(await verify(toPost(spelled))).toEqual({ ok: false, reason: "weak_algorithm" });
+    const digest = xml.replace("xmlenc#sha256", "xmlenc#sh&#97;1").replace("xmlenc#sh&#97;1", "xmldsig#sh&#97;1");
+    expect(await verify(toPost(digest))).toEqual({ ok: false, reason: "weak_algorithm" });
+  });
+  it("an algorithm outside the allow-list is refused even if it is not one we name as weak", async () => {
+    const xml = responseXml({ key }).replace("xmldsig-more#rsa-sha256", "xmldsig-more#rsa-ripemd160");
+    expect(await verify(toPost(xml))).toEqual({ ok: false, reason: "weak_algorithm" });
+  });
+  it("a Success status inside a comment is not a status", async () => {
+    const xml = responseXml({ key, status: "Responder" });
+    const commented = xml.replace("<samlp:Status>", '<!-- <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/> --><samlp:Status>');
+    expect(await verify(toPost(commented))).toEqual({ ok: false, reason: "bad_status" });
+    const reference = xml.replace('Value="urn:oasis:names:tc:SAML:2.0:status:Responder"', 'Value="urn:oasis:names:tc:SAML:2.0:status:Succ&#101;ss"');
+    expect((await verify(toPost(reference))).ok).toBe(true);
+  });
+});
+
+describe("the subject, the destination and the session end (review N2, N3, N5)", () => {
+  it("a NameID with surrounding whitespace is refused, not trimmed into another person's key", async () => {
+    expect(await refusal({ nameId: " person-una" })).toBe("no_subject");
+    expect(await refusal({ nameId: "person-una\n" })).toBe("no_subject");
+    expect(await refusal({ nameId: "person-una" })).toBe("accepted");
+  });
+  it("a signed response must carry its Destination; an unsigned one (signed assertion) need not", async () => {
+    expect(await refusal({ sign: "response", destination: null })).toBe("wrong_destination");
+    expect(await refusal({ sign: "both", destination: null })).toBe("wrong_destination");
+    expect(await refusal({ sign: "assertion", destination: null })).toBe("accepted");
+    expect(await refusal({ sign: "response" })).toBe("accepted");
+  });
+  it("reports the provider's session end, the earliest one named", async () => {
+    const result = await verify(makeResponse({ key, sessionNotOnOrAfterOffsetMs: 600_000 }));
+    expect(result.ok && result.assertion.sessionNotOnOrAfter).toBeGreaterThan(0);
+    expect(result.ok && Math.abs(result.assertion.sessionNotOnOrAfter! - Math.floor((now() + 600_000) / 1000))).toBeLessThanOrEqual(2);
+    const none = await verify(makeResponse({ key, sessionNotOnOrAfterOffsetMs: null }));
+    expect(none.ok && none.assertion.sessionNotOnOrAfter).toBeUndefined();
+  });
+});
+
 describe("the XML is read safely", () => {
   const withPrologue = (prologue: string) => toPost(`${prologue}${responseXml({ key })}`);
   it("a document type declaration is refused before any parser sees it (XXE, entity expansion)", async () => {

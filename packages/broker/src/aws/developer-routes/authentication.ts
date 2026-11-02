@@ -1,5 +1,5 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DEVELOPER_TOKEN_AUDIENCE, agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
+import { DEVELOPER_TOKEN_AUDIENCE, agentXError, singleOrgIdForEnv, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../../developer/edition-methods.js";
 import { safeDisplayName } from "../../developer/person-name.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
@@ -74,6 +74,17 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   // session at its next refresh.
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
+  }
+  // SAML is turned off, and its certificate rotated, by the saved settings (not the environment): their cutoff ends the sessions that started before it (Enterprise foundations I4, review S3).
+  // Settings that cannot be read, or none, end the session: a SAML session with nothing to stand on is not kept.
+  if (session.amr === "saml") {
+    let validFrom = Number.MAX_SAFE_INTEGER;
+    try {
+      validFrom = (await deps.sso?.saml.config.get(singleOrgIdForEnv(deps.developer.env)))?.sessionsValidFrom ?? validFrom;
+    } catch {
+      validFrom = Number.MAX_SAFE_INTEGER;
+    }
+    if (startedBeforeMethodOn(session.startedAt, validFrom)) throw agentXError("AUTH_REQUIRED", "your sign-in ended when SAML single sign-on was changed; sign in again");
   }
   // Release 0.4.18: the name the person chose is an item in the State table, read with their sign-in record.
   const [developer, chosenName] = await Promise.all([

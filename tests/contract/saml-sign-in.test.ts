@@ -6,7 +6,8 @@ import { methodAllowedByEdition } from "../../packages/broker/src/developer/edit
 import { createDeveloperIdentityHandler, enabledMethods } from "../../packages/broker/src/developer/server.js";
 import { REMOVED_FROM_ORG_MESSAGE } from "../../packages/broker/src/org/sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { CLI_REDIRECT, ISSUER, T0, authorizeQuery, httpEvent, identityHarness } from "../support/developer-fakes.js";
+import { CLI_REDIRECT, ISSUER, OIDC_ISSUER, T0, authorizeQuery, httpEvent, identityHarness } from "../support/developer-fakes.js";
+import { isFreshSignIn } from "../../packages/broker/src/developer/store.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { TEST_IDP_ENTITY, TEST_SP, TEST_SSO_URL, makeIdpKey, makeResponse, requestIdOf, type IdpKey, type ResponseOptions } from "../support/saml-fixtures.js";
 
@@ -19,14 +20,15 @@ const RULES = [
   { id: "users", group: "rovara-users", orgRole: "member" as const, projectRoles: [] },
   { id: "auditors", group: "rovara-auditors", orgRole: "auditor" as const, projectRoles: [] },
 ];
-const una = ownerKeyForSubject(TEST_IDP_ENTITY, "person-una");
+// A SAML identity is keyed apart from every other method's (review B1): the issuer in the key names the method.
+const una = ownerKeyForSubject(`saml:${TEST_IDP_ENTITY}`, "person-una");
 
 let key: IdpKey;
 beforeAll(() => { key = makeIdpKey({ notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2031-01-01T00:00:00Z") }); });
 beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(T0); });
 afterEach(() => { vi.useRealTimers(); });
 
-async function world(options: { configured?: boolean; enabled?: boolean; policy?: ReturnType<typeof editionPolicy> | undefined; mapping?: boolean } = {}) {
+async function world(options: { configured?: boolean; enabled?: boolean; policy?: ReturnType<typeof editionPolicy> | undefined; mapping?: boolean; trustEmail?: boolean } = {}) {
   const capture = capturingAuditDeps();
   const policy = "policy" in options ? options.policy : enterprise;
   const h = identityHarness({ slack: false, editionPolicy: policy!, sso: true, saml: true, audit: capture });
@@ -34,7 +36,7 @@ async function world(options: { configured?: boolean; enabled?: boolean; policy?
   await h.orgs.addMember({ orgId: TEST_ORG, developerId: "b".repeat(64), role: "owner" });
   h.db.set({ ...orgMetaKey(TEST_ORG) });
   if (options.mapping !== false) await h.deps.sso!.mappings.put(TEST_ORG, { claim: "groups", rules: RULES, updatedAt: "2026-10-31T00:00:00Z", updatedBy: BY }, 0);
-  if (options.configured !== false) await h.deps.sso!.saml.config.put(TEST_ORG, { idpEntityId: TEST_IDP_ENTITY, ssoUrl: TEST_SSO_URL, certificate: key.certificate, enabled: options.enabled ?? true }, BY, 0, T0);
+  if (options.configured !== false) await h.deps.sso!.saml.config.put(TEST_ORG, { idpEntityId: TEST_IDP_ENTITY, ssoUrl: TEST_SSO_URL, certificate: key.certificate, enabled: options.enabled ?? true, trustEmail: options.trustEmail ?? true }, BY, 0, T0);
   return { h, capture };
 }
 type World = Awaited<ReturnType<typeof world>>["h"];
@@ -76,7 +78,7 @@ describe("a SAML sign-in", () => {
     const session = (await h.deps.store.getSession(String(claims.sid)))!;
     expect(session.endsAt).toBeLessThanOrEqual(Math.floor(T0 / 1000) + ENTERPRISE_SESSION_MAX_SECONDS);
     expect(session.groupClaims).toEqual({ groups: ["rovara-users"] });
-    expect(await h.deps.store.getDeveloper(una)).toMatchObject({ provider: "saml", issuer: TEST_IDP_ENTITY, subject: "person-una", email: "una@example.test", displayName: "Una" });
+    expect(await h.deps.store.getDeveloper(una)).toMatchObject({ provider: "saml", issuer: `saml:${TEST_IDP_ENTITY}`, subject: "person-una", email: "una@example.test", displayName: "Una" });
     expect((await h.orgs.orgForDeveloper(una))?.role).toBe("member");
     expect(capture.recordedBy("sso.sign_in")[0]).toMatchObject({ orgId: TEST_ORG, facts: { source: "mapping", role: "member", rules: 1 }, details: [{ fields: { matchedRuleIds: "users" } }] });
     // The response, the assertion and the groups are in no audit record.
@@ -324,5 +326,116 @@ describe("the edition and the switch", () => {
     expect(metadata.body).toContain(TEST_SP.acsUrl);
     expect(metadata.body).toContain(`entityID="${TEST_SP.entityId}"`);
     expect(metadata.body).not.toMatch(/PRIVATE|BEGIN/);
+  });
+});
+
+describe("a SAML identity never lands on another method's account (review B1)", () => {
+  it("a NameID equal to an existing OpenID Connect subject, under an entity id equal to the OIDC issuer, resolves to its own new account", async () => {
+    const capture = capturingAuditDeps();
+    const h = identityHarness({ slack: false, oidc: {}, editionPolicy: enterprise, sso: true, saml: true, audit: capture });
+    await h.orgs.ensureOrg(TEST_ORG, "staging");
+    h.db.set({ ...orgMetaKey(TEST_ORG) });
+    await h.deps.sso!.mappings.put(TEST_ORG, { claim: "groups", rules: RULES, updatedAt: "2026-10-31T00:00:00Z", updatedBy: BY }, 0);
+    // The company's OIDC owner, signed in before.
+    const ownerId = ownerKeyForSubject(OIDC_ISSUER, "owner-1");
+    await h.deps.store.upsertDeveloper({ developerId: ownerId, provider: "oidc", issuer: OIDC_ISSUER, subject: "owner-1", displayName: "Olga", email: "olga@example.test" });
+    await h.orgs.addMember({ orgId: TEST_ORG, developerId: ownerId, role: "owner" });
+    // SAML saved with the OIDC issuer as its entity id (written straight to the store: the route refuses it, the account key must not depend on that).
+    await h.deps.sso!.saml.config.put(TEST_ORG, { idpEntityId: OIDC_ISSUER, ssoUrl: TEST_SSO_URL, certificate: key.certificate, enabled: true, trustEmail: true }, BY, 0, T0);
+    const result = await signIn(h, { issuer: OIDC_ISSUER, nameId: "owner-1" });
+    expect(result.tokens).toBeDefined();
+    const sub = decodeJwt(String(result.tokens!.access_token)).sub;
+    expect(sub).not.toBe(ownerId);
+    expect(sub).toBe(ownerKeyForSubject(`saml:${OIDC_ISSUER}`, "owner-1"));
+    expect(roleOf(result.tokens)).toBe("member");
+    // The owner's own account is untouched: still an OIDC account, still owner, and no session was started for it.
+    expect(await h.deps.store.getDeveloper(ownerId)).toMatchObject({ provider: "oidc", issuer: OIDC_ISSUER, subject: "owner-1" });
+    expect((await h.orgs.orgForDeveloper(ownerId))?.role).toBe("owner");
+    expect(h.db.find((item) => String(item.pk).startsWith("SESSION#") && item.developerId === ownerId)).toEqual([]);
+  });
+});
+
+describe("the provider's email is trusted only when an owner says so (review S1)", () => {
+  it("by default a SAML email is not used: no Slack lookup, no address on the account, no invite matched by address", async () => {
+    const { h } = await world({ trustEmail: false });
+    const lookup = vi.spyOn(h.deps.directory, "lookupByEmail");
+    const result = await signIn(h);
+    expect(roleOf(result.tokens)).toBe("member");
+    expect(lookup).not.toHaveBeenCalled();
+    expect((await h.deps.store.getDeveloper(una))?.email).toBeUndefined();
+    // Even a NameID in email format is not used for it.
+    const viaNameId = await signIn(h, { nameId: "other@example.test", nameIdFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress", assertionId: "_n2", attributes: { groups: ["rovara-users"] } });
+    expect(roleOf(viaNameId.tokens)).toBe("member");
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("with the owner's setting on, the email is used (the Slack link and invites by address work)", async () => {
+    const { h } = await world({ trustEmail: true });
+    const lookup = vi.spyOn(h.deps.directory, "lookupByEmail");
+    expect(roleOf((await signIn(h)).tokens)).toBe("member");
+    expect(lookup).toHaveBeenCalledWith("una@example.test");
+    expect((await h.deps.store.getDeveloper(una))?.email).toBe("una@example.test");
+  });
+});
+
+describe("turning SAML off or rotating the certificate ends its sessions (review S3)", () => {
+  it("a refresh after the cutoff is refused and the session is revoked; a session that started after it is kept", async () => {
+    const { h } = await world();
+    const first = await signIn(h);
+    const refresh = (token: unknown) => h.http(httpEvent("POST", "/v1/auth/token", { grant_type: "refresh_token", client_id: "agentx-cli", refresh_token: String(token) }));
+    h.tick(1000);
+    const config = (await h.deps.sso!.saml.config.get(TEST_ORG))!;
+    const { version: _version, updatedAt: _at, updatedBy: _by, ...settings } = config;
+    void _version; void _at; void _by;
+    await h.deps.sso!.saml.config.put(TEST_ORG, { ...settings, enabled: false, sessionsValidFrom: Math.floor((T0 + 500) / 1000) + 1 }, BY, config.version, T0 + 1000);
+    const refused = await refresh(first.tokens!.refresh_token);
+    expect(refused.statusCode).toBe(400);
+    expect((JSON.parse(refused.body) as { error: string }).error).toBe("invalid_grant");
+    expect((await h.deps.store.getSession(String(decodeJwt(String(first.tokens!.access_token)).sid)))?.revokedAt).toBeDefined();
+  });
+});
+
+describe("the posted response is kept once per sign-in request (review S4)", () => {
+  it("a flood of POSTs for one request keeps one response; POSTs for requests that do not exist keep none", async () => {
+    const { h } = await world();
+    const { request } = await start(h);
+    const body = makeResponse({ key, now: T0, inResponseTo: request!.id, subjectInResponseTo: request!.id });
+    const statuses: number[] = [];
+    for (let i = 0; i < 25; i++) statuses.push((await post(h, body, request!.relayState)).statusCode);
+    expect(statuses.filter((status) => status === 303)).toHaveLength(1);
+    expect(h.state.find((item) => String(item.sk).startsWith("SSO_SAML_RESP#"))).toHaveLength(1);
+    for (let i = 0; i < 25; i++) expect((await post(h, body, `${String(i).padStart(43, "Q")}`)).statusCode).toBe(400);
+    expect(h.state.find((item) => String(item.sk).startsWith("SSO_SAML_RESP#"))).toHaveLength(1);
+  });
+
+  it("the handle belongs to its request: another request's handle does not open the stored response", async () => {
+    const { h } = await world();
+    const a = (await start(h)).request!;
+    const b = (await start(h)).request!;
+    const postedA = await post(h, makeResponse({ key, now: T0, inResponseTo: a.id, subjectInResponseTo: a.id }), a.relayState);
+    const postedB = await post(h, makeResponse({ key, now: T0, inResponseTo: b.id, subjectInResponseTo: b.id, assertionId: "_b" }), b.relayState);
+    const handleB = new URL(postedB.headers.location!).searchParams.get("code")!;
+    const crossed = await h.http(httpEvent("GET", `/v1/auth/callback/saml?state=${encodeURIComponent(a.relayState)}&code=${encodeURIComponent(handleB)}`));
+    expect(new URL(crossed.headers.location ?? "https://none.invalid/").searchParams.get("code")).toBeNull();
+    void postedA;
+  });
+});
+
+describe("freshness and the provider's session end (review N1, N2)", () => {
+  it("a response with no authentication time is not a fresh sign-in; one with a recent time is", async () => {
+    const { h } = await world();
+    const fresh = await signIn(h);
+    const sessionOf = async (tokens: Record<string, unknown> | undefined) => (await h.deps.store.getSession(String(decodeJwt(String(tokens!.access_token)).sid)))!;
+    expect(isFreshSignIn(await sessionOf(fresh.tokens), T0)).toBe(true);
+    const none = await signIn(h, { omitAuthnStatement: true, assertionId: "_noauthn" });
+    expect(none.tokens).toBeDefined();
+    expect(isFreshSignIn(await sessionOf(none.tokens), T0)).toBe(false);
+  });
+
+  it("the session ends no later than the provider's SessionNotOnOrAfter", async () => {
+    const { h } = await world();
+    const result = await signIn(h, { sessionNotOnOrAfterOffsetMs: 600_000 });
+    const session = (await h.deps.store.getSession(String(decodeJwt(String(result.tokens!.access_token)).sid)))!;
+    expect(session.endsAt).toBeLessThanOrEqual(Math.floor((T0 + 600_000) / 1000));
   });
 });

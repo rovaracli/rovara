@@ -760,6 +760,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...routeEditionDependencies(dependencies),
           ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
+          ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
