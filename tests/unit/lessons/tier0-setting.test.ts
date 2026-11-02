@@ -419,17 +419,17 @@ describe("the membership fence: a change in who may approve between the read and
     w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
     w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "newadmin"]; w.group.membershipVersion = 4; };
-    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "membership_changed_retry" });
     expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("two");
     expect(w.settings.writes).toEqual([]);
-    expect(w.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
     expect(w.audit.actions()).not.toContain("lesson.tier0_setting_changed");
   });
   it("an approver removed after the read (second-person mode): not applied", async () => {
     const w = world();
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
     w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "ann"]; w.group.membershipVersion = 4; };
-    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
     expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBeUndefined();
   });
   it("every loosening write carries the fence the eligibility answer gave (version and conditions); the authority is asked about the proposer and the approver", async () => {
@@ -442,6 +442,113 @@ describe("the membership fence: a change in who may approve between the read and
     await requestTier0Change(direct.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "ann" });
     expect(direct.settings.fences).toEqual([{ membershipVersion: 3, conditions: [{ pinned: 3 }] }]);
     expect(direct.authority.asked).toEqual([{ proposerId: "ann", approverId: "ann" }]);
+  });
+});
+
+describe("a fenced refusal is retryable: the proposal stays open and a retry re-runs every check (owner decision 2026-11-01)", () => {
+  const DAY_MS = 86_400_000;
+  /** A write that loses only to the membership fence: `during` runs inside the write, as another admin's change would. */
+  const fenced = (w: ReturnType<typeof world>, during: () => void) => { w.settings.beforeWrite = () => { during(); w.group.membershipVersion = 4; w.settings.beforeWrite = undefined; }; };
+  it("the change goes back to pending with its expiry, nothing is written, and the refusal is audited with the change id and scope", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    const expiresAt = w.changes.rows.get("chg-1")!.expiresAt;
+    w.clock.advance(3_600_000);
+    fenced(w, () => undefined);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    expect(w.changes.rows.get("chg-1")).toMatchObject({ state: "pending", expiresAt });
+    expect(await w.changes.open(PROJECT_SCOPE, w.clock.now())).toMatchObject({ id: "chg-1" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.tier0_setting_refused_retryable"]);
+    expect(w.audit.events.at(-1)).toMatchObject({ actor: "bob", workspaceId: WS, facts: { scope: "project", changeId: "chg-1" } });
+  });
+  it("a value that moved is still stale and cancels the change (only the fence alone is retryable)", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(w, () => w.settings.values.set(scopeId(PROJECT_SCOPE), "two"));
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(w.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(w.audit.actions()).not.toContain("lesson.tier0_setting_refused_retryable");
+  });
+  it("a change that cannot go back to pending, or a value that cannot be re-read, is cancelled", async () => {
+    const a = world();
+    await requestTier0Change(a.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(a, () => undefined);
+    const transition = a.changes.transition.bind(a.changes);
+    a.changes.transition = async (scope, id, from, to) => (from === "applied" && to === "pending" ? false : transition(scope, id, from, to));
+    expect(await approveTier0Change(a.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(a.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(a.audit.actions()).not.toContain("lesson.tier0_setting_refused_retryable");
+    const b = world();
+    await requestTier0Change(b.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(b, () => undefined);
+    const read = b.settings.read.bind(b.settings);
+    b.settings.read = async (scope) => { if (b.settings.fences.length > 0) throw new Error("down"); return read(scope); };
+    expect(await approveTier0Change(b.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(b.changes.rows.get("chg-1")?.state).toBe("cancelled");
+  });
+  it("an eligible retry succeeds after the membership change (a fresh read, a new fence), audited once as changed", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(w, () => { w.group.eligibleIds = ["owner", "ann", "bob", "cy"]; });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    const asked = w.authority.calls;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: true, value: "auto" });
+    expect(w.authority.calls).toBe(asked + 1);
+    expect(w.settings.fences.at(-1)).toEqual({ membershipVersion: 4, conditions: [{ pinned: 4 }] });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("auto");
+    expect(w.changes.rows.get("chg-1")?.state).toBe("applied");
+    expect(w.audit.actions().filter((a) => a === "lesson.tier0_setting_changed")).toHaveLength(1);
+  });
+  it("a retry by someone who is no longer eligible is refused, and the change stays open for an eligible person", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(w, () => { w.group.eligibleIds = ["owner", "ann"]; });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "not_eligible" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "auto" });
+  });
+  it("a retry re-checks the company switch and the cool-off too: a switch turned OFF, or a departure inside 24 h, refuses a sole owner's retry", async () => {
+    const off = world({ eligible: ["owner"], owners: ["owner"], soleOwner: true });
+    off.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(off.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    fenced(off, () => undefined);
+    expect(await approveTier0Change(off.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    off.deps.soleOwnerLoosening = async () => false;
+    expect(await approveTier0Change(off.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(off.changes.rows.get("chg-1")?.state).toBe("pending");
+    const cool = world({ eligible: ["owner"], owners: ["owner"] });
+    cool.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(cool.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    fenced(cool, () => undefined);
+    expect(await approveTier0Change(cool.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    const left = cool.clock.now() - 3_600_000;
+    cool.group.lastEligibleLossAtMs = left;
+    expect(await approveTier0Change(cool.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "sole_owner_cool_off", availableAt: new Date(left + DAY_MS).toISOString() });
+    expect(cool.settings.writes).toEqual([]);
+  });
+  it("a sole-owner retry after someone eligible was added is refused (the exception is asked for again, not reused)", async () => {
+    const w = world({ eligible: ["owner"], owners: ["owner"] });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    expect(w.changes.rows.get("chg-1")?.soleEligibleAtProposal).toBe(true);
+    fenced(w, () => { w.group.eligibleIds = ["owner", "newadmin"]; });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("two");
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "newadmin" })).toEqual({ ok: true, value: "one" });
+  });
+  it("an expired change is not revived by a retry", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    fenced(w, () => undefined);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    w.clock.advance(7 * DAY_MS + 1);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "expired" });
   });
 });
 
@@ -526,14 +633,32 @@ describe("the sole-owner switch setter (the only way routes change the switch)",
     expect(await approveSoleOwnerSwitch(e.sdeps, { workspaceId: WS, changeId: "nope", approverId: "bob" })).toEqual({ ok: false, code: "not_found" });
     const f = switchWorld(); f.store.value = false; await setSoleOwnerSwitch(f.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
     f.store.beforeWrite = () => { f.group.membershipVersion = 4; };
-    expect(await approveSoleOwnerSwitch(f.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(await approveSoleOwnerSwitch(f.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
     expect(f.store.value).toBe(false);
+    expect(f.store.rows.get("sw-1")?.state).toBe("pending");
     const g = switchWorld(); g.store.value = false; await setSoleOwnerSwitch(g.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
     g.audit.emit = async () => { throw new Error("audit down"); };
     expect(await approveSoleOwnerSwitch(g.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "audit_unavailable" });
     expect(g.store.value).toBe(false);
     expect(g.store.writes).toEqual([true, false]);
     expect(g.store.rows.get("sw-1")?.state).toBe("cancelled");
+  });
+  it("a fenced refusal of the switch approval is retryable: pending again, audited; a retry re-checks eligibility, and a switch that moved cancels", async () => {
+    const w = switchWorld(); w.store.value = false;
+    await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    const expiresAt = w.store.rows.get("sw-1")!.expiresAt;
+    w.store.beforeWrite = () => { w.group.eligibleIds = ["owner", "ann"]; w.group.membershipVersion = 4; w.store.beforeWrite = undefined; };
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    expect(w.store.rows.get("sw-1")).toMatchObject({ state: "pending", expiresAt });
+    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.tier0_setting_refused_retryable", actor: "bob", facts: { scope: "company_switch", changeId: "sw-1" } });
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "not_eligible" });
+    expect(w.store.writes).toEqual([]);
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "owner" })).toEqual({ ok: true, enabled: true });
+    const m = switchWorld(); m.store.value = false;
+    await setSoleOwnerSwitch(m.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    m.store.beforeWrite = () => { m.store.value = true; m.group.membershipVersion = 4; };
+    expect(await approveSoleOwnerSwitch(m.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(m.store.rows.get("sw-1")?.state).toBe("cancelled");
   });
   it("turning it OFF is fenced too: a membership change after the read stops it", async () => {
     const w = switchWorld();

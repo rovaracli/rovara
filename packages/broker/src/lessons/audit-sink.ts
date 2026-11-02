@@ -34,6 +34,8 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   // Loosening the tier-0 approval setting and the company sole-owner switch (a proposal for a second person, then the change; the exception is audited as such).
   "lesson.tier0_setting_proposed": { action: "lesson.tier0_setting_proposed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromLevel: word(e.facts["from"], "unknown"), toLevel: word(e.facts["to"], "unknown") }) },
   "lesson.tier0_setting_changed": { action: "lesson.tier0_setting_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromLevel: word(e.facts["from"], "unknown"), toLevel: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "second_person") }) },
+  // A fenced refusal that leaves the proposal open: recorded as a refusal (the contract's `lesson.refused`) with a fixed word.
+  "lesson.tier0_setting_refused_retryable": { action: "lesson.refused", facts: () => ({ refusal: "membership_changed_retry" }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
   "lesson.sole_owner_switch_changed": { action: "lesson.sole_owner_switch_changed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true, mode: word(e.facts["mode"], "second_person") }) },
 };

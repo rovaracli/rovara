@@ -11,6 +11,8 @@
 //    "One-admin companies"; replaces "there is no sole-owner path for loosening"). A setting that cannot be read counts as OFF.
 //  - Nothing loosens TO "auto" while automatic go-live is not enabled (`autoApplyEnabled`), whoever approves.
 //  - Every write is conditional on the value it was made against: a stricter write made in between is never overwritten (the result is "stale").
+//  - A write refused by the membership fence ALONE (the value is unchanged) is retryable (owner decision 2026-11-01): the proposal goes back to pending, keeps its expiry, and the next approval
+//    re-runs every check from scratch (second person, sole-owner exception and cool-off, company switch). The result is "membership_changed_retry". Replaces: a fenced refusal cancels the proposal.
 //  - A company floor can only be stricter: a project value below the floor is refused, at request and again at approval.
 //  - Fail closed: an unknown value, eligibility that is incomplete or cannot be read, a stale proposal (the value moved), an expired one, or an audit event that cannot be written stops
 //    the change. The audit event is written BEFORE a loosening is applied; a stricter write is never blocked by an audit outage (the kill-switch side).
@@ -75,7 +77,9 @@ export interface Tier0Deps {
 
 export type Tier0Failure =
   | "invalid_value" | "not_eligible" | "eligibility_unavailable" | "below_company_floor" | "auto_apply_not_enabled" | "already_open" | "audit_unavailable"
-  | "not_found" | "not_pending" | "expired" | "stale" | "second_person_required" | "sole_owner_cool_off" | "conflict";
+  | "not_found" | "not_pending" | "expired" | "stale" | "second_person_required" | "sole_owner_cool_off" | "conflict"
+  /** The membership fence refused the write (a person added, removed or demoted since the check) and the value is unchanged: the proposal is still open, so check again and approve again. */
+  | "membership_changed_retry";
 export type Tier0Request = { ok: true; status: "applied"; value: Tier0Level } | { ok: true; status: "needs_approval"; changeId: string } | { ok: false; code: Tier0Failure };
 
 const NO_PROJECT = "_workspace";
@@ -94,6 +98,10 @@ async function floorOf(deps: Tier0Deps, scope: Tier0Scope): Promise<Tier0Level> 
 /** Whether the company allows the sole-owner exception for loosening. A reader that fails counts as OFF. */
 async function soleOwnerAllowed(deps: Tier0Deps, scope: Tier0Scope): Promise<boolean> {
   try { return (await deps.soleOwnerLoosening(scope.workspaceId)) === true; } catch { return false; }
+}
+/** After a refused write: whether the value is still the one the change was made against, so only the membership fence failed. A read that fails counts as "moved" (fail closed: the change is cancelled). */
+async function valueUnmoved<T>(read: () => Promise<T>, from: T): Promise<boolean> {
+  try { return (await read()) === from; } catch { return false; }
 }
 async function groupOf(deps: Pick<Tier0Deps, "authority">, scope: Tier0Scope, who: { proposerId: string; approverId: string }) {
   const group = await deps.authority.eligibility(scope, who).catch(() => undefined);
@@ -172,6 +180,12 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   // stays in force (the safe side), the change is closed, and the proposer asks again. The write is also fenced on the membership the decision rested on (a person added or removed since the
   // eligibility read, or an approver who lost authority, stops it as "stale" the same way).
   if (!(await deps.settings.write(scope, change.to, { by: input.approverId, at }, change.from, fenceOf(group)))) {
+    // Owner decision 2026-11-01: a refusal by the commit fence alone (the value is still the one the change was made against) is retryable: the change goes back to pending with its expiry,
+    // and the next approval re-runs every check from scratch against a fresh group read. A value that moved, or a change that cannot be reopened, cancels it as before.
+    if (await valueUnmoved(() => currentOf(deps, scope), change.from) && await deps.changes.transition(scope, change.id, "applied", "pending").catch(() => false)) {
+      await emitAudit(deps.audit, { action: "lesson.tier0_setting_refused_retryable", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId, facts: { scope: scope.kind, changeId: change.id } });
+      return { ok: false, code: "membership_changed_retry" };
+    }
     await deps.changes.transition(scope, change.id, "applied", "cancelled").catch(() => false);
     return { ok: false, code: "stale" };
   }
@@ -274,6 +288,11 @@ export async function approveSoleOwnerSwitch(deps: SoleOwnerSwitchDeps, input: {
   if (current !== change.from) return { ok: false, code: "stale" };
   if (!(await deps.store.transition(workspaceId, change.id, "pending", "applied"))) return { ok: false, code: "not_pending" };
   if (!(await deps.store.write(workspaceId, change.to, { by: input.approverId, at }, change.from, fenceOf(group)))) {
+    // A refusal by the commit fence alone is retryable (see `approveTier0Change`): back to pending with its expiry; a switch that moved, or a change that cannot be reopened, cancels it.
+    if (await valueUnmoved(() => deps.store.read(workspaceId), change.from) && await deps.store.transition(workspaceId, change.id, "applied", "pending").catch(() => false)) {
+      await emitAudit(deps.audit, { action: "lesson.tier0_setting_refused_retryable", workspaceId, project: NO_PROJECT, actor: input.approverId, facts: { scope: "company_switch", changeId: change.id } });
+      return { ok: false, code: "membership_changed_retry" };
+    }
     await deps.store.transition(workspaceId, change.id, "applied", "cancelled").catch(() => false);
     return { ok: false, code: "stale" };
   }
