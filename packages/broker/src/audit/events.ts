@@ -837,3 +837,15 @@ export function auditTaskStopDecision(input: AuditBuilderBase & {
  return build(input.action, input, { kind: "task", id: input.taskId }, { effectiveStopMicrousd: input.effectiveStopMicrousd, approvalCapMicrousd: input.approvalCapMicrousd,
   policyDigest: input.policyDigest, workKind: "task-window", admissionId: input.admissionId });
 }
+
+// Tracker people (team record) -------------------------------------------------------------------------------------------
+
+/** `occurrence`: the admin's request id. `source` is `linear` or `jira`. The target is the member; the tool's id and the name it shows never go in. */
+export function auditRecordTrackerPersonMapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_mapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}
+
+/** `occurrence`: the admin's request id. */
+export function auditRecordTrackerPersonUnmapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_unmapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}

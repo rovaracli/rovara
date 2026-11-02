@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { OrgStore } from "../org/store.js";
@@ -41,7 +41,9 @@ import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
-import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, removeTrackerLinks, trackerLinksOf, type TrackerLink, type TrackerLinkVia } from "./identity-links.js";
+import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
+import { syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
+import { auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
@@ -95,6 +97,11 @@ export interface TeamRecordRuntimeInput {
    * against the record table is sent here and applied by `drain`, so a delete is never swallowed by a tap. Absent (tests, or an install without the queue): a failure is rethrown to the caller.
    */
   opsQueue?: OpsQueue;
+  /**
+   * The org's connected Linear and Jira connections, to read their user lists through (lane team-record-links). Absent: no tracker person is linked automatically and the mapping page lists nobody. A company that
+   * has not connected a tool has nothing here for it, and nothing is read for it.
+   */
+  trackers?: ConnectedTrackersPort;
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -121,6 +128,19 @@ export interface TeamRecordRuntime {
   readonly links: {
     link(orgId: OrgId, input: TrackerLink & { developerId: string; via: Exclude<TrackerLinkVia, "verified_email"> }): Promise<boolean>;
     linkByVerifiedEmail(orgId: OrgId, input: TrackerLink & { email: string; emailVerified: boolean | undefined }): Promise<boolean>;
+  };
+  /**
+   * Tracker people (Linear, Jira): who the tool lists, who is linked to a Rovara person, and the admin's mapping of the rest. Every call is for ONE org, taken from the caller's session by the route.
+   * The route has already checked that the caller is a company owner or admin with a fresh sign-in.
+   */
+  readonly trackerPeople: {
+    /** Tool users nobody is linked to (display name and tool id only) and the ones linked (so an admin can unmap one). */
+    list(orgId: OrgId): Promise<{ unmatched: UnmatchedTrackerUser[]; linked: LinkedTrackerUser[]; truncated: boolean }>;
+    /** Maps an unmatched tool user to a member of the SAME org. `audit_unavailable` when the audit event cannot be written (nothing is changed then). */
+    map(orgId: OrgId, input: TrackerLink & { developerId: string; by: string; requestId: string }): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable">;
+    unmap(orgId: OrgId, input: TrackerLink & { by: string; requestId: string }): Promise<"unmapped" | "not_found" | "audit_unavailable">;
+    /** Reads one connection's users and links or lists them (on connect). Undefined when the org has no such connection (nothing is read). */
+    syncConnection(orgId: OrgId, connectionId: string, options?: { maxMs?: number }): Promise<SyncResult | undefined>;
   };
   readonly emitter: RovaraEmitter;
   readonly actors: ActorResolverPort;
@@ -741,6 +761,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return deleted;
   }
 
+  /** Filled in below, where the tracker pieces are built (they need the links, which are defined after the jobs). */
+  const trackerSync: { run: (orgId: OrgId, budgetMs: number) => Promise<number> } = { run: async () => 0 };
   const jobs: TeamRecordRuntime["jobs"] = {
     async run(job) {
       if (job === "hourly") {
@@ -757,7 +779,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const erased = await resumeErases(orgId, budgetMs);
           // TRW-5 S3: archived projects whose erase was never recorded or finished.
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept };
+          // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
+          const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
         }, JOB_BUDGET_MS - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         return summary;
@@ -846,5 +870,58 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     link: (orgId, link) => linkTrackerIdentity(table, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }, { orgOfDeveloper }),
     linkByVerifiedEmail: (orgId, link) => linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email), orgOfDeveloper }, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }),
   };
-  return { edition, table, sink, drain, removal, links, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+
+  // ---- tracker people: the automatic link through the connected app's user list, and the admin's mapping of the rest
+  const membership = { orgOfDeveloper: orgOfDeveloper };
+  const linkVerified = (orgId: OrgId, link: Parameters<TeamRecordRuntime["links"]["linkByVerifiedEmail"]>[1] & { displayName?: string }) =>
+    linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email).catch(() => undefined), orgOfDeveloper }, orgId, { ...link, at: new Date(now()).toISOString() });
+  async function syncOne(orgId: OrgId, connectionId: string, maxMs: number): Promise<SyncResult | undefined> {
+    const tracker = await input.trackers?.get(orgId, connectionId);
+    if (tracker === undefined) return undefined;
+    await listOrg(orgId);
+    return syncTrackerUsers({ table, now, log, linkByVerifiedEmail: linkVerified }, orgId, tracker, { maxMs });
+  }
+  const trackerPeople: TeamRecordRuntime["trackerPeople"] = {
+    async list(orgId) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const [unmatched, linked] = await Promise.all([listUnmatchedTrackerUsers(table, parsed), listLinkedTrackerUsers(table, parsed)]);
+      return { unmatched: unmatched.users, linked: linked.users, truncated: unmatched.truncated || linked.truncated };
+    },
+    async map(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const listed = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(parsed), sk: `${UNMATCHED_PREFIX}${call.system}#${call.sourceId}` }, ConsistentRead: true }))) as { Item?: unknown }).Item;
+      if (listed === undefined || !isTrackerSystem(call.system)) return "not_found";
+      if ((await orgOfDeveloper(call.developerId)) !== parsed) return "not_member";
+      // The audit event first: a mapping the ledger could not record is not made.
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerPersonMapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: call.requestId, memberId: call.developerId, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      return (await mapTrackerUser(table, parsed, { system: call.system, sourceId: call.sourceId, developerId: call.developerId, at: new Date(now()).toISOString() }, membership)) ? "mapped" : "not_member";
+    },
+    async unmap(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      if (!isTrackerSystem(call.system)) return "not_found";
+      const linkedTo = await developerOfTrackerAuthor(table, parsed, call);
+      if (linkedTo === undefined) return "not_found";
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerPersonUnmapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: call.requestId, memberId: linkedTo, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      return (await unmapTrackerUser(table, parsed, call, new Date(now()).toISOString())) === undefined ? "not_found" : "unmapped";
+    },
+    syncConnection: (orgId, connectionId, options) => syncOne(OrgIdSchema.parse(orgId), connectionId, Math.min(options?.maxMs ?? 5_000, 8_000)),
+  };
+  /** The hourly job's share: the org's connected trackers that are due (a day since the last full read, or a read that did not finish), a few per run. */
+  async function syncDueTrackers(orgId: OrgId, budgetMs: number): Promise<number> {
+    if (input.trackers === undefined) return 0;
+    const started = now();
+    let synced = 0;
+    for (const tracker of (await input.trackers.list(orgId)).slice(0, 5)) {
+      const left = budgetMs - (now() - started);
+      if (left < 1_000 || synced >= 3) break;
+      if (!await syncIsDue(table, orgId, tracker.connectionId, now())) continue;
+      await syncOne(orgId, tracker.connectionId, Math.min(left, 4_000));
+      synced += 1;
+    }
+    return synced;
+  }
+  trackerSync.run = syncDueTrackers;
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

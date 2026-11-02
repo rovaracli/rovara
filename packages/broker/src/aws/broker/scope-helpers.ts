@@ -342,6 +342,12 @@ export function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgCo
         await disableHooksOfAccount({ store: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }), awsAccounts }, removed.orgId, account);
       },
     }),
+    // Lane team-record-links: a saved Linear or Jira connection (with a secret) has its user list read, to link people to their Rovara accounts. Where the Team record's switch is off there is no runtime and nothing is read.
+    ...(dependencies.teamRecord === undefined ? {} : {
+      afterSave: async (saved: { orgId: OrgId; connectionId: string; type: string; hasSecret: boolean }) => {
+        if ((saved.type === "linear" || saved.type === "jira") && saved.hasSecret) await dependencies.teamRecord?.trackerPeople.syncConnection(saved.orgId, saved.connectionId);
+      },
+    }),
     // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
     // Each native type's check is registered as its task lands (Plan 4 Tasks 13 to 17); a test may replace any of them through `connectionChecks.checks`.
     checks: {
