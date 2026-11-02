@@ -41,6 +41,7 @@ async function harness(options: { approve?: boolean } = {}) {
     await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-run-1", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: T0, approval: { approverId: "dev_b", signedInAtMs: T0, sessionRef: "5".repeat(64) } });
   }
   const head = { value: HEAD };
+  const merged = new Map<string, string>();
   const started: Array<Record<string, any>> = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- the request shape is asserted field by field
   const admitted: unknown[] = [];
   const startError: { value: Error | undefined } = { value: undefined };
@@ -49,6 +50,7 @@ async function harness(options: { approve?: boolean } = {}) {
   const runs = nightlyRunPort({
     ...deps,
     admitProject: (input) => { admitted.push(input); return Promise.resolve(); },
+    resolveOwner: (_org, developerId) => Promise.resolve(merged.get(developerId) ?? developerId),
     headOf: () => Promise.resolve(head.value),
     // The shared start, as the task start makes its records: a task of purpose nightly_run with what it was started to run, and the pointer of its workspace.
     startAgentRun: (request) => {
@@ -60,7 +62,7 @@ async function harness(options: { approve?: boolean } = {}) {
     },
   });
   const fire = (scheduledAt = SCHEDULED) => ({ source: "agentx.test-env-nightly", orgId: ORG, project: PROJECT, scheduledAt });
-  return { db, deps, clock, head, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
+  return { db, deps, clock, head, merged, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
@@ -88,11 +90,20 @@ describe("a fire starts the run", () => {
     expect(h.admitted).toEqual([{ orgId: ORG, project: PROJECT }]);
     expect(h.started).toHaveLength(1);
     expect(h.started[0]).toMatchObject({
-      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: "dev_a" }, startedBy: { developerId: "dev_a" },
+      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: "dev_a" },
       payer: { kind: "project", project: PROJECT }, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD },
     });
     expect((h.started[0]!["input"] as { text: string }).text).toContain(PROJECT);
     expect(nightlyRequestId(slotOf())).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  });
+
+  it("the owner is the approver read as whoever they were merged into", async () => {
+    const h = await harness();
+    h.merged.set("dev_a", "dev_survivor");
+    await h.fireNow();
+    expect(h.started[0]!["owner"]).toEqual({ developerId: "dev_survivor" });
+    expect(h.started[0]!["startedBy"]).toBeUndefined();
+    expect((h.started[0]!["input"] as { text: string }).text).toMatch(/^Nightly test run for the project/u);
   });
 
   it("the nightly origin is the project's own work whatever the project's AI settings say about paying for tasks", () => {
@@ -153,7 +164,7 @@ describe("a fire starts the run", () => {
 
   it("an environment revision whose record names no approver is not run: nothing is started", async () => {
     const h = await harness();
-    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), headOf: () => Promise.resolve(HEAD), startAgentRun: () => Promise.reject(new Error("must not start")) })
+    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), resolveOwner: (_org, id) => Promise.resolve(id), headOf: () => Promise.resolve(HEAD), startAgentRun: () => Promise.reject(new Error("must not start")) })
       .startRun({ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD, envRevision: 9, slotId: slotOf(), payer: { kind: "project", project: PROJECT }, source: "nightly_baseline" });
     expect(skipped).toEqual({ skipped: "owner_unavailable" });
   });

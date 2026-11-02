@@ -7,6 +7,7 @@ import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { ROVARA_CODE_AGENT_ID, canonicalJson, type OrgId } from "@agentx/contracts";
 import { admitWork } from "../../spend/admission.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
+import { resolveSurvivor } from "../../agents/access.js";
 import { startAgentRun } from "../../agents/runs.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
@@ -52,7 +53,7 @@ export function nightlyResultDeps(dependencies: AwsBrokerDependencies): TestEnvD
 export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined, env: NodeJS.ProcessEnv = process.env): NightlyRunPort | undefined {
   if (!healthWiringOn(env)) return undefined;
   const starter = agentRunStarterFrom(dependencies, tasks, agents);
-  if (starter === undefined) return undefined;
+  if (starter === undefined || agents === undefined) return undefined;
   const admission = dependencies.modelAccess === undefined ? undefined
     : { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now, cloud: dependencies.cloud === true };
   return nightlyRunPort({
@@ -62,6 +63,7 @@ export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: Develo
       if (admission === undefined) return;
       await admitWork(admission, { orgId, payer: { kind: "project", project }, project, agentId: ROVARA_CODE_AGENT_ID, agentName: "Rovara Code", path: "QUICK" });
     },
+    resolveOwner: (orgId, developerId) => resolveSurvivor({ signInStore: agents.signInStore, ...(agents.resolveDeveloper === undefined ? {} : { resolveDeveloper: agents.resolveDeveloper }) }, orgId, developerId),
     headOf: ({ orgId, project, branch }) => defaultBranchHeadOf(dependencies, orgId, project, branch),
     startAgentRun: (request) => startAgentRun(starter, request),
   });

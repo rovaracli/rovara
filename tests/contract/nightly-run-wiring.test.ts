@@ -81,6 +81,9 @@ describe("with nh and the test environment on", () => {
       purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: OMAR.developerId,
       nightlyRun: { slotId: slot, envRevision: 1, branch: "main", headSha: HEAD },
     });
+    // The approver owns it and did not start it: no starter is named, and the title says it is the nightly run.
+    expect(task["startedBy"]).toBeUndefined();
+    expect(String(task["title"])).toMatch(/^Nightly test run for the project/u);
     // No pointer of the setup run's kind, no workflow: this is no task a person drives.
     expect(task["workflow"]).toBeUndefined();
     expect(own.workflowMode).toBe("CHECKS");

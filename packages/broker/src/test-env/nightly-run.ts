@@ -18,8 +18,8 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { readApprovedBy, readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import { BUDGET_CODES, type NightlyRunPort } from "./nightly.js";
 
-/** The words of the task's request: the project's name and nothing from a repository. */
-export const nightlyRunText = (project: string): string => `Run the nightly test baseline for the project ${project}.`;
+/** The words of the task's request, which are also its title in every list and notification: it says plainly that it is the nightly run, and names the project; nothing from a repository. */
+export const nightlyRunText = (project: string): string => `Nightly test run for the project ${project}.`;
 
 /** The start's request id: one per slot, so a retried fire starts one run and the repeat answers the first. A version 4 shaped id made from the slot. */
 export function nightlyRequestId(slotId: string): string {
@@ -35,6 +35,8 @@ export interface NightlyRunDependencies extends TestEnvDeps {
   admitProject(input: { orgId: OrgId; project: string }): Promise<void>;
   /** The head commit of the branch, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
+  /** The person an id names read as whoever they were merged into (`resolveSurvivor`): a merged duplicate approver would otherwise own the run. */
+  resolveOwner(orgId: OrgId, developerId: string): Promise<string>;
   /** The shared run start (`startAgentRun` bound to the install's starter). */
   startAgentRun(request: AgentRunRequest): Promise<AgentRunResult>;
 }
@@ -54,13 +56,16 @@ export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
     admit: (input) => deps.admitProject({ orgId: input.orgId, project: input.project }),
     headOf: (input) => deps.headOf(input),
     async startRun(input) {
-      const owner = await readApprovedBy(deps, input.orgId, input.project, input.envRevision);
-      if (owner === undefined) return { skipped: "owner_unavailable" as const };
+      const approver = await readApprovedBy(deps, input.orgId, input.project, input.envRevision);
+      if (approver === undefined) return { skipped: "owner_unavailable" as const };
+      const owner = await deps.resolveOwner(input.orgId, approver);
       const nightlyRun: NightlyRunWire = { slotId: input.slotId, envRevision: input.envRevision, branch: input.branch, headSha: input.headSha };
       try {
         await deps.startAgentRun({
           requestId: nightlyRequestId(input.slotId), orgId: input.orgId, project: input.project, agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: nightlyRunText(input.project) },
-          origin: NIGHTLY_RUN_ORIGIN, owner: { developerId: owner }, startedBy: { developerId: owner }, nightlyRun,
+          // The approver owns the task (a task has a member for its owner) but did NOT start it: no `startedBy`, so no person is named as the starter in the task, its session, its audit or its notices. The owner is
+          // the survivor of a merge, so a merged duplicate never owns it.
+          origin: NIGHTLY_RUN_ORIGIN, owner: { developerId: owner }, nightlyRun,
           // The payer is the project's (the origin says so); named here so a start that worked out another is refused, never charged to someone else.
           payer: { kind: "project", project: input.project }, payerFromRules: true,
         });
