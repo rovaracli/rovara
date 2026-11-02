@@ -110,3 +110,62 @@ export function withRetention(draft: RecordDraft, retention: Retention): RecordD
 
 /** Every tap's hard bound on what one delivery may write. */
 export const MAX_DRAFTS_PER_DELIVERY = 50;
+
+/** Scripts written without spaces between words: a run of these is cut into words with the platform's word segmenter (a dictionary-based break), not taken whole. */
+const UNSPACED = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+let segmenter: Intl.Segmenter | undefined;
+const wordSegmenter = (): Intl.Segmenter => (segmenter ??= new Intl.Segmenter("und", { granularity: "word" }));
+
+/** The words of a text and where each sits in it: every run of letters, digits and marks (Unicode, NFC-normalised), with punctuation and whitespace as separators; unspaced scripts are cut by the word segmenter. */
+function wordsOf(text: string): Array<{ key: string; start: number; end: number }> {
+  const out: Array<{ key: string; start: number; end: number }> = [];
+  for (const run of text.matchAll(/[\p{L}\p{N}\p{M}]+/gu)) {
+    const at = run.index;
+    const piece = run[0];
+    // A Jira heading marker (`h2.`) is markup, not a word.
+    if (/^h[1-6]$/iu.test(piece) && text[at + piece.length] === ".") continue;
+    if (!UNSPACED.test(piece)) { out.push({ key: piece.toLowerCase(), start: at, end: at + piece.length }); continue; }
+    for (const segment of wordSegmenter().segment(piece)) {
+      if (segment.isWordLike === true) out.push({ key: segment.segment.toLowerCase(), start: at + segment.index, end: at + segment.index + segment.segment.length });
+    }
+  }
+  return out;
+}
+
+/**
+ * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after. A word counts as added only when the earlier text has no more of it than the new text does (a COUNT of each word, not
+ * a position), so a block of text that was only moved adds nothing, and a typo fix adds just the one changed word. A word is a run of letters and digits (NFC-normalised, any script; punctuation and whitespace
+ * only separate words, so `Priya,Sam`, `Priya, Sam`, `well-known`, `well known` and `foo/bar` are the same words), and a script written without spaces (Chinese, Japanese, Thai...) is cut into words by the word
+ * segmenter, so a one-character fix there credits one word, not the paragraph. Link and markup syntax is taken away first: `[Priya](http://x.y/z)` is the word "Priya" (which was there) and the address (which is the
+ * editor's); a heading, list or emphasis marker is no word. Words are compared without case. What is returned is the editor's own text for the new words: neighbouring new words come back as written (with the
+ * punctuation between them), separate runs are joined by a space.
+ *
+ * Fail closed: `previous` unknown gives nothing; nothing added gives nothing. The two texts must be in the SAME format (a source that sends the old and the new text in different markups must not be compared:
+ * Jira's changelog gives both, in wiki markup).
+ */
+export function addedText(previous: string | undefined, next: string | undefined): string | undefined {
+  if (previous === undefined || next === undefined) return undefined;
+  const plain = (text: string): string => text
+    .replace(/\[([^\]]*)\]\(([^)\s]*)[^)]*\)/gu, "$1 $2")
+    .replace(/\[([^\]|]*)\|([^\]]*)\]/gu, "$1 $2")
+    .replace(/<a\s[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gisu, "$2 $1")
+    .normalize("NFC");
+  const before = plain(previous);
+  const after = plain(next);
+  const remaining = new Map<string, number>();
+  for (const { key } of wordsOf(before)) remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  const runs: string[] = [];
+  let start = -1;
+  let end = -1;
+  let last = -1;
+  const words = wordsOf(after);
+  words.forEach((word, index) => {
+    const left = remaining.get(word.key) ?? 0;
+    if (left > 0) { remaining.set(word.key, left - 1); return; }
+    // A new word next to the previous new word (nothing old between them) continues the run.
+    if (start >= 0 && last === index - 1) end = word.end; else { if (start >= 0) runs.push(after.slice(start, end)); start = word.start; end = word.end; }
+    last = index;
+  });
+  if (start >= 0) runs.push(after.slice(start, end));
+  return runs.length === 0 ? undefined : runs.join(" ");
+}

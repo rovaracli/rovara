@@ -878,3 +878,20 @@ export function auditSetupHostAsked(input: AuditBuilderBase & { projectName: str
 export function auditSetupHostRefused(input: AuditBuilderBase & { projectName: string; askId: string; refusal: string; host: string }): AuditEventInput {
   return build("setup.host_refused", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { host: input.host } }] }, { kind: "project", name: input.projectName }, { askId: input.askId, refusal: input.refusal });
 }
+
+// Tracker people (team record) -------------------------------------------------------------------------------------------
+
+/** `occurrence`: the admin's request id. `source` is `linear` or `jira`. The target is the member; the tool's id and the name it shows never go in. */
+export function auditRecordTrackerPersonMapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_mapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}
+
+/** `occurrence`: the admin's request id. */
+export function auditRecordTrackerPersonUnmapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_unmapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}
+
+/** `occurrence`: the admin's request id and the new state. The target is the company; `enabled` is the new state of the switch. */
+export function auditRecordTrackerAutolinkChanged(input: AuditBuilderBase & { enabled: boolean }): AuditEventInput {
+  return build("record.tracker_autolink_changed", input, { kind: "org", id: input.orgId }, { enabled: input.enabled });
+}

@@ -838,6 +838,10 @@ describe("I4: the builders", () => {
     // Setup agent website asks (SH12)
     ["auditSetupHostAsked", (occurrence) => builders.auditSetupHostAsked({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", taskId: "task_1", journalN: 4, host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" })],
     ["auditSetupHostRefused", (occurrence) => builders.auditSetupHostRefused({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", refusal: "person", host: "docs.corp.example" })],
+    // Tracker people (team record)
+    ["auditRecordTrackerPersonMapped", (occurrence) => builders.auditRecordTrackerPersonMapped({ ...base, occurrence, details, memberId: "dev_1", source: "jira" })],
+    ["auditRecordTrackerPersonUnmapped", (occurrence) => builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence, details, memberId: "dev_1", source: "linear" })],
+    ["auditRecordTrackerAutolinkChanged", (occurrence) => builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence, details, enabled: true })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -910,6 +914,17 @@ describe("I4: the builders", () => {
     expect(refused.details).toContainEqual({ subject: "org", fields: { host: "docs.corp.example" } });
     for (const event of [asked, typed, refused]) expect(JSON.stringify({ ...event, details: undefined, target: undefined })).not.toContain("docs.corp.example");
     expect(asked.eventId).not.toBe(refused.eventId);
+  });
+
+  it("the tracker people events target the member (the switch targets the company), carry only the tool's name and the new state, and a map and an unmap of one request differ", () => {
+    const mapped = builders.auditRecordTrackerPersonMapped({ ...base, occurrence: "req_1", memberId: "dev_1", source: "jira" });
+    expect(mapped).toMatchObject({ action: "record.tracker_person_mapped", target: { kind: "member", id: "dev_1" }, facts: { source: "jira" } });
+    const unmapped = builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence: "req_1", memberId: "dev_1", source: "jira" });
+    expect(unmapped).toMatchObject({ action: "record.tracker_person_unmapped", target: { kind: "member", id: "dev_1" }, facts: { source: "jira" } });
+    expect(mapped.eventId).not.toBe(unmapped.eventId);
+    const on = builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence: "req_2", enabled: true });
+    expect(on).toMatchObject({ action: "record.tracker_autolink_changed", target: { kind: "org", id: base.orgId }, facts: { enabled: true } });
+    expect(builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence: "req_2", enabled: false }).facts).toStrictEqual({ enabled: false });
   });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {

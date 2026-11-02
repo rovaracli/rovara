@@ -9,10 +9,10 @@
 //
 // What this does NOT contain (and the lane report says so): a model. The distiller and the human-edit extractor need the learning lane's `PipelineModel` and its spend gate; until a model is
 // given (`distillModel`), retention B (Public Slack "notes with links") has nowhere to go and the message is processed and DROPPED, which is the safe side of Slack's terms.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { OrgStore } from "../org/store.js";
@@ -38,12 +38,15 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
-import { createCaptureModePort, createRecordHistoryPort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
+import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
-import { createEditedItemsPort } from "./edited-items.js";
-import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, removeTrackerLinks, trackerLinksOf, type TrackerLink, type TrackerLinkVia } from "./identity-links.js";
+import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
+import { autoLinkEnabled, setAutoLinkEnabled, type VerifiedDomainsPort } from "./tracker-autolink.js";
+import { markSyncDue, syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
+import { auditOccurrence, auditRecordTrackerAutolinkChanged, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
+import { priorEditsPort } from "./prior-edits.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
@@ -96,6 +99,16 @@ export interface TeamRecordRuntimeInput {
    * against the record table is sent here and applied by `drain`, so a delete is never swallowed by a tap. Absent (tests, or an install without the queue): a failure is rethrown to the caller.
    */
   opsQueue?: OpsQueue;
+  /**
+   * The org's connected Linear and Jira connections, to read their user lists through (lane team-record-links). Absent: no tracker person is linked automatically and the mapping page lists nobody. A company that
+   * has not connected a tool has nothing here for it, and nothing is read for it.
+   */
+  trackers?: ConnectedTrackersPort;
+  /**
+   * The domains the company has verified for its Rovara sign-in (condition 1 of the opt-in automatic linking). No install records such a list today, so nothing supplies it and the answer is always "none recorded": no
+   * person is linked by themselves, and nothing is guessed from members' emails.
+   */
+  verifiedDomains?: VerifiedDomainsPort;
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -122,6 +135,23 @@ export interface TeamRecordRuntime {
   readonly links: {
     link(orgId: OrgId, input: TrackerLink & { developerId: string; via: Exclude<TrackerLinkVia, "verified_email"> }): Promise<boolean>;
     linkByVerifiedEmail(orgId: OrgId, input: TrackerLink & { email: string; emailVerified: boolean | undefined }): Promise<boolean>;
+  };
+  /**
+   * Tracker people (Linear, Jira): who the tool lists, who is linked to a Rovara person, and the admin's mapping of the rest. Every call is for ONE org, taken from the caller's session by the route.
+   * The route has already checked that the caller is a company owner or admin with a fresh sign-in.
+   */
+  readonly trackerPeople: {
+    /** Tool users nobody is linked to (display name and tool id only) and the ones linked (so an admin can unmap one). */
+    list(orgId: OrgId): Promise<{ unmatched: UnmatchedTrackerUser[]; linked: LinkedTrackerUser[]; truncated: boolean; autoLink: { enabled: boolean; verifiedDomainsRecorded: boolean } }>;
+    /** Turns the company's automatic linking on or off (off by default). Audited first; the request id is bound to the change. Turning it on marks the org's connected tools due; turning it off stops NEW automatic links only. */
+    setAutoLink(orgId: OrgId, input: { enabled: boolean; by: string; requestId: string }): Promise<"set" | "audit_unavailable" | "request_reused">;
+    /** Maps an unmatched tool user to a member of the SAME org. `audit_unavailable` when the audit event cannot be written (nothing is changed then). */
+    map(orgId: OrgId, input: TrackerLink & { developerId: string; by: string; requestId: string }): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable" | "request_reused">;
+    unmap(orgId: OrgId, input: TrackerLink & { by: string; requestId: string }): Promise<"unmapped" | "not_found" | "audit_unavailable" | "request_reused">;
+    /** A connection was saved: its users are marked due and the org joins the scheduled jobs, which read them at their next run. Nothing is read here, so a save never waits on the tool. False when the org has no such connection. */
+    requestSync(orgId: OrgId, connectionId: string): Promise<boolean>;
+    /** Reads one connection's users and links or lists them now, within `maxMs`. Undefined when the org has no such connection (nothing is read). */
+    syncConnection(orgId: OrgId, connectionId: string, options?: { maxMs?: number }): Promise<SyncResult | undefined>;
   };
   readonly emitter: RovaraEmitter;
   readonly actors: ActorResolverPort;
@@ -348,9 +378,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (needsLinkedAuthor(draft)) {
         log("record.unlinked_skipped", { source: draft.source });
         await skipped.count(orgId, draft.project, draft.source).catch(() => log("record.unlinked_count_failed", {}));
+        // S2: this change is not kept, but its words may be in the item's text: later edits by the author keep no whole text.
+        if (draft.sourceRef.order !== undefined) await priorEdits.noteUnstored?.({ workspaceId: draft.workspaceId, source: draft.source as never, system: draft.sourceRef.system, id: draft.sourceRef.id }).catch(() => log("record.prior_edit_mark_failed", {}));
+        // The org joins the scheduled jobs' directory now: the hourly job is what reads its connected tools' people and links them, so an org whose first changes were all refused must be reached by it.
+        await listOrg(orgId).catch(() => log("record.list_org_failed", {}));
         return { status: "refused", reason: "author_not_linked" } as never;
       }
-      try { return await directSink.put(draft); } catch (error) {
+      try {
+        const outcome = await directSink.put(draft);
+        // An erased person's late change, or an excluded one, is refused too: same reason.
+        if (outcome.status === "refused" && draft.sourceRef.order !== undefined && (outcome.reason === "actor_erased" || outcome.reason === "excluded")) await priorEdits.noteUnstored?.({ workspaceId: draft.workspaceId, source: draft.source as never, system: draft.sourceRef.system, id: draft.sourceRef.id }).catch(() => log("record.prior_edit_mark_failed", {}));
+        return outcome;
+      } catch (error) {
         if (queue === undefined || !keepsText(draft)) throw error;
         await queue.send({ v: 1, op: "put", draft, queuedAt: new Date(now()).toISOString() } as never);
         log("record.put_queued", {});
@@ -388,7 +427,6 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   const config = createSourceConfigPort({ table, edition });
   const mode = createCaptureModePort({ modes });
-  const history = createRecordHistoryPort({ table });
   const tapLog = (event: string, fields: Readonly<Record<string, string | number | boolean>>): void => log(event, fields);
 
   // ---- purge (delete worker, erase): per workspace, with that workspace's vectors
@@ -463,10 +501,10 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
     async byMergeCommit() { return undefined; },
   };
-  const countUnlinked = (workspaceId: string, project: string | undefined, source: string): void => { const parsed = OrgIdSchema.safeParse(workspaceId); if (parsed.success) void skipped.count(parsed.data, project, source).catch(() => undefined); };
-  const edited = createEditedItemsPort(table, now);
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, onUnlinked: countUnlinked, edited });
-  const recorder = createTicketRecorder({ sink, actors, mode, config, history, log: tapLog, onUnlinked: countUnlinked, edited });
+  const priorEdits = priorEditsPort(table, now);
+  // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits });
+  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits });
   const hook = createHookRecordTap({ recorder });
   const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
 
@@ -744,6 +782,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return deleted;
   }
 
+  /** Filled in below, where the tracker pieces are built (they need the links, which are defined after the jobs). */
+  const trackerSync: { run: (orgId: OrgId, budgetMs: number) => Promise<number> } = { run: async () => 0 };
   const jobs: TeamRecordRuntime["jobs"] = {
     async run(job) {
       if (job === "hourly") {
@@ -760,7 +800,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const erased = await resumeErases(orgId, budgetMs);
           // TRW-5 S3: archived projects whose erase was never recorded or finished.
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept };
+          // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
+          const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
         }, JOB_BUDGET_MS - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         return summary;
@@ -849,5 +891,100 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     link: (orgId, link) => linkTrackerIdentity(table, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }, { orgOfDeveloper }),
     linkByVerifiedEmail: (orgId, link) => linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email), orgOfDeveloper }, OrgIdSchema.parse(orgId), { ...link, at: new Date(now()).toISOString() }),
   };
-  return { edition, table, sink, drain, removal, links, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
+
+  // ---- tracker people: the automatic link through the connected app's user list, and the admin's mapping of the rest
+  const membership = { orgOfDeveloper: orgOfDeveloper };
+  const linkVerified = (orgId: OrgId, link: Parameters<TeamRecordRuntime["links"]["linkByVerifiedEmail"]>[1] & { displayName?: string; via?: "auto"; why?: string }) =>
+    linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email).catch(() => undefined), orgOfDeveloper }, orgId, { ...link, at: new Date(now()).toISOString() });
+  async function syncOne(orgId: OrgId, connectionId: string, maxMs: number): Promise<SyncResult | undefined> {
+    const tracker = await input.trackers?.get(orgId, connectionId);
+    if (tracker === undefined) return undefined;
+    await listOrg(orgId);
+    return syncTrackerUsers({ table, now, log, linkByVerifiedEmail: linkVerified, autoLink: { enabled: (org) => autoLinkEnabled(table, org), domains: input.verifiedDomains ?? { domainsOf: async () => undefined } } }, orgId, tracker, { maxMs });
+  }
+  // S3: a request id is single use and bound to the exact change it first named. The same id with the same change answers what it answered (nothing is done twice, nothing is audited twice); the same id with another
+  // change is refused. Written after the change; a crash before it only means the next try does the work again (and its audit event, bound to the same change, is the same event).
+  const requestKey = (orgId: OrgId, requestId: string): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId), sk: `TRREQ#${createHash("sha256").update(requestId).digest("hex")}` });
+  const changeDigest = (change: string): string => createHash("sha256").update(change).digest("hex");
+  async function requestOutcome(orgId: OrgId, requestId: string, change: string): Promise<string | undefined> {
+    const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: requestKey(orgId, requestId), ConsistentRead: true }))) as { Item?: { digest?: unknown; outcome?: unknown } }).Item;
+    if (item === undefined) return undefined;
+    return item.digest === changeDigest(change) && typeof item.outcome === "string" ? item.outcome : "reused";
+  }
+  async function rememberRequest(orgId: OrgId, requestId: string, change: string, outcome: string): Promise<void> {
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...requestKey(orgId, requestId), entityType: "TEAM_RECORD_TRACKER_REQUEST", orgId, digest: changeDigest(change), outcome, at: new Date(now()).toISOString(), indexExpiresAt: Math.floor(now() / 1000) + 90 * 86_400 } })).catch(() => log("record.request_not_remembered", {}));
+  }
+  const trackerPeople: TeamRecordRuntime["trackerPeople"] = {
+    async list(orgId) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const [unmatched, linked, enabled, domains] = await Promise.all([listUnmatchedTrackerUsers(table, parsed), listLinkedTrackerUsers(table, parsed), autoLinkEnabled(table, parsed), (input.verifiedDomains?.domainsOf(parsed) ?? Promise.resolve(undefined)).catch(() => undefined)]);
+      return { unmatched: unmatched.users, linked: linked.users, truncated: unmatched.truncated || linked.truncated, autoLink: { enabled, verifiedDomainsRecorded: domains !== undefined && domains.size > 0 } };
+    },
+    async setAutoLink(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const change = `autolink|${call.enabled ? "on" : "off"}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : "set";
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerAutolinkChanged({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, change), enabled: call.enabled })); } catch { return "audit_unavailable"; }
+      await setAutoLinkEnabled(table, parsed, { enabled: call.enabled, by: call.by, at: new Date(now()).toISOString() });
+      // Turning it on: the org's tools are read again at the next run, so people are judged under the new setting. Turning it off changes nothing already linked.
+      if (call.enabled && input.trackers !== undefined) { await listOrg(parsed); for (const tracker of await input.trackers.list(parsed)) await markSyncDue(table, parsed, tracker.connectionId, now()); }
+      await rememberRequest(parsed, call.requestId, change, "set");
+      return "set";
+    },
+    async map(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const change = `map|${call.system}|${call.sourceId}|${call.developerId}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : (earlier as "mapped");
+      const listed = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(parsed), sk: `${UNMATCHED_PREFIX}${call.system}#${call.sourceId}` }, ConsistentRead: true }))) as { Item?: unknown }).Item;
+      if (listed === undefined || !isTrackerSystem(call.system)) return "not_found";
+      if ((await orgOfDeveloper(call.developerId)) !== parsed) return "not_member";
+      // The audit event first: a mapping the ledger could not record is not made. Its id is bound to the EXACT change (a request id alone could be reused for another mapping and the ledger would drop the second event).
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerPersonMapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, call.system, call.sourceId, call.developerId), memberId: call.developerId, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      if (!(await mapTrackerUser(table, parsed, { system: call.system, sourceId: call.sourceId, developerId: call.developerId, at: new Date(now()).toISOString() }, membership))) return "not_member";
+      await rememberRequest(parsed, call.requestId, change, "mapped");
+      return "mapped";
+    },
+    async unmap(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const change = `unmap|${call.system}|${call.sourceId}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : (earlier as "unmapped");
+      if (!isTrackerSystem(call.system)) return "not_found";
+      const linkedTo = await developerOfTrackerAuthor(table, parsed, call);
+      if (linkedTo === undefined) return "not_found";
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerPersonUnmapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, call.system, call.sourceId, linkedTo), memberId: linkedTo, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      if ((await unmapTrackerUser(table, parsed, call, new Date(now()).toISOString())) === undefined) return "not_found";
+      await rememberRequest(parsed, call.requestId, change, "unmapped");
+      return "unmapped";
+    },
+    async requestSync(orgId, connectionId) {
+      const parsed = OrgIdSchema.parse(orgId);
+      if (await input.trackers?.get(parsed, connectionId) === undefined) return false;
+      await listOrg(parsed);
+      await markSyncDue(table, parsed, connectionId, now());
+      return true;
+    },
+    syncConnection: (orgId, connectionId, options) => syncOne(OrgIdSchema.parse(orgId), connectionId, Math.min(options?.maxMs ?? 5_000, 8_000)),
+  };
+  /** The hourly job's share: the org's connected trackers that are due (a day since the last full read, or a read that did not finish), a few per run. */
+  async function syncDueTrackers(orgId: OrgId, budgetMs: number): Promise<number> {
+    if (input.trackers === undefined) return 0;
+    const started = now();
+    let synced = 0;
+    for (const tracker of (await input.trackers.list(orgId)).slice(0, 5)) {
+      const left = budgetMs - (now() - started);
+      if (left < 1_000 || synced >= 3) break;
+      if (!await syncIsDue(table, orgId, tracker.connectionId, now())) continue;
+      await syncOne(orgId, tracker.connectionId, Math.min(left, 4_000));
+      synced += 1;
+    }
+    return synced;
+  }
+  trackerSync.run = syncDueTrackers;
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

@@ -130,6 +130,12 @@ export const RecordSourceRefSchema = z.object({
   versionAt: z.string().datetime().optional(),
   /** The source's own id for the item, for asking the source again (the existence sweep). Absent: `id`. */
   nativeId: z.string().min(1).max(300).optional(),
+  /**
+   * Per-editor rows (owner, 2026-11-02): present on a row that is ONE CHANGE to a ticket, pull request, review or comment, made by the row's actor and holding only that person's own
+   * words. `id` is still the item's id (so a source delete, a hide and the lake reach every change of the item); `order` is the change's place in the item's history (the change's time at the
+   * source, in milliseconds). Readers put an item's rows back together by it. A row with `order` is never replaced by a later change: erasing a person removes exactly their rows.
+   */
+  order: z.number().int().nonnegative().optional(),
 }).strict();
 export type RecordSourceRef = z.infer<typeof RecordSourceRefSchema>;
 

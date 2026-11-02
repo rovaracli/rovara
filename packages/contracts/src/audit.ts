@@ -212,6 +212,11 @@ export const AUDIT_ACTIONS = [
   "record.source_removed",
   "record.tombstoned",
   "record.erased",
+  // Tracker people (lane team-record-links): an admin mapped a Linear or Jira person to a member of the company, or took the mapping away. The target is the member; the tool's id and name never go in.
+  "record.tracker_person_mapped",
+  "record.tracker_person_unmapped",
+  // The company switch for automatic tracker linking (off by default): who turned it on or off; the fact is the new state.
+  "record.tracker_autolink_changed",
   "lesson.mode_changed",
   "lesson.proposed",
   "lesson.activated",
@@ -460,6 +465,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "record.source_removed": ["source"],
   "record.tombstoned": ["source", "cause", "count"],
   "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],
+  // `source` is `linear` or `jira`.
+  "record.tracker_person_mapped": ["source"],
+  "record.tracker_person_unmapped": ["source"],
+  "record.tracker_autolink_changed": ["enabled"],
   "lesson.mode_changed": ["fromMode", "toMode", "locked"],
   "lesson.proposed": ["lessonType", "tier"],
   "lesson.activated": ["lessonType", "tier", "auto"],

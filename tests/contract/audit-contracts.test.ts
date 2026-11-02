@@ -179,7 +179,7 @@ describe("the event catalog", () => {
       // Proof and evidence
       "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused",
       // Team record and lessons (learning v2, R1)
-      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "lesson.mode_changed", "lesson.proposed",
+      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
       "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",

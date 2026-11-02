@@ -182,6 +182,7 @@ import { routeIntake } from "./developer-routes/intake.js";
 import { routeTestEnvironment, testEnvStoreOf } from "./developer-routes/test-environment.js";
 import { routeTestHealth } from "./developer-routes/test-health.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
+import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
@@ -526,6 +527,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testHealthReply !== undefined) return testHealthReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
+  const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);
+  if (trackerPeopleReply !== undefined) return trackerPeopleReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
