@@ -169,6 +169,8 @@ export function acceptSecondReport(input: SecondReportCheck): { accepted: true }
   if (input.currentCandidateDigest === undefined || input.report.candidateDigest !== input.currentCandidateDigest) return { accepted: false, reason: "wrong-candidate" };
   const ran = input.ranModel;
   if (ran === undefined || secondReviewModelKey(ran) !== secondReviewModelKey(input.plan.model)) return { accepted: false, reason: "wrong-model" };
+  // The operation record's model is the broker's own plan, not proof of what answered: the report names the model its reviewer session ran on (the worker reports it), and that must be the planned one too.
+  if (secondReviewModelKey({ provider: input.report.provider, modelId: input.report.version }) !== secondReviewModelKey(input.plan.model)) return { accepted: false, reason: "wrong-model" };
   if (!input.plan.against.every((other) => differentCompany(ran, other))) return { accepted: false, reason: "same-company" };
   return { accepted: true };
 }
@@ -304,12 +306,14 @@ export const SECOND_OPINION_PR_LINE_MAX = 300;
  * `inertLine` as the first review's: redacted, control characters gone, `@` broken so nobody is mentioned, links reduced to text, no image, no HTML comment, issue words neutralised. The model's name is a
  * report string and is made inert too.
  */
-export function secondOpinionPrLines(opinion: SecondOpinion): string[] {
+export function secondOpinionPrLines(opinion: SecondOpinion, accepted?: readonly AcceptedFindingRef[]): string[] {
   if (!secondOpinionShownOn(opinion).pullRequest) return [];
   // An `on` second review that did not run: one fixed line, no model text.
   if (opinion.unavailable) return opinion.unavailableReason === undefined ? [] : [secondReviewDidNotRunLine(opinion.unavailableReason)];
   if (opinion.report === undefined) return [];
-  const blocking = blockingFindings(opinion.report);
+  // The same list the opinion blocked on: a finding the owner accepted as a risk is neither blocking nor listed.
+  const blocking = blockingFindings(opinion.report, accepted);
+  if (blocking.length === 0) return [];
   return [
     `Second review (${inertLine(`${opinion.report.provider}/${opinion.report.version}`, 80)}): ${String(blocking.length)} blocking ${blocking.length === 1 ? "finding" : "findings"}`,
     ...blocking.slice(0, SECOND_OPINION_PR_FINDINGS_MAX).map((finding) => `- ${inertLine(finding.text, SECOND_OPINION_PR_LINE_MAX)}${finding.file === undefined ? "" : ` (${inertLine(finding.file, 120)}${finding.line === undefined ? "" : `:${String(finding.line)}`})`}`),

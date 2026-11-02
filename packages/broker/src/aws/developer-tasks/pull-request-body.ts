@@ -33,7 +33,7 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
   // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.
   if (workflow.definitionVersion === "1.1.0") {
     // SH34: the second review of this code (switch `cr`; none for a shadow opinion), kept beside the workflow and never part of the first review's lines.
-    const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest);
+    const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest, workflow.acceptedFindings);
     return rovaraPullRequestBody({
       summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
       fallbackTitle: task.title, workflow, context: { ...(context ?? {}), ...(proofLines.length === 0 ? {} : { proofLines }), ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }) }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,

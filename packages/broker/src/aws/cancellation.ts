@@ -1,3 +1,4 @@
+import type { SecondReviewOperationPlan } from "../rovara-code/second-review-store.js";
 import type {TurnModelPin} from "../model-selection/turn-policy.js";
 // The operation records and the cancel path shared by the broker and, for issue 173, the session
 // reconciler's backstop: moved here unchanged from broker.ts, so both cancel through the same code.
@@ -80,6 +81,10 @@ export interface OperationRecord extends Operation {
   reviewSameModel?: true;
   /** SH34: this REVIEW-mode operation is a SECOND review by another AI company (switch `cr`). Every lookup of reviews, and the workflow's completion handling, leaves it out; its result goes to the task's `secondOpinion`, never to the workflow. */
   secondReview?: true;
+  /** SH34: set with `secondReview` when the broker starts a second review: the candidate it is about and the plan it runs under; its end reads it (`secondReviewEndItems`). */
+  secondReviewPlan?: SecondReviewOperationPlan;
+  /** SH30: the company recipes (id and revision) the broker offered this SETUP_DRAFT run when it dispatched it. The run's reported recipe sources are intersected with this (`offeredRecipesNamedBy`). */
+  setupRecipeOffers?: Array<{ recipeId: string; revision: number }>;
   /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */
   planRevision?: true;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */

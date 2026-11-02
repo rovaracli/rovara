@@ -50,6 +50,17 @@ export function recipesNamedBy(sources: ReadonlyArray<TestEnvValueSource>): Arra
   return [...out].map(([recipeId, revision]) => ({ recipeId, revision }));
 }
 
+/** An offer as the broker recorded it on the SETUP_DRAFT operation when it dispatched the run: just which recipe and which revision it sent. */
+export interface RecordedOffer { recipeId: string; revision: number }
+
+/**
+ * The recipes a worker's value sources name, INTERSECTED with the offers the broker recorded for that run. A worker's report is only a claim: a source naming a recipe the broker never offered this run (another
+ * recipe of the company, a revision it did not send, an id it made up) contributes nothing, so a compromised or confused worker cannot choose which recipe's hosts are listed.
+ */
+export function offeredRecipesNamedBy(sources: ReadonlyArray<TestEnvValueSource>, recorded: readonly RecordedOffer[]): RecordedOffer[] {
+  return recipesNamedBy(sources).filter((named) => recorded.some((offer) => offer.recipeId === named.recipeId && offer.revision === named.revision));
+}
+
 export interface PreApprovedHost {
   host: string;
   /** The recipe that lists it, as a value source. */
@@ -67,10 +78,10 @@ export interface PreApprovedHost {
  * after Rovara staff approve it (`staffApprovalRequired`). It is for the host ask to say "your company already approved this host" and to skip asking an admin twice.
  */
 export async function preApprovedRecipeHosts(
-  deps: Reads, input: { orgId: OrgId; project: string; sources: ReadonlyArray<TestEnvValueSource>; cloud: boolean; isHostRefused(host: string): boolean },
+  deps: Reads, input: { orgId: OrgId; project: string; sources: ReadonlyArray<TestEnvValueSource>; /** The offers recorded on the run's operation at dispatch (`RecordedOffer`). */ recorded: readonly RecordedOffer[]; cloud: boolean; isHostRefused(host: string): boolean },
 ): Promise<PreApprovedHost[]> {
   if (!OrgIdSchema.safeParse(input.orgId).success) return [];
-  const named = recipesNamedBy(input.sources).slice(0, SETUP_RECIPE_OFFERS_MAX);
+  const named = offeredRecipesNamedBy(input.sources, input.recorded).slice(0, SETUP_RECIPE_OFFERS_MAX);
   const stored: StoredRecipe[] = [];
   for (const { recipeId, revision } of named) {
     const found = await deps.store.getRecipe(input.orgId, recipeId);

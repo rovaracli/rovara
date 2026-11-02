@@ -1,7 +1,7 @@
 import type { TaskFundingProof } from "../org/task-stop-funding.js";
 import type { SpendingAdmissionReference } from "@agentx/contracts";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
-import type { SecondReviewPending, StoredSecondOpinion } from "../rovara-code/second-review-store.js";
+import type { StoredSecondOpinion } from "../rovara-code/second-review-store.js";
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
 import type {ModelFallback} from "@agentx/contracts";
@@ -144,10 +144,8 @@ export interface DeveloperTaskRecord {
   reviewSameModel?: { candidateDigest: string };
   /**
    * Second review by another AI company (SH34, switch `cr`). Kept here and NEVER in the (strict) workflow, so the first review's record, `reviewCleared` and everything that reads the workflow are untouched by it
-   * and an older broker ignores these keys. `secondReviewPending` is set while a second review of `candidateDigest` is running (bounded by `deadlineAt`); `secondOpinion` is its result for one candidate;
-   * `secondReviewAcknowledged` holds the keys the task owner acknowledged (`secondReviewAcknowledgement`).
+   * and an older broker ignores these keys. `secondOpinion` is its result for one candidate; `secondReviewAcknowledged` holds the keys the task owner acknowledged (`secondReviewAcknowledgement`).
    */
-  secondReviewPending?: SecondReviewPending;
   secondOpinion?: StoredSecondOpinion;
   secondReviewAcknowledged?: string[];
   /** The commit each repository's preparation checked out, from the prepare result; the task's base until one is pinned. */

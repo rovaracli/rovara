@@ -9,7 +9,7 @@ import { applyRecipe, registryHostsOf } from "../../packages/worker/src/env-dete
 import { buildEnvironmentDraft, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 import { emptyDetection, type RepositoryReader } from "../../packages/worker/src/env-detect/types.js";
 import { detectTestEnvironment } from "../../packages/worker/src/test-env-detect.js";
-import { preApprovedRecipeHosts, recipeOffersForProject, recipesNamedBy } from "../../packages/broker/src/org/setup-recipe-offers.js";
+import { offeredRecipesNamedBy, preApprovedRecipeHosts, recipeOffersForProject, recipesNamedBy } from "../../packages/broker/src/org/setup-recipe-offers.js";
 import type { StoredLocks, StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
 import { memorySetupRecipeStore } from "../support/memory-setup-recipe-store.js";
 
@@ -260,13 +260,15 @@ describe("recipeOffersForProject", () => {
 
 describe("preApprovedRecipeHosts: a list, never a grant", () => {
   const refuse = (host: string) => host === "evil.example.net";
+  // The offers the broker recorded on the run's operation when it dispatched it.
+  const RECORDED = [{ recipeId: ID1, revision: 1 }];
   const sources = [source(ID1, 1), { path: "a.py", line: 1 }, "model" as const, "detector:python" as const];
 
   it("lists the hosts of the recipes the proposal used, nothing else", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1, {}, { approvedHosts: ["pypi.internal.example.com", "npm.internal.example.com"] }));
     put(store, stored(ID2, {}, { match: { markerFiles: ["go.mod"], registryHosts: [] }, approvedHosts: ["goproxy.internal.example.com"] }));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, cloud: false, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     expect(hosts).toEqual([
       { host: "npm.internal.example.com", source: source(ID1, 1), staffApprovalRequired: false },
       { host: "pypi.internal.example.com", source: source(ID1, 1), staffApprovalRequired: false },
@@ -277,7 +279,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
   it("says Rovara staff are still needed on Cloud", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, cloud: true, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: true, isHostRefused: refuse });
     expect(hosts.every((entry) => entry.staffApprovalRequired)).toBe(true);
   });
 
@@ -286,7 +288,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
       const store = memorySetupRecipeStore();
       put(store, stored(ID1));
       await mutate(store);
-      return preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, cloud: false, isHostRefused: refuse });
+      return preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     };
     expect(await run((store) => put(store, stored(ID1, { status: "revoked" })))).toEqual([]);
     expect(await run((store) => put(store, stored(ID1, { revision: 2 })))).toEqual([]);
@@ -299,11 +301,25 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
   it("drops a host the refusal list refuses today, even one an admin once approved", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1, {}, { approvedHosts: ["pypi.internal.example.com", "evil.example.net"] }));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, cloud: false, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     expect(hosts.map((entry) => entry.host)).toEqual(["pypi.internal.example.com"]);
   });
 
   it("names no recipe from a source that merely looks like one", () => {
     expect(recipesNamedBy(["recipe:rcp_short@1", "recipe:rcp_" + "1".repeat(20) + "@0", "recipe:" + ID1, "observed:run#1"] as never)).toEqual([]);
+  });
+
+  it("a source the broker never offered this run contributes no hosts: the worker's report is a claim, the recorded offers decide", async () => {
+    const store = memorySetupRecipeStore();
+    put(store, stored(ID1, {}, { approvedHosts: ["pypi.internal.example.com"] }));
+    put(store, stored(ID2, {}, { match: { markerFiles: ["go.mod"], registryHosts: [] }, approvedHosts: ["goproxy.internal.example.com"] }));
+    // The worker names ID2 (and an ID1 revision it was not sent), but the broker offered only ID1@1.
+    const claimed = [source(ID2, 1), source(ID1, 7), "model" as const];
+    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources: claimed, recorded: RECORDED, cloud: false, isHostRefused: refuse });
+    expect(hosts).toEqual([]);
+    // With the offer recorded, the same claim lists the host; with nothing recorded, nothing is listed.
+    expect((await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources: [source(ID2, 1)], recorded: [{ recipeId: ID2, revision: 1 }], cloud: false, isHostRefused: refuse })).map((entry) => entry.host)).toEqual(["goproxy.internal.example.com"]);
+    expect(await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: [], cloud: false, isHostRefused: refuse })).toEqual([]);
+    expect(offeredRecipesNamedBy([source(ID1, 1), source(ID2, 1), source(ID1, 2)], [{ recipeId: ID1, revision: 1 }])).toEqual([{ recipeId: ID1, revision: 1 }]);
   });
 });

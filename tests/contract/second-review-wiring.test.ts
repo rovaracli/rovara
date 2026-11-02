@@ -3,12 +3,13 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createWorkflowSnapshot, createCandidateManifest, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { reviewCleared, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
+import { reviewCleared, workflowFindingFingerprint, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { specReviewRecordItems } from "../../packages/broker/src/spec/review-record.js";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
-import { secondOpinionOfTask, secondReviewEndItems, secondReviewExpiredItems, secondReviewPullRequestLines, secondReviewTaskView, type SecondReviewPending } from "../../packages/broker/src/rovara-code/second-review-store.js";
+import { secondOpinionOfTask, secondReviewEndItems, secondReviewPullRequestLines, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -42,10 +43,10 @@ const plan = () => {
   if (!planned.run) throw new Error("expected a plan");
   return planned;
 };
-const pending = (operationId: string, mode: "shadow" | "on" = "on", deadlineAt = "2026-11-02T13:00:00.000Z"): SecondReviewPending => {
-  const planned = plan();
-  return { operationId, candidateDigest: code.digest, startedAt: NOW, deadlineAt, attempts: [], plan: { mode, company: planned.company, model: planned.model, against: planned.against } };
-};
+const planned = plan();
+const operationPlan = (mode: "shadow" | "on" = "on", candidateDigest = code.digest): SecondReviewOperationPlan => ({ candidateDigest, plan: { mode, company: planned.company, model: planned.model, against: planned.against } });
+/** A second-review operation as the broker records it when it starts one. */
+const secondOp = (id: string, over: Record<string, unknown> = {}) => ({ id, kind: "task", workflowMode: "REVIEW", secondReview: true, model: NOVA, secondReviewPlan: operationPlan(), ...over });
 const secondReport = (operationId: string, status: WorkflowReviewReport["status"], findings: WorkflowReviewReport["findings"] = []): WorkflowReviewReport => ({
   operationId, candidateDigest: code.digest, role: "CRITIC", provider: "amazon-bedrock", version: "us.amazon.nova-premier-v1:0", status, findings, readOnly: true, recordedAt: NOW,
 });
@@ -59,71 +60,97 @@ function harness(taskExtra: Record<string, unknown> = {}) {
 }
 
 describe("key rule 1: a second review never reaches the workflow", () => {
-  it("a second-review PASS ends in one write that touches only the second-review attributes, never the workflow", async () => {
+  const update = (items: unknown[]) => (items[0] as { Update: { UpdateExpression: string; ExpressionAttributeValues: Record<string, unknown> } }).Update;
+  const opinionIn = (items: unknown[]) => (update(items).ExpressionAttributeValues[":opinion"] as { opinion: SecondOpinion }).opinion;
+
+  it("a second-review PASS ends in one write that touches only the second opinion, never the workflow", async () => {
     const operationId = randomUUID();
-    const { dependencies, workflow } = harness({ secondReviewPending: pending(operationId) });
-    const items = await completedWorkflowItems(dependencies, { id: operationId, kind: "task", workflowMode: "REVIEW", secondReview: true, model: NOVA } as never, { taskId } as never, "SUCCEEDED", NOW, { workflowReviews: [secondReport(operationId, "PASS")] });
+    const { dependencies, workflow } = harness();
+    const items = await completedWorkflowItems(dependencies, secondOp(operationId) as never, { taskId } as never, "SUCCEEDED", NOW, { workflowReviews: [secondReport(operationId, "PASS")] });
     expect(items).toHaveLength(1);
-    const update = (items[0] as { Update: { UpdateExpression: string; ExpressionAttributeValues: Record<string, unknown> } }).Update;
-    expect(update.UpdateExpression).toBe("SET secondOpinion = :opinion, updatedAt = :now REMOVE secondReviewPending");
-    expect(update.UpdateExpression).not.toMatch(/workflow/u);
-    expect(Object.keys(update.ExpressionAttributeValues)).not.toContain(":workflow");
+    expect(update(items).UpdateExpression).toBe("SET secondOpinion = :opinion, updatedAt = :now");
+    expect(update(items).UpdateExpression).not.toMatch(/workflow/u);
+    expect(Object.keys(update(items).ExpressionAttributeValues)).not.toContain(":workflow");
     // The first review's FINDINGS still block: nothing about the workflow changed, and a second PASS is not a review of it.
     const first = workflow.reviews![0]!;
     expect(first.status).toBe("FINDINGS");
     expect(reviewCleared(first, undefined)).toBe(false);
-    expect((update.ExpressionAttributeValues[":opinion"] as { opinion: SecondOpinion }).opinion).toMatchObject({ unavailable: false, blocked: false });
+    expect(opinionIn(items)).toMatchObject({ unavailable: false, blocked: false });
   });
 
-  it("the same holds when the second review fails, is stopped, or returns garbage: only the second-review attributes are written", async () => {
+  it("the same holds when the second review fails, is stopped, or returns garbage: only the second opinion is written", async () => {
     for (const [status, result] of [["FAILED", undefined], ["CANCELLED", null], ["SUCCEEDED", { workflowReviews: "nonsense" }], ["SUCCEEDED", { workflowReviews: [] }], ["SUCCEEDED", { workflowReviews: [{ nope: 1 }] }]] as const) {
       const operationId = randomUUID();
-      const { dependencies } = harness({ secondReviewPending: pending(operationId) });
-      const items = await completedWorkflowItems(dependencies, { id: operationId, kind: "task", workflowMode: "REVIEW", secondReview: true } as never, { taskId } as never, status, NOW, result);
+      const { dependencies } = harness();
+      const items = await completedWorkflowItems(dependencies, secondOp(operationId) as never, { taskId } as never, status, NOW, result);
       expect(items).toHaveLength(1);
-      const update = (items[0] as { Update: { UpdateExpression: string; ExpressionAttributeValues: Record<string, unknown> } }).Update;
-      expect(update.UpdateExpression).not.toMatch(/workflow/u);
-      expect((update.ExpressionAttributeValues[":opinion"] as { opinion: SecondOpinion }).opinion).toMatchObject({ unavailable: true, unavailableReason: "no-answer", blocked: false });
+      expect(update(items).UpdateExpression).not.toMatch(/workflow/u);
+      expect(opinionIn(items)).toMatchObject({ unavailable: true, unavailableReason: "no-answer", blocked: false });
     }
   });
 
-  it("a second review that is not the pending one writes nothing (a late or duplicate end)", async () => {
-    const { dependencies } = harness({ secondReviewPending: pending(randomUUID()) });
-    expect(await completedWorkflowItems(dependencies, { id: randomUUID(), kind: "task", workflowMode: "REVIEW", secondReview: true } as never, { taskId } as never, "SUCCEEDED", NOW, { workflowReviews: [] })).toEqual([]);
-    const none = harness();
-    expect(await completedWorkflowItems(none.dependencies, { id: randomUUID(), kind: "task", workflowMode: "REVIEW", secondReview: true } as never, { taskId } as never, "SUCCEEDED", NOW, {})).toEqual([]);
+  it("a second-review operation with no recorded plan writes nothing, and never falls through to the first review's branch", async () => {
+    const { dependencies } = harness();
+    expect(await completedWorkflowItems(dependencies, secondOp(randomUUID(), { secondReviewPlan: undefined }) as never, { taskId } as never, "SUCCEEDED", NOW, { workflowReviews: [] })).toEqual([]);
   });
 
-  it("a report for another candidate, another model or the security role is stored as unavailable, never as an answer", () => {
+  describe("what makes an answer an answer", () => {
     const operationId = randomUUID();
-    const base = { tableName: "state", task: { taskId, secondReviewPending: pending(operationId), workflow: { candidate: { digest: code.digest } } }, operation: { id: operationId, model: NOVA }, terminalStatus: "SUCCEEDED", now: NOW, taskKey };
-    const opinionOf = (over: Partial<Parameters<typeof secondReviewEndItems>[0]>, report: WorkflowReviewReport) => {
-      const items = secondReviewEndItems({ ...base, ...over, result: { workflowReviews: [report] } });
-      return ((items[0] as { Update: { ExpressionAttributeValues: Record<string, unknown> } }).Update.ExpressionAttributeValues[":opinion"] as { opinion: SecondOpinion }).opinion;
-    };
-    expect(opinionOf({}, secondReport(operationId, "PASS"))).toMatchObject({ unavailable: false });
-    expect(opinionOf({}, { ...secondReport(operationId, "PASS"), candidateDigest: "c".repeat(64) })).toMatchObject({ unavailable: true, unavailableReason: "wrong-candidate" });
-    expect(opinionOf({}, { ...secondReport(operationId, "PASS"), role: "SECURITY" })).toMatchObject({ unavailable: true, unavailableReason: "wrong-role" });
-    expect(opinionOf({ operation: { id: operationId, model: SONNET } }, secondReport(operationId, "FINDINGS", [BLOCKING]))).toMatchObject({ unavailable: true, unavailableReason: "wrong-model", wouldHaveBlocked: false });
+    const base = { tableName: "state", task: { taskId, workflow: { candidate: { digest: code.digest } } }, operation: { id: operationId, model: NOVA, secondReviewPlan: operationPlan() }, terminalStatus: "SUCCEEDED", now: NOW, taskKey };
+    const opinionOf = (over: Partial<Parameters<typeof secondReviewEndItems>[0]>, report: WorkflowReviewReport) => opinionIn(secondReviewEndItems({ ...base, ...over, result: { workflowReviews: [report] } }));
+
+    it("accepts the code review of the planned candidate from the planned model", () => {
+      expect(opinionOf({}, secondReport(operationId, "PASS"))).toMatchObject({ unavailable: false });
+    });
+
+    it("a report for another candidate than the plan's (even if it is the task's current one) is unavailable: wrong-candidate", () => {
+      const other = "c".repeat(64);
+      expect(opinionOf({}, { ...secondReport(operationId, "PASS"), candidateDigest: other })).toMatchObject({ unavailable: true, unavailableReason: "wrong-candidate" });
+      // The plan names an earlier candidate, the report agrees with it, but the task has moved on: not the current code.
+      expect(opinionOf({ operation: { ...base.operation, secondReviewPlan: operationPlan("on", other) } }, { ...secondReport(operationId, "PASS"), candidateDigest: other })).toMatchObject({ unavailable: true, unavailableReason: "wrong-candidate" });
+    });
+
+    it("the security role is wrong-role", () => {
+      expect(opinionOf({}, { ...secondReport(operationId, "PASS"), role: "SECURITY" })).toMatchObject({ unavailable: true, unavailableReason: "wrong-role" });
+    });
+
+    it("another model is wrong-model, whether the operation record or the report itself names it", () => {
+      expect(opinionOf({ operation: { ...base.operation, model: SONNET } }, secondReport(operationId, "FINDINGS", [BLOCKING]))).toMatchObject({ unavailable: true, unavailableReason: "wrong-model", wouldHaveBlocked: false });
+      // The operation record says the planned model, but the report's own provider/version says a different one.
+      expect(opinionOf({}, { ...secondReport(operationId, "FINDINGS", [BLOCKING]), version: "us.amazon.nova-pro-v1:0" })).toMatchObject({ unavailable: true, unavailableReason: "wrong-model" });
+      expect(opinionOf({}, { ...secondReport(operationId, "FINDINGS", [BLOCKING]), provider: "openai", version: "gpt-5.5" })).toMatchObject({ unavailable: true, unavailableReason: "wrong-model" });
+      // The same model through another geography is the same revision.
+      expect(opinionOf({}, { ...secondReport(operationId, "PASS"), version: "eu.amazon.nova-premier-v1:0" })).toMatchObject({ unavailable: false });
+    });
+
+    it("a finding the owner accepted as a risk is neither blocking nor listed, on the opinion, the task page and the pull request", () => {
+      const fingerprint = workflowFindingFingerprint("CRITIC", { text: BLOCKING.text });
+      const accepted = [{ candidateDigest: code.digest, role: "CRITIC", fingerprint, text: BLOCKING.text, reason: "ok", actorId: ownerId, at: NOW }];
+      const items = secondReviewEndItems({ ...base, task: { ...base.task, workflow: { candidate: { digest: code.digest }, acceptedFindings: accepted } }, operation: { ...base.operation, secondReviewPlan: operationPlan("on") }, result: { workflowReviews: [secondReport(operationId, "FINDINGS", [BLOCKING])] } });
+      expect(opinionIn(items)).toMatchObject({ mode: "on", blocked: false, wouldHaveBlocked: false, blockingCount: 0 });
+      // Not accepted: it blocks.
+      expect(opinionOf({ operation: { ...base.operation, secondReviewPlan: operationPlan("on") } }, secondReport(operationId, "FINDINGS", [BLOCKING]))).toMatchObject({ blocked: true, blockingCount: 1 });
+      // Accepted AFTER the review ended: the page and the description are rendered from the same filtered list, so it is gone from both.
+      const blockedOpinion = opinionOf({ operation: { ...base.operation, secondReviewPlan: operationPlan("on") } }, secondReport(operationId, "FINDINGS", [BLOCKING]));
+      const task = { ...stored(blockedOpinion), workflow: { acceptedFindings: accepted } };
+      expect(secondReviewTaskView({ ...stored(blockedOpinion), workflow: {} }, code.digest, ENABLED)?.lines.join("\n")).toContain(BLOCKING.text);
+      expect(secondReviewTaskView(task, code.digest, ENABLED)).toBeUndefined();
+      expect(secondReviewPullRequestLines(stored(blockedOpinion), code.digest, [], ENABLED).join("\n")).toContain(BLOCKING.text);
+      expect(secondReviewPullRequestLines(stored(blockedOpinion), code.digest, accepted, ENABLED)).toEqual([]);
+    });
   });
 });
 
-describe("the wait is bounded: a review that never ends is given up on, flagged, never hung", () => {
-  it("past its deadline the sweep writes 'did not run' for that candidate and removes the pending record", () => {
-    const operationId = randomUUID();
-    const task = { taskId, secondReviewPending: pending(operationId, "on", "2026-11-02T12:30:00.000Z") };
-    expect(secondReviewExpiredItems({ tableName: "state", task, now: "2026-11-02T12:29:59.000Z", taskKey })).toEqual([]);
-    const items = secondReviewExpiredItems({ tableName: "state", task, now: "2026-11-02T12:30:00.000Z", taskKey });
-    expect(items).toHaveLength(1);
-    const update = (items[0] as { Update: { UpdateExpression: string; ConditionExpression: string; ExpressionAttributeValues: Record<string, unknown> } }).Update;
-    expect(update.UpdateExpression).toContain("REMOVE secondReviewPending");
-    expect(update.UpdateExpression).not.toMatch(/workflow/u);
-    expect(update.ConditionExpression).toContain("secondReviewPending.operationId = :operation");
-    expect((update.ExpressionAttributeValues[":opinion"] as { opinion: SecondOpinion }).opinion).toMatchObject({ mode: "on", unavailable: true, unavailableReason: "no-answer", blocked: false });
-  });
-
-  it("nothing is pending, nothing is written", () => {
-    expect(secondReviewExpiredItems({ tableName: "state", task: { taskId }, now: NOW, taskKey })).toEqual([]);
+describe("a second review is never given the spec to walk", () => {
+  it("records no spec walk for a second-review operation, and still does for the first review's", async () => {
+    const store = { load: () => Promise.resolve({ state: { specPullRequest: { commit: "s".repeat(40) } } }) } as never;
+    const env = { tableName: "state", store, now: () => NOW };
+    const walk = { specCommit: "s".repeat(40), requirements: [] };
+    const result = { specReview: walk };
+    expect(await specReviewRecordItems(env, taskId, { id: "op", kind: "task", workflowMode: "REVIEW", secondReview: true }, { status: "SUCCEEDED", result })).toEqual([]);
+    // The guard is the only difference: the same call without the tag reaches the schema (a walk that does not parse is also none, so this checks the tag is not what stops it by accident).
+    const first = await specReviewRecordItems(env, taskId, { id: "op", kind: "task", workflowMode: "REVIEW" }, { status: "SUCCEEDED", result });
+    expect(Array.isArray(first)).toBe(true);
   });
 });
 
@@ -172,14 +199,14 @@ describe("key rule 2: shadow findings never reach the pull request", () => {
 
   it("with cr off the description is exactly today's, whatever is stored", () => {
     const flagged = secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer");
-    expect(secondReviewPullRequestLines(stored(flagged), code.digest, OFF)).toEqual([]);
-    expect(secondReviewPullRequestLines(stored(flagged), code.digest, ENABLED)).toHaveLength(1);
+    expect(secondReviewPullRequestLines(stored(flagged), code.digest, [], OFF)).toEqual([]);
+    expect(secondReviewPullRequestLines(stored(flagged), code.digest, [], ENABLED)).toHaveLength(1);
     expect(prBody(stored(flagged))).toBe(prBody({}));
   });
 
   it("an opinion about other code is not shown", () => {
     const flagged = secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer");
-    expect(secondReviewPullRequestLines({ secondOpinion: { candidateDigest: "f".repeat(64), opinion: flagged, recordedAt: NOW } }, code.digest, ENABLED)).toEqual([]);
+    expect(secondReviewPullRequestLines({ secondOpinion: { candidateDigest: "f".repeat(64), opinion: flagged, recordedAt: NOW } }, code.digest, [], ENABLED)).toEqual([]);
     expect(secondOpinionOfTask({ secondOpinion: { candidateDigest: code.digest, opinion: { junk: true }, recordedAt: NOW } }, code.digest)).toBeUndefined();
     expect(secondOpinionOfTask({}, undefined)).toBeUndefined();
   });

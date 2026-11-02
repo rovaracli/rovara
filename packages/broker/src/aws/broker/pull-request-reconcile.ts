@@ -177,7 +177,7 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
     const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
     // SH34: the second review's lines (switch `cr`), rewritten with the rest of the block.
-    const secondReviewLines = workflow.definitionVersion === "1.1.0" ? secondReviewPullRequestLines(task, candidateDigest) : [];
+    const secondReviewLines = workflow.definitionVersion === "1.1.0" ? secondReviewPullRequestLines(task, candidateDigest, workflow.acceptedFindings) : [];
     // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow and the description had a Proof section, that section's body becomes a one-line marker (its old table describes the code before this fix).
     const proofResult = proofRead === undefined ? undefined : await proofRead;
     const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);

@@ -399,6 +399,13 @@ describe("acceptSecondReport (W2)", () => {
     expect(check({ ranModel: { provider: "amazon-bedrock", modelId: "eu.amazon.nova-premier-v1:0" } })).toEqual({ accepted: true });
   });
 
+  it("refuses when the report's own provider and version name another model than the plan, whatever the operation record says (ran model)", () => {
+    expect(check({ report: report("PASS", [], { provider: "amazon-bedrock", version: "us.amazon.nova-pro-v1:0" }) })).toEqual({ accepted: false, reason: "wrong-model" });
+    expect(check({ report: report("PASS", [], { provider: "openai", version: "gpt-5.5" }) })).toEqual({ accepted: false, reason: "wrong-model" });
+    expect(check({ report: report("PASS", [], { version: "us.amazon.nova-premier-v2:0" }) })).toEqual({ accepted: false, reason: "wrong-model" });
+    expect(check({ report: report("PASS", [], { provider: "Amazon-Bedrock", version: "eu.amazon.nova-premier-v1:0" }) })).toEqual({ accepted: true });
+  });
+
   it("refuses a security review, another candidate, and a missing current candidate", () => {
     expect(check({ report: report("PASS", [], { role: "SECURITY" }) })).toEqual({ accepted: false, reason: "wrong-role" });
     expect(check({ report: report("PASS", [], { candidateDigest: "c".repeat(64) }) })).toEqual({ accepted: false, reason: "wrong-candidate" });
@@ -594,6 +601,17 @@ describe("the pull request lines (W7)", () => {
     expect(text).not.toMatch(/https?:\/\/(?!‍)/u);
     expect(text).not.toMatch(/#(?=\d)/u);
     expect(text).not.toMatch(/Fixes ENG-9/u);
+  });
+
+  it("list the same blocking findings the opinion blocked on: one the owner accepted as a risk is not listed (and with all accepted there are no lines)", () => {
+    const two = opinion("on", report("FINDINGS", [BLOCKING, { text: "second problem", origin: "INTRODUCED" }]));
+    const accepted = [{ candidateDigest: digest, role: "CRITIC", fingerprint: workflowFindingFingerprint("CRITIC", { text: BLOCKING.text }) }];
+    const text = secondOpinionPrLines(two, accepted).join("\n");
+    expect(text).toContain("1 blocking finding");
+    expect(text).toContain("second problem");
+    expect(text).not.toContain(BLOCKING.text);
+    const both = [...accepted, { candidateDigest: digest, role: "CRITIC", fingerprint: workflowFindingFingerprint("CRITIC", { text: "second problem" }) }];
+    expect(secondOpinionPrLines(two, both)).toEqual([]);
   });
 
   it("are bounded: at most five findings, each cut", () => {
