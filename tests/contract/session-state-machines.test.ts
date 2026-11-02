@@ -85,6 +85,18 @@ describe("provisioner", () => {
     expect((states.MarkFailed!.Arguments!.Payload as Record<string, unknown>).error).toBe("{% $substring($string($failure), 0, 4000) %}");
   });
 
+  // LR-1: what the probe heard on /ping goes on the session, so the broker (which cannot reach port 8080) can read the worker's features. The JSONata the machine runs, evaluated for real.
+  it("keeps the features of the last probe and hands them to MarkReady", async () => {
+    const assigned = (states.ProbePing!.Assign as Record<string, string>).features!;
+    const sent = (states.MarkReady!.Arguments!.Payload as Record<string, string>).workerFeatures!;
+    expect(sent).toBe("{% $features %}");
+    const heard = (features: unknown) => jsonata(/^\{% (.*) %\}$/s.exec(assigned)![1]!).evaluate({}, { states: { result: { Payload: { healthy: true, status: "Healthy", features } } } }).then((value: unknown) => JSON.parse(JSON.stringify(value)) as unknown);
+    expect(await heard(["task.ownerRedirect.v1", "task.liveSteer.v1"])).toEqual(["task.ownerRedirect.v1", "task.liveSteer.v1"]);
+    // One feature stays a list, and none stays an empty list: the step's schema takes only arrays.
+    expect(await heard(["task.ownerRedirect.v1"])).toEqual(["task.ownerRedirect.v1"]);
+    expect(await heard([])).toEqual([]);
+  });
+
   it("sends every failure through cleanup: terminate any instance, keep the volume, mark failed", () => {
     for (const [name, state] of Object.entries(states)) {
       if (state.Type !== "Task" || name === "MarkFailed" || name === "TerminateInstance") continue;

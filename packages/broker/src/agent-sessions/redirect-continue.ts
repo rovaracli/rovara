@@ -204,7 +204,7 @@ export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carr
       // A redirect waiting for its stop is timed from when it was made; one being restarted from when its restart was claimed (a stop that took long to land must not make a fresh restart look old).
       const since = record.state === "restarting" ? Date.parse(record.claimedAt ?? record.createdAt) : Date.parse(open.createdAt);
       if (since > cutoff) continue;
-      let to: "left_blocked" | "restarted" | "failed" = "left_blocked";
+      let to: "left_blocked" | "restarted" | "revise_started" | "failed" = "left_blocked";
       if (record.state === "restarting") {
         // A restart that committed and died before it ended the record left the workflow past the stop: that run is going, so it is not "left blocked".
         const task = (await getItem(deps, taskKey(open.taskId))) as DeveloperTaskRecord | undefined;

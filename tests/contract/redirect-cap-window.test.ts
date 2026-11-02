@@ -3,7 +3,7 @@
 // to 25 is the positive control; the redirect's restarts, in every mode, leave it unset.
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { OWNER_REDIRECT_FEATURE, WORKER_PING_FEATURES_FIELD, workspaceSessionKey } from "../../packages/contracts/src/index.js";
+import { OWNER_REDIRECT_FEATURE, workspaceSessionKey } from "../../packages/contracts/src/index.js";
 import type * as TaskWindow from "../../packages/broker/src/aws/developer-tasks/task-window.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -30,8 +30,7 @@ async function setup() {
     const plan = "# Plan\n\n1. Fix retry handling.\n";
     await finishPlanningWithMarkdown(h, workspaceId, String(operations(workspaceId).find((item) => item.workflowMode === "PLAN")!.id), plan);
     await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: task(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex") });
-    h.db.set({ ...workspaceSessionKey(workspaceId), entityType: "WORKSPACE_SESSION", state: "READY", privateIp: "10.0.0.9", generation: 1 });
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [OWNER_REDIRECT_FEATURE] }), { status: 200 }));
+    h.db.set({ ...workspaceSessionKey(workspaceId), entityType: "WORKSPACE_SESSION", state: "READY", privateIp: "10.0.0.9", generation: 1, workerFeatures: [OWNER_REDIRECT_FEATURE] });
     return { taskId, sessionId, workspaceId };
   };
   const redirect = async (sessionId: string, workspaceId: string, mode: "keep_plan" | "change_plan") => {

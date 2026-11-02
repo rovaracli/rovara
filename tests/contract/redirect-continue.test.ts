@@ -10,7 +10,6 @@ import {
   REDIRECT_RETRY_INSTRUCTIONS,
   WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
   WORKFLOW_REDIRECT_SEND_BACK_REASON,
-  WORKER_PING_FEATURES_FIELD,
   agentSessionKey,
   projectMemberKey,
   workspaceSessionKey,
@@ -58,12 +57,9 @@ async function setup(options: { features?: readonly string[] | "down" } = {}) {
       });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     }
-    h.db.set({ ...workspaceSessionKey(workspaceId), entityType: "WORKSPACE_SESSION", state: "READY", privateIp: "10.0.0.9", generation: 1 });
+    // The session manager recorded what the worker listed when the session became READY (LR-1); "down" is a session recorded without a list (unknown).
     const features = options.features ?? [OWNER_REDIRECT_FEATURE];
-    vi.stubGlobal("fetch", async () => {
-      if (features === "down") throw new Error("connect ECONNREFUSED");
-      return new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: features }), { status: 200 });
-    });
+    h.db.set({ ...workspaceSessionKey(workspaceId), entityType: "WORKSPACE_SESSION", state: "READY", privateIp: "10.0.0.9", generation: 1, ...(features === "down" ? {} : { workerFeatures: features }) });
     return { taskId, sessionId, workspaceId, plan };
   };
   const redirect = (who: typeof MAYA, sessionId: string, body: Record<string, unknown> = {}) => h.dev(who, "POST", `/v1/app/sessions/${sessionId}/redirect`, { requestId: randomUUID(), text: TEXT, mode: "keep_plan", ...body });
@@ -133,7 +129,7 @@ describe("keep the plan, at coding", () => {
     const b = await t.runningCoding();
     const requestId = randomUUID();
     await t.redirect(MAYA, b.sessionId, { requestId });
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [] }), { status: 200 }));
+    t.db.set({ ...(t.db.get(workspaceSessionKey(b.workspaceId)) as Item), workerFeatures: [] });
     await t.stopLands(b.workspaceId);
     expect(t.operations(b.workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
     expect(t.task(b.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
@@ -313,12 +309,16 @@ describe("the owner check and the People fence come from one read (fix round 1, 
       t.db.set(owners("owner"));
       const requestId = randomUUID();
       expect((await t.redirect(OMAR, sessionId, { requestId })).status).toBe(200);
-      // The first check (before the probe) passes; the change lands while the probe runs, before the restart reads the People list it fences on.
-      vi.stubGlobal("fetch", async () => {
-        if (change === "removed from the People list") t.db.set(owners("viewer"));
-        else t.db.set({ ...t.task(taskId), currentOwner: { developerId: MAYA.developerId, name: MAYA.name, provider: MAYA.provider, since: new Date().toISOString() } });
-        return new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [OWNER_REDIRECT_FEATURE] }), { status: 200 });
-      });
+      // The first check (before the worker is asked) passes; the change lands when the worker's features are read, before the restart reads the People list it fences on.
+      const send = t.db.send.bind(t.db);
+      (t.db as { send: typeof send }).send = async (command: Parameters<typeof send>[0]) => {
+        const key = (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key;
+        if (key?.pk === workspaceSessionKey(workspaceId).pk && key.sk === workspaceSessionKey(workspaceId).sk && command.constructor.name === "GetCommand") {
+          if (change === "removed from the People list") t.db.set(owners("viewer"));
+          else t.db.set({ ...t.task(taskId), currentOwner: { developerId: MAYA.developerId, name: MAYA.name, provider: MAYA.provider, since: new Date().toISOString() } });
+        }
+        return send(command);
+      };
       await t.stopLands(workspaceId);
       expect(t.record(taskId, requestId)).toMatchObject({ state: "left_blocked" });
       expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
@@ -359,7 +359,6 @@ describe("restart conditions (R3)", () => {
     expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
     // Block the step as the stop does, without the hook, then let two hooks race.
     const cancel = t.operations(workspaceId).find((operation) => operation.kind === "cancel")!;
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [OWNER_REDIRECT_FEATURE] }), { status: 200 }));
     const registry = await import("../../packages/broker/src/agent-sessions/redirect-hook.js");
     registry.registerRedirectContinuation(t.db, undefined);
     await t.finish(workspaceId, cancel.id, "SUCCEEDED");

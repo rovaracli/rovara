@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData, getParametersInBatches, type SsmGetParametersAnswer } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData, getParametersInBatches, type SsmGetParametersAnswer } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
 
@@ -31,7 +31,8 @@ export const SessionStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("recordVolume"), workspaceId: uuid, generation, volumeId }).strict(),
   z.object({ action: z.literal("recordInstance"), workspaceId: uuid, generation, instanceId: z.string().regex(/^i-[0-9a-f]{8,17}$/), privateIp: z.ipv4(), instanceType: z.string().regex(/^[a-z][a-z0-9-]*\.[a-z0-9]+$/).optional() }).strict(),
   z.object({ action: z.literal("probePing"), privateIp: z.ipv4() }).strict(),
-  z.object({ action: z.literal("markReady"), workspaceId: uuid, generation }).strict(),
+  // `workerFeatures`: what the probe heard on /ping (LR-1). Optional so a step machine from before this still parses; the machine always sends it, and an absent list is recorded as unknown.
+  z.object({ action: z.literal("markReady"), workspaceId: uuid, generation, workerFeatures: z.array(z.string().min(1).max(WORKER_FEATURE_MAX_CHARS)).max(WORKER_FEATURES_MAX).optional() }).strict(),
   z.object({ action: z.literal("markFailed"), workspaceId: uuid, generation, error: z.string().max(16_384) }).strict(),
   z.object({ action: z.literal("markDeleted"), workspaceId: uuid }).strict(),
 ]);
@@ -86,6 +87,8 @@ export interface SessionStepsDependencies {
 export interface WorkerPing {
   status?: string;
   reason?: string;
+  /** The invocation features the worker lists (spec 053); none for a worker built before them. */
+  features?: string[];
 }
 
 /** One short line of plain text: the reason reaches the Slack thread through markFailed. */
@@ -117,13 +120,20 @@ function plainFailure(error: string): string {
   return typeof message === "string" ? `worker boot failed: ${bootFailureReason(message)}` : "worker boot failed (no reason recorded)";
 }
 
+/** The feature names of a /ping answer that fit what a session records: strings only, none empty or longer than the bound, no more than the bound's count, each once. */
+export function boundedFeatures(listed: readonly unknown[]): string[] {
+  return [...new Set(listed.filter((feature): feature is string => typeof feature === "string" && feature !== "" && feature.length <= WORKER_FEATURE_MAX_CHARS))].slice(0, WORKER_FEATURES_MAX);
+}
+
 /** GET on a worker's /ping. Any HTTP status: a failed boot answers 503 with its reason. */
 export async function pingWorker(url: string, timeoutMs = PING_TIMEOUT_MS): Promise<WorkerPing> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  const body = await response.json() as { status?: unknown; reason?: unknown };
+  const body = await response.json() as { status?: unknown; reason?: unknown; [WORKER_PING_FEATURES_FIELD]?: unknown };
+  const listed = body[WORKER_PING_FEATURES_FIELD];
   return {
     ...(typeof body.status === "string" ? { status: body.status } : {}),
     ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+    ...(Array.isArray(listed) ? { features: boundedFeatures(listed) } : {}),
   };
 }
 
@@ -189,10 +199,11 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           failure.stack = `${BOOT_FAILED_ERROR}: ${failure.message}`;
           throw failure;
         }
-        return { healthy: status === "Healthy" || status === "HealthyBusy", status: status ?? "Unreachable" };
+        // `features` is always an array (empty when the worker listed none or did not answer), so the machine can pass it on as it is (LR-1).
+        return { healthy: status === "Healthy" || status === "HealthyBusy", status: status ?? "Unreachable", features: ping?.features ?? [] };
       }
       case "markReady":
-        return dependencies.sessions.markReady(step.workspaceId, step.generation);
+        return dependencies.sessions.markReady(step.workspaceId, step.generation, step.workerFeatures);
       case "markFailed":
         return dependencies.sessions.markFailed(step.workspaceId, step.generation, plainFailure(step.error));
       case "markDeleted":

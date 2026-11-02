@@ -5,7 +5,7 @@
 //     person who redirected;
 //   - the sweep that closes a redirect nobody finished.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { WORKER_PING_FEATURES_FIELD, agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
+import { agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
 import { continueRedirect, sweepStoppingRedirects, type RedirectContinueDependencies, type RedirectRestartHost } from "../../agent-sessions/redirect-continue.js";
 import { registerRedirectContinuation } from "../../agent-sessions/redirect-hook.js";
 import { redirectRestartingCheck } from "../../agent-sessions/redirect-state.js";
@@ -20,22 +20,18 @@ import { sharedAccessCheck } from "../developer-tasks/workflow-coding.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 
-/** The worker's port and how long /ping may take: the same as every other delivery (ec2-delivery.ts, dispatcher.ts). */
-const WORKER_PORT = 8080;
-const PING_TIMEOUT_MS = 3_000;
-
 /**
- * What the worker of the task's workspace lists on /ping, or `undefined` when there is no ready worker to ask. Rejects when the worker does not answer. Nothing here starts compute: a workspace whose
- * worker is stopped or starting has no one to ask, and a redirect is refused (fail closed). The broker needs a network path to the workers for this; without one every probe fails and every redirect is refused.
+ * What the worker of the task's workspace listed on /ping when its session became READY, or `undefined` when that is not known: the workspace has no READY session, or the session was recorded without a list
+ * (it became READY before the session manager recorded one). Nothing here reaches the worker (the broker has no network path to port 8080: the session manager, which does, records the list on the session,
+ * LR-1) and nothing starts compute. Unknown is a refusal for the caller (fail closed), never a guess.
  */
-export async function workspaceWorkerFeatures(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">, task: Pick<DeveloperTaskRecord, "workspaceId">, fetchPing: typeof fetch = fetch): Promise<readonly string[] | undefined> {
+export async function workspaceWorkerFeatures(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">, task: Pick<DeveloperTaskRecord, "workspaceId">): Promise<readonly string[] | undefined> {
   const session = ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: workspaceSessionKey(task.workspaceId), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
-  if (session?.["state"] !== "READY" || typeof session["privateIp"] !== "string") return undefined;
-  const response = await fetchPing(`http://${session["privateIp"]}:${WORKER_PORT}/ping`, { signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`worker /ping returned HTTP ${response.status}`);
-  const body: unknown = await response.json();
-  const features = typeof body === "object" && body !== null ? (body as Record<string, unknown>)[WORKER_PING_FEATURES_FIELD] : undefined;
-  return Array.isArray(features) ? features.filter((feature): feature is string => typeof feature === "string") : [];
+  if (session?.["state"] !== "READY") return undefined;
+  const listed = session["workerFeatures"];
+  // A list that is not an array of strings is damaged, not empty: unknown.
+  if (!Array.isArray(listed) || !listed.every((feature): feature is string => typeof feature === "string")) return undefined;
+  return listed;
 }
 
 /**
@@ -119,7 +115,7 @@ function continueDependencies(dependencies: AwsBrokerDependencies, config: Pick<
 
 /**
  * The redirect's outside world, or undefined: the switch `rd` (the broker's `LIVE_REDIRECT_ENABLED`) is on only when it is exactly "1". Off, nothing is built or registered, the route does not exist
- * and no terminal result looks for a redirect. Turn it on only after the dispatcher and the worker image that carry `task.ownerRedirect.v1` are deployed, and the broker can reach the workers' /ping.
+ * and no terminal result looks for a redirect. Turn it on only after the dispatcher and the worker image that carry `task.ownerRedirect.v1` are deployed and the session manager records worker features on the session (workers already READY have none recorded until their next start, and a redirect on them is refused).
  */
 export function redirectFromEnvironment(dependencies: AwsBrokerDependencies, env: Record<string, string | undefined> = process.env): RedirectConfig | undefined {
   if (!liveInteractionFlagOn(env[LIVE_INTERACTION_FLAGS.redirect.variable])) {
