@@ -579,7 +579,7 @@ describe("P1: the commits the broker recorded travel in the run's payload", () =
     const wire = setupAgentWireOf({ setupAgentLimits: { ...SETUP_AGENT_LIMITS_DEFAULT, commands: 10 }, preparedBase: BASE });
     expect(wire).toEqual({ limits: { ...SETUP_AGENT_LIMITS_DEFAULT, commands: 10 }, commits: [{ repository: "web", commit: COMMIT }] });
     expect(SetupAgentWireSchema.safeParse(wire).success).toBe(true);
-    expect(setupAgentWireOf({ setupAgentLimits: undefined })).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+    expect(setupAgentWireOf({})).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
     expect(setupAgentWireOf(undefined)).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
   });
   it("the wire shape takes only full commit hashes and no extra field", () => {
@@ -711,7 +711,7 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
     it("reads the proposal again: one for a repository the project does not have is not kept, and a report with nothing readable keeps nothing", async () => {
       const w = world();
       const taskId = await cancelled(w);
-      expect(await keep(w, taskId, report, { names: ["api"], urls: {} })).toBe(false);
+      expect(await keep(w, taskId, report, { names: ["api"], urls: { web: "https://github.com/acme/web.git" } })).toBe(false);
       expect(await keep(w, taskId, { setupProposal: { setup: "ls" }, setupRunSummary: partial() })).toBe(false);
       expect(await keep(w, taskId, undefined)).toBe(false);
       expect(await keep(w, taskId, "text")).toBe(false);

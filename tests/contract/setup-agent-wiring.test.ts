@@ -237,7 +237,7 @@ describe("the end", () => {
 });
 
 describe("F5: a person's Stop keeps the partial proposal", () => {
-  const partialFor = (task: { startingRevision?: unknown }) => {
+  const partialFor = (task: Record<string, unknown>) => {
     const read = sanitizeSetupProposal({ setup: [{ repo: "web", commands: ["npm ci"], confidence: "medium", from: [{ kind: "inferred", repo: "web", note: "worked when run" }] }], tests: [], notes: "stopped" }, { basedOnRevision: Number(task.startingRevision), repositories: [{ name: "web", url: "https://github.com/acme/web.git" }] });
     if (!read.ok) throw new Error("fixture");
     return read.proposal;
@@ -251,7 +251,7 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
     const cancel = ops(t, run.task.workspaceId).find((operation) => operation.kind === "cancel")!;
     return { ...run, cancel };
   };
-  const report = (task: { startingRevision?: unknown }) => ({ conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_AGENT", setupProposal: partialFor(task), setupRunSummary: { ...summary, stop: "infrastructure" } });
+  const report = (task: Record<string, unknown>) => ({ conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_AGENT", setupProposal: partialFor(task), setupRunSummary: { ...summary, stop: "infrastructure" } });
 
   it("the cancel ends the run at once as the person's stop; the worker's own report, a moment later, adds the partial proposal and who stopped it", async () => {
     process.env.SETUP_AGENT_ENABLED = "1";
@@ -263,7 +263,7 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
     expect(early.body).not.toHaveProperty("proposal");
     await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
     const late = await t.dev(MAYA, "GET", ROUTE);
-    expect(late.body).toMatchObject({ status: "failed", stop: "stopped_by_person", summary: { stop: "stopped_by_person", partial: true, commandsRun: 3 }, stoppedBy: { name: expect.any(String) } });
+    expect(late.body).toMatchObject({ status: "failed", stop: "stopped_by_person", summary: { stop: "stopped_by_person", partial: true, commandsRun: 3 }, stoppedBy: { name: expect.any(String) as string } });
     expect(JSON.stringify((late.body as { proposal?: unknown }).proposal)).toContain("npm ci");
     // The run is over and nothing was applied: no settings revision, no test-environment proposal.
     expect(t.db.find((item) => item.entityType === "TESTENV" || String(item.pk).includes("TESTENV#"))).toEqual([]);
@@ -299,7 +299,7 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
     const t = await bench();
     const { task, own } = await started(t);
     await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
-    const state = (await t.dev(OMAR, "GET", ROUTE)).body as Record<string, unknown>;
+    const state = (await t.dev(OMAR, "GET", ROUTE)).body;
     expect(state).toMatchObject({ status: "failed", stop: "infrastructure" });
     expect(state).not.toHaveProperty("proposal");
   });
