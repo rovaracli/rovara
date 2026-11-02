@@ -265,6 +265,32 @@ export function reviewCleared(review: WorkflowReviewReport, accepted: readonly A
   return review.status === "PASS" || (review.status === "FINDINGS" && blockingFindings(review, accepted).length === 0);
 }
 
+/**
+ * SR-1 (switch `cr`, `on` only): the second review's blocking findings for one candidate, kept IN the workflow so that nothing which reads the workflow can clear them by accident: accepting the first review's
+ * findings does not clear this block, and each of these findings is accepted (or sent to coding) by the owner the same way a first review's is. Absent unless an `on` second review blocked.
+ */
+export const WORKFLOW_SECOND_REVIEW_LINE_MAX = 10_000_000;
+
+export const WorkflowSecondReviewBlockSchema = z.object({
+  candidateDigest: DigestSchema,
+  findings: z.array(z.object({ text: z.string().trim().min(1).max(600), file: z.string().max(500).optional(), line: z.number().int().positive().max(WORKFLOW_SECOND_REVIEW_LINE_MAX).optional() }).strict()).min(1).max(20),
+}).strict();
+export type WorkflowSecondReviewBlock = z.infer<typeof WorkflowSecondReviewBlockSchema>;
+
+/** A review finding as the block keeps it, always within the block's own limits (a model's absurd line number or long path can never make the workflow unreadable): the line is left out when it is over the cap, the path and text are cut. */
+export function secondReviewBlockFinding(finding: { text: string; file?: string | undefined; line?: number | undefined }): { text: string; file?: string; line?: number } {
+  return { text: finding.text.slice(0, 600), ...(finding.file === undefined ? {} : { file: finding.file.slice(0, 500) }),
+    ...(finding.line === undefined || finding.line > WORKFLOW_SECOND_REVIEW_LINE_MAX ? {} : { line: finding.line }) };
+}
+
+/** The second review's findings the owner has not accepted yet, for the code the workflow holds NOW. Role `CRITIC` is the namespace they are accepted under (a second review is a code review). */
+export function openSecondReviewFindings(workflow: { candidate?: { digest: string } | undefined; acceptedFindings?: readonly AcceptedFindingRef[] | undefined; secondReviewBlock?: { candidateDigest: string; findings: ReadonlyArray<{ text: string; file?: string | undefined; line?: number | undefined }> } | undefined }): Array<{ text: string; file?: string | undefined; line?: number | undefined }> {
+  const block = workflow.secondReviewBlock;
+  const current = workflow.candidate?.digest;
+  if (block === undefined || current === undefined || block.candidateDigest !== current) return [];
+  return block.findings.filter((finding) => !findingAccepted(finding, "CRITIC", current, workflow.acceptedFindings));
+}
+
 export const WorkflowPullRequestSchema = z.object({
   repositoryId: z.string().trim().min(1).max(200),
   number: z.number().int().positive(),
@@ -846,6 +872,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   risk: RiskAssessmentSchema.optional(),
   /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
   fixRounds: WorkflowFixRoundsSchema.optional(),
+  /** SR-1 (switch `cr`, `on`): the second review's blocking findings for one candidate; see `WorkflowSecondReviewBlockSchema`. */
+  secondReviewBlock: WorkflowSecondReviewBlockSchema.optional(),
   fixSource: FixSourceSchema.optional(),
   /** Both versions: the names of the failing checks the fix now running is for (at most five, one line each); present only with `fixSource`. */
   fixProblems: z.array(z.string().trim().min(1).max(200)).min(1).max(CI_FIX_PROBLEMS_MAX).optional(),
@@ -967,6 +995,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
       workflow.reviews?.some((review) => review.role === role && review.candidateDigest === currentDigest && reviewCleared(review, workflow.acceptedFindings)) === true);
     if (!checksPass) context.addIssue({ code: "custom", path: ["verification"], message: "PR readiness requires passing checks for the current candidate" });
     if (!reviewsPass) context.addIssue({ code: "custom", path: ["reviews"], message: "PR readiness requires critic and security passes for the current candidate" });
+    if (openSecondReviewFindings(workflow).length > 0) context.addIssue({ code: "custom", path: ["secondReviewBlock"], message: "PR readiness requires every blocking finding of the second review to be resolved" });
   }
   // Ready, or blocked only because AgentX gave up opening the draft pull request on its own (the owner retries it), or
   // running only while a fix is pushed to the pull requests already open.

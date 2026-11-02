@@ -239,7 +239,11 @@ async function changedRepositories(
  * proposal, applied by a maintainer, marks what it changes `agent`, so a later import or draft can tell Rovara's value from one a person typed. It is an option of the
  * function, never of the request body: no caller can claim it over HTTP.
  */
-export interface UpdateProjectSettingsOptions { origin?: "person" | "agent" }
+export interface UpdateProjectSettingsOptions {
+  origin?: "person" | "agent";
+  /** Conditions that commit with the revision (a ConditionCheck on a record the write depends on): when one fails nothing is written. Set by the settings proof for a held change, never by a request. */
+  guardItems?: TransactItem[];
+}
 
 /** A save that touched settings the meta repo's config file manages. A typed refusal, so callers need not read the words; it answers 403 FORBIDDEN as it always did. */
 export class ManagedByFileError extends AgentXError {
@@ -372,7 +376,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const egressWarnings = domainPlan === undefined ? await recordEgress(deps.egress, caller, name, afterDomains) : [];
   if (changed) {
     try {
-      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, domainPlan?.items);
+      const extraItems = [...(domainPlan?.items ?? []), ...(options.guardItems ?? [])];
+      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, extraItems.length === 0 ? undefined : extraItems);
     } catch (error) {
       // Another save took this revision number first (its content differs), or the catalog moved under this one.
       if (domainPlan === undefined || !await recoverOwnedDomainReceipt()) {

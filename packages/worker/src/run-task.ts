@@ -40,7 +40,7 @@ import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
-import { LEARNED_LOAD_REPORT_FIELD } from "@agentx/contracts";
+import { LEARNED_LOAD_REPORT_FIELD, type SecondReviewContext, type SecondReviewResult } from "@agentx/contracts";
 import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
@@ -70,7 +70,7 @@ import { saveEvidenceRaw } from "./verification/evidence-raw.js";
 import { CommandRecorder } from "./verification/recorder.js";
 import {
   createTaskUsageTelemetry,
-  usageForControlPlane,
+  usageForControlPlane, reviewUsageArtifactName,
   type TaskUsageOutcome,
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies, type ExecuteSerialWorkflowDependenciesInput, type ExecuteSerialWorkflowDependenciesResult } from "./workflow-dependencies.js";
@@ -84,6 +84,7 @@ import { contextSourcesNote } from "./context-sources/frame.js";
 import { stubContextEvent } from "./context-sources/events.js";
 import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTextGuard } from "./context-sources/text-guard.js";
 import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -115,6 +116,8 @@ export interface TaskInvocationResult {
   /** Repository identities captured when the final successful check round ended. */
   workflowCheckCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   workflowReviews?: WorkflowReviewReport[];
+  /** SR-1: the second reviewer's outcome, beside `workflowReviews` and never inside it. Present exactly when the invocation asked for a second reviewer. */
+  workflowSecondReview?: SecondReviewResult;
   workflowDependenciesResult?: WorkflowDependencyResult;
   workflowFeedbackReviewResult?: { taskId: string; workflowRevision: number; candidateDigest: string; outputDigest: string; artifactName: string; status: WorkflowFeedbackReviewReport["status"] };
   /** An agent step of a non-coding run (Task 23): its report, and the branch it chose when the run has a result contract. */
@@ -140,6 +143,8 @@ export interface TaskInvocationDependencies {
   workflowE2EOnOwnedContainerRunning?: (receipt: Readonly<{ containerId: string; requestId: string; sourceDigest: string; observedAt: string; inspectBytes: Uint8Array }>) => Promise<void>;
   authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
   piAdapter?: PiSessionAdapter;
+  /** SR-1: the models (each with its session) the second reviewer may try; absent when the invocation names none. */
+  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; context?: SecondReviewContext };
   cancellationController?: WorkerCancellationController;
   /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
   setupAgent?: (body: unknown) => Promise<unknown>;
@@ -328,7 +333,7 @@ async function runTask(
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
       await sandbox.start().catch((error: unknown) => reportFeedbackReviewStartFailure(error));
-      bashOperations = sandbox.bashOperations();
+      bashOperations = executionFor(SANDBOX_TARGET, { sandbox }).bashOperations();
     } else {
       // The local shell, chosen explicitly (taskShell or AGENTX_TASK_SHELL=local): tests and a developer's machine.
       localShell = true;
@@ -1476,6 +1481,8 @@ async function runTask(
         const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const beforeReview = createCandidateManifest(await readCandidateRepositories(repositories));
         let specReviewResult: SpecReviewResult | undefined;
+        // SR-1: present from the start when a second reviewer was asked for, so a review that ended early still says "asked, no answer" (an older worker, which never writes it, is told apart by the key's absence).
+        let secondReview: SecondReviewResult | undefined = invocation.payload.workflowSecondReviewer === undefined ? undefined : { tries: 0 };
         let reports = await runWorkflowReviews({
           operationId: invocation.operationId,
           rootPath: canonicalRoot,
@@ -1492,6 +1499,7 @@ async function runTask(
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
           ...(invocation.payload.workflowReviewRisk === true ? { reviewRisk: true } : {}),
           ...(sourceSession === undefined ? {} : { sources: { tools: sourceSession.contextTools, note: sourceSession.contextNote, labels: sourceSession.labels } }),
+          ...(dependencies.secondReviewer === undefined || invocation.payload.workflowSecondReviewer === undefined ? {} : { secondReviewer: dependencies.secondReviewer, onSecondReview: (result: SecondReviewResult) => { secondReview = result; } }),
           ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
           ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
           ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
@@ -1501,18 +1509,21 @@ async function runTask(
           ...(fileTools === undefined ? {} : { fileTools }),
           onProgress: (message) => { void events.append("progress", { message }).catch(() => undefined); },
           onLoadedKnowledge: (manifest) => { void emit("progress", loadedKnowledgePayload(manifest)); },
-          onUsage: async ({ role, stats, model, outcome }) => {
+          onUsage: async ({ role, stats, model, outcome, secondReviewTry }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
+            // SR-1: the usage event stays exactly the telemetry shape the activity index reads (an extra field would make it unreadable and it would be dropped); the second reviewer's calls are told apart by their own artifact names.
             await events.append("usage", usageForControlPlane(redactedUsage, dependencies.model));
-            await artifactSink({ name: `workflow-review-${role.toLowerCase()}-usage.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
+            await artifactSink({ name: reviewUsageArtifactName(role, secondReviewTry), mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
           },
         });
         try {
           const afterReview = createCandidateManifest(await readCandidateRepositories(repositories));
           if (afterReview.digest !== beforeReview.digest) reports = reports.map((report) => ({ ...report, status: "UNKNOWN", findings: [] }));
+          if (afterReview.digest !== beforeReview.digest && secondReview?.report !== undefined) secondReview = { ...secondReview, report: { ...secondReview.report, status: "UNKNOWN", findings: [] } };
         } catch {
           reports = reports.map((report) => ({ ...report, status: "UNKNOWN", findings: [] }));
+          if (secondReview?.report !== undefined) secondReview = { ...secondReview, report: { ...secondReview.report, status: "UNKNOWN", findings: [] } };
         }
         await publishEvidence();
         outcome = "SUCCEEDED";
@@ -1520,8 +1531,9 @@ async function runTask(
           status: "SUCCEEDED", conversationId, workflowMode: "REVIEW",
           workflowCandidateRepositories: beforeReview.repositories,
           workflowReviews: reports,
+          ...(secondReview === undefined ? {} : { workflowSecondReview: secondReview }),
         });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "REVIEW", workflowCandidateRepositories: beforeReview.repositories, workflowReviews: reports, ...(specReviewResult === undefined ? {} : { specReview: specReviewResult }) };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "REVIEW", workflowCandidateRepositories: beforeReview.repositories, workflowReviews: reports, ...(secondReview === undefined ? {} : { workflowSecondReview: secondReview }), ...(specReviewResult === undefined ? {} : { specReview: specReviewResult }) };
       } else {
       diffAttempted = true;
       const { changed: dirty } = await publishWorkspaceDiff(dependencies.rootPath, artifactSink);

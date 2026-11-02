@@ -14,11 +14,9 @@ import { WorkflowReviewReportSchema } from "./task-workflow.js";
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /**
- * The only providers a second review runs on (design 9.1 item 4): Amazon Bedrock, so the model call is on the customer's own Bedrock in Enterprise and on Rovara's in Public. A direct OpenAI, Google or other key is
- * not used for a second review, whatever the company's other model sources allow.
+ * Owner decision (2026-11-02, replacing the Bedrock-only rule): the second reviewer may run on any model source the company has connected, plus Rovara's own sources (Bedrock, OpenRouter, direct providers).
+ * Which models those are is decided where the plan is made, from the same sources chat and dispatch use (`servableModels` / `servingRoutes`); there is no provider list here.
  */
-export const SECOND_REVIEW_PROVIDERS: readonly string[] = ["amazon-bedrock"];
-export const secondReviewProviderAllowed = (model: { provider: string }): boolean => SECOND_REVIEW_PROVIDERS.includes(model.provider.toLowerCase());
 
 /** The tag a second review's operation record carries (`secondReview: true`) and its receipts' purpose. Every lookup that reads reviews of a task must leave such an operation out. */
 export const SECOND_REVIEW_OPERATION_TAG = "second-review";
@@ -74,7 +72,7 @@ export function configuredSecondReviewMode(input: { project?: SecondReviewMode |
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** Why a second review did not run (fixed words, shown as such). */
-export const SECOND_REVIEW_SKIP_REASONS = ["switch-off", "mode-off", "no-reference-model", "no-candidate", "untested"] as const;
+export const SECOND_REVIEW_SKIP_REASONS = ["switch-off", "mode-off", "no-reference-model", "no-candidate", "choice-not-qualifying"] as const;
 export type SecondReviewSkipReason = (typeof SECOND_REVIEW_SKIP_REASONS)[number];
 
 /**
@@ -83,8 +81,12 @@ export type SecondReviewSkipReason = (typeof SECOND_REVIEW_SKIP_REASONS)[number]
  * `unavailable` is set when the reviewer gave no answer (the report is FAILED, INTERRUPTED or UNKNOWN): the first review stands alone, and the task page says the second opinion did not run.
  */
 /** Why a second opinion is unavailable (fixed words): the reviewer gave no answer, or its answer was not accepted. */
-export const SECOND_OPINION_UNAVAILABLE_REASONS = ["no-answer", "wrong-role", "wrong-candidate", "wrong-model", "same-company", "budget", "not-run", "no-candidate"] as const;
+export const SECOND_OPINION_UNAVAILABLE_REASONS = ["no-answer", "wrong-role", "wrong-candidate", "wrong-model", "same-company", "budget", "not-run", "no-candidate", "choice-not-qualifying", "older-worker"] as const;
 export type SecondOpinionUnavailableReason = (typeof SECOND_OPINION_UNAVAILABLE_REASONS)[number];
+
+/** Why a second reviewer's model was chosen. */
+export const SECOND_REVIEW_CHOICES = ["company", "default"] as const;
+export type SecondReviewChoice = (typeof SECOND_REVIEW_CHOICES)[number];
 
 export const SecondOpinionSchema = z.object({
   mode: z.enum(["shadow", "on"]),
@@ -94,6 +96,10 @@ export const SecondOpinionSchema = z.object({
   /** The accepted report; absent when the second review did not run or its answer was not accepted (then `unavailableReason` says why). */
   report: WorkflowReviewReportSchema.optional(),
   unavailableReason: z.enum(SECOND_OPINION_UNAVAILABLE_REASONS).optional(),
+  /** Why this model: the company named it (`review.otherCompanyModels`), or it is the default (the strongest model the company can use). Absent when no model was chosen. */
+  choice: z.enum(SECOND_REVIEW_CHOICES).optional(),
+  /** Set when the default model changed since this task's last second review because the earlier default no longer qualifies: the page says "Using default: <new> (previous no longer fits)". */
+  defaultChanged: z.literal(true).optional(),
   blockingCount: z.number().int().min(0).max(20),
   blocked: z.boolean(),
   wouldHaveBlocked: z.boolean(),
@@ -119,6 +125,8 @@ export const SECOND_OPINION_UNAVAILABLE_TEXT: Readonly<Record<SecondOpinionUnava
   "budget": "there was not enough budget left",
   "not-run": "it had already run for this change",
   "no-candidate": "no allowed model from a different AI company could be used",
+  "choice-not-qualifying": "the model chosen for it no longer qualifies (it must be from a different AI company than the one that wrote the code, and allowed)",
+  "older-worker": "the worker that ran the review is not updated for it",
 };
 export const secondReviewDidNotRunLine = (reason: SecondOpinionUnavailableReason): string => `Second review did not run: ${SECOND_OPINION_UNAVAILABLE_TEXT[reason]}`;
 
@@ -258,4 +266,102 @@ export function secondReviewVerdictHolds(verdict: SecondReviewVerdict, run: Seco
   const replayed = Date.parse(run.ranAt);
   if ([started, ended, replayed].some(Number.isNaN) || started <= replayed || ended < started) return false;
   return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Starting a second review (SR-1): the reviewer inside the REVIEW operation, the tries it makes, the words it leaves
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** The reason a workflow blocks with when the second review (in `on`) found problems the change introduced. One fixed sentence: the findings are on the task, never in the reason. */
+export const SECOND_REVIEW_BLOCK_REASON = "the second review did not pass";
+
+/** The result key the worker writes the second reviewer's outcome under, beside `workflowReviews` (never inside it, so an older broker that ignores the key can never take it for the first review's). */
+export const SECOND_REVIEW_RESULT_KEY = "workflowSecondReview";
+
+/** The most tries one second review makes in all (owner decision, 2026-11-02): the first, one retry on the same model, then the next allowed candidate. */
+export const SECOND_REVIEW_TRIES_MAX = 3;
+/** The most models the broker names for one second review. With 3 tries, a third name could never be reached after the first model's retry. */
+export const SECOND_REVIEW_CANDIDATES_MAX = 2;
+
+/**
+ * What the second reviewer is shown besides the code change and the task description (owner decision, 2026-11-02, option C): by default NOTHING from connected sources (no Slack, Jira or other source tools, no
+ * learned lessons, no step instructions or skills). A company can choose `same_as_first`, which gives it what the first reviewer has. Widening what is shared is an admin's browser-session change, audited.
+ */
+export const SECOND_REVIEW_CONTEXTS = ["change_only", "same_as_first"] as const;
+export const SecondReviewContextSchema = z.enum(SECOND_REVIEW_CONTEXTS);
+export type SecondReviewContext = z.infer<typeof SecondReviewContextSchema>;
+
+/** A model a company may name for its second reviewer (`review.otherCompanyModels`): provider and model id, nothing else. */
+export const SecondReviewModelRefSchema = z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict();
+export type SecondReviewModelRef = z.infer<typeof SecondReviewModelRefSchema>;
+
+/** The company's choice (owner decision, 2026-11-02): a primary model and an optional backup, in that order, no model twice (by exact revision). When set it replaces the default. */
+export const SECOND_REVIEW_COMPANY_MODELS_MAX = 2;
+export const SecondReviewModelListSchema = z.array(SecondReviewModelRefSchema).max(SECOND_REVIEW_COMPANY_MODELS_MAX)
+  .refine((models) => new Set(models.map(secondReviewModelKey)).size === models.length, { message: "a model appears twice" });
+
+/**
+ * The list a task's second reviewer is chosen from, in order, and why. The company's list (when it set one) replaces the default order. A project may NARROW it to a subset, never widen it: an entry the
+ * company's list does not hold is dropped, and a project that names only models the company did not name ends with an empty list (no second reviewer), never the company's whole list. With no company
+ * list the project's list is a subset of the default pool: `undefined` means "no list, use the default order", an array means "only these, in this order".
+ */
+export function narrowedSecondReviewModels(input: { company?: readonly SecondReviewModelRef[] | undefined; project?: readonly SecondReviewModelRef[] | undefined }): { models: SecondReviewModelRef[] | undefined; choice: SecondReviewChoice } {
+  // `undefined` is "nobody chose"; an empty list is a choice that holds nothing (an unreadable one), which must never fall back to the default.
+  const company = input.company === undefined ? undefined : [...input.company];
+  const project = input.project;
+  if (company === undefined) return { models: project === undefined ? undefined : [...project], choice: "default" };
+  if (project === undefined) return { models: company, choice: "company" };
+  const keep = new Set(project.map(secondReviewModelKey));
+  return { models: company.filter((model) => keep.has(secondReviewModelKey(model))), choice: "company" };
+}
+
+/**
+ * Whether a second reviewer's report says its model could not serve this account, so the next try leaves that model out: a refused key, a model not found or not in the catalog, a 402, `MODEL_NOT_ALLOWED`, a
+ * model the install does not serve. NOT `request-rejected` and NOT `unknown`: a request the provider refused includes a prompt over the model's context length (a long diff on a model with a small window), which
+ * says nothing about whether the account can use the model.
+ */
+export function secondReviewModelUnusable(report: { modelFailure?: string | undefined }): boolean {
+  const failure = report.modelFailure;
+  if (failure === undefined) return false;
+  return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog)\b/u.test(failure)
+    || /\bthe model call failed: [a-z-]+(?: [A-Za-z0-9_]+)? HTTP 402\b/u.test(failure)
+    || /^MODEL_NOT_ALLOWED:/u.test(failure)
+    || /\bis not available on this install\b/u.test(failure);
+}
+
+/** One try of a second review: the model, and how it ended. A context-length rejection is `no-answer`, never `unusable`. */
+export interface SecondReviewTry { model: SecondReviewModelRef; outcome: "answered" | "no-answer" | "unusable" }
+
+/**
+ * The next model to try, or none. At most `SECOND_REVIEW_TRIES_MAX` tries in all; a model that gave no answer is tried once more; a model that gave no answer twice, or that the account cannot use, is left out and
+ * the next candidate is tried. The one place this order lives: the worker runs it, the tests check it.
+ */
+export function nextSecondReviewModel(candidates: readonly SecondReviewModelRef[], tries: readonly SecondReviewTry[]): SecondReviewModelRef | undefined {
+  if (tries.length >= SECOND_REVIEW_TRIES_MAX || tries.some((entry) => entry.outcome === "answered")) return undefined;
+  const of = (model: SecondReviewModelRef) => tries.filter((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model));
+  return candidates.find((model) => of(model).every((entry) => entry.outcome === "no-answer") && of(model).length < 2);
+}
+
+/** How a finished try ended, from the report the reviewer wrote (`undefined`: no report at all). */
+export function secondReviewTryOutcome(report: { status: string; modelFailure?: string | undefined } | undefined): SecondReviewTry["outcome"] {
+  if (report === undefined) return "no-answer";
+  if (report.status === "PASS" || report.status === "FINDINGS") return "answered";
+  return secondReviewModelUnusable(report) ? "unusable" : "no-answer";
+}
+
+/** The worker's whole answer for the second reviewer: the report of the last try (an answer, or the last failure), and how many tries it made. Strict, bounded, no free text beyond the report's own fixed shape. */
+export const SecondReviewResultSchema = z.object({
+  report: WorkflowReviewReportSchema.optional(),
+  tries: z.number().int().min(0).max(SECOND_REVIEW_TRIES_MAX),
+}).strict();
+export type SecondReviewResult = z.infer<typeof SecondReviewResultSchema>;
+
+/**
+ * The line that says which model reviewed and why ("Reviewed by gpt-5.5 on openrouter (company choice)", or "Using default: gpt-5.5 (change)" while nobody has chosen). The model's name is a report string: the caller makes it inert/plain before showing it. The provider is
+ * named as it is recorded (a Bedrock model reads "amazon-bedrock").
+ */
+export function secondReviewedByLine(input: { provider: string; modelId: string; choice: SecondReviewChoice | undefined; defaultChanged?: boolean | undefined }): string {
+  // Nobody chose: the default is shown with the way to change it. The company chose: its choice is named.
+  if (input.choice === "default") return `Using default: ${input.modelId} (${input.defaultChanged === true ? "previous no longer fits" : "change"})`;
+  return `Reviewed by ${input.modelId} on ${input.provider}${input.choice === "company" ? " (company choice)" : ""}`;
 }

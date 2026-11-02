@@ -18,6 +18,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, ty
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { call } from "../support/slack-broker.js";
 import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
+import { browserRequests } from "../support/browser-session.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -86,7 +87,9 @@ async function install(options: { cloud?: boolean; owner?: OrgRole; audit?: Audi
   if (options.audit !== undefined) options.audit.audit.documentClient = h.db as unknown as typeof options.audit.audit.documentClient;
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: options.owner ?? "admin" });
   seedProject(h.db);
-  const put = (who: Developer, body: Record<string, unknown>, name = "web") => h.dev(who, "PUT", `/v1/app/projects/${name}/settings`, { requestId: randomUUID(), expectedRevision: 1, ...body });
+  // TE-4: a save of commands lands at once only from a browser session (an API key's is held until its check passes: settings-command-proof.test.ts), so these tests of the save itself send it as the app does.
+  const web = browserRequests(h);
+  const put = (who: Developer, body: Record<string, unknown>, name = "web") => web(who, "PUT", `/v1/app/projects/${name}/settings`, { requestId: randomUUID(), expectedRevision: 1, ...body });
   const detail = async (who: Developer = OMAR, name = "web") => (await h.dev(who, "GET", `/v1/app/projects/${name}`)).body as { latestRevision: number; settings: { setupCommands: string[]; testCommands: string[]; devcontainer: { repository: string; configPath: string } | null; allowedDomains: Array<{ domain: string; status: string }> }; repositories: Array<{ fullName: string; defaultBranch: string }>; description?: string };
   const revisions = (name = "web", orgId: OrgId = TEST_ORG) => h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(orgId, name, 1).pk);
   const revision = (n: number, name = "web", orgId: OrgId = TEST_ORG) => h.db.get(projectRevisionKey(orgId, name, n)) as { definition: Record<string, unknown>; runtimeBinding: unknown; registeredBy: string } | undefined;

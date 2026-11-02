@@ -106,6 +106,8 @@ import { auditOperatorId } from "@agentx/contracts";
 import { learningFirstTick } from "../../spend/settlement-job.js";
 import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
+import { installSettingsProofSettler } from "../developer-routes/settings-proof-hook.js";
+import { settleSettingsProofOfCheck, sweepSettingsProofs } from "../developer-routes/settings-proof.js";
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const dependencies = brokerDependencies(input);
@@ -132,6 +134,66 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   }
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
+  // TE-4: the developer API's dependencies, built the same way for a request and for the settling of a project's settings proof when a check reports (no request in sight).
+  const developerRouteDependencies = (): DeveloperRouteDependencies | undefined => {
+    if (!dependencies.developer) return undefined;
+        const orgConnections = orgConnectionStoreOf(dependencies);
+        const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+          orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(removalDepsOf(agents, dependencies))),
+          // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
+          ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
+          ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
+          ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+          ...(dependencies.cloud === true ? { cloud: true } : {}),
+          ...routeEditionDependencies(dependencies),
+          ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
+          ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
+          ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
+          ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
+          ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
+          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
+          createProject: (caller, input) => createCloudProject(dependencies, caller, input),
+          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
+          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+          ...githubConnectRoute(dependencies),
+          // Proof and evidence (wire-proof fix round 1): the stored evidence of an archived project or a closed company is deleted with it.
+          evidenceErase: evidenceEraseOf(dependencies),
+          ...(agents === undefined ? {} : { agents }),
+          // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
+          ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {
+            setupCitationReader: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => dependencies.githubPullRequests.getFileAtCommit!(repositoryUrl, path, commit, githubScope(dependencies, orgId), options),
+          }),
+          // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
+          ...diagnosisDefaultBranchFileRoute(dependencies),
+          // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
+          ...(orgConnections === undefined ? {} : { orgConnections }),
+          ...repositoriesGateRoute(dependencies),
+          ...workingBranchPagesRoute(dependencies),
+          ...serviceStatusRouteDependencies(dependencies),
+          ...workingBranchPreviewRoute(dependencies),
+          projectAllowedDomains: {
+            registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
+          },
+          projectSettings: {
+            registerRevision: async (actor, input, extraItems) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none", ...(extraItems === undefined ? {} : { extraItems, expectedBaseRevision: input.definition.revision - 1 }) }); },
+            // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
+            ...(repositoryGateOf(dependencies) === undefined ? {} : {
+              requireRepositoryConnected: (orgId: OrgId, owner: string, repository: string) => requireRepositoryConnected(repositoryGateOf(dependencies)!, orgId, owner, repository),
+            }),
+            ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
+            ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
+              repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
+            }),
+          },
+          ...workflowApplicationRouteDependencies(dependencies),
+          // The Team record's `/record/` routes (they were wired only on the review page's branch) and the lessons routes; both empty where the record is off.
+          ...recordAndLessonRouteDependencies(dependencies) };
+        // Meta repo lane A: creating a project from a meta repo, and the meta repo's config file (reuses the settings route's own pieces).
+        Object.assign(routeDependencies, metaRepoRouteDependencies(dependencies, routeDependencies.projectSettings));
+    return routeDependencies;
+  };
+  installSettingsProofSettler((workspaceId) => settleSettingsProofOfCheck(developerRouteDependencies, workspaceId));
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string; getRemainingTimeInMillis?: () => number }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Enterprise foundations I-2: an install whose edition stamp is not its recorded edition serves nothing (every kind of event).
     await dependencies.editionGuard?.();
@@ -332,6 +394,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "evidence.erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { pending: 0, finished: 0 };
         });
+        // TE-4: saved or held setup commands waiting on a check are settled here too, so a check that ended with no result callback (or never) is acted on and its sender told. Its own small budget; a fault only means the next minute tries again.
+        const settingsProofs = await sweepSettingsProofs(developerRouteDependencies, { limit: 25, budgetMs: 5_000 }).catch(() => ({ settled: 0, left: 0 }));
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
@@ -350,7 +414,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "company_domain.recheck_run_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { checked: 0, verified: 0, lost: 0, released: 0, skipped: 0 };
         });
-        return json({ ...result, tracking, woken, evidence, domains }, "workflow-merge-recovery");
+        return json({ ...result, tracking, woken, evidence, domains, settingsProofs }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -774,60 +838,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // verifies the developer token, then checks the method and session (FR-009).
       if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/") || url.pathname.startsWith("/v1/web/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
-        const orgConnections = orgConnectionStoreOf(dependencies);
-        const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
-          orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(removalDepsOf(agents, dependencies))),
-          // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
-          ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
-          ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
-          ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
-          ...(dependencies.cloud === true ? { cloud: true } : {}),
-          ...routeEditionDependencies(dependencies),
-          ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
-          ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
-          ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
-          ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
-          // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
-          ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
-          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
-          createProject: (caller, input) => createCloudProject(dependencies, caller, input),
-          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
-          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
-          ...githubConnectRoute(dependencies),
-          // Proof and evidence (wire-proof fix round 1): the stored evidence of an archived project or a closed company is deleted with it.
-          evidenceErase: evidenceEraseOf(dependencies),
-          ...(agents === undefined ? {} : { agents }),
-          // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
-          ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {
-            setupCitationReader: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => dependencies.githubPullRequests.getFileAtCommit!(repositoryUrl, path, commit, githubScope(dependencies, orgId), options),
-          }),
-          // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
-          ...diagnosisDefaultBranchFileRoute(dependencies),
-          // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
-          ...(orgConnections === undefined ? {} : { orgConnections }),
-          ...repositoriesGateRoute(dependencies),
-          ...workingBranchPagesRoute(dependencies),
-          ...serviceStatusRouteDependencies(dependencies),
-          ...workingBranchPreviewRoute(dependencies),
-          projectAllowedDomains: {
-            registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
-          },
-          projectSettings: {
-            registerRevision: async (actor, input, extraItems) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none", ...(extraItems === undefined ? {} : { extraItems, expectedBaseRevision: input.definition.revision - 1 }) }); },
-            // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
-            ...(repositoryGateOf(dependencies) === undefined ? {} : {
-              requireRepositoryConnected: (orgId: OrgId, owner: string, repository: string) => requireRepositoryConnected(repositoryGateOf(dependencies)!, orgId, owner, repository),
-            }),
-            ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
-            ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
-              repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
-            }),
-          },
-          ...workflowApplicationRouteDependencies(dependencies),
-          // The Team record's `/record/` routes (they were wired only on the review page's branch) and the lessons routes; both empty where the record is off.
-          ...recordAndLessonRouteDependencies(dependencies) };
-        // Meta repo lane A: creating a project from a meta repo, and the meta repo's config file (reuses the settings route's own pieces).
-        Object.assign(routeDependencies, metaRepoRouteDependencies(dependencies, routeDependencies.projectSettings));
+        const routeDependencies = developerRouteDependencies()!;
         let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
         if (url.pathname.startsWith("/v1/web/")) {
           const caller = await authenticateWebRequest(routeDependencies, request);

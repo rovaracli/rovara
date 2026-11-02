@@ -79,9 +79,7 @@ export interface OperationRecord extends Operation {
   criticSameModel?: true;
   /** Trust fix A2: the reviews ran on the same model that wrote the code, because it was the only one usable; their reports say so (absent: another model reviewed). */
   reviewSameModel?: true;
-  /** SH34: this REVIEW-mode operation is a SECOND review by another AI company (switch `cr`). Every lookup of reviews, and the workflow's completion handling, leaves it out; its result goes to the task's `secondOpinion`, never to the workflow. */
-  secondReview?: true;
-  /** SH34: set with `secondReview` when the broker starts a second review: the candidate it is about and the plan it runs under; its end reads it (`secondReviewEndItems`). */
+  /** SR-1 (switch `cr`): this REVIEW operation carries a second reviewer (another AI company's model, inside the same operation), or records why it could not: the candidate it is about and the plan (or the fixed reason it did not run). The one REVIEW end reads it (`secondOpinionFromReviewResult`); no other lookup does. */
   secondReviewPlan?: SecondReviewOperationPlan;
   /** SH30: the company recipes (id and revision) the broker offered this SETUP_DRAFT run when it dispatched it. The run's reported recipe sources are intersected with this (`offeredRecipesNamedBy`). */
   setupRecipeOffers?: Array<{ recipeId: string; revision: number }>;

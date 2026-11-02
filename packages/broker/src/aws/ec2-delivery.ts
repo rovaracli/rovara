@@ -21,6 +21,7 @@ import {
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_COVERAGE_PATH_FEATURE,
   TEST_ENV_DETECT_FEATURE,
+  SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   credentialKindsOfWorkerFeatures,
@@ -582,13 +583,19 @@ async function forWorkerFeatures(
   if (detectUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_detect_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, detection: "not_run" }));
   }
+  // SR-1 (switch `cr`): the second reviewer only ADDS an opinion to a review, so a worker that does not list it is sent the review without the field and runs it as today; its result then has no second-review key,
+  // which the broker reads as "did not run: older worker" (flagged in `on`, silent in shadow). The review itself is never refused for it.
+  const secondReviewerUnsupported = invocation.kind === "task" && invocation.payload.workflowSecondReviewer !== undefined && !features.includes(SECOND_REVIEWER_FEATURE);
+  if (secondReviewerUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.second_reviewer_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
   // Evidence (S-2): the approved report path in the test environment's plan only helps the evidence read changed-line coverage, so a worker that lists the plan but not this field is sent the plan without it (its
   // strict parse would refuse the field); nothing else in the plan changes, and the omission is recorded.
   const coveragePathUnsupported = invocation.kind === "task" && invocation.payload.testEnvironment?.checks.some((check) => check.coveragePath !== undefined) === true && !features.includes(TEST_ENV_COVERAGE_PATH_FEATURE);
   if (coveragePathUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_coverage_path_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
-  const withAttribution = withoutCoveragePath(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), coveragePathUnsupported);
+  const withAttribution = withoutCoveragePath(withoutSecondReviewer(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), secondReviewerUnsupported), coveragePathUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -1019,6 +1026,13 @@ function withoutTestEnvDetect(invocation: WorkerInvocation, drop: boolean): Work
   if (!drop || invocation.kind !== "task") return invocation;
   const payload = { ...invocation.payload };
   delete payload.testEnvDetect;
+  return { ...invocation, payload };
+}
+
+function withoutSecondReviewer(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowSecondReviewer;
   return { ...invocation, payload };
 }
 

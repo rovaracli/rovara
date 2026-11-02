@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
+import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { readTurnActorChecks } from "../../model-selection/turn-authority.js";
@@ -277,8 +278,6 @@ async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId:
   const found: Array<{ stepId: string; model?: ModelSelection }> = [];
   for (const item of await queryAllItems(dependencies, `WORKSPACE#${workspaceId}`, "OPERATION#")) {
     if (item.entityType !== "OPERATION" || item.kind !== "task") continue;
-    // A second review (SH34) is not a step of the recipe: it must never stand for the review step in an independence comparison.
-    if (item.secondReview === true) continue;
     // An agent-step run's operation names its recipe step itself (it has no coding mode); a coding operation is the step its mode and program step say.
     if (item.workflowMode === undefined && typeof item.programStepId !== "string") continue;
     const model = ModelSelectionSchema.safeParse(item.model);
@@ -376,6 +375,9 @@ export async function taskOperationParts(
   const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;
+  // SR-1 (switch `cr`, off: nothing here changes): a REVIEW that carries a second reviewer from another AI company, inside this same operation, or the fixed reason it could not.
+  const secondReview = await prepareSecondReview({ dependencies, orgId, project: workspace.projectName, workspaceId: workspace.id, conversationId: input.conversationId, task, workflowMode: input.workflowMode, agentRun: input.agentRun,
+    workflowReviewers: input.workflowReviewers, firstReviewerModel: payloadModel, approved: settings.definition.models?.approved, routing });
   // Learning v2: the approved lessons for this stage, only where the install has lesson ports and the project's learning mode allows (lessons-dispatch.ts). Delivery drops the field for an older worker.
   const { load: learnedLoad, ...learned } = await learnedContextForOperation(dependencies, { orgId, task, workflowMode: input.workflowMode, legacyTask: input.legacyTask, agentRun: input.agentRun, definition: settings.definition });
   const operationId = input.operationId ?? randomUUID();
@@ -415,6 +417,7 @@ export async function taskOperationParts(
   if (applied?.criticSameModel === true) operation.criticSameModel = true;
   // Trust fix A2: only the build's own model was usable for the reviews; their reports say so.
   if (applied?.reviewSameModel === true) operation.reviewSameModel = true;
+  if (secondReview.record !== undefined) operation.secondReviewPlan = secondReview.record;
   // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
   if (input.planRevision === true) operation.planRevision = true;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
@@ -558,6 +561,8 @@ export async function taskOperationParts(
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+      // SR-1: a worker without "task.workflowSecondReviewer.v1" is sent the review without the field at delivery and runs it as today.
+      ...(secondReview.field === undefined ? {} : { workflowSecondReviewer: secondReview.field }),
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is sent the run without the field at delivery (no evidence is captured, and the omission is logged).

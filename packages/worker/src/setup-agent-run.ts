@@ -30,6 +30,7 @@ import { asksForCodeChange, setupAgentInstructions } from "./setup-agent-prompt.
 import { createPersonCommandRunner } from "./setup-command-runner.js";
 import type { PiSessionHandle } from "./pi-session.js";
 import type { RunNetwork } from "./setup-network.js";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import type { TaskSandbox } from "./task-sandbox.js";
 
 /** What the preparation manifest says about a repository (the broker's own record of the default branch's head). */
@@ -194,7 +195,7 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
   try {
     sandbox = ports.createSandbox(network);
     const refreshBlocked = async (): Promise<void> => { blocked = await network.readBlocked(); };
-    const base = serialize(sandbox.bashOperations(), refreshBlocked);
+    const base = serialize(executionFor(SANDBOX_TARGET, { sandbox }).bashOperations(), refreshBlocked);
     const governor = new SetupAgentGovernor({
       limits, now,
       // The larger of what the session reports and what the run counted itself from each turn's tokens at the catalog price: a proxy-routed model may report a cost of 0, and a turn with no usage and no cost is unreadable (= used up).

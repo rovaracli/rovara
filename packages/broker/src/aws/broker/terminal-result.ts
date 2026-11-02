@@ -11,6 +11,7 @@ import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
 import { keepSetupPreparedBase } from "../../rovara-code/setup-agent.js";
 import { isStoppedSetupOperation, keepStoppedSetupRun } from "./setup-stopped-result.js";
+import { settleAfterCheckReported } from "../developer-routes/settings-proof-hook.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
 import { noteDurationAtPullRequest } from "../../rovara-code/duration.js";
@@ -172,6 +173,8 @@ async function closeCheckAfterPrepare(dependencies: AwsBrokerDependencies, works
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.setup_check_close_failed", workspaceId, error: error instanceof Error ? error.name : "unknown" }));
   }
+  // TE-4: a project's saved or held commands wait on this result: act on it now.
+  await settleAfterCheckReported(workspaceId);
 }
 
 /**
@@ -423,7 +426,7 @@ export async function recordTerminalResult(
       // An agent-step run goes on from this result (or ends because of it): the engine's dispatch row is due in this same transaction (Plan 3, Task 22).
       const agentRun = pointer === undefined ? [] : await agentRunWakeItems(dependencies.documentClient, dependencies.tableName, operation, pointer.taskId, now);
       // Meta repo lane D (D3): a code review's walk of the spec is recorded with the review's result (the requirement rows W4 reads).
-      const specReview = pointer === undefined || operation.workflowMode !== "REVIEW" || operation.secondReview === true ? [] : await specReviewRecordItems({ tableName: dependencies.tableName, store: dynamoSpecStore(dependencies), now: () => now }, pointer.taskId, operation, { status: terminalStatus, result });
+      const specReview = pointer === undefined || operation.workflowMode !== "REVIEW" ? [] : await specReviewRecordItems({ tableName: dependencies.tableName, store: dynamoSpecStore(dependencies), now: () => now }, pointer.taskId, operation, { status: terminalStatus, result });
       const cancelledStep = !cancelStepAllowed || graphCancelBoundTarget !== undefined || e2eCancelBoundTarget !== undefined ? []
         : await cancelledWorkflowStepItems(dependencies, pointer, cancelTargetOperation, now);
       cancelStepAttached = cancelledStep.length > 0;
