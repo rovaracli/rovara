@@ -769,6 +769,25 @@ describe("a Stop between the claim and the restart's commit stops the restart (L
     expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
   });
 
+  it("a Stop pressed after the restart committed but before the redirect ended leaves the message untold-as-given (N5)", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    registerRedirectContinuation(t.db, undefined);
+    await t.stopLands(workspaceId);
+    const real = redirectRestartHost(t.brokerInput as never);
+    const host = { ...real, coding: async (...args: Parameters<typeof real.coding>) => {
+      await real.coding(...args);
+      expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+    } };
+    const outcome = await continueRedirect({ documentClient: t.db, tableName: "state", now: Date.now, config: { workerFeatures: async () => [OWNER_REDIRECT_FEATURE] }, host }, taskId);
+    expect(outcome).toBe("none");
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
+    const messageId = String(t.record(taskId, requestId)!["messageId"]);
+    expect(t.db.get(agentSessionKey(TEST_ORG, sessionId, "META").pk, `MESSAGE#${messageId}`)).toMatchObject({ delivery: { state: "queued" } });
+  });
+
   it("every restart is conditional on the redirect still restarting: a record that is not `restarting` starts nothing", async () => {
     const t = await setup();
     const { taskId, sessionId, workspaceId } = await t.runningCoding();

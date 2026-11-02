@@ -157,7 +157,8 @@ async function restart(deps: RedirectContinueDependencies, record: RedirectRecor
     else await deps.host.sendBack(task, record, ownerRedirect);
     // Whatever happens next, the step was started: the redirect ends as that, and the message is told it was given.
     const ended = await finish(deps, record, ["restarting"], to);
-    if (record.step === "IMPLEMENT" || record.step === "VERIFY" || record.step === "REVIEW") await deliverSteerLive(deps, record.orgId, record.sessionId, record.messageId, record.taskId);
+    // A Stop that ended the record after the restart committed owns the message's fate: it is not told it was given (N5).
+    if (ended && (record.step === "IMPLEMENT" || record.step === "VERIFY" || record.step === "REVIEW")) await deliverSteerLive(deps, record.orgId, record.sessionId, record.messageId, record.taskId);
     return ended ? to : "none";
   } catch (error) {
     warn(deps, { event: "redirect.restart_failed", taskId: record.taskId, step: record.step, error: error instanceof Error ? error.name : "unknown" });

@@ -160,13 +160,19 @@ export async function handleAskServiceRoute(
   const requester = askedBy === undefined ? undefined : { kind: "developer" as const, developerId: askedBy, provider: task.provider };
   // SY-7: the asker's standing is read after the level check and asserted again in the write that records the key, so a removal or ban in between refuses the key.
   const guard = askedBy === undefined ? undefined : requesterStandingGuard(dependencies.tableName, await developerStanding(dependencies, named.orgId, askedBy));
-  return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }, guard), request.requestId);
+  try {
+    return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }, guard), request.requestId);
+  } catch (error) {
+    // No key was made, so the place is given back (N3): a refused standing or a model-access fault does not use up one of the Ask's places.
+    await releaseKeyPlace(ask, named).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** The keys one Ask may have: its turn's, and one more for a turn the queue delivered again. */
 export const ASK_KEYS_PER_ASK = 2;
 
-/** Takes one of the Ask's key places in its request item (atomic: conditional on the count), or refuses. A refusal is the route's own "not found", as for an Ask that is no longer waiting. */
+/** Takes one of the Ask's key places in its request item (atomic: conditional on the count), or refuses. A mint that then fails gives the place back (`releaseKeyPlace`). A refusal is the route's own "not found", as for an Ask that is no longer waiting. */
 async function takeKeyPlace(ask: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }, item: Record<string, unknown>): Promise<void> {
   const taken = typeof item["keysTaken"] === "number" ? item["keysTaken"] : 0;
   if (taken >= ASK_KEYS_PER_ASK) throw agentXError("NOT_FOUND", "route not found");
@@ -181,6 +187,14 @@ async function takeKeyPlace(ask: AskDependencies, ref: { orgId: OrgId; sessionId
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("NOT_FOUND", "route not found");
     throw error;
   }
+}
+
+/** Gives back a key place taken for a mint that failed. Never below zero. */
+async function releaseKeyPlace(ask: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }): Promise<void> {
+  await ask.documentClient.send(new UpdateCommand({
+    TableName: ask.tableName, Key: askRequestKey(ref.orgId, ref.sessionId, ref.askId), UpdateExpression: "SET keysTaken = keysTaken - :one",
+    ConditionExpression: "attribute_exists(keysTaken) AND keysTaken > :zero", ExpressionAttributeValues: { ":one": 1, ":zero": 0 },
+  }));
 }
 
 /** Where the upkeep got to today: the day, the last org done (orgs are walked in id order), and whether the whole walk is finished. */

@@ -730,6 +730,16 @@ describe("a person's erase hands the Ask scrub the person's names, hashed with t
     expect(JSON.stringify(lines)).not.toContain("sign-in store down");
   });
 
+  it("with the sign-in row already gone the names are none: the erase completes and only the person's label tag is kept (N6)", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON }, { askAliasKey: KEY, namesOf: async () => [] });
+    await expect(runtime.erase.person(ORG_A, "dev-1")).resolves.toBeUndefined();
+    const entries = await aliasesOf(db);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ names: [], handles: [] });
+    expect(scrubWithAliasHashes("Priya Raman asked.", entries, KEY)).toContain("Priya Raman");
+  });
+
   it("does not keep the names in the erase job it records (they are read again on each pass)", async () => {
     const db = dbOf();
     const runtime = build(db, { ...ON }, { askAliasKey: KEY, namesOf: async () => ["Priya Raman"] });

@@ -116,6 +116,20 @@ describe("model access for an Ask", () => {
     expect(mint).toHaveBeenCalledTimes(2);
   });
 
+  it("a mint that fails gives its key place back, so failures do not use up the Ask's two places (N3)", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const body = (turnId: string) => t.request("/asks/model-access", { ...ref, turnId, model: { provider: "amazon-bedrock", modelId: "m" } });
+    mint.mockRejectedValueOnce(new Error("proxy down")).mockRejectedValueOnce(new Error("proxy down"));
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000001"), "/v1/asks/model-access")).rejects.toThrow("proxy down");
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000002"), "/v1/asks/model-access")).rejects.toThrow("proxy down");
+    expect((t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId)) as { keysTaken?: number }).keysTaken).toBe(0);
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000003"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000004"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000005"), "/v1/asks/model-access")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("two requests at the same moment for the last key place: one gets it (LA-5, M2)", async () => {
     mint.mockClear();
     const t = world();
