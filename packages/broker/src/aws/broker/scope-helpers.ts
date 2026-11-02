@@ -183,10 +183,16 @@ export function customModelEndpointsOn(dependencies: Pick<AwsBrokerDependencies,
     endpointRangesFromEnvironment(process.env);
     return true;
   } catch {
-    console.log(JSON.stringify({ component: "broker", event: "model_endpoints.misconfigured" }));
+    // Said once for these settings, not on every call.
+    const key = `${process.env.ROVARA_MODEL_ENDPOINT_CIDRS ?? ""}|${process.env.ROVARA_VPC_CIDRS ?? ""}`;
+    if (!saidMisconfigured.has(key)) {
+      saidMisconfigured.add(key);
+      console.log(JSON.stringify({ component: "broker", event: "model_endpoints.misconfigured" }));
+    }
     return false;
   }
 }
+const saidMisconfigured = new Set<string>();
 
 /** The launch lists with the endpoint kind added when the install has custom endpoints on. A launch an install or test supplied is kept as it is. */
 function launchWithEndpoint(dependencies: AwsBrokerDependencies): ModelSourceBrokerOptions["launch"] {

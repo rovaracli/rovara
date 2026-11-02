@@ -37,6 +37,14 @@ export interface EndpointAddressOptions {
   resolveHost?: ResolveHost | undefined;
 }
 
+const blockLists = new Map<string, ReturnType<typeof cidrBlockListOf>>();
+/** The ranges as a block list, built once per distinct list. */
+function blockListMemo(cidrs: readonly string[]): ReturnType<typeof cidrBlockListOf> {
+  const key = cidrs.join(",");
+  if (!blockLists.has(key)) blockLists.set(key, cidrBlockListOf(cidrs));
+  return blockLists.get(key);
+}
+
 /**
  * The refusal (CONFIG_INVALID, text safe to show) for an endpoint whose host resolves where a model call must not go, or undefined when it may be used. Every address
  * the name gives is judged: the never-called list (this machine, link-local and metadata addresses, multicast and the IPv6 forms that carry an IPv4 address) and
@@ -52,9 +60,9 @@ export async function checkModelEndpointHost(host: string, options: EndpointAddr
     throw agentXError("RUNTIME_UNAVAILABLE", "the endpoint host could not be looked up; try again");
   }
   if (addresses.length === 0) throw agentXError("CONFIG_INVALID", "the endpoint host did not resolve to any address");
-  const own = options.rovaraCidrs === undefined || options.rovaraCidrs.length === 0 ? undefined : cidrBlockListOf(options.rovaraCidrs);
+  const own = options.rovaraCidrs === undefined || options.rovaraCidrs.length === 0 ? undefined : blockListMemo(options.rovaraCidrs);
   if (options.rovaraCidrs !== undefined && options.rovaraCidrs.length > 0 && own === undefined) throw agentXError("CONFIG_INVALID", "the endpoint host can't be checked on this install");
-  const privateRanges = options.privateCidrs === undefined || options.privateCidrs.length === 0 ? undefined : cidrBlockListOf(options.privateCidrs);
+  const privateRanges = options.privateCidrs === undefined || options.privateCidrs.length === 0 ? undefined : blockListMemo(options.privateCidrs);
   if (options.privateCidrs !== undefined && options.privateCidrs.length > 0 && privateRanges === undefined) throw agentXError("CONFIG_INVALID", "the endpoint host can't be checked on this install");
   for (const address of addresses) {
     const family = isIP(address);
@@ -70,6 +78,26 @@ export async function checkModelEndpointHost(host: string, options: EndpointAddr
 
 /** The ranges from the environment, parsed once at wiring. A range that is not private, or that overlaps Rovara's own network, stops the install: never a silent widening. */
 export function endpointRangesFromEnvironment(env: Record<string, string | undefined>): { privateCidrs: string[]; rovaraCidrs: string[] } {
+  // Parsed once for the settings a process has: the same settings give the same answer (or the same error) without parsing again.
+  const key = JSON.stringify([env[MODEL_ENDPOINT_CIDRS_ENV] ?? null, env[ROVARA_VPC_CIDRS_ENV] ?? null]);
+  if (rangesMemo?.key === key) {
+    if (rangesMemo.error !== undefined) throw rangesMemo.error;
+    return rangesMemo.value!;
+  }
+  try {
+    const value = parseEndpointRanges(env);
+    rangesMemo = { key, value };
+    return value;
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error("the endpoint ranges are not valid");
+    rangesMemo = { key, error: failure };
+    throw failure;
+  }
+}
+
+let rangesMemo: { key: string; value?: { privateCidrs: string[]; rovaraCidrs: string[] }; error?: Error } | undefined;
+
+function parseEndpointRanges(env: Record<string, string | undefined>): { privateCidrs: string[]; rovaraCidrs: string[] } {
   const rovaraCidrs = (env[ROVARA_VPC_CIDRS_ENV] ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
   const privateCidrs = parseInstallCidrs(env[MODEL_ENDPOINT_CIDRS_ENV], rovaraCidrs, MODEL_ENDPOINT_CIDRS_ENV);
   if (privateCidrs.length > 0 && rovaraCidrs.length === 0) throw agentXError("CONFIG_INVALID", `${MODEL_ENDPOINT_CIDRS_ENV} needs ${ROVARA_VPC_CIDRS_ENV}, the network Rovara itself runs in, so that an overlap can be refused`);

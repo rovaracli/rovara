@@ -75,6 +75,30 @@ function hostnameOf(value: unknown): string | undefined {
   }
 }
 
+/**
+ * The most token usage any event of a streamed reply reports: a `usage` object on the event, on its `message` (Anthropic message_start) or on its `response` (OpenAI Responses
+ * completed). Anthropic reports input in one event and output in another, so its two counts are added across events.
+ */
+function streamedUsageTotal(text: string): number {
+  let total = 0, input = 0, output = 0;
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    let event: unknown;
+    try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
+    if (typeof event !== "object" || event === null) continue;
+    const record = event as Record<string, unknown>;
+    for (const holder of [record, record.message, record.response]) {
+      const usage = typeof holder === "object" && holder !== null ? (holder as Record<string, unknown>).usage : undefined;
+      if (typeof usage !== "object" || usage === null) continue;
+      const counts = usage as Record<string, unknown>;
+      total = Math.max(total, numberOf(counts.total_tokens) ?? ((numberOf(counts.prompt_tokens) ?? 0) + (numberOf(counts.completion_tokens) ?? 0)));
+      input = Math.max(input, numberOf(counts.input_tokens) ?? 0);
+      output = Math.max(output, numberOf(counts.output_tokens) ?? 0);
+    }
+  }
+  return Math.max(total, input + output);
+}
+
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
 const notScoped = () => agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
@@ -566,7 +590,48 @@ export class ModelProxyClient implements ModelAccess {
     if (reply.status !== 200) return "this source did not answer a test call";
     const usage = isRecord(reply.body) && isRecord(reply.body.usage) ? reply.body.usage : {};
     const total = numberOf(usage.total_tokens) ?? ((numberOf(usage.prompt_tokens) ?? numberOf(usage.input_tokens) ?? 0) + (numberOf(usage.completion_tokens) ?? numberOf(usage.output_tokens) ?? 0));
-    return total > 0 ? undefined : "this endpoint's replies carry no token usage, so its spend could not be counted";
+    if (total <= 0) return "this endpoint's replies carry no token usage, so its spend could not be counted";
+    return this.probeStreamedUsage(master, entry);
+  }
+
+  /**
+   * N2: the same small call, streamed. Usage is asked for where the format has the option (OpenAI chat), and the events are read for any usage report; a stream that ends
+   * without one is refused, since the spend of a streamed reply would otherwise be counted as nothing.
+   */
+  private async probeStreamedUsage(master: string, entry: ProxyModelEntry): Promise<string | undefined> {
+    const prompt = "Reply with the single word: ok";
+    const [path, body]: [string, Json] = entry.api === "anthropic-messages"
+      ? ["/v1/messages", { model: entry.name, max_tokens: 16, stream: true, messages: [{ role: "user", content: prompt }] }]
+      : entry.api === "openai-responses"
+        ? ["/v1/responses", { model: entry.name, input: prompt, max_output_tokens: 16, stream: true }]
+        : ["/chat/completions", { model: entry.name, messages: [{ role: "user", content: prompt }], max_tokens: 16, stream: true, stream_options: { include_usage: true } }];
+    let text: string;
+    try {
+      text = await this.requestText("POST", path, master, body);
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "MODEL_PROXY_UNAVAILABLE") return "this source did not answer a test call";
+      throw error;
+    }
+    return streamedUsageTotal(text) > 0 ? undefined : "this endpoint's streamed replies carry no token usage, so its spend could not be counted";
+  }
+
+  /** One HTTP exchange whose answer is text (an event stream). A status that is not 200 is "did not answer"; redirects are not followed. */
+  private async requestText(method: "POST", path: string, master: string, body: Json): Promise<string> {
+    let response: Response;
+    try {
+      response = await this.input.fetch(`${this.baseUrl}${path}`, {
+        method, headers: { authorization: `Bearer ${master}`, "content-type": "application/json" }, body: JSON.stringify(body), redirect: "manual",
+        signal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      });
+    } catch {
+      throw unavailable("model proxy is unreachable");
+    }
+    if (response.status !== 200) throw unavailable("model proxy did not answer the test call");
+    try {
+      return (await response.text()).slice(0, 262_144);
+    } catch {
+      throw unavailable("model proxy answer could not be read");
+    }
   }
 
   /**
@@ -666,11 +731,15 @@ export class ModelProxyClient implements ModelAccess {
         method,
         headers: { authorization: `Bearer ${master}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // N6: a redirect is never followed. The calls that reach a company's endpoint (the health call, the test replies) go through this one function; an answer that is a
+        // redirect is refused, so no request, and nothing in it, is sent on to an address nobody approved.
+        redirect: "manual",
         signal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
     } catch {
       throw unavailable("model proxy is unreachable");
     }
+    if (response.status >= 300 && response.status < 400) throw unavailable("model proxy answered with a redirect, which is not followed");
     if (response.status >= 500) throw unavailable(`model proxy answered ${String(response.status)}`);
     let parsed: unknown;
     try {

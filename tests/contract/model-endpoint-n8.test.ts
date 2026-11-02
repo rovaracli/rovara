@@ -351,3 +351,53 @@ describe("a redirect from an approved endpoint host is never followed (N6)", () 
     expect(ROVARA_GUARD_PY).toContain("_self_test()");
   });
 });
+
+describe("a Vertex-style served name is the same model (S2)", () => {
+  const opus: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-1-20250805-v1:0" };
+
+  it("reads a version after @ (a date, or latest) and a publisher path as the model they name", () => {
+    for (const name of ["claude-opus-4-1@20250805", "claude-opus-4-1@latest", "publishers/anthropic/models/claude-opus-4-1@20250805", "anthropic.claude-opus-4-1@20250805", "us.anthropic.claude-opus-4-1@20250805", "Claude-Opus-4.1@20250805"]) {
+      expect(endpointForbiddenModelProblem([{ name, catalog: sonnet }], [opus]), name).toBe("models.0: this model is forbidden in your company");
+    }
+  });
+
+  it("reads a forbidden model written the Vertex way, whatever spelling the endpoint serves", () => {
+    const vertex: ModelIdentifier = { provider: "vertex_ai", modelId: "claude-opus-4-1@20250805" };
+    for (const name of ["claude-opus-4-1", "us.anthropic.claude-opus-4-1-20250805-v1:0", "anthropic/claude-opus-4-1", "claude-opus-4-1@20250805"]) {
+      expect(endpointForbiddenModelProblem([{ name, catalog: sonnet }], [vertex]), name).toBe("models.0: this model is forbidden in your company");
+    }
+    // A catalog entry written the Vertex way is read too.
+    expect(endpointForbiddenModelProblem([{ name: "ours", catalog: vertex }], [opus])).toBe("models.0: this model is forbidden in your company");
+    expect(endpointForbiddenModelProblem([{ name: "claude-sonnet-4-5@20250929", catalog: sonnet }], [opus, vertex])).toBeUndefined();
+  });
+});
+
+describe("the endpoint ranges are parsed once (R2)", () => {
+  it("returns the same answer, not a new parse, for the same settings, and a new one when they change; a bad setting fails the same way every time", async () => {
+    const { endpointRangesFromEnvironment: ranges } = await import("../../packages/broker/src/model-sources/endpoint-qualification.js");
+    const env = { ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" };
+    const first = ranges(env);
+    expect(ranges({ ...env })).toBe(first);
+    expect(ranges({ ...env, ROVARA_MODEL_ENDPOINT_CIDRS: "10.5.0.0/16" })).not.toBe(first);
+    const bad = { ROVARA_MODEL_ENDPOINT_CIDRS: "8.8.8.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" };
+    let error1: unknown, error2: unknown;
+    try { ranges(bad); } catch (error) { error1 = error; }
+    try { ranges({ ...bad }); } catch (error) { error2 = error; }
+    expect(error1).toBeDefined();
+    expect(error2).toBe(error1);
+  });
+
+  it("says a misconfigured range once, not on every call", async () => {
+    const { vi } = await import("vitest");
+    const { customModelEndpointsOn } = await import("../../packages/broker/src/aws/broker/scope-helpers.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.stubEnv("ROVARA_CUSTOM_MODEL_ENDPOINTS", "1");
+    vi.stubEnv("ROVARA_MODEL_ENDPOINT_CIDRS", "9.9.9.0/24");
+    vi.stubEnv("ROVARA_VPC_CIDRS", "10.42.0.0/16");
+    try {
+      const install = { editionPolicy: editionPolicy("enterprise") } as never;
+      for (let call = 0; call < 5; call += 1) expect(customModelEndpointsOn(install)).toBe(false);
+      expect(log.mock.calls.filter(([line]) => String(line).includes("model_endpoints.misconfigured"))).toHaveLength(1);
+    } finally { vi.unstubAllEnvs(); log.mockRestore(); }
+  });
+});

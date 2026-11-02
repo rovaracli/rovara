@@ -510,6 +510,18 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
   const source = ModelSourceIdSchema.safeParse(rawId).success ? current.sources.find((candidate) => candidate.sourceId === rawId) : undefined;
   if (source === undefined) throw agentXError("NOT_FOUND", MISSING);
   requireAvailable(deps, source.kind, source.kind === "endpoint" ? source.api : undefined);
+  if (source.kind !== "endpoint") return runCheck(deps, caller, source);
+  // R1: a check of an endpoint that ends in ANY error (a lookup that failed, a health call the proxy refused, a proxy that is down) leaves no qualification behind, the same as
+  // a check that refused. The error is still the check's answer; if clearing fails too, the original error stands (the record is cleared first, which is what routing reads).
+  try {
+    return await runCheck(deps, caller, source);
+  } catch (error) {
+    try { await unqualify(deps, caller, source.sourceId); } catch { /* the check's own error is the answer */ }
+    throw error;
+  }
+}
+
+async function runCheck(deps: Deps, caller: AgentCaller, source: Source): Promise<Record<string, unknown>> {
   /** B1: a refusal of an endpoint that was qualified takes the qualification away before it answers. */
   const refuseEndpoint = async (message: string): Promise<Record<string, unknown>> => {
     await unqualify(deps, caller, source.sourceId);

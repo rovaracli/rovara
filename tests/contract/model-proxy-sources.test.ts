@@ -60,7 +60,7 @@ interface StoredModel { id: string; model_name: string; litellm_params: Record<s
 interface StoredCredential { credential_name: string; credential_values: Record<string, unknown>; credential_info: unknown }
 
 /** A stateful fake of the LiteLLM routes the registry uses. */
-function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined; /** The usage a test completion reports; absent means a usual one. */ usage?: (seen: Seen) => Record<string, unknown> | undefined | null; completion?: (seen: Seen) => Response | undefined } = {}) {
+function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined; /** The usage a test completion reports; absent means a usual one. */ usage?: (seen: Seen) => Record<string, unknown> | undefined | null; completion?: (seen: Seen) => Response | undefined; /** Whether a streamed test reply carries usage (default yes). */ streamUsage?: boolean } = {}) {
   const models: StoredModel[] = [];
   const credentials = new Map<string, StoredCredential>();
   const teams = new Map<string, string[] | undefined>();
@@ -141,6 +141,15 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     if (method === "POST" && (path === "/chat/completions" || path === "/v1/messages" || path === "/v1/responses")) {
       const answered = options.completion?.(entry);
       if (answered !== undefined) return answered;
+      if (entry.body?.stream === true) {
+        const carries = options.streamUsage !== false;
+        const events = path === "/v1/messages"
+          ? [{ type: "message_start", message: { usage: carries ? { input_tokens: 5, output_tokens: 1 } : {} } }, { type: "message_delta", usage: carries ? { output_tokens: 2 } : {} }]
+          : path === "/v1/responses"
+            ? [{ type: "response.output_text.delta", delta: "ok" }, { type: "response.completed", response: { usage: carries ? { input_tokens: 5, output_tokens: 2, total_tokens: 7 } : {} } }]
+            : [{ choices: [{ delta: { content: "ok" } }] }, { choices: [], ...(carries ? { usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } } : {}) }];
+        return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
       const reported = options.usage === undefined ? (path === "/v1/messages" ? { input_tokens: 5, output_tokens: 2 } : { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }) : options.usage(entry);
       return json({ id: "reply", ...(reported === null || reported === undefined ? {} : { usage: reported }) });
     }
@@ -1117,5 +1126,91 @@ describe("the endpoint address is judged inside the VPC (S4)", () => {
     expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1" }).checkEndpointHost).toBe("function");
     expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" }).checkEndpointHost).toBe("function");
     expect(endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "8.8.8.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8 fix round 2: redirects (N6) and streamed usage (N2).
+// ---------------------------------------------------------------------------------------------------------------------
+describe("a redirect is never followed on a call to the proxy, so none can carry a request elsewhere (N6)", () => {
+  function recording(proxy: ReturnType<typeof litellm>) {
+    const calls: Array<{ url: string; redirect: string | undefined }> = [];
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, redirect: init?.redirect });
+      return proxy.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    return { calls, wrapped };
+  }
+
+  it("asks for manual redirect handling on every call: registration, health, the test reply and the stream", async () => {
+    const proxy = litellm();
+    const { calls, wrapped } = recording(proxy);
+    const registry = client(proxy, { fetch: wrapped, resolveSecret: resolver() });
+    await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(await registry.checkSource(ORG, SRC)).toEqual({ ok: true, health: "healthy" });
+    expect(calls.some((call) => call.url.endsWith("/health?model_id=model-id-1"))).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/chat/completions"))).toBe(true);
+    expect(calls.length).toBeGreaterThan(8);
+    expect(calls.filter((call) => call.redirect !== "manual")).toEqual([]);
+  });
+
+  it("refuses an answer that is a redirect, whichever call it answers, and follows nothing", async () => {
+    for (const path of ["/health", "/chat/completions", "/model/new", "/credentials"]) {
+      const proxy = litellm({ failOn: (seen) => (seen.path === path ? new Response(null, { status: 302, headers: { location: "https://evil.example.net/steal" } }) : undefined) });
+      const { calls, wrapped } = recording(proxy);
+      const registry = client(proxy, { fetch: wrapped, resolveSecret: resolver() });
+      try {
+        await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+        await registry.checkSource(ORG, SRC);
+      } catch {
+        // A refusal is the expected outcome for most of these; what matters is where the request went.
+      }
+      // /chat/completions is answered through the probe, which reports it as a source that did not answer; the others are refused outright.
+      expect(calls.some((call) => call.url.includes("evil.example.net")), path).toBe(false);
+    }
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/health" ? new Response(null, { status: 307, headers: { location: "https://evil.example.net/" } }) : undefined) });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    const refused = await failure(client(proxy).checkSource(ORG, SRC));
+    expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(refused.message).toContain("redirect");
+    const probe = litellm({ completion: () => new Response(null, { status: 302, headers: { location: "https://evil.example.net/" } }) });
+    await client(probe, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(await client(probe).checkSource(ORG, SRC)).toEqual({ ok: false, message: "this source did not answer a test call" });
+  });
+});
+
+describe("a streamed reply with no usage is refused as well (N2)", () => {
+  const checked = async (options: Parameters<typeof litellm>[0], api = "openai-completions") => {
+    const proxy = litellm(options);
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource(api) });
+    return { proxy, answer: await client(proxy).checkSource(ORG, SRC) };
+  };
+  const message = "this endpoint's streamed replies carry no token usage, so its spend could not be counted";
+
+  it("asks for a streamed reply in each wire format (with usage requested where the format has the option) and passes one that reports usage", async () => {
+    for (const [api, path] of [["openai-completions", "/chat/completions"], ["openai-responses", "/v1/responses"], ["anthropic-messages", "/v1/messages"]] as const) {
+      const { proxy, answer } = await checked({}, api);
+      expect(answer, api).toEqual({ ok: true, health: "healthy" });
+      const streamed = proxy.seen.find((entry) => entry.method === "POST" && entry.path === path && entry.body?.stream === true)!;
+      expect(streamed, api).toBeDefined();
+      if (api === "openai-completions") expect(streamed.body!.stream_options).toEqual({ include_usage: true });
+    }
+  });
+
+  it("refuses a stream that ends without any usage, in each wire format, while the plain reply is fine", async () => {
+    for (const api of ["openai-completions", "openai-responses", "anthropic-messages"]) {
+      expect((await checked({ streamUsage: false }, api)).answer, api).toEqual({ ok: false, message });
+    }
+  });
+
+  it("counts the output tokens of an Anthropic stream that reports input in no event at all", async () => {
+    const events = [{ type: "message_start", message: { usage: {} } }, { type: "message_delta", usage: { output_tokens: 3 } }];
+    const completion = (seen: Seen) => (seen.body?.stream === true ? new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200 }) : undefined);
+    expect((await checked({ completion }, "anthropic-messages")).answer).toEqual({ ok: true, health: "healthy" });
+  });
+
+  it("says the source did not answer when the stream cannot be read or the call fails", async () => {
+    expect((await checked({ completion: (seen) => (seen.body?.stream === true ? json({ error: { message: "no" } }, 400) : undefined) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    expect((await checked({ completion: (seen) => (seen.body?.stream === true ? new Response("not an event stream at all", { status: 200 }) : undefined) })).answer).toEqual({ ok: false, message });
   });
 });

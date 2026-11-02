@@ -2093,12 +2093,38 @@ describe("a failed check takes an endpoint's qualification away (B1)", () => {
     return { s, id };
   }
 
-  it("does not clear it for a lookup that failed to answer: that is a retry, not a verdict", async () => {
-    const { s, id, state } = await qualifiedSource();
-    state.lookupDown = true;
-    const down = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
-    expect(down.status).toBeGreaterThanOrEqual(500);
-    expect(digestOf(s)).toBeDefined();
+  it("clears it for any error thrown during the check, not only for a refusal: a lookup that failed, a health call the proxy refused, a proxy that is down (R1)", async () => {
+    const lookup = await qualifiedSource();
+    lookup.state.lookupDown = true;
+    expect((await lookup.s.call(DANA, "POST", `${SIGNED}/${lookup.id}/check`)).status).toBeGreaterThanOrEqual(500);
+    await expectUnqualified(lookup.s, lookup.id, "lookup");
+
+    const health = await qualifiedSource();
+    health.s.access.checkSource.mockRejectedValueOnce(agentXError("CONFIG_INVALID", "model proxy refused the health check (400)"));
+    const refused = await health.s.call(DANA, "POST", `${SIGNED}/${health.id}/check`);
+    expect([refused.status, errorOf(refused).message]).toEqual([400, "model proxy refused the health check (400)"]);
+    await expectUnqualified(health.s, health.id, "health");
+
+    const down = await qualifiedSource();
+    down.s.access.checkSource.mockRejectedValueOnce(agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable"));
+    expect((await down.s.call(DANA, "POST", `${SIGNED}/${down.id}/check`)).status).toBe(503);
+    await expectUnqualified(down.s, down.id, "proxy down");
+
+    const registering = await qualifiedSource();
+    registering.s.access.upsertSource.mockRejectedValueOnce(agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable"));
+    expect((await registering.s.call(DANA, "POST", `${SIGNED}/${registering.id}/check`)).status).toBe(503);
+    expect(digestOf(registering.s), "registration").toBeUndefined();
+    expect((await registering.s.list()).sources[0]).toMatchObject({ qualified: false });
+  });
+
+  it("still answers with the original error when clearing the qualification fails too", async () => {
+    const { s, id } = await qualifiedSource();
+    s.access.checkSource.mockRejectedValueOnce(agentXError("CONFIG_INVALID", "model proxy refused the health check (400)"));
+    s.access.upsertSource.mockRejectedValue(agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable"));
+    const refused = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    // The record no longer holds the qualification, which is what routing reads, even though the proxy could not be told.
+    expect(digestOf(s)).toBeUndefined();
+    expect(refused.status).toBeGreaterThanOrEqual(400);
   });
 
   it("clears the qualification of the record as it is when the clear happens, after a change that kept the digest landed during the check", async () => {

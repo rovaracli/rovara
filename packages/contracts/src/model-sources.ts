@@ -243,6 +243,8 @@ function servedCanonicalNames(provider: string, name: string): Set<string> {
   const ids = new Set<string>();
   const parts = name.split("/");
   for (let index = 0; index < parts.length; index += 1) ids.add(parts.slice(index).join("/"));
+  // A version after "@" (Vertex AI: `claude-opus-4-1@20250805`, `@latest`) is not part of the model's name.
+  for (const id of [...ids]) ids.add(id.replace(/@[A-Za-z0-9._-]+$/u, ""));
   const names = new Set<string>();
   for (const id of ids) for (const reading of new Set([provider, "amazon-bedrock", "openrouter", "anthropic", "openai"])) names.add(canonicalModelName({ provider: reading, modelId: id }));
   return names;
@@ -253,10 +255,12 @@ function servedCanonicalNames(provider: string, name: string): Set<string> {
  * serves it under, read under every provider's rules (`servedCanonicalNames`), so a forbidden model cannot hide behind another spelling.
  */
 export function endpointForbiddenModelProblem(models: ReadonlyArray<{ name: string; catalog: ModelIdentifier }>, forbidden: readonly ModelIdentifier[]): string | undefined {
-  const forbiddenNames = new Set(forbidden.map(canonicalModelName));
+  // A forbidden model written another way (the Vertex way, say) is read the same way the served names are.
+  const forbiddenNames = new Set(forbidden.flatMap((model) => [canonicalModelName(model), ...servedCanonicalNames(model.provider, model.modelId)]));
   for (const [index, entry] of models.entries()) {
     const served = servedCanonicalNames(entry.catalog.provider, entry.name);
-    if (forbiddenNames.has(canonicalModelName(entry.catalog)) || [...served].some((name) => forbiddenNames.has(name))) return `models.${String(index)}: this model is forbidden in your company`;
+    const catalogNames = [canonicalModelName(entry.catalog), ...servedCanonicalNames(entry.catalog.provider, entry.catalog.modelId)];
+    if (catalogNames.some((name) => forbiddenNames.has(name)) || [...served].some((name) => forbiddenNames.has(name))) return `models.${String(index)}: this model is forbidden in your company`;
   }
   return undefined;
 }
