@@ -123,6 +123,11 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
    * logged by name and never undoes or fails the removal.
    */
   afterRemove?: (removed: { orgId: OrgId; connectionId: string; type: string; roleArn?: string }) => Promise<void>;
+  /**
+   * Told after a connection has been saved (and the save committed), for what follows from it that lives elsewhere (the Team record reads a newly connected Linear or Jira user list to link people). A failure is
+   * logged by name and never undoes or fails the save.
+   */
+  afterSave?: (saved: { orgId: OrgId; connectionId: string; type: string; hasSecret: boolean }) => Promise<void>;
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
@@ -130,7 +135,7 @@ const CHECK_TIMEOUT_MS = 10_000;
 const CHECK_MESSAGE_MAX = 300;
 const DEFAULT_ENDPOINT_GUARD = mcpEndpointGuard();
 const MAX_CHECK_RESPONSE_BYTES = 1_000_000;
-const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
+export const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 
 const coded = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
 const parseOrg = (orgId: string): OrgId => {
@@ -372,6 +377,9 @@ export class OrgConnectionStore {
       ], (failed) => (failed.has(0) ? stale : undefined), input.request, saved);
     }
     await flushAuditEvents(this.input, events);
+    await this.input.afterSave?.({ orgId, connectionId: connection.connectionId, type: connection.type, hasSecret: saved.hasSecret }).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "connection.after_save_failed", orgId, connectionId: connection.connectionId, error: error instanceof Error ? error.name : "unknown" }));
+    });
     return saved;
   }
 

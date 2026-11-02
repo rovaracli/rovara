@@ -7,9 +7,12 @@ import type { TicketContext, TicketItem, TicketRecorder } from "./tickets.js";
 
 const text = (max: number) => z.string().max(max);
 
-const LinearEnvelope = z.object({ type: text(64), action: text(64), organizationId: text(100), webhookTimestamp: z.unknown().optional(), createdAt: z.unknown().optional(), url: z.unknown().optional(), actor: z.object({ id: text(200) }).passthrough().nullish(), data: z.record(z.string(), z.unknown()) }).passthrough();
+const LinearEnvelope = z.object({ type: text(64), action: text(64), organizationId: text(100), webhookTimestamp: z.unknown().optional(), createdAt: z.unknown().optional(), url: z.unknown().optional(), actor: z.object({ id: text(200) }).passthrough().nullish(), updatedFrom: z.record(z.string(), z.unknown()).nullish(), data: z.record(z.string(), z.unknown()) }).passthrough();
 
-const JiraEnvelope = z.object({ webhookEvent: text(100), timestamp: z.unknown().optional(), user: z.object({ accountId: text(200).optional() }).passthrough().nullish(), issue: z.record(z.string(), z.unknown()).optional(), comment: z.record(z.string(), z.unknown()).optional() }).passthrough();
+const JiraEnvelope = z.object({
+  webhookEvent: text(100), timestamp: z.unknown().optional(), user: z.object({ accountId: text(200).optional() }).passthrough().nullish(), issue: z.record(z.string(), z.unknown()).optional(), comment: z.record(z.string(), z.unknown()).optional(),
+  changelog: z.object({ items: z.array(z.record(z.string(), z.unknown())).max(100).optional() }).passthrough().nullish(),
+}).passthrough();
 
 export type TicketWebhookInput =
   | { source: "linear"; body: unknown; tenant: { organizationId: string; teamId: string } }
@@ -19,6 +22,10 @@ export type TicketWebhookResult = { changes: TicketItem[]; removed: string[]; sy
 
 const idText = (value: unknown): string | undefined => (typeof value === "string" || typeof value === "number" ? String(value).slice(0, 100) : undefined);
 const str = (value: unknown, max = 2000): string | undefined => (typeof value === "string" && value !== "" ? value.slice(0, max) : undefined);
+/** Per-editor rows: the text an update's source says the field had before (null or missing is the empty text). */
+/** A field of a changelog item by name (`toString` is also an Object method, so it is read through a key, not as a property). */
+const changeValue = (entry: Record<string, unknown> | undefined, key: string): unknown => entry?.[key];
+const before = (value: unknown): string => (typeof value === "string" ? value.slice(0, 70_000) : "");
 
 /** Reads one verified delivery into items to record and ids to remove. Nothing of the body is believed past the hook's tenant. */
 export function ticketsOfWebhook(input: TicketWebhookInput): TicketWebhookResult {
@@ -48,11 +55,15 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
     const actorId = str(parsed.data.actor?.id, 200);
     const state = str((data.state as { name?: unknown } | undefined)?.name, 100);
     const labels = Array.isArray(data.labels) ? data.labels.flatMap((label: unknown) => str((label as { name?: unknown } | null)?.name, 100) ?? []) : [];
+    // Linear says which fields an update changed (`updatedFrom` holds their old values). Absent on an update: unknown, and no words of it are kept.
+    const from = action === "update" ? parsed.data.updatedFrom ?? undefined : undefined;
+    const changedOf = from === undefined ? undefined : { title: "title" in from, body: "description" in from, state: "stateId" in from || "state" in from, labels: "labelIds" in from || "labels" in from };
     return { system: "linear", removed: [], changes: [{
       source: "linear", system: "linear", id: key, kind: action === "create" ? "ticket.created" : "ticket.updated", scope,
       title: str(data.title, 500) ?? str(data.identifier, 100) ?? id, ...(str(data.description, 70_000) === undefined ? {} : { body: str(data.description, 70_000)! }),
       ...(state === undefined ? {} : { state }), labels, ...(str(data.url ?? parsed.data.url) === undefined ? {} : { url: str(data.url ?? parsed.data.url)! }),
       ...(creator === undefined ? {} : { authorId: creator }), ...(actorId === undefined ? {} : { updaterId: actorId }), nativeId: id, ...(action === "update" ? { edit: true } : {}),
+      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(from !== undefined && "description" in from ? { previousBody: before(from.description) } : {}), ...(from !== undefined && "title" in from ? { previousTitle: before(from.title) } : {}),
       occurredAt: at, version: `${action}:${at}`, acl,
     }] };
   }
@@ -68,6 +79,7 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
       source: "linear", system: "linear", id: key, kind: "ticket.comment", scope, ...(issueId === undefined ? {} : { parentId: `issue:${issueId}` }),
       ...(str(data.body, 70_000) === undefined ? {} : { body: str(data.body, 70_000)! }), ...(str(data.url ?? parsed.data.url) === undefined ? {} : { url: str(data.url ?? parsed.data.url)! }),
       ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }), ...(commentUpdater === undefined ? {} : { updaterId: commentUpdater }), nativeId: id, ...(action === "update" ? { edit: true } : {}),
+      ...(action === "update" && parsed.data.updatedFrom != null && "body" in parsed.data.updatedFrom ? { previousBody: before(parsed.data.updatedFrom.body) } : {}),
       // A comment that names no team is recorded only when its ticket is already recorded under this team.
       ...(bodyTeam === undefined ? { needsParentProof: true } : {}), occurredAt: at, version: `${action}:${at}`, acl,
     }] };
@@ -121,11 +133,23 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
     if (issueId === undefined) return { ignored: "unreadable" };
     const state = str((fields.status as { name?: unknown } | undefined)?.name, 100);
     const description = adfText(fields.description);
+    // Jira's changelog names the fields an update changed, with their old text. Absent on an update: unknown, and no words of it are kept.
+    const changes = webhookEvent === "jira:issue_updated" ? parsed.data.changelog?.items : undefined;
+    const changedField = (name: string): Record<string, unknown> | undefined => changes?.find((entry) => typeof entry.field === "string" && entry.field.toLowerCase() === name);
+    const changedOf = changes === undefined ? undefined : { title: changedField("summary") !== undefined, body: changedField("description") !== undefined, state: changedField("status") !== undefined, labels: changedField("labels") !== undefined };
+    const descriptionChange = changedField("description");
+    const summaryChange = changedField("summary");
+    // B1: an UPDATE's description and title come from the changelog item itself: its `fromString` and `toString` are in the SAME format (Jira's wiki markup), so the words the editor added are found by comparing
+    // the two. The description in `fields` is Atlassian Document Format flattened to plain text, a different format, and is never compared with `fromString`. With no `toString` there is no text to compare: no words are kept.
+    const isUpdate = webhookEvent === "jira:issue_updated";
+    const bodyOf = isUpdate ? str(changeValue(descriptionChange, "toString"), 70_000) : description;
+    const titleOf = isUpdate && summaryChange !== undefined ? str(changeValue(summaryChange, "toString"), 500) : undefined;
     return { system, removed: [], changes: [{
       source: "jira", system, id: `issue:${issueId}`, kind: webhookEvent === "jira:issue_created" ? "ticket.created" : "ticket.updated", scope,
-      title: str(fields.summary, 500) ?? key ?? issueId, ...(description === undefined ? {} : { body: description }), ...(state === undefined ? {} : { state }),
+      title: titleOf ?? str(fields.summary, 500) ?? key ?? issueId, ...(bodyOf === undefined ? {} : { body: bodyOf }), ...(state === undefined ? {} : { state }),
       labels: Array.isArray(fields.labels) ? fields.labels.flatMap((label: unknown) => str(label, 100) ?? []) : [], ...(browse === undefined ? {} : { url: browse }),
       ...(creator === undefined ? {} : { authorId: creator }), ...(triggeredBy === undefined ? {} : { updaterId: triggeredBy }), nativeId: issueId, ...(webhookEvent === "jira:issue_updated" ? { edit: true } : {}),
+      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(descriptionChange === undefined ? {} : { previousBody: before(descriptionChange.fromString) }), ...(summaryChange === undefined ? {} : { previousTitle: before(summaryChange.fromString) }),
       ...(restricted ? { restricted: true } : {}), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
     }] };
   }

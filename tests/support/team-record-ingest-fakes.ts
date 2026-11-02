@@ -1,7 +1,7 @@
 // Fakes for the Team record ingest taps (lane "ingest"). They stand in for the record core (R2 sink, source rows, mode, identity resolver) that
 // another lane builds; the taps only ever see the interfaces in `team-record/sources/ports.ts`.
 import {
-  idempotencyKey, type ActorResolverPort, type EditedByOtherPort, type CaptureModePort, type PushIndexPort, type PushRecord, type RecordDraft, type RecordHistoryPort, type RecordSinkPort, type RovaraPullRequest, type RovaraPullRequestIndexPort, type SourceConfig,
+  idempotencyKey, type ActorResolverPort, type CaptureModePort, type PushIndexPort, type PushRecord, type RecordDraft, type RecordHistoryPort, type RecordSinkPort, type RovaraPullRequest, type RovaraPullRequestIndexPort, type SourceConfig,
   type SourceConfigPort, type SourceSystem, type TombstoneCause, type TransientDistillerPort, type TrustClass, type Audience,
 } from "../../packages/broker/src/team-record/sources/ports.js";
 
@@ -29,6 +29,12 @@ export class FakeSink implements RecordSinkPort, RecordHistoryPort {
     if (scope !== undefined && this.deadScopes.has(scope)) return { status: "refused" as const, reason: "excluded_scope" };
     const key = idempotencyKey(draft);
     if (this.keys.has(key)) return { status: "duplicate" as const };
+    // Per-editor rows (`sourceRef.order`): each change is its own row; a later change replaces nothing and an older one is not stale.
+    if (draft.sourceRef.order !== undefined) {
+      this.keys.add(key);
+      this.puts.push(draft);
+      return { status: "stored" as const };
+    }
     const stamp = draft.sourceRef.versionAt ?? draft.occurredAt;
     const existing = this.puts.find((old) => FakeSink.itemKey(old.workspaceId, old.source, old.sourceRef.system, old.sourceRef.id) === item);
     if (existing !== undefined && (existing.sourceRef.versionAt ?? existing.occurredAt) > stamp) return { status: "duplicate" as const };
@@ -60,13 +66,6 @@ export class FakeSink implements RecordSinkPort, RecordHistoryPort {
     this.audienceReplacements.push({ scope: input.scope, audience: input.audience });
   }
   kinds(): string[] { return this.puts.map((draft) => draft.kind); }
-}
-
-export class FakeEdited implements EditedByOtherPort {
-  readonly marked = new Set<string>();
-  private static key(input: { workspaceId: string; source: string; system: string; id: string }): string { return `${input.workspaceId}|${input.source}|${input.system}|${input.id}`; }
-  async mark(input: { workspaceId: string; source: SourceSystem; system: string; id: string }) { this.marked.add(FakeEdited.key(input)); }
-  async isMarked(input: { workspaceId: string; source: SourceSystem; system: string; id: string }) { return this.marked.has(FakeEdited.key(input)); }
 }
 
 export class FakePushIndex implements PushIndexPort {
@@ -123,5 +122,5 @@ export const sha = (n: number): string => n.toString(16).padStart(40, "0");
 
 /** A world with the source rows most tests want already present. */
 export function world() {
-  return { edited: new FakeEdited(), pushes: new FakePushIndex(), sink: new FakeSink(), distiller: new FakeDistiller(), config: new FakeConfig(), mode: new FakeMode(), actors: new FakeActors(), prs: new FakeRovaraPrs() };
+  return { pushes: new FakePushIndex(), sink: new FakeSink(), distiller: new FakeDistiller(), config: new FakeConfig(), mode: new FakeMode(), actors: new FakeActors(), prs: new FakeRovaraPrs() };
 }
