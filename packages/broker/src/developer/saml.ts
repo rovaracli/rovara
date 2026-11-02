@@ -156,7 +156,7 @@ const childElements = (node: XmlElement): XmlElement[] => {
 async function inspectDocument(xml: string, sp: SamlServiceProvider, requestId: string): Promise<{ ok: true } | { ok: false; reason: SamlRefusal }> {
   let doc: XmlDocument;
   try {
-    doc = await parseDomFromString(xml) as unknown as XmlDocument;
+    doc = await parseDomFromString(xml) as XmlDocument;
   } catch {
     return refuse("response_unreadable");
   }

@@ -133,6 +133,10 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
+    category: "aws-service-principal", why: "The CodeArtifact service name in the sts:AWSServiceName condition that scopes the broker role's registry token policy (a policy value, not a call).", files: ["infra/lib/registry-access.ts"],
+    hosts: ["codeartifact.amazonaws.com"],
+  },
+  {
     category: "audit-timestamp", why: "The two public timestamp authorities the audit anchor asks by default.", files: ["packages/contracts/src/audit.ts", "packages/audit-verifier/src/trust-roots.ts"],
     hosts: ["timestamp.digicert.com", "timestamp.sectigo.com"],
   },
@@ -173,6 +177,10 @@ export const HOST_RULES: readonly HostRule[] = [
       // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
       "registry.corp.example.net",
     ],
+  },
+  {
+    category: "reserved-example", why: "XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched.", files: ["packages/broker/src/developer/saml.ts", "packages/broker/src/developer/providers.ts"],
+    hosts: ["www.w3.org", "schemas.xmlsoap.org"],
   },
 ];
 

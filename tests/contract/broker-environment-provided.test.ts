@@ -32,6 +32,8 @@ const OPTIONAL = new Map<string, string>([
   ["DEVELOPER_IDENTITY_FUNCTION_ARN", "the sign-in function by ARN, which still works where an environment gives one instead of DEVELOPER_IDENTITY_FUNCTION_NAME"],
   ["AGENTX_RELEASE_VERSION", "set by the release, for the health route; absent on an install made from source"],
   ["MODEL_SOURCE_TRUST_PRINCIPALS", "an operator's list of Bedrock roles to trust; empty by default"],
+  ["ROVARA_MODEL_ENDPOINT_CIDRS", "Enterprise only: the private ranges a custom model endpoint may resolve into; set by the install (infra/lib/model-endpoints.ts) and absent when the setting is left out (public addresses only)"],
+  ["ROVARA_VPC_CIDRS", "Enterprise only: the network Rovara itself runs in, set by the install with the private ranges (model endpoints, private MCP) and absent when they are left out"],
 ]);
 
 const REGION = "ap-southeast-4";
