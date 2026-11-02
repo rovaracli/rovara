@@ -7,6 +7,8 @@ import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { resolveAgent,type AgentStore,type AgentRecord } from "../agents/store.js";
 import { readGuardrailsWithRevision } from "../agents/guardrails.js";
 import { defaultWorkerModel } from "../agents/dispatch.js";
+import { servableModels } from "../model-sources/routing.js";
+import { reviewDefaultExtras } from "./review-default-pool.js";
 import { readProjectPlaybookState } from "../playbook/project-playbook-store.js";
 import { readModelSelectionPolicy,type ModelPolicyReader } from "./policy-store.js";
 import { readStageModelEvidence,type StageEvidenceDependencies } from "./evidence.js";
@@ -88,6 +90,8 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
   return {stage,own,defaults,company,projectSelection};
  });
  if(pool.size>23) throw unavailable();
+ // The review steps' default is another company's model the company can use: bring those models into the pool, within its limit. A source that cannot be listed adds nothing (today's pool stands).
+ for(const extra of reviewDefaultExtras({servable:await servableModels(deps.routing,orgId,project).catch(()=>[]),approved:definition.data.models?.approved,forbidden:guardrails.forbiddenModels,have:new Set(pool.keys())})) add(extra);
  const evidence=await readStageModelEvidence(deps,{orgId,project,models:[...pool.values()],payerDeveloperId:caller.developerId});
  return {orgId,project,processChain:recipe.chain,playbookSnapshot:{exists:playbookState.exists,revision:playbook.revision,defaultProcess:playbook.defaultProcess},selectionSnapshot:selected?.success?{exists:true,model:selected.data}:{exists:false},guardrailsRevision:storedGuardrails.revision,registeredAt:record.registeredAt,companyRevision:policy.revision,projectRevision:definition.data.revision,canEdit:false,process:{agentId,...(version===undefined?{}:{version}),...(draftRevision===undefined?{}:{draftRevision}),digest:recipeDigest(recipe)},stages:rows.map(({stage,own,defaults,company,projectSelection})=>({orgId,stage,...evidence,forbidden:guardrails.forbiddenModels,approved:definition.data.models?.approved,projectChoice:own,companyLock:company?.locked===true?company:undefined,companyDefault:company?.locked===true?undefined:defaults,companyDefaultOrigin:company?.model===undefined&&defaults?.model!==undefined?"recipe":undefined,projectSelection:approvedProjectModel(projectSelection,definition.data.models),projectDefault:approvedProjectModel(definition.data.models?.default,definition.data.models),builtinDefault:defaultWorkerModel(deps.routing.rovaraGeography),requireDifferentVendor:guardrails.requireCrossCompanyReview&&(stage==="code_review"||stage==="security_review"),allowLegacyDefaultFallback:true}))};
 }

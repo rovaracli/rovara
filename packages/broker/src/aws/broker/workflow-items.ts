@@ -622,6 +622,8 @@ export async function completedWorkflowItems(
   let planUnreadable: DeveloperTaskRecord["planUnreadable"] | null | undefined;
   /** Trust fix A2: what a review on the build's own model leaves on the task (`reviewSameModel`): the flag for this code, null to clear an earlier one, undefined to leave it. */
   let reviewSameModel: DeveloperTaskRecord["reviewSameModel"] | null | undefined;
+  /** Owner decision 2026-11-02: the same for a review that ran on the build's own company because no other company's model was usable (`reviewNoOtherCompany`). */
+  let reviewNoOtherCompany: DeveloperTaskRecord["reviewNoOtherCompany"] | null | undefined;
   /** SR-1 (switch `cr`): the second review's opinion, from the same REVIEW operation, stored in the SAME Update as the workflow transition (null: forget an old one). */
   let secondOpinion: StoredSecondOpinion | null | undefined;
   // Plan self-check: the answer was not shown (unreadable once, or its own checks found a problem); the planner is asked again by itself, once per document version.
@@ -1015,6 +1017,8 @@ export async function completedWorkflowItems(
         // The note about the model belongs to the reviews just taken: set for this code when they ran on the build's own model, cleared when an earlier review of it had left one.
         if (operation.reviewSameModel === true && next.candidate !== undefined) reviewSameModel = { candidateDigest: next.candidate.digest };
         else if (task.reviewSameModel !== undefined) reviewSameModel = null;
+        if (operation.reviewNoOtherCompany === true && operation.model !== undefined && next.candidate !== undefined) reviewNoOtherCompany = { candidateDigest: next.candidate.digest, model: { provider: operation.model.provider, modelId: operation.model.modelId } };
+        else if (task.reviewNoOtherCompany !== undefined) reviewNoOtherCompany = null;
         const blockedReport = secondOpinion?.opinion.blocked === true ? secondOpinion.opinion.report : undefined;
         if (blockedReport !== undefined) {
           // The block is kept IN the workflow (secondReviewBlock), so accepting the first review's findings can never clear it.
@@ -1260,7 +1264,7 @@ export async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planSelfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${planHold === undefined ? "" : ", planGrounding = :grounding"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${reviewSameModel === undefined || reviewSameModel === null ? "" : ", reviewSameModel = :reviewSameModel"}${secondOpinion === undefined || secondOpinion === null ? "" : ", secondOpinion = :secondOpinion"}${forget || dropStaleEstimate || reviewSameModel === null || secondOpinion === null ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : []), ...(reviewSameModel === null ? ["reviewSameModel"] : []), ...(secondOpinion === null ? ["secondOpinion"] : [])].join(", ")}` : ""}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planSelfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${planHold === undefined ? "" : ", planGrounding = :grounding"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${reviewSameModel === undefined || reviewSameModel === null ? "" : ", reviewSameModel = :reviewSameModel"}${reviewNoOtherCompany === undefined || reviewNoOtherCompany === null ? "" : ", reviewNoOtherCompany = :reviewNoOtherCompany"}${secondOpinion === undefined || secondOpinion === null ? "" : ", secondOpinion = :secondOpinion"}${forget || dropStaleEstimate || reviewSameModel === null || reviewNoOtherCompany === null || secondOpinion === null ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : []), ...(reviewSameModel === null ? ["reviewSameModel"] : []), ...(reviewNoOtherCompany === null ? ["reviewNoOtherCompany"] : []), ...(secondOpinion === null ? ["secondOpinion"] : [])].join(", ")}` : ""}`,
     ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${raisedPlanningLimit === undefined ? "" : " AND budgetUsd = :seenLimit"}${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
@@ -1271,6 +1275,7 @@ export async function completedWorkflowItems(
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
       ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
       ...(reviewSameModel === undefined || reviewSameModel === null ? {} : { ":reviewSameModel": reviewSameModel }),
+      ...(reviewNoOtherCompany === undefined || reviewNoOtherCompany === null ? {} : { ":reviewNoOtherCompany": reviewNoOtherCompany }),
       ...(secondOpinion === undefined || secondOpinion === null ? {} : { ":secondOpinion": secondOpinion }),
       ...(graphApproval === undefined || graphCancelTarget?.workflowDependencies === undefined ? {} : {
         ":graphOperationId": graphCancelTarget.id,

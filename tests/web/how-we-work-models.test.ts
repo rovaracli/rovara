@@ -372,3 +372,43 @@ describe("editable model rows", () => {
   await expectNoAxeViolations(f.container);
  });
 });
+
+describe("review defaults (owner decision 2026-11-02)", () => {
+ const review = (reason: string, extra: Json = {}) => ({ code_review: stageEntry("code_review", { effective: effective(GPT_REVIEW, { reason, ...extra }) }), security_review: stageEntry("security_review", { effective: effective(GPT_REVIEW, { reason, ...extra }) }) });
+ const GPT_REVIEW = "openai/gpt-5-codex";
+ it("shows a review step's reason in the three fixed phrases, and the ordinary words for a step that is not a check", async () => {
+  await open({ stages: review("DEFAULT_DIFFERENT_COMPANY") });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: default: different company", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+  expect(within(card("Review")).getByText("Picked because: default: different company", { selector: "[data-stage='security_review'] *" })).toBeTruthy();
+  expect(within(card("Build")).getByText("Picked because: Rovara's default")).toBeTruthy();
+ });
+ it("says your choice for a project or company choice and company lock for a lock", async () => {
+  const choice = await open({ stages: review("PROJECT_CHOICE", { decidedBy: "project" }) });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: your choice", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+  choice.unmount();
+  await open({ stages: { code_review: stageEntry("code_review", { locked: true, effective: effective(GPT_REVIEW, { reason: "COMPANY_LOCK", decidedBy: "company", locked: true }) }), security_review: stageEntry("security_review", { locked: true, effective: effective(GPT_REVIEW, { reason: "COMPANY_LOCK", decidedBy: "company", locked: true }) }) } });
+  await waitFor(() => expect(within(card("Review")).getByText("Picked because: company lock", { selector: "[data-stage='code_review'] *" })).toBeTruthy());
+ });
+ it("says in fixed words that the review is on the builder's company when no other company's model is available, and the plan check likewise", async () => {
+  await open({ stages: { ...review("BUILTIN_DEFAULT", { noOtherCompany: true }), plan_check: stageEntry("plan_check", { effective: effective(SONNET, { noOtherCompany: true }) }) } });
+  await waitFor(() => expect(within(card("Review")).getAllByText("Review uses GPT-5 Codex (same company as the builder: no other company's model is available)")).toHaveLength(2));
+  expect(within(card("Review")).getAllByText("Picked because: default: different company").length).toBe(2);
+  expect(within(card("Plan check")).getByText("Plan check uses Sonnet 4.6 (same company as the planner: no other company's model is available)")).toBeTruthy();
+  expect(within(card("Build")).queryByText(/same company as the/)).toBeNull();
+ });
+ it("shows the different-vendor switch on while the default applies, and turning it off writes the explicit different-model rule", async () => {
+  const f = await open({ stages: review("DEFAULT_DIFFERENT_COMPANY") });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
+  fireEvent.click(toggle());
+  const body = await saved(f);
+  expect(body.overlay.steps!.review).toEqual({ differentCompanyFrom: null });
+ });
+ it("keeps the switch off for a step with a project choice and no rule, and turning it on writes the vendor rule", async () => {
+  const f = await open({ stages: review("PROJECT_CHOICE", { decidedBy: "project" }) });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
+  fireEvent.click(toggle());
+  expect((await saved(f)).overlay.steps!.review).toEqual({ differentCompanyFrom: "build" });
+ });
+});

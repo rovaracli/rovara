@@ -6,6 +6,8 @@ import {PROJECT_REVISION_SK_PREFIX,StoredProjectDefinitionSchema,projectPk,proje
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {defaultWorkerModel} from "../agents/dispatch.js";
+import {servableModels} from "../model-sources/routing.js";
+import {reviewDefaultExtras} from "./review-default-pool.js";
 import {parseTaskModelPolicyPin} from "./task-pin.js";
 import {readStageModelEvidence,type StageEvidenceDependencies} from "./evidence.js";
 import {resolvePinnedTaskStage,type PinnedTaskStageInput} from "./task-runtime.js";
@@ -36,7 +38,13 @@ async function readPinnedTaskStage(deps:TaskStageLiveDependencies,input:TaskStag
  for(const model of input.defaultFallbacks??[])add(model);
  const builtinDefault=defaultWorkerModel(deps.routing.rovaraGeography);add(builtinDefault);
  if(models.size>23)throw unavailable();
- const [guardrailSnapshot,evidence]=await Promise.all([readGuardrailsWithRevision(deps,input.orgId),readStageModelEvidence(deps,{orgId:input.orgId,project:input.project,models:[...models.values()],payerDeveloperId:input.payerDeveloperId,excludePersonalPlan:input.excludePersonalPlan})]);
+ const guardrailsRead=readGuardrailsWithRevision(deps,input.orgId);
+ // A checking step's default is another company's model the company can use (owner decision 2026-11-02): only those stages read the company's servable models, and only within the pool's limit. A source that cannot be listed adds nothing.
+ if(input.stage==="plan_check"||input.stage==="code_review"||input.stage==="security_review") {
+  const forbidden=(await guardrailsRead).guardrails.forbiddenModels;
+  for(const extra of reviewDefaultExtras({servable:await servableModels(deps.routing,input.orgId,input.project).catch(()=>[]),approved:frozen.projectModels?.approved,forbidden,have:new Set(models.keys())}))add(extra);
+ }
+ const [guardrailSnapshot,evidence]=await Promise.all([guardrailsRead,readStageModelEvidence(deps,{orgId:input.orgId,project:input.project,models:[...models.values()],payerDeveloperId:input.payerDeveloperId,excludePersonalPlan:input.excludePersonalPlan})]);
  const guardrails=guardrailSnapshot.guardrails;
  const decision=resolvePinnedTaskStage({...input,registeredAt:pin.registeredAt,builtinDefault,live:{...evidence,forbidden:guardrails.forbiddenModels,deniedModels:input.deniedModels,requireDifferentVendor:guardrails.requireCrossCompanyReview&&(input.stage==="code_review"||input.stage==="security_review")}});
  const checks:TransactItem[]=[];

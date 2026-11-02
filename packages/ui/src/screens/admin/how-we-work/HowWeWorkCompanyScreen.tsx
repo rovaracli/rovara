@@ -15,7 +15,7 @@ import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, codedText, effortLabel } 
 import { ReadSection, checkedTime, useAdminRead } from "../models/read.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { PrLearningLockRow } from "../agents/PrLearningLockRow.js";
-import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, type CompanyRow, type EffortChoice } from "./company-edit.js";
+import { defaultVendorApplies, incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, vendorOn, type CompanyRow, type EffortChoice } from "./company-edit.js";
 import * as T from "./company-text.js";
 import { LearningSuggestionsRow } from "./LearningSuggestionsRow.js";
 import { KnownFailingPolicyRow } from "./KnownFailingPolicyRow.js";
@@ -63,7 +63,8 @@ const effort = effortChoice(entry?.thinkingLevel), effortOptions = EFFORT_OPTION
  return <section aria-label={row.title} className="rv-hww-company-card"><h2>{row.title}</h2>
   {candidates === undefined ? <p>Model: {entry?.model === undefined ? <>Rovara's default</> : <VisibleText text={modelKey(entry.model)} />}</p> : <ModelPicker entry={entry} candidates={candidates} disabled={disabled} onPick={value => onChange(patchRow(overrides, row, { model: value }))} />}
   <Select label="Effort" value={effort} options={effortOptions} disabled={disabled} onValueChange={value => onChange(patchRow(overrides, row, { effort: value as EffortChoice }))} />
-  {row.reference !== undefined && <Switch label={"Different vendor than " + referenceTitle} checked={entry?.differentFrom?.level === "vendor"} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { vendor: checked }))} />}
+  {row.reference !== undefined && <Switch label={"Different vendor than " + referenceTitle} checked={vendorOn(entry)} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { vendor: checked }))} />}
+  {row.reference !== undefined && defaultVendorApplies(entry) && <p className="rv-muted">{T.DEFAULT_VENDOR_NOTE}</p>}
   <Switch label="Lock this stage" checked={locked} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { locked: checked }))} />
   {incomplete && <p role="status" className="rv-hww-company-hint">{T.CARD_INCOMPLETE}</p>}
   {split && <p className="rv-muted">{T.SPLIT[row.id]}</p>}

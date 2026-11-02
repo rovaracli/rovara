@@ -43,7 +43,9 @@ export const StageModelCandidateSchema = z.object({
 export const EffectiveStageModelSchema = z.object({
   model: ModelIdentifierSchema, sourceId: SourceId, thinkingLevel: ThinkingLevelSchema.nullable(),
   decidedBy: z.enum(["rovara", "company", "project", "person"]), locked: z.boolean(),
-  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL"]),
+  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL", "DEFAULT_DIFFERENT_COMPANY"]),
+  /** A checking step whose default is "a different company than the step it checks" found no other company's model to use, so it runs on the same company's model. Set by the server only. */
+  noOtherCompany: z.literal(true).optional(),
 }).strict();
 const StageRowBase = z.object({
   stage: StageIdSchema, projectChoice: StageModelChoiceSchema.nullable(), companyDefault: StageModelChoiceSchema.nullable(),

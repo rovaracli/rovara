@@ -11,7 +11,10 @@ export interface StageEdit { model?: string; effort?: EffortValue; vendor?: bool
 export type ModelEdits = Record<string, StageEdit>;
 export const baselineModel = (stage: StageModelsStage): string => stage.projectChoice?.model === undefined ? DEFAULT_MODEL : modelKey(stage.projectChoice.model);
 export const baselineEffort = (stage: StageModelsStage): EffortValue => { const effort = stage.projectChoice?.thinkingLevel;return effort === undefined ? "inherit" : effort === null ? "null" : effort; };
-export const baselineVendor = (stage: StageModelsStage): boolean => (stage.projectChoice?.differentFrom ?? stage.companyDefault?.differentFrom)?.level === "vendor";
+/** The vendor rule somebody set (the project's, else the company's). */
+export const explicitVendor = (stage: StageModelsStage): boolean => (stage.projectChoice?.differentFrom ?? stage.companyDefault?.differentFrom)?.level === "vendor";
+/** The switch's state: a rule somebody set, or the default rule of a checking step nobody set (a different company than the step it checks, in force even when no such model is available). */
+export const baselineVendor = (stage: StageModelsStage): boolean => explicitVendor(stage) || ("effective" in stage && (stage.effective.reason === "DEFAULT_DIFFERENT_COMPANY" || stage.effective.noOtherCompany === true));
 /** The edits of one step after `patch`, leaving out anything equal to what the draft already holds. */
 export function mergeEdit(edits: ModelEdits, stepId: string, patch: StageEdit, base: StageModelsStage): ModelEdits {
  const next: StageEdit = { ...edits[stepId], ...patch };

@@ -11,8 +11,17 @@ export function reviewSameModelOf(task: { reviewSameModel?: { candidateDigest: s
   return task.reviewSameModel !== undefined && (workflow.candidate === undefined || task.reviewSameModel.candidateDigest === workflow.candidate.digest);
 }
 
+/** The model the reviews of the workflow's current code ran on when none of another company than the build's was usable (`reviewNoOtherCompany` on the task record), else undefined. */
+export function reviewNoOtherCompanyOf(task: { reviewNoOtherCompany?: { candidateDigest: string; model: { provider: string; modelId: string } } | undefined }, workflow: Pick<WorkflowSnapshot, "candidate">): { provider: string; modelId: string } | undefined {
+  const flag = task.reviewNoOtherCompany;
+  return flag !== undefined && (workflow.candidate === undefined || flag.candidateDigest === workflow.candidate.digest) ? flag.model : undefined;
+}
+
 /** Said when the project (or the account) offered no model but the build's for the review. */
 export const REVIEW_SAME_MODEL_NOTE = "Review used the same model as Build. Enable another model for an independent review.";
+
+/** Said (owner decision 2026-11-02) when the reviews' default is another company's model than the build's and none was usable, so they ran on the build's own company. Fixed words; the model is a report's text, so the caller makes the line inert. */
+export const reviewNoOtherCompanyLine = (model: { provider: string; modelId: string }): string => `Review uses ${redactText(`${model.provider}/${model.modelId}`).replace(/\s+/gu, " ").trim().slice(0, 80)} (same company as the builder: no other company's model is available)`;
 
 const ROLE_WORD = { CRITIC: "code review", SECURITY: "security review" } as const;
 const MODEL_MAX = 80;
