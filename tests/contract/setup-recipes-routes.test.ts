@@ -248,7 +248,9 @@ describe("what the admin sees before approving (F2, F4)", () => {
     expect(proposed.sourceProject).toBe(NAME);
     expect(proposed.proposedBy).toBe("Maya Chen");
     expect(proposed.replaces).toEqual([{ recipeId: (await list(t)).recipes.find((entry) => entry.label === "Existing")!.recipeId, label: "Existing" }]);
-    // A recipe with another fingerprint replaces nothing, and an approved one shows no warning.
+    // An approved recipe with ANOTHER fingerprint is not replaced, and an approved one shows no warning.
+    expect((await post(t, { action: "create", body: { ...recipeBody(), label: "Go services", match: { markerFiles: ["go.mod"], registryHosts: [] } } })).status).toBe(200);
+    expect((await only(t, "Newer")).replaces.map((entry) => entry.label)).toEqual(["Existing"]);
     expect((await only(t, "Existing")).replaces).toEqual([]);
   });
 });

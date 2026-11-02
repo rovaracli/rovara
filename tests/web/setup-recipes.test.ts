@@ -244,6 +244,13 @@ describe("the share entry point on a project's test environment page (F8)", () =
    f.unmount();
   }
  });
+ it("shows a hidden character in a marker file name or repository as a visible mark", async () => {
+  panel({ status: 200, body: { repositories: ["or\u202Eders"], markerFiles: ["py\u202Eproject.toml"], hasApprovedEnvironment: true } });
+  fireEvent.click(await screen.findByRole("button", { name: "Share as company recipe" }));
+  const form = within(await screen.findByRole("form", { name: "Share a project's setup" }));
+  expect(form.getByRole("checkbox", { name: "py[U+202E]project.toml" })).toBeTruthy();
+  expect(form.getByRole("option", { name: "or[U+202E]ders" })).toBeTruthy();
+ });
  it("offers the form with the project's repositories, and shares with one request to the project's route", async () => {
   const f = panel({ status: 200, body: { repositories: ["orders-api", "orders-web"], markerFiles: ["package.json", "pyproject.toml"], hasApprovedEnvironment: true } });
   fireEvent.click(await screen.findByRole("button", { name: "Share as company recipe" }));
