@@ -9,12 +9,14 @@ import { ORG_A, ORG_B, T0 } from "../support/team-record-core.js";
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const world = () => { const db = new FakeDynamoDb({ indexKeys }); return { db, table: { documentClient: db, tableName: "TeamRecord" } }; };
 const AT = new Date(T0).toISOString();
+/** dev-1 and dev-2 belong to org A; dev-other belongs to org B; dev-gone to none. */
+const members = { orgOfDeveloper: async (developerId: string) => (developerId === "dev-1" || developerId === "dev-2" ? ORG_A : developerId === "dev-other" ? ORG_B : undefined) };
 
 describe("tracker links", () => {
   it("links a Linear or Jira author to a person; the link is per org and answers nothing for another org", async () => {
     const { table } = world();
-    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT })).toBe(true);
-    expect(await linkTrackerIdentity(table, ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-1", developerId: "dev-1", via: "signin", at: AT })).toBe(true);
+    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT }, members)).toBe(true);
+    expect(await linkTrackerIdentity(table, ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-1", developerId: "dev-1", via: "signin", at: AT }, members)).toBe(true);
     expect(await developerOfTrackerAuthor(table, ORG_A, { system: "linear", sourceId: "u-1" })).toBe("dev-1");
     expect(await developerOfTrackerAuthor(table, ORG_B, { system: "linear", sourceId: "u-1" })).toBeUndefined();
     expect(await developerOfTrackerAuthor(table, ORG_A, { system: "linear", sourceId: "u-2" })).toBeUndefined();
@@ -24,25 +26,33 @@ describe("tracker links", () => {
   it("refuses an id or a system that is not well formed, a system that is not a tracker, and a person who has been erased", async () => {
     const { table } = world();
     for (const bad of [{ system: "github", sourceId: "1" }, { system: "linear", sourceId: "" }, { system: "linear", sourceId: "a b" }, { system: "jira:", sourceId: "x" }]) {
-      expect(await linkTrackerIdentity(table, ORG_A, { ...bad, developerId: "dev-1", via: "connect", at: AT }), JSON.stringify(bad)).toBe(false);
+      expect(await linkTrackerIdentity(table, ORG_A, { ...bad, developerId: "dev-1", via: "connect", at: AT }, members), JSON.stringify(bad)).toBe(false);
     }
-    await markPersonErased(table, ORG_A, { developerId: "dev-gone" }, AT);
-    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-9", developerId: "dev-gone", via: "connect", at: AT })).toBe(false);
+    await markPersonErased(table, ORG_A, { developerId: "dev-1" }, AT);
+    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-9", developerId: "dev-1", via: "connect", at: AT }, members)).toBe(false);
+  });
+
+  it("refuses a person who is not a member of THIS org (connect and sign-in), and links nothing for them", async () => {
+    const { db, table } = world();
+    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-b", developerId: "dev-other", via: "connect", at: AT }, members)).toBe(false);
+    expect(await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-g", developerId: "dev-gone", via: "signin", at: AT }, members)).toBe(false);
+    expect(await developerOfTrackerAuthor(table, ORG_A, { system: "linear", sourceId: "u-b" })).toBeUndefined();
+    expect(db.find(() => true)).toStrictEqual([]);
   });
 
   it("an author id moved to another person leaves the first person with no link to it", async () => {
     const { table } = world();
-    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT });
-    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-2", via: "connect", at: AT });
+    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT }, members);
+    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-2", via: "connect", at: AT }, members);
     expect(await developerOfTrackerAuthor(table, ORG_A, { system: "linear", sourceId: "u-1" })).toBe("dev-2");
     expect(await trackerLinksOf(table, ORG_A, "dev-1")).toStrictEqual([]);
   });
 
   it("removes a person's links, both items of each, and no one else's", async () => {
     const { db, table } = world();
-    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT });
-    await linkTrackerIdentity(table, ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-1", developerId: "dev-1", via: "connect", at: AT });
-    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-2", developerId: "dev-2", via: "connect", at: AT });
+    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-1", developerId: "dev-1", via: "connect", at: AT }, members);
+    await linkTrackerIdentity(table, ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-1", developerId: "dev-1", via: "connect", at: AT }, members);
+    await linkTrackerIdentity(table, ORG_A, { system: "linear", sourceId: "u-2", developerId: "dev-2", via: "connect", at: AT }, members);
     expect(await removeTrackerLinks(table, ORG_A, "dev-1")).toBe(true);
     expect(await developerOfTrackerAuthor(table, ORG_A, { system: "linear", sourceId: "u-1" })).toBeUndefined();
     expect(await trackerLinksOf(table, ORG_A, "dev-1")).toStrictEqual([]);

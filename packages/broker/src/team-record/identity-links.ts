@@ -23,9 +23,18 @@ const forwardKey = (orgId: OrgId, link: TrackerLink): { pk: string; sk: string }
 const personPrefix = (developerId: string): string => `${LINK_BY_PERSON_PREFIX}${recordDeveloperHash(developerId)}#`;
 const reverseKey = (orgId: OrgId, developerId: string, link: TrackerLink): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId), sk: `${personPrefix(developerId)}${link.system}#${link.sourceId}` });
 
-/** Links a tracker author id to a person of the org. Refused (false) for an id that is not well formed or a person who has been erased. A second link for the same author id replaces the first. */
-export async function linkTrackerIdentity(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { developerId: string; via: TrackerLinkVia; at: string }): Promise<boolean> {
+export interface OrgMembershipPort {
+  /** The org the developer belongs to (`OrgStore.orgForDeveloper`). */
+  orgOfDeveloper(developerId: string): Promise<OrgId | undefined>;
+}
+
+/**
+ * Links a tracker author id to a person of the org. Refused (false) for an id that is not well formed, a person who is not a member of THIS org (a link in this org's partition to another org's person
+ * would put that person's id on rows that their own org's erase never reaches), or a person who has been erased. A second link for the same author id replaces the first.
+ */
+export async function linkTrackerIdentity(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { developerId: string; via: TrackerLinkVia; at: string }, members: OrgMembershipPort): Promise<boolean> {
   if (!SYSTEM.test(input.system) || !SOURCE_ID.test(input.sourceId) || input.developerId === "") return false;
+  if ((await members.orgOfDeveloper(input.developerId)) !== orgId) return false;
   if (await isErasedActor(table, orgId, input.system, { sourceId: input.sourceId, developerId: input.developerId })) return false;
   const existing = await developerOfTrackerAuthor(table, orgId, input);
   if (existing !== undefined && existing !== input.developerId) await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: reverseKey(orgId, existing, input) }));
@@ -34,11 +43,9 @@ export async function linkTrackerIdentity(table: TeamRecordTable, orgId: OrgId, 
   return true;
 }
 
-export interface VerifiedEmailDependencies {
+export interface VerifiedEmailDependencies extends OrgMembershipPort {
   /** The org member whose VERIFIED email this is (`OrgStore.developerForVerifiedEmail`). */
   developerForVerifiedEmail(email: string): Promise<string | undefined>;
-  /** The org the developer belongs to (`OrgStore.orgForDeveloper`). */
-  orgOfDeveloper(developerId: string): Promise<OrgId | undefined>;
 }
 
 /**
@@ -49,7 +56,7 @@ export async function linkTrackerByVerifiedEmail(table: TeamRecordTable, deps: V
   if (input.emailVerified !== true || input.email === "") return false;
   const developerId = await deps.developerForVerifiedEmail(input.email);
   if (developerId === undefined || (await deps.orgOfDeveloper(developerId)) !== orgId) return false;
-  return linkTrackerIdentity(table, orgId, { system: input.system, sourceId: input.sourceId, developerId, via: "verified_email", at: input.at });
+  return linkTrackerIdentity(table, orgId, { system: input.system, sourceId: input.sourceId, developerId, via: "verified_email", at: input.at }, deps);
 }
 
 /** The person an author id is linked to, or undefined. */

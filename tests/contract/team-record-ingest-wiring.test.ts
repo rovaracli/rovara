@@ -197,6 +197,27 @@ describe("hook ingress: record tap", () => {
     expect(world.dispatched).toHaveLength(1);
   });
 
+  it("TRW-4 S2: a tap that fails AFTER the budget (a removal no path could take) is caught and logged: the answer stands, and nothing is left unhandled", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = setupHookWorld();
+      world.deps.recordTap = () => new Promise((_resolve, reject) => { setTimeout(() => reject(Object.assign(new Error("not accepted"), { name: "RecordRemovalNotAccepted" })), HOOK_RECORD_TAP_BUDGET_MS + 500); });
+      const hook = await world.hook({ source: "linear" });
+      const answered = world.receive(world.delivery(hook, body(LINEAR_TENANT)));
+      await vi.advanceTimersByTimeAsync(HOOK_RECORD_TAP_BUDGET_MS + 100);
+      expect((await answered).status).toBe(202);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(world.logs.map((entry) => entry.event)).toContain("hook.record_tap_late_failure");
+      expect(unhandled).toStrictEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("a failing tap leaves the answer and the dispatch as they were", async () => {
     const world = setupHookWorld();
     world.deps.recordTap = async () => { throw new Error("record down"); };

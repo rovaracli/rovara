@@ -510,8 +510,8 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
     return forbidden();
   }
   // Team record (R7): after the tenant check, before events are dispatched; a tap that throws or is slow changes nothing about the answer.
-  if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) await offerToRecord(deps.recordTap, { orgId, hook, body }, () => log("hook.record_tap_failed", { hookId: hook.hookId }));
-  if (deps.commentIntake !== undefined && hook.source === "linear" && !("tenantMismatch" in normalized)) await offerToRecord(deps.commentIntake, { orgId, hook, body }, () => log("hook.comment_intake_failed", { hookId: hook.hookId }));
+  if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) await offerToRecord(deps.recordTap, { orgId, hook, body }, () => log("hook.record_tap_failed", { hookId: hook.hookId }), (name) => log("hook.record_tap_late_failure", { hookId: hook.hookId, error: name }));
+  if (deps.commentIntake !== undefined && hook.source === "linear" && !("tenantMismatch" in normalized)) await offerToRecord(deps.commentIntake, { orgId, hook, body }, () => log("hook.comment_intake_failed", { hookId: hook.hookId }), (name) => log("hook.comment_intake_late_failure", { hookId: hook.hookId, error: name }));
   return deliverEvents(deps, orgId, hook, normalized, now);
 }
 
@@ -565,11 +565,17 @@ async function deliverEvents(deps: HookIngressDeps, orgId: OrgId, hook: HookReco
 /** Longest the Team record tap may hold a hook delivery's answer. */
 export const HOOK_RECORD_TAP_BUDGET_MS = 1_500;
 
-async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, onFailure: () => void): Promise<void> {
+async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, onFailure: () => void, onLateFailure: (name: string) => void): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let answered = false;
+  // The tap keeps running after the budget. Whatever it does then is caught HERE, so that a rejection after the answer is never unhandled (in Node on Lambda that fails whatever invocation is running at the time,
+  // possibly another request's after a freeze and thaw). A removal the record could not take at all (table, queue and Event invoke all failed) after the answer cannot be answered 503 any more: it is logged.
+  const running = (async () => tap(input))();
+  running.catch((error: unknown) => { if (answered) onLateFailure(errorName(error)); });
   try {
-    await Promise.race([tap(input), new Promise<void>((resolve) => { timer = setTimeout(() => { onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
+    await Promise.race([running, new Promise<void>((resolve) => { timer = setTimeout(() => { answered = true; onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
   } catch (error) {
+    answered = true;
     onFailure();
     // A delete the record could not take at all (TRW-5 S2): not swallowed. `receiveHook` answers 503 with nothing in it, so that Linear or Jira sends the delivery again.
     if ((error as { name?: unknown } | null)?.name === "RecordRemovalNotAccepted") throw error;
