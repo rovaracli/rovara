@@ -5,6 +5,7 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import type { StreamRecord } from "../developer/notifications.js";
 import { projectSessions } from "../agent-sessions/projector.js";
+import { indexSecondReviewTrack, trackStoreOf } from "../rovara-code/second-review-track.js";
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { INDEX_DEFAULT_BUDGET_MS, byDeadline, indexActivity, putCountedUsage } from "./activity-index.js";
 import { requiredEnvironment, type DurableOutboxRecord } from "./lambda.js";
@@ -27,12 +28,13 @@ type IndexRun = (records: readonly StreamRecord[], options?: { deadline: number 
  * Runs the activity index and the session projector together under the same deadline. Either failing is logged by name and never fails the batch, and one
  * never waits on or hides the other (Plan 5 Task 7a).
  */
-export function indexTogether(indexes: { activity: IndexRun; sessions: IndexRun }): IndexRun {
+export function indexTogether(indexes: { activity: IndexRun; sessions: IndexRun; /** The second review's track record (lane cr-settings): a task whose second opinion changed. Best effort like the others. */ track?: IndexRun }): IndexRun {
   return async (records, options) => {
-    const [activity, sessions] = await Promise.allSettled([indexes.activity(records, options), indexes.sessions(records, options)]);
+    const [activity, sessions, track] = await Promise.allSettled([indexes.activity(records, options), indexes.sessions(records, options), indexes.track?.(records, options)]);
     const name = (reason: unknown) => (reason instanceof Error ? reason.name : "unknown");
     if (activity.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "activity_index.write_failed", error: name(activity.reason) }));
     if (sessions.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "session_projector.failed", error: name(sessions.reason) }));
+    if (track.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "second_review_track.failed", error: name(track.reason) }));
   };
 }
 
@@ -118,6 +120,8 @@ export const handler = createOutboxPublisherHandler({
     putCounting: (item, counter, requestOptions) => putCountedUsage(documentClient, required(tableName, "STATE_TABLE_NAME"), item, counter, abortOptions(requestOptions?.signal)),
   }, (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS, installOrgIdFromEnvironment()),
   sessions: (records, options) => projectSessions(records, { documentClient, tableName: required(tableName, "STATE_TABLE_NAME"), now: Date.now }, { deadline: options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS }),
+  // Only a task record carrying a second opinion reaches any write, so with `cr` off (no second opinions) this reads the batch and writes nothing.
+  track: (records) => indexSecondReviewTrack(records, trackStoreOf({ documentClient, tableName: required(tableName, "STATE_TABLE_NAME") }), (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), installOrgIdFromEnvironment()),
   }),
 });
 

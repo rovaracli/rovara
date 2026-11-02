@@ -177,7 +177,7 @@ describe("the event catalog", () => {
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // Proof and evidence
-      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged",
+      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -238,6 +238,12 @@ describe("the event catalog", () => {
     "company.known_failing_policy_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
     "company.second_review_choice_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["change", "count"], sample: { change: "choose", count: 2 } },
     "company.second_review_context_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["to", "widens"], sample: { to: "same_as_first", widens: true } },
+    "company.second_review_mode_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to"], sample: { scope: "company", from: "on", to: "shadow" } },
+    "company.second_review_mode_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to", "mode"], sample: { scope: "project", from: "shadow", to: "on", mode: "direct" } },
+    "company.second_review_mode_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
+    "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
+    "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },
+    "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
