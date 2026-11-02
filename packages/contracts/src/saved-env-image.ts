@@ -174,6 +174,24 @@ export const SavedEnvRegistryAuthSchema = z.object({
 }).strict();
 export type SavedEnvRegistryAuth = z.infer<typeof SavedEnvRegistryAuthSchema>;
 
+/**
+ * What a task's preparation is told when the project has a saved environment it may use (SH23; the prepare payload carries it, SH25): the repository, the image DIGEST (never a tag), the revision and the key
+ * the broker expects the image to say, and a pull login for that one repository. The worker checks the pulled image says the same before it uses anything in it.
+ */
+export const SavedEnvUseSchema = z.object({
+  repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
+  digest: ImageDigestSchema,
+  /** The test environment revision the image was built at. */
+  testEnvRevision: z.number().int().min(1),
+  environmentKey: z.string().regex(/^[a-f0-9]{64}$/u),
+  auth: SavedEnvRegistryAuthSchema,
+}).strict().refine((use) => use.auth.repository === use.repository, "the login is for another repository");
+export type SavedEnvUse = z.infer<typeof SavedEnvUseSchema>;
+
+/** The steps a use can fail at; the evidence says "fresh setup (saved environment failed at <step>)" and the registry marks the image stale. */
+export const SAVED_ENV_USE_STEPS = ["input", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch"] as const;
+export type SavedEnvUseStep = (typeof SAVED_ENV_USE_STEPS)[number];
+
 /** What is written into the image as `/rovara/manifest.json`: the manifest without the digest (an image cannot hold its own digest). The broker keeps the full manifest. */
 export const SavedEnvImageManifestSchema = SavedEnvManifestSchema.omit({ imageDigest: true });
 export type SavedEnvImageManifest = z.infer<typeof SavedEnvImageManifestSchema>;

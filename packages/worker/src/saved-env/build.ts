@@ -67,7 +67,8 @@ const DOCKER_QUICK_MS = 2 * 60_000;
 const MAX_REPOSITORIES = 16;
 const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const SHA = /^[a-f0-9]{40}$/u;
-const SAFE_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+/** The checkout's folder under the workspace root: one to four plain segments (the project's repository path), never `..`, never absolute. */
+const SAFE_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){0,3}$/u;
 
 export interface BuildRepository {
   /** The project's id for the repository (the test environment's `repositoryId`). */

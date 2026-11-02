@@ -44,6 +44,7 @@ import type {
 import { openRegistrySession, removeLeftoverRegistryConfigs, type RegistrySession } from "./registry-config.js";
 import { RegistryTokenLeakError, wipeWorkspaceForTaint } from "./registry-guard.js";
 import type { RegistryCredentialProvider } from "./registry-credentials.js";
+import { savedEnvMaterializer, type SavedEnvUseOptions } from "./saved-env/use.js";
 
 const MANIFEST_PATH = ".agentx/preparation-manifest.json";
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
@@ -170,6 +171,11 @@ export interface PrepareWorkspaceOptions {
   registryCredentialProvider?: RegistryCredentialProvider;
   /** The waits and log of the "Repository not found" retry (see `retryRepositoryNotFound`); tests replace them. */
   cloneRetry?: CloneRetryOptions;
+  /**
+   * Setup and test health SH23: the project's saved environment (an image of the repositories with their dependency folders, pulled by digest). Each repository tries it first and any failure clones fresh
+   * and reports the failed step (saved-env/use.ts). Sent only to a worker that lists the saved environment feature (SH25).
+   */
+  savedEnv?: SavedEnvUseOptions;
 }
 
 export interface CloneRetryOptions {
@@ -240,7 +246,8 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   const rootPath = resolve(options.rootPath);
   await mkdir(rootPath, { recursive: true });
   const canonicalRoot = await realpath(rootPath);
-  const materializer = options.materializer ?? cloneRepository;
+  const savedEnv = options.savedEnv === undefined ? undefined : savedEnvMaterializer({ ...options.savedEnv, onDiagnostic: options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic }, project.repositories, options.materializer ?? cloneRepository);
+  const materializer = savedEnv ?? options.materializer ?? cloneRepository;
   const readOnly = options.readOnly === true;
   const target = readOnly ? undefined : devcontainerTarget(canonicalRoot, project);
   const runtimeBackingPath = options.trustedRuntimeBackingOwner === undefined
@@ -424,6 +431,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     // The registries' config first: nothing that fails after it can leave a token on the disk. A config that cannot be removed fails the preparation and taints the workspace (S2).
     let removalFailure: unknown;
     try { await registrySession?.dispose(); } catch (disposeError) { removalFailure = disposeError; }
+    await savedEnv?.dispose();
     await sandbox?.dispose();
     if (removalFailure !== undefined) {
       await writeManifest(canonicalRoot, { ...manifest, complete: false, tainted: true, failure: removalFailure instanceof Error ? removalFailure.message : "the package registry config could not be removed" }).catch(() => undefined);

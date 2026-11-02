@@ -59,10 +59,10 @@ export function originUrlIsSafe(url: string): boolean {
 }
 
 /** The config the staged repository gets: only the origin URL (so a later fetch knows where it came from), nothing the project's commands could have written. */
-export function minimalGitConfig(originUrl: string): string {
+export function minimalGitConfig(originUrl: string, extraCore: readonly string[] = []): string {
   if (!originUrlIsSafe(originUrl)) throw new RangeError("the origin URL is not safe to write");
   return [
-    "[core]", "\trepositoryformatversion = 0", "\tfilemode = true", "\tbare = false",
+    "[core]", "\trepositoryformatversion = 0", "\tfilemode = true", "\tbare = false", ...extraCore.map((line) => `\t${line}`),
     '[remote "origin"]', `\turl = ${originUrl}`, "\tfetch = +refs/heads/*:refs/remotes/origin/*", "",
   ].join("\n");
 }
