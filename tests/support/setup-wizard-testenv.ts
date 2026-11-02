@@ -2,13 +2,15 @@
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import {
-  TestEnvironmentBodySchema, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, TEST_ENV_DRAFT_RESULT_KEY, testEnvDigest,
+  TestEnvironmentBodySchema, projectPk, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, TEST_ENV_DRAFT_RESULT_KEY, testEnvDigest,
   type GithubInstallationRecord, type TestEnvDraft, type TestEnvironmentBody,
 } from "../../packages/contracts/src/index.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "./developer-task-broker.js";
 import { TEST_ORG } from "./orgs.js";
+import { candidatePassed } from "./candidate-check.js";
+import { candidateCheckKey } from "../../packages/broker/src/org/test-env-candidate.js";
 import type { AuditCapture } from "./audit-capture.js";
 
 export const NAME = "web";
@@ -32,7 +34,7 @@ const SETUP_PROPOSAL = { setup: [{ repo: "web", commands: ["npm ci"], confidence
 /** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`agentx-<env>-team-record`). A read of the wrong table finds nothing. */
 export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
 
-export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture } = {}) {
+export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; /** TE-2: by default a Prove first finds a passing candidate check for the digest (an older suite is about approval, not about where the Prove reads from); `false` leaves every check to the test. */ autoCandidate?: boolean } = {}) {
   const teamDb = new FakeDynamoDb();
   const h = await createDeveloperTaskBroker({
     register: false,
@@ -77,12 +79,8 @@ export async function setupWizardBench(options: { agents?: boolean; teamRecord?:
     const own = operations(task.workspaceId).find((operation) => operation.kind === "task")!;
     await h.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT", setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draft } });
   };
-  /** The project's setup check, passed at `revision`. */
-  const setupCheckPassed = (revision = 1, startedAt = new Date().toISOString()) => {
-    h.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "READY" });
-    const meta = h.db.get(projectMetaKey(TEST_ORG, NAME)) as Record<string, unknown>;
-    h.db.set({ ...meta, ...projectMetaKey(TEST_ORG, NAME), setupCheck: { workspaceId: "ws-check", revision, startedAt, startedBy: OMAR.developerId } });
-  };
+  /** The proposal's CANDIDATE check, passed (TE-2): a ready workspace and the record of the commands it ran, at `revision` (default: the project's latest). */
+  const candidatePassedFor = (digest: string, options: Parameters<typeof candidatePassed>[2] = {}) => candidatePassed(h.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId }, options);
 
   // ---- browser sessions
   const sessions = new Map<string, string>();
@@ -112,14 +110,14 @@ export async function setupWizardBench(options: { agents?: boolean; teamRecord?:
     });
     return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
   };
-  const state = async (who: Developer = OMAR) => (await h.dev(who, "GET", ENV)).body as { approved?: { revision: number; digest: string }; draft: { status: string }; proposal?: { digest: string; source: string; risk: string; lessSafe: string[]; proved: boolean; needs: { freshSignIn: boolean; secondPerson: boolean }; approval: { status: string }; runs: Array<{ setup: string[]; checks: Array<{ command: string; selectArgs?: string[] }> }>; valueSources: Array<{ field: string; source: unknown }>; commandsNotInSettings: number } };
-  /** Proposes the draft, proves it with a passing setup check and approves it as revision 1 (a sandbox environment: no second person). */
+  const state = async (who: Developer = OMAR) => (await h.dev(who, "GET", ENV)).body as { approved?: { revision: number; digest: string }; draft: { status: string }; proposal?: { digest: string; source: string; risk: string; lessSafe: string[]; proved: boolean; needs: { freshSignIn: boolean; secondPerson: boolean }; approval: { status: string }; runs: Array<{ setup: string[]; checks: Array<{ command: string; selectArgs?: string[] }> }>; valueSources: Array<{ field: string; source: unknown }>; commandsNotInSettings: number; check: { status: string; failedStep?: string } } };
+  /** Proposes the draft, proves it with a passing candidate check and approves it as revision 1 (a sandbox environment: no second person). */
   const approveFirst = async (draft: TestEnvDraft = draftOf()): Promise<string> => {
     await drafted(draft);
     const proposed = await h.dev(OMAR, "POST", `${ENV}/propose`, {});
     if (proposed.status !== 200) throw new Error(`propose: ${JSON.stringify(proposed.body)}`);
     const digest = testEnvDigest(draft.environment);
-    setupCheckPassed();
+    candidatePassedFor(digest);
     const proved = await h.dev(OMAR, "POST", `${ENV}/prove`, { digest });
     if (proved.status !== 200) throw new Error(`prove: ${JSON.stringify(proved.body)}`);
     const approved = await h.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
@@ -137,7 +135,18 @@ export async function setupWizardBench(options: { agents?: boolean; teamRecord?:
     const decidedAt = Date.now() - (when.confirmedMinutesAgo ?? 0) * 60_000;
     h.db.set({ ...card, status: "APPROVED_DONE", decidedBy: by.developerId, decidedAt: new Date(decidedAt).toISOString(), decision: "APPROVE", decisionProof: { kind: "fresh_sign_in", method: "email_code", authTime: new Date(decidedAt - (when.signedInMinutesBefore ?? 0) * 60_000).toISOString(), sessionRef: "5".repeat(64) } });
   };
-  return { ...h, teamDb, person, ask, drafted, setupCheckPassed, web, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
+  const autoCandidate = options.autoCandidate !== false;
+  /** Before a Prove of a stored proposal, a passing candidate check at the latest revision unless the test already left one. */
+  const checkBeforeProve = (method: string, path: string, body: unknown): void => {
+    if (!autoCandidate || method !== "POST" || !path.endsWith("/test-environment/prove")) return;
+    const digest = (body as { digest?: unknown } | undefined)?.digest;
+    if (typeof digest !== "string" || h.db.get({ pk: projectPk(TEST_ORG, NAME), sk: `TESTENV#PROPOSAL#${digest}` }) === undefined) return;
+    const latest = Math.max(...(h.db.find((item) => item.entityType === "PROJECT" && (item.definition as { name?: string }).name === NAME) as Array<{ definition: { revision: number } }>).map((item) => item.definition.revision));
+    if (h.db.get(candidateCheckKey(TEST_ORG, NAME, digest, latest)) === undefined) candidatePassedFor(digest);
+  };
+  const withChecks = { dev: (who: Developer, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Reply> => { checkBeforeProve(method, path, body); return h.dev(who, method, path, body, headers); } };
+  const webChecked: typeof web = async (who, method, path, body) => { checkBeforeProve(method, path, body); return web(who, method, path, body); };
+  return { ...h, dev: withChecks.dev, teamDb, person, ask, drafted, candidatePassed: candidatePassedFor, web: webChecked, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
 }
 export type Bench = Awaited<ReturnType<typeof setupWizardBench>>;
 

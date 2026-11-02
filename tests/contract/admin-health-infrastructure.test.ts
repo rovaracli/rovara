@@ -247,6 +247,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/project-slack-proposals.ts",
       // 2026-11-02, sh-health-wire (SH28): the project's health record (`TEST_ENV_HEALTH`, one item per project, rewritten by the nightly run) expires after 60 days (HEALTH_TTL_MS) if no run refreshes it; only health.ts writes it.
       "packages/broker/src/test-env/health.ts",
+      // 2026-11-02, testenv-apply (TE-2): a proposal's candidate check record (`TEST_ENV_CANDIDATE_CHECK`, one item per project, digest and settings revision) expires with the proposal it checks (7 days); only commitSetupCheck (project-setup-check.ts) writes it, and test-env-candidate.ts reads it.
+      "packages/broker/src/org/test-env-candidate.ts",
       // 2026-11-02, sh-health-wire (SH28): a proposed fix task (`TEST_ENV_PROPOSED_FIX_TASK`, written once per key, never updated) expires after 30 days (TTL_MS) if nobody starts or dismisses it; only proposed-tasks.ts writes it.
       "packages/broker/src/test-env/proposed-tasks.ts",
       // 2026-10-31, the lanes merged into cloud/next. Each writes rows that are meant to expire, none a durable record, and each was read for that:

@@ -143,8 +143,10 @@ export const TestEnvironmentStateSchema = z
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
         approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
-        /** The project's commands that the proposal's commands are not among, so the setup check has not run them. */
+        /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
         commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
+        /** TE-2: the candidate check of THIS proposal (a fresh workspace prepared from the proposal's commands, never from the applied settings), at the settings revision as they stand now. */
+        check: z.object({ status: z.enum(["unchecked", "checking", "ready", "failed", "outdated"]), failedStep: line(400).optional() }).strict().default({ status: "unchecked" }),
       })
       .strict()
       .optional(),
@@ -154,6 +156,9 @@ export type TestEnvironmentState = z.infer<typeof TestEnvironmentStateSchema>;
 
 export const TestEnvProposeBodySchema = z.object({}).strict();
 export const TestEnvProveBodySchema = z.object({ digest: Sha256 }).strict();
+/** Run the candidate check of a proposal: a request id, so a retry is one check. */
+export const TestEnvCheckBodySchema = z.object({ digest: Sha256, requestId: z.string().uuid() }).strict();
+export type TestEnvCheckBody = z.infer<typeof TestEnvCheckBodySchema>;
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
 
 /** A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). */

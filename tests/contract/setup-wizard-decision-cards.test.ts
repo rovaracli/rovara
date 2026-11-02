@@ -31,7 +31,7 @@ async function provedProposal(t: Bench, draft = draftOf()): Promise<string> {
   await t.drafted(draft);
   expect((await t.dev(OMAR, "POST", `${ENV}/propose`, {})).status).toBe(200);
   const digest = testEnvDigest(draft.environment);
-  t.setupCheckPassed();
+  t.candidatePassed(digest);
   expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
   return digest;
 }
@@ -131,7 +131,7 @@ describe("approve_test_env", () => {
       await t.drafted();
       await t.dev(OMAR, "POST", `${ENV}/propose`, {});
       expect(ofKind((await cards(t)).cards, "approve_test_env")).toEqual([]); // not proved
-      t.setupCheckPassed();
+      t.candidatePassed(testEnvDigest(draftBody()));
       await t.dev(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(draftBody()) });
       expect(ofKind((await cards(t)).cards, "approve_test_env")).toHaveLength(1);
       expect(ofKind((await cards(t, MAYA)).cards, "approve_test_env")).toEqual([]); // a contributor cannot approve it
@@ -155,6 +155,22 @@ describe("approve_test_env", () => {
       const pressed = await t.dev(OMAR, "POST", `/v1/app/decisions/approve_test_env/${digest}/approve`, { requestId: randomUUID(), shownDigest: digests[card!.id] });
       expect(pressed.status).toBe(404);
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
+    }));
+  });
+
+  it("a proposal a setup run made is a HIGH card with no approve action (its approval needs a fresh sign-in the card cannot ask for), and a pressed approve decides nothing", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      const run = draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["worked"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] }));
+      const digest = await provedProposal(t, { ...run, valueSources: [{ field: "repos[0].setupCommands[1]", source: "observed:abcdefgh#1" }] });
+      const { cards: list, digests } = await cards(t);
+      const [card] = ofKind(list, "approve_test_env");
+      expect(card).toMatchObject({ risk: "high" });
+      expect(card!.riskReasons.join(" ")).toContain("setup run");
+      expect(card!.actions.map((action) => action.kind)).toEqual(["open"]);
+      const pressed = await t.dev(OMAR, "POST", `/v1/app/decisions/approve_test_env/${digest}/approve`, { requestId: randomUUID(), shownDigest: digests[card!.id] });
+      expect(pressed.status).toBe(404);
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toEqual([]);
     }));
   });
 
@@ -240,7 +256,7 @@ describe("confirm_env_change", () => {
   });
 
   it("is not offered when the checks themselves changed, to a task that has ended, or with a switch off", async () => {
-    const t = await setupWizardBench();
+    const t = await setupWizardBench({ autoCandidate: false });
     await withSwitch("1", () => withCards(async () => {
       await t.approveFirst();
       const taskId = await startTask(t);
@@ -248,9 +264,8 @@ describe("confirm_env_change", () => {
       const other = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test", "--fast"], 1800), kind: "test" }] }] });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: other });
       const digest = testEnvDigest(other);
-      t.setupCheckPassed(1);
       const proved = await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
-      // The setup check has not run `--fast`, so this is not provable here; apply the commands, then it can be.
+      // No candidate check has run `--fast`, so this is not provable yet.
       expect(proved.status).toBe(400);
       expect(ofKind((await cards(t)).cards, "confirm_env_change")).toEqual([]);
       expect(pinOf(t, taskId)).toMatchObject({ revision: 1 });

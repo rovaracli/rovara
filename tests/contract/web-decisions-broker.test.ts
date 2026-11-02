@@ -23,7 +23,7 @@ async function provedProposal(t: Bench): Promise<string> {
   await t.drafted();
   expect((await t.dev(OMAR, "POST", `${ENV}/propose`, {})).status).toBe(200);
   const digest = testEnvDigest(draftBody());
-  t.setupCheckPassed();
+  t.candidatePassed(digest);
   expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
   return digest;
 }

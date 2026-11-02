@@ -125,29 +125,49 @@ it("a proposal says what will run, with the arguments that narrow the tests and 
   expect(within(checks).getByText(/Found by the node detector/)).toBeTruthy();
   expect(within(region).getByText("Rovara's proposal")).toBeTruthy();
   expect(within(region).getByRole("button", { name: "Approve" })).toHaveProperty("disabled", true);
-  expect(within(region).getByRole("button", { name: "Prove it" })).toHaveProperty("disabled", false);
+  // TE-2: the proposal has its own check first; there is nothing to prove until it passed, and the commands are not added to the settings before approval.
+  expect(within(region).getByRole("button", { name: "Prove it" })).toHaveProperty("disabled", true);
+  expect(within(region).getByRole("button", { name: "Run the check" })).toHaveProperty("disabled", false);
   expect(within(region).queryByRole("button", { name: "Add these commands to the project's settings" })).toBeNull();
   await expectNoAxeViolations(region);
   f.close();
 });
 
-it("proves the proposal, and says why in the server's words when it can't", async () => {
-  const f = setup({ read: { status: 200, body: state({ proposal: PROPOSAL }) }, answers: { "/prove": { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Run the project's setup check first." } } } } });
+it("proves the proposal from its passed check, and says why in the server's words when it can't", async () => {
+  const f = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "ready" } } }) }, answers: { "/prove": { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Some of the proposed commands are not among the commands the check ran." } } } } });
   const region = await section();
   fireEvent.click(within(region).getByRole("button", { name: "Prove it" }));
-  expect((await within(region).findByRole("alert")).textContent).toContain("Run the project's setup check first.");
+  expect((await within(region).findByRole("alert")).textContent).toContain("not among the commands the check ran");
   expect(posts(f, "/test-environment/prove")[0]!.body).toEqual({ digest: DIGEST });
   f.close();
 });
 
-it("adds the commands the setup check has not run to the project's settings, says what was added and what was left out, and loads the saved settings", async () => {
-  const withMissing = { ...PROPOSAL, commandsNotInSettings: 2 };
-  const applied = { added: ["npm ci", "npm test"], skipped: [{ reason: "different_directory", count: 1 }], settingsRevision: 3, setupCheck: "started", state: state({ proposal: { ...withMissing, commandsNotInSettings: 0 } }) };
-  const f = setup({ read: { status: 200, body: state({ proposal: withMissing }) }, answers: { "/apply-commands": { status: 200, body: applied } } });
+it("runs the proposal's own check, shows it running and shows how a failed one failed, with no command added to the settings", async () => {
+  const running = { ...PROPOSAL, commandsNotInSettings: 2, check: { status: "checking" } };
+  const f = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, commandsNotInSettings: 2 } }) }, answers: { "/check": { status: 200, body: state({ proposal: running }) } } });
   const region = await section();
-  expect(within(region).getByText(/2 of these commands are not in the project's settings/)).toBeTruthy();
+  expect(within(region).getByText(/2 of them are not in the settings yet; approving adds them/)).toBeTruthy();
+  fireEvent.click(within(region).getByRole("button", { name: "Run the check" }));
+  await within(region).findByText("The check is running.");
+  const [call] = posts(f, "/test-environment/check");
+  expect(call!.body).toMatchObject({ digest: DIGEST });
+  expect(Object.keys(call!.body as object).sort()).toEqual(["digest", "requestId"]);
+  expect(posts(f, "/test-environment/apply-commands")).toEqual([]);
+  f.close();
+  const failed = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, check: { status: "failed", failedStep: "setup: npm ci - exited 1" } } }) } });
+  const failedRegion = await section();
+  expect((await within(failedRegion).findByRole("alert")).textContent).toContain("The check failed: setup: npm ci - exited 1");
+  expect(within(failedRegion).getByRole("button", { name: "Run the check again" })).toBeTruthy();
+  failed.close();
+});
+
+it("after approval, offers to add any approved command the settings still lack, says what was added and what was left out, and loads the saved settings", async () => {
+  const approvedState = (missing: number) => state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY }, proposal: { ...PROPOSAL, proved: true, commandsNotInSettings: missing } });
+  const applied = { added: ["npm ci", "npm test"], skipped: [{ reason: "different_directory", count: 1 }], settingsRevision: 3, setupCheck: "started", state: approvedState(0) };
+  const f = setup({ read: { status: 200, body: approvedState(2) }, answers: { "/apply-commands": { status: 200, body: applied } } });
+  const region = await section();
   fireEvent.click(within(region).getByRole("button", { name: "Add these commands to the project's settings" }));
-  await within(region).findByText(/Added to the project's settings, and the setup check started/);
+  await within(region).findByText(/Added to the project's settings, and the project's setup check started/);
   expect(within(region).getByText(/1 command was left out: run in another directory/)).toBeTruthy();
   const [call] = posts(f, "/test-environment/apply-commands");
   expect(call!.body).toMatchObject({ digest: DIGEST, expectedRevision: 2 });
@@ -162,7 +182,7 @@ it("a proved proposal is approved with the revision it was looked at against, an
   const approved = { revision: 1, digest: DIGEST, replayed: false, state: state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY } }) };
   const f = setup({ read: { status: 200, body: state({ proposal: proved }) }, answers: { "/approve": { status: 200, body: approved } } });
   const region = await section();
-  expect(within(region).getByText(/Proved: the setup check ran these commands/)).toBeTruthy();
+  expect(within(region).getByText(/Proved: the check ran these commands/)).toBeTruthy();
   fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
   await within(region).findByText(/Approved: revision 1/);
   const [call] = posts(f, "/test-environment/approve");

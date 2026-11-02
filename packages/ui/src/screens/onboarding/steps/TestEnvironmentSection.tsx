@@ -23,7 +23,7 @@ const SKIPPED_WORDS: Record<TestEnvApplyAnswer["skipped"][number]["reason"], str
   different_directory: "run in another directory, which the project's settings can't hold",
   too_many: "didn't fit: a project holds at most 16 commands in a list",
   download_and_run: "download and run code",
-  not_needed: "are not build, smoke or test checks, so the setup check doesn't need them",
+  not_needed: "are not build, smoke or test checks, so the check doesn't need them",
 };
 
 /** Where a value came from, in the person's words. The path is text from a repository, shown through `VisibleText` by the caller. */
@@ -41,8 +41,8 @@ function Line({ text, source }: { text: string; source: Source | undefined }) {
 }
 
 /**
- * The setup wizard's test-environment section (E4): Rovara proposes, a maintainer looks at what would run and where each value came from, applies the commands to the project's settings, proves it with the setup
- * check, and approves it. A change that is less safe than the sandbox needs a second person's confirmation and the approver's own fresh sign-in; this page only asks, and the server decides. With the feature off
+ * The setup wizard's test-environment section (E4): Rovara proposes, a maintainer looks at what would run and where each value came from, runs the proposal's own check on a fresh workspace (the commands are NOT in
+ * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. A change that is less safe than the sandbox needs a second person's confirmation and the approver's own fresh sign-in; this page only asks, and the server decides. With the feature off
  * the server answers "not found" and this section shows nothing.
  */
 export function TestEnvironmentSection({ project, setupStatus, settingsRevision, onSettingsChanged }: { project: string; setupStatus: string; settingsRevision: number; onSettingsChanged: () => Promise<void> }) {
@@ -51,7 +51,8 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
   // The setup check finishing (or the settings changing) changes what can be proved: the status is part of the key, so a change reads again.
   const client = useQueryClient();
   const key = ["onboard", "test-environment", project, setupStatus];
-  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false });
+  // While the proposal's own check runs, read again every few seconds: it is done when its workspace is.
+  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" ? 5000 : false) });
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<{ message: string; reauth: boolean }>();
   const [applied, setApplied] = useState<TestEnvApplyAnswer>();
@@ -89,10 +90,12 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
     {proposal === undefined && shown.draft.status === "none" && !shown.approved && <p>Ask Rovara to propose the setup above first. The test environment is drafted from that look at your default branch.</p>}
 
     {proposal !== undefined && <ProposalView
-      proposal={proposal} approvedRevision={approvedRevision} setupStatus={setupStatus} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}
+      proposal={proposal} approvedRevision={approvedRevision} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}
+      onCheck={() => { void act("check", () => api.startCheck(project, proposal.digest, crypto.randomUUID()), take); }}
+      approvedDigest={shown.approved?.digest}
       onApply={() => { void act("apply", () => api.applyCommands(project, { digest: proposal.digest, requestId: crypto.randomUUID(), expectedRevision: settingsRevision }), (answer) => { setApplied(answer); take(answer.state); void onSettingsChanged(); }); }}
       onProve={() => { void act("prove", () => api.prove(project, proposal.digest), take); }}
-      onApprove={() => { void act("approve", () => api.approve(project, proposal.digest, approvedRevision, crypto.randomUUID()), (answer) => { take(answer.state); setConfirmUrl(undefined); }); }}
+      onApprove={() => { void act("approve", () => api.approve(project, proposal.digest, approvedRevision, crypto.randomUUID()), (answer) => { take(answer.state); setConfirmUrl(undefined); void onSettingsChanged(); }); }}
       onAsk={() => { void act("ask", () => api.requestApproval(project, proposal.digest, approvedRevision), (answer) => { take(answer.state); setConfirmUrl(answer.confirmUrl); }); }}
       onRefresh={() => { void act("refresh", () => api.read(project), take); }}
       onEdit={() => setEditing(JSON.stringify(proposal.environment, null, 2))}
@@ -111,8 +114,8 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
 }
 
 function ProposalView(props: {
-  proposal: Proposal; approvedRevision: number; setupStatus: string; busy: string | undefined; confirmUrl: string | undefined; origin: string; applied: TestEnvApplyAnswer | undefined;
-  onApply: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
+  proposal: Proposal; approvedRevision: number; busy: string | undefined; confirmUrl: string | undefined; origin: string; applied: TestEnvApplyAnswer | undefined;
+  approvedDigest: string | undefined; onCheck: () => void; onApply: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
 }) {
   const { proposal, busy } = props;
   const link = props.confirmUrl !== undefined && isConfirmUrl(props.confirmUrl, props.origin) ? props.confirmUrl : undefined;
@@ -136,15 +139,18 @@ function ProposalView(props: {
       <p>It needs a second person to confirm it, and you to sign in again just before you approve.</p></div>}
 
     <h4>Proof</h4>
-    {proposal.proved ? <p role="status">Proved: the setup check ran these commands and they passed ({proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")}).</p>
-      : props.setupStatus === "ready" && proposal.commandsNotInSettings === 0 ? <p>Not proved yet. The setup check passed; prove the environment from it.</p>
-        : <p>Not proved yet. {proposal.commandsNotInSettings > 0 ? `${String(proposal.commandsNotInSettings)} of these commands are not in the project's settings, so the setup check has not run them.` : "Run the setup check, then prove the environment from it."}</p>}
-    {proposal.commandsNotInSettings > 0 && <Button busy={busy === "apply"} onClick={props.onApply}>Add these commands to the project's settings</Button>}
+    {proposal.proved ? <p role="status">Proved: the check ran these commands and they passed ({proposal.proveSteps.filter((step) => step.status === "passed").map((step) => step.step.replace("_", " ")).join(", ")}).</p>
+      : <p>Not proved yet. The check runs the commands above on a fresh copy of your default branch, before any of them is added to the project's settings{proposal.commandsNotInSettings > 0 ? ` (${String(proposal.commandsNotInSettings)} of them are not in the settings yet; approving adds them)` : ""}.</p>}
+    {proposal.check.status === "checking" && <p role="status">The check is running.</p>}
+    {proposal.check.status === "failed" && <p role="alert">The check failed{proposal.check.failedStep !== undefined && <>: <VisibleText text={proposal.check.failedStep} /></>}</p>}
+    {proposal.check.status === "ready" && !proposal.proved && <p>The check passed; prove the environment from it.</p>}
+    {proposal.check.status !== "checking" && !proposal.proved && <Button busy={busy === "check"} onClick={props.onCheck}>{proposal.check.status === "unchecked" || proposal.check.status === "outdated" ? "Run the check" : "Run the check again"}</Button>}
+    {proposal.digest === props.approvedDigest && proposal.commandsNotInSettings > 0 && <Button busy={busy === "apply"} onClick={props.onApply}>Add these commands to the project's settings</Button>}
     {props.applied && <div role="status">
-      {props.applied.added.length > 0 ? <><p>Added to the project's settings{props.applied.setupCheck === "started" ? ", and the setup check started" : ""}:</p><ul>{props.applied.added.map((line, index) => <li key={index}><code><VisibleText text={line} /></code></li>)}</ul></> : <p>Nothing to add: the project already has them.</p>}
+      {props.applied.added.length > 0 ? <><p>Added to the project's settings{props.applied.setupCheck === "started" ? ", and the project's setup check started" : ""}:</p><ul>{props.applied.added.map((line, index) => <li key={index}><code><VisibleText text={line} /></code></li>)}</ul></> : <p>Nothing to add: the project already has them.</p>}
       {props.applied.skipped.map((entry) => <p key={entry.reason} className="rv-proposal-meta">{entry.count} {entry.count === 1 ? "command was" : "commands were"} left out: {SKIPPED_WORDS[entry.reason]}.</p>)}
     </div>}
-    {!proposal.proved && <Button busy={busy === "prove"} onClick={props.onProve}>Prove it</Button>}
+    {!proposal.proved && <Button busy={busy === "prove"} disabled={proposal.check.status !== "ready"} onClick={props.onProve}>Prove it</Button>}
 
     <h4>Approve</h4>
     {!proposal.needs.secondPerson && <>
