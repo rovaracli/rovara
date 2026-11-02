@@ -13,8 +13,7 @@ import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { testEnvChangeLines } from "../org/test-env-diff.js";
-import { readApprovedTestEnvironment, readProposal, readProposalSources, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
-import { isSetupRunProposal } from "../test-env/candidate-commands.js";
+import { proposalIsSetupRun, readApprovedTestEnvironment, readProposal, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
 import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
 import { testEnvironmentEnabled } from "../test-env/switch.js";
 import type { DecisionItem } from "./project.js";
@@ -73,7 +72,7 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
       const expectedRevision = approved?.revision ?? 0;
       const lessSafe = testEnvLessSafeChanges(approved?.environment, body);
       // TE-2: a proposal a setup RUN made is approved only with the approver's fresh sign-in, which a one-press card cannot ask for: it is a high card that opens the setup page.
-      const setupRun = isSetupRunProposal((await readProposalSources(ports.store, orgId, project, newest.digest)).valueSources);
+      const setupRun = await proposalIsSetupRun(ports.store, orgId, project, newest.digest);
       const risk = lessSafe.length > 0 || setupRun ? "high" as const : testEnvApprovalRisk(body);
       const confirmPath = lessSafe.length > 0 ? await ports.confirmPathOf(caller, { project, digest: newest.digest, expectedRevision }) : undefined;
       found.push({

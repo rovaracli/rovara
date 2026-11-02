@@ -56,6 +56,6 @@ export const SetupConfirmReplySchema = z.object({
   left: z.array(z.object({ id: z.string().min(1).max(100), reason: z.enum(SETUP_CONFIRM_LEFT_OUT) }).strict()).max(200),
   /** Always false here: the Prove is the wizard's, on the project's setup check. */
   proved: z.boolean(),
-  next: z.literal("apply_commands"),
+  next: z.literal("check"),
 }).passthrough();
 export type SetupConfirmReply = z.infer<typeof SetupConfirmReplySchema>;

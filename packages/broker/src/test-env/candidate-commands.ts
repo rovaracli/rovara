@@ -1,7 +1,7 @@
 // TE-2: the commands a test-environment proposal would add to a project's settings, and the lists a candidate check therefore runs. Pure, and used by both sides of the apply: the candidate check is prepared
 // from `candidateLists` (the settings' commands plus what the proposal adds), and the approval writes `commandsToApply` of the same proposal against the same settings. When the settings are the revision the
 // check ran against, the two are the same lists, so what is written is exactly what was proved.
-import { SetupValueSourceSchema, agentXError, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@agentx/contracts";
+import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@agentx/contracts";
 import { refusedCommand } from "./draft.js";
 import { PROVED_CHECK_KINDS } from "./prove-from-setup-check.js";
 
@@ -39,10 +39,16 @@ export function commandsToApply(
   return { setup: added.setup, readiness: added.readiness, skipped: [...skipped].map(([reason, count]) => ({ reason, count })) };
 }
 
-/** The lists the settings would hold once the proposal's commands are added: what the candidate check runs, and what an approval writes. */
+/**
+ * A command in the form the settings save stores it: the save writes each command as a line and reads it back, so a command's own `env` is dropped and its timeout becomes the list's (900 s for setup, 1800 s for
+ * tests). The candidate check runs this form, so what it proves is what is written.
+ */
+export const asSaved = (command: ProjectCommand, timeoutSeconds: number): ProjectCommand => ({ cwd: command.cwd, executable: command.executable, args: [...command.args], timeoutSeconds });
+
+/** The lists the settings would hold once the proposal's commands are added, in the form the save stores: what the candidate check runs, and what an approval writes. */
 export function candidateLists(body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
   const plan = commandsToApply(body, current, firstRepositoryPath);
-  return { setup: [...current.setup, ...plan.setup], readiness: [...current.readiness, ...plan.readiness] };
+  return { setup: [...current.setup, ...plan.setup].map((command) => asSaved(command, SETUP_TIMEOUT)), readiness: [...current.readiness, ...plan.readiness].map((command) => asSaved(command, TEST_TIMEOUT)) };
 }
 
 /** Whether two command lists are the same commands in the same order. */
@@ -63,10 +69,6 @@ export function candidateListsChecked(
   return candidateLists(body, definition, first);
 }
 
-/**
- * Whether a proposal was made by a setup RUN (the setup agent ran commands, or filled values from a company recipe, or a person typed them into the run): any value source the run adds. Such a proposal is approved
- * only by a person who signed in just now, in a browser, as a less-safe change is. (A team build runner would add the second person of owner decision 10 here; there is none to ask yet.)
- */
-export function isSetupRunProposal(valueSources: ReadonlyArray<{ source: unknown }>): boolean {
-  return valueSources.some((entry) => SetupValueSourceSchema.safeParse(entry.source).success);
-}
+
+/** Whether two command lists are identical: every field, env and timeout included (the check's record against what the save would store). */
+export const identicalCommands = (left: readonly ProjectCommand[], right: readonly ProjectCommand[]): boolean => left.length === right.length && left.every((command, index) => JSON.stringify(command) === JSON.stringify(right[index]));

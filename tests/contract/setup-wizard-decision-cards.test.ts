@@ -174,6 +174,21 @@ describe("approve_test_env", () => {
     }));
   });
 
+  it("B1: a proposal MARKED as a setup run's is a HIGH card even when its values cite a file and line", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["from-file"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] });
+      const store = { documentClient: t.db, tableName: "state", now: () => Date.now() };
+      await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body, origin: "setup_run", valueSources: [{ field: "repos[0].setupCommands[1]", source: { path: "package.json", line: 3 } }] });
+      const digest = testEnvDigest(body);
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      const { cards: list } = await cards(t);
+      const [card] = ofKind(list, "approve_test_env");
+      expect(card).toMatchObject({ risk: "high" });
+      expect(card!.actions.map((action) => action.kind)).toEqual(["open"]);
+    }));
+  });
+
   it("the performer's approval is the wizard's: a less-safe item pressed directly is refused by the approval itself", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", () => withCards(async () => {

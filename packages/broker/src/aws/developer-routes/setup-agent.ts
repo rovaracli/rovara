@@ -96,7 +96,7 @@ function confirmDepsOf(deps: DeveloperRouteDependencies, setup: SetupAgentDepend
   return {
     ...setup, testEnvironmentOn: testEnvironmentEnabled(env),
     merge: async (project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(store, caller.orgId, project))?.environment),
-    propose: async (who, project, role, environment, valueSources) => { const { digest } = await proposeTestEnvironment(store, { orgId: who.orgId, project, proposedBy: who.developerId, role, body: environment, valueSources }); return { digest }; },
+    propose: async (who, project, role, environment, valueSources) => { const { digest } = await proposeTestEnvironment(store, { orgId: who.orgId, project, proposedBy: who.developerId, role, body: environment, valueSources, origin: "setup_run" }); return { digest }; },
   };
 }
 

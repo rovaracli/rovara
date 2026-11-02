@@ -161,20 +161,27 @@ it("runs the proposal's own check, shows it running and shows how a failed one f
   failed.close();
 });
 
-it("after approval, offers to add any approved command the settings still lack, says what was added and what was left out, and loads the saved settings", async () => {
-  const approvedState = (missing: number) => state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY }, proposal: { ...PROPOSAL, proved: true, commandsNotInSettings: missing } });
-  const applied = { added: ["npm ci", "npm test"], skipped: [{ reason: "different_directory", count: 1 }], settingsRevision: 3, setupCheck: "started", state: approvedState(0) };
-  const f = setup({ read: { status: 200, body: approvedState(2) }, answers: { "/apply-commands": { status: 200, body: applied } } });
+it("S2: when an approved command is not in the settings, offers the check of the approved environment first, then writes exactly the approved commands, and loads the saved settings", async () => {
+  const approvedState = (missing: number, check: Record<string, unknown>) => state({ approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY, commandsNotInSettings: missing, check } });
+  const f = setup({ read: { status: 200, body: approvedState(2, { status: "unchecked" }) }, answers: { "/check": { status: 200, body: approvedState(2, { status: "ready" }) } } });
   const region = await section();
-  fireEvent.click(within(region).getByRole("button", { name: "Add these commands to the project's settings" }));
-  await within(region).findByText(/Added to the project's settings, and the project's setup check started/);
-  expect(within(region).getByText(/1 command was left out: run in another directory/)).toBeTruthy();
-  const [call] = posts(f, "/test-environment/apply-commands");
+  expect(within(region).getByText(/2 approved commands are not in the project's settings yet/)).toBeTruthy();
+  expect(within(region).queryByRole("button", { name: "Write the approved commands to the project's settings" })).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "Run the check" }));
+  await within(region).findByText("The check passed at the current settings.");
+  expect(posts(f, "/test-environment/check")[0]!.body).toMatchObject({ digest: DIGEST });
+  f.close();
+  const applied = { added: ["npm ci", "npm test"], skipped: [{ reason: "different_directory", count: 1 }], settingsRevision: 3, setupCheck: "started", state: approvedState(0, { status: "unchecked" }) };
+  const g = setup({ read: { status: 200, body: approvedState(2, { status: "ready" }) }, answers: { "/apply-commands": { status: 200, body: applied } } });
+  const again = await section();
+  fireEvent.click(within(again).getByRole("button", { name: "Write the approved commands to the project's settings" }));
+  await waitFor(() => expect(posts(g, "/test-environment/apply-commands")).toHaveLength(1));
+  const [call] = posts(g, "/test-environment/apply-commands");
   expect(call!.body).toMatchObject({ digest: DIGEST, expectedRevision: 2 });
   expect(Object.keys(call!.body as object).sort()).toEqual(["digest", "expectedRevision", "requestId"]);
-  await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/projects/web" && r.method === "GET").length).toBeGreaterThan(1));
-  expect(within(region).queryByRole("button", { name: "Add these commands to the project's settings" })).toBeNull();
-  f.close();
+  await waitFor(() => expect(g.request.mock.calls.filter(([r]) => r.path === "/v1/app/projects/web" && r.method === "GET").length).toBeGreaterThan(1));
+  await waitFor(() => expect(within(again).queryByRole("button", { name: "Write the approved commands to the project's settings" })).toBeNull());
+  g.close();
 });
 
 it("a proved proposal is approved with the revision it was looked at against, and the approved environment is shown", async () => {

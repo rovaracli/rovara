@@ -43,7 +43,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { confirmationReply } from "../../agent-sessions/shares.js";
 import { latestRevision } from "../../org/project-settings.js";
 import {
-  approveTestEnvironment, clearEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
+  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
@@ -51,7 +51,6 @@ import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from
 import { derivedRequestId, setupDraftState } from "../../rovara-code/setup-draft.js";
 import { readSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
-import { isSetupRunProposal } from "../../test-env/candidate-commands.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { StatusReply } from "../status-reply.js";
@@ -161,7 +160,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     const report = await readTestEnvProveReport(store, project.orgId, project.name, shown.digest);
     const lessSafe = testEnvLessSafeChanges(approved?.environment, shown.body);
     const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body);
-    const { valueSources } = await readProposalSources(store, project.orgId, project.name, shown.digest);
+    const { valueSources, origin } = await readProposalSources(store, project.orgId, project.name, shown.digest);
     let approval: "none" | "pending" | "approved" | "expired" = "none";
     if (lessSafe.length > 0 && deps.agents !== undefined) {
       approval = await testEnvCardStateOf(deps.agents, { orgId: project.orgId, project: project.name, digest: shown.digest, expectedRevision: approved?.revision ?? 0, askedBy: project.developerId }).catch(() => "none" as const);
@@ -170,14 +169,14 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
       proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
-      needs: { freshSignIn: lessSafe.length > 0 || risk === "high", secondPerson: lessSafe.length > 0 },
+      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
       check: await checkOf(deps, project, shown.digest, latest.definition),
     };
   }
   return {
-    ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment) } }),
+    ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment), ...await approvedGapOf(deps, project, approved.environment, latest.definition) } }),
     draft: draft.status === "ready"
       ? { status: "ready", notes: draft.draft.notes, questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
       : { status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
@@ -202,6 +201,12 @@ const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message
   // Field names only: the values are the person's.
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
+
+/** S2: an approved environment whose commands are not all in the settings (the write after the approval did not land, or the settings changed since), and where the check of THAT digest stands at the settings revision as it is now. */
+async function approvedGapOf(deps: DeveloperRouteDependencies, project: ProjectView, environment: TestEnvironmentBody, definition: Awaited<ReturnType<typeof latestOf>>["definition"]): Promise<{ commandsNotInSettings: number; check: NonNullable<TestEnvironmentState["proposal"]>["check"] }> {
+  const missing = commandsNotRun(environment, definition);
+  return { commandsNotInSettings: missing, check: missing === 0 ? { status: "unchecked" } : await checkOf(deps, project, testEnvDigest(environment), definition) };
+}
 
 /** Where the proposal's candidate check stands at the settings as they are now (a failing step is a redacted one-liner, cut to what the page shows). */
 async function checkOf(deps: DeveloperRouteDependencies, project: ProjectView, digest: string, definition: Awaited<ReturnType<typeof latestOf>>["definition"]): Promise<NonNullable<TestEnvironmentState["proposal"]>["check"]> {
@@ -339,7 +344,7 @@ export async function approveChecked(
       if (!again.ok) throw refuse(again.refusal);
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
       // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
-      const setupRun = isSetupRunProposal((await readProposalSources(store, caller.orgId, name, input.digest)).valueSources);
+      const setupRun = await proposalIsSetupRun(store, caller.orgId, name, input.digest);
       if (lessSafe.length > 0 || testEnvApprovalRisk(proposal) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
       if (lessSafe.length > 0 && deps.agents !== undefined) {
         approval = await confirmedTestEnvApproval(deps.agents, { orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, askedBy: caller.developerId });

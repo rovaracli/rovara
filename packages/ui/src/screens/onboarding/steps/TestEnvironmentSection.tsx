@@ -52,7 +52,7 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
   const client = useQueryClient();
   const key = ["onboard", "test-environment", project, setupStatus];
   // While the proposal's own check runs, read again every few seconds: it is done when its workspace is.
-  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" ? 5000 : false) });
+  const query = useQuery({ queryKey: key, queryFn: () => api.read(project), retry: false, refetchInterval: (q) => (q.state.data?.proposal?.check.status === "checking" || q.state.data?.approved?.check.status === "checking" ? 5000 : false) });
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<{ message: string; reauth: boolean }>();
   const [applied, setApplied] = useState<TestEnvApplyAnswer>();
@@ -82,6 +82,12 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
     <h3>Test environment</h3>
     <p>How tests run for this project. Rovara proposes it from your default branch; nothing is used until a maintainer proves and approves it.</p>
     {shown.approved && <p role="status">Approved: revision {shown.approved.revision}, {shown.approved.summary.repositories.reduce((sum, repository) => sum + repository.checks.length, 0)} checks, tier {shown.approved.summary.tier}.</p>}
+    {shown.approved && shown.approved.commandsNotInSettings > 0 && <ApprovedGap
+      approved={shown.approved} busy={busy}
+      onCheck={() => { void act("check", () => api.startCheck(project, shown.approved!.digest, crypto.randomUUID()), take); }}
+      onRefresh={() => { void act("refresh", () => api.read(project), take); }}
+      onApply={() => { void act("apply", () => api.applyCommands(project, { digest: shown.approved!.digest, requestId: crypto.randomUUID(), expectedRevision: settingsRevision }), (answer) => { setApplied(answer); take(answer.state); void onSettingsChanged(); }); }}
+    />}
     {shown.draft.notes.map((note, index) => <p key={index} className="rv-proposal-meta"><VisibleText text={note} /></p>)}
     {shown.draft.questions.length > 0 && <><p>Rovara is not sure about:</p><ul>{shown.draft.questions.map((question, index) => <li key={index}><VisibleText text={question} /></li>)}</ul></>}
 
@@ -92,8 +98,6 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
     {proposal !== undefined && <ProposalView
       proposal={proposal} approvedRevision={approvedRevision} busy={busy} confirmUrl={confirmUrl} origin={host.origin} applied={applied}
       onCheck={() => { void act("check", () => api.startCheck(project, proposal.digest, crypto.randomUUID()), take); }}
-      approvedDigest={shown.approved?.digest}
-      onApply={() => { void act("apply", () => api.applyCommands(project, { digest: proposal.digest, requestId: crypto.randomUUID(), expectedRevision: settingsRevision }), (answer) => { setApplied(answer); take(answer.state); void onSettingsChanged(); }); }}
       onProve={() => { void act("prove", () => api.prove(project, proposal.digest), take); }}
       onApprove={() => { void act("approve", () => api.approve(project, proposal.digest, approvedRevision, crypto.randomUUID()), (answer) => { take(answer.state); setConfirmUrl(undefined); void onSettingsChanged(); }); }}
       onAsk={() => { void act("ask", () => api.requestApproval(project, proposal.digest, approvedRevision), (answer) => { take(answer.state); setConfirmUrl(answer.confirmUrl); }); }}
@@ -113,9 +117,23 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
   </section>;
 }
 
+/**
+ * S2: the approval stands but some of the approved commands are not in the project's settings (the write after the approval did not land, or the settings changed since). Nothing is written until a check of THIS approved
+ * environment passed at the settings as they are now; then one press writes exactly those commands.
+ */
+function ApprovedGap({ approved, busy, onCheck, onRefresh, onApply }: { approved: NonNullable<TestEnvironmentState["approved"]>; busy: string | undefined; onCheck: () => void; onRefresh: () => void; onApply: () => void }) {
+  return <div className="rv-proposal-card" role="note">
+    <p><strong>{approved.commandsNotInSettings === 1 ? "1 approved command is" : `${String(approved.commandsNotInSettings)} approved commands are`} not in the project's settings yet.</strong> Tasks use the settings, so they do not run {approved.commandsNotInSettings === 1 ? "it" : "them"} until it is written.</p>
+    {approved.check.status === "checking" && <><p role="status">The check is running.</p><Button busy={busy === "refresh"} onClick={onRefresh}>Check again</Button></>}
+    {approved.check.status === "failed" && <p role="alert">The check failed{approved.check.failedStep !== undefined && <>: <VisibleText text={approved.check.failedStep} /></>}</p>}
+    {approved.check.status === "ready" && <><p>The check passed at the current settings.</p><Button variant="primary" busy={busy === "apply"} onClick={onApply}>Write the approved commands to the project's settings</Button></>}
+    {approved.check.status !== "checking" && approved.check.status !== "ready" && <Button busy={busy === "check"} onClick={onCheck}>{approved.check.status === "failed" ? "Run the check again" : "Run the check"}</Button>}
+  </div>;
+}
+
 function ProposalView(props: {
   proposal: Proposal; approvedRevision: number; busy: string | undefined; confirmUrl: string | undefined; origin: string; applied: TestEnvApplyAnswer | undefined;
-  approvedDigest: string | undefined; onCheck: () => void; onApply: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
+  onCheck: () => void; onProve: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
 }) {
   const { proposal, busy } = props;
   const link = props.confirmUrl !== undefined && isConfirmUrl(props.confirmUrl, props.origin) ? props.confirmUrl : undefined;
@@ -145,7 +163,6 @@ function ProposalView(props: {
     {proposal.check.status === "failed" && <p role="alert">The check failed{proposal.check.failedStep !== undefined && <>: <VisibleText text={proposal.check.failedStep} /></>}</p>}
     {proposal.check.status === "ready" && !proposal.proved && <p>The check passed; prove the environment from it.</p>}
     {proposal.check.status !== "checking" && !proposal.proved && <Button busy={busy === "check"} onClick={props.onCheck}>{proposal.check.status === "unchecked" || proposal.check.status === "outdated" ? "Run the check" : "Run the check again"}</Button>}
-    {proposal.digest === props.approvedDigest && proposal.commandsNotInSettings > 0 && <Button busy={busy === "apply"} onClick={props.onApply}>Add these commands to the project's settings</Button>}
     {props.applied && <div role="status">
       {props.applied.added.length > 0 ? <><p>Added to the project's settings{props.applied.setupCheck === "started" ? ", and the project's setup check started" : ""}:</p><ul>{props.applied.added.map((line, index) => <li key={index}><code><VisibleText text={line} /></code></li>)}</ul></> : <p>Nothing to add: the project already has them.</p>}
       {props.applied.skipped.map((entry) => <p key={entry.reason} className="rv-proposal-meta">{entry.count} {entry.count === 1 ? "command was" : "commands were"} left out: {SKIPPED_WORDS[entry.reason]}.</p>)}

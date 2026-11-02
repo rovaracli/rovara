@@ -117,7 +117,12 @@ export type TestEnvRuns = z.infer<typeof TestEnvRunsSchema>;
 
 export const TestEnvironmentStateSchema = z
   .object({
-    approved: z.object({ revision: z.number().int().min(1), approvedAt: z.string().datetime(), digest: Sha256, summary: TestEnvSummarySchema }).strict().optional(),
+    approved: z.object({
+      revision: z.number().int().min(1), approvedAt: z.string().datetime(), digest: Sha256, summary: TestEnvSummarySchema,
+      /** S2: the approved environment's commands that the project's settings do not hold (the write after the approval did not land, or the settings changed since), and where the check of this digest stands at the current settings revision. */
+      commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
+      check: z.object({ status: z.enum(["unchecked", "checking", "ready", "failed", "outdated"]), failedStep: line(400).optional() }).strict().default({ status: "unchecked" }),
+    }).strict().optional(),
     /** What the latest setup run found, ready to propose. `stale`: the setup run is older than the project's settings or is not ready. */
     draft: z.object({ status: z.enum(["none", "ready", "stale"]), notes: z.array(line(400)).max(60), questions: z.array(line(400)).max(60), pendingServices: z.array(TestEnvPendingServiceSchema).max(32) }).strict(),
     proposal: z

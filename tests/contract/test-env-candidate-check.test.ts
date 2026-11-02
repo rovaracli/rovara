@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { projectMetaKey, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { approveTestEnvironment, proposeTestEnvironment, readProposalSources } from "../../packages/broker/src/org/test-environment.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -22,7 +23,7 @@ const argsOf = (commands: ReadonlyArray<{ args: string[] }>) => commands.map((en
 interface Stored { definition: { revision: number; setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }> } }
 const revisions = (t: Bench) => t.db.find((item) => item.entityType === "PROJECT") as unknown as Stored[];
 const settingsOf = (t: Bench) => revisions(t).sort((a, b) => a.definition.revision - b.definition.revision).at(-1)!.definition;
-const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; revision: number; digest: string; setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }> }>;
+const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; revision: number; digest: string; setup: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }>; readiness: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }> }>;
 const metaCheck = (t: Bench) => (t.db.get(projectMetaKey(TEST_ORG, NAME)) as { setupCheck?: unknown }).setupCheck;
 const prepareOf = (t: Bench, workspaceId: string) => String((t.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
 
@@ -264,5 +265,86 @@ describe("approving writes exactly the proven commands", () => {
       expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
       expect(argsOf(settingsOf(t).setup)).toEqual(["old-setup", "deps"]);
     });
+  });
+});
+
+describe("S1: what is written is what was run", () => {
+  it("the check runs the commands in the form the settings save stores (no env, the list's own timeout), and the written settings are deeply the check's lists", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      // A command the settings already hold with an env and its own timeout: the save would drop the env and reset the timeout.
+      const stored = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: { readiness: Array<Record<string, unknown>> } } & Record<string, unknown>;
+      t.db.set({ ...stored, definition: { ...stored.definition, readiness: [{ ...stored.definition.readiness[0]!, env: { FOO: "1" }, timeoutSeconds: 77 }] } });
+      const digest = await proposed(t);
+      await startCheck(t, digest);
+      const [record] = candidates(t);
+      for (const entry of [...record!.setup, ...record!.readiness]) expect(entry.env).toBeUndefined();
+      expect(record!.setup.every((entry) => entry.timeoutSeconds === 900)).toBe(true);
+      expect(record!.readiness.every((entry) => entry.timeoutSeconds === 1800)).toBe(true);
+      await reportCheck(t, "SUCCEEDED");
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);
+      const written = settingsOf(t) as unknown as { setup: unknown[]; readiness: unknown[] };
+      expect(written.setup).toEqual(record!.setup);
+      expect(written.readiness).toEqual(record!.readiness);
+    });
+  });
+});
+
+describe("S2: an approval whose write did not land can be finished", () => {
+  it("shows the approved environment's missing commands with the check state, runs the check for that digest and revision, then writes them", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const digest = await proposed(t);
+      await startCheck(t, digest);
+      await reportCheck(t, "SUCCEEDED");
+      await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);
+      expect(argsOf(settingsOf(t).setup)).toEqual(["old-setup", "deps"]);
+      // The write did not land (here: the settings were put back afterwards, revision 3).
+      const put = await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 2, setupCommands: ["make old-setup"], testCommands: ["make old-test"] });
+      expect(put.status, JSON.stringify(put.body)).toBe(200);
+      const stuck = await t.state();
+      expect(stuck.approved).toMatchObject({ digest, commandsNotInSettings: 2, check: { status: "unchecked" } });
+      // Writing needs a check at THIS revision.
+      const early = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 3 });
+      expect(early.status).toBe(400);
+      expect((await startCheck(t, digest)).status).toBe(202);
+      expect((await t.state()).approved).toMatchObject({ check: { status: "checking" } });
+      await reportCheck(t, "SUCCEEDED");
+      expect((await t.state()).approved).toMatchObject({ check: { status: "ready" } });
+      const written = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 3 });
+      expect(written.status, JSON.stringify(written.body)).toBe(200);
+      expect(argsOf(settingsOf(t).setup)).toEqual(["old-setup", "deps"]);
+      expect(argsOf(settingsOf(t).readiness)).toEqual(["old-test", "smoke"]);
+      expect((await t.state()).approved).toMatchObject({ commandsNotInSettings: 0 });
+    });
+  });
+});
+
+describe("B1: the approval's own sign-in guard", () => {
+  it("approveTestEnvironment itself asks for a fresh sign-in for a proposal marked as a setup run's, whoever calls it", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const store = { documentClient: t.db, tableName: "state", now: () => Date.now() };
+      const body = proposalBody();
+      await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body, origin: "setup_run", valueSources: [{ field: "repos[0].setupCommands[1]", source: { path: "package.json", line: 3 } }] });
+      const digest = testEnvDigest(body);
+      t.candidatePassed(digest);
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      const input = { orgId: TEST_ORG, project: NAME, digest, expectedRevision: 0, requestId: "request-12345", approvedBy: OMAR.developerId, role: "maintainer" as const };
+      await expect(approveTestEnvironment(store, input)).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+      await expect(approveTestEnvironment(store, { ...input, approvedBySignedInAtMs: Date.now() - 11 * 60_000 })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+      await expect(approveTestEnvironment(store, { ...input, approvedBySignedInAtMs: Date.now() - 60_000 })).resolves.toMatchObject({ revision: 1 });
+    });
+  });
+
+  it("proposing the same body again without the mark does not take the mark away", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    const store = { documentClient: t.db, tableName: "state", now: () => Date.now() };
+    const body = proposalBody();
+    await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body, origin: "setup_run" });
+    await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body });
+    expect((await readProposalSources(store, TEST_ORG, NAME, testEnvDigest(body))).origin).toBe("setup_run");
   });
 });
