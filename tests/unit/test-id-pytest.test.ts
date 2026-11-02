@@ -8,6 +8,8 @@ import { hasUnconfirmedFailingTest } from "../../packages/broker/src/verificatio
 import { nightlyHealthOf } from "../../packages/broker/src/test-env/nightly.js";
 import { runNightly, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
 import { selectTests } from "../../packages/worker/src/verification/selection.js";
+import { collectEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
+import { runNightlyInvocation } from "../../packages/worker/src/nightly-invocation.js";
 import { pytestFileOf, withTestIds } from "../../packages/worker/src/verification/test-ids.js";
 import { counted, evidenceTests, parseTestReport } from "../../packages/worker/src/verification/test-report.js";
 import { readTestReportAt } from "../../packages/worker/src/verification/test-report-folder.js";
@@ -53,6 +55,29 @@ describe("pytest's own output", () => {
   it("an absolute path in a vitest report is made relative to the check's directory, so a worker's root does not change an id", async () => {
     const json = JSON.stringify({ testResults: [{ name: `${FIXTURE}/src/a.test.ts`, status: "passed", assertionResults: [{ fullName: "adds", status: "passed" }] }] });
     expect(testIdOf((await withTestIds(parseTestReport(json)!, { root: WORKSPACE, cwd: CWD })).tests[0]!)).toBe("src/a.test.ts::adds");
+  });
+
+  it("the evidence collector reads the real report from the check's own command and names the tests by pytest's node ids", async () => {
+    const command = { executable: "pytest", args: ["-q", "--junitxml=reports/junit.xml"], cwd: CWD, timeoutSeconds: 60 };
+    const entry = { id: "readiness:0", label: "pytest", source: "project", before: "passed", after: "failed", class: "regression", output: "", durationMs: 100, exitCode: 1 } as never;
+    const raw = await collectEvidenceRaw({ rootPath: WORKSPACE, commands: [command], entries: [entry], candidateDigest: "d".repeat(64), repositories: [] });
+    const names = raw?.checks[0]?.tests?.names.map((test) => test.name) ?? [];
+    expect([...names].sort()).toEqual([...(await collected())].sort());
+    expect(names.filter((name) => name.endsWith("test_discount_fails"))).toEqual(["tests/test_cart_rules.py::TestRules::test_discount_fails"]);
+  });
+
+  it("the nightly's own report reader (the production port) gives the same ids from the same file", async () => {
+    const posted: unknown[] = [];
+    const environment = { ...env, selection: { method: "full" as const, alwaysRun: [], fullSuiteOn: [] } };
+    await runNightlyInvocation(
+      { kind: "task", operationId: "11111111-1111-4111-8111-111111111111", payload: { conversationId: "22222222-2222-4222-8222-222222222222", nightlyRun: { slotId: "c".repeat(64), envRevision: 1, branch: "main", headSha: "a".repeat(40), environment } } } as never,
+      {
+        rootPath: WORKSPACE, eventSink: async () => undefined, nightlyResult: (message) => { posted.push(message); return Promise.resolve({}); },
+        runners: { runProjectCommand: () => Promise.resolve({ exitCode: 1, timedOut: false, stdout: "", stderr: "" }), runAgentCommand: () => Promise.reject(new Error("not used")) },
+      },
+      { repositories: [{ name: "cart", path: CWD, resolvedCommit: "a".repeat(40) }] } as never,
+    );
+    expect((posted[0] as { result: { failed: string[] } }).result.failed).toEqual(FAILING);
   });
 
   it("the nightly, the evidence pack, the already-failing comparison and the selection speak one id", async () => {
