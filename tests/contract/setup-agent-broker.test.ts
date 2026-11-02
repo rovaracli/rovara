@@ -5,10 +5,10 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SetupAgentWireSchema, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal,
 } from "@agentx/contracts";
 import {
-  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, setupAgentEndItems, setupAgentKey, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
+  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, keepSetupPreparedBase, setupAgentEndItems, setupAgentKey, setupAgentWireOf, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
   type SetupAgentDependencies, type SetupAgentRunRequest, type SetupAgentStarter,
 } from "../../packages/broker/src/rovara-code/setup-agent.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -551,5 +551,41 @@ describe("what the view shows", () => {
     expect(text).not.toContain("payer");
     expect(text).not.toContain("requestedBy");
     expect(text).not.toContain(OMAR);
+  });
+});
+
+describe("P1: the commits the broker recorded travel in the run's payload", () => {
+  const BASE = [{ repositoryId: "web", baseCommitSha: COMMIT }];
+  const started = async (w: World) => (await startSetupAgent(w.deps, caller(), NAME, body())).body as { taskId: string };
+  const keep = (w: World, taskId: string, result: unknown) => keepSetupPreparedBase(w.deps, taskId, result, "2026-11-02T10:00:00.000Z");
+  it("keeps the prepare's report of where each repository was checked out on the task, and the first report stands", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await keep(w, taskId, { preparedBase: BASE });
+    expect(taskOf(w, taskId).preparedBase).toEqual(BASE);
+    await keep(w, taskId, { preparedBase: [{ repositoryId: "web", baseCommitSha: "b".repeat(40) }] });
+    expect(taskOf(w, taskId).preparedBase).toEqual(BASE);
+  });
+  it("keeps nothing from a report that does not read, and nothing on a task that is not a setup run", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    for (const result of [{ preparedBase: [{ repositoryId: "web", baseCommitSha: "main" }] }, { preparedBase: [] }, {}, undefined, "x"]) await keep(w, taskId, result);
+    expect(taskOf(w, taskId).preparedBase).toBeUndefined();
+    w.db.set({ ...taskOf(w, taskId), purpose: "setup_draft" });
+    await expect(keep(w, taskId, { preparedBase: BASE })).rejects.toMatchObject({ name: "ConditionalCheckFailedException" });
+    expect(taskOf(w, taskId).preparedBase).toBeUndefined();
+  });
+  it("puts the recorded commits in the payload beside the limits, and nothing when none was recorded (the worker then refuses)", () => {
+    const wire = setupAgentWireOf({ setupAgentLimits: { ...SETUP_AGENT_LIMITS_DEFAULT, commands: 10 }, preparedBase: BASE });
+    expect(wire).toEqual({ limits: { ...SETUP_AGENT_LIMITS_DEFAULT, commands: 10 }, commits: [{ repository: "web", commit: COMMIT }] });
+    expect(SetupAgentWireSchema.safeParse(wire).success).toBe(true);
+    expect(setupAgentWireOf({ setupAgentLimits: undefined })).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+    expect(setupAgentWireOf(undefined)).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+  });
+  it("the wire shape takes only full commit hashes and no extra field", () => {
+    const limits = SETUP_AGENT_LIMITS_DEFAULT;
+    expect(SetupAgentWireSchema.safeParse({ limits, commits: [{ repository: "web", commit: "main" }] }).success).toBe(false);
+    expect(SetupAgentWireSchema.safeParse({ limits, commits: [{ repository: "web", commit: COMMIT, ref: "main" }] }).success).toBe(false);
+    expect(SetupAgentWireSchema.safeParse({ limits, commits: [] }).success).toBe(false);
   });
 });

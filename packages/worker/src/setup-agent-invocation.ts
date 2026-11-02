@@ -52,7 +52,7 @@ export async function runSetupAgentInvocation(
   const conversationId = invocation.payload.conversationId;
   const result = await runSetupAgent({
     rootPath: canonicalRoot, operationId: invocation.operationId, basedOnRevision: invocation.projectRevision, limits: setup.limits, price,
-    repositories: manifest.repositories,
+    repositories: manifest.repositories, commits: setup.commits,
     ...(manifest.meta === undefined ? {} : { metaRepo: manifest.meta.name }),
     ports: {
       startNetwork: async () => startRunNetwork(docker, { taskId: invocation.operationId, image, workspace: await setupWorkspaceKey(canonicalRoot) }),

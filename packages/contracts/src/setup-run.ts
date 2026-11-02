@@ -218,7 +218,15 @@ export const SETUP_AGENT_FEATURE = "task.setupAgent.v1" as const;
 
 /**
  * What the broker tells the worker about a setup run: the limits the run started with (the project's setting cut down to the company's lock, fixed at start). Nothing else: the repositories and the
- * commit each is read at come from the preparation manifest the broker wrote (the default branch's head as the broker resolved it), never from a field of this payload.
+ * commit each is read at come from the preparation manifest the broker wrote (the default branch's head as the broker resolved it), never from a field of this payload. The payload's `commits` are only a
+ * cross-check the worker holds the manifest to (P1): they can never add or change what the run reads.
  */
-export const SetupAgentWireSchema = z.object({ limits: SetupAgentLimitsSchema }).strict();
+export const SetupAgentWireSchema = z.object({
+  limits: SetupAgentLimitsSchema,
+  /**
+   * P1: the commit each repository was prepared at, as the broker recorded it from the prepare's report (`preparedBase`). The worker compares the preparation manifest with this and refuses the run on any
+   * difference, a missing repository or a missing list. Optional only so that an older broker's payload still parses (the worker then refuses it); the current broker always sends it when it has it.
+   */
+  commits: z.array(z.object({ repository: z.string().min(1).max(200), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u) }).strict()).min(1).max(32).optional(),
+}).strict();
 export type SetupAgentWire = z.infer<typeof SetupAgentWireSchema>;

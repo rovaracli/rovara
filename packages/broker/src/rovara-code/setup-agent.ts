@@ -30,6 +30,7 @@ import {
   SETUP_HOST_WAIT_MAX_HOURS,
   SETUP_RUN_LIMIT_STOPS,
   SetupRunSummarySchema,
+  WorkflowReviewBaseSchema,
   agentXError,
   effectiveSetupAgentLimits,
   isSetupRunLimitStop,
@@ -41,6 +42,7 @@ import {
   type Payer,
   type ProjectRole,
   type SetupAgentLimits,
+  type SetupAgentWire,
   type SetupProposal,
   type SetupVerification,
   type SetupRunEndWord,
@@ -298,6 +300,30 @@ export function setupAgentEndItems(
     ConditionExpression: "attribute_exists(pk)",
     ExpressionAttributeValues: { ":end": { state, at: now }, ":result": result, ":now": now },
   } }];
+}
+
+/**
+ * P1: keeps the prepare's report of where each repository was checked out (`preparedBase`) on the setup task, BEFORE the task's first operation is built from it in the same terminal transaction (the
+ * terminal result calls this for a prepare that succeeded whose task pointer still waits to start `SETUP_AGENT`). The first report stands; a report that does not read keeps nothing, and the worker then
+ * refuses the run for want of commits.
+ */
+export async function keepSetupPreparedBase(deps: Pick<SetupAgentDependencies, "documentClient" | "tableName">, taskId: string, result: unknown, now: string): Promise<void> {
+  const reported = typeof result === "object" && result !== null ? (result as { preparedBase?: unknown }).preparedBase : undefined;
+  const base = WorkflowReviewBaseSchema.safeParse(reported);
+  if (!base.success) return;
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET preparedBase = if_not_exists(preparedBase, :base), updatedAt = :now",
+    ConditionExpression: "attribute_exists(pk) AND purpose = :purpose", ExpressionAttributeValues: { ":base": base.data, ":now": now, ":purpose": "setup_agent" },
+  }));
+}
+
+/**
+ * What a setup run's invocation carries (P1): the limits it started with, read again through the contract, and the commits the broker recorded when the preparation reported. Without a record there are no
+ * commits and the worker refuses the run.
+ */
+export function setupAgentWireOf(task: Pick<DeveloperTaskRecord, "setupAgentLimits" | "preparedBase"> | undefined): SetupAgentWire {
+  const commits = task?.preparedBase?.map((entry) => ({ repository: entry.repositoryId, commit: entry.baseCommitSha }));
+  return { limits: effectiveSetupAgentLimits(task?.setupAgentLimits), ...(commits === undefined || commits.length === 0 ? {} : { commits }) };
 }
 
 // ---- routes (not wired: SH14)

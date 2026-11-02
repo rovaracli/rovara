@@ -35,12 +35,12 @@ const ops = (t: Bench, workspaceId: string) => t.db.find((item) => item.entityTy
 const outbox = (t: Bench, operationId: string) => WorkerInvocationSchema.parse((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0] as { invocation: unknown }).invocation);
 
 /** Starts a run and finishes its preparation, so the setup operation exists. */
-async function started(t: Bench) {
+async function started(t: Bench, preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }>) {
   const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
   expect(reply.status, JSON.stringify(reply.body)).toBe(202);
   const [task] = tasks(t);
   const prepare = ops(t, task!.workspaceId).find((operation) => operation.kind === "prepare")!;
-  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase: undefined } });
+  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase } });
   const own = ops(t, task!.workspaceId).find((operation) => operation.kind === "task")!;
   // The worker's first event moves the operation to RUNNING, as it does for every task.
   await t.events(task!.workspaceId, own.id, [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
@@ -83,6 +83,21 @@ describe("with the switch on", () => {
     expect(claims.actions).toContain("setup-agent");
     // The run's limit is the setup budget ($4), not the planning limit.
     expect(task["budgetUsd"] === undefined || task["budgetUsd"] === SETUP_AGENT_LIMITS_DEFAULT.budgetCents / 100).toBe(true);
+  });
+
+  it("P1: the commits the preparation reported travel in the run's payload (the worker holds its manifest to them), and none are sent when the preparation reported none", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own } = await started(t, [{ repositoryId: "web", baseCommitSha: "a".repeat(40) }]);
+    expect(t.db.get(`DEVTASK#${task.taskId}`, "META") ?? t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]).toMatchObject({ preparedBase: [{ repositoryId: "web", baseCommitSha: "a".repeat(40) }] });
+    const invocation = outbox(t, own.id);
+    if (invocation.kind !== "task") throw new Error("not a task");
+    expect(invocation.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT, commits: [{ repository: "web", commit: "a".repeat(40) }] });
+    const bare = await bench();
+    const second = await started(bare);
+    const sent = outbox(bare, second.own.id);
+    if (sent.kind !== "task") throw new Error("not a task");
+    expect(sent.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
   });
 
   it("holds the start to the payer the route resolved once (payerFromRules), so a setting that changes in between is a retryable busy answer and never a charge to another", async () => {

@@ -9,6 +9,7 @@ import { TEST_ENV_DRAFT_RESULT_KEY, checksForSection, StandingFailuresSchema, ne
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
+import { keepSetupPreparedBase } from "../../rovara-code/setup-agent.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
 import { noteDurationAtPullRequest } from "../../rovara-code/duration.js";
@@ -406,6 +407,8 @@ export async function recordTerminalResult(
         ? await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspace.id))
         : undefined;
       taskPointer = pointer;
+      // P1 (su): a setup run's preparation report of where each repository stands is kept before the run's first operation is built from it (rovara-code/setup-agent.ts).
+      if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now);
       const completed = await completedTurnItems(dependencies, operation, pointer, terminalStatus, { result, error }, now);
       inlineEvidence.length = 0;
       plannerReplies.length = 0;

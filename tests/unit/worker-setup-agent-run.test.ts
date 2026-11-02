@@ -25,6 +25,7 @@ const ANSWER = {
 };
 const block = (answer: unknown) => `done\n\`\`\`agentx-setup-proposal\n${JSON.stringify(answer)}\n\`\`\``;
 const repo = { name: "web", path: "repo/web", resolvedCommit: COMMIT };
+const COMMITS = [{ repository: "web", commit: COMMIT }];
 
 interface World {
   order: string[];
@@ -77,19 +78,19 @@ async function world(options: {
     tickMs: 5,
   };
   ports.beforeStart = async () => ({ scan: { repositories: [], setup: [], tests: [], checks: [], knowledge: [], sources: [], foundNotUsed: [], notes: [] }, tracked: new Map([["web", new Set(["package.json", ".github/workflows/ci.yml"])]]) });
-  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, price: { inputPerMTok: 3, outputPerMTok: 15 }, repositories: options.repositories ?? [repo], ports };
+  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, price: { inputPerMTok: 3, outputPerMTok: 15 }, repositories: options.repositories ?? [repo], commits: options.repositories === undefined ? [{ repository: "web", commit: COMMIT }] : options.repositories.map((r) => ({ repository: r.name, commit: r.resolvedCommit })), ports };
   return { w, input, rootPath };
 }
 
 describe("what the run reads (ED-1)", () => {
   it("takes the repositories from the manifest, at the commit the broker resolved", () => {
-    expect(setupRepositoriesOf("/work", [repo])).toEqual([{ ...repo, directory: "/work/repo/web" }]);
+    expect(setupRepositoriesOf("/work", [repo], COMMITS)).toEqual([{ ...repo, directory: "/work/repo/web" }]);
   });
   it("refuses a workspace with a pull request head checked out, a commit that is not a full hash, and no repository", () => {
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, checkedOut: { pullRequest: 3, headSha: "b".repeat(40) } }])).toThrow();
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "main" }])).toThrow();
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "abc123" }])).toThrow();
-    expect(() => setupRepositoriesOf("/work", [])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, checkedOut: { pullRequest: 3, headSha: "b".repeat(40) } }], COMMITS)).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "main" }], [{ repository: "web", commit: "main" }] as never)).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "abc123" }], [{ repository: "web", commit: "abc123" }] as never)).toThrow();
+    expect(() => setupRepositoriesOf("/work", [], COMMITS)).toThrow();
   });
   it("hands the tracked-files check the manifest's directory, never a path from anywhere else", async () => {
     const t = await world();
@@ -97,6 +98,27 @@ describe("what the run reads (ED-1)", () => {
     t.input.ports.checkFiles = async (repositories) => { seen.push(...repositories.map((r) => `${r.directory}@${r.resolvedCommit ?? ""}`)); return { ok: true }; };
     await runSetupAgent(t.input);
     expect(new Set(seen)).toEqual(new Set([`${t.rootPath}/repo/web@${COMMIT}`]));
+  });
+});
+
+describe("P1: the manifest is held to the commits the broker recorded", () => {
+  it("accepts the manifest when every repository's commit equals the recorded one", () => {
+    expect(() => setupRepositoriesOf("/work", [repo], COMMITS)).not.toThrow();
+  });
+  it("refuses a different commit, a missing list, a repository the broker did not record, a repository missing from the manifest and a repeated entry", () => {
+    expect(() => setupRepositoriesOf("/work", [repo], [{ repository: "web", commit: "b".repeat(40) }])).toThrow(/another commit/u);
+    expect(() => setupRepositoriesOf("/work", [repo], undefined)).toThrow(/commits the broker recorded/u);
+    expect(() => setupRepositoriesOf("/work", [repo], [{ repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [repo], [...COMMITS, { repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [repo, { ...repo, name: "api", path: "repo/api" }], COMMITS)).toThrow();
+    expect(() => setupRepositoriesOf("/work", [repo], [...COMMITS, ...COMMITS])).toThrow();
+  });
+  it("starts nothing (no network, no sandbox) when the commits differ", async () => {
+    const t = await world();
+    t.input.commits = [{ repository: "web", commit: "c".repeat(40) }];
+    await expect(runSetupAgent(t.input)).rejects.toThrow(/another commit/u);
+    expect(t.w.order).toEqual([]);
+    expect(t.w.stopped.network).toBe(false);
   });
 });
 

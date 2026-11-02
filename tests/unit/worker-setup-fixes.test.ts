@@ -199,7 +199,7 @@ describe("F3: money", () => {
       openSession: async () => session, callback: async () => ({ hosts: [] }), progress: async () => undefined, register: () => () => undefined, checkFiles: async () => ({ ok: true }), tickMs: 50,
       beforeStart: async () => ({ scan: { repositories: [], setup: [], tests: [], checks: [], knowledge: [], sources: [], foundNotUsed: [], notes: [] }, tracked: new Map([["web", new Set<string>()]]) }),
     };
-    const input: SetupRunInput = { rootPath, operationId: "11111111-1111-4111-8111-111111111111", basedOnRevision: 1, limits: { ...SETUP_AGENT_LIMITS_DEFAULT }, price: { inputPerMTok: 10, outputPerMTok: 50 }, repositories: [{ name: "web", path: "repo/web", resolvedCommit: COMMIT }], ports };
+    const input: SetupRunInput = { rootPath, operationId: "11111111-1111-4111-8111-111111111111", basedOnRevision: 1, limits: { ...SETUP_AGENT_LIMITS_DEFAULT }, price: { inputPerMTok: 10, outputPerMTok: 50 }, repositories: [{ name: "web", path: "repo/web", resolvedCommit: COMMIT }], commits: [{ repository: "web", commit: COMMIT }], ports };
     return { input, stopped };
   }
   it("refuses a run for a model with no price before anything starts", async () => {
@@ -250,7 +250,7 @@ describe("F3: money", () => {
     const r = await repository();
     const calls: string[][] = [];
     const docker: DockerCli = { run: (args) => { calls.push([...args]); return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }); } };
-    const invocation = { operationId: "11111111-1111-4111-8111-111111111111", projectRevision: 1, payload: { conversationId: "c", setupAgent: { limits: SETUP_AGENT_LIMITS_DEFAULT } } } as never;
+    const invocation = { operationId: "11111111-1111-4111-8111-111111111111", projectRevision: 1, payload: { conversationId: "c", setupAgent: { limits: SETUP_AGENT_LIMITS_DEFAULT, commits: [{ repository: "web", commit: "a".repeat(40) }] } } } as never;
     const dependencies = { rootPath: r.root, model: { provider: "amazon-bedrock", modelId: "global.anthropic.claude-fable-5" }, eventSink: async () => undefined, setupAgent: async () => ({}), docker };
     await expect(runSetupAgentInvocation(invocation, { ...dependencies, environment: { AGENTX_SANDBOX_IMAGE: "i@sha256:" + "b".repeat(64) } }, { repositories: [] }, r.root)).rejects.toThrow("model proxy");
     await expect(runSetupAgentInvocation(invocation, { ...dependencies, model: { provider: "x", modelId: "unlisted" }, environment: { AGENTX_SANDBOX_IMAGE: "i@sha256:" + "b".repeat(64), AGENTX_MODEL_PROXY_URL: "https://proxy.test" } }, { repositories: [{ name: "web", path: "repo/web", resolvedCommit: COMMIT, defaultBranch: "main", resolvedAt: "", completedAt: "" }] }, r.root)).rejects.toThrow("price");
