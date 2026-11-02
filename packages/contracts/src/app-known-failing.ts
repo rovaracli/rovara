@@ -2,8 +2,10 @@
 // Strict shapes for the routes `/v1/app/projects/{name}/known-failing` and `/v1/app/org/known-failing-policy`; the readers keep fields a newer server adds. Words, ids, counts and the test ids a maintainer already sees on the Fix setup card; never output.
 import { z } from "zod";
 import { forwardReader } from "./forward-reader.js";
+import { TEST_ID_MAX } from "./test-id.js";
 
-const TestId = z.string().min(1).max(200);
+// The one test id (contracts `test-id.ts`): the same string the nightly run, the evidence pack and the marks use.
+const TestId = z.string().min(1).max(TEST_ID_MAX);
 const CheckId = z.string().min(1).max(64);
 /** A person's id as the app shows it, and the day-and-time a mark was made. */
 const PersonId = z.string().min(1).max(200);

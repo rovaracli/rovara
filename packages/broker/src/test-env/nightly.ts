@@ -33,6 +33,7 @@ import {
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import type { ScheduleSettings, SchedulerPort } from "../triggers/schedules.js";
 import { classifyNightlyHealth } from "./nightly-health.js";
+import { recordNightUnavailable, sameDayRetryOf } from "./night-status.js";
 
 const HOUR_MS = 3_600_000;
 /** A fire older than this is not run: the scheduler retries for an hour at most. */
@@ -134,7 +135,7 @@ export async function syncNightlySchedule(deps: NightlyScheduleDependencies, inp
 // ---- one fire
 
 /** The spend refusals a nightly can meet (the ledger's own codes for a full budget): the night is skipped, not retried. */
-const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
+export const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
 /** At most one nightly run per project in this long, whatever the cron says: a cron of `* * * * *` or a busy repo cannot make more. */
 export const NIGHTLY_MIN_GAP_MS = 20 * HOUR_MS;
 
@@ -144,10 +145,24 @@ export interface NightlyRunPort {
    * The run's key must then be minted with payer project and source `nightly_baseline` (see `startRun`).
    */
   admit(input: { orgId: OrgId; project: string; purpose: "nightly_baseline" }): Promise<void>;
+  /**
+   * The repository's own default branch (NH-1: ED-1, the main branch only). The preparation clones the default branch, so a nightly whose `nightly.branch` is any other would test one branch and report it as another:
+   * the fire is skipped (`branch_not_default`) unless the two are the same. Undefined when it cannot be read (the fire is then `head_unreadable`). Left out by a port that does not know (older tests).
+   */
+  defaultBranchOf?(input: { orgId: OrgId; project: string }): Promise<string | undefined>;
+  /**
+   * Whether the project uses private package registries. The nightly's preparation is read-only (the Prove sequence runs the project's setup itself, in the sandbox), and a read-only preparation carries no registry
+   * pointer or credential exchange, so setup would fail on a 401 and read as a broken environment. Until nightly preparations can carry the pointer safely, such a project is skipped (`registries_unsupported`), which is
+   * never "needs repair". Undefined when it cannot be read (`head_unreadable`). Left out by a port that does not know (older tests).
+   */
+  usesRegistries?(input: { orgId: OrgId; project: string }): Promise<boolean | undefined>;
   /** The branch's head commit now, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
-  /** Starts the full run (CHECKS mode on the default branch). Throws when it cannot be started. */
-  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string; payer: { kind: "project"; project: string }; source: "nightly_baseline" }): Promise<void>;
+  /**
+   * Starts the full run (CHECKS mode on the default branch). Throws when it cannot be started for a reason that may pass; answers `{ skipped }` when the night cannot run at all today (nobody to run it as, no
+   * workspace room, a budget with no room): the claims are then given back and the scheduler is not asked to retry.
+   */
+  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string; payer: { kind: "project"; project: string }; source: "nightly_baseline" }): Promise<void | { skipped: NightlySkipReason }>;
 }
 
 export interface NightlyDeps extends TestEnvDeps { runs: NightlyRunPort }
@@ -156,6 +171,11 @@ export type NightlyFireOutcome = { outcome: "started"; slotId: string } | { outc
 
 const skip = (reason: NightlySkipReason): NightlyFireOutcome => ({ outcome: "skipped", reason });
 const dbError = (error: unknown, name: string): boolean => errorName(error) === name;
+/** A night that cannot run at all today: a note the project's health page and Home read (night-status.ts), and a skip. The note is best effort. */
+async function unavailable(deps: TestEnvDeps, orgId: OrgId, project: string, scheduledAt: string, reason: "services_unsupported" | "registries_unsupported" | "branch_not_default"): Promise<NightlyFireOutcome> {
+  await recordNightUnavailable(deps, { orgId, project, slotId: nightlySlotId(orgId, project, scheduledAt), reason }).catch(() => undefined);
+  return skip(reason);
+}
 
 /** The last recorded baseline, or undefined. A stored item that does not read back is an error: a damaged baseline is never "no baseline". */
 export async function readNightlyBaseline(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<NightlyBaseline | undefined> {
@@ -179,7 +199,19 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   const env = await readApprovedTestEnvironment(deps, orgId, project);
   if (env === undefined) return skip("environment_missing");
   if (!env.environment.nightly.enabled) return skip("nightly_off");
+  // Services (mocks, pre-prod probes) cannot be started by a nightly run yet: no preparation, no task, and a neutral reason (never "needs repair").
+  if (env.environment.services.length > 0) return unavailable(deps, orgId, project, scheduledAt, "services_unsupported");
   const branch = env.environment.nightly.branch;
+  if (deps.runs.defaultBranchOf !== undefined) {
+    const defaultBranch = await deps.runs.defaultBranchOf({ orgId, project }).catch(() => undefined);
+    if (defaultBranch === undefined) return skip("head_unreadable");
+    if (defaultBranch !== branch) return unavailable(deps, orgId, project, scheduledAt, "branch_not_default");
+  }
+  if (deps.runs.usesRegistries !== undefined) {
+    const registries = await deps.runs.usesRegistries({ orgId, project }).catch(() => undefined);
+    if (registries === undefined) return skip("head_unreadable");
+    if (registries) return unavailable(deps, orgId, project, scheduledAt, "registries_unsupported");
+  }
   const head = await deps.runs.headOf({ orgId: orgId, project, branch }).catch(() => undefined);
   if (head === undefined || !/^[a-f0-9]{40}$/u.test(head)) return skip("head_unreadable");
   const last = await readNightlyBaseline(deps, orgId, project);
@@ -196,6 +228,10 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
     if (typeof code === "string" && BUDGET_CODES.has(code)) return skip("budget");
     throw error;
   }
+
+  // At most one retry the same UTC day, only after an infrastructure-class failure: the failed night's claims are given back so this fire may take the day (night-status.ts `sameDayRetryOf`).
+  const retrying = await sameDayRetryOf(deps, orgId, project).catch(() => undefined);
+  if (retrying !== undefined) await releaseNightly(deps, orgId, project, retrying, true);
 
   const slotId = nightlySlotId(orgId, project, scheduledAt);
   const dayClaim = keyOf(orgId, project, `TESTENV#NIGHTLY#DAY#${new Date(now).toISOString().slice(0, 10)}`);
@@ -240,17 +276,24 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
     }
     throw error;
   }
+  let refused: { skipped: NightlySkipReason } | undefined;
   try {
-    await deps.runs.startRun({ orgId, project, branch, headSha: head, envRevision: env.revision, slotId, payer: { kind: "project", project }, source: "nightly_baseline" });
+    const started = await deps.runs.startRun({ orgId, project, branch, headSha: head, envRevision: env.revision, slotId, payer: { kind: "project", project }, source: "nightly_baseline" });
+    if (started !== undefined) refused = started;
   } catch (error) {
     // The run did not start: let the scheduler's retry try again (the slot claim stays, so a retry would be "already handled"; release both).
     await releaseNightly(deps, orgId, project, slotId, true);
     throw error;
   }
+  // The night cannot run today and nothing was started: every claim is given back, so tomorrow's fire (or a later one today) is not shut out by it.
+  if (refused !== undefined) {
+    await releaseNightly(deps, orgId, project, slotId, true);
+    return skip(refused.skipped);
+  }
   return { outcome: "started", slotId };
 }
 
-async function releaseNightly(deps: TestEnvDeps, orgId: OrgId, project: string, slotId: string, alsoSlot: boolean): Promise<void> {
+export async function releaseNightly(deps: TestEnvDeps, orgId: OrgId, project: string, slotId: string, alsoSlot: boolean): Promise<void> {
   const send = (command: unknown) => deps.documentClient.send(command).catch(() => undefined);
   await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, "TESTENV#NIGHTLY#ACTIVE"), ConditionExpression: "slotId = :slot", ExpressionAttributeValues: { ":slot": slotId } }));
   if (alsoSlot) {
@@ -276,11 +319,11 @@ export interface NightlyRecorded { orgId: OrgId; project: string; slotId: string
  * What the night's step words say (SH27), classified by the broker's own rules (SH6): nothing the worker says in words is read. Undefined for a result that carries no step words (an older worker), which then
  * stores nothing new. A report whose counts are not the result's own counts disagrees with itself and reads as unclear, never as passed.
  */
-export function nightlyHealthOf(result: NightlyResult): StoredNightlyHealth | undefined {
+export function nightlyHealthOf(result: NightlyResult, context: { noSmokeCheck?: boolean } = {}): StoredNightlyHealth | undefined {
   if (result.health === undefined) return undefined;
   const { ranFrom, ...report } = result.health;
   const agrees = report.tests.total === result.tests.total && report.tests.passed === result.tests.passed && report.tests.skipped === result.tests.skipped && report.tests.failures + report.tests.errors === result.tests.failed;
-  const verdict = agrees ? classifyNightlyHealth(report) : ({ class: "unclear", cause: "steps_disagree" } as const);
+  const verdict = agrees ? classifyNightlyHealth(report, context) : ({ class: "unclear", cause: "steps_disagree" } as const);
   return { class: verdict.class, ...("cause" in verdict ? { cause: verdict.cause } : {}), ...(verdict.class === "tests" ? { setupProved: verdict.setupProved } : {}), ranFrom: ranFrom ?? "fresh" };
 }
 
@@ -321,13 +364,15 @@ export async function recordNightlyResult(
   const baseline = NightlyBaselineSchema.parse({
     recordedAt: new Date(now).toISOString(), envRevision: result.envRevision, branch: result.branch, headSha: result.headSha, finishedAt: result.finishedAt, tests: result.tests,
     failed: result.failed.slice(0, NIGHTLY_FAILED_MAX), flaky: result.flaky.slice(0, NIGHTLY_FLAKY_MAX),
+    ...(result.failedUnlisted === undefined || result.failedUnlisted === 0 ? {} : { failedUnlisted: result.failedUnlisted }),
     // Keep the last good map when this run recorded none: selection reads its own age, so an old map falls back to the full suite by itself.
     ...(result.coverageMapRef !== undefined && coverageMapBuiltAt !== undefined ? { coverageMapRef: result.coverageMapRef, coverageMapBuiltAt } : previous?.coverageMapRef === undefined || previous.coverageMapBuiltAt === undefined ? {} : { coverageMapRef: previous.coverageMapRef, coverageMapBuiltAt: previous.coverageMapBuiltAt }),
   });
   // The health sits BESIDE the baseline, not inside it: an older broker still reads the baseline. A result without step words stores exactly what it always did.
-  const health = nightlyHealthOf(result);
+  // A skipped smoke step is fine only when the approved environment of THIS night's revision defines no smoke check (read here, from the broker's own record).
+  const health = nightlyHealthOf(result, { noSmokeCheck: !env.environment.repos.some((repo) => repo.checks.some((check) => check.kind === "smoke")) });
   const healthField = health === undefined ? {} : { health };
-  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
+  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, ...(result.coverageMapSkipped === undefined ? {} : { coverageMapSkipped: result.coverageMapSkipped }), slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: history }));
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...keyOf(input.orgId, input.project, "TESTENV#BASELINE#LATEST"), entityType: "TEST_ENV_BASELINE_LATEST", orgId: input.orgId, project: input.project, baseline, ...healthField } }));
   // Before the run is released: a listener that fails leaves the run claimed, so the worker's retry records the same result again (every write above and in the listener is repeatable).
@@ -343,6 +388,12 @@ export async function recordNightlyResult(
   await releaseNightly(deps, input.orgId, input.project, result.slotId, false);
   return { recorded: true, flakyCount: result.flaky.length, failingCount: result.tests.failed };
 }
+
+/**
+ * Whether a baseline's failing set is whole: every failing test is either listed in `failed` or counted in `failedUnlisted` (its id is not valid, so it can be neither excused nor marked, and no other test is it).
+ * A set the cap cut, or that no longer adds up, is not whole and excuses nothing. One odd id does NOT make the baseline unusable: only that test loses its excuse.
+ */
+export const failingSetIsWhole = (baseline: Pick<NightlyBaseline, "failed" | "failedUnlisted" | "tests">): boolean => baseline.failed.length + (baseline.failedUnlisted ?? 0) === baseline.tests.failed;
 
 // ---- what the baseline feeds
 
@@ -363,7 +414,7 @@ export async function readLatestNightlyHealth(deps: TestEnvDeps, orgId: OrgId, p
  */
 export async function alreadyFailingTests(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<string[]> {
   const baseline = await readNightlyBaseline(deps, orgId, project).catch(() => undefined);
-  if (baseline === undefined || baseline.tests.failed > NIGHTLY_FAILED_MAX || baseline.failed.length !== baseline.tests.failed) return [];
+  if (baseline === undefined || !failingSetIsWhole(baseline)) return [];
   return [...baseline.failed];
 }
 

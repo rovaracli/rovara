@@ -12,7 +12,7 @@
 //   5. Verified: every required check ran on the current candidate, the evidence is for exactly this code, and nothing is missing.
 // Anything that cannot be read is never Verified.
 import {
-  autoFixDecision, classifyBlockedWorkflow, E2E_PROJECT_CHECK_ID,
+  autoFixDecision, classifyBlockedWorkflow, E2E_PROJECT_CHECK_ID, isValidTestId,
   type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingCodeReason, type TestingPartialReason, type TestingReason, type TestingResult,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -129,8 +129,11 @@ export function readableFailingTests(check: EvidencePack["checks"][number]): str
   if (check.tests === undefined) return undefined;
   const declared = check.tests.failed + check.tests.errored;
   if (declared === 0) return undefined;
-  const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored").map((test) => test.name);
+  const failingNames = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
+  const failed = failingNames.map((test) => test.name);
   if (failed.length !== declared || new Set(failed).size !== failed.length) return undefined;
+  // A failing test whose id is not valid (hidden or look-alike characters, too long; contracts `test-id.ts`) cannot be in the nightly's failing set or a mark, so it is never confirmed as already failing: unreadable here.
+  if (failingNames.some((test) => test.unlisted === true) || !failed.every(isValidTestId)) return undefined;
   return failed;
 }
 

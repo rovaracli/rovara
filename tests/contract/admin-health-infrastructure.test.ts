@@ -249,6 +249,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/test-env/health.ts",
       // 2026-11-02, testenv-apply (TE-2): a proposal's candidate check record (`TEST_ENV_CANDIDATE_CHECK`, one item per project, digest and settings revision) expires with the proposal it checks (7 days); only commitSetupCheck (project-setup-check.ts) writes it, and test-env-candidate.ts reads it.
       "packages/broker/src/org/test-env-candidate.ts",
+      // 2026-11-02, nightly-run (NH-1): a night's status row (`TEST_ENV_NIGHT`, one per project and slot: unavailable or failed, with its reason) expires after the night-status retention (TTL_MS); only night-status.ts writes it.
+      "packages/broker/src/test-env/night-status.ts",
       // 2026-11-02, sh-health-wire (SH28): a proposed fix task (`TEST_ENV_PROPOSED_FIX_TASK`, written once per key, never updated) expires after 30 days (TTL_MS) if nobody starts or dismisses it; only proposed-tasks.ts writes it.
       "packages/broker/src/test-env/proposed-tasks.ts",
       // 2026-11-02, sh-setup-wire (SH12-SH15): the setup run's journal entries, its command counter, its host-ask items (31 days) and the setup-run proposal index (7 days) are working rows of one setup run, meant to expire; none is a durable record.

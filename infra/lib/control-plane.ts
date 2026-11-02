@@ -215,6 +215,9 @@ export class ControlPlaneStack extends Stack {
           expiration: Duration.days(evidenceRetentionDays(retentionClass, evidenceRetentionSetting(this.node.tryGetContext("evidenceRetentionDays"))?.[retentionClass] as number | undefined) ?? EVIDENCE_RETENTION_DAYS[retentionClass].default),
           // Prefix AND tag (S3 reads that as an `And` filter): another writer's object that happens to carry the tag, outside the private evidence keys, never matches (Opus review M1).
           prefix: "private/", tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: retentionClass } })),
+        // NH-1: the nightly run's coverage maps (`nightly-maps/<company>/<project>/<digest>.json`) expire after 30 days; selection reads a map no older than 7 days, so nothing live is lost. Archiving a project or closing
+        // a company deletes the prefix sooner (evidence-erase.ts).
+        { id: "ExpireNightlyMaps", prefix: "nightly-maps/", expiration: Duration.days(30) },
       ] }),
       // Retained: the broker's operation artifacts must outlive a stack deletion.
       removalPolicy: RemovalPolicy.RETAIN,

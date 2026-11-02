@@ -8,6 +8,8 @@ import { createHash } from "node:crypto";
 import {
   ArtifactLinkSchema, ArtifactRefSchema, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_CHECKS_MAX, EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, EvidenceViewSchema,
   redactText,
+  TEST_ID_MAX,
+  isValidTestId,
   type ArtifactLink, type ArtifactRef, type CheckEntry, type CheckKind, type EvidenceArtifactKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceWithheldReason, type EvidenceRaw, type EvidenceView,
 } from "@agentx/contracts";
 
@@ -77,6 +79,16 @@ function plain(text: string, max: number, fallback = "-"): string {
   const line = redactText(text.replace(/[\p{Cc}\p{Cf}]+/gu, " ")).replace(/\s+/gu, " ").trim();
   const points = Array.from(line === "" ? fallback : line);
   return points.length <= max ? points.join("") : `${points.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * A test name in the pack (NH-1 re-check F2/F5): redacted again, and otherwise AS IT IS when it is a valid test id (contracts `test-id.ts`), so it is the same string the nightly's failing set and the marks hold. It is never cut
+ * and its spaces are never changed. A name that is not valid (or that the worker already said is not) is shown as one plain line, cut with an ellipsis at the id limit, and marked `unlisted`: counted, never matched.
+ */
+function testNameOf(name: string, alreadyUnlisted: boolean): { name: string; unlisted?: true } {
+  const redacted = redactText(name);
+  if (!alreadyUnlisted && isValidTestId(redacted)) return { name: redacted };
+  return { name: plain(redacted, TEST_ID_MAX, "test"), unlisted: true };
 }
 
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
@@ -155,7 +167,7 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
       label: plain(entry.label, 200),
       before: entry.before, after: entry.after, class: entry.class, durationMs: entry.durationMs,
       ...(entry.exitCode === undefined ? {} : { exitCode: entry.exitCode }),
-      ...(tests === undefined ? {} : { tests: { ...tests, names: tests.names.map((name) => ({ ...name, name: plain(name.name, 300, "test") })), newTests: tests.newTests.map((name) => plain(name, 300, "test")) } }),
+      ...(tests === undefined ? {} : { tests: { ...tests, names: tests.names.map((name) => ({ ...name, ...testNameOf(name.name, name.unlisted === true) })), newTests: tests.newTests.map((name) => testNameOf(name, false).name) } }),
       ...(coverage === undefined ? {} : { coverage: { ...coverage, files: coverage.files.map((file) => ({ ...file, path: plain(file.path, 500) })) } }),
       ...(findings === undefined ? {} : { findings: { ...findings, tool: plain(findings.tool, 60), items: findings.items.map((item) => ({ ...item, ruleId: plain(item.ruleId, 100), path: plain(item.path, 500), message: item.message === "" ? "" : plain(item.message, 300) })) } }),
       ...(extra?.migrations === undefined ? {} : { migrations: { applied: extra.migrations.applied.map((name) => plain(name, 100)), rolledBack: extra.migrations.rolledBack, schemaChanges: extra.migrations.schemaChanges.map((name) => plain(name, 200)) } }),

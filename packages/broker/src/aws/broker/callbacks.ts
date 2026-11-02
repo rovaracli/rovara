@@ -33,6 +33,8 @@ import { chatGptTaskToken, recordChatGptFallback } from "./task-operations.js";
 import { afterWorkerEvents } from "./lessons-report.js";
 import { recordTerminalResult } from "./terminal-result.js";
 import { handleSetupAgentCallback } from "../../rovara-code/setup-agent-callback.js";
+import { handleNightlyResultCallback } from "../../test-env/nightly-callback.js";
+import { nightlyResultDeps } from "./nightly-run-wiring.js";
 import { readStoredCandidateSourceExport } from "./workflow-items.js";
 
 export async function handleCallback(
@@ -85,6 +87,11 @@ export async function handleCallback(
   if (action === "setup-agent") {
     if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a setup run");
     return json(await handleSetupAgentCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), ...(dependencies.developer === undefined ? {} : { signInTableName: dependencies.developer.signInTableName }) }, operation, body), request.requestId);
+  }
+  // NH-1 (switch `nh`): the nightly run's one action. The capability has it only for the verification operation of a nightly task; the handler checks the switches, the running state and what the run was started to run.
+  if (action === "nightly-result") {
+    if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a nightly run");
+    return json(await handleNightlyResultCallback(nightlyResultDeps(dependencies), operation, body), request.requestId);
   }
   if (action === "events") {
     const accepted = await appendEvents(dependencies, operation, body);

@@ -323,18 +323,22 @@ describe("the named TEST proof-only installation gate", () => {
     // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
     // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
+    // 2026-11-02, NH-1 (nightly run): the named and foreign digests were retaken after ONE intended addition to the artifact bucket (checked by synthesizing with and without it: nothing else moved): the lifecycle
+    // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
+    // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
+    // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4eb11f80907e9a77d8b9a5a0d24f760e2100e0725035b689f086dbf13512c3d4",
-        withoutRoute: "dafcc5a1bebbbc6c17cf99d28adb3281bb78b507a59e7025b7838141c793aa11",
+        withRoute: "7fbe2526a4c3dbdce670a74858e81a193b251861cb649bf7d159a2dd6ebd3c67",
+        withoutRoute: "e1280d580dcd35e213872e9dc4c36aff8d0a467a65fb5c417fc3095de8138322",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7831380a195694131dfe7ae5aae6d01718d3c4798b04d432b0549a1f313e95a7",
-        withoutRoute: "b2575d646bf959c749d4d27992e584df48e7a4e52c94d4483685007c8d6c18eb",
+        withRoute: "4f107dcdffba70f895f367f0850e3079a9f378b5d7c043980f82a6bfac3c3062",
+        withoutRoute: "8a0bad499f6ab6de2932a6826e2c634fc0b76f4eeaa35461c98fd60d83acec6b",
       },
       {
         label: "legacy",
