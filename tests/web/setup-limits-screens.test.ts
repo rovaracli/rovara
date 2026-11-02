@@ -79,8 +79,8 @@ describe("the project's Setup limits", () => {
   mountProject({ view: projectView({ revision: 2, limits: { commands: 30 }, companyLock: { wallClockMin: 60, budgetCents: 250 }, effective: { ...DEFAULTS, commands: 30, wallClockMin: 45, budgetCents: 250 } }) });
   const section = await limitsRegion();
   expect(await section.findByText(/A run started now would use/u)).toBeTruthy();
-  expect((section.getByLabelText("Commands a run may run") as HTMLInputElement).value).toBe("30");
-  expect((section.getByLabelText("Model spend of a run, in dollars") as HTMLInputElement).value).toBe("");
+  expect((section.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("30");
+  expect((section.getByLabelText<HTMLInputElement>("Model spend of a run, in dollars")).value).toBe("");
   expect(section.getByText("Default 40. Most 120. No company cap.")).toBeTruthy();
   expect(section.getByText("Default $4.00. Most $20.00. Company cap $2.50.")).toBeTruthy();
   expect(section.getByText("Default 45. Most 120. Company cap 60.")).toBeTruthy();
@@ -90,16 +90,16 @@ describe("the project's Setup limits", () => {
   const f = mountProject({ view: projectView({ revision: 2, limits: { commands: 30 } }) });
   const section = await limitsRegion();
   await section.findByLabelText("Commands a run may run");
-  expect((section.getByRole("button", { name: "Save limits" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((section.getByRole<HTMLButtonElement>("button", { name: "Save limits" })).disabled).toBe(true);
   type("Commands a run may run", "25");
   type("Model spend of a run, in dollars", "3.5");
-  fireEvent.click(section.getByRole("button", { name: "Save limits" }));
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
   await section.findByText("Saved. New runs use these limits.");
   expect(f.puts()).toHaveLength(1);
   expect(f.puts()[0]!.body).toMatchObject({ expectedRevision: 2, limits: { commands: 25, budgetCents: 350 } });
   expect(typeof (f.puts()[0]!.body as { requestId: string }).requestId).toBe("string");
   expect(Object.keys(f.puts()[0]!.body as object).sort()).toEqual(["expectedRevision", "limits", "requestId"]);
-  expect((section.getByLabelText("Commands a run may run") as HTMLInputElement).value).toBe("25");
+  expect((section.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("25");
  });
 
  it("emptying a box removes the project's own value (the default applies)", async () => {
@@ -107,7 +107,7 @@ describe("the project's Setup limits", () => {
   const section = await limitsRegion();
   await section.findByLabelText("Commands a run may run");
   type("Commands a run may run", "");
-  fireEvent.click(section.getByRole("button", { name: "Save limits" }));
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
   await section.findByText("Saved. New runs use these limits.");
   expect(f.puts()[0]!.body).toMatchObject({ limits: { hostAsks: 2 } });
   expect((f.puts()[0]!.body as { limits: object }).limits).not.toHaveProperty("commands");
@@ -119,13 +119,13 @@ describe("the project's Setup limits", () => {
   await section.findByLabelText("Commands a run may run");
   type("Commands a run may run", "30");
   expect(section.getByText("No more than 20")).toBeTruthy();
-  expect((section.getByRole("button", { name: "Save limits" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((section.getByRole<HTMLButtonElement>("button", { name: "Save limits" })).disabled).toBe(true);
   type("Commands a run may run", "abc");
   expect(section.getByText("Use a whole number")).toBeTruthy();
   type("Commands a run may run", "0");
   expect(section.getByText("At least 1")).toBeTruthy();
   type("Commands a run may run", "20");
-  expect((section.getByRole("button", { name: "Save limits" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((section.getByRole<HTMLButtonElement>("button", { name: "Save limits" })).disabled).toBe(false);
   expect(f.puts()).toHaveLength(0);
  });
 
@@ -135,9 +135,9 @@ describe("the project's Setup limits", () => {
   await section.findByLabelText("Commands a run may run");
   f.set(projectView({ revision: 2, limits: { commands: 10 }, effective: { ...DEFAULTS, commands: 10 } }));
   type("Commands a run may run", "25");
-  fireEvent.click(section.getByRole("button", { name: "Save limits" }));
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
   expect((await screen.findByRole("alert")).textContent).toContain("The limits changed since you looked. They were read again.");
-  await waitFor(() => expect((screen.getByLabelText("Commands a run may run") as HTMLInputElement).value).toBe("10"));
+  await waitFor(() => expect((screen.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("10"));
  });
 
  it("shows a refusal through VisibleText: a hidden control character is shown, never obeyed", async () => {
@@ -145,7 +145,7 @@ describe("the project's Setup limits", () => {
   const section = await limitsRegion();
   await section.findByLabelText("Commands a run may run");
   type("Commands a run may run", "25");
-  fireEvent.click(section.getByRole("button", { name: "Save limits" }));
+  fireEvent.click(section.getByRole<HTMLButtonElement>("button", { name: "Save limits" }));
   expect((await screen.findByRole("alert")).textContent).toContain("commands: too[U+202E]many");
  });
 
@@ -158,7 +158,6 @@ describe("the project's Setup limits", () => {
 
 // ---- the company page
 
-interface LockState { limits: Record<string, number>; setupAgentOff: boolean; devcontainerImages: string[] | null; noSoleOwnerException: boolean }
 const PENDING_AT = "2026-11-02T12:30:00.000Z";
 const DIGEST = "d".repeat(64);
 const locksView = (over: Record<string, unknown> = {}) => ({ revision: 3, limits: {}, setupAgentOff: false, devcontainerImages: null, noSoleOwnerException: false, defaults: DEFAULTS, maxima: MAXIMA, ...over });
@@ -170,7 +169,7 @@ function mountCompany(options: { view?: unknown; missing?: boolean; role?: "owne
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
  let view: unknown = options.view ?? locksView();
  const f = fakeHost(async request => {
-  const path = request.path.split("?")[0];
+  const path = request.path.split("?")[0] ?? "";
   if (path === "/v1/app/nav") return { status: 200, body: nav };
   if (path === "/v1/app/me") return { status: 200, body: me };
   if (path === "/v1/app/org/model-selection-policy") return { status: 200, body: companyPolicyRaw() };
