@@ -260,7 +260,22 @@ async function requireFreshAdmin(deps: SetupRecipeDeps, caller: RecipeCaller): P
 const iso = (deps: SetupRecipeDeps): string => deps.now().toISOString();
 
 /** Whether redaction would change anything in the body: a credential in a URL, a flag value, a key-shaped string. A recipe is shared text, so it must hold none. */
-const holdsSecret = (body: SetupRecipeBody): boolean => canonicalJson(redactSecrets(body)) !== canonicalJson(body);
+/**
+ * An npm/Yarn auth setting named by a key and given any value, in the same argument (`//host/:_authToken=abc`) or the next one (`config set //host/:_authToken abc`): `_authToken`, `_auth`, `_password`, `npmAuthToken`,
+ * `npmAuthIdent`. The value need not look like a key; the setting itself is the secret's place. A bare key with nothing after it is not a value.
+ */
+const AUTH_SETTING = /(?:^|[^A-Za-z0-9])(?:_authToken|_auth|_password|npmAuthToken|npmAuthIdent)(?:=(.*))?$/iu;
+function setsAuthValue(args: readonly string[]): boolean {
+  return args.some((arg, index) => {
+    const match = AUTH_SETTING.exec(arg);
+    if (match === null) return false;
+    return (match[1] !== undefined && match[1].length > 0) || (!arg.includes("=") && index + 1 < args.length);
+  });
+}
+
+const holdsSecret = (body: SetupRecipeBody): boolean =>
+  canonicalJson(redactSecrets(body)) !== canonicalJson(body)
+  || [...body.setupCommands, ...body.updateCommands, ...body.checks.map((check) => check.command)].some((command) => setsAuthValue(command.args));
 
 /** Parses a body, refuses a credential, refuses a host the host-ask list refuses, and refuses a body that names the repositories it came from. */
 function checkedBody(deps: SetupRecipeDeps, input: unknown, repositoryNames: readonly string[]): SetupRecipeBody {

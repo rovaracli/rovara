@@ -660,6 +660,22 @@ describe("fix round 1: repository names come from the broker's records, secrets 
       expect(await code(proposeRecipe(deps, maintainer, { project: "orders", body: input }))).toBe("CONFIG_INVALID");
     }
     expect(store.recipes.size).toBe(0);
+    // An auth setting with a plain value (not key-shaped) is refused, in the same argument or the next one, in setup, update and check commands.
+    const settings: string[][] = [
+      ["config", "set", "//registry.example.com/:_authToken", "plainvalue1"], ["config", "set", "//registry.example.com/:_authToken=plainvalue1"], ["config", "set", "_auth", "dXNlcjpwYXNz"],
+      ["config", "set", "_password", "hunter"], ["config", "set", "_password=hunter"], ["config", "set", "npmAuthToken", "abc123"], ["config", "set", "//registry.example.com/:_authtoken", "x"],
+    ];
+    for (const args of settings) {
+      for (const input of [body({ setupCommands: [cmd("npm", args)] }), body({ updateCommands: [cmd("npm", args)] }), body({ checks: [{ id: "unit", label: "Unit", command: cmd("npm", args), kind: "test" }] })]) {
+        expect(await code(createRecipeAsAdmin(deps, admin, { body: input })), args.join(" ")).toBe("CONFIG_INVALID");
+      }
+    }
+    expect(store.recipes.size).toBe(0);
+    // Positive controls: other settings, and a bare key with no value, are fine.
+    for (const args of [["config", "set", "registry", "https://registry.example.com/"], ["config", "get", "//registry.example.com/:_authToken"], ["config", "set", "fund", "false"]]) {
+      expect(await code(createRecipeAsAdmin(deps, admin, { body: body({ label: args.join(" "), setupCommands: [cmd("npm", args)] }) })), args.join(" ")).toBe("NO_ERROR");
+    }
+    store.recipes.clear();
     // Positive control: the same shape without a credential is accepted.
     expect(await code(createRecipeAsAdmin(deps, admin, { body: body({ setupCommands: [cmd("pip", ["install", "-r", "requirements.txt", "--index-url", "https://pypi.internal.example.com/simple"])] }) }))).toBe("NO_ERROR");
   });
