@@ -171,6 +171,16 @@ describe("the second reviewer takes no extra wall time (M1)", () => {
     expect(second?.report).toMatchObject({ status: "UNKNOWN", failureReason: "TIMEOUT" });
   });
 
+  it("a try that would run past the shared budget is cut at what is left of it, not given a fresh limit", async () => {
+    const prompts: string[] = [];
+    // The first try fails after 600 ms; the second hangs. With a shared budget of 1500 ms the second is cut at what is left (about 900 ms less the setup); with a fresh limit it would run 1500 ms more.
+    const slow = model("second-a", ["throw", "hang"], prompts, { delayMs: 600 });
+    const { second, elapsed } = await run({ first: model("first-v1", [PASS], prompts), candidates: [slow], timeoutMs: 1500 });
+    expect(second?.tries).toBe(2);
+    expect(second?.report).toMatchObject({ status: "UNKNOWN", failureReason: "TIMEOUT" });
+    expect(elapsed).toBeLessThan(1500 + 450);
+  });
+
   it("sees only the change by default: no source tools and no lessons (owner decision, option C); same_as_first gives it what the first reviewer has", async () => {
     const seen: string[] = [];
     const sources = { tools: [{ name: "lookup_ticket" }], note: "SOURCES-NOTE", labels: [{ label: "Jira" }] };
