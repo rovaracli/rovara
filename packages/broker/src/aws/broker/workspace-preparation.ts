@@ -107,7 +107,7 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; grantedBy?: unknown } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string } } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -131,6 +131,8 @@ export async function newWorkspacePreparation(
     createdAt: now,
     updatedAt: now,
   });
+  // Saved environments (SH25): the image this task's preparation may pull (a reference only; the worker asks for the login at pull time). Only a developer task's start sends a pin, and never a setup draft.
+  const savedEnv = await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId), setupDraft: options.setupDraft === true, testEnvPin: options.testEnvPin });
   const operation = operationRecord({
     ...operationOrg(workspace),
     id: operationId,
@@ -145,6 +147,8 @@ export async function newWorkspacePreparation(
     ...requesterOf(identity),
   });
   if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
+  // The digest this operation was told to pull is kept with the operation, so the login exchange gives a login for THAT image only and never for one the worker names.
+  if (savedEnv.savedEnv !== undefined) operation.savedEnvDigest = savedEnv.savedEnv.digest;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -169,7 +173,7 @@ export async function newWorkspacePreparation(
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
       // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) }),
-      ...(await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) })),
+      ...savedEnv,
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -243,7 +247,7 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
  */
 export async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; testEnvPin?: { revision: number; digest: string } } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -251,6 +255,7 @@ export async function heldPreparationDispatch(
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, workspace.orgId);
+  const savedEnv = await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId, setupDraft: options.setupDraft === true, testEnvPin: options.testEnvPin });
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
@@ -262,14 +267,18 @@ export async function heldPreparationDispatch(
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId }),
-      ...(await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId })),
+      ...savedEnv,
     },
   };
   const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {
     TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET knowledgeCommit = :commit",
     ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":commit": metaPrepare.knowledgeCommit },
   } }];
-  return { workspace, items: [...pinKnowledge, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
+  const pinSavedEnv: TransactItems = savedEnv.savedEnv === undefined ? [] : [{ Update: {
+    TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET savedEnvDigest = :digest",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":digest": savedEnv.savedEnv.digest },
+  } }];
+  return { workspace, items: [...pinKnowledge, ...pinSavedEnv, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**

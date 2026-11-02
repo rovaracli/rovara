@@ -10,7 +10,7 @@ import type { LessonsRuntime } from "../../lessons/runtime.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { RegistryTokenSource } from "../../project-registries/mint.js";
-import { E2EPolicySchema, type PrepareSavedEnv, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
+import { E2EPolicySchema, type PrepareSavedEnv, type SavedEnvRegistryAuth, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
@@ -25,6 +25,7 @@ import type { CredentialRegistry, ConnectorCredentialsConfiguration } from "../c
 import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
 import type { PlanEvidenceEvent } from "../../developer/plan-evidence-jobs.js";
 import type { CodeHostRouter, PluginRegistry } from "../../plugins/registry.js";
+import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import type { SsoStores } from "../../developer/sso-sign-in.js";
 import type { CloudProjectDefaults } from "../../org/cloud-projects.js";
 import type { OrgResolver } from "../../org/resolve.js";
@@ -200,8 +201,15 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
-  /** Saved environments (SH25): what a preparation's `savedEnv` field is, for a project (installed with the registry wiring; absent while the `sv` switch is off, so nothing is sent). Never throws. */
-  savedEnvPrepare?: (input: { orgId: string; projectName: string }) => Promise<{ savedEnv?: PrepareSavedEnv }>;
+  /**
+   * Saved environments (SH25): what a preparation's `savedEnv` field is, for a project and the TASK'S approved environment pin (`testEnvPin`, set only by the developer task start and continue paths). Installed by
+   * `installSavedEnv` only while the `sv` switch is on; absent otherwise, so nothing is sent. Never throws. The field names an image and carries no credential.
+   */
+  savedEnvPrepare?: (input: { orgId: string; projectName: string; testEnvPin: { revision: number; digest: string } }) => Promise<{ savedEnv?: PrepareSavedEnv }>;
+  /** Saved environments (SH25, review M1): the pull login for the image a running preparation was told to pull. Installed with `savedEnvPrepare`. Undefined: no login. Never carries more than the one repository. */
+  savedEnvLogin?: (input: { orgId: string; projectName: string; digest: string }) => Promise<SavedEnvRegistryAuth | undefined>;
+  /** Saved environments (SH24/SH25): the registry's ports (store, sessions, ECR). Wired with the routes; `installSavedEnv` derives the two hooks above from it, only while the switch is on. */
+  savedEnvDeps?: SavedEnvDeps;
   /** Injectable clock for funding evidence and its durable audit. */
   now?: () => number;
   documentClient: DynamoDBDocumentClient;

@@ -76,6 +76,7 @@ import { getSwebenchRunForThread, handleSwebenchCallback, isSwebenchCallbackPath
 import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSlackBatch, updateWatchedBatch } from "../eval-batch-service.js";
 import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
+import { exchangeSavedEnvLogin } from "./saved-env-login.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
@@ -742,6 +743,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const registryExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/registry-credentials$/.exec(url.pathname);
       if (request.method === "POST" && registryExchange?.[1] && registryExchange[2]) {
         return json(await exchangeRegistryCredential(dependencies, request, registryExchange[1], registryExchange[2]), request.requestId);
+      }
+      // Saved environments (SH25): the pull login, given to a running preparation for the image it was told to pull (test-env/saved-env-login.ts).
+      const savedEnvLoginExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-login$/.exec(url.pathname);
+      if (request.method === "POST" && savedEnvLoginExchange?.[1] && savedEnvLoginExchange[2]) {
+        return json(await exchangeSavedEnvLogin(dependencies, request, savedEnvLoginExchange[1], savedEnvLoginExchange[2]), request.requestId);
       }
       const credentialExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/repository-credentials$/.exec(
         url.pathname,

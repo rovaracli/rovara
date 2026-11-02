@@ -40,6 +40,8 @@ import {
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import { resumeAfterRunLimitApproval } from "./workflow-coding.js";
 import { AgentRunStateSchema, AgentXError, PER_TASK_BUDGET_USD, ROVARA_CODE_AGENT_ID, type SpendingAdmissionReference, canonicalJson, projectAiKey, recipeRunner } from "@agentx/contracts";
+import { readTestEnvPin } from "../../test-env/usable.js";
+import { pinOfStoredPin } from "../../test-env/saved-env-pin.js";
 import { Aliases, type TransactItem, failedIndexes } from "../../agents/table-writes.js";
 import { type CapturedTaskStop, captureTaskStopAdmission } from "../../org/task-stop-admission.js";
 import { type PreparedTaskApprovalAdmission, type TaskStopTransition, checkedTaskMaxPerRun, checkedTaskStopSnapshot, readTaskStopTransition, readTaskStopWindow, taskMaxPerRunForAdmission, taskStopTransitionItems, taskStopTransitionRecoveryChecks, taskStopWindowItems, withAdmittedTaskSource } from "../../org/task-stop-window.js";
@@ -174,6 +176,12 @@ export function heldPreparationOptions(task: Pick<DeveloperTaskRecord, "purpose"
   };
 }
 
+/** `{ testEnvPin }` for a held start's preparation when its task uses the approved environment (the pin stored at the start); nothing otherwise (SH25). */
+export async function heldSavedEnvPin(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "orgId">, task: Pick<DeveloperTaskRecord, "project" | "taskId">): Promise<{ testEnvPin?: { revision: number; digest: string } }> {
+  const testEnvPin = pinOfStoredPin(await readTestEnvPin(deps, deps.orgId, task.project, task.taskId));
+  return testEnvPin === undefined ? {} : { testEnvPin };
+}
+
 /**
  * A run held at its start (run limit 0) is dispatched now that its limit was raised (Task 15's paused start): in one transaction, conditional on the pause
  * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
@@ -184,7 +192,8 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, heldPreparationOptions(task, held));
+  // Saved environments (SH25): the pin the task started with (stored with it), when it uses the approved environment; nothing otherwise.
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...heldPreparationOptions(task, held), ...(await heldSavedEnvPin(deps, task)) });
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [

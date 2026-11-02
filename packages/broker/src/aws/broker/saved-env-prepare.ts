@@ -1,11 +1,34 @@
-// Saved environments (SH25): the saved image field of a prepare invocation. The rules are in ../../test-env/saved-env.ts (`savedEnvForPrepare`); this file only asks the installed resolver, and never lets it
-// block or fail a preparation. A run that runs none of the project's code (`readOnly`) is sent nothing: it has no setup to save.
+// Saved environments (SH25): the saved image field of a prepare invocation, and the install of the registry's hooks. The rules are in ../../test-env/saved-env.ts (`savedEnvForPrepare`, `savedEnvPullLogin`); this
+// file only asks the installed resolver, and never lets it block or fail a preparation.
+//
+// What is sent, and when: the field is a REFERENCE (repository, digest, revision, key, the task's pinned revision). It is stored with the invocation (outbox, stream, queue), so it holds no credential: the worker
+// asks for the pull login at pull time (`exchangeSavedEnvLogin`). Only a developer task's start (and the continue of a held start) sends the task's approved-environment pin; a preparation without one (a thread
+// workspace, project registration, a setup draft, a run that runs none of the project's code) is sent nothing.
 import type { PrepareSavedEnv } from "@agentx/contracts";
+import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
+import { savedEnvForPrepare, savedEnvPullLogin } from "../../test-env/saved-env.js";
 import type { AwsBrokerDependencies, RegisteredProjectRecord } from "./definitions.js";
 
 /** `{ savedEnv }` for a prepare payload, or nothing. */
-export async function savedEnvPrepareOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, options: { readOnly?: boolean; orgId: string | undefined }): Promise<{ savedEnv?: PrepareSavedEnv }> {
+export async function savedEnvPrepareOf(
+  dependencies: AwsBrokerDependencies,
+  project: RegisteredProjectRecord,
+  options: { readOnly?: boolean; orgId: string | undefined; setupDraft?: boolean; testEnvPin?: { revision: number; digest: string } | undefined },
+): Promise<{ savedEnv?: PrepareSavedEnv }> {
   const resolve = dependencies.savedEnvPrepare;
-  if (resolve === undefined || options.readOnly === true || options.orgId === undefined) return {};
-  try { return await resolve({ orgId: options.orgId, projectName: project.definition.name }); } catch { return {}; }
+  if (resolve === undefined || options.readOnly === true || options.setupDraft === true || options.orgId === undefined || options.testEnvPin === undefined) return {};
+  try { return await resolve({ orgId: options.orgId, projectName: project.definition.name, testEnvPin: options.testEnvPin }); } catch { return {}; }
+}
+
+/** The two hooks, from the registry's ports, and only while the `sv` switch is on: with it off nothing is installed, so nothing is sent and no login is given. */
+export function installSavedEnv(input: Pick<AwsBrokerDependencies, "savedEnvDeps">, env: NodeJS.ProcessEnv = process.env): Pick<AwsBrokerDependencies, "savedEnvPrepare" | "savedEnvLogin"> {
+  const deps = input.savedEnvDeps;
+  if (deps === undefined || !savedEnvEnabled(env)) return {};
+  return {
+    savedEnvPrepare: ({ orgId, projectName, testEnvPin }) => savedEnvForPrepare(deps, { orgId, projectId: projectName }, testEnvPin),
+    savedEnvLogin: async ({ orgId, projectName, digest }) => {
+      const login = await savedEnvPullLogin(deps, { orgId, projectId: projectName }, digest);
+      return login.ok ? login.auth : undefined;
+    },
+  };
 }

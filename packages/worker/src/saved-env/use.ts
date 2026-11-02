@@ -28,11 +28,12 @@ import {
   SAVED_ENV_IMAGE_SEED_PATH,
   SAVED_ENV_LABEL_KEY,
   SAVED_ENV_LABEL_REVISION,
+  PrepareSavedEnvSchema,
   SavedEnvImageManifestSchema,
-  SavedEnvUseSchema,
+  SavedEnvRegistryAuthSchema,
   type PrepareSavedEnv,
   type SavedEnvImageManifest,
-  type SavedEnvUse,
+  type SavedEnvRegistryAuth,
   type SavedEnvUseStep,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
@@ -46,6 +47,8 @@ type Repository = StoredProjectDefinition["repositories"][number];
 type Materializer = (repository: Repository, destination: string, credential: GitCredential) => Promise<void>;
 
 const DOCKER_QUICK_MS = 2 * 60_000;
+/** A login with less than this left is not used: the pull could outlive it. */
+const LOGIN_MIN_REMAINING_MS = 60_000;
 const PULL_TIMEOUT_MS = 30 * 60_000;
 const COPY_TIMEOUT_MS = 30 * 60_000;
 const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
@@ -53,9 +56,12 @@ const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const NEVER_RUN = "/rovara/never-run";
 
 export interface SavedEnvUseOptions {
-  use: SavedEnvUse;
-  /** The test environment revision this TASK is pinned to. */
-  taskTestEnvRevision: number;
+  /** The prepare invocation's reference (no credential). */
+  ref: PrepareSavedEnv;
+  /** Gets the pull login from the broker, right before the pull. Never stored; the login is written only to the throwaway Docker config of the pull and removed with it. */
+  login: () => Promise<SavedEnvRegistryAuth>;
+  /** Now, in milliseconds. Default: the clock. */
+  now?: () => number;
   docker: DockerCli;
   /** Called once with the step an attempt failed at (the registry marks the image stale; the evidence says so). Never called when the image was used. */
   onFallback?: (step: SavedEnvUseStep) => void;
@@ -111,11 +117,16 @@ export async function checkSeedTree(root: string, links: LinkPolicy = DEFAULT_LI
  * `remove`, or here on failure.
  */
 async function extractImage(options: SavedEnvUseOptions, repositories: readonly Repository[]): Promise<Extracted> {
-  const parsed = SavedEnvUseSchema.safeParse(options.use);
+  const parsed = PrepareSavedEnvSchema.safeParse(options.ref);
   if (!parsed.success) throw new Fallback("input");
   const use = parsed.data;
-  if (use.testEnvRevision !== options.taskTestEnvRevision) throw new Fallback("revision");
-  const reference = `${use.auth.registry}/${use.repository}@${use.digest}`;
+  if (use.testEnvRevision !== use.taskTestEnvRevision) throw new Fallback("revision");
+  // the login is fetched as late as possible and checked before anything is pulled with it
+  let auth: SavedEnvRegistryAuth;
+  try { auth = SavedEnvRegistryAuthSchema.parse(await options.login()); } catch { throw new Fallback("login"); }
+  if (auth.repository !== use.repository) throw new Fallback("login");
+  if (Date.parse(auth.expiresAt) - (options.now ?? Date.now)() < LOGIN_MIN_REMAINING_MS) throw new Fallback("expired");
+  const reference = `${auth.registry}/${use.repository}@${use.digest}`;
   const folder = await (options.temporaryFolder ?? defaultFolder)();
   const container = `rovara-saved-env-${(options.random ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-f0-9]/gu, "").slice(0, 16)}`;
   const docker = options.docker;
@@ -128,7 +139,7 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
     // pull, by digest, with a login that exists only for this call
     const config = path.join(folder.path, "docker-config");
     await mkdir(config, { recursive: true, mode: 0o700 });
-    await writeFile(path.join(config, "config.json"), JSON.stringify({ auths: { [use.auth.registry]: { auth: Buffer.from(`${use.auth.username}:${use.auth.password}`).toString("base64") } } }), { mode: 0o600 });
+    await writeFile(path.join(config, "config.json"), JSON.stringify({ auths: { [auth.registry]: { auth: Buffer.from(`${auth.username}:${auth.password}`).toString("base64") } } }), { mode: 0o600 });
     const pulled = await docker.run(["--config", config, "pull", reference], { timeoutMs: PULL_TIMEOUT_MS });
     await rm(config, { recursive: true, force: true });
     if (pulled.exitCode !== 0) throw new Fallback("pull");
@@ -157,7 +168,7 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
     // the manifest inside the image
     let manifest: SavedEnvImageManifest;
     try { manifest = SavedEnvImageManifestSchema.parse(JSON.parse(await readFile(manifestFile, "utf8"))); } catch { throw new Fallback("manifest"); }
-    if (manifest.environmentKey !== use.environmentKey || manifest.testEnvRevision !== use.testEnvRevision || manifest.testEnvRevision !== options.taskTestEnvRevision) throw new Fallback("manifest");
+    if (manifest.environmentKey !== use.environmentKey || manifest.testEnvRevision !== use.testEnvRevision || manifest.testEnvRevision !== use.taskTestEnvRevision) throw new Fallback("manifest");
     for (const repository of repositories) if (!manifest.commits.some((commit) => commit.repositoryId === repository.name)) throw new Fallback("manifest");
     if (options.workspaceRoot !== undefined && manifest.workspaceRoot !== undefined && manifest.workspaceRoot !== options.workspaceRoot) {
       options.onDiagnostic?.("the saved environment was built at another workspace path; the project's setup repairs paths written into it");
@@ -180,10 +191,10 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
  * The preparation's saved environment options from the prepare invocation's `savedEnv` (SH25): the machine's docker, and a fallback that is written to the worker log as a JSON line with the digest and the step
  * (the broker marks the image stale from the operation's result; no credential is in the line).
  */
-export function savedEnvOptionsOf(payload: PrepareSavedEnv, docker: DockerCli = createDockerCli()): SavedEnvUseOptions {
+export function savedEnvOptionsOf(payload: PrepareSavedEnv, login: SavedEnvUseOptions["login"], docker: DockerCli = createDockerCli()): SavedEnvUseOptions {
   return {
-    use: payload.use, taskTestEnvRevision: payload.taskTestEnvRevision, docker,
-    onFallback: (step) => { console.log(JSON.stringify({ component: "worker", event: "saved-env.fallback", digest: payload.use.digest, step })); },
+    ref: payload, login, docker,
+    onFallback: (step) => { console.log(JSON.stringify({ component: "worker", event: "saved-env.fallback", digest: payload.digest, step })); },
   };
 }
 

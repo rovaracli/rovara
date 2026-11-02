@@ -63,6 +63,8 @@ export interface OperationRecord extends Operation {
   targetOperationId?: string;
   /** Meta repo lane A: the meta repository's default-branch head the BROKER read and sent in this prepare invocation; the task keeps it only when the worker reports the same one. */
   knowledgeCommit?: string;
+  /** Saved environments (SH25): the image digest this prepare invocation was told to pull. The pull login is given for this digest only. */
+  savedEnvDigest?: string;
   /** The model proxy keys minted for this operation's worker by key id (a hash), when no task record keeps them (Slack work, ruling R31). */
   modelKeyIds?: string[];
   /** The project revision whose non-disk settings applied, which may be newer than the workspace's. */

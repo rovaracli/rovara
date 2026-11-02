@@ -132,8 +132,7 @@ describe("what the build writes is what the use reads (B4)", () => {
     const manifest = await prepareWorkspace({
       rootPath, project: PROJECT, readOnly: true, materializer, credentialProvider: async () => ({}),
       savedEnv: {
-        use: { repository: REPOSITORY, digest: IMAGE_DIGEST, testEnvRevision: 4, environmentKey: key, auth: { registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: ["login", "-", "p".repeat(30)].join(""), expiresAt: new Date(Date.now() + 1_800_000).toISOString() } },
-        taskTestEnvRevision: 4, docker, onFallback: (step) => fallbacks.push(step),
+        ref: { repository: REPOSITORY, digest: IMAGE_DIGEST, testEnvRevision: 4, environmentKey: key, taskTestEnvRevision: 4 }, login: async () => ({ registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: ["login", "-", "p".repeat(30)].join(""), expiresAt: new Date(Date.now() + 1_800_000).toISOString() }), docker, onFallback: (step) => fallbacks.push(step),
         fetch: async ({ directory, branch }) => { execFileSync("git", ["fetch", "-q", "--no-tags", pathToFileURL(built.source).href, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: directory, env: { ...gitEnv, HOME: directory } }); },
       },
     });
@@ -167,7 +166,7 @@ describe("what the build writes is what the use reads (B4)", () => {
       const materializer: RepositoryMaterializer = async (_repository, target) => { execFileSync("git", ["clone", "-q", "--no-checkout", pathToFileURL(built.source).href, target], { env: gitEnv }); };
       const manifest = await prepareWorkspace({
         rootPath: await scratch(), project: PROJECT, readOnly: true, materializer, credentialProvider: async () => ({}),
-        savedEnv: { use: { repository: REPOSITORY, digest: IMAGE_DIGEST, testEnvRevision: 4, environmentKey: key, auth: { registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: ["login", "-", "p".repeat(30)].join(""), expiresAt: new Date(Date.now() + 1_800_000).toISOString() } }, taskTestEnvRevision: 4, docker, onFallback: (s) => fallbacks.push(s) },
+        savedEnv: { ref: { repository: REPOSITORY, digest: IMAGE_DIGEST, testEnvRevision: 4, environmentKey: key, taskTestEnvRevision: 4 }, login: async () => ({ registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: ["login", "-", "p".repeat(30)].join(""), expiresAt: new Date(Date.now() + 1_800_000).toISOString() }), docker, onFallback: (s) => fallbacks.push(s) },
       });
       expect(manifest.complete).toBe(true);
       expect(fallbacks).toEqual([step]);

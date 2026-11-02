@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { PrepareSavedEnvSchema, savedEnvRepositoryName, type SavedEnvManifest } from "../../packages/contracts/src/index.js";
 import {
-  ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
+  ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, savedEnvPullLogin, sweepDeleted, SAVED_ENV_TASK_CHECK_MS, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
   type RegistryImage, type RegistryPort, type SavedEnvDeps, type SavedEnvImageRecord, type SavedEnvState,
 } from "../../packages/broker/src/test-env/saved-env.js";
 import { expectedRepositoryPolicy, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
+import { installSavedEnv } from "../../packages/broker/src/aws/broker/saved-env-prepare.js";
+import { heldPreparationDispatch, newWorkspacePreparation } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { memorySavedEnvStore } from "../support/memory-saved-env-store.js";
 
 const DAY = 86_400_000;
@@ -99,10 +101,28 @@ describe("queueing a rebuild", () => {
     expect(await requestReset(w.deps, ids, "person-1")).toEqual({ ok: false, reason: "disabled" });
     expect(await authorizeLease(w.deps, ids, { jobId: "x", leaseToken: "y" })).toEqual({ ok: false, reason: "disabled" });
     expect(await walk(w.deps, ids)).toEqual({ ok: false, reason: "disabled" });
-    expect(await onProjectDeleted(w.deps, ids)).toEqual({ ok: false, reason: "disabled" });
     expect(await markStale(w.deps, ids, { digest: dig(1), step: "pull" })).toEqual({ ok: false });
+    expect(await savedEnvPullLogin(w.deps, ids, dig(1))).toEqual({ ok: false, reason: "disabled" });
+    expect(await sweepDeleted(w.deps)).toEqual({ ok: false, reason: "disabled" });
     expect(w.store.rows.size).toBe(0);
     expect(w.assumed).toEqual([]);
+  });
+
+  it("a delete or an archive is MARKED even with `sv` off (nothing is built for the project when it is turned on later), and the registry is not touched", async () => {
+    const w = world({ enabled: false });
+    expect(await onProjectDeleted(w.deps, { orgId: "org-1", projectId: "gone" })).toEqual({ ok: false, reason: "disabled" });
+    expect(w.store.rows.get("org-1#gone")).toMatchObject({ deleted: true, images: [] });
+    expect(await onProjectArchived(w.deps, { orgId: "org-1", projectId: "kept" }, true)).toEqual({ ok: true });
+    expect(w.store.rows.get("org-1#kept")).toMatchObject({ archived: true });
+    expect(w.assumed).toEqual([]);
+    expect(w.calls.repoDeleted).toBe(0);
+  });
+
+  it("an archive that met another write is retried", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))] });
+    w.store.failNextCommit();
+    expect(await onProjectArchived(w.deps, ids, true)).toEqual({ ok: true });
+    expect(w.store.rows.get("org-1#proj-1")!.archived).toBe(true);
   });
 
   it("a project with an approved environment and no image gets a job with a lease; a second check while it runs changes nothing", async () => {
@@ -574,10 +594,24 @@ describe("what a preparation is told (SH25)", () => {
     const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
     const told = await savedEnvForPrepare(w.deps, ids, APPROVED);
     expect(PrepareSavedEnvSchema.safeParse(told.savedEnv).success).toBe(true);
-    expect(told.savedEnv).toMatchObject({ taskTestEnvRevision: 4, use: { repository, digest: dig(1), testEnvRevision: 4, environmentKey: KEY, auth: { repository, username: "AWS" } } });
-    expect(w.assumed.some((request) => request.roleArn.includes("img-pull"))).toBe(true);
-    expect(w.assumed.some((request) => request.roleArn.includes("img-push"))).toBe(false);
+    expect(told.savedEnv).toEqual({ repository, digest: dig(1), testEnvRevision: 4, environmentKey: KEY, taskTestEnvRevision: 4 });
+    // a REFERENCE only: no login is minted for an invocation that is stored (the worker asks at pull time)
+    expect(JSON.stringify(told)).not.toMatch(/password|username|auth/u);
+    expect(w.assumed).toEqual([]);
     expect(w.store.rows.get("org-1#proj-1")!.lastTaskAt).toBe(iso(T0));
+  });
+
+  it("a task's check (activity, a possible rebuild) is made at most once per ten minutes: a retried preparation does not repeat it", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+    let keyReads = 0;
+    w.deps.currentKey = async () => { keyReads += 1; return KEY; };
+    await savedEnvForPrepare(w.deps, ids, APPROVED);
+    await savedEnvForPrepare(w.deps, ids, APPROVED);
+    await savedEnvForPrepare(w.deps, ids, APPROVED);
+    expect(keyReads).toBe(1);
+    w.clock.now += SAVED_ENV_TASK_CHECK_MS + 1;
+    await savedEnvForPrepare(w.deps, ids, APPROVED);
+    expect(keyReads).toBe(2);
   });
 
   it("nothing (the task sets up fresh) when the switch is off, there is no image, the image is stale, built for another approved environment, or the project is archived", async () => {
@@ -594,13 +628,157 @@ describe("what a preparation is told (SH25)", () => {
     expect(await savedEnvForPrepare(archived.deps, ids, APPROVED)).toEqual({});
   });
 
-  it("nothing when the repository is not the template's (squatting), the project's approved environment moved, or anything throws; never an error", async () => {
-    const squat = world({ description: { encryptionType: "AES256", kmsKey: undefined, imageTagMutability: "MUTABLE", policyText: undefined } }); seed(squat, { images: [imageOf(dig(1))] });
-    expect(await savedEnvForPrepare(squat.deps, ids, APPROVED)).toEqual({});
-    const moved = world({ approved: { revision: 5, digest: "9".repeat(64) } }); seed(moved, { images: [imageOf(dig(1))] });
-    expect(await savedEnvForPrepare(moved.deps, ids, APPROVED)).toEqual({});
+  it("nothing when anything throws; never an error", async () => {
     const broken = world(); seed(broken, { images: [imageOf(dig(1))] });
     broken.deps.store.get = async () => { throw new Error("table unavailable"); };
     expect(await savedEnvForPrepare(broken.deps, ids, APPROVED)).toEqual({});
+  });
+});
+
+describe("the pull login (SH25 review M1): minted at pull time for the image the operation was told to pull", () => {
+  it("gives a one-repository, pull-role login for a ready image of the row, and mints nothing else", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+    const login = await savedEnvPullLogin(w.deps, ids, dig(1));
+    expect(login.ok).toBe(true);
+    expect(login.ok && login.auth).toMatchObject({ repository, username: "AWS" });
+    expect(w.assumed.some((request) => request.roleArn.includes("img-pull"))).toBe(true);
+    expect(w.assumed.some((request) => request.roleArn.includes("img-push"))).toBe(false);
+  });
+
+  it("an older image that is still in the row and ready can be pulled by the operation that was told to; one the row does not name, or a stale one, cannot", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(2)), imageOf(dig(1))] });
+    expect((await savedEnvPullLogin(w.deps, ids, dig(1))).ok).toBe(true);
+    expect(await savedEnvPullLogin(w.deps, ids, dig(7))).toEqual({ ok: false, reason: "no_image" });
+    const stale = world(); seed(stale, { images: [imageOf(dig(1), { status: "stale" })] });
+    expect(await savedEnvPullLogin(stale.deps, ids, dig(1))).toEqual({ ok: false, reason: "no_image" });
+    expect(stale.assumed).toEqual([]);
+  });
+
+  it("no login for an archived, deleted or turned-off project, or an image far past the max age", async () => {
+    for (const over of [{ archived: true }, { deleted: true }, { enabled: false }] as Array<Partial<SavedEnvState>>) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], ...over });
+      expect(await savedEnvPullLogin(w.deps, ids, dig(1))).toEqual({ ok: false, reason: "no_image" });
+      expect(w.assumed).toEqual([]);
+    }
+    const old = world(); seed(old, { images: [imageOf(dig(1), { recordedAt: iso(T0 - 9 * 86_400_000) })] });
+    expect(await savedEnvPullLogin(old.deps, ids, dig(1))).toEqual({ ok: false, reason: "no_image" });
+  });
+
+  it("no login when the repository is not the template's (squatting) or the project's approved environment moved since the image was built", async () => {
+    const squat = world({ description: { encryptionType: "AES256", kmsKey: undefined, imageTagMutability: "MUTABLE", policyText: undefined } }); seed(squat, { images: [imageOf(dig(1))] });
+    expect(await savedEnvPullLogin(squat.deps, ids, dig(1))).toEqual({ ok: false, reason: "unavailable" });
+    const moved = world({ approved: { revision: 5, digest: "9".repeat(64) } }); seed(moved, { images: [imageOf(dig(1))] });
+    expect(await savedEnvPullLogin(moved.deps, ids, dig(1))).toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+const lateResult = (digest: string) => ({ ok: true, repository, tag: "k0123456789abcdef-20261102120000-01234567", imageDigest: digest, manifest: manifestOf({ imageDigest: digest }) });
+
+describe("SH24 review items", () => {
+  it("a job is never queued without a key (no_key), a Reset included; the Reset stays asked for", async () => {
+    const w = world({ key: undefined });
+    expect(await checkRebuild(w.deps, ids, "push")).toMatchObject({ ok: true, queued: false, why: "no_key" });
+    expect(await requestReset(w.deps, ids, "person-1")).toMatchObject({ ok: true, queued: false, why: "no_key" });
+    expect(w.store.rows.get("org-1#proj-1")!.job).toBeUndefined();
+    expect(w.store.rows.get("org-1#proj-1")!.resetRequested).toBe(true);
+  });
+
+  it("the walk keeps unnamed digests while a job's lease is live (a build may have pushed but not reported), and deletes them once the lease has lapsed", async () => {
+    const pushed = { digest: dig(5), tags: ["t"], pushedAt: iso(T0 - 3_600_000) };
+    const w = world({ images: [pushed] }); seed(w, { images: [], job: { jobId: "j", leaseToken: "l", reason: "no_image", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0 - 3_600_000), leaseUntil: iso(T0 + 3_600_000), dispatchedAt: iso(T0 - 3_000_000) } });
+    await walk(w.deps, ids);
+    expect(w.calls.deleted).toEqual([]);
+    w.clock.now = T0 + 4 * 3_600_000;
+    await walk(w.deps, ids);
+    expect(w.calls.deleted).toEqual([[dig(5)]]);
+  });
+
+  it("a result that arrives after the project was deleted runs the repository deletion again; it never leaves the pushed image", async () => {
+    const w = world({ images: [{ digest: dig(5), tags: ["t"], pushedAt: iso(T0) }] });
+    await onProjectDeleted(w.deps, ids);
+    const before = w.calls.repoDeleted;
+    const late = await recordBuild(w.deps, ids, { jobId: "j", leaseToken: "l", result: lateResult(dig(5)) });
+    expect(late).toMatchObject({ ok: false, reason: "no_job" });
+    expect(w.calls.repoDeleted).toBe(before + 1);
+  });
+
+  it("a result with a bad lease deletes nothing (the caller proved nothing)", async () => {
+    const w = world({ images: [{ digest: dig(5), tags: ["t"], pushedAt: iso(T0) }] }); seed(w, { images: [imageOf(dig(1))], job: { jobId: "j", leaseToken: "l", reason: "no_image", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + 3_600_000) } });
+    await recordBuild(w.deps, ids, { jobId: "j", leaseToken: "wrong", result: lateResult(dig(1)) });
+    await recordBuild(w.deps, { orgId: "org-1", projectId: "nobody" }, { jobId: "j", leaseToken: "l", result: lateResult(dig(1)) });
+    expect(w.calls.deleted).toEqual([]);
+    expect(w.calls.repoDeleted).toBe(0);
+  });
+
+  it("a valid lease on a project turned off deletes the pushed digest", async () => {
+    const w = world(); seed(w, { enabled: false, images: [], job: { jobId: "j", leaseToken: "l", reason: "no_image", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + 3_600_000) } });
+    const late = await recordBuild(w.deps, ids, { jobId: "j", leaseToken: "l", result: lateResult(dig(5)) });
+    expect(late).toMatchObject({ ok: false, reason: "inactive" });
+    expect(w.calls.deleted).toEqual([[dig(5)]]);
+  });
+
+  it("the nightly sweep runs the registry deletion again for projects deleted in the last two days, and not for older ones", async () => {
+    const w = world();
+    await onProjectDeleted(w.deps, { orgId: "org-1", projectId: "recent" });
+    seed(w, { deleted: true, deletedAt: iso(T0 - 5 * 86_400_000) });
+    const before = w.calls.repoDeleted;
+    const swept = await sweepDeleted(w.deps);
+    expect(swept).toEqual({ ok: true, swept: 1, failed: 0 });
+    expect(w.calls.repoDeleted).toBe(before + 1);
+  });
+});
+
+describe("the stored invocation holds no credential (SH25 review M1/M2)", () => {
+  const projectRecord = { definition: { name: "proj-1", revision: 1, repositories: [{ name: "svc", url: "https://github.com/acme/svc.git", path: "svc", defaultBranch: "main", credentialRef: "svc-read" }], setup: [], readiness: [], orchestratorInstructions: "x" }, runtimeBinding: { deploymentMode: "ec2-ebs" } } as never;
+  const OWNER = "owner-key-0123456789";
+  const identity = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", ownerKey: OWNER, issuer: "i", subject: "s" } as never;
+  const PASSWORD = "p".repeat(30);
+  const brokerDeps = (w: ReturnType<typeof world>, env: string) => {
+    const hooks = installSavedEnv({ savedEnvDeps: w.deps }, { SAVED_ENV_ENABLED: env });
+    // the registry world's rows are under "org-1"; the preparation's org is the identity's
+    return {
+      callbackSigningKey: "signing-key", tableName: "table", documentClient: { send: async () => ({}) }, repositoryGrants: { issue: () => "grant-value" },
+      ...(hooks.savedEnvPrepare === undefined ? {} : { savedEnvPrepare: (input: { orgId: string; projectName: string; testEnvPin: { revision: number; digest: string } }) => hooks.savedEnvPrepare!({ ...input, orgId: "org-1" }) }),
+    } as never;
+  };
+
+  it("a new preparation names the image in the invocation and the outbox record and keeps the digest with the operation; no password, username or login anywhere in what is written", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+    const prepared = await newWorkspacePreparation(brokerDeps(w, "1"), identity, projectRecord, OWNER, "7c0f4b9e-1111-4222-8333-444455558888", { testEnvPin: APPROVED });
+    const text = JSON.stringify(prepared.items);
+    expect(text).toContain(dig(1));
+    expect(text).toContain(`"savedEnv":{"repository":"${repository}"`);
+    expect(text).not.toContain(PASSWORD);
+    expect(text).not.toMatch(/"(password|username|auth|authorizationToken)"/u);
+    const operation = prepared.items.map((item) => (item as { Put?: { Item?: { entityType?: string; savedEnvDigest?: string } } }).Put?.Item).find((item) => item?.entityType === "OPERATION");
+    expect(operation?.savedEnvDigest).toBe(dig(1));
+    expect(w.assumed).toEqual([]);
+  });
+
+  it("no pin (a thread workspace, a registration), a setup draft, a read-only run or the switch off: nothing is sent and no digest is kept", async () => {
+    for (const [env, options] of [["1", {}], ["1", { testEnvPin: APPROVED, setupDraft: true }], ["1", { testEnvPin: APPROVED, readOnly: true }], ["0", { testEnvPin: APPROVED }]] as const) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+      const prepared = await newWorkspacePreparation(brokerDeps(w, env), identity, projectRecord, OWNER, "7c0f4b9e-1111-4222-8333-444455558888", options);
+      expect(JSON.stringify(prepared.items)).not.toContain("savedEnv");
+    }
+  });
+
+  it("a held start's dispatch also names the image only by reference, and records the digest on the operation in the same transaction", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+    // the held preparation as the start left it: workspace and operation written, nothing sent yet
+    const table = new Map<string, unknown>();
+    const first = await newWorkspacePreparation(brokerDeps(w, "1"), identity, projectRecord, OWNER, "7c0f4b9e-1111-4222-8333-444455558888", {});
+    for (const item of first.items) {
+      const put = (item as { Put?: { Item?: { pk?: string; sk?: string; entityType?: string } } }).Put?.Item;
+      if (put?.entityType === "WORKSPACE" || put?.entityType === "OPERATION") table.set(`${put.pk}|${put.sk}`, put);
+    }
+    const reading = { ...(brokerDeps(w, "1") as object), documentClient: { send: async (command: { input: { Key: { pk: string; sk: string } } }) => ({ Item: table.get(`${command.input.Key.pk}|${command.input.Key.sk}`) }) } } as never;
+    const held = await heldPreparationDispatch(reading, projectRecord, first.workspace.id, first.operationId, OWNER, { testEnvPin: APPROVED });
+    const text = JSON.stringify(held.items);
+    expect(text).toContain(`"savedEnv":{"repository":"${repository}"`);
+    expect(text).toContain("SET savedEnvDigest = :digest");
+    expect(text).not.toMatch(/"(password|username|auth|authorizationToken)"/u);
+    const none = await heldPreparationDispatch(reading, projectRecord, first.workspace.id, first.operationId, OWNER, { testEnvPin: APPROVED, setupDraft: true });
+    expect(JSON.stringify(none.items)).not.toContain("savedEnv");
   });
 });

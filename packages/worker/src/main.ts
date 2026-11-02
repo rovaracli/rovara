@@ -30,6 +30,7 @@ import { handlePeekInvocation } from "./peek-invocation.js";
 import { removeLeftoverMaskVolumes } from "./devcontainer.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 import { removeLeftoverSetupRuns, setupWorkspaceKey } from "./setup-network.js";
+import { createSavedEnvLoginProvider } from "./saved-env/login.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
@@ -112,7 +113,7 @@ const state = createWorkerServerState(
           ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
           // N9 (INTG2): the project's private package registries, for the setup and readiness commands.
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
-          ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv) }),
+          ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
         });
         return {

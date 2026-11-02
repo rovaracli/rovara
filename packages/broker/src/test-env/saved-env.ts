@@ -39,6 +39,7 @@ import {
   SavedEnvBuildResultSchema,
   type PrepareSavedEnv,
   type SavedEnvBuildResult,
+  type SavedEnvRegistryAuth,
   type SavedEnvManifest,
 } from "@agentx/contracts";
 import { mintManageSession, mintPullSession, mintPushSession, mintScanSession, verifyRepository, type SavedEnvSessionConfig, type SavedEnvSessionPorts, type SessionCredentials } from "./saved-env-session.js";
@@ -77,8 +78,8 @@ export interface RebuildJob {
   approved: ApprovedPin;
   /** The default branch head of each repository (by repository name) the build is FOR, taken when the job was queued. */
   commits: Record<string, string>;
-  /** The environment key of those commits, when it could be worked out then. */
-  expectedKey?: string | undefined;
+  /** The environment key of those commits. A job is never queued without one (`no_key`), so a result is always held to it. */
+  expectedKey: string;
   createdAt: string;
   leaseUntil: string;
   /** Set when the dispatcher took the lease token (once). */
@@ -100,6 +101,8 @@ export interface SavedEnvState {
   resetRequested?: boolean | undefined;
   archived?: boolean | undefined;
   deleted?: boolean | undefined;
+  /** When the project was deleted (the nightly sweep re-runs the registry deletion for a few days after, for a push that was in flight). */
+  deletedAt?: string | undefined;
   lastPushAt?: string | undefined;
   lastTaskAt?: string | undefined;
   lastRebuildReason?: RebuildReason | undefined;
@@ -127,6 +130,8 @@ export interface SavedEnvStore {
   commit(next: SavedEnvState, expectedVersion: number | null, audit: SavedEnvAuditEntry): Promise<boolean>;
   /** An audit entry that is not tied to a change of the row (a refused lease, a routine deletion, a scan start). */
   audit(entry: SavedEnvAuditEntry): Promise<void>;
+  /** The projects whose row says deleted since `cutoffIso` (for `sweepDeleted`). */
+  deletedSince(cutoffIso: string): Promise<Array<{ orgId: string; projectId: string }>>;
 }
 
 export interface RegistryImage { digest: string; tags: string[]; pushedAt: string }
@@ -213,7 +218,7 @@ export function lightSetup(state: Pick<SavedEnvState, "lastPushAt" | "lastTaskAt
 }
 
 export type CheckResult =
-  | { ok: true; queued: false; why: "no_change" | "in_flight" | "archived" | "idle" | "no_approved" | "backoff" | "off_for_project" | "no_heads" }
+  | { ok: true; queued: false; why: "no_change" | "in_flight" | "archived" | "idle" | "no_approved" | "backoff" | "off_for_project" | "no_heads" | "no_key" }
   | { ok: true; queued: true; job: Pick<RebuildJob, "jobId" | "reason" | "approved" | "commits"> }
   | { ok: false; reason: "disabled" | "stale_write" };
 
@@ -244,12 +249,14 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   const currentKey = await deps.currentKey(ids.orgId, ids.projectId).catch(() => undefined);
   const reason = rebuildReason({ now, image: base.images[0], approved, currentKey, resetRequested: base.resetRequested === true });
   if (reason === undefined) return stay("no_change");
+  // Without the key of the code the build is for, a result could not be held to it: nothing is queued (a reset too), and the next check tries again.
+  if (currentKey === undefined) return stay("no_key");
   if (lightSetup(base, now, idleDays) && reason !== "reset" && trigger !== "push") return stay("idle");
   // The commits the build is FOR. Without them there is nothing to hold the result against.
   const heads = await deps.defaultHeads(ids.orgId, ids.projectId).catch(() => undefined);
   if (heads === undefined || heads.size === 0) return stay("no_heads");
   const job: RebuildJob = {
-    jobId: token(deps).slice(0, 24), leaseToken: token(deps), reason, approved, commits: Object.fromEntries(heads), ...(currentKey === undefined ? {} : { expectedKey: currentKey }),
+    jobId: token(deps).slice(0, 24), leaseToken: token(deps), reason, approved, commits: Object.fromEntries(heads), expectedKey: currentKey,
     createdAt: iso(now), leaseUntil: iso(now + SAVED_ENV_JOB_LEASE_MS),
   };
   const written = await commit(deps, prior, { ...touched, job, resetRequested: false, lastRebuildReason: reason }, audit(deps, base, "rebuild_queued", { reason }));
@@ -323,8 +330,13 @@ const COMMIT_RETRIES = 3;
 
 export async function recordBuild(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, input: { jobId: string; leaseToken: string; result: unknown }): Promise<RecordResult> {
   let leased = await authorizeLease(deps, ids, input);
-  if (!leased.ok) return leased;
   const parsed = SavedEnvBuildResultSchema.safeParse(input.result);
+  if (!leased.ok) {
+    // A result that arrives after the project was deleted (a push that was in flight re-created the repository), or while the project is turned off, must not leave its image behind: the repository is deleted
+    // again (a deleted row), or the pushed digest is (the lease was valid). A refused lease of any other kind deletes nothing: the caller proved nothing.
+    if (leased.reason === "no_job" || leased.reason === "inactive") await cleanLateResult(deps, ids, parsed.success && parsed.data.ok ? parsed.data.imageDigest : undefined, leased.reason);
+    return leased;
+  }
   if (!parsed.success) return { ok: false, reason: "bad_result" };
   const result: SavedEnvBuildResult = parsed.data;
 
@@ -356,7 +368,7 @@ export async function recordBuild(deps: SavedEnvDeps, ids: { orgId: string; proj
   if (approved === undefined || approved.revision !== job.approved.revision || approved.digest !== job.approved.digest) return refuse("not_approved");
   // the manifest says what the job asked for: its revision, its key (when the job knew it), and EXACTLY the commits the job was given
   if (result.manifest.testEnvRevision !== job.approved.revision || result.manifest.imageDigest !== result.imageDigest) return refuse("wrong_manifest");
-  if (job.expectedKey !== undefined && result.manifest.environmentKey !== job.expectedKey) return refuse("wrong_manifest");
+  if (result.manifest.environmentKey !== job.expectedKey) return refuse("wrong_manifest");
   const wanted = Object.entries(job.commits);
   if (result.manifest.commits.length !== wanted.length || result.manifest.commits.some((entry) => job.commits[entry.repositoryId] !== entry.sha)) return refuse("wrong_commits");
   // the repository in the registry is the one the creation template made (checked now, after the push)
@@ -374,6 +386,15 @@ export async function recordBuild(deps: SavedEnvDeps, ids: { orgId: string; proj
   const scanned = await startScan(deps, ids, image.digest);
   const walked = await walk(deps, ids);
   return { ok: true, image: scanned ? { ...image, scanStartedAt: iso(deps.now()) } : image, deleted: walked.ok ? walked.deleted : 0 };
+}
+
+/** A result for a project that no longer takes one. Deleted row: the repository goes again (it removes whatever was pushed). A valid lease on a project turned off: the pushed digest goes. */
+async function cleanLateResult(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, digest: string | undefined, reason: "no_job" | "inactive"): Promise<void> {
+  try {
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    if (state?.deleted === true) await purgeRegistry(deps, ids, "late_result");
+    else if (reason === "inactive" && digest !== undefined) await deleteDigest(deps, ids, digest);
+  } catch { /* the nightly sweep and the walk are the backstop */ }
 }
 
 async function deleteDigest(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, digest: string): Promise<void> {
@@ -436,28 +457,51 @@ export function imageForTask(state: SavedEnvState | undefined, taskPin: Approved
   return { digest: image.digest, environmentKey: image.manifest.environmentKey, testEnvRevision: image.manifest.testEnvRevision };
 }
 
+/** A task's preparation records the task as activity (and may queue a rebuild) at most this often: a retried or re-dispatched preparation does not repeat the check. */
+export const SAVED_ENV_TASK_CHECK_MS = 10 * 60_000;
+
 /**
- * What a preparation is told about the project's saved environment (SH25): the image a task pinned to `taskPin` may use (`imageForTask`), a pull login for that one repository (`mintPullSession`, which also
- * checks the project's approved environment and the repository), and the pin's revision. Nothing (an empty object) when the switch is off, there is no usable image, or anything fails: the task sets up fresh,
- * as before. Records the task as activity (the idle test) and may queue a rebuild; a failure of either never blocks the preparation.
+ * What a preparation is told about the project's saved environment (SH25): the image a task pinned to `taskPin` may use (`imageForTask`) as a REFERENCE (repository, digest, revision, key, the pinned revision).
+ * It carries no login: the invocation is stored, so the worker asks for the login at pull time (`savedEnvPullLogin`). Nothing (an empty object) when the switch is off, there is no usable image, or anything
+ * fails: the task sets up fresh, as before. Records the task as activity (the idle test) and may queue a rebuild, at most once per `SAVED_ENV_TASK_CHECK_MS`; a failure of either never blocks the preparation.
  */
 export async function savedEnvForPrepare(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, taskPin: ApprovedPin): Promise<{ savedEnv?: PrepareSavedEnv }> {
   if (disabled(deps) !== undefined) return {};
   try {
-    await checkRebuild(deps, ids, "task").catch(() => undefined);
-    const state = await deps.store.get(ids.orgId, ids.projectId);
+    let state = await deps.store.get(ids.orgId, ids.projectId);
+    const last = Date.parse(state?.lastTaskAt ?? "");
+    if (!(last > 0 && deps.now() - last < SAVED_ENV_TASK_CHECK_MS)) {
+      await checkRebuild(deps, ids, "task").catch(() => undefined);
+      state = await deps.store.get(ids.orgId, ids.projectId);
+    }
     const image = imageForTask(state, taskPin, deps.now());
     if (image === undefined) return {};
-    const login = await mintPullSession(deps.session.config, deps.session.ports, { ...ids, approved: taskPin });
-    if (!login.ok) return {};
     const parsed = PrepareSavedEnvSchema.safeParse({
-      use: { repository: login.auth.repository, digest: image.digest, testEnvRevision: image.testEnvRevision, environmentKey: image.environmentKey, auth: login.auth },
-      taskTestEnvRevision: taskPin.revision,
+      repository: savedEnvRepositoryName({ env: deps.session.config.env, orgId: ids.orgId, projectId: ids.projectId }),
+      digest: image.digest, testEnvRevision: image.testEnvRevision, environmentKey: image.environmentKey, taskTestEnvRevision: taskPin.revision,
     });
     return parsed.success ? { savedEnv: parsed.data } : {};
   } catch {
     return {};
   }
+}
+
+export type PullLoginResult = { ok: true; auth: SavedEnvRegistryAuth } | { ok: false; reason: "disabled" | "no_image" | "unavailable" };
+
+/**
+ * The pull login for the image a running preparation was told to pull (review M1: the login is minted at pull time, never stored in an invocation). The digest is the one the BROKER recorded with the
+ * operation, never one the worker names. It must still be an image of the row, `ready`, not past the max age, of a project that is live; the login is minted for that image's approved pin, which `mintPullSession`
+ * holds against the project's newest approved environment. One repository, short lived.
+ */
+export async function savedEnvPullLogin(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, digest: string): Promise<PullLoginResult> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  const state = await deps.store.get(ids.orgId, ids.projectId);
+  if (state === undefined || !state.enabled || state.deleted === true || state.archived === true) return { ok: false, reason: "no_image" };
+  const image = state.images.find((known) => known.digest === digest);
+  if (image === undefined || image.status !== "ready" || deps.now() - Date.parse(image.recordedAt) > (SAVED_ENV_MAX_AGE_DAYS + 1) * DAY_MS) return { ok: false, reason: "no_image" };
+  const login = await mintPullSession(deps.session.config, deps.session.ports, { ...ids, approved: image.approved });
+  return login.ok ? { ok: true, auth: login.auth } : { ok: false, reason: "unavailable" };
 }
 
 // ---- the manage walk, archive and delete
@@ -484,12 +528,14 @@ export async function walk(deps: SavedEnvDeps, ids: { orgId: string; projectId: 
   const now = deps.now();
   const keep = keepOf(await deps.keep(ids.orgId).catch(() => SAVED_ENV_KEEP_DEFAULT));
   const named = new Set(state.images.slice(0, keep).map((image) => image.digest));
+  // While a job's lease is live, a build may have pushed a digest it has not reported yet (it can take longer than the grace period): unnamed digests stay. The age ceiling and the untagged rule still apply.
+  const building = state.job !== undefined && Date.parse(state.job.leaseUntil) > now;
   const doomed = new Set<string>();
   for (const image of listed) {
     const age = now - Date.parse(image.pushedAt);
     if (age > SAVED_ENV_IMAGE_CEILING_DAYS * DAY_MS) doomed.add(image.digest);
     else if (image.tags.length === 0 && age > DAY_MS) doomed.add(image.digest);
-    else if (!named.has(image.digest) && age > RECORD_GRACE_MS) doomed.add(image.digest);
+    else if (!building && !named.has(image.digest) && age > RECORD_GRACE_MS) doomed.add(image.digest);
   }
   if (doomed.size > 0) {
     try { await deps.registry.batchDelete(manage.credentials, manage.repository, [...doomed]); } catch { return { ok: false, reason: "unavailable" }; }
@@ -507,12 +553,15 @@ export async function walk(deps: SavedEnvDeps, ids: { orgId: string; projectId: 
 export const ARCHIVE_POLICY = "An archived project keeps its saved images until the age ceiling deletes them, so an unarchive needs no rebuild; it queues no rebuild and mints no login. Only a delete removes them at once." as const;
 
 export async function onProjectArchived(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, archived: boolean): Promise<{ ok: boolean }> {
-  if (disabled(deps) !== undefined) return { ok: false };
-  // A project with no row yet is archived all the same (a later build must not start for it).
-  const state = await deps.store.get(ids.orgId, ids.projectId);
-  const base = state ?? blank(ids.orgId, ids.projectId);
-  const written = await commit(deps, state, { ...base, archived, ...(archived ? { job: undefined } : {}) }, audit(deps, base, "project_archived", { reason: archived ? "archived" : "unarchived" }));
-  return { ok: written !== undefined };
+  // The mark is written whatever the `sv` switch says: a project archived while the switch is off must not get a build when it is turned on. A write that met another write is retried.
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    // A project with no row yet is archived all the same (a later build must not start for it).
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    const base = state ?? blank(ids.orgId, ids.projectId);
+    const written = await commit(deps, state, { ...base, archived, ...(archived ? { job: undefined } : {}) }, audit(deps, base, "project_archived", { reason: archived ? "archived" : "unarchived" }));
+    if (written !== undefined) return { ok: true };
+  }
+  return { ok: false };
 }
 
 /**
@@ -520,15 +569,21 @@ export async function onProjectArchived(deps: SavedEnvDeps, ids: { orgId: string
  * a manage session. A repository that does not exist counts as done. If the registry cannot be reached the row stays deleted and the caller retries the registry part. Audited, with or without a row.
  */
 export async function onProjectDeleted(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }): Promise<{ ok: true; deleted: number } | { ok: false; reason: "disabled" | "unavailable" | "stale_write" }> {
-  const off = disabled(deps);
-  if (off !== undefined) return off;
+  // The mark is written whatever the `sv` switch says (a project deleted while the switch is off must never get a build or a login later); only the registry part needs the switch.
   let committed = false;
   for (let attempt = 0; attempt < COMMIT_RETRIES && !committed; attempt += 1) {
     const state = await deps.store.get(ids.orgId, ids.projectId);
     const base = state ?? blank(ids.orgId, ids.projectId);
-    committed = (await commit(deps, state, { ...base, images: [], job: undefined, resetRequested: false, deleted: true, health: "never_proved" }, audit(deps, base, "project_deleted"))) !== undefined;
+    committed = (await commit(deps, state, { ...base, images: [], job: undefined, resetRequested: false, deleted: true, deletedAt: iso(deps.now()), health: "never_proved" }, audit(deps, base, "project_deleted"))) !== undefined;
   }
   if (!committed) return { ok: false, reason: "stale_write" };
+  return purgeRegistry(deps, ids, "project_deleted");
+}
+
+/** Deletes the project's repository with its images (a manage session of the broker's own). A repository that does not exist counts as done. Answers `disabled` when the switch is off: nothing is touched. */
+async function purgeRegistry(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, reason: string): Promise<{ ok: true; deleted: number } | { ok: false; reason: "disabled" | "unavailable" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
   const manage = await mintManageSession(deps.session.config, deps.session.ports, ids);
   if (!manage.ok) return { ok: false, reason: "unavailable" };
   let count: number;
@@ -538,6 +593,24 @@ export async function onProjectDeleted(deps: SavedEnvDeps, ids: { orgId: string;
     count = found.length;
     await deps.registry.deleteRepository(manage.credentials, manage.repository);
   } catch { return { ok: false, reason: "unavailable" }; }
-  await deps.store.audit(audit(deps, ids, "images_deleted", { count, reason: "project_deleted" })).catch(() => undefined);
+  await deps.store.audit(audit(deps, ids, "images_deleted", { count, reason })).catch(() => undefined);
   return { ok: true, deleted: count };
+}
+
+/** How long after a delete the nightly sweep still re-runs the registry deletion: far longer than a job's lease, so a build that was in flight at the delete cannot leave a repository behind. */
+export const SAVED_ENV_DELETED_SWEEP_DAYS = 2;
+
+/** Nightly: the registry deletion is run again for every project deleted in the last `SAVED_ENV_DELETED_SWEEP_DAYS` days (a push in flight at the delete re-creates the repository). Best effort per project. */
+export async function sweepDeleted(deps: SavedEnvDeps): Promise<{ ok: true; swept: number; failed: number } | { ok: false; reason: "disabled" | "unavailable" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  let rows: Array<{ orgId: string; projectId: string }>;
+  try { rows = await deps.store.deletedSince(iso(deps.now() - SAVED_ENV_DELETED_SWEEP_DAYS * DAY_MS)); } catch { return { ok: false, reason: "unavailable" }; }
+  let swept = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const done = await purgeRegistry(deps, row, "deleted_sweep").catch(() => ({ ok: false as const }));
+    if (done.ok) swept += 1; else failed += 1;
+  }
+  return { ok: true, swept, failed };
 }

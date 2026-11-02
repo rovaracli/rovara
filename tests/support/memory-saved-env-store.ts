@@ -18,6 +18,7 @@ export function memorySavedEnvStore(): MemorySavedEnvStore {
     rows, log,
     failNextCommit() { failNext = true; },
     audit(entry) { log.push(structuredClone(entry)); return Promise.resolve(); },
+    deletedSince: (cutoffIso) => Promise.resolve([...rows.values()].filter((row) => row.deleted === true && (row.deletedAt ?? "") >= cutoffIso).map((row) => ({ orgId: row.orgId, projectId: row.projectId }))),
     get: (orgId, projectId) => Promise.resolve(structuredClone(rows.get(key(orgId, projectId)))),
     commit(next, expectedVersion, entry) {
       if (failNext) { failNext = false; return Promise.resolve(false); }

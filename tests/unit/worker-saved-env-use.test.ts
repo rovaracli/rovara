@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, parseCommandLine, savedEnvRepositoryName, type ProjectDefinition, type SavedEnvRegistryAuth, type SavedEnvUse, type SavedEnvUseStep } from "../../packages/contracts/src/index.js";
+import { SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, parseCommandLine, savedEnvRepositoryName, savedEnvStepMarksStale, type ProjectDefinition, type PrepareSavedEnv, type SavedEnvRegistryAuth, type SavedEnvUseStep } from "../../packages/contracts/src/index.js";
 import { prepareWorkspace, type PrepareWorkspaceOptions, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { checkSeedTree, replaceFileExclusively, savedEnvMaterializer, seededGitConfig, type SavedEnvUseOptions } from "../../packages/worker/src/saved-env/use.js";
@@ -27,7 +27,8 @@ const gitEnv = { PATH: process.env["PATH"] ?? "", GIT_CONFIG_GLOBAL: "/dev/null"
 const git = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...gitEnv, HOME: cwd } }).trim();
 
 const auth = (over: Partial<SavedEnvRegistryAuth> = {}): SavedEnvRegistryAuth => ({ registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: new Date(Date.now() + 1_800_000).toISOString(), ...over });
-const useOf = (over: Partial<SavedEnvUse> = {}): SavedEnvUse => ({ repository: REPOSITORY, digest: DIGEST, testEnvRevision: 4, environmentKey: KEY, auth: auth(), ...over });
+const refOf = (over: Partial<PrepareSavedEnv> = {}): PrepareSavedEnv => ({ repository: REPOSITORY, digest: DIGEST, testEnvRevision: 4, environmentKey: KEY, taskTestEnvRevision: 4, ...over });
+const loginOf = (over: Partial<SavedEnvRegistryAuth> = {}) => async (): Promise<SavedEnvRegistryAuth> => auth(over);
 
 const project = (over: Partial<ProjectDefinition["repositories"][number]> = {}): ProjectDefinition => ({
   name: "demo", revision: 1,
@@ -117,7 +118,7 @@ async function run(f: Fixture, docker: Docker, over: Partial<SavedEnvUseOptions>
     credentialProvider: async () => ({ username: "x-access-token", password: "clone-credential-value" }),
     materializer: freshClone(f, log),
     savedEnv: {
-      use: useOf(), taskTestEnvRevision: 4, docker: docker.cli, onFallback: (step) => fallbacks.push(step), onDiagnostic: (message) => diagnostics.push(message),
+      ref: refOf(), login: loginOf(), docker: docker.cli, onFallback: (step) => fallbacks.push(step), onDiagnostic: (message) => diagnostics.push(message),
       fetch: async ({ directory, branch }) => { fetched.push(directory); if (over.fail !== undefined) throw over.fail; execFileSync("git", ["fetch", "-q", "--no-tags", pathToFileURL(f.source).href, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: directory, env: { ...gitEnv, HOME: directory } }); },
       random: () => "0123456789abcdef",
       ...Object.fromEntries(Object.entries(over).filter(([key]) => key !== "prepare" && key !== "project" && key !== "fail")),
@@ -270,21 +271,59 @@ describe("the revision the image was built at must be the revision the task is p
   it("a task pinned to another revision never pulls the image", async () => {
     const f = await fixture();
     const docker = fakeDocker(f);
-    const r = await run(f, docker, { taskTestEnvRevision: 5 });
+    const r = await run(f, docker, { ref: refOf({ taskTestEnvRevision: 5 }) });
     expect(r.fallbacks).toEqual(["revision"]);
     expect(docker.calls).toEqual([]);
     expect(r.log).toEqual(["fresh clone"]);
   });
 
-  it("a login for another repository, a tag instead of a digest, or a registry that is not ECR is refused before anything is pulled", async () => {
-    const other = savedEnvRepositoryName({ env: "test", orgId: "org-1", projectId: "proj-2" });
+  it("a reference with a tag instead of a digest, or for a repository that is not a saved environment, is refused before a login is asked for or anything is pulled", async () => {
     const f = await fixture();
-    for (const use of [{ ...useOf(), auth: auth({ repository: other }) }, { ...useOf(), digest: "latest" }, { ...useOf(), auth: auth({ registry: "evil.example.com" }) }] as unknown as SavedEnvUse[]) {
+    for (const ref of [{ ...refOf(), digest: "latest" }, { ...refOf(), repository: "evil/repo" }] as unknown as PrepareSavedEnv[]) {
       const docker = fakeDocker(f);
-      const r = await run(f, docker, { use });
+      let asked = 0;
+      const r = await run(f, docker, { ref, login: async () => { asked += 1; return auth(); } });
       expect(r.fallbacks).toEqual(["input"]);
       expect(docker.calls).toEqual([]);
+      expect(asked).toBe(0);
     }
+  });
+
+  it("a login for another repository, or for a registry that is not ECR, is refused before anything is pulled, and does not mark the image stale", async () => {
+    const other = savedEnvRepositoryName({ env: "test", orgId: "org-1", projectId: "proj-2" });
+    const f = await fixture();
+    for (const over of [{ repository: other }, { registry: "evil.example.com" }]) {
+      const docker = fakeDocker(f);
+      const r = await run(f, docker, { login: loginOf(over) });
+      expect(r.fallbacks).toEqual(["login"]);
+      expect(savedEnvStepMarksStale("login")).toBe(false);
+      expect(docker.calls).toEqual([]);
+    }
+  });
+
+  it("a login that fails, or is out of date or nearly so, falls back to a fresh setup without pulling, and does not mark the image stale", async () => {
+    const f = await fixture();
+    const failing = fakeDocker(f);
+    const r1 = await run(f, failing, { login: async () => { throw new Error("broker down"); } });
+    expect(r1.fallbacks).toEqual(["login"]);
+    expect(failing.calls).toEqual([]);
+    for (const left of [-5_000, 30_000]) {
+      const docker = fakeDocker(f);
+      const r = await run(f, docker, { login: loginOf({ expiresAt: new Date(Date.now() + left).toISOString() }) });
+      expect(r.fallbacks).toEqual(["expired"]);
+      expect(docker.calls).toEqual([]);
+      expect(r.log).toEqual(["fresh clone"]);
+    }
+    expect(savedEnvStepMarksStale("expired")).toBe(false);
+    expect(savedEnvStepMarksStale("pull")).toBe(true);
+  });
+
+  it("the login is asked for once per preparation, however many repositories it has", async () => {
+    const f = await fixture();
+    const docker = fakeDocker(f);
+    let asked = 0;
+    await run(f, docker, { login: async () => { asked += 1; return auth(); } });
+    expect(asked).toBe(1);
   });
 });
 
@@ -294,7 +333,7 @@ describe("pieces", () => {
     const docker = fakeDocker(f);
     const log: string[] = [];
     const fallbacks: string[] = [];
-    const materialize = savedEnvMaterializer({ use: useOf(), taskTestEnvRevision: 4, docker: docker.cli, onFallback: (s) => fallbacks.push(s) }, project().repositories, freshClone(f, log));
+    const materialize = savedEnvMaterializer({ ref: refOf(), login: loginOf(), docker: docker.cli, onFallback: (s) => fallbacks.push(s) }, project().repositories, freshClone(f, log));
     await materialize({ name: "meta", url: ORIGIN, path: "meta", defaultBranch: "main", credentialRef: "x" }, join(await scratch(), "meta"), {});
     expect(log).toEqual(["fresh clone"]);
     expect(fallbacks).toEqual([]);

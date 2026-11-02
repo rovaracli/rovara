@@ -146,7 +146,7 @@ export function savedEnvRepositoryPolicy(input: { pushRoleArn: string; pullRoleA
   };
 }
 
-/** ECR's own count rule keeps this many MORE than the company's `keep`: it is a backstop, not the rule. The broker's walk decides which images stay (the row names them), and an image pushed but not yet recorded must not push a recorded one out. */
+/** ECR's own count rule keeps this many MORE than the largest `keep` a company may set: it is a backstop, not the rule. The broker's walk decides which images stay (the row names them), and an image pushed but not yet recorded must not push a recorded one out. */
 export const SAVED_ENV_LIFECYCLE_MARGIN = 3;
 
 /**
@@ -155,7 +155,9 @@ export const SAVED_ENV_LIFECYCLE_MARGIN = 3;
  * `SAVED_ENV_IMAGE_CEILING_DAYS`.
  */
 export function savedEnvLifecyclePolicy(keep: number): { rules: Array<Record<string, unknown>> } {
-  const count = z.number().int().min(SAVED_ENV_KEEP_MIN).max(SAVED_ENV_KEEP_MAX).parse(keep) + SAVED_ENV_LIFECYCLE_MARGIN;
+  z.number().int().min(SAVED_ENV_KEEP_MIN).max(SAVED_ENV_KEEP_MAX).parse(keep);
+  // The backstop is the LARGEST `keep` plus a margin, whatever this company chose: it must never be what decides which images stay.
+  const count = SAVED_ENV_KEEP_MAX + SAVED_ENV_LIFECYCLE_MARGIN;
   return {
     rules: [
       { rulePriority: 1, description: "Untagged images expire", selection: { tagStatus: "untagged", countType: "sinceImagePushed", countUnit: "days", countNumber: SAVED_ENV_UNTAGGED_DAYS }, action: { type: "expire" } },
@@ -178,33 +180,42 @@ export const SavedEnvRegistryAuthSchema = z.object({
 }).strict();
 export type SavedEnvRegistryAuth = z.infer<typeof SavedEnvRegistryAuthSchema>;
 
+/** The worker feature (listed on /ping) that takes the prepare payload's `savedEnv`. A worker without it is sent no field and sets up fresh. */
+export const PREPARE_SAVED_ENV_FEATURE = "prepare.savedEnv.v1" as const;
+
 /**
- * What a task's preparation is told when the project has a saved environment it may use (SH23; the prepare payload carries it, SH25): the repository, the image DIGEST (never a tag), the revision and the key
- * the broker expects the image to say, and a pull login for that one repository. The worker checks the pulled image says the same before it uses anything in it.
+ * The prepare invocation's `savedEnv`: WHICH image to pull and the revision this task is pinned to (the worker refuses an image of another revision). It carries NO credential: an invocation is stored (outbox, stream,
+ * queue, dead-letter queue), and a pull login must not be. The worker asks the broker for the login at pull time (`SAVED_ENV_LOGIN_PATH`), with the preparation's own grant, and never writes it down.
  */
-export const SavedEnvUseSchema = z.object({
+export const PrepareSavedEnvSchema = z.object({
   repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
   digest: ImageDigestSchema,
   /** The test environment revision the image was built at. */
+  testEnvRevision: z.number().int().min(1),
+  environmentKey: z.string().regex(/^[a-f0-9]{64}$/u),
+  taskTestEnvRevision: z.number().int().min(1),
+}).strict();
+export type PrepareSavedEnv = z.infer<typeof PrepareSavedEnvSchema>;
+
+/** The path (under a workspace's operation) the worker POSTs to for the pull login, right before the pull. */
+export const SAVED_ENV_LOGIN_PATH = "saved-env-login" as const;
+
+/** What a use works from: the invocation's reference and a login the worker just obtained. Never stored. */
+export const SavedEnvUseSchema = z.object({
+  repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
+  digest: ImageDigestSchema,
   testEnvRevision: z.number().int().min(1),
   environmentKey: z.string().regex(/^[a-f0-9]{64}$/u),
   auth: SavedEnvRegistryAuthSchema,
 }).strict().refine((use) => use.auth.repository === use.repository, "the login is for another repository");
 export type SavedEnvUse = z.infer<typeof SavedEnvUseSchema>;
 
-/** The worker feature (listed on /ping) that takes the prepare payload's `savedEnv`. A worker without it is sent no field and sets up fresh. */
-export const PREPARE_SAVED_ENV_FEATURE = "prepare.savedEnv.v1" as const;
-
-/** The prepare invocation's `savedEnv`: what to pull, and the revision this task is pinned to (the worker refuses an image of another revision). */
-export const PrepareSavedEnvSchema = z.object({
-  use: SavedEnvUseSchema,
-  taskTestEnvRevision: z.number().int().min(1),
-}).strict();
-export type PrepareSavedEnv = z.infer<typeof PrepareSavedEnvSchema>;
-
-/** The steps a use can fail at; the evidence says "fresh setup (saved environment failed at <step>)" and the registry marks the image stale. */
-export const SAVED_ENV_USE_STEPS = ["input", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch", "checkout", "setup"] as const;
+/** The steps a use can fail at; the evidence says "fresh setup (saved environment failed at <step>)". */
+export const SAVED_ENV_USE_STEPS = ["input", "login", "expired", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch", "checkout", "setup"] as const;
 export type SavedEnvUseStep = (typeof SAVED_ENV_USE_STEPS)[number];
+
+/** Whether a fallback at this step says something about the IMAGE. Not getting a login, or getting one that is already out of date, says nothing: the image is not marked stale for it. */
+export const savedEnvStepMarksStale = (step: SavedEnvUseStep): boolean => step !== "login" && step !== "expired";
 
 /** What is written into the image as `/rovara/manifest.json`: the manifest without the digest (an image cannot hold its own digest). The broker keeps the full manifest. */
 export const SavedEnvImageManifestSchema = SavedEnvManifestSchema.omit({ imageDigest: true }).extend({

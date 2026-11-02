@@ -10245,7 +10245,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           },
         },
         "ImageTagMutability": "IMMUTABLE",
-        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 6 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":6},"action":{"type":"expire"}}]}",
+        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 13 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":13},"action":{"type":"expire"}}]}",
         "Prefix": "rovara-env/staging",
         "RepositoryPolicy": {
           "Fn::Join": [
