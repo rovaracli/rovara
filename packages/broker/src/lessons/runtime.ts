@@ -38,6 +38,8 @@ export interface LessonsRuntimeInput {
   repositoriesOf: (workspaceId: string, project: string) => Promise<readonly string[]>;
   evidence: SecondPersonEvidenceDependencies;
   linkedAccounts: (orgId: OrgId, developerId: string) => Promise<readonly string[]>;
+  /** Follows a merged developer to the member they became (the author rules compare members, not raw ids). */
+  resolveMember?: (orgId: OrgId, developerId: string) => Promise<string>;
   names: AttributionReader;
 }
 
@@ -71,7 +73,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const store = new DynamoLessonStore(input.table, input.now);
   const settings = dynamoLearningSettings(input.table, new DynamoTier0Settings(input.table));
   const access = createAccessCheckPort(input.table, input.log === undefined ? {} : { log: input.log });
-  const directory = createApproverDirectory({ evidence: input.evidence, linkedAccounts: input.linkedAccounts });
+  const directory = createApproverDirectory({ evidence: input.evidence, linkedAccounts: input.linkedAccounts, ...(input.resolveMember === undefined ? {} : { resolveMember: input.resolveMember }) });
   const unwritable: RecordAuditSink = async () => { throw new Error("no audit ledger"); };
   const audit = lessonAuditSink(input.audit ?? unwritable, input.now);
   const base = { now: input.now, audit, ...(input.log === undefined ? {} : { log: input.log }) };

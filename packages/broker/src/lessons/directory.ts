@@ -10,12 +10,22 @@ export interface DirectoryInput {
   evidence: SecondPersonEvidenceDependencies;
   /** The source accounts a person has linked (ids by source), or undefined when none can be found. May throw: the identity is then empty. */
   linkedAccounts(orgId: OrgId, developerId: string): Promise<readonly string[]>;
+  /** The member a (possibly merged-away) developer id stands for (follows `mergedInto`). May throw: the author rules then refuse. */
+  resolveMember?(orgId: OrgId, developerId: string): Promise<string>;
 }
 
 const NOBODY = { complete: false, membershipVersion: 0, ownerIds: [] as string[], eligibleIds: [] as string[], lastEligibleLossAtMs: null };
 
 export function createApproverDirectory(input: DirectoryInput): ApproverDirectory {
+  const resolveMember = input.resolveMember;
   return {
+    ...(resolveMember === undefined ? {} : {
+      async resolveMember(workspaceId, developerId) {
+        const org = OrgIdSchema.safeParse(workspaceId);
+        if (!org.success) throw new Error("not a company id");
+        return resolveMember(org.data, developerId);
+      },
+    }),
     async eligibility(workspaceId, project, who) {
       const org = OrgIdSchema.safeParse(workspaceId);
       if (!org.success) return NOBODY;
