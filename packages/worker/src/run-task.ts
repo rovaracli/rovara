@@ -84,6 +84,7 @@ import { contextSourcesNote } from "./context-sources/frame.js";
 import { stubContextEvent } from "./context-sources/events.js";
 import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTextGuard } from "./context-sources/text-guard.js";
 import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -332,7 +333,7 @@ async function runTask(
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
       await sandbox.start().catch((error: unknown) => reportFeedbackReviewStartFailure(error));
-      bashOperations = sandbox.bashOperations();
+      bashOperations = executionFor(SANDBOX_TARGET, { sandbox }).bashOperations();
     } else {
       // The local shell, chosen explicitly (taskShell or AGENTX_TASK_SHELL=local): tests and a developer's machine.
       localShell = true;
