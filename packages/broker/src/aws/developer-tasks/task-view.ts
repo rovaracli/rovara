@@ -57,6 +57,7 @@ import { verificationReport, workflowReviewRound } from "../../rovara-code/verif
 import { publicTrackingItem, readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { parseChangedFiles } from "../../rovara-code/changed-files.js";
 import { reviewModelLines, reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
+import { secondReviewTaskView } from "../../rovara-code/second-review-store.js";
 import type { ChangedFilesRead } from "../../rovara-code/pull-request-body.js";
 import { proofTableView } from "../../rovara-code/proof-view.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -327,6 +328,8 @@ export async function taskView(
   const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  // SH34: the second review by another AI company (switch `cr`), from the task record beside the workflow; full reads only. Silent for shadow that did not run.
+  const secondReview = rovaraCodeV2 && options.details && task.workflow !== undefined ? secondReviewTaskView(task, task.workflow.candidate?.digest) : undefined;
   // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
   // full read, and only when this task's pull request was published with risk low.
   const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;
@@ -344,6 +347,7 @@ export async function taskView(
     ...(proofTable === undefined ? {} : { proofTable }),
     ...(evidence === undefined ? {} : { evidence }),
     ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
+    ...(secondReview === undefined ? {} : { secondReview }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),

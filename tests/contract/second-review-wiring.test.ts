@@ -7,8 +7,8 @@ import { reviewCleared, type ModelIdentifier, type SecondOpinion, type WorkflowR
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
-import { planSecondReview, secondOpinionOf, secondOpinionUnavailable } from "../../packages/broker/src/rovara-code/second-review.js";
-import { secondOpinionOfTask, secondReviewEndItems, secondReviewExpiredItems, secondReviewPullRequestLines, type SecondReviewPending } from "../../packages/broker/src/rovara-code/second-review-store.js";
+import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
+import { secondOpinionOfTask, secondReviewEndItems, secondReviewExpiredItems, secondReviewPullRequestLines, secondReviewTaskView, type SecondReviewPending } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -184,4 +184,35 @@ describe("key rule 2: shadow findings never reach the pull request", () => {
     expect(secondOpinionOfTask({}, undefined)).toBeUndefined();
   });
 
+});
+
+describe("the task page", () => {
+  const answered = (mode: "shadow" | "on", findings: WorkflowReviewReport["findings"]) =>
+    secondOpinionOf({ plan: mode === "on" ? { ...plan(), mode: "on" } : plan(), report: secondReport(randomUUID(), findings.length === 0 ? "PASS" : "FINDINGS", findings), currentCandidateDigest: code.digest, ranModel: NOVA });
+
+  it("is empty while cr is off, whatever is stored", () => {
+    expect(secondReviewTaskView(stored(secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer")), code.digest, OFF)).toBeUndefined();
+  });
+
+  it("shows a shadow opinion's findings as not blocking, with plain single lines", () => {
+    const view = secondReviewTaskView(stored(answered("shadow", [{ text: "line one\nline two with a secret ghp_abcdefghijklmnopqrstuvwxyz0123456789", origin: "INTRODUCED" }])), code.digest, ENABLED)!;
+    expect(view.lines[0]).toContain("Second opinion (not blocking)");
+    expect(view.lines).toHaveLength(2);
+    expect(view.lines[1]).not.toMatch(/\n|ghp_/u);
+    expect(view).toMatchObject({ needsAcknowledgement: false, acknowledged: false });
+  });
+
+  it("a shadow review that did not run is silent; an on review that did not run says so and needs the owner's acknowledgement", () => {
+    expect(secondReviewTaskView(stored(secondOpinionUnavailable({ mode: "shadow", company: "amazon" }, "no-answer")), code.digest, ENABLED)).toBeUndefined();
+    const flagged = stored(secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-candidate"));
+    expect(secondReviewTaskView(flagged, code.digest, ENABLED)).toEqual({ lines: ["Second review did not run: no allowed model from a different AI company could be used"], needsAcknowledgement: true, acknowledged: false });
+  });
+
+  it("an acknowledgement is for that candidate and reason only", () => {
+    const opinion = secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer");
+    const ack = secondReviewAcknowledgement(opinion, code.digest);
+    if (!ack.required) throw new Error("expected an ask");
+    expect(secondReviewTaskView({ ...stored(opinion), secondReviewAcknowledged: [ack.key] }, code.digest, ENABLED)).toMatchObject({ needsAcknowledgement: true, acknowledged: true });
+    expect(secondReviewTaskView({ ...stored(opinion), secondReviewAcknowledged: ["0".repeat(64)] }, code.digest, ENABLED)).toMatchObject({ acknowledged: false });
+  });
 });

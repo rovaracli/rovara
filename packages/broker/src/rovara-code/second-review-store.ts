@@ -1,10 +1,10 @@
 // Second review by another AI company (SH34): what the broker keeps on the TASK RECORD about it, and the writes that keep it. Nothing here touches the workflow snapshot: a second review is an ADDED opinion, so
 // its operation's result never reaches `submitWorkflowReview`, `reviewCleared`, the latest-review-for-candidate lookup, the pull request's Reviews section or `requireCrossCompanyReview`. It lives beside the workflow
 // (as `reviewSameModel` does), keyed by the candidate it is about.
-import { WorkflowReviewReportSchema, SecondOpinionSchema, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
+import { redactText, WorkflowReviewReportSchema, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
-import { secondOpinionOf, secondOpinionPrLines, secondOpinionUnavailable, type SecondReviewAttempt, type SecondReviewPlan } from "./second-review.js";
+import { secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewAttempt, type SecondReviewPlan } from "./second-review.js";
 
 type RunPlan = Extract<SecondReviewPlan, { run: true }>;
 
@@ -95,4 +95,30 @@ export function secondReviewPullRequestLines(task: { secondOpinion?: unknown }, 
   if (!secondReviewEnabled(env)) return [];
   const opinion = secondOpinionOfTask(task, candidateDigest);
   return opinion === undefined ? [] : secondOpinionPrLines(opinion);
+}
+
+const plainLine = (text: string, max: number): string => Array.from(redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()).slice(0, max).join("");
+
+/**
+ * What the task page shows about the second review of the code the task holds (the full read only; none while `cr` is off). An answer lists its blocking findings (up to 5, plain single lines, redacted: the page
+ * escapes them for its markup) with the model's name and whether they block; an `on` review that did not run says so in the fixed line and asks for the owner's acknowledgement; a shadow review that did not run is silent.
+ */
+export function secondReviewTaskView(task: { secondOpinion?: unknown; secondReviewAcknowledged?: readonly string[] | undefined }, candidateDigest: string | undefined, env: NodeJS.ProcessEnv = process.env): { lines: string[]; needsAcknowledgement: boolean; acknowledged: boolean } | undefined {
+  if (!secondReviewEnabled(env)) return undefined;
+  const opinion = secondOpinionOfTask(task, candidateDigest);
+  if (opinion === undefined || candidateDigest === undefined || !secondOpinionShownOn(opinion).taskPage) return undefined;
+  if (opinion.unavailable) {
+    const ack = secondReviewAcknowledgement(opinion, candidateDigest);
+    return { lines: [secondReviewDidNotRunLine(opinion.unavailableReason ?? "no-answer")], needsAcknowledgement: ack.required, acknowledged: ack.required && (task.secondReviewAcknowledged ?? []).includes(ack.key) };
+  }
+  const report = opinion.report;
+  if (report === undefined) return undefined;
+  const blocking = blockingFindings(report);
+  const name = plainLine(`${report.provider}/${report.version}`, 80);
+  const kind = opinion.mode === "on" ? "Second review" : "Second opinion (not blocking)";
+  return {
+    lines: [`${kind} (${name}): ${String(blocking.length)} ${blocking.length === 1 ? "finding" : "findings"}${opinion.downgraded === undefined ? "" : ", shown as an opinion only because this model has not yet passed the replay check"}`,
+      ...blocking.slice(0, 5).map((finding) => `- ${plainLine(finding.text, 300)}`)],
+    needsAcknowledgement: false, acknowledged: false,
+  };
 }
