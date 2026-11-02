@@ -12,7 +12,8 @@ import {
 } from "@agentx/contracts";
 import {
   SECOND_REVIEW_OPERATION, acceptSecondReport, admitSecondReview, againstModels, drivingTestGate, estimateSecondReviewUsd, planSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn,
-  secondOpinionUnavailable, secondReviewAlreadyRan, secondReviewBlocksWhenUnavailable, secondReviewModelUnusable, type DrivingTestRecord, type SecondReviewPlan, type SecondReviewPlanInput,
+  SECOND_REVIEW_TRIES_MAX, mergeWaitsForSecondReview, nextSecondReviewTry, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewAlreadyRan, secondReviewBlocksWhenUnavailable, secondReviewModelUnusable,
+  secondReviewUnavailableDecision, type SecondReviewAttempt, type DrivingTestRecord, type SecondReviewPlan, type SecondReviewPlanInput,
 } from "../../packages/broker/src/rovara-code/second-review.js";
 import { reviewFailures } from "../../packages/broker/src/model-selection/task-failures.js";
 
@@ -426,21 +427,160 @@ describe("acceptSecondReport (W2)", () => {
   });
 });
 
-describe("unavailable means not blocking, in one place (owner decision pending)", () => {
-  it("today nothing blocks when the second review cannot run", () => {
-    for (const reason of ["no-answer", "wrong-model", "budget", "not-run", "no-candidate", "untested", "no-reference-model", "mode-off"] as const) {
-      expect(secondReviewBlocksWhenUnavailable({ mode: "on", reason }), reason).toBe(false);
+describe("a second review that cannot run (owner decision 2026-11-02: retry, then flag)", () => {
+  const REASONS = ["no-answer", "wrong-model", "budget", "not-run", "no-candidate", "wrong-role", "wrong-candidate", "same-company"] as const;
+
+  it("never blocks, whatever the reason or mode", () => {
+    for (const reason of REASONS) for (const mode of ["on", "shadow"] as const) expect(secondReviewBlocksWhenUnavailable({ mode, reason }), `${mode} ${reason}`).toBe(false);
+  });
+
+  it("on: flags it on the task page and the pull request and asks the owner to acknowledge; shadow stays silent", () => {
+    for (const reason of REASONS) {
+      expect(secondReviewUnavailableDecision({ mode: "on", reason })).toMatchObject({ blocks: false, showOnTaskPage: true, showOnPullRequest: true, askOwnerToAcknowledge: true, line: expect.stringMatching(/^Second review did not run: .+/u) as string });
+      expect(secondReviewUnavailableDecision({ mode: "shadow", reason }), reason).toEqual({ blocks: false, showOnTaskPage: false, showOnPullRequest: false, askOwnerToAcknowledge: false, line: undefined });
     }
+  });
+
+  it("the page rules follow: an unavailable on opinion is on the PR, an unavailable shadow one is nowhere, an answered shadow one is on the task page only", () => {
+    expect(secondOpinionShownOn({ mode: "on", blocked: false, unavailable: true })).toEqual({ taskPage: true, pullRequest: true });
+    expect(secondOpinionShownOn({ mode: "shadow", blocked: false, unavailable: true })).toEqual({ taskPage: false, pullRequest: false });
+    expect(secondOpinionShownOn({ mode: "shadow", blocked: false, unavailable: false })).toEqual({ taskPage: true, pullRequest: false });
+    expect(secondOpinionShownOn({ mode: "on", blocked: false, unavailable: false })).toEqual({ taskPage: true, pullRequest: false });
+  });
+
+  it("the pull request says one fixed line for an on opinion that did not run, with no model text", () => {
+    for (const reason of REASONS) {
+      const lines = secondOpinionPrLines(secondOpinionUnavailable({ mode: "on", company: "amazon" }, reason));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^Second review did not run: [A-Za-z ,.'-]+$/u);
+    }
+    expect(secondOpinionPrLines(secondOpinionUnavailable({ mode: "shadow", company: "amazon" }, "no-answer"))).toEqual([]);
+  });
+
+  it("no candidate at all is an opinion with no company, flagged the same way", () => {
+    const none = secondOpinionUnavailable({ mode: "on" }, "no-candidate");
+    expect(none.company).toBeUndefined();
+    expect(secondOpinionShownOn(none)).toEqual({ taskPage: true, pullRequest: true });
+    expect(secondReviewAcknowledgement(none, digest)).toMatchObject({ required: true });
+  });
+
+  it("asks the task owner to acknowledge before merge, once per candidate, and the merge waits until they have", () => {
+    const flagged = secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer");
+    const ack = secondReviewAcknowledgement(flagged, digest);
+    if (!ack.required) throw new Error("expected an ask");
+    expect(ack.text).toMatch(/^Second review did not run: .+Acknowledge before merging\.$/u);
+    expect(secondReviewAcknowledgement(flagged, digest)).toEqual(ack); // the same ask is the same key
+    const otherCandidate = secondReviewAcknowledgement(flagged, "f".repeat(64));
+    expect(otherCandidate.required && otherCandidate.key).not.toBe(ack.key);
+    expect(mergeWaitsForSecondReview(flagged, digest, [])).toBe(true);
+    expect(mergeWaitsForSecondReview(flagged, digest, [ack.key])).toBe(false);
+    expect(mergeWaitsForSecondReview(flagged, "f".repeat(64), [ack.key])).toBe(true); // an acknowledgement is for that candidate only
+    expect(mergeWaitsForSecondReview(secondOpinionUnavailable({ mode: "shadow", company: "amazon" }, "no-answer"), digest, [])).toBe(false);
+    expect(mergeWaitsForSecondReview(opinion("on", report("PASS")), digest, [])).toBe(false);
+    expect(mergeWaitsForSecondReview(undefined, digest, [])).toBe(false);
+  });
+
+  describe("the tries: the same model once more, then the next allowed candidate, at most three", () => {
+    const onInput = (over: Partial<SecondReviewPlanInput> = {}): SecondReviewPlanInput => ({
+      switchOn: true, mode: "on", against: [SONNET], project: {}, forbidden: [], sources: [SONNET, NOVA_PREMIER, NOVA_PRO, BEDROCK_GPT_OSS], drivingTestPassed: passed(NOVA_PREMIER, NOVA_PRO, BEDROCK_GPT_OSS),
+      verdicts: [verdictFor(NOVA_PREMIER, { replayRunId: "run-1" }), verdictFor(NOVA_PRO, { replayRunId: "run-2" }), verdictFor(BEDROCK_GPT_OSS, { replayRunId: "run-3" })],
+      replayRuns: [runFor(NOVA_PREMIER, { runId: "run-1" }), runFor(NOVA_PRO, { runId: "run-2" }), runFor(BEDROCK_GPT_OSS, { runId: "run-3" })], ...over,
+    });
+    const nextModel = (result: ReturnType<typeof nextSecondReviewTry>) => ("try" in result ? `${result.try.model.modelId}|${result.try.mode}` : `giveUp:${result.giveUp}`);
+    const attempt = (model: ModelIdentifier, outcome: SecondReviewAttempt["outcome"], mode: "shadow" | "on" = "on"): SecondReviewAttempt => ({ model, outcome, mode });
+
+    it("the first try is the best candidate", () => {
+      expect(nextModel(nextSecondReviewTry(onInput(), []))).toBe("us.amazon.nova-premier-v1:0|on");
+    });
+
+    it("a first answer-less try is retried on the same model", () => {
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, "no-answer")]))).toBe("us.amazon.nova-premier-v1:0|on");
+    });
+
+    it("an unusable model goes straight to the next allowed candidate", () => {
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, "unusable")]))).toBe("us.amazon.nova-pro-v1:0|on");
+    });
+
+    it("a model with no answer twice is left out; the third try is the next candidate", () => {
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, "no-answer"), attempt(NOVA_PREMIER, "no-answer")]))).toBe("us.amazon.nova-pro-v1:0|on");
+    });
+
+    it("stops after three tries, whatever is left", () => {
+      expect(SECOND_REVIEW_TRIES_MAX).toBe(3);
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, "no-answer"), attempt(NOVA_PREMIER, "no-answer"), attempt(NOVA_PRO, "no-answer")]))).toBe("giveUp:no-answer");
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, "unusable"), attempt(NOVA_PRO, "unusable"), attempt(BEDROCK_GPT_OSS, "unusable")]))).toBe("giveUp:no-answer");
+    });
+
+    it("gives up when no candidate is left, flagged as such", () => {
+      expect(nextModel(nextSecondReviewTry(onInput({ project: { approved: [SONNET] } }), []))).toBe("giveUp:no-candidate");
+      expect(nextModel(nextSecondReviewTry(onInput({ sources: [SONNET, NOVA_PREMIER], verdicts: [verdictFor(NOVA_PREMIER, { replayRunId: "run-1" })], replayRuns: [runFor(NOVA_PREMIER, { runId: "run-1" })] }), [attempt(NOVA_PREMIER, "unusable")]))).toBe("giveUp:no-answer");
+    });
+
+    it("never swaps a blocking review for a silent one: if the next candidate could only run in shadow, it gives up", () => {
+      // Only Nova Premier has evidence for on. After it fails, the next candidate (Nova Pro) would run in shadow: not taken.
+      const input = onInput({ verdicts: [verdictFor(NOVA_PREMIER, { replayRunId: "run-1" })], replayRuns: [runFor(NOVA_PREMIER, { runId: "run-1" })] });
+      expect(nextModel(nextSecondReviewTry(input, [attempt(NOVA_PREMIER, "unusable")]))).toBe("giveUp:no-answer");
+      expect(nextModel(nextSecondReviewTry(input, [attempt(NOVA_PREMIER, "no-answer"), attempt(NOVA_PREMIER, "no-answer")]))).toBe("giveUp:no-answer");
+    });
+
+    it("a context-length rejection counts as no answer, so it never retires the model for the other tries", () => {
+      const rejected = report("FAILED", [], { modelFailure: "the model call failed: request-rejected ValidationException HTTP 400" });
+      expect(secondReviewModelUnusable(rejected)).toBe(false);
+      expect(nextModel(nextSecondReviewTry(onInput(), [attempt(NOVA_PREMIER, secondReviewModelUnusable(rejected) ? "unusable" : "no-answer")]))).toBe("us.amazon.nova-premier-v1:0|on");
+    });
+
+    it("shadow tries follow the same count, and its result stays silent", () => {
+      const shadowInput = onInput({ mode: "shadow", verdicts: [], replayRuns: [] });
+      expect(nextModel(nextSecondReviewTry(shadowInput, [attempt(NOVA_PREMIER, "no-answer", "shadow"), attempt(NOVA_PREMIER, "no-answer", "shadow")]))).toBe("us.amazon.nova-pro-v1:0|shadow");
+      expect(secondReviewUnavailableDecision({ mode: "shadow", reason: "no-answer" }).showOnPullRequest).toBe(false);
+    });
+
+    it("THE ATTACKER CASE: a diff that makes every candidate time out or come back unusable ends flagged and needing acknowledgement, never passing silently", () => {
+      // Drive the whole sequence the way the engine will: try, record the outcome, ask for the next try, until it gives up.
+      const attempts: SecondReviewAttempt[] = [];
+      let guard = 0;
+      let verdict: ReturnType<typeof nextSecondReviewTry>;
+      for (;;) {
+        verdict = nextSecondReviewTry(onInput(), attempts);
+        if (!("try" in verdict) || (guard += 1) > 10) break;
+        // The injected diff: Nova Premier times out, Nova Pro is "unusable", the OpenAI model times out.
+        const outcome = verdict.try.model.modelId.includes("nova-pro") ? "unusable" : "no-answer";
+        attempts.push({ model: verdict.try.model, mode: verdict.try.mode, outcome });
+      }
+      expect(attempts.length).toBeLessThanOrEqual(SECOND_REVIEW_TRIES_MAX);
+      expect(guard).toBeLessThanOrEqual(SECOND_REVIEW_TRIES_MAX);
+      if (!("giveUp" in verdict)) throw new Error("the sequence must end");
+      const flagged = secondOpinionUnavailable({ mode: "on", company: "amazon" }, verdict.giveUp);
+      // Not blocked, but shown on both pages, with the fixed line, and the merge waits for the owner.
+      expect(flagged).toMatchObject({ unavailable: true, blocked: false, wouldHaveBlocked: false });
+      expect(secondOpinionShownOn(flagged)).toEqual({ taskPage: true, pullRequest: true });
+      expect(secondOpinionPrLines(flagged)[0]).toMatch(/^Second review did not run:/u);
+      expect(mergeWaitsForSecondReview(flagged, digest, [])).toBe(true);
+    });
+
+    it("the same attack with every candidate unusable and with no candidate at all is flagged too", () => {
+      const allUnusable = [attempt(NOVA_PREMIER, "unusable"), attempt(NOVA_PRO, "unusable"), attempt(BEDROCK_GPT_OSS, "unusable")];
+      const stopped = nextSecondReviewTry(onInput(), allUnusable);
+      expect(stopped).toEqual({ giveUp: "no-answer" });
+      const none = nextSecondReviewTry(onInput({ sources: [SONNET] }), []);
+      expect(none).toEqual({ giveUp: "no-candidate" });
+      for (const result of [stopped, none]) {
+        if (!("giveUp" in result)) throw new Error("expected give up");
+        expect(mergeWaitsForSecondReview(secondOpinionUnavailable({ mode: "on" }, result.giveUp), digest, [])).toBe(true);
+      }
+    });
   });
 });
 
 describe("the pull request lines (W7)", () => {
   const hostile = "See [the fix](https://evil.example/x) @octocat #123 ![img](https://evil.example/i.png) <!-- hide --> GH-45 Fixes ENG-9 https://evil.example/path www.evil.example";
 
-  it("are empty for a shadow opinion, a non-blocking one and an unavailable one", () => {
+  it("are empty for a shadow opinion and a non-blocking one, and one fixed line for an on one that did not run", () => {
     expect(secondOpinionPrLines(opinion("shadow", report("FINDINGS", [{ text: hostile, origin: "INTRODUCED" }])))).toEqual([]);
     expect(secondOpinionPrLines(opinion("on", report("PASS")))).toEqual([]);
-    expect(secondOpinionPrLines(secondOpinionUnavailable(runPlan("on"), "no-answer"))).toEqual([]);
+    // An `on` one that did not run is the one fixed line, no model text (owner decision 2026-11-02).
+    expect(secondOpinionPrLines(secondOpinionUnavailable(runPlan("on"), "no-answer"))).toEqual(["Second review did not run: the reviewer gave no usable answer after retrying"]);
+    expect(secondOpinionPrLines(secondOpinionUnavailable(runPlan("shadow"), "no-answer"))).toEqual([]);
   });
 
   it("make model text inert: no link, mention, image, comment, issue reference or closing word survives", () => {

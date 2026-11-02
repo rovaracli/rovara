@@ -7,11 +7,12 @@
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
 import {
-  SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, blockingFindings, canonicalModelName, modelCompany, secondReviewModelKey, secondReviewProviderAllowed, secondReviewVerdictHolds,
+  SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, canonicalModelName, modelCompany, secondReviewModelKey, secondReviewProviderAllowed, secondReviewVerdictHolds,
   type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewMode, type SecondReviewReplayRun,
   type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
+import { createHash } from "node:crypto";
 import { inertLine } from "./inert-text.js";
 import { candidatesOf, type CriticModelLimits } from "./critic.js";
 
@@ -200,28 +201,99 @@ export function secondOpinionOf(input: SecondOpinionInput): SecondOpinion {
   });
 }
 
-/** An unavailable second opinion: no findings, nothing blocked. `report` is kept only for `no-answer` (the failed report says why, for the page); any other reason drops it, since it was not accepted. */
-export function secondOpinionUnavailable(plan: Pick<Extract<SecondReviewPlan, { run: true }>, "mode" | "company" | "downgraded">, reason: SecondOpinionUnavailableReason, report?: WorkflowReviewReport): SecondOpinion {
+/**
+ * An unavailable second opinion: no findings, nothing blocked. `report` is kept only for `no-answer` (the failed report says why, for the page); any other reason drops it, since it was not accepted. `company` is
+ * absent when no model was ever chosen (`no-candidate`).
+ */
+export function secondOpinionUnavailable(plan: { mode: "shadow" | "on"; company?: Exclude<ModelCompany, "other"> | undefined; downgraded?: "replay-not-passed" | undefined }, reason: SecondOpinionUnavailableReason, report?: WorkflowReviewReport): SecondOpinion {
   return SecondOpinionSchema.parse({
-    mode: plan.mode, ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), company: plan.company,
+    mode: plan.mode, ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), ...(plan.company === undefined ? {} : { company: plan.company }),
     ...(report !== undefined && reason === "no-answer" ? { report } : {}), unavailableReason: reason,
     blockingCount: 0, blocked: false, wouldHaveBlocked: false, unavailable: true,
   });
 }
 
-/**
- * OWNER DECISION PENDING: what `on` does when the second review cannot run (no answer, or no candidate because the project's approved list leaves none). Today's behaviour, kept in this one function: it does
- * not block. When the owner decides, change it here, and the wiring that sends work back reads only this.
- */
-export function secondReviewBlocksWhenUnavailable(input: { mode: SecondReviewMode; reason: SecondOpinionUnavailableReason | SecondReviewSkipReason }): boolean {
-  void input; // the owner's decision will read these
-  return false;
+/** The most tries one second review makes in all (owner decision, 2026-11-02): the first, one retry on the same model, then the next allowed candidate. */
+export const SECOND_REVIEW_TRIES_MAX = 3;
+
+/** What a second review that cannot run means (owner decision, 2026-11-02, "Retry, then flag"). */
+export interface UnavailableDecision {
+  /** Never: the added opinion is not a reason a task stops. */
+  blocks: false;
+  /** `on` says so on the task page; shadow stays silent. */
+  showOnTaskPage: boolean;
+  /** `on` says "Second review did not run: <reason>" on the pull request too; shadow never does. */
+  showOnPullRequest: boolean;
+  /** `on`: the task owner is asked to acknowledge before merge. Shadow: never. */
+  askOwnerToAcknowledge: boolean;
+  /** The line to show, or undefined where nothing is shown. */
+  line: string | undefined;
 }
 
-/** Where a second opinion may be shown: always on the task page; on the pull request only when it blocked (a shadow opinion is never on the pull request). Not shown on the PR for an unavailable one (owner decision pending). */
-export function secondOpinionShownOn(opinion: Pick<SecondOpinion, "mode" | "blocked">): { taskPage: true; pullRequest: boolean } {
-  return { taskPage: true, pullRequest: opinion.mode === "on" && opinion.blocked };
+/**
+ * What it means that the second review could not run (no answer after the tries, an unusable or unaccepted report, no candidate model, no budget). `on`: do not block, but flag it on the task page and the pull
+ * request and ask the task owner to acknowledge before merge. Shadow: silent. Every reason that stops the review from giving its opinion lands here, so none can pass silently.
+ */
+export function secondReviewUnavailableDecision(input: { mode: SecondReviewMode; reason: SecondOpinionUnavailableReason }): UnavailableDecision {
+  const flagged = input.mode === "on";
+  return { blocks: false, showOnTaskPage: flagged, showOnPullRequest: flagged, askOwnerToAcknowledge: flagged, line: flagged ? secondReviewDidNotRunLine(input.reason) : undefined };
 }
+
+/** Kept for callers that only ask whether it blocks: it never does. */
+export const secondReviewBlocksWhenUnavailable = (input: { mode: SecondReviewMode; reason: SecondOpinionUnavailableReason }): boolean => secondReviewUnavailableDecision(input).blocks;
+
+export interface SecondReviewAttempt {
+  model: ModelIdentifier;
+  /** The mode the try was planned in. */
+  mode: "shadow" | "on";
+  /** `no-answer`: no report, a failed or unaccepted one (a context-length rejection is this, never `unusable`). `unusable`: the account cannot use the model (`secondReviewModelUnusable`). */
+  outcome: "no-answer" | "unusable";
+}
+
+export type SecondReviewNextTry = { try: Extract<SecondReviewPlan, { run: true }> } | { giveUp: SecondOpinionUnavailableReason };
+
+/**
+ * The next try of a second review that has not answered yet, at most `SECOND_REVIEW_TRIES_MAX` in all: a model that gave no answer is tried once more; a model that gave no answer twice, or that the account cannot use,
+ * is left out, and the next allowed candidate is planned. When the review started in `on`, a later try that would only run in shadow (the next candidate has no evidence to run in `on`) is NOT taken: that would swap a
+ * blocking review for a silent one, so it gives up instead and the result is flagged. Gives up with `no-candidate` when nothing was ever tried and nothing can be, else with `no-answer`.
+ */
+export function nextSecondReviewTry(input: SecondReviewPlanInput, attempts: readonly SecondReviewAttempt[]): SecondReviewNextTry {
+  if (attempts.length >= SECOND_REVIEW_TRIES_MAX) return { giveUp: "no-answer" };
+  const noAnswerCount = (model: ModelIdentifier): number => attempts.filter((attempt) => attempt.outcome === "no-answer" && secondReviewModelKey(attempt.model) === secondReviewModelKey(model)).length;
+  const leftOut = [...(input.unusable ?? []), ...attempts.filter((attempt) => attempt.outcome === "unusable" || noAnswerCount(attempt.model) >= 2).map((attempt) => attempt.model)];
+  const next = planSecondReview({ ...input, unusable: leftOut });
+  if (!next.run) return { giveUp: attempts.length === 0 ? "no-candidate" : "no-answer" };
+  if (attempts.some((attempt) => attempt.mode === "on") && next.mode !== "on") return { giveUp: "no-answer" };
+  return { try: next };
+}
+
+/**
+ * Where a second opinion may be shown. The task page: any opinion with an answer, and an unavailable `on`; shadow that did not run is silent. The pull request: only an `on` opinion that blocked, or an `on` one that
+ * did not run ("Second review did not run: <reason>"); a shadow opinion never.
+ */
+export function secondOpinionShownOn(opinion: Pick<SecondOpinion, "mode" | "blocked"> & { unavailable?: boolean }): { taskPage: boolean; pullRequest: boolean } {
+  const unavailable = opinion.unavailable === true;
+  return { taskPage: !unavailable || opinion.mode === "on", pullRequest: opinion.mode === "on" && (opinion.blocked || unavailable) };
+}
+
+/**
+ * The acknowledgement the task owner is asked for before merge when an `on` second review did not run: one per candidate (the key is a hash of the candidate and the reason, so the same ask is not made twice and a
+ * new candidate asks again). The ask itself goes through the existing ask-a-person mechanism; this says whether one is needed and what it says.
+ */
+export function secondReviewAcknowledgement(opinion: Pick<SecondOpinion, "mode" | "unavailable" | "unavailableReason">, candidateDigest: string): { required: false } | { required: true; key: string; text: string } {
+  if (opinion.mode !== "on" || !opinion.unavailable || opinion.unavailableReason === undefined) return { required: false };
+  return {
+    required: true,
+    key: createHash("sha256").update(`second-review-ack\n${candidateDigest}\n${opinion.unavailableReason}`, "utf8").digest("hex"),
+    text: `${secondReviewDidNotRunLine(opinion.unavailableReason)}. Acknowledge before merging.`,
+  };
+}
+
+/** Whether a merge must wait: an acknowledgement is required for this candidate and has not been given (`given` holds the keys the task owner acknowledged). */
+export const mergeWaitsForSecondReview = (opinion: Pick<SecondOpinion, "mode" | "unavailable" | "unavailableReason"> | undefined, candidateDigest: string, given: readonly string[]): boolean => {
+  const ack = opinion === undefined ? { required: false as const } : secondReviewAcknowledgement(opinion, candidateDigest);
+  return ack.required && !given.includes(ack.key);
+};
 
 /** The most findings and characters a second opinion puts on a pull request. */
 export const SECOND_OPINION_PR_FINDINGS_MAX = 5;
@@ -233,7 +305,10 @@ export const SECOND_OPINION_PR_LINE_MAX = 300;
  * report string and is made inert too.
  */
 export function secondOpinionPrLines(opinion: SecondOpinion): string[] {
-  if (!secondOpinionShownOn(opinion).pullRequest || opinion.report === undefined) return [];
+  if (!secondOpinionShownOn(opinion).pullRequest) return [];
+  // An `on` second review that did not run: one fixed line, no model text.
+  if (opinion.unavailable) return opinion.unavailableReason === undefined ? [] : [secondReviewDidNotRunLine(opinion.unavailableReason)];
+  if (opinion.report === undefined) return [];
   const blocking = blockingFindings(opinion.report);
   return [
     `Second review (${inertLine(`${opinion.report.provider}/${opinion.report.version}`, 80)}): ${String(blocking.length)} blocking ${blocking.length === 1 ? "finding" : "findings"}`,

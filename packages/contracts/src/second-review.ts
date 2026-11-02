@@ -83,14 +83,14 @@ export type SecondReviewSkipReason = (typeof SECOND_REVIEW_SKIP_REASONS)[number]
  * `unavailable` is set when the reviewer gave no answer (the report is FAILED, INTERRUPTED or UNKNOWN): the first review stands alone, and the task page says the second opinion did not run.
  */
 /** Why a second opinion is unavailable (fixed words): the reviewer gave no answer, or its answer was not accepted. */
-export const SECOND_OPINION_UNAVAILABLE_REASONS = ["no-answer", "wrong-role", "wrong-candidate", "wrong-model", "same-company", "budget", "not-run"] as const;
+export const SECOND_OPINION_UNAVAILABLE_REASONS = ["no-answer", "wrong-role", "wrong-candidate", "wrong-model", "same-company", "budget", "not-run", "no-candidate"] as const;
 export type SecondOpinionUnavailableReason = (typeof SECOND_OPINION_UNAVAILABLE_REASONS)[number];
 
 export const SecondOpinionSchema = z.object({
   mode: z.enum(["shadow", "on"]),
   downgraded: z.literal("replay-not-passed").optional(),
-  /** The company of the second reviewer's model, never `other`. */
-  company: z.enum(MODEL_COMPANIES.filter((company) => company !== "other") as [string, ...string[]]),
+  /** The company of the second reviewer's model, never `other`. Absent only when no model was ever chosen (`no-candidate`). */
+  company: z.enum(MODEL_COMPANIES.filter((company) => company !== "other") as [string, ...string[]]).optional(),
   /** The accepted report; absent when the second review did not run or its answer was not accepted (then `unavailableReason` says why). */
   report: WorkflowReviewReportSchema.optional(),
   unavailableReason: z.enum(SECOND_OPINION_UNAVAILABLE_REASONS).optional(),
@@ -101,10 +101,26 @@ export const SecondOpinionSchema = z.object({
 }).strict().superRefine((opinion, context) => {
   if (opinion.mode === "shadow" && opinion.blocked) context.addIssue({ code: "custom", path: ["blocked"], message: "a shadow second opinion never blocks" });
   if (opinion.unavailable !== (opinion.report === undefined || opinion.unavailableReason !== undefined)) context.addIssue({ code: "custom", path: ["unavailable"], message: "unavailable exactly when there is no accepted answer" });
+  if (!opinion.unavailable && opinion.company === undefined) context.addIssue({ code: "custom", path: ["company"], message: "an answered second opinion names the company of its model" });
   if (opinion.unavailable && (opinion.blocked || opinion.wouldHaveBlocked || opinion.blockingCount > 0)) context.addIssue({ code: "custom", path: ["blocked"], message: "an unavailable second opinion has no findings and blocks nothing" });
   if (opinion.blocked && !opinion.wouldHaveBlocked) context.addIssue({ code: "custom", path: ["blocked"], message: "a second opinion that blocked would have blocked" });
 });
 export type SecondOpinion = z.infer<typeof SecondOpinionSchema>;
+
+/**
+ * The words after "Second review did not run: " for each reason (owner decision, 2026-11-02, "Retry, then flag"). Fixed text, never a model's: it goes on the task page and, for `on`, on the pull request.
+ */
+export const SECOND_OPINION_UNAVAILABLE_TEXT: Readonly<Record<SecondOpinionUnavailableReason, string>> = {
+  "no-answer": "the reviewer gave no usable answer after retrying",
+  "wrong-role": "the answer was not the code review's",
+  "wrong-candidate": "the answer was for other code than the current change",
+  "wrong-model": "the answer came from a model other than the one planned",
+  "same-company": "the model that answered is not from a different AI company",
+  "budget": "there was not enough budget left",
+  "not-run": "it had already run for this change",
+  "no-candidate": "no allowed model from a different AI company could be used",
+};
+export const secondReviewDidNotRunLine = (reason: SecondOpinionUnavailableReason): string => `Second review did not run: ${SECOND_OPINION_UNAVAILABLE_TEXT[reason]}`;
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The replay check (section 9.2). The quality suite (a manual run) fills one case per past task or planted diff; this file defines the fields and the bar.
