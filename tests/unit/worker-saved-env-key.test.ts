@@ -65,6 +65,14 @@ describe("fix round 1: more key files, anchored exclusions, dev container refere
     expect(keyFilePaths(paths, [])).toEqual([".pnpmfile.cjs", ".yarn/releases/yarn-4.1.0.cjs", "patches/left-pad+1.0.0.patch", "requirements/base.txt", "requirements/dev/extra.txt"]);
   });
 
+  it("counts pip-tools inputs and constraints files, in any directory", async () => {
+    const paths = ["requirements.in", "requirements-dev.in", "svc/requirements-test.in", "constraints.txt", "svc/constraints-3.12.txt", "svc/src/constraints.py", "docs/requirements.md"];
+    expect(keyFilePaths(paths, [])).toEqual(["constraints.txt", "requirements-dev.in", "requirements.in", "svc/constraints-3.12.txt", "svc/requirements-test.in"]);
+    const files: Files = { "svc/requirements.in": "a", "svc/constraints-3.12.txt": "b" };
+    const before = await keyString(files);
+    for (const name of Object.keys(files)) expect(await keyString({ ...files, [name]: "changed" }), name).not.toBe(before);
+  });
+
   it("counts those directories at any depth, so a workspace package's files change the key", async () => {
     const paths = ["svc/requirements/base.txt", "web/.yarn/releases/yarn-4.cjs", "web/patches/a.patch", "svc/docs/patches-notes.md", "svc/src/requirements.py"];
     expect(keyFilePaths(paths, [])).toEqual(["svc/requirements/base.txt", "web/.yarn/releases/yarn-4.cjs", "web/patches/a.patch"]);
