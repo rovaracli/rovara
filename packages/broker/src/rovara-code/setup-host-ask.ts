@@ -359,13 +359,13 @@ async function recountOpenAsks(table: HostAskTable, orgId: OrgId, project: strin
 
 // ---- the card item
 
-export function hostAskItem(ask: SetupHostAsk, input: { staffStep: boolean }): Extract<DecisionItem, { kind: "setup_host" }> {
+export function hostAskItem(ask: SetupHostAsk, input: { staffStep: boolean; /** SH30: the company already approved this host through a recipe the project's setup used. A mark on the card; it grants nothing. */ companyApproved?: boolean }): Extract<DecisionItem, { kind: "setup_host" }> {
   const subjectId = hostAskSubjectId(ask.orgId, ask.project, ask.host);
   const base = `/app/projects/${ask.project}`;
   return {
-    kind: "setup_host", subjectId, project: ask.project, host: ask.host, staffStep: input.staffStep, international: isInternationalName(ask.host), taskId: ask.taskId, ...(ask.typedBy === undefined ? {} : { typedBy: livePersonLabel(ask.typedBy) }),
+    kind: "setup_host", subjectId, project: ask.project, host: ask.host, staffStep: input.staffStep, international: isInternationalName(ask.host), ...(input.companyApproved === true ? { companyApproved: true as const } : {}), taskId: ask.taskId, ...(ask.typedBy === undefined ? {} : { typedBy: livePersonLabel(ask.typedBy) }),
     ...(ask.from === undefined ? {} : { from: ask.from }), ...(ask.journalN === undefined ? {} : { journalN: ask.journalN }),
-    title: `Allow ${ask.host}`, createdAt: ask.askedAt, openPath: `${base}/settings`, contentVersion: `${ask.host}@${ask.askedAt}`,
+    title: `Allow ${ask.host}`, createdAt: ask.askedAt, openPath: `${base}/settings`, contentVersion: `${ask.host}@${ask.askedAt}${input.companyApproved === true ? "+recipe" : ""}`,
   };
 }
 
@@ -374,6 +374,8 @@ export interface HostItemPorts extends HostAskTable {
   approvableProjects(who: { orgId: string; developerId: string }): Promise<readonly string[]>;
   /** Whether Rovara staff also approve a project's websites (Cloud). */
   staffStep: boolean;
+  /** SH30 (switch `sp`): the hosts of a project its company approved through a recipe the project's setup used (`companyApprovedHostMarks`). A mark for the card only. Errors are the port's to absorb. */
+  companyApproved?: ((orgId: OrgId, project: string) => Promise<ReadonlyMap<string, unknown>>) | undefined;
 }
 /**
  * The open asks the caller may decide, as card items: ONE read of the company's index of open asks (however many projects it has), then the projects the caller may approve for. At most
@@ -384,6 +386,12 @@ export async function hostAskItemsFor(ports: HostItemPorts, who: { orgId: string
   if (allowed.size === 0) return [];
   const orgId = who.orgId;
   const out: DecisionItem[] = [];
+  const marks = new Map<string, Promise<ReadonlyMap<string, unknown>>>();
+  const marksOf = (project: string): Promise<ReadonlyMap<string, unknown>> => {
+    if (ports.companyApproved === undefined) return Promise.resolve(new Map());
+    if (!marks.has(project)) marks.set(project, ports.companyApproved(orgId, project).catch(() => new Map()));
+    return marks.get(project)!;
+  };
   let start: Row | undefined;
   let read = 0;
   for (let page = 0; page < SETUP_HOST_INDEX_MAX / 100; page += 1) {
@@ -394,7 +402,7 @@ export async function hostAskItemsFor(ports: HostItemPorts, who: { orgId: string
       read += 1;
       const parsed = AskRowSchema.safeParse(item["ask"]);
       if (rowExpired(item, ports.now()) || !parsed.success || parsed.data.orgId !== orgId || parsed.data.state !== "open" || !allowed.has(parsed.data.project) || item["project"] !== parsed.data.project || item["host"] !== parsed.data.host) continue;
-      out.push(hostAskItem(parsed.data, { staffStep: ports.staffStep }));
+      out.push(hostAskItem(parsed.data, { staffStep: ports.staffStep, companyApproved: (await marksOf(parsed.data.project)).has(parsed.data.host) }));
     }
     start = result.LastEvaluatedKey;
     if (start === undefined || read >= SETUP_HOST_INDEX_MAX) break;
