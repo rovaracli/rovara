@@ -1,7 +1,8 @@
 // R7: the one place a tracker item (a Linear or Jira webhook, a backfill page, an MCP poller result) becomes a record draft. Everything
 // ticket-shaped goes through `createTicketRecorder`, so audience, trust and retention are decided once.
-import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type EditedByOtherPort, type RecordHistoryPort, type TrustClass, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
+import { createHash } from "node:crypto";
+import { addedText, cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
+import { MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
 
 export interface TicketAcl {
   principals?: readonly string[];
@@ -34,12 +35,19 @@ export interface TicketItem {
    * does not become a member's because a member changed its status. Absent: the author is unknown, which is an outsider.
    */
   authorId?: string;
-  /** Who made this change (the webhook's actor, the "last modified by"). Kept as data; it can only lower the row's trust, never raise it. */
+  /** Who made this change (the webhook's actor, the "last modified by"). On an edit this is the person the row belongs to and is erased with. */
   updaterId?: string;
   /** The source's own id, to ask the source again (existence sweep). Absent: `id`. */
   nativeId?: string;
   /** The item is an edit of one already recorded (an update, not a first sight). */
   edit?: boolean;
+  /**
+   * Per-editor rows: what this edit changed, as the source said so (Linear's `updatedFrom`, Jira's changelog, GitHub's `changes`). Absent on an edit: unknown, and then no words of the edit are kept
+   * (the row says only that someone changed the item), because the text may hold other people's words. A comment's edit changes its body.
+   */
+  changed?: { title?: boolean; body?: boolean; state?: boolean; labels?: boolean };
+  /** The body (or comment text) as it was before this edit, when the source sent it: the editor is credited with the lines they added to it and nothing else. */
+  previousBody?: string;
   /** The source marks the item as restricted inside its team or project (a Jira issue security level): maintainers only, whatever the admin widened. */
   restricted?: boolean;
   /**
@@ -67,20 +75,7 @@ export interface TicketRecorderDependencies extends GateDependencies {
   sink: RecordSinkPort;
   actors: ActorResolverPort;
   parents?: ParentLookupPort;
-  /**
-   * Sticky trust: the lowest trust any earlier version of the item ever had (the sink, `RecordHistoryPort`). Without it an outsider's edit to a member's ticket
-   * is relabelled `member` by the next innocent touch (a status change) that carries the same text with the member as creator. In production it is required; an
-   * edit whose history cannot be read is recorded as an outsider's.
-   */
-  history?: RecordHistoryPort;
-  /**
-   * TRW-4 (B1): items an edit by someone other than the author touched. Such an item is not stored again (its later versions would carry the editor's words under the author's name). In production it is
-   * required; a read that fails skips the version.
-   */
-  edited?: EditedByOtherPort;
   log?: TapLog;
-  /** Called when an item is skipped because its editor is not a linked person (the author's own skip is counted by the sink). */
-  onUnlinked?: (workspaceId: string, project: string | undefined, source: TicketItem["source"]) => void;
 }
 
 export interface TicketContext {
@@ -117,6 +112,9 @@ export function ticketAudience(item: Pick<TicketItem, "source" | "scope"> & { re
   return { kind: "restricted", acl: { source: item.source, scope: item.scope, groups: [MAINTAINERS_GROUP], capturedAt: at, liveCheck: "none" } };
 }
 
+/** The short tag of the person a change row belongs to: two people's changes at the same instant are two rows. */
+const tagOf = (sourceId: string | undefined): string => (sourceId === undefined ? "-" : createHash("sha256").update(sourceId).digest("hex").slice(0, 12));
+
 export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRecorder {
   const log: TapLog = deps.log ?? (() => undefined);
   return {
@@ -124,18 +122,16 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
       try {
         const config = preloaded ?? await gate(deps, { workspaceId: context.workspaceId, ...(context.project === undefined ? {} : { project: context.project }), source: item.source, scope: item.scope });
         if (config === undefined) return "skipped";
-        if (isExcluded(config, item.authorId, ...(item.labels ?? []))) return "skipped";
+        // Per-editor rows (owner, 2026-11-02): ONE row per change, under the person who made it. A creation is its author's; an edit (a description, a title, a status, a label, a comment) is its editor's,
+        // and holds only that person's own words, so a person's erase takes exactly their rows and nothing else of the item. Nothing is frozen and nothing is replaced.
+        const isEdit = item.edit === true;
+        const actorId = isEdit ? item.updaterId : item.authorId;
+        if (isExcluded(config, item.authorId, actorId, ...(item.labels ?? []))) return "skipped";
         const project = context.project ?? config.project;
         if (item.needsParentProof === true) {
           const proven = item.parentId !== undefined && deps.parents !== undefined
             && await deps.parents.isRecorded({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
           if (!proven) return "skipped";
-        }
-        const itemRef = { workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id };
-        if (item.edit === true && deps.edited !== undefined) {
-          // A version of an item an editor touched is not stored; neither is one whose mark cannot be read.
-          const marked = await deps.edited.isMarked(itemRef).catch(() => true);
-          if (marked) { log("record.edited_item_skipped", { source: item.source }); return "skipped"; }
         }
         let restricted = item.restricted === true;
         if (item.inheritsRestriction === true && !restricted) {
@@ -143,37 +139,37 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
             && await deps.parents.isOpen({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
           restricted = !open;
         }
-        // Trust follows the person who wrote the text. An author the source names but the company has not linked is an outsider; so is no author at all.
-        // Whoever made this change can only lower it: an outsider who edits a member's ticket makes that version an outsider's.
         const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
-        const who = item.authorId === undefined ? { trust: "outsider" as const } : await resolve(item.authorId);
-        const updater = item.updaterId === undefined || item.updaterId === item.authorId ? undefined : await resolve(item.updaterId);
-        // TRW-4 (fix round 1, B1): the row is indexed under its AUTHOR only, so an erase of the editor could not find it. After an edit by anyone other than the author (a bot is not a person), the words in
-        // the text may be the editor's: the version is not stored (the row stays at the author's last version). An unlinked editor is counted; a linked one is only logged. An edit by the same person
-        // under another id (two ids linked to one person) is that person's own and is erased with them.
-        if (updater !== undefined && updater.trust !== "system" && (updater.developerId === undefined || updater.developerId !== who.developerId)) {
-          if (updater.developerId === undefined) deps.onUnlinked?.(context.workspaceId, project, item.source);
-          else log("record.edit_by_other_skipped", { source: item.source });
-          await deps.edited?.mark(itemRef);
-          return "skipped";
-        }
-        let previous: TrustClass | undefined;
-        if (deps.history !== undefined) {
-          try {
-            previous = await deps.history.lowestTrust({ workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id });
-          } catch {
-            // A history that cannot be read is not "no history": the text may be someone else's.
-            previous = "outsider";
+        // The person who made this change. A change nobody is named for (or a person nobody linked) is refused by the sink, which counts it: only a linked person's words can be erased.
+        const who = actorId === undefined ? { trust: "outsider" as const } : await resolve(actorId);
+        const isComment = item.kind === "ticket.comment";
+        const pieces: string[] = [];
+        if (!isEdit) {
+          for (const part of [item.title, item.body]) if (typeof part === "string" && part !== "") pieces.push(part);
+        } else {
+          if (item.changed?.title === true && typeof item.title === "string" && item.title !== "") pieces.push(item.title);
+          if (isComment || item.changed?.body === true) {
+            let added = addedText(item.previousBody, item.body);
+            // Only a comment's own author edits it (an administrator's edit of someone else's comment always sends what it was, or keeps no words): with no earlier text, the editor's whole text is theirs.
+            if (added === undefined && isComment && item.previousBody === undefined && item.body !== undefined && item.authorId !== undefined && item.authorId === item.updaterId) added = item.body;
+            if (added !== undefined) pieces.push(added);
           }
         }
-        const trust = lowestTrust(who.trust, ...(updater === undefined ? [] : [updater.trust]), ...(previous === undefined ? [] : [previous]));
-        const text = cleanText([item.title, item.body].filter((part): part is string => typeof part === "string" && part !== "").join("\n\n"));
+        const text = cleanText(pieces.join("\n\n"));
+        const changedWords = isEdit ? Object.entries(item.changed ?? {}).filter(([, on]) => on === true).map(([name]) => name).join(",") : "";
+        const structured = isEdit
+          ? scalars({ edit: true, changed: item.changed === undefined ? "unknown" : changedWords, ...(item.changed?.state === true ? { state: item.state } : {}), ...(item.changed?.labels === true ? { labels: item.labels?.slice(0, 20).join(",") } : {}), restricted })
+          : scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), restricted });
+        const occurredMs = Date.parse(item.occurredAt);
         const draft: RecordDraft = {
           workspaceId: context.workspaceId, ...(project === undefined ? {} : { project }), source: item.source, kind: item.kind, occurredAt: item.occurredAt,
-          sourceRef: { system: item.system, id: item.id, nativeId: item.nativeId ?? item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }), version: item.version },
-          ...(item.authorId === undefined ? {} : { actor: { sourceId: item.authorId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: who.trust } }),
-          trust, scope: item.scope, pieceTrusts: [who.trust, ...(updater === undefined ? [] : [updater.trust]), ...(previous === undefined ? [] : [previous])], audience: ticketAudience({ source: item.source, scope: item.scope, restricted }, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
-          structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), updatedBy: item.updaterId, restricted }), links: linksOf(item.url), retention: config.retention,
+          sourceRef: {
+            system: item.system, id: item.id, nativeId: item.nativeId ?? item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }),
+            version: `${item.version}:${tagOf(actorId)}`.slice(0, 100), order: Number.isFinite(occurredMs) && occurredMs >= 0 ? Math.floor(occurredMs) : 0,
+          },
+          ...(actorId === undefined ? {} : { actor: { sourceId: actorId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: who.trust } }),
+          trust: who.trust, scope: item.scope, pieceTrusts: [who.trust], audience: ticketAudience({ source: item.source, scope: item.scope, restricted }, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
+          structured, links: linksOf(item.url), retention: config.retention,
         };
         const outcome = await deps.sink.put(withRetention(draft, config.retention));
         return outcome.status;

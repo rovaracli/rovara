@@ -110,3 +110,27 @@ export function withRetention(draft: RecordDraft, retention: Retention): RecordD
 
 /** Every tap's hard bound on what one delivery may write. */
 export const MAX_DRAFTS_PER_DELIVERY = 50;
+
+/**
+ * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after. Whole lines of `next` that were not in `previous` (as a multiset, so a repeated line counts
+ * once per time it was added). It is how a person who edited someone else's description is credited with their own lines only, and never with the author's.
+ *
+ * Fail closed: `previous` unknown gives nothing; and when `previous` has words but no line of it survives in `next` the two may not line up at all (a different markup for the same text), so
+ * nothing is credited rather than the author's words credited to the editor.
+ */
+export function addedText(previous: string | undefined, next: string | undefined): string | undefined {
+  if (previous === undefined || next === undefined) return undefined;
+  const lines = (text: string): string[] => text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+  const before = lines(previous);
+  const after = lines(next);
+  const remaining = new Map<string, number>();
+  for (const line of before) remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  const added: string[] = [];
+  let kept = 0;
+  for (const line of after) {
+    const left = remaining.get(line) ?? 0;
+    if (left > 0) { remaining.set(line, left - 1); kept += 1; } else added.push(line);
+  }
+  if (before.length > 0 && kept === 0) return undefined;
+  return added.length === 0 ? undefined : added.join("\n");
+}

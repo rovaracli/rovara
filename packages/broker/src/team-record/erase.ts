@@ -311,7 +311,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings. */
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
-/** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) */
+/** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
 const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "SKIPPED#", "EDITED#"] as const;
 
 /**

@@ -37,6 +37,7 @@ import { Aliases, errorName } from "../agents/table-writes.js";
 import { createAccessReader } from "./access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";
 import { parseEventVectorRef } from "./ingest.js";
+import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-assembly.js";
 import type { LearningModeReader } from "./mode.js";
 import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
@@ -237,10 +238,19 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   // viewer probe whether a private discussion exists.
   const someHidden = audience.kind === "caller" && topEvents.withheld + topFacts.withheld > 0;
   const hits: RecordSearchHit[] = [];
+  const shownItems = new Set<string>();
   for (const candidate of wanted) {
     if (hits.length >= limit) break;
-    if (candidate.event !== undefined && okEvents.has(candidate.event)) hits.push(hitOfEvent(candidate.event));
-    else if (candidate.fact !== undefined && okFacts.has(candidate.fact)) hits.push(hitOfFact(candidate.fact));
+    if (candidate.event !== undefined && okEvents.has(candidate.event)) {
+      if (isChangeRow(candidate.event)) {
+        // A ticket, pull request, review or comment is stored as one row per change: it is shown ONCE, with its rows put back together in order (each of them seen through the same filter).
+        const key = itemKeyOf(candidate.event);
+        if (shownItems.has(key)) continue;
+        shownItems.add(key);
+        const rows = await visibleItemRows(deps.table, orgId, candidate.event, audience, filters, nowSeconds).catch(() => [candidate.event as StoredEvent]);
+        hits.push(hitOfEvent(assembleItem(rows.length === 0 ? [candidate.event] : rows)));
+      } else hits.push(hitOfEvent(candidate.event));
+    } else if (candidate.fact !== undefined && okFacts.has(candidate.fact)) hits.push(hitOfFact(candidate.fact));
   }
   return RecordSearchResponseSchema.parse({ hits, someHidden });
 }

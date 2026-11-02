@@ -61,7 +61,7 @@ export interface RecordDraft {
   repo?: string;
   source: SourceSystem;
   /** `system` names the source instance (a Slack team, a repo host, an MCP server id); `id` and `version` make the write idempotent. */
-  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; /** When this VERSION was made (an edit's time). Absent: `occurredAt`. The sink orders versions by it, never by arrival. */ versionAt?: string; /** The source's own id, for asking the source again (existence sweep). Absent: the same as `id`. */ nativeId?: string };
+  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; /** When this VERSION was made (an edit's time). Absent: `occurredAt`. The sink orders versions by it, never by arrival. */ versionAt?: string; /** The source's own id, for asking the source again (existence sweep). Absent: the same as `id`. */ nativeId?: string; /** Per-editor rows: this row is ONE change to the item `id`, made by `actor`, holding only that person's own words; the change's time at the source in milliseconds. A change row is never replaced by a later one. */ order?: number };
   kind: RecordKind;
   occurredAt: string;
   actor?: { sourceId: string; developerId?: string; trust: TrustClass };
@@ -105,6 +105,8 @@ export type TombstoneCause = "source_deleted" | "person_erased" | "project_archi
  *    redelivers (a message posted and deleted within seconds can reach the sink as tombstone first, put second; a dead-letter redrive is the same), so
  *    arrival order must never bring deleted text back. (A scope tombstone hides what exists at that moment; only cause `excluded` also refuses later
  *    puts under that scope, because a Slack Connect channel stays excluded.);
+ *  - a draft whose `sourceRef.order` is set is a PER-EDITOR CHANGE ROW: one change by one person, holding only their words. It replaces nothing and is replaced by nothing (no item head, no
+ *    sticky trust, no staleness); the item `id` still reaches every change through a source delete or a tombstone;
  *  - versions are ordered by `sourceRef.versionAt ?? occurredAt`, not by arrival: a `put` older than the stored version is a no-op (answer `duplicate`),
  *    so a late older version can never replace newer text;
  *  - trust is read back through `RecordHistoryPort` (below), which must report the LOWEST trust any version of the item ever had.
@@ -132,17 +134,6 @@ export interface RecordSinkPort {
  */
 export interface RecordHistoryPort {
   lowestTrust(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<TrustClass | undefined>;
-}
-
-/**
- * TRW-4 fix round 1 (B1). A row is indexed under its AUTHOR only, so an erase of another person cannot find it. When someone other than the author edits an item, their words may be in the text, so that
- * version is not stored, and the item is marked: no later version of it is stored either (a later touch by the author would carry the editor's words under the author's name). The row stays at the
- * author's last version. The mark holds a hash of the item and nothing else.
- */
-export interface EditedByOtherPort {
-  mark(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<void>;
-  /** Whether the item was marked. A read that fails THROWS: the caller treats the item as marked. */
-  isMarked(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<boolean>;
 }
 
 /** One authenticated push to a branch: the minimum needed to say who put a range of commits on it. No content. Held for a short time (30 days). */

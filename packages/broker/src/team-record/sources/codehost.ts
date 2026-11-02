@@ -4,10 +4,11 @@
 // What it writes: pull requests, reviews, comments, CI conclusions, reverts. What it deliberately does NOT write (owner decision Q5, 2026-10-30):
 // the changed lines of a human edit to a Rovara pull request. At merge those are read live from the host, handed once, in memory, to the
 // learning extractor, and dropped. Only the lesson the extractor makes, and a link to the pull request, are ever kept (by the learning lane).
-import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, MAX_DRAFTS_PER_DELIVERY, type GateDependencies } from "./common.js";
+import { createHash } from "node:crypto";
+import { addedText, cleanText, gate, isExcluded, linksOf, scalars, withRetention, MAX_DRAFTS_PER_DELIVERY, type GateDependencies } from "./common.js";
 import type {
   ActorResolverPort, Audience, OnceClaimPort, PushIndexPort, PushRecord, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
-  EditedByOtherPort, SourceSystem, TapLog, TrackRecordPort,
+  SourceSystem, TapLog, TrackRecordPort,
 } from "./ports.js";
 
 export interface CodeHostPerson {
@@ -31,10 +32,11 @@ export interface CodeHostRepo {
 
 export type CodeHostEvent =
   | { type: "pr"; repo: CodeHostRepo; number: number; url: string; action: "opened" | "closed" | "reopened" | "edited"; merged: boolean; title: string; body?: string;
-      author: CodeHostPerson; /** Who made an `edited` change (the delivery's sender), when that is not known to be the author. */ editor?: CodeHostPerson; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
-  | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; at: string; version: string }
+      author: CodeHostPerson; /** Who made this change (the delivery's sender): the person an edit, a close or a reopen is recorded under. Absent: the author. */ editor?: CodeHostPerson;
+      /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
+  | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; at: string; version: string }
   | { type: "comment"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "created" | "edited" | "deleted"; surface: "review_comment" | "discussion";
-      body?: string; author: CodeHostPerson; editor?: CodeHostPerson; path?: string; at: string; version: string }
+      body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; path?: string; at: string; version: string }
   | { type: "ci"; repo: CodeHostRepo; id: string; name: string; conclusion: string; headSha: string; prNumbers: readonly number[]; url?: string; at: string }
   | { type: "push"; repo: CodeHostRepo; ref: string; commits: ReadonlyArray<{ sha: string; message: string }>; at: string;
       /** The pushed range and the account the host authenticated for the push (the signed delivery's sender): the second way a human commit is vouched for. */
@@ -112,10 +114,6 @@ export interface CodeHostTapDependencies extends GateDependencies {
   /** Where a human-edit read is queued so the compare and the extractor never run inside the webhook's answer. Absent: it runs inline. */
   humanEditJobs?: { enqueue(job: HumanEditJob): Promise<void> };
   log?: TapLog;
-  /** Called when an edit is skipped because its editor is not a linked person (the author's own skip is counted by the sink). */
-  onUnlinked?: (workspaceId: string, project: string | undefined, source: SourceSystem) => void;
-  /** TRW-4 (B1): items an edit by someone other than the author touched are not stored again. In production it is required; a read that fails skips the event. */
-  edited?: EditedByOtherPort;
 }
 
 export interface TapResult {
@@ -176,32 +174,26 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         const resolved = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: event.repo.host, sourceId: person.id, isBot: person.isBot });
         return { sourceId: person.id, ...(resolved.developerId === undefined ? {} : { developerId: resolved.developerId }), trust: person.isBot ? "system" : resolved.trust };
       };
-      // TRW-4 (fix round 1, B1): a row is indexed under its author only, so an edit made by someone else (they may have written the text) is not stored: an erase of the editor could not find it. The item is
-      // marked, and none of its later versions is stored (the author's next touch would carry the editor's words). A bot is not a person.
-      let textBlocked = false;
-      if (event.type === "pr" || event.type === "review" || event.type === "comment") {
-        const itemRef = { workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: event.type === "pr" ? prId(event.repo, event.number) : event.type === "review" ? `${prId(event.repo, event.prNumber)}:review${event.id}` : commentId(event) };
-        const firstSight = event.action === "opened" || event.action === "created" || event.action === "submitted";
-        if (!firstSight && deps.edited !== undefined && await deps.edited.isMarked(itemRef).catch(() => true)) { log("record.edited_item_skipped", { host: event.repo.host }); textBlocked = true; }
-        if (!textBlocked && event.action === "edited" && event.editor !== undefined && event.editor.id !== event.author.id && !event.editor.isBot) {
-          const editor = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: event.repo.host, sourceId: event.editor.id });
-          const author = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: event.repo.host, sourceId: event.author.id, isBot: event.author.isBot });
-          if (editor.developerId === undefined) deps.onUnlinked?.(event.repo.workspaceId, project, sourceOf(event.repo));
-          if (editor.developerId === undefined || editor.developerId !== author.developerId) {
-            log("record.edit_by_other_skipped", { host: event.repo.host });
-            await deps.edited?.mark(itemRef);
-            textBlocked = true;
-          }
-        }
-      }
+      // Per-editor rows (owner, 2026-11-02): ONE row per change to a pull request, review or comment, under the person who made it (the delivery's sender for an edit, a close, a reopen, a dismissal;
+      // the author for the first sight). A row holds only that person's own words: an edit credits the editor with the lines they added to what was there, and an edit whose earlier text the host did
+      // not send credits no words at all (except a comment edited by its own author). Nothing is frozen and nothing is replaced, so a person's erase takes exactly their rows.
+      const tagOf = (person: CodeHostPerson): string => createHash("sha256").update(person.id).digest("hex").slice(0, 12);
+      const rowOf = (fields: { person: CodeHostPerson; at: string; version: string }): { person: CodeHostPerson; version: string; order: number } => {
+        const ms = Date.parse(fields.at);
+        return { person: fields.person, version: `${fields.version}:${tagOf(fields.person)}`.slice(0, 100), order: Number.isFinite(ms) && ms >= 0 ? Math.floor(ms) : 0 };
+      };
       switch (event.type) {
         case "pr": {
-          if (isExcluded(config, event.author.id, event.author.login)) return result;
-          const who = await actor(event.author);
-          const text = cleanText([event.title, event.body].filter((part) => part !== undefined && part !== "").join("\n\n"));
+          const doer = event.action === "opened" ? event.author : event.editor ?? event.author;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          const who = await actor(doer);
+          const row = rowOf({ person: doer, at: event.at, version: event.version });
+          let text: string | undefined;
+          if (event.action === "opened") text = cleanText([event.title, event.body].filter((part) => part !== undefined && part !== "").join("\n\n"));
+          else if (event.action === "edited") text = cleanText([event.changed?.title === true ? event.title : undefined, event.changed?.body === true ? addedText(event.previousBody, event.body) : undefined].filter((part) => part !== undefined && part !== "").join("\n\n"));
           drafts.push({
             ...base, kind: "github.pr", occurredAt: event.at,
-            sourceRef: { system: event.repo.host, id: prId(event.repo, event.number), url: event.url, version: event.version },
+            sourceRef: { system: event.repo.host, id: prId(event.repo, event.number), url: event.url, version: row.version, order: row.order },
             actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ number: event.number, action: event.action, merged: event.merged, base: event.baseRef, headSha: event.headSha, mergeCommitSha: event.mergeCommitSha }),
             links: linksOf(event.url), retention: config.retention,
@@ -209,12 +201,14 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           break;
         }
         case "review": {
-          if (isExcluded(config, event.author.id, event.author.login)) return result;
-          const who = await actor(event.author);
-          const text = cleanText(event.body);
+          const doer = event.action === "submitted" ? event.author : event.editor ?? event.author;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          const who = await actor(doer);
+          const row = rowOf({ person: doer, at: event.at, version: event.version });
+          const text = event.action === "submitted" ? cleanText(event.body) : event.action === "edited" ? cleanText(addedText(event.previousBody, event.body)) : undefined;
           drafts.push({
             ...base, kind: "github.review", occurredAt: event.at,
-            sourceRef: { system: event.repo.host, id: `${prId(event.repo, event.prNumber)}:review${event.id}`, url: event.url, parentId: prId(event.repo, event.prNumber), version: event.version },
+            sourceRef: { system: event.repo.host, id: `${prId(event.repo, event.prNumber)}:review${event.id}`, url: event.url, parentId: prId(event.repo, event.prNumber), version: row.version, order: row.order },
             actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ prNumber: event.prNumber, state: event.state, action: event.action }),
             links: linksOf(event.url), retention: config.retention,
@@ -222,12 +216,20 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           break;
         }
         case "comment": {
-          if (isExcluded(config, event.author.id, event.author.login)) return result;
-          const who = await actor(event.author);
-          const text = cleanText(event.body);
+          const doer = event.action === "created" ? event.author : event.editor ?? event.author;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          const who = await actor(doer);
+          const row = rowOf({ person: doer, at: event.at, version: event.version });
+          let text: string | undefined;
+          if (event.action === "created") text = cleanText(event.body);
+          else if (event.action === "edited") {
+            // Only the comment's own author edits it, apart from a repository administrator, whose edit always sends what it was.
+            const added = addedText(event.previousBody, event.body);
+            text = cleanText(added ?? (event.previousBody === undefined && doer.id === event.author.id ? event.body : undefined));
+          }
           drafts.push({
             ...base, kind: "github.review_comment", occurredAt: event.at,
-            sourceRef: { system: event.repo.host, id: commentId(event), url: event.url, parentId: prId(event.repo, event.prNumber), version: event.version },
+            sourceRef: { system: event.repo.host, id: commentId(event), url: event.url, parentId: prId(event.repo, event.prNumber), version: row.version, order: row.order },
             actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path }),
             links: linksOf(event.url), retention: config.retention,
@@ -258,8 +260,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           break;
         }
       }
-      // The text of a blocked item is not written; what the event means for reverts and human edits is still handled below.
-      for (const draft of (textBlocked ? [] : drafts).slice(0, MAX_DRAFTS_PER_DELIVERY)) await write(draft, result);
+      for (const draft of drafts.slice(0, MAX_DRAFTS_PER_DELIVERY)) await write(draft, result);
       await revertsOf(event, config, result);
       if (event.type === "pr" && event.action === "closed" && event.merged) await humanEdit(event);
     } catch {

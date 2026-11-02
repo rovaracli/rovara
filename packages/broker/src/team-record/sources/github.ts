@@ -26,11 +26,21 @@ const personOf = (person: z.infer<typeof Person>): CodeHostPerson => ({
   id: String(person.id), ...(person.login === undefined ? {} : { login: person.login }), isBot: person.type === "Bot" || /\[bot\]$/i.test(person.login ?? ""),
 });
 
-/** Who made an `edited` change: the delivery's sender (GitHub names the account that acted). Only for edits; the other actions carry no new words of anyone but the author. */
+/** Who made this change: the delivery's sender (GitHub names the account that acted). A first sight is its author's own; an edit, a close, a reopen and a dismissal are the sender's. */
 const editorOf = (action: string | undefined, sender: unknown): { editor?: CodeHostPerson } => {
-  if (action !== "edited") return {};
+  if (action === "opened" || action === "created" || action === "submitted") return {};
   const parsed = Person.safeParse(sender);
   return parsed.success ? { editor: personOf(parsed.data) } : {};
+};
+
+/** What an `edited` delivery says it changed, and the text before (`changes.<field>.from`). */
+const ChangesOf = z.object({ changes: z.object({ title: z.object({ from: z.string().max(1000) }).passthrough().optional(), body: z.object({ from: z.string().max(70_000).nullish() }).passthrough().optional() }).passthrough().optional() }).passthrough();
+const changesOf = (action: string | undefined, payload: unknown): { changed?: { title?: boolean; body?: boolean }; previousBody?: string } => {
+  if (action !== "edited") return {};
+  const parsed = ChangesOf.safeParse(payload);
+  const changes = parsed.success ? parsed.data.changes : undefined;
+  if (changes === undefined) return {};
+  return { changed: { title: changes.title !== undefined, body: changes.body !== undefined }, ...(changes.body === undefined ? {} : { previousBody: changes.body.from ?? "" }) };
 };
 
 export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencies, "diffs"> {
@@ -88,7 +98,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       const at = isoOrUndefined(pr.data.updated_at) ?? fallbackAt;
       return [{
         type: "pr", repo, number: pr.data.number, url: pr.data.html_url, action, merged: pr.data.merged === true, title: pr.data.title, ...(pr.data.body ? { body: pr.data.body } : {}),
-        author: personOf(pr.data.user), ...editorOf(action, object.sender), headSha: pr.data.head.sha, ...(pr.data.head.ref === undefined ? {} : { headRef: pr.data.head.ref }), ...(pr.data.merge_commit_sha ? { mergeCommitSha: pr.data.merge_commit_sha } : {}), baseRef: pr.data.base.ref, at, version: `${action}:${pr.data.updated_at}`,
+        author: personOf(pr.data.user), ...editorOf(action, object.sender), ...changesOf(action, payload), headSha: pr.data.head.sha, ...(pr.data.head.ref === undefined ? {} : { headRef: pr.data.head.ref }), ...(pr.data.merge_commit_sha ? { mergeCommitSha: pr.data.merge_commit_sha } : {}), baseRef: pr.data.base.ref, at, version: `${action}:${pr.data.updated_at}`,
       }];
     }
     case "pull_request_review": {
@@ -99,7 +109,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       const stamp = review.data.submitted_at ?? undefined;
       return [{
         type: "review", repo, prNumber: pr.data.number, id: String(review.data.id), url: review.data.html_url, action, state: review.data.state.toLowerCase(),
-        ...(review.data.body ? { body: review.data.body } : {}), author: personOf(review.data.user), ...editorOf(action, object.sender), at: isoOrUndefined(stamp) ?? fallbackAt, version: `${action}:${stamp ?? "none"}`,
+        ...(review.data.body ? { body: review.data.body } : {}), author: personOf(review.data.user), ...editorOf(action, object.sender), ...(changesOf(action, payload).previousBody === undefined ? {} : { previousBody: changesOf(action, payload).previousBody! }), at: action === "submitted" ? isoOrUndefined(stamp) ?? fallbackAt : fallbackAt, version: action === "submitted" ? `${action}:${stamp ?? "none"}` : `${action}:${fallbackAt}`,
       }];
     }
     case "pull_request_review_comment":
@@ -120,7 +130,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       }
       return [{
         type: "comment", repo, prNumber, id: String(comment.data.id), url: comment.data.html_url, action, surface: eventName === "issue_comment" ? "discussion" : "review_comment",
-        ...(comment.data.body ? { body: comment.data.body } : {}), author: personOf(comment.data.user), ...editorOf(action, object.sender), ...(comment.data.path === undefined ? {} : { path: comment.data.path }),
+        ...(comment.data.body ? { body: comment.data.body } : {}), author: personOf(comment.data.user), ...editorOf(action, object.sender), ...(changesOf(action, payload).previousBody === undefined ? {} : { previousBody: changesOf(action, payload).previousBody! }), ...(comment.data.path === undefined ? {} : { path: comment.data.path }),
         at: isoOrUndefined(comment.data.updated_at) ?? fallbackAt, version: `${action}:${comment.data.updated_at}`,
       }];
     }

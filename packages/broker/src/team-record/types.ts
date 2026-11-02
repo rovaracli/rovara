@@ -22,7 +22,7 @@ export interface RecordDraft {
   repo?: string;
   source: RecordSystem;
   /** `system` names the source instance (a Slack team, a code host, an MCP server id); `id` and `version` make the write idempotent. */
-  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; versionAt?: string; nativeId?: string };
+  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; versionAt?: string; nativeId?: string; order?: number };
   kind: RecordEventKind;
   occurredAt: string;
   actor?: { sourceId: string; developerId?: string; trust: TrustClass };

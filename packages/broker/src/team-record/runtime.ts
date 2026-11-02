@@ -38,10 +38,9 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
-import { createCaptureModePort, createRecordHistoryPort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
+import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
-import { createEditedItemsPort } from "./edited-items.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, removeTrackerLinks, trackerLinksOf, type TrackerLink, type TrackerLinkVia } from "./identity-links.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
@@ -388,7 +387,6 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   const config = createSourceConfigPort({ table, edition });
   const mode = createCaptureModePort({ modes });
-  const history = createRecordHistoryPort({ table });
   const tapLog = (event: string, fields: Readonly<Record<string, string | number | boolean>>): void => log(event, fields);
 
   // ---- purge (delete worker, erase): per workspace, with that workspace's vectors
@@ -463,10 +461,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
     async byMergeCommit() { return undefined; },
   };
-  const countUnlinked = (workspaceId: string, project: string | undefined, source: string): void => { const parsed = OrgIdSchema.safeParse(workspaceId); if (parsed.success) void skipped.count(parsed.data, project, source).catch(() => undefined); };
-  const edited = createEditedItemsPort(table, now);
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, onUnlinked: countUnlinked, edited });
-  const recorder = createTicketRecorder({ sink, actors, mode, config, history, log: tapLog, onUnlinked: countUnlinked, edited });
+  // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now });
+  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog });
   const hook = createHookRecordTap({ recorder });
   const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
 
