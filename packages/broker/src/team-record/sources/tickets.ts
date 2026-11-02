@@ -1,7 +1,7 @@
 // R7: the one place a tracker item (a Linear or Jira webhook, a backfill page, an MCP poller result) becomes a record draft. Everything
 // ticket-shaped goes through `createTicketRecorder`, so audience, trust and retention are decided once.
 import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type RecordHistoryPort, type TrustClass, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
+import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type EditedByOtherPort, type RecordHistoryPort, type TrustClass, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
 
 export interface TicketAcl {
   principals?: readonly string[];
@@ -73,7 +73,14 @@ export interface TicketRecorderDependencies extends GateDependencies {
    * edit whose history cannot be read is recorded as an outsider's.
    */
   history?: RecordHistoryPort;
+  /**
+   * TRW-4 (B1): items an edit by someone other than the author touched. Such an item is not stored again (its later versions would carry the editor's words under the author's name). In production it is
+   * required; a read that fails skips the version.
+   */
+  edited?: EditedByOtherPort;
   log?: TapLog;
+  /** Called when an item is skipped because its editor is not a linked person (the author's own skip is counted by the sink). */
+  onUnlinked?: (workspaceId: string, project: string | undefined, source: TicketItem["source"]) => void;
 }
 
 export interface TicketContext {
@@ -124,6 +131,12 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
             && await deps.parents.isRecorded({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
           if (!proven) return "skipped";
         }
+        const itemRef = { workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id };
+        if (item.edit === true && deps.edited !== undefined) {
+          // A version of an item an editor touched is not stored; neither is one whose mark cannot be read.
+          const marked = await deps.edited.isMarked(itemRef).catch(() => true);
+          if (marked) { log("record.edited_item_skipped", { source: item.source }); return "skipped"; }
+        }
         let restricted = item.restricted === true;
         if (item.inheritsRestriction === true && !restricted) {
           const open = item.parentId !== undefined && deps.parents?.isOpen !== undefined
@@ -135,6 +148,15 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
         const who = item.authorId === undefined ? { trust: "outsider" as const } : await resolve(item.authorId);
         const updater = item.updaterId === undefined || item.updaterId === item.authorId ? undefined : await resolve(item.updaterId);
+        // TRW-4 (fix round 1, B1): the row is indexed under its AUTHOR only, so an erase of the editor could not find it. After an edit by anyone other than the author (a bot is not a person), the words in
+        // the text may be the editor's: the version is not stored (the row stays at the author's last version). An unlinked editor is counted; a linked one is only logged. An edit by the same person
+        // under another id (two ids linked to one person) is that person's own and is erased with them.
+        if (updater !== undefined && updater.trust !== "system" && (updater.developerId === undefined || updater.developerId !== who.developerId)) {
+          if (updater.developerId === undefined) deps.onUnlinked?.(context.workspaceId, project, item.source);
+          else log("record.edit_by_other_skipped", { source: item.source });
+          await deps.edited?.mark(itemRef);
+          return "skipped";
+        }
         let previous: TrustClass | undefined;
         if (deps.history !== undefined) {
           try {

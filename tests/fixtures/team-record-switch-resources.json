@@ -1,5 +1,6 @@
 {
   "BrokerSqsEventSourceAgentXControlPlaneTeamRecordOps5E3AD63EA5EAE174": "AWS::Lambda::EventSourceMapping",
+  "TeamRecordBrokerSelfInvoke5AFB1B97": "AWS::IAM::Policy",
   "TeamRecordHourlySchedule": "AWS::Scheduler::Schedule",
   "TeamRecordLakeAthenaResults68DBAFCE": "AWS::S3::Bucket",
   "TeamRecordLakeAthenaResultsPolicy68873E4C": "AWS::S3::BucketPolicy",

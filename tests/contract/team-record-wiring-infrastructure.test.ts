@@ -168,6 +168,19 @@ describe("the switch on: Public cloud", () => {
     expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 10 });
   }, 180_000);
 
+  // TRW-5: the broker reads the dead-letter queue only to delete text out of it, may send a delete to itself as an Event, and every asynchronous invoke it cannot run lands in the failure queue that alarms.
+  it("the broker may receive from and delete in the dead-letter queue, invoke itself, and its asynchronous failures go to a queue", () => {
+    const statements = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement) : []));
+    const dlq = statements.filter((statement) => JSON.stringify(statement.Resource).includes("TeamRecordOpsDeadLetters") && [statement.Action].flat().includes("sqs:ReceiveMessage"));
+    expect(dlq.length, JSON.stringify(statements.filter((statement) => JSON.stringify(statement).includes("DeadLetters")))).toBeGreaterThan(0);
+    expect([dlq[0]!.Action].flat()).toContain("sqs:DeleteMessage");
+    const selfInvoke = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^TeamRecordBrokerSelfInvoke/.test(id));
+    expect(selfInvoke).toHaveLength(1);
+    expect(JSON.stringify(selfInvoke[0]![1].Properties)).toMatch(/lambda:InvokeFunction/);
+    const configs = Object.values(resources).filter((resource) => resource.Type === "AWS::Lambda::EventInvokeConfig" && JSON.stringify(resource.Properties.FunctionName).includes("Broker"));
+    expect(configs.some((config) => JSON.stringify((config.Properties.DestinationConfig as { OnFailure?: unknown } | undefined)?.OnFailure).includes("SlackHandOffFailureQueue"))).toBe(true);
+  }, 180_000);
+
   it("S2: the vector data role names its indexes by the session TAG, never `index/*`, and only lets the broker tag a session with an index name", () => {
     const role = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::IAM::Role" && /^TeamRecordVectorsDataRole/.test(id))![1];
     const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);

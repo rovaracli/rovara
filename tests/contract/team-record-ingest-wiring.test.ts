@@ -197,6 +197,27 @@ describe("hook ingress: record tap", () => {
     expect(world.dispatched).toHaveLength(1);
   });
 
+  it("TRW-4 S2: a tap that fails AFTER the budget (a removal no path could take) is caught and logged: the answer stands, and nothing is left unhandled", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = setupHookWorld();
+      world.deps.recordTap = () => new Promise((_resolve, reject) => { setTimeout(() => reject(Object.assign(new Error("not accepted"), { name: "RecordRemovalNotAccepted" })), HOOK_RECORD_TAP_BUDGET_MS + 500); });
+      const hook = await world.hook({ source: "linear" });
+      const answered = world.receive(world.delivery(hook, body(LINEAR_TENANT)));
+      await vi.advanceTimersByTimeAsync(HOOK_RECORD_TAP_BUDGET_MS + 100);
+      expect((await answered).status).toBe(202);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(world.logs.map((entry) => entry.event)).toContain("hook.record_tap_late_failure");
+      expect(unhandled).toStrictEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("a failing tap leaves the answer and the dispatch as they were", async () => {
     const world = setupHookWorld();
     world.deps.recordTap = async () => { throw new Error("record down"); };
@@ -205,6 +226,24 @@ describe("hook ingress: record tap", () => {
     expect(answer.status).toBe(202);
     expect(world.dispatched).toHaveLength(1);
     expect(world.logs.map((entry) => entry.event)).toContain("hook.record_tap_failed");
+  });
+
+  it("TRW-5 S2: a delete the record could not take at all is answered 503 with nothing sent on, so Linear or Jira sends it again; any other tap failure still leaves the answer alone", async () => {
+    const world = setupHookWorld();
+    world.deps.recordTap = async () => { throw Object.assign(new Error("not accepted"), { name: "RecordRemovalNotAccepted" }); };
+    const hook = await world.hook({ source: "linear" });
+    const answer = await world.receive(world.delivery(hook, body(LINEAR_TENANT)));
+    expect(answer.status).toBe(503);
+    expect(world.dispatched).toHaveLength(0);
+  });
+
+  it("TRW-5 S2: the adapter throws RecordRemovalNotAccepted when the recorder cannot take a delete, and swallows a failed record", async () => {
+    const removalDown = createHookRecordTap({ recorder: { record: async () => "stored", remove: async () => { throw new Error("table, queue and invoke down"); } } });
+    const linearRemove = { type: "Issue", action: "remove", organizationId: LINEAR_TENANT.organizationId, data: { id: "i1", teamId: LINEAR_TENANT.teamId } };
+    await expect(removalDown({ orgId: "org-1", hook: { source: "linear", project: "web", tenant: LINEAR_TENANT }, body: linearRemove })).rejects.toMatchObject({ name: "RecordRemovalNotAccepted" });
+    const recordDown = createHookRecordTap({ recorder: { record: async () => { throw new Error("down"); }, remove: async () => undefined } });
+    const linearCreate = { type: "Issue", action: "create", organizationId: LINEAR_TENANT.organizationId, data: { id: "i1", teamId: LINEAR_TENANT.teamId, title: "t" } };
+    await expect(recordDown({ orgId: "org-1", hook: { source: "linear", project: "web", tenant: LINEAR_TENANT }, body: linearCreate })).resolves.toBeUndefined();
   });
 
   it("the adapter passes only Linear and Jira hooks on, with their own tenant", async () => {

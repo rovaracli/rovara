@@ -93,6 +93,8 @@ export interface RecordQueryDependencies {
   /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
   lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes: string[] }>>;
   stats?: StatsPort;
+  /** TRW-4: how many rows were skipped for want of a linked author, per source, for a project (counts only). Shown to the project's maintainers. */
+  skipped?: { read(orgId: OrgId, project: string): Promise<Record<string, number>> };
   now?: () => number;
   log?: RecordLog;
 }

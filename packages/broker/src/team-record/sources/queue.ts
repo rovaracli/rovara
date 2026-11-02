@@ -9,6 +9,9 @@
 //    fixed code. (CDK for both queues belongs with the storage lane's `infra/lib/team-record.ts`; the properties are in the lane report.)
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS } from "@agentx/contracts";
+
+/** The delivery at which a queued put is dropped: two before the queue would dead-letter it. */
+export const TEAM_RECORD_PUT_DROP_AT = TEAM_RECORD_OPS_MAX_RECEIVES - 2;
 import type { CodeHostTapDependencies, HumanEditJob } from "./codehost.js";
 import type { Audience, RecordDraft, RecordSinkPort, TapLog, TombstoneCause, TransientDistillerPort } from "./ports.js";
 
@@ -203,9 +206,11 @@ export function createOpConsumer(deps: OpConsumerDependencies): { processBatch(r
             log("record.transient_dropped", {});
             continue;
           }
-          // The queue's next failure would dead-letter the message for 14 days with the draft's text in it. A put is not a delete: dropping it loses a row, never a removal.
-          if (op.op === "put" && record.receiveCount >= TEAM_RECORD_OPS_MAX_RECEIVES) {
-            log("record.put_dropped", { why: "failed" });
+          // The queue would dead-letter the message for 14 days with the draft's text in it. A put is dropped two deliveries early (TRW-5 S1): an invocation that times out or is throttled raises the receive
+          // count without this code running, and two of those must not carry the put to the dead-letter queue. A put is not a delete: dropping it loses a row, never a removal.
+          // A dropped NEW VERSION of an item leaves the older text in the record until retention, so it is logged apart.
+          if (op.op === "put" && record.receiveCount >= TEAM_RECORD_PUT_DROP_AT) {
+            log("record.put_dropped", { why: /updated|edited|changed/.test(op.draft.kind) ? "edit" : "failed" });
             continue;
           }
           log("record.op_failed", { op: op.op, receiveCount: record.receiveCount });

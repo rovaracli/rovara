@@ -127,6 +127,11 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
   ops.grantSendMessages(broker);
   BrokerNames.of(broker).add("teamRecordDeadLetters", deadLetters.queueName);
+  // The hourly job deletes PUT messages out of the dead-letter queue (they hold a draft's text, TRW-5 S1): receive and delete on that one queue.
+  deadLetters.grantConsumeMessages(broker);
+  // A delete that neither the table nor the queue took is sent to the broker itself as an asynchronous Event (TRW-5 S2). A policy of its own, so the function does not wait on its own role (no cycle).
+  // A removal Lambda could not run lands in the stack's failure queue, which alarms (the broker's `configureAsyncInvoke`, control-plane.ts).
+  new iam.Policy(stack, "TeamRecordBrokerSelfInvoke", { roles: [broker.role!], statements: [new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] })] });
 
   // The Slack ingress hands a verified event to the broker (direct invoke, which it is already allowed to do) and sends removals (ids only) to the durable queue: this tells it to, and where.
   props.slackIngress.addEnvironment("TEAM_RECORD_ENABLED", "1");
