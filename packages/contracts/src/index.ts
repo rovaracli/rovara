@@ -274,3 +274,6 @@ export * from "./saved-env.js";
 
 // Setup and test health: setup recipes and their fingerprint (SH4).
 export * from "./setup-recipe.js";
+
+// Company domain verification (owner decision 2026-11-02).
+export * from "./company-domains-web.js";

@@ -320,6 +320,8 @@ export const ProjectOverviewSchema = z
     budget: ProjectOverviewBudgetSchema.optional(),
     /** Present only for a project maintainer (a role that may edit the project's settings). */
     learning: ProjectOverviewLearningSchema.optional(),
+    /** KF-1: present only for a project maintainer while the four test results are on (`vx`): how many tests are marked as already failing. The page shows the list (and Undo) only when this is present. */
+    knownFailing: z.object({ count: z.number().int().min(0).max(500) }).strict().optional(),
     running: z.array(LiveTileSchema).max(LIVE_PAGE_MAX),
   })
   .strict();

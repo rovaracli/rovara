@@ -563,6 +563,16 @@ export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { proje
   });
 }
 
+/**
+ * KF-1. `occurrence`: the request id of the undo, or the slot id of the nightly run that showed the tests passing. Facts are a fixed word, counts and hashes, never a test name: `removal` (`undo` or `nightly_passing`),
+ * `testCount` (marks removed), `markEpoch` (the card the mark was made on; 0 when the marks came from several cards), `testSetSha256` (sha256 of the sorted "check, test" lines removed), `rowVersionAfter` and `totalAfter`.
+ */
+export function auditProjectKnownFailingRemoved(input: AuditBuilderBase & { projectName: string; removal: "undo" | "nightly_passing"; testCount: number; markEpoch: number; testSetSha256: string; rowVersionAfter: number; totalAfter: number }): AuditEventInput {
+  return build("project.known_failing_removed", input, { kind: "project", name: input.projectName }, {
+    removal: input.removal, testCount: input.testCount, markEpoch: input.markEpoch, testSetSha256: input.testSetSha256, rowVersionAfter: input.rowVersionAfter, totalAfter: input.totalAfter,
+  });
+}
+
 /** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */
 export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: string; artifactKind: string; retentionClass: string }): AuditEventInput {
   return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });
@@ -763,6 +773,31 @@ export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on
   return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source, ...(input.previousSource === undefined ? {} : { previousSource: input.previousSource }) });
 }
 
+// Company domain verification (owner decision 2026-11-02) ----------------------------------------------------------------
+
+type DomainEventInput = AuditBuilderBase & { domain: string };
+const domainDetails = (input: DomainEventInput): AuditDetailPart[] => [...(input.details ?? []), { subject: "org", fields: { domain: input.domain } }];
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt)`. A domain the company added (not yet proven; any number of companies may add the same one). The domain is a detail. */
+export function auditCompanyDomainAdded(input: DomainEventInput): AuditEventInput {
+  return build("company_domain.added", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, {});
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The check found the company's token (the actor is the person who pressed Check now, or the system for the daily re-check). `tookOver`: the proof moved the domain from another company's lost claim. */
+export function auditCompanyDomainVerified(input: DomainEventInput & { wasState: "pending" | "lost"; tookOver?: boolean }): AuditEventInput {
+  return build("company_domain.verified", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState, tookOver: input.tookOver === true });
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The record has been gone for the whole grace period; the domain stops counting (the actor is the system). */
+export function auditCompanyDomainLost(input: DomainEventInput & { missingDays: number }): AuditEventInput {
+  return build("company_domain.lost", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { missingDays: input.missingDays });
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt)`. An owner removed the domain. */
+export function auditCompanyDomainRemoved(input: DomainEventInput & { wasState: "pending" | "verified" | "lost" }): AuditEventInput {
+  return build("company_domain.removed", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState });
+}
+
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
@@ -852,4 +887,21 @@ export function auditSetupHostAsked(input: AuditBuilderBase & { projectName: str
 /** `occurrence`: `auditOccurrence(project, askId, decidedAt)`. An admin refused the ask (or the broker did, for a fixed reason); `refusal` is one of the fixed words of the refusal. */
 export function auditSetupHostRefused(input: AuditBuilderBase & { projectName: string; askId: string; refusal: string; host: string }): AuditEventInput {
   return build("setup.host_refused", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { host: input.host } }] }, { kind: "project", name: input.projectName }, { askId: input.askId, refusal: input.refusal });
+}
+
+// Tracker people (team record) -------------------------------------------------------------------------------------------
+
+/** `occurrence`: the admin's request id. `source` is `linear` or `jira`. The target is the member; the tool's id and the name it shows never go in. */
+export function auditRecordTrackerPersonMapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_mapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}
+
+/** `occurrence`: the admin's request id. */
+export function auditRecordTrackerPersonUnmapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
+  return build("record.tracker_person_unmapped", input, { kind: "member", id: input.memberId }, { source: input.source });
+}
+
+/** `occurrence`: the admin's request id and the new state. The target is the company; `enabled` is the new state of the switch. */
+export function auditRecordTrackerAutolinkChanged(input: AuditBuilderBase & { enabled: boolean }): AuditEventInput {
+  return build("record.tracker_autolink_changed", input, { kind: "org", id: input.orgId }, { enabled: input.enabled });
 }

@@ -25,7 +25,7 @@ import { erasedAccessIds, observeOpenRow, observeRowAccess, unitHasList, without
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { removePrincipalsFromRow, supersedeItem, wasDeletedAtSource } from "./scope-work.js";
-import { advanceItemHead, getItemHead, isScopeClosed, versionTimeOf } from "./item-head.js";
+import { advanceItemHead, getItemHead, isScopeClosed, versionTimeOf, type AdvanceOutcome } from "./item-head.js";
 import { hasQuotedOrForwarded } from "./quoted.js";
 import { isErasedActor } from "./erased.js";
 import { deleteItem, deterministicEventId, getSourceConfigByScope, putRecordEvent, tombstoneItem } from "./store.js";
@@ -213,7 +213,9 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
     ...(draft.actor === undefined && draft.source !== "rovara" && draft.text !== undefined ? ["system" as const] : []),
   );
   // A late edit by someone else never raises what an item was: the lowest trust any version had is kept (the ingest lane's `RecordHistoryPort`).
-  const head = await getItemHead(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id);
+  // A per-editor change row (`sourceRef.order`) holds only its own editor's words, so no earlier version's trust applies to it and no earlier row is replaced by it.
+  const change = draft.sourceRef.order !== undefined;
+  const head = change ? undefined : await getItemHead(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id);
   if (head !== undefined) trust = minTrust(trust, head.lowestTrust);
   // The Slack rule follows Slack's words into a Rovara row: in Public they are never kept as text.
   const keptText = deps.edition === "public" && draft.origin === "slack" ? undefined : draft.text;
@@ -227,7 +229,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
       if (clean === undefined || transientScope === undefined) return refused("invalid");
       if (await isScopeClosed(deps.table, orgId, transientScope)) return refused("scope_closed");
       // Versions are ordered by source time here too, and a newer version clears the notes made from the older one.
-      const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt });
+      const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt });
       if (moved.status === "stale") return refused("stale_version");
       const owedRows = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
       // The trust of the author's OWN words: every reason the row was lowered except the quote terms (those are applied span by span, where the splitter finds the quote). The tap's
@@ -287,7 +289,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
 
   // 6. Versions are ordered by the source's own time. A version older than the one stored changes nothing (it only lowers the item's remembered trust).
   const versionAt = versionTimeOf(draft);
-  const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt });
+  const moved: AdvanceOutcome = change ? { status: "advanced", lowestTrust: trust, previous: undefined } : await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt });
   if (moved.status === "stale") return { status: "duplicate" };
 
   // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal. If this version's row was already there

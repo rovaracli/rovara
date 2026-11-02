@@ -3,6 +3,7 @@
 // and what the last check found. It never holds the key or token, or even the secret's name: that name is derived from
 // the org id and the connection id each time, and the value lives only in the org-tagged secret (org-secrets.ts).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type { z } from "zod";
 import { listMcpTools } from "@agentx/gateway";
 import {
   ConnectionIdSchema,
@@ -51,6 +52,8 @@ export interface OrgConnectionDeps {
 
 /** The id of the secret version a connection's own save wrote (kept on the record, never shown); a connection reads exactly that version. */
 const VERSION_FIELD = "secretVersion";
+
+type JiraSecret = z.infer<(typeof ConnectionSecretSchemas)["jira"]>;
 
 export interface ConnectionCheckRecord {
   ok: boolean;
@@ -123,6 +126,11 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
    * logged by name and never undoes or fails the removal.
    */
   afterRemove?: (removed: { orgId: OrgId; connectionId: string; type: string; roleArn?: string }) => Promise<void>;
+  /**
+   * Told after a connection has been saved (and the save committed), for what follows from it that lives elsewhere (the Team record reads a newly connected Linear or Jira user list to link people). A failure is
+   * logged by name and never undoes or fails the save.
+   */
+  afterSave?: (saved: { orgId: OrgId; connectionId: string; type: string; hasSecret: boolean }) => Promise<void>;
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
@@ -130,7 +138,7 @@ const CHECK_TIMEOUT_MS = 10_000;
 const CHECK_MESSAGE_MAX = 300;
 const DEFAULT_ENDPOINT_GUARD = mcpEndpointGuard();
 const MAX_CHECK_RESPONSE_BYTES = 1_000_000;
-const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
+export const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 
 const coded = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
 const parseOrg = (orgId: string): OrgId => {
@@ -304,12 +312,14 @@ export class OrgConnectionStore {
       throw coded("CONFIG_INVALID", "roleArn: use a role in your own AWS account");
     }
     let secretJson: string | undefined;
+    let pendingJira: JiraSecret | undefined;
     if (input.secret !== undefined) {
       if (!connectionTakesSecret(connection.type)) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes no secret`);
       const schema = ConnectionSecretSchemas[connection.type];
       const secret = schema.safeParse(input.secret);
       if (!secret.success) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes ${Object.keys(schema.shape).join(", ")} and nothing else`);
       secretJson = JSON.stringify(secret.data);
+      if (connection.type === "jira") pendingJira = secret.data as JiraSecret;
     }
     const target = endpointTarget(connection);
     if (target !== undefined) {
@@ -321,6 +331,18 @@ export class OrgConnectionStore {
     if (existing === undefined && input.requireExisting === true) throw coded("NOT_FOUND", "no connection has that ID");
     if (existing !== undefined && input.requireNew === true) throw coded("CONFIG_INVALID", "requestId: this request ID was already used; send a new one");
     if (existing !== undefined && existing.type !== connection.type) throw coded("CONFIG_INVALID", "connection.type: a connection's type cannot change; remove it and add a new one");
+    // The Jira organization admin key and its organization id are kept by a later save that leaves them out (the web and the CLI send only the email and token); `clearOrgAdmin: true` removes them. Nothing of the
+    // stored secret is read for any other purpose, and the flag is never stored.
+    if (pendingJira !== undefined) {
+      const { clearOrgAdmin, ...rest } = pendingJira;
+      let merged: Omit<JiraSecret, "clearOrgAdmin"> = rest;
+      if (rest.orgAdminKey === undefined && clearOrgAdmin !== true && existing !== undefined && existing.hasSecret === true && existing.type === "jira") {
+        const stored = await readConnectionSecret(this.input, orgId, { connectionId: connection.connectionId, type: "jira", ...(typeof existing[VERSION_FIELD] === "string" ? { secretVersion: existing[VERSION_FIELD] } : {}) }).catch(() => undefined);
+        const kept = stored !== undefined && "orgAdminKey" in stored && "atlassianOrgId" in stored && typeof stored.orgAdminKey === "string" && typeof stored.atlassianOrgId === "string" ? { orgAdminKey: stored.orgAdminKey, atlassianOrgId: stored.atlassianOrgId } : undefined;
+        if (kept !== undefined) merged = { ...rest, ...kept };
+      }
+      secretJson = JSON.stringify(merged);
+    }
     const movedHost = existing !== undefined && secretHost(OrgConnectionSchema.parse(pick(existing))) !== secretHost(connection);
     if (movedHost && secretJson === undefined && existing.hasSecret === true) {
       throw coded("CONFIG_INVALID", "connection: the saved secret would be sent to a different host; give the new secret with it");
@@ -372,6 +394,9 @@ export class OrgConnectionStore {
       ], (failed) => (failed.has(0) ? stale : undefined), input.request, saved);
     }
     await flushAuditEvents(this.input, events);
+    await this.input.afterSave?.({ orgId, connectionId: connection.connectionId, type: connection.type, hasSecret: saved.hasSecret }).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "connection.after_save_failed", orgId, connectionId: connection.connectionId, error: error instanceof Error ? error.name : "unknown" }));
+    });
     return saved;
   }
 

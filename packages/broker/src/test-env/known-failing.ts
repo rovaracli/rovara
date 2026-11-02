@@ -15,7 +15,7 @@ import { usableNightlyFailing, type UsableNightlyOptions } from "./nightly-usabl
 export const KNOWN_FAILING_MAX = 500;
 /** The longest test id a mark can carry: every name that is marked is shown in full on the card. */
 export const KNOWN_FAILING_NAME_MAX = TEST_ID_MAX;
-export const KNOWN_FAILING_FULL_MESSAGE = `This project's known-failing list is full (${String(KNOWN_FAILING_MAX)}). Remove some before marking more.`;
+export const KNOWN_FAILING_FULL_MESSAGE = `This project's known-failing list is full (${String(KNOWN_FAILING_MAX)}). Remove some with Undo on the project page (Environment) before marking more.`;
 
 /** A test id as the nightly run, the evidence and the selection name it (contracts `test-id.ts`): one safe token. An id with whitespace or hidden characters cannot be marked. */
 export const KnownFailingTestId = TestIdSchema;

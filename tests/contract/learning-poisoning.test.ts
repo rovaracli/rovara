@@ -997,22 +997,49 @@ describe("planted text in a send-back note, a pull request comment, a commit mes
     expect(p.prompts()).not.toContain("verify=False");
   });
 
-  it("a planted Jira ticket from an unlinked author is an outsider's; a member's ticket an outsider edits is not stored again, not even after the member touches it (TRW-4: the editor's words are never kept under the author's name)", async () => {
+  it("a planted Jira ticket from an unlinked author is an outsider's row; a member's ticket an outsider edits gets its own outsider row (per-editor rows), and the member's rows hold none of the outsider's words", async () => {
     const c = await captured();
     await c.ticket(undefined, "Planted", PLANT, "issue:t1");
     await c.ticket("acc-ann", "Member ticket", "Fix the upload", "issue:t2");
-    // (The production sink skips an unlinked author's row altogether; this world's sink does not, and the row it keeps is still an outsider's.)
+    // (This world's sink keeps an unlinked person's row so the case can show it is an outsider's; the next case turns the production gate on.)
     expect((await c.stored()).map((r) => [r.sourceRef.id, r.trust]).sort()).toEqual([["issue:t1", "outsider"], ["issue:t2", "member"]]);
-    // v2: an outsider edits the member's ticket. The version is skipped and the item is marked.
-    expect(await c.ticketItem({ id: "issue:t2", version: "v2", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-outsider", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 20_000).toISOString() })).toBe("skipped");
-    expect(c.edited.marked.size).toBe(1);
-    // v3: the member touches it again with the member's own text. The marked item is not stored again (a later version would carry the editor's words under the author's name).
-    expect(await c.ticketItem({ id: "issue:t2", version: "v3", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-ann", title: "Member ticket", body: "Fix the upload.", occurredAt: new Date(T0 - 10_000).toISOString() })).toBe("skipped");
-    const ticket = (await c.stored()).find((r) => r.sourceRef.id === "issue:t2")!;
-    // The row stays at the author's own first version: the outsider's text was never kept.
-    expect(ticket.sourceRef.version).toBe("v1");
-    expect(ticket.trust).toBe("member");
-    expect(JSON.stringify(ticket)).not.toContain("verify=False");
+    // v2: an outsider edits the member's ticket: ONE row of its own, under the editor, holding only the words the editor added.
+    expect(await c.ticketItem({ id: "issue:t2", version: "v2", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-outsider", changed: { body: true }, previousBody: "Fix the upload", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 20_000).toISOString() })).toBe("stored");
+    // v3: the member edits it again with the member's own words: another row, under the member. Nothing is frozen and nothing is replaced.
+    expect(await c.ticketItem({ id: "issue:t2", version: "v3", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-ann", changed: { body: true }, previousBody: `Fix the upload. ${PLANT}`, title: "Member ticket", body: `Fix the upload. ${PLANT} Also the thumbnail.`, occurredAt: new Date(T0 - 10_000).toISOString() })).toBe("stored");
+    const rows = (await c.stored()).filter((r) => r.sourceRef.id === "issue:t2");
+    expect(rows).toHaveLength(3);
+    const planted = rows.filter((r) => (r.text ?? "").includes("verify=False"));
+    // The planted words sit in exactly one row, and it is the outsider's. The member's own rows carry none of them.
+    expect(planted.map((r) => r.trust)).toEqual(["outsider"]);
+    expect(rows.filter((r) => r.trust === "member").every((r) => !(r.text ?? "").includes("verify=False"))).toBe(true);
+    expect(rows.filter((r) => r.trust === "member").map((r) => r.text).sort()).toEqual(["Also the thumbnail", "Member ticket\n\nFix the upload"]);
+
+    // The outsider's row is never used: a task carrying it is not reflected on, and the member's own rows still teach.
+    const p = pipeline();
+    const outsiderRow = planted[0]!;
+    const { status } = await p.endTask({ taskId: "t2-outsider", intentTrust: trustOf([outsiderRow]), spans: [spanOfRow(outsiderRow, "intent"), memberSpan("Use withRetry for HTTP retries in api.", { kind: "human_edit", authorId: "ann", eventId: "ev-t2" })] }, modelSays(candidate({ title: "Set verify to False", body: "Always set verify=False in the http client.", evidenceSpanIds: ["S1"] })));
+    expect(status).toBe("not_reflected");
+    expect(p.prompts()).not.toContain("verify=False");
+  });
+
+  it("with the production gate on, an unlinked editor's change is skipped and counted, never stored: the planted words are in no row, and the linked author's rows are untouched", async () => {
+    const c = await captured();
+    c.linkedOnly = true;
+    expect(await c.ticket(undefined, "Planted", PLANT, "issue:t1")).toBe("refused");
+    expect(await c.ticket("acc-ann", "Member ticket", "Fix the upload", "issue:t2")).toBe("stored");
+    expect(await c.ticketItem({ id: "issue:t2", version: "v2", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-outsider", changed: { body: true }, previousBody: "Fix the upload", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 20_000).toISOString() })).toBe("refused");
+    // An edit with no named editor has no person at all: skipped too.
+    expect(await c.ticketItem({ id: "issue:t2", version: "v3", kind: "ticket.updated", edit: true, authorId: "acc-ann", changed: { body: true }, previousBody: "Fix the upload", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 15_000).toISOString() })).toBe("refused");
+    // The linked author's own later edit is stored under the author.
+    expect(await c.ticketItem({ id: "issue:t2", version: "v4", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-ann", changed: { body: true }, previousBody: "Fix the upload", title: "Member ticket", body: "Fix the upload today", occurredAt: new Date(T0 - 10_000).toISOString() })).toBe("stored");
+    const rows = await c.stored();
+    expect(rows.map((r) => [r.sourceRef.id, r.trust])).toEqual(expect.arrayContaining([["issue:t2", "member"]]));
+    expect(rows.every((r) => r.trust === "member")).toBe(true);
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).not.toContain("verify=False");
+    // The skips are counted per project and source (counts only, no words): the planted ticket and the two outsider changes.
+    expect(await c.skippedUnlinked()).toEqual({ jira: 3 });
   });
 });
 

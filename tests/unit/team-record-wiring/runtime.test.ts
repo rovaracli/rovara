@@ -5,7 +5,7 @@
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -916,11 +916,13 @@ describe("TRW-4: a row is stored only when its author is linked to a Rovara pers
     expect(JSON.stringify(rows)).toContain("dev-1");
   });
 
-  it("a ticket a linked person wrote but an unlinked person edited is not stored (their words could not be erased)", async () => {
+  it("a change by an unlinked person is not stored and is counted, whoever wrote the ticket (their words could not be erased); the linked author's own creation is stored", async () => {
     const { db, runtime } = await world();
     await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-ann", developerId: "dev-1", via: "connect" });
-    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: { ...linearIssue("i2", "lin-ann", `edited ${MARKER}`), actor: { id: "lin-stranger" } } });
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: linearIssue("i2", "lin-ann", "created") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: { ...linearIssue("i2", "lin-ann", `edited ${MARKER}`), action: "update", actor: { id: "lin-stranger" }, updatedFrom: { title: "created" }, data: { id: "i2", teamId: "t1", title: `edited ${MARKER}`, creatorId: "lin-ann", updatedAt: "2026-10-30T10:05:00.000Z" } } });
     expect(everything(db)).not.toContain(MARKER);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
     expect(await skippedFor(runtime, "maintainer")).toStrictEqual({ linear: 1 });
   });
 
@@ -981,13 +983,13 @@ describe("TRW-4: a person's erase takes their rows from all four sources, queues
     await runtime.taps.github(delivery(55, 101, `github ${MARKER}`));
     await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "create", organizationId: "lin-org", actor: { id: "lin-ann" }, data: { id: "i1", teamId: "t1", title: `linear ${MARKER}`, creatorId: "lin-ann", updatedAt: "2026-10-30T10:00:00.000Z" } } });
     await runtime.taps.hook({ orgId: ORG_A, hook: { source: "jira", project: "web", tenant: { siteHost: "acme.atlassian.net", projectKey: "WEB" } }, body: { webhookEvent: "jira:issue_created", timestamp: 1_761_818_400_000, user: { accountId: "acc-ann" }, issue: { id: "1", key: "WEB-1", self: "https://acme.atlassian.net/rest/api/2/issue/1", fields: { summary: `jira ${MARKER}`, project: { key: "WEB" }, creator: { accountId: "acc-ann" } } } } });
-    // A colleague (not erased in this test) rewrites her Linear ticket: nothing of theirs is kept (B1), so the person's erase below has nothing of theirs to miss either.
+    // A colleague (not erased in this test) edits her Linear ticket: that is the colleague's OWN row (per-editor rows), so the person's erase below leaves it alone.
     db.set({ ...developerOrgKey("dev-2"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
     await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-bob", developerId: "dev-2", via: "connect" });
-    await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "update", organizationId: "lin-org", actor: { id: "lin-bob" }, data: { id: "i1", teamId: "t1", title: "BOBEDIT-QZ", creatorId: "lin-ann", updatedAt: "2026-10-30T10:05:00.000Z" } } });
-    expect(everything(db)).not.toContain("BOBEDIT-QZ");
+    await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "update", organizationId: "lin-org", actor: { id: "lin-bob" }, updatedFrom: { title: "x" }, data: { id: "i1", teamId: "t1", title: "BOBEDIT-QZ", creatorId: "lin-ann", updatedAt: "2026-10-30T10:05:00.000Z" } } });
+    expect(everything(db)).toContain("BOBEDIT-QZ");
     const rowsBefore = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
-    expect(rowsBefore).toHaveLength(4);
+    expect(rowsBefore).toHaveLength(5);
     expect(new Set(rowsBefore.map((row) => row.source as string))).toStrictEqual(new Set(["slack", "github", "linear", "jira"]));
     expect(aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand").length).toBeGreaterThan(0);
     // A put of theirs that was queued while the table was down, and one that reached the dead-letter queue.
@@ -1013,9 +1015,10 @@ describe("TRW-4: a person's erase takes their rows from all four sources, queues
     // The table: no row, fact, link, derivation, queue entry or counter with their words or their ids.
     const left = everything(db);
     expect(left).not.toContain(MARKER);
-    expect(left).not.toContain("BOBEDIT-QZ");
     for (const id of ["lin-ann", "acc-ann"]) expect(db.find((item) => JSON.stringify(item).includes(id)).map((item) => `${item.pk as string} ${item.sk as string} ${item.entityType as string}`), id).toStrictEqual([]);
-    for (const type of ["TEAM_RECORD_EVENT", "TEAM_RECORD_FACT", "TEAM_RECORD_DERIVATION"]) expect(db.find((item) => item.entityType === type), type).toStrictEqual([]);
+    for (const type of ["TEAM_RECORD_FACT", "TEAM_RECORD_DERIVATION"]) expect(db.find((item) => item.entityType === type), type).toStrictEqual([]);
+    // The colleague's own edit stays (only the erased person's rows go).
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => (row.actor as { developerId?: string }).developerId)).toStrictEqual(["dev-2"]);
     // Their links are gone; the colleague's (not erased) is the only one left.
     expect(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_LINK").map((item) => item.sk)).toStrictEqual(["TRLINK#linear#lin-bob"]);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_LINK_BY_PERSON")).toHaveLength(1);
@@ -1032,11 +1035,14 @@ describe("TRW-4: a person's erase takes their rows from all four sources, queues
     const putKeys = aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand").flatMap((call) => ((call.input.vectors as Array<{ key: string }> | undefined) ?? []).map((vector) => vector.key));
     const deletedKeys = new Set(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand").flatMap((call) => (call.input.keys as string[] | undefined) ?? []));
     expect(putKeys.length).toBeGreaterThan(0);
-    for (const key of putKeys) expect(deletedKeys.has(key), key).toBe(true);
+    // ...except the colleague's own row, which stays with its vector.
+    const keptKeys = new Set(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => `event:${row.id as string}`));
+    expect(keptKeys.size).toBe(1);
+    for (const key of putKeys) expect(deletedKeys.has(key) !== keptKeys.has(key), key).toBe(true);
     // The queue: the put that waited is refused when it is replayed (the person is erased), and stores nothing.
     expect(await runtime.drain(queued.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 })))).toStrictEqual({ batchItemFailures: [] });
     expect(everything(db)).not.toContain(MARKER);
-    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => (row.actor as { developerId?: string }).developerId)).toStrictEqual(["dev-2"]);
     // The dead-letter queue still holds only the message with ids.
     expect(deadLetters.map((message) => message.handle)).toStrictEqual(["h2"]);
   });
@@ -1217,10 +1223,10 @@ describe("TRW-4: the erase knows the person's tracker author ids and removes the
 });
 
 // ---- TRW-4 fix round 1 (Opus review of team-record-erase)
-describe("fix round 1, B1: the editor of an item is erasable, because their words are never kept", () => {
+describe("per-editor rows: the editor of an item is erasable, and only their rows go", () => {
   const BOB_WORDS = "BOBWORDS-7Q-rewrite";
   const linearHook = { source: "linear" as const, project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } };
-  const linearBody = (action: "create" | "update", actor: string, text: string) => ({ type: "Issue", action, organizationId: "lin-org", actor: { id: actor }, data: { id: "i1", teamId: "t1", title: text, creatorId: "lin-ann", updatedAt: "2026-10-30T10:00:00.000Z" } });
+  const linearBody = (action: "create" | "update", actor: string, text: string, at = "2026-10-30T10:00:00.000Z") => ({ type: "Issue", action, organizationId: "lin-org", actor: { id: actor }, ...(action === "update" ? { updatedFrom: { title: "old title" } } : {}), data: { id: "i1", teamId: "t1", title: text, creatorId: "lin-ann", updatedAt: at } });
 
   async function world() {
     const db = dbOf();
@@ -1240,35 +1246,80 @@ describe("fix round 1, B1: the editor of an item is erasable, because their word
   const edited = (text: string) => ({
     eventName: "issue_comment", deliveryId: "d-2",
     payload: {
-      action: "edited", sender: { id: 456, login: "bob", type: "User" }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" },
+      action: "edited", sender: { id: 456, login: "bob", type: "User" }, changes: { body: { from: "maya's original" } }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" },
       issue: { number: 12, pull_request: {} }, comment: { id: 7, html_url: "https://github.com/acme/api/pull/12#issuecomment-7", body: text, user: { id: 123, login: "maya", type: "User" }, updated_at: "2026-10-30T10:05:00Z" },
     },
   });
 
-  it("a linked person's rewrite of someone else's ticket or comment is not kept, so erasing the editor leaves nothing of theirs; the author's own row stays", async () => {
+  it("a linked person's edit of someone else's ticket or comment is THEIR row; erasing the editor takes exactly their rows and the authors' own rows stay", async () => {
     const { db, runtime, clock } = await world();
     await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("create", "lin-ann", "ann's original") });
     await runtime.taps.github(delivery(55, 101, "maya's original"));
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(2);
-    // Bob rewrites both; then the author touches the ticket again (the text now carries Bob's words).
-    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-bob", BOB_WORDS) });
-    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-ann", BOB_WORDS) });
-    await runtime.taps.github(edited(BOB_WORDS));
-    expect(everything(db)).not.toContain(BOB_WORDS);
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-bob", BOB_WORDS, "2026-10-30T10:05:00.000Z") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-ann", "ann's second title", "2026-10-30T10:06:00.000Z") });
+    await runtime.taps.github(edited(`maya's original\n${BOB_WORDS}`));
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(5);
+    const bobRows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT" && (item.actor as { developerId?: string }).developerId === "dev-2");
+    expect(bobRows.map((row) => row.text)).toStrictEqual([BOB_WORDS, BOB_WORDS]);
     await runtime.erase.person(ORG_A, "dev-2");
     await runtime.jobs.run("hourly");
     clock.at += ERASE_SWEEP_DELAY_MS + 1; // the erase's own second pass has run and dropped the ids it kept for it
     await runtime.jobs.run("hourly");
     for (const needle of [BOB_WORDS, "lin-bob"]) expect(db.find((item) => JSON.stringify(item).includes(needle)).map((item) => `${item.entityType as string} ${item.sk as string}`), needle).toStrictEqual([]);
-    const rows = JSON.stringify(db.find((item) => item.entityType === "TEAM_RECORD_EVENT"));
-    expect(rows).toContain("ann's original");
-    expect(rows).toContain("maya's original");
+    const left = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(left).toHaveLength(3);
+    expect(JSON.stringify(left)).toContain("ann's original");
+    expect(JSON.stringify(left)).toContain("ann's second");
+    expect(JSON.stringify(left)).toContain("maya's original");
   });
 
-  it("an unlinked editor is not kept either, and is counted", async () => {
+  it("S2: a comment its author edits with no earlier text from the host keeps her whole text only if nobody else edited it before", async () => {
+    const { db, runtime } = await world();
+    const mayaEdits = (text: string, id: number, at: string) => ({ eventName: "issue_comment", deliveryId: `d-${String(id)}`, payload: { action: "edited", sender: { id: 123, login: "maya", type: "User" }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" }, issue: { number: 12, pull_request: {} }, comment: { id, html_url: `https://github.com/acme/api/pull/12#issuecomment-${String(id)}`, body: text, user: { id: 123, login: "maya", type: "User" }, updated_at: at } } });
+    // Comment 7: Bob edited it, then Maya edits it with no earlier text sent: none of her text is kept.
+    await runtime.taps.github(delivery(55, 101, "maya's original"));
+    await runtime.taps.github(edited(`maya's original\n${BOB_WORDS}`));
+    await runtime.taps.github(mayaEdits(`maya's original\n${BOB_WORDS}\nMAYA-SECOND`, 7, "2026-10-30T10:09:00Z"));
+    // Comment 8: nobody else touched it, so her whole edited text is hers.
+    await runtime.taps.github(mayaEdits("maya alone EIGHT", 8, "2026-10-30T10:10:00Z"));
+    const texts = db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => String(row.text));
+    expect(texts.some((text) => text.includes("MAYA-SECOND"))).toBe(false);
+    expect(texts.filter((text) => text.includes(BOB_WORDS))).toHaveLength(1);
+    expect(texts).toContain("maya alone EIGHT");
+  });
+
+  it("S2: an earlier edit by someone whose change was NOT stored (an unlinked person, an excluded one, an erased one) also stops the author's whole-comment credit", async () => {
+    const { db, runtime, clock } = await world();
+    const comment = (action: "create" | "update", actor: string, text: string, at: string) => ({ type: "Comment", action, organizationId: "lin-org", actor: { id: actor }, data: { id: "c1", issueId: "i1", teamId: "t1", userId: "lin-ann", body: text, updatedAt: at } });
+    const later = comment("update", "lin-ann", "ann again\nSTRANGERWORDS", "2026-10-30T10:09:00.000Z");
+    // A comment nobody else touched: Ann's edit with no earlier text is hers whole.
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: { ...comment("create", "lin-ann", "ann original", "2026-10-30T10:00:00.000Z"), data: { id: "c0", issueId: "i1", teamId: "t1", userId: "lin-ann", body: "ann original", updatedAt: "2026-10-30T10:00:00.000Z" } } });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: { ...comment("update", "lin-ann", "ann fixed", "2026-10-30T10:01:00.000Z"), data: { id: "c0", issueId: "i1", teamId: "t1", userId: "lin-ann", body: "ann fixed", updatedAt: "2026-10-30T10:01:00.000Z" } } });
+    // Comment c1: an unlinked person edits it (refused, counted), then Ann edits it with no earlier text.
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: comment("create", "lin-ann", "ann original", "2026-10-30T10:00:00.000Z") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: comment("update", "lin-stranger", "ann original\nSTRANGERWORDS", "2026-10-30T10:05:00.000Z") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: later });
+    const texts = () => db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => String(row.text));
+    expect(texts()).toContain("ann fixed");
+    expect(texts().some((text) => text.includes("STRANGERWORDS"))).toBe(false);
+    // An erased person's edit: Bob edits GitHub comment 7 (stored, with the earlier text), is erased, and Maya's later edit with no earlier text keeps nothing.
+    await runtime.taps.github(delivery(55, 101, "maya's original"));
+    await runtime.taps.github(edited(`maya's original\n${BOB_WORDS}`));
+    await runtime.erase.person(ORG_A, "dev-2");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain(BOB_WORDS);
+    const mayaAgain = { eventName: "issue_comment", deliveryId: "d-9", payload: { action: "edited", sender: { id: 123, login: "maya", type: "User" }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" }, issue: { number: 12, pull_request: {} }, comment: { id: 7, html_url: "https://github.com/acme/api/pull/12#issuecomment-7", body: `maya's original\n${BOB_WORDS}\nMAYA-LATER`, user: { id: 123, login: "maya", type: "User" }, updated_at: "2026-10-30T10:20:00Z" } } };
+    await runtime.taps.github(mayaAgain);
+    expect(everything(db)).not.toContain("MAYA-LATER");
+  });
+
+  it("an unlinked editor is not kept, and is counted", async () => {
     const { db, runtime } = await world();
     await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("create", "lin-ann", "ann's original") });
-    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-stranger", BOB_WORDS) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("update", "lin-stranger", BOB_WORDS, "2026-10-30T10:05:00.000Z") });
     expect(everything(db)).not.toContain(BOB_WORDS);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_SKIPPED").map((item) => item.skipped)).toStrictEqual([1]);
   });
@@ -1461,5 +1512,175 @@ describe("the production wiring of the person erase (LA-5)", () => {
       .filter((file) => /^[a-z-]+\/src\/.*\.ts$/u.test(file.replaceAll("\\", "/")) && readFileSync(new URL(file, root), "utf8").includes("createTeamRecordRuntime("))
       .map((file) => file.replaceAll("\\", "/")).sort();
     expect(sites).toEqual(["broker/src/aws/broker.ts", "broker/src/team-record/runtime.ts"]);
+  });
+});
+
+// ---- per-editor rows (lane team-record-links): every change is its own row under the person who made it
+describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to Done", () => {
+  const SAM_WORDS = "SAMWORDS-reproduced-on-Safari";
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const linearHook = { source: "linear" as const, project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } };
+  const issue = (action: "create" | "update", actor: string, at: string, description: string, extra: Record<string, unknown> = {}, data: Record<string, unknown> = {}) => ({
+    type: "Issue", action, organizationId: "lin-org", actor: { id: actor }, ...extra,
+    data: { id: "lin42", identifier: "LIN-42", teamId: "t1", title: "Checkout fails on an empty cart", description, creatorId: "lin-priya", updatedAt: at, state: { name: "Todo" }, ...data },
+  });
+
+  async function world(options: { keywordSearch?: true } = {}) {
+    const db = dbOf();
+    const aws = fakeAws();
+    // A reader that finds the item by keyword (the vector query is down), so the test reads back what the table holds.
+    const sdk = options.keywordSearch !== true ? aws.sdk : async (name: string): Promise<Record<string, unknown>> => {
+      const loaded = await aws.sdk(name);
+      if (name !== "@aws-sdk/client-s3vectors") return loaded;
+      const Real = loaded.S3VectorsClient as new (config: unknown) => { send(command: { commandName: string }): Promise<unknown> };
+      return { ...loaded, S3VectorsClient: class { private readonly real: InstanceType<typeof Real>; constructor(config: unknown) { this.real = new Real(config); } async send(command: { commandName: string }) { if (command.commandName === "QueryVectorsCommand") throw new Error("vector query down"); return this.real.send(command); } } };
+    };
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    db.set({ ...developerOrgKey("dev-2"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
+    const queued: Array<Record<string, unknown>> = [];
+    const deadLetters: Array<{ handle: string; body: string }> = [];
+    const down = { on: false };
+    const client = { send: async (command: unknown) => { if (down.on && /^(Put|Update|Delete|TransactWrite)/.test((command as { constructor: { name: string } }).constructor.name)) throw new Error("table down"); return db.send(command as never); } };
+    const clock = { at: T0 };
+    const runtime = build(db, { ...ON, ...LAKE, ROVARA_EDITION: "enterprise" }, {
+      now: () => clock.at, sdk, sts: aws.sts, documentClient: client, opsQueue: { send: async (op) => { queued.push(op); } },
+      deadLetters: { receive: async (max) => deadLetters.slice(0, max), remove: async (handle) => { const at = deadLetters.findIndex((message) => message.handle === handle); if (at >= 0) deadLetters.splice(at, 1); } },
+    });
+    await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source: "linear", scope: "linear:team/t1", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+    expect(await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-priya", developerId: "dev-1", via: "connect" })).toBe(true);
+    expect(await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-sam", developerId: "dev-2", via: "connect" })).toBe(true);
+    return { db, aws, runtime, queued, deadLetters, down, clock };
+  }
+  const story = async (runtime: TeamRecordRuntime) => {
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("create", "lin-priya", "2026-10-30T10:00:00.000Z", "Steps: add nothing, then pay.") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("update", "lin-sam", "2026-10-30T10:05:00.000Z", `Steps: add nothing, then pay.\n${SAM_WORDS}`, { updatedFrom: { description: "Steps: add nothing, then pay." } }) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("update", "lin-priya", "2026-10-30T10:10:00.000Z", `Steps: add nothing, then pay.\n${SAM_WORDS}`, { updatedFrom: { stateId: "todo" } }, { state: { name: "Done" } }) });
+  };
+  const search = async (runtime: TeamRecordRuntime, query: string) => ((await runtime.routes({ method: "GET", path: "/v1/app/projects/web/record/search", query: { query }, caller: { orgId: ORG_A, developerId: "dev-1", projectRole: "maintainer" } }))?.body as { hits: Array<{ snippet: string; kind: string }> }).hits;
+
+  it("stores each change as its own row under the person who made it, with the item and an order", async () => {
+    const { db, runtime } = await world();
+    await story(runtime);
+    const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT").sort((a, b) => (a.sourceRef as { order: number }).order - (b.sourceRef as { order: number }).order);
+    expect(rows.map((row) => [(row.actor as { developerId: string }).developerId, (row.actor as { sourceId: string }).sourceId, row.kind, row.text, (row.structured as { state?: string; changed?: string }).state])).toStrictEqual([
+      ["dev-1", "lin-priya", "ticket.created", "Checkout fails on an empty cart\n\nSteps: add nothing, then pay.", "Todo"],
+      ["dev-2", "lin-sam", "ticket.updated", SAM_WORDS, undefined],
+      ["dev-1", "lin-priya", "ticket.updated", undefined, "Done"],
+    ]);
+    expect(new Set(rows.map((row) => (row.sourceRef as { id: string }).id))).toStrictEqual(new Set(["issue:lin42"]));
+    expect(rows.map((row) => (row.sourceRef as { order: number }).order)).toStrictEqual([Date.parse("2026-10-30T10:00:00.000Z"), Date.parse("2026-10-30T10:05:00.000Z"), Date.parse("2026-10-30T10:10:00.000Z")]);
+    // No freeze mark and no item head: nothing is replaced and nothing stops later changes.
+    expect(db.find((item) => String(item.sk).startsWith("EDITED#") || String(item.sk).startsWith("ITEM#"))).toStrictEqual([]);
+  });
+
+  it("B1: a Jira author's formatted description survives Sam's edit in HER row and leaves with her erase; Sam's row holds only the words he added", async () => {
+    const { db, runtime, clock } = await world();
+    await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source: "jira", scope: "jira:project/WEB", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+    expect(await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-priya", developerId: "dev-1", via: "connect" })).toBe(true);
+    expect(await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-sam", developerId: "dev-2", via: "connect" })).toBe(true);
+    const jiraHook = { source: "jira" as const, project: "web", tenant: { siteHost: "acme.atlassian.net", projectKey: "WEB" } };
+    const para = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+    const adf = (...lines: string[]) => ({ type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "Context" }] }, ...lines.map(para)] });
+    const issue = (kind: string, user: string, at: number, description: unknown, changelog?: unknown) => ({
+      webhookEvent: kind, timestamp: at, user: { accountId: user }, ...(changelog === undefined ? {} : { changelog }),
+      issue: { id: "7", key: "WEB-7", self: "https://acme.atlassian.net/rest/api/2/issue/7", fields: { summary: "Cart", description, project: { key: "WEB" }, creator: { accountId: "acc-priya" } } },
+    });
+    const wiki = "h2. Context\n* PRIYASECRET plan item\nplain line";
+    await runtime.taps.hook({ orgId: ORG_A, hook: jiraHook, body: issue("jira:issue_created", "acc-priya", 1_761_818_400_000, adf("PRIYASECRET plan item", "plain line")) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: jiraHook, body: issue("jira:issue_updated", "acc-sam", 1_761_818_700_000, adf("PRIYASECRET plan item", "plain line", "SAMLINE added"), { items: [{ field: "description", fromString: wiki, toString: `${wiki}\nSAMLINE added` }] }) });
+    const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rows).toHaveLength(2);
+    const byPerson = (id: string) => JSON.stringify(rows.filter((row) => (row.actor as { developerId: string }).developerId === id).map((row) => row.text));
+    expect(byPerson("dev-1")).toContain("PRIYASECRET");
+    expect(byPerson("dev-2")).toBe(JSON.stringify(["SAMLINE added"]));
+    await runtime.erase.person(ORG_A, "dev-1");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain("PRIYASECRET");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => row.text)).toStrictEqual(["SAMLINE added"]);
+  });
+
+  it("a freeze mark left from before (EDITED#) is ignored: nothing reads it, and every change still lands", async () => {
+    const { db, runtime } = await world();
+    const { createHash } = await import("node:crypto");
+    db.set({ pk: teamRecordPk(ORG_A), sk: `EDITED#${createHash("sha256").update("linear\u0000linear\u0000issue:lin42").digest("hex")}`, entityType: "TEAM_RECORD_EDITED_BY_OTHER", orgId: ORG_A, at: "2026-10-30T09:00:00.000Z" });
+    await story(runtime);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(3);
+  });
+
+  it("a reader that shows the item puts its rows back together in order, once; after Sam's erase it reads on without his lines", async () => {
+    const { db, runtime, clock } = await world({ keywordSearch: true });
+    await story(runtime);
+    const hits = await search(runtime, "checkout");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.snippet.indexOf("Checkout fails")).toBeGreaterThanOrEqual(0);
+    expect(hits[0]!.snippet.indexOf(SAM_WORDS)).toBeGreaterThan(hits[0]!.snippet.indexOf("add nothing"));
+    expect(await search(runtime, "Safari")).toHaveLength(1);
+    // A query that two rows of the item match (the creation's title and Sam's line) still shows the item once.
+    expect(await search(runtime, "checkout reproduced")).toHaveLength(1);
+    await runtime.erase.person(ORG_A, "dev-2");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    const after = await search(runtime, "checkout");
+    expect(after).toHaveLength(1);
+    expect(after[0]!.snippet).toContain("add nothing");
+    expect(after[0]!.snippet).not.toContain("SAMWORDS");
+    expect(await search(runtime, "Safari")).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(2);
+  });
+
+  it("erasing Sam leaves Priya's two rows and nothing of Sam's: table, lake, vectors and queues", async () => {
+    const { db, aws, runtime, queued, deadLetters, down, clock } = await world();
+    await story(runtime);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(3);
+    // A put of Sam's that waited in the queue while the table was down, and one in the dead-letter queue.
+    down.on = true;
+    await runtime.sink.put(githubDraft({ source: "linear", kind: "ticket.updated", retention: "C", audience: { kind: "project" }, scope: "linear:team/t1", actor: { sourceId: "lin-sam", developerId: "dev-2", trust: "member" }, sourceRef: { system: "linear", id: "issue:late", version: "1", order: 5 }, text: `queued ${SAM_WORDS}` }));
+    down.on = false;
+    expect(queued.map((op) => op.op)).toStrictEqual(["put"]);
+    deadLetters.push({ handle: "h1", body: JSON.stringify(queued[0]) });
+    await runtime.erase.person(ORG_A, "dev-2");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    for (let run = 0; run < 6; run += 1) await runtime.jobs.run("hourly");
+    // The table: Priya's two rows are left (her creation and her move to Done), and nothing at all names Sam.
+    const left = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(left.map((row) => [(row.actor as { developerId: string }).developerId, row.kind])).toStrictEqual([["dev-1", "ticket.created"], ["dev-1", "ticket.updated"]]);
+    expect(left.every((row) => row.tombstone === undefined)).toBe(true);
+    for (const needle of [SAM_WORDS, "lin-sam", "dev-2"]) expect(db.find((item) => JSON.stringify(item).includes(needle) && item.entityType !== "DEVELOPER_ORG").map((item) => `${item.entityType as string} ${item.sk as string}`), needle).toStrictEqual([]);
+    // The lake was told to forget Sam, by developer and by his Linear id, and Priya not at all.
+    const statements = aws.athenaCalls.filter((call) => call.command === "StartQueryExecutionCommand" && /DELETE FROM/i.test(call.sql)).map((call) => call.sql).join("\n");
+    expect(statements).toContain(recordDeveloperHash("dev-2"));
+    expect(statements).toContain(recordActorSourceHash(identitySystem("linear"), "lin-sam"));
+    expect(statements).not.toContain(recordDeveloperHash("dev-1"));
+    // The vector index: Sam's row's vector was deleted and Priya's two were not.
+    const putKeys = aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand").flatMap((call) => ((call.input.vectors as Array<{ key: string }> | undefined) ?? []).map((vector) => vector.key));
+    const deletedKeys = new Set(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand").flatMap((call) => (call.input.keys as string[] | undefined) ?? []));
+    const keptKeys = new Set(left.map((row) => `event:${row.id as string}`));
+    expect(putKeys.length).toBeGreaterThanOrEqual(2);
+    for (const key of putKeys) expect(deletedKeys.has(key) !== keptKeys.has(key), key).toBe(true);
+    // The queues: the waiting put is refused when replayed, and the dead-letter queue's copy was swept out.
+    expect(await runtime.drain(queued.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 })))).toStrictEqual({ batchItemFailures: [] });
+    expect(deadLetters).toStrictEqual([]);
+    expect(everything(db)).not.toContain(SAM_WORDS);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(2);
+  });
+
+  it("a later change by Priya still lands after Sam's erase (nothing froze), and a person erased is not brought back by a late change of theirs", async () => {
+    const { db, runtime, clock } = await world();
+    await story(runtime);
+    await runtime.erase.person(ORG_A, "dev-2");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("update", "lin-priya", "2026-10-30T10:20:00.000Z", "x", { updatedFrom: { title: "old" } }, { title: "Checkout fails on an empty cart (reopened)" }) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("update", "lin-sam", "2026-10-30T10:21:00.000Z", "x", { updatedFrom: { title: "old" } }, { title: `${SAM_WORDS} again` }) });
+    const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rows).toHaveLength(3);
+    expect(JSON.stringify(rows)).toContain("(reopened");
+    expect(everything(db)).not.toContain(SAM_WORDS);
   });
 });

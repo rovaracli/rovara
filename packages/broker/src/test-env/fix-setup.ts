@@ -17,7 +17,7 @@ import { z } from "zod";
 import { AUTO_FIX_ENVIRONMENT_CODES, agentXError, projectPk, type AutoFixCode, type EvidencePack, type OrgId } from "@agentx/contracts";
 import { autoFixCodeSentence } from "../developer/autofix-messages.js";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { auditProjectKnownFailingMarked } from "../audit/events.js";
+import { auditOccurrence, auditProjectKnownFailingMarked } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
@@ -398,7 +398,7 @@ export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Pre
   // Throws the limit's own refusal ("This project's known-failing list is full (500)...").
   const next = nextKnownFailing(before, added);
   const event = await tryAuditEvent(ports.store, () => auditProjectKnownFailingMarked({
-    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: requestId, projectName: item.project, cause: record.cause, testCount: next.length - before.marks.length,
+    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: auditOccurrence(item.project, requestId, record.cause, String(record.epoch), testSetSha256), projectName: item.project, cause: record.cause, testCount: next.length - before.marks.length,
     recordEpoch: record.epoch, taskCount: record.taskCount, taskIdsSha256: hashOf([...record.taskIds].sort()),
     testSetSha256, rowVersionAfter: before.version + 1, totalAfter: next.length,
     approvalMode: second === undefined ? "single" : second.mode, secondPersonWhy: needed.why,

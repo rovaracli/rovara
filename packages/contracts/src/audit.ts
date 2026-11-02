@@ -202,6 +202,8 @@ export const AUDIT_ACTIONS = [
   "evidence.downloaded",
   // Setup and test health (SH17): a maintainer marked tests as already failing, so later results no longer count them against a change.
   "project.known_failing_marked",
+  // Setup and test health KF-1: a mark was taken off the list, by a maintainer (undo) or by the system (a usable nightly showed the test passing).
+  "project.known_failing_removed",
   // Setup and test health SH17 (F4): the company setting "always two people" for marking tests as already failing. Tightening applies at once; loosening is a proposal a different admin approves.
   "company.known_failing_policy_proposed",
   "company.known_failing_policy_changed",
@@ -212,6 +214,11 @@ export const AUDIT_ACTIONS = [
   "record.source_removed",
   "record.tombstoned",
   "record.erased",
+  // Tracker people (lane team-record-links): an admin mapped a Linear or Jira person to a member of the company, or took the mapping away. The target is the member; the tool's id and name never go in.
+  "record.tracker_person_mapped",
+  "record.tracker_person_unmapped",
+  // The company switch for automatic tracker linking (off by default): who turned it on or off; the fact is the new state.
+  "record.tracker_autolink_changed",
   "lesson.mode_changed",
   "lesson.proposed",
   "lesson.activated",
@@ -275,6 +282,11 @@ export const AUDIT_ACTIONS = [
   "rule.correction_remembered",
   "project.learning_changed",
   "rule.suggestions_set",
+  // Company domain verification (owner decision 2026-11-02): a domain claimed, checked, lost or removed. The domain itself is in `details`, never a fact.
+  "company_domain.added",
+  "company_domain.verified",
+  "company_domain.lost",
+  "company_domain.removed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -445,6 +457,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.
   "project.known_failing_marked": ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"],
   // `fromAlwaysTwo` / `toAlwaysTwo` are booleans; `mode` is `direct`, `second_person`; `refusal` a fixed word.
+  // `removal` is `undo` or `nightly_passing`; `testCount` is how many marks left the list; `markEpoch` is the card the mark was made on (0: marks from several cards); `testSetSha256` is the sha256 of the sorted "check, test" lines removed; `rowVersionAfter` and `totalAfter` describe the list afterwards.
+  "project.known_failing_removed": ["removal", "testCount", "markEpoch", "testSetSha256", "rowVersionAfter", "totalAfter"],
   "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
   "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
   "company.known_failing_policy_refused": ["refusal"],
@@ -455,6 +469,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "record.source_removed": ["source"],
   "record.tombstoned": ["source", "cause", "count"],
   "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],
+  // `source` is `linear` or `jira`.
+  "record.tracker_person_mapped": ["source"],
+  "record.tracker_person_unmapped": ["source"],
+  "record.tracker_autolink_changed": ["enabled"],
   "lesson.mode_changed": ["fromMode", "toMode", "locked"],
   "lesson.proposed": ["lessonType", "tier"],
   "lesson.activated": ["lessonType", "tier", "auto"],
@@ -520,6 +538,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
   "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
+  // Company domains: `tookOver` is true when the proof moved the domain from another company's lost claim; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
+  "company_domain.added": [],
+  "company_domain.verified": ["wasState", "tookOver"],
+  "company_domain.lost": ["missingDays"],
+  "company_domain.removed": ["wasState"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

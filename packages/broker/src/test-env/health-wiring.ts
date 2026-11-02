@@ -10,7 +10,8 @@ import type { TestEnvDeps } from "../org/test-environment.js";
 import { healthFixSetupCards } from "./fix-setup-health.js";
 import { noteBlockedTask, noteSetupProved, nightlyHealthListener, type HealthPorts } from "./health.js";
 import { nightlyHealthEnabled } from "./health-switch.js";
-import { recordNightlyResult, type MapStore } from "./nightly.js";
+import { knownFailingExpiryListener } from "./known-failing-undo.js";
+import { recordNightlyResult, type MapStore, type NightlyRecorded } from "./nightly.js";
 import { proposedFixTaskStore } from "./proposed-tasks.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
@@ -22,7 +23,14 @@ export const healthWiringOn = (env: NodeJS.ProcessEnv = process.env): boolean =>
 
 /** Records a finished nightly run; while `nh` is on the project's health follows it. With `nh` off this is `recordNightlyResult` exactly. */
 export function recordNightlyResultWithHealth(deps: TestEnvDeps, maps: MapStore, input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown }, env: NodeJS.ProcessEnv = process.env): ReturnType<typeof recordNightlyResult> {
-  return recordNightlyResult(deps, maps, input, nightlyHealthListener(deps, healthPortsOf(deps, env), env));
+  return recordNightlyResult(deps, maps, input, nightlyListeners(nightlyHealthListener(deps, healthPortsOf(deps, env), env), knownFailingExpiryListener(deps, env)));
+}
+
+/** The listeners that are on, one after the other (the health first, as before; the marks' expiry never throws). Undefined when none is on, so the record path is today's. */
+function nightlyListeners(...listeners: Array<((event: NightlyRecorded) => Promise<void>) | undefined>): ((event: NightlyRecorded) => Promise<void>) | undefined {
+  const on = listeners.filter((listener): listener is (event: NightlyRecorded) => Promise<void> => listener !== undefined);
+  if (on.length === 0) return undefined;
+  return async (event) => { for (const listener of on) await listener(event); };
 }
 
 /**
