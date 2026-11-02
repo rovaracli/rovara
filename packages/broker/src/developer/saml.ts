@@ -351,8 +351,9 @@ function readAttributes(assertion: Xml2Js): Record<string, string[]> {
       for (const value of asArray((attribute as Xml2Js).AttributeValue)) {
         const text = textOf(value);
         if (text === undefined || text.length > ATTRIBUTE_VALUE_MAX_CHARS) {
-          // Mark an unreadable value with a value no group can have (a control character), so the group list is "invalid", not shorter and quietly valid.
-          values.push("\u0000");
+          // Mark an unreadable value with an empty value, which the group reader refuses (claim_invalid): the list is then refused whole, never shorter and quietly valid
+          // (a dropped value could be the Auditor group that makes the sign-in a refusal).
+          values.push("");
           continue;
         }
         if (values.length < ATTRIBUTE_MAX_VALUES + 1) values.push(text);

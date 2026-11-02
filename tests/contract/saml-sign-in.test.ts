@@ -105,6 +105,16 @@ describe("a SAML sign-in", () => {
     expect(result.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.no_group);
   });
 
+  it("a group value that cannot be read refuses the whole list (a dropped value could be the group that denies)", async () => {
+    const { h } = await world();
+    const child = '<saml:Attribute Name="groups"><saml:AttributeValue><x:y xmlns:x="urn:x">rovara-auditors</x:y></saml:AttributeValue></saml:Attribute>';
+    const result = await signIn(h, { attributes: { groups: ["rovara-users"] }, attributesRaw: child });
+    expect(result.tokens).toBeUndefined();
+    expect(result.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.claim_invalid);
+    const tooLong = await signIn(h, { attributes: { groups: ["rovara-users", "g".repeat(300)] }, assertionId: "_long" });
+    expect(tooLong.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.claim_invalid);
+  });
+
   it("a person whose groups make them both an Auditor and a member is refused", async () => {
     const { h, capture } = await world();
     const result = await signIn(h, { attributes: { groups: ["rovara-users", "rovara-auditors"] } });
@@ -210,6 +220,14 @@ describe("what a refused response leaves behind", () => {
     expect(h.state.find(() => true).length).toBe(before);
     expect((await post(h, "", "R".repeat(43))).statusCode).toBe(400);
     expect((await h.http(httpEvent("POST", "/v1/auth/callback/saml"))).statusCode).toBe(400);
+  });
+
+  it("a response for a sign-in waiting for another method is not kept", async () => {
+    const { h } = await world();
+    const other = await h.deps.store.createAuthRequest({ clientRedirectUri: CLI_REDIRECT, clientState: "s", codeChallenge: "c".repeat(43), nonce: "n".repeat(43) });
+    await h.deps.store.chooseMethod(other.id, "slack");
+    expect((await post(h, makeResponse({ key, now: T0 }), other.id)).statusCode).toBe(400);
+    expect(h.state.find((item) => String(item.sk).startsWith("SSO_SAML_RESP#"))).toEqual([]);
   });
 
   it("an oversized POST is refused unread", async () => {

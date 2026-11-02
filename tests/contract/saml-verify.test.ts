@@ -161,6 +161,35 @@ describe("the XML is read safely", () => {
     expect(await verify(toPost(`${responseXml({ key })}<!-- ${"x".repeat(SAML_RESPONSE_MAX_BYTES)} -->`))).toEqual({ ok: false, reason: "response_too_large" });
     expect(await verify("A".repeat(Math.ceil((SAML_RESPONSE_MAX_BYTES * 4) / 3) + 100))).toEqual({ ok: false, reason: "response_too_large" });
   });
+  it("the size bound holds at each end: decoded bytes just over the limit, and padding that is all whitespace", async () => {
+    const xml = responseXml({ key });
+    const over = xml.replace("<saml:Issuer>", `<!--${"x".repeat(SAML_RESPONSE_MAX_BYTES - xml.length + 10)}--><saml:Issuer>`);
+    expect(Buffer.byteLength(over)).toBeGreaterThan(SAML_RESPONSE_MAX_BYTES);
+    expect(toPost(over).length).toBeLessThan(Math.ceil((SAML_RESPONSE_MAX_BYTES * 4) / 3) + 64);
+    expect(await verify(toPost(over))).toEqual({ ok: false, reason: "response_too_large" });
+    expect(await verify(`${toPost(xml)}${" ".repeat(300_000)}`)).toEqual({ ok: false, reason: "response_too_large" });
+  });
+  it("only standard base64 is read (base64url is not), strict UTF-8, and no NUL character, even where a signature would not notice", async () => {
+    const xml = responseXml({ key });
+    const comment = (body: string) => xml.replace("<saml:Issuer>", `<!--${body}--><saml:Issuer>`);
+    // Each is a comment outside the signed assertion, so the signature still verifies: only the reader's own strictness refuses them.
+    expect((await verify(toPost(comment("clean")))).ok).toBe(true);
+    const url = toPost(comment("?>?>?>?>?>?>?>?>?>?>")).replace(/\+/g, "-").replace(/\//g, "_");
+    expect(url).toMatch(/[-_]/);
+    expect(await verify(url)).toEqual({ ok: false, reason: "response_unreadable" });
+    const bytes = Buffer.from(comment("@@"), "utf8");
+    const at = bytes.indexOf("@@");
+    bytes[at] = 0xff;
+    expect(await verify(bytes.toString("base64"))).toEqual({ ok: false, reason: "response_unreadable" });
+    expect(await verify(toPost(comment("a\u0000b")))).toEqual({ ok: false, reason: "response_unreadable" });
+  });
+  it("an assertion with a malformed id, a version other than 2.0, no subject or two subjects' names is refused", async () => {
+    expect(await refusal({ assertionId: "1bad id" })).not.toBe("accepted");
+    expect(await refusal({ assertionId: "1bad" })).toBe("bad_assertion");
+    expect(await refusal({ assertionVersion: "1.1" })).toBe("bad_assertion");
+    expect(await refusal({ omitSubject: true })).toBe("no_subject");
+    expect(await refusal({ secondNameId: true })).toBe("no_subject");
+  });
   it("a document with too many elements is refused", async () => {
     expect(await verify(toPost(responseXml({ key }).replace("<saml:Issuer>", `${"<a>".repeat(5001)}<saml:Issuer>`)))).toEqual({ ok: false, reason: "response_too_large" });
   });

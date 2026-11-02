@@ -77,6 +77,11 @@ export interface ResponseOptions {
   signWith?: IdpKey;
   /** Adds a second, unsigned assertion naming someone else (a signature wrapping attempt). */
   extraAssertion?: boolean;
+  assertionVersion?: string;
+  omitSubject?: boolean;
+  secondNameId?: boolean;
+  /** Raw XML added to the attribute statement (an attribute value with child elements, say). */
+  attributesRaw?: string;
 }
 
 export const RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
@@ -99,7 +104,7 @@ function assertionXml(o: ResponseOptions, now: number, id: string, nameId: strin
   const confirmation = `<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:${o.bearer === false ? "holder-of-key" : "bearer"}"><saml:SubjectConfirmationData${subjectRequest === null ? "" : ` InResponseTo="${subjectRequest}"`}${recipient === null ? "" : ` Recipient="${recipient}"`}${subjectEnd === undefined ? "" : ` NotOnOrAfter="${subjectEnd}"`}/></saml:SubjectConfirmation>`;
   const format = o.nameIdFormat === undefined ? "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" : o.nameIdFormat;
   const conditions = o.conditionsElement === false ? "" : `<saml:Conditions${notBefore === undefined ? "" : ` NotBefore="${notBefore}"`}${notOnOrAfter === undefined ? "" : ` NotOnOrAfter="${notOnOrAfter}"`}>${audience === null ? "" : `<saml:AudienceRestriction><saml:Audience>${audience}</saml:Audience></saml:AudienceRestriction>`}</saml:Conditions>`;
-  return `<saml:Assertion ID="${id}" Version="2.0" IssueInstant="${iso(now)}"><saml:Issuer>${o.issuer ?? TEST_IDP_ENTITY}</saml:Issuer><saml:Subject><saml:NameID${format === null ? "" : ` Format="${format}"`}>${escapeXml(nameId)}</saml:NameID>${confirmation}</saml:Subject>${conditions}<saml:AuthnStatement AuthnInstant="${iso(now + (o.authnInstantOffsetMs ?? -5_000))}"${sessionEnd === undefined ? "" : ` SessionNotOnOrAfter="${sessionEnd}"`} SessionIndex="s1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>${attributeXml}</saml:AttributeStatement></saml:Assertion>`;
+  return `<saml:Assertion ID="${id}" Version="${o.assertionVersion ?? "2.0"}" IssueInstant="${iso(now)}"><saml:Issuer>${o.issuer ?? TEST_IDP_ENTITY}</saml:Issuer>${o.omitSubject === true ? "" : `<saml:Subject><saml:NameID${format === null ? "" : ` Format="${format}"`}>${escapeXml(nameId)}</saml:NameID>${o.secondNameId === true ? "<saml:NameID>person-admin</saml:NameID>" : ""}${confirmation}</saml:Subject>`}${conditions}<saml:AuthnStatement AuthnInstant="${iso(now + (o.authnInstantOffsetMs ?? -5_000))}"${sessionEnd === undefined ? "" : ` SessionNotOnOrAfter="${sessionEnd}"`} SessionIndex="s1"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement>${attributeXml}${o.attributesRaw ?? ""}</saml:AttributeStatement></saml:Assertion>`;
 }
 
 function sign(xml: string, target: "Assertion" | "Response", o: ResponseOptions): string {
