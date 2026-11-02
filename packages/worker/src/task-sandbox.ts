@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { availableParallelism, totalmem } from "node:os";
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -146,7 +147,7 @@ export function taskShellFromEnvironment(environment: NodeJS.ProcessEnv = proces
 /** How a project without a devcontainer runs its commands: chosen explicitly, never by falling back from the other. */
 export type TaskShellSelection =
   | { kind: "local" }
-  | { kind: "sandbox"; docker?: DockerCli; image?: string; environment?: NodeJS.ProcessEnv };
+  | { kind: "sandbox"; docker?: DockerCli; image?: string; environment?: NodeJS.ProcessEnv; dns?: readonly string[] };
 
 /** The selection a worker makes from its environment. */
 export function taskShellSelection(environment: NodeJS.ProcessEnv = process.env): TaskShellSelection {
@@ -167,6 +168,23 @@ export interface TaskSandboxRunInput {
    * host's even in the worker's container: it reads the kernel's figure, not the container's limit. A worker started with a limit of its own does not shrink it.
    */
   hostMemoryBytes?: number;
+  /**
+   * DNS servers the sandbox resolves names with, as IP addresses (`--dns`). Absent, the sandbox uses the daemon's, as every sandbox did before. The setup agent's sandbox sets it to its own
+   * forwarder (setup-dns-watch.ts), which is how a blocked website is found without reading any command's output. At most `TASK_SANDBOX_DNS_MAX`.
+   */
+  dns?: readonly string[];
+}
+
+/** The most DNS servers a sandbox is given (a resolver uses at most three). */
+export const TASK_SANDBOX_DNS_MAX = 3;
+
+/** The `--dns` arguments for the given servers: each must be an IP address, so a string out of a repository can never become a docker option. */
+function dnsArgs(dns: readonly string[] | undefined): string[] {
+  if (dns === undefined || dns.length === 0) return [];
+  if (dns.length > TASK_SANDBOX_DNS_MAX || dns.some((server) => isIP(server) === 0)) {
+    throw agentXError("CONFIG_INVALID", `a task sandbox takes at most ${String(TASK_SANDBOX_DNS_MAX)} DNS servers, each an IP address`);
+  }
+  return dns.flatMap((server) => ["--dns", server]);
 }
 
 function memoryArgs(hostMemoryBytes: number): string[] {
@@ -182,6 +200,7 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--label", `${TASK_SANDBOX_LABEL}=${input.taskId}`,
     "--label", `${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(input.rootPath)}`,
     "--network", TASK_SANDBOX_NETWORK,
+    ...dnsArgs(input.dns),
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
     ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),
@@ -208,6 +227,8 @@ export interface TaskSandboxOptions {
   /** Default: AGENTX_SANDBOX_IMAGE in `environment`. */
   image?: string;
   environment?: NodeJS.ProcessEnv;
+  /** DNS servers for the sandbox (see `TaskSandboxRunInput.dns`). Default: none, the daemon's resolver. */
+  dns?: readonly string[];
   /** Where the sandbox reports what it does not fail on; default: one JSON line on the worker's log. */
   log?: (event: Record<string, unknown>) => void;
 }
@@ -295,7 +316,7 @@ export class TaskSandbox {
     await this.ensureNetwork();
     const maskedPaths = await hiddenWorkspaceDirectories(root);
     const result = await this.docker.run(
-      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths }),
+      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths, ...(this.options.dns === undefined ? {} : { dns: this.options.dns }) }),
       { timeoutMs: SANDBOX_START_TIMEOUT_MS },
     );
     if (result.exitCode !== 0) {
@@ -377,5 +398,6 @@ export function taskSandboxFor(selection: TaskShellSelection, input: { rootPath:
     ...(selection.docker === undefined ? {} : { docker: selection.docker }),
     ...(selection.image === undefined ? {} : { image: selection.image }),
     ...(selection.environment === undefined ? {} : { environment: selection.environment }),
+    ...(selection.dns === undefined ? {} : { dns: selection.dns }),
   });
 }
