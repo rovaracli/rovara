@@ -104,10 +104,12 @@ export async function runNightlyInvocation(
     await events.flush();
     // ED-1: the broker's commit for the default branch, in the workspace the broker prepared, and nothing else.
     if (manifest.repositories.length !== 1) throw new NightlyRefused("worker_refused", "a nightly run needs exactly one prepared repository");
-    let repository;
-    try { [repository] = setupRepositoriesOf(deps.rootPath, manifest.repositories); } catch { throw new NightlyRefused("worker_refused", "the workspace is not the default branch of one repository"); }
+    let repositories: ReturnType<typeof setupRepositoriesOf>;
+    try { repositories = setupRepositoriesOf(deps.rootPath, manifest.repositories); } catch { throw new NightlyRefused("worker_refused", "the workspace is not the default branch of one repository"); }
+    const repository = repositories[0];
+    if (repository === undefined) throw new NightlyRefused("worker_refused", "the workspace has no repository");
     // The branch moved between the broker's read of its head and the clone: the night is for the commit the broker named, so it is not run (and nothing is recorded for code it did not test).
-    if (repository!.resolvedCommit !== run.headSha) throw new NightlyRefused("branch_moved", "the workspace is not at the commit this nightly run was started for");
+    if (repository.resolvedCommit !== run.headSha) throw new NightlyRefused("branch_moved", "the workspace is not at the commit this nightly run was started for");
     if (run.environment.services.length > 0) throw new NightlyRefused("worker_refused", NIGHTLY_SERVICES_UNAVAILABLE);
     await events.append("progress", { message: "Rovara is running the project's whole test suite on the default branch for the nightly baseline. It makes no code changes." });
     const { result, coverageMap } = await runNightly({

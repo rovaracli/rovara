@@ -416,7 +416,7 @@ describe("nights that did not finish, and nights that cannot run", () => {
   it("an operation that ends in failure with no word from the worker leaves an infra row; the worker's own word stands; a stop and a success leave none", async () => {
     const task = { taskId: TASK, purpose: "nightly_run" as const, project: PROJECT, orgId: ORG, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD } };
     const h = await harness();
-    const apply = async (items: ReturnType<typeof nightlyEndItems>) => { for (const item of items) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h.db.send(new UpdateCommand(item.Update as never)); };
+    const apply = async (items: ReturnType<typeof nightlyEndItems>) => { for (const item of items) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h.db.send(new UpdateCommand(item.Update)); };
     await apply(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "CANCELLED" }, new Date(T0).toISOString()));
     await apply(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, new Date(T0).toISOString()));
     expect(await rowsOf(h)).toEqual([]);
@@ -428,7 +428,7 @@ describe("nights that did not finish, and nights that cannot run", () => {
     const h2 = await harness();
     await h2.fireNow();
     await record(h2, failedBody("branch_moved") as never);
-    for (const item of nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "FAILED" }, new Date(T0).toISOString())) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h2.db.send(new UpdateCommand(item.Update as never));
+    for (const item of nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "FAILED" }, new Date(T0).toISOString())) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h2.db.send(new UpdateCommand(item.Update));
     expect((await rowsOf(h2))[0]).toMatchObject({ reason: "branch_moved" });
   });
 

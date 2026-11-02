@@ -507,7 +507,7 @@ export async function taskOperationParts(
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
     ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
   const nightlyRun = isNightlyOperation(task, input.workflowMode) && task?.nightlyRun !== undefined
-    ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task!.nightlyRun!) : undefined;
+    ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task.nightlyRun) : undefined;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "task",
