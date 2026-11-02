@@ -79,6 +79,7 @@ import {
 import { testEnvironmentForStart } from "../../test-env/usable.js";
 import { loadOwnedTask, refuse } from "./access.js";
 import { openTasksText, taskView } from "./task-view.js";
+import { withTestingNotice } from "./health-notice.js";
 import { runResultOf } from "./task-index.js";
 import { releaseFinishedTasksOf } from "./release.js";
 import { assertRepositoryHostsKnown } from "../../wiring/enterprise-identity.js";
@@ -647,7 +648,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     throw agentXError("WORKSPACE_BUSY", "AgentX could not start the task just now; try again with the same request_id");
   }
   return {
-    task: await taskView(deps, task, { events: 0, details: false }),
+    task: await withTestingNotice(deps, task, await taskView(deps, task, { events: 0, details: false })),
     ...(run === undefined || prepared === undefined ? {} : { run: { taskId, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused } }),
   };
 }

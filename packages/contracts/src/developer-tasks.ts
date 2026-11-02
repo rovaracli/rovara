@@ -149,6 +149,11 @@ export const DeveloperTaskViewSchema = z.object({
   sessionId: SessionIdSchema.optional(),
   sessionUrl: z.string().url().optional(),
   /**
+   * Setup and test health (SH28, switch `nh`): present on a task start and a task read ONLY while the project's setup needs repair. The task still starts and runs; this says its testing may be blocked.
+   * Fixed words from the broker. Absent with the switch off, and for every project that is not in that state.
+   */
+  testingNotice: z.object({ state: z.literal("needs_repair"), text: z.string().min(1).max(200) }).strict().optional(),
+  /**
    * Plan 3, Task 35b: a plan blocked on its run limit: the limit it waits for, the request that asks for it while one is open, and whether its owner may ask
    * again (`POST /v1/app/tasks/{id}/run-limit-request`, once the last request was denied or ran out, not while its start is pending, and at most once per ten
    * minutes: `askAgainAfter` is when). Absent unless the plan is blocked on its run limit.

@@ -65,6 +65,8 @@ export interface AutofixDependencies {
   ownerCancelledChecks(task: DeveloperTaskRecord): Promise<boolean>;
   /** The text at an object key (a plan's stored self-check record), or undefined. */
   readArtifactText(objectKey: string): Promise<string | undefined>;
+  /** Setup and test health (SH28, only while `nh` is on): told when Rovara gives up on a task and the faults are the environment's, so the project's count of tasks blocked by the environment goes up. Advisory: a failure is logged and changes nothing. */
+  blockedByEnvironment?(task: DeveloperTaskRecord, codes: readonly AutoFixCode[]): Promise<void>;
   /** AUTOREQUALIFY: stops the task's idle worker so the retry runs on a fresh one (used when the block is a kernel mismatch between worker and test machine). */
   recycleWorker?(task: DeveloperTaskRecord): Promise<unknown>;
   now(): number;
@@ -200,6 +202,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
       ...(entries.length === 0 ? {} : { groups: entries.slice(0, AUTOFIX_ASK_GROUPS_MAX).map(([id, original]) => ({ id, original })), groupCount: entries.length }),
       at: new Date(deps.now()).toISOString(),
     });
+    if (deps.blockedByEnvironment !== undefined) await deps.blockedByEnvironment(task, askCodes).catch((error: unknown) => deps.log({ event: "autofix.health_note_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     log("ASK", { reason, codes: [...askCodes] });
     return "ASKED";
   };

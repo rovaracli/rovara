@@ -177,7 +177,7 @@ describe("the event catalog", () => {
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // Proof and evidence
-      "project.test_env_changed", "evidence.downloaded",
+      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -240,6 +240,7 @@ describe("the event catalog", () => {
     "rule.withdrawn": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "cause"], sample: { suggestionId: "sug_1", stage: "build", cause: "forgotten" } },
     "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
+    "project.test_health_setting_changed": { target: { kind: "project", name: "web" }, keys: ["setting", "enabled"], sample: { setting: "propose_fix_task", enabled: true } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
   } as const;

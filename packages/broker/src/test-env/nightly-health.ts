@@ -65,7 +65,8 @@ export type NightlyUnclearCause = (typeof NIGHTLY_UNCLEAR_CAUSES)[number];
 export type NightlyHealth =
   | { class: "passed" }
   | { class: "environment"; cause: NightlyEnvironmentCause }
-  | { class: "tests" }
+  /** `setupProved`: the run has the same evidence a passing night needs that the SETUP works (a check ran, the code was put in place, both test steps ran and were not skipped). Without it a night with failing tests says nothing about a repair state. */
+  | { class: "tests"; setupProved: boolean }
   | { class: "unclear"; cause: NightlyUnclearCause };
 
 const STEP_CAUSE: Readonly<Record<(typeof NIGHTLY_HEALTH_SETUP_STEPS)[number], NightlyEnvironmentCause>> = {
@@ -94,6 +95,9 @@ export function classifyNightlyHealth(input: unknown): NightlyHealth {
   // 3. every failure is a collection or import error and it touches more than a fifth of the tests
   if (tests.errors > 0 && tests.failures === 0 && tests.errors > tests.total * NIGHTLY_ENV_ERROR_SHARE) return { class: "environment", cause: "collection_errors" };
 
+  // The evidence that the setup works, shared by "passed" and by "tests": a check was made, the code was put in place by at least one of pull, update, setup, build, and both test steps ran.
+  const codeInPlace = (["pull", "update", "setup", "build"] as const).some((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
+  const testStepsRan = NIGHTLY_HEALTH_TEST_STEPS.every((step) => steps.some((entry) => entry.step === step && entry.status !== "skipped"));
   // A test step that failed while the counts show no failure cannot be read either way.
   const testStepFailed = steps.some((entry) => entry.status === "failed" && (NIGHTLY_HEALTH_TEST_STEPS as readonly string[]).includes(entry.step));
   if (tests.failures + tests.errors === 0) {
@@ -102,13 +106,12 @@ export function classifyNightlyHealth(input: unknown): NightlyHealth {
     if (tests.total - tests.skipped === 0) return { class: "environment", cause: "no_tests_collected" };
     // "Passed" needs the whole run on record: at least one check, a passing test, no setup step failed (checked above), and both test steps present and passed.
     const testStepsPassed = NIGHTLY_HEALTH_TEST_STEPS.every((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
-    // Skipped setup steps are fine one by one, but at least one of the steps that put the code in place (pull, update, setup, build) must have passed.
-    const codeInPlace = (["pull", "update", "setup", "build"] as const).some((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
+    // Skipped setup steps are fine one by one, but at least one of the steps that put the code in place (pull, update, setup, build) must have passed (`codeInPlace`, above).
     return checks.length > 0 && tests.passed > 0 && testStepsPassed && codeInPlace ? { class: "passed" } : { class: "unclear", cause: "incomplete_run" };
   }
 
   // 4. real assertion failures next to tests that passed
-  if (tests.failures > 0 && tests.passed > 0) return { class: "tests" };
+  if (tests.failures > 0 && tests.passed > 0) return { class: "tests", setupProved: checks.length > 0 && codeInPlace && testStepsRan && tests.errors === 0 };
 
   // 5. anything else
   if (tests.failures > 0) return { class: "unclear", cause: "all_tests_failed" };

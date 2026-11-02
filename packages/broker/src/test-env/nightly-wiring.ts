@@ -17,6 +17,7 @@ import { scheduleSettingsFromEnvironment, type SchedulerPort } from "../triggers
 import type { TestEnvRouteHooks } from "../aws/developer-routes/test-environment.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { deleteNightlySchedule, handleNightlyFire, putNightlySchedule, type NightlyFireOutcome, type NightlyRunPort, type NightlyScheduleDependencies } from "./nightly.js";
+import { setupProvedHook } from "./health-wiring.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
 /** The scheduler's invocation of a nightly fire: an event of its own, which has no request context (a request through the API always has one, so its body can never pass for this). */
@@ -31,16 +32,27 @@ export function nightlyScheduleDependencies(env: NodeJS.ProcessEnv = process.env
   return { client: client ?? new SchedulerClient({}), settings };
 }
 
-/** After an approval: make the project's nightly schedule match the approved environment. */
-export function nightlyHooks(deps: { scheduling?: NightlyScheduleDependencies | undefined } = {}, env: NodeJS.ProcessEnv = process.env): TestEnvRouteHooks {
+/** After an approval: make the project's nightly schedule match the approved environment, and (SH28, only while `nh` is on) end a repair state: an approved revision is a proved one. */
+export function nightlyHooks(deps: { scheduling?: NightlyScheduleDependencies | undefined; /** The store the project health is kept in. */ health?: TestEnvDeps | undefined } = {}, env: NodeJS.ProcessEnv = process.env): TestEnvRouteHooks {
   return {
-    async onApproved(orgId: OrgId, project: string, approved: TestEnvironment) {
+    async onApproved(orgId: OrgId, project: string, approved: TestEnvironment, approval?: { replayed: boolean }) {
       if (!testEnvironmentEnabled(env)) return;
+      // Neither step keeps the other from running; the first failure is thrown after both (the route logs it and never undoes the approval).
+      let failure: Error | undefined;
+      // A replay of an approval that already stood proves nothing new: it must not end a repair state that came after it.
+      const proved = deps.health === undefined || approval?.replayed === true ? undefined : setupProvedHook(deps.health, env);
+      if (proved !== undefined) {
+        try { await proved(orgId, project); } catch (error) { failure = error instanceof Error ? error : new Error("health update failed"); }
+      }
       const scheduling = deps.scheduling ?? nightlyScheduleDependencies(env);
-      if (scheduling === undefined) return;
-      const { nightly } = approved.environment;
-      if (nightly.enabled) await putNightlySchedule(scheduling, { orgId, project, cronUtc: nightly.cronUtc, enabled: true });
-      else await deleteNightlySchedule(scheduling, { orgId, project });
+      if (scheduling !== undefined) {
+        const { nightly } = approved.environment;
+        try {
+          if (nightly.enabled) await putNightlySchedule(scheduling, { orgId, project, cronUtc: nightly.cronUtc, enabled: true });
+          else await deleteNightlySchedule(scheduling, { orgId, project });
+        } catch (error) { failure = failure ?? (error instanceof Error ? error : new Error("schedule update failed")); }
+      }
+      if (failure !== undefined) throw failure;
     },
   };
 }

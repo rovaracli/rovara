@@ -14,6 +14,43 @@ export const NIGHTLY_SOURCE = "agentx.test-env-nightly";
 export const NightlyFireSchema = z.object({ source: z.literal(NIGHTLY_SOURCE), orgId: z.string().regex(/^org_[0-9a-z]{20}$/), project: z.string().min(1).max(200), scheduledAt: z.string().datetime({ offset: true }) }).strict();
 export type NightlyFire = z.infer<typeof NightlyFireSchema>;
 
+// ---- the step words (SH27, design setup-test-health 6.1): what the run says about its own steps, so the broker can tell a broken environment from failing tests. Fixed words and counts only.
+
+/** The steps of a nightly run, in the Prove step words plus `pull` and `update`. The first seven are about the setup; `smoke` and `full_suite` are tests. */
+export const NIGHTLY_STEP_WORDS = ["pull", "update", "setup", "build", "boot", "mocks", "preprod_probe", "smoke", "full_suite"] as const;
+export type NightlyStepWord = (typeof NIGHTLY_STEP_WORDS)[number];
+export const NIGHTLY_STEP_STATUSES = ["passed", "failed", "skipped"] as const;
+/** Where the night's code and tools came from: a fresh setup, or the project's saved image (which the night then also checks). */
+export const NIGHTLY_RAN_FROM = ["fresh", "saved_image"] as const;
+export type NightlyRanFrom = (typeof NIGHTLY_RAN_FROM)[number];
+const HealthCount = z.number().int().min(0).max(100_000_000);
+
+/** What a run reports about itself for the health check. Strict and bounded; the broker decides what it means (`classifyNightlyHealth`), the worker's own words about it are never used. */
+export const NightlyHealthReportSchema = z
+  .object({
+    steps: z.array(z.object({ step: z.enum(NIGHTLY_STEP_WORDS), status: z.enum(NIGHTLY_STEP_STATUSES) }).strict()).max(NIGHTLY_STEP_WORDS.length),
+    /** One entry per check the run was to make. */
+    checks: z
+      .array(z.object({ runsTests: z.boolean(), started: z.boolean(), timedOut: z.boolean(), reportApproved: z.boolean(), reportWritten: z.boolean(), testsCollected: HealthCount }).strict())
+      .max(64),
+    /** `failures` are assertion failures, `errors` are collection or import errors. */
+    tests: z.object({ total: HealthCount, passed: HealthCount, failures: HealthCount, errors: HealthCount, skipped: HealthCount }).strict(),
+    /** Left out by a run that does not say (an older worker): read as fresh. */
+    ranFrom: z.enum(NIGHTLY_RAN_FROM).optional(),
+  })
+  .strict();
+export type NightlyHealthReport = z.infer<typeof NightlyHealthReportSchema>;
+
+/** What the broker keeps of the classification, beside the baseline (never inside it, so an older broker still reads the baseline). `cause` is one of the fixed cause words of the classifier. */
+export const StoredNightlyHealthSchema = z
+  .object({
+    class: z.enum(["passed", "environment", "tests", "unclear"]), cause: z.string().regex(/^[a-z_]{1,40}$/u).optional(), ranFrom: z.enum(NIGHTLY_RAN_FROM),
+    /** Only with class `tests`: the night had the evidence that the setup works (see `classifyNightlyHealth`). Absent reads as false. */
+    setupProved: z.boolean().optional(),
+  })
+  .strict();
+export type StoredNightlyHealth = z.infer<typeof StoredNightlyHealthSchema>;
+
 export const NightlyResultSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -33,6 +70,8 @@ export const NightlyResultSchema = z
     /** The digest of the coverage map the run stored, when it recorded one (coverage contexts on). */
     coverageMapRef: Sha256.optional(),
     slowest: z.array(z.object({ id: TestId, durationMs: z.number().int().min(0) }).strict()).max(NIGHTLY_SLOW_MAX),
+    /** The step words (SH27). Optional: a result from before them parses exactly as it did, and carries no health. */
+    health: NightlyHealthReportSchema.optional(),
   })
   .strict()
   .superRefine((result, context) => {
