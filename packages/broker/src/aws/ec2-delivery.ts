@@ -17,6 +17,7 @@ import {
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
   SETUP_AGENT_FEATURE,
+  NIGHTLY_RUN_FEATURE,
   SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_COVERAGE_PATH_FEATURE,
@@ -418,6 +419,10 @@ async function forWorkerFeatures(
   }
   // SH14: a setup run that runs commands is never sent to a worker that does not list it (an older worker fails the mode at its own parse). The field is never dropped.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_AGENT" && !features.includes(SETUP_AGENT_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // NH-1: a nightly run is never sent to a worker that does not list it (an older worker would run the verification mode with no checks and say nothing of the night). The field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.nightlyRun !== undefined && !features.includes(NIGHTLY_RUN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.

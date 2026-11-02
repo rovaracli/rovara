@@ -306,6 +306,12 @@ export async function readApprovedTestEnvironment(deps: TestEnvDeps, orgId: OrgI
   return parsed.data;
 }
 
+/** Who approved the environment revision (NH-1: the person a nightly run is started as; a task has a member for its owner). Undefined when there is no such revision or it names nobody. */
+export async function readApprovedBy(deps: TestEnvDeps, orgId: OrgId, project: string, revision: number): Promise<string | undefined> {
+  const item = await read(deps, revisionKey(orgId, project, revision));
+  return typeof item?.approvedBy === "string" && item.approvedBy !== "" ? item.approvedBy : undefined;
+}
+
 export interface LessSafeApproval {
   /** The second person, as the confirmation page authenticated them. Their role and whether a sole-owner exception applies are read from the company's records, not from here. */
   approverId: string;

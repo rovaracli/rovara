@@ -646,7 +646,7 @@ function startRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   };
 }
 
-function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
+export function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
   const routeDependencies = startRouteDependencies(dependencies, tasks, agents);
   return routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
 }

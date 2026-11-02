@@ -22,7 +22,8 @@ describe("the worker side is reachable only through the evidence hook", () => {
     expect(importersOf("sarif")).toEqual(["verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     expect(importersOf("sarif-baseline")).toEqual(["verification/evidence-raw.ts"]);
     expect(importersOf("migration-check")).toEqual(["verification/evidence-raw.ts"]);
-    expect(importersOf("report-file")).toEqual(["verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
+    // (NH-1: the nightly run reads coverage.py's contexts file through the same contained reader; it is not the evidence path.)
+    expect(importersOf("report-file")).toEqual(["nightly-invocation.ts", "verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     // EV-2 / S-2: the Go and JaCoCo readers take text (the file comes through readContainedReport in readChangedCoverage) and open no file; the join places their files and is reached only from the evidence hook.
     expect(importersOf("line-coverage-join")).toEqual(["verification/evidence-raw.ts"]);
     expect(readFileSync(join(WORKER, "verification/changed-coverage.ts"), "utf8")).not.toMatch(/from "node:fs|from "fs/u);

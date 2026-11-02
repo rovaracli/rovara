@@ -39,6 +39,7 @@ import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
 import { setupAgentEndItems } from "../../rovara-code/setup-agent.js";
+import { nightlyEndItems } from "../../test-env/nightly-run.js";
 import { testEnvDraftEndItems } from "../../test-env/draft.js";
 import { diagnosisEndItems } from "../../diagnosis/deep.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
@@ -489,6 +490,8 @@ export async function completedWorkflowItems(
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return setupAgentEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }
+  // NH-1: a nightly run reports through its own action, so its end only gives back its workspace.
+  if (task?.purpose === "nightly_run") return nightlyEndItems(dependencies.tableName, task, operation, { status: terminalStatus }, now);
   // Live interaction F3: a deep diagnosis's result is its diagnosis (or none), written with the result and unable to fail it.
   if (task?.purpose === "diagnosis") return diagnosisEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError }, now);
   if (task?.workflow === undefined) return [];

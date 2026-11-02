@@ -8,6 +8,10 @@ import { TestProofSchema, type CheckEntry, type ProjectCommand } from "../../pac
 import { CheckNotRunError, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { AgentFilesRestoreError, gitOriginalCode, ORIGINAL_CODE_REF } from "../../packages/worker/src/verification/original-code.js";
 import { runTestProof } from "../../packages/worker/src/verification/test-proof.js";
+import { withTestIds } from "../../packages/worker/src/verification/test-ids.js";
+import { evidenceTests, parseTestReport } from "../../packages/worker/src/verification/test-report.js";
+import { provenTestNames } from "../../packages/broker/src/rovara-code/proof-section.js";
+import { testsLine } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { FAKE_TEST_COMMAND, fakeTestRunner, git, passedEntry, repositoryWithCandidate } from "../support/test-proof-fixture.js";
 
 const SOURCE_1 = "export const value = 1;\n";
@@ -149,8 +153,19 @@ describe("TESTPROOF", () => {
     await runner.runProjectCommand(command, new AbortController().signal);
     const reportOfNewRun = await readFile(join(made.directory, "report.json"), "utf8");
     const proof = await runTestProof(proofOptions(made, { runners: runner, plan: { source: "project", readiness: [command], projectBefore: ["unknown"] } }));
-    expect(proof.items).toEqual([expect.objectContaining({ checkId: "readiness:0", granularity: "test", test: "bug is fixed", verdict: "proves_change", reason: "assertion_failed_on_old" })]);
+    // The item names the test by its ID (file::name), the string the evidence pack and the nightly use for the same test.
+    expect(proof.items).toEqual([expect.objectContaining({ checkId: "readiness:0", granularity: "test", test: "src/bug.test.ts::bug is fixed", verdict: "proves_change", reason: "assertion_failed_on_old" })]);
     expect(await readFile(join(made.directory, "report.json"), "utf8")).toBe(reportOfNewRun);
+
+    // F1 (NH-1 re-check): the pull request's Tests line compares the evidence pack's new-test ids with the proof's ids: a new test that fails on the original code reads "1 fail on the original code".
+    const reported = parseTestReport(reportOfNewRun, "json")!;
+    const evidence = evidenceTests(await withTestIds(reported, { root: made.directory, cwd: command.cwd }), { changedTestPaths: ["src/bug.test.ts"] });
+    expect(evidence.newTests).toEqual(["src/bug.test.ts::bug is fixed"]);
+    const pack = { checks: [{ label: "unit", kind: "test", after: "passed", tests: evidence }], selection: { selected: 2, total: 2, method: "full" } } as never;
+    const proven = provenTestNames(proof, DIGEST);
+    expect(testsLine(pack, proven)).toContain("1 new, 1 fail on the original code");
+    // Bare names never matched: a proof that names the test by its bare name proves nothing here.
+    expect(testsLine(pack, new Set(["bug is fixed"]))).toContain("1 new, 0 fail on the original code");
   });
 
   it("does not run a check on the original code that did not pass on the new code", async () => {

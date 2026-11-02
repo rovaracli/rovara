@@ -1,0 +1,11 @@
+tests/pkg/test_deep.py::test_in_package
+tests/test_cart.py::test_add
+tests/test_cart.py::test_total_fails
+tests/test_cart.py::test_skipped
+tests/test_cart.py::test_price[1-2]
+tests/test_cart.py::test_price[3-4]
+tests/test_cart.py::test_label_with_space[a b]
+tests/test_cart.py::test_label_with_space_fails[x y]
+tests/test_cart_rules.py::TestRules::test_discount
+tests/test_cart_rules.py::TestRules::test_discount_fails
+tests/test_cart_rules.py::TestOther::TestNested::test_deep

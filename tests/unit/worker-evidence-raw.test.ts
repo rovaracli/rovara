@@ -31,7 +31,7 @@ describe("the test report a check already writes", () => {
     expect(raw?.candidateDigest).toBe(DIGEST);
     expect(raw?.checks).toHaveLength(1);
     expect(raw?.checks[0]).toMatchObject({ checkId: "readiness:0", tests: { total: 3, passed: 2, skipped: 1, failed: 0, errored: 0 } });
-    expect(raw?.checks[0]?.tests?.names.map((name) => name.name)).toContain("test_no_region");
+    expect(raw?.checks[0]?.tests?.names.map((name) => name.name)).toContain("tests/test_match.py::test_no_region");
     expect(raw?.selection).toEqual({ method: "full", selected: 3, total: 3 });
     expect(commands[0]?.args).toEqual(["--junitxml=report.xml"]);
     expect(EvidenceRawSchema.safeParse(raw).success).toBe(true);
