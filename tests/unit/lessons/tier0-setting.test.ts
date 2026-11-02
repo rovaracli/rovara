@@ -369,14 +369,36 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     expect(audit.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
     expect(audit.settings.writes.map((x) => x.value)).toEqual(["auto", "one"]);
   });
-  it("if the exception cannot be recorded, nothing is claimed or written (fails closed, before the write)", async () => {
+  it("if the exception cannot be recorded, the loosening is taken back and the change closed (the record is written after the write, so an outage undoes it)", async () => {
     const w = solo();
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
     const emit = w.audit.emit.bind(w.audit);
     w.audit.emit = async (event) => { if (event.action === "lesson.sole_owner_exception") throw new Error("audit down"); return emit(event); };
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
-    expect(w.settings.writes).toEqual([]);
-    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    expect(w.settings.writes.map((x) => x.value)).toEqual(["auto", "one"]);
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(w.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(w.audit.actions()).not.toContain("lesson.tier0_setting_changed");
+  });
+  it("the sole-owner exception is recorded only after the write took effect, then the change; a fenced or stale refusal leaves no exception record", async () => {
+    const ok = solo();
+    await requestTier0Change(ok.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    let writtenWhenRecorded: number | undefined;
+    const emit = ok.audit.emit.bind(ok.audit);
+    ok.audit.emit = async (event) => { if (event.action === "lesson.sole_owner_exception") writtenWhenRecorded = ok.settings.writes.length; return emit(event); };
+    expect(await approveTier0Change(ok.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "auto" });
+    expect(writtenWhenRecorded).toBe(1);
+    expect(ok.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.sole_owner_exception", "lesson.tier0_setting_changed"]);
+    const fenced = solo();
+    await requestTier0Change(fenced.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    fenced.settings.beforeWrite = () => { fenced.group.membershipVersion = 4; };
+    expect(await approveTier0Change(fenced.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "membership_changed_retry" });
+    expect(fenced.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.tier0_setting_refused_retryable"]);
+    const moved = solo();
+    await requestTier0Change(moved.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    moved.settings.beforeWrite = () => moved.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await approveTier0Change(moved.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    expect(moved.audit.actions()).toEqual(["lesson.tier0_setting_proposed"]);
   });
   it("a proposal made while another eligible person existed is not turned into a self-approval when they leave; cancel and propose again works", async () => {
     const w = world({ eligible: ["owner", "ann"], owners: ["owner"] });
