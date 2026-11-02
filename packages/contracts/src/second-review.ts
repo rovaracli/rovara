@@ -349,10 +349,11 @@ export const SecondReviewResultSchema = z.object({
 export type SecondReviewResult = z.infer<typeof SecondReviewResultSchema>;
 
 /**
- * The line that says which model reviewed and why ("Reviewed by gpt-5.5 on openrouter (company choice)"). The model's name is a report string: the caller makes it inert/plain before showing it. The provider is
+ * The line that says which model reviewed and why ("Reviewed by gpt-5.5 on openrouter (company choice)", or "Using default: gpt-5.5 (change)" while nobody has chosen). The model's name is a report string: the caller makes it inert/plain before showing it. The provider is
  * named as it is recorded (a Bedrock model reads "amazon-bedrock").
  */
-export function secondReviewedByLine(input: { provider: string; modelId: string; choice: SecondReviewChoice | undefined }): string {
-  const why = input.choice === "company" ? " (company choice)" : input.choice === "default" ? " (default: strongest available)" : "";
-  return `Reviewed by ${input.modelId} on ${input.provider}${why}`;
+export function secondReviewedByLine(input: { provider: string; modelId: string; choice: SecondReviewChoice | undefined; defaultChanged?: boolean | undefined }): string {
+  // Nobody chose: the default is shown with the way to change it. The company chose: its choice is named.
+  if (input.choice === "default") return `Using default: ${input.modelId} (${input.defaultChanged === true ? "previous no longer fits" : "change"})`;
+  return `Reviewed by ${input.modelId} on ${input.provider}${input.choice === "company" ? " (company choice)" : ""}`;
 }

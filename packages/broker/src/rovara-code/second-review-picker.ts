@@ -4,10 +4,10 @@
 //
 // There is no hidden driving-test gate: any eligible model may run in shadow straight away. Running in `on` (blocking) is a separate step that needs a track record (see second-review.ts, `verified`).
 import {
-  canonicalModelName, modelCompany, secondReviewModelKey, type ModelCompany, type ModelIdentifier, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds,
+  canonicalModelName, modelCompany, secondReviewModelKey, secondReviewedByLine, type ModelCompany, type ModelIdentifier, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds,
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
-import { candidatesOf, criticCapabilityTier, type CriticModelLimits } from "./critic.js";
+import { candidatesOf, criticCapabilityTier, rankCriticModels, type CriticModelLimits } from "./critic.js";
 
 /** A typical review's size: one place for the cost estimate shown beside each model (tokens in and out). No prompt caching is assumed. */
 export const SECOND_REVIEW_TYPICAL_REVIEW_TOKENS = { input: 60_000, output: 4_000 } as const;
@@ -76,7 +76,10 @@ export function secondReviewTrackRecord(verdict: Pick<SecondReviewVerdict, "shad
  */
 export function secondReviewPicker(input: PickerInput): { entries: PickerEntry[]; suggested: PickerEntry[] } {
   const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.forbidden, unusable: input.unusable };
-  const usable = candidatesOf(limits, input.sources);
+  // Every route the company can use, each exactly as the source lists it (a `:free` variant is its own entry, not the same model as the paid one): allowed by the limits, strongest first.
+  const exact = new Map<string, ModelIdentifier>();
+  for (const model of input.sources.length > 0 ? input.sources : input.project.approved ?? []) exact.set(secondReviewModelKey(model), model);
+  const usable = rankCriticModels([...exact.values()].filter((model) => candidatesOf(limits, [model]).length > 0));
   const entries: PickerEntry[] = usable.map((model) => {
     const company = modelCompany(model);
     const eligible = company !== "other" && input.against.length > 0 && input.against.every((other) => differentCompany(model, other));
@@ -108,8 +111,5 @@ export function secondReviewPicker(input: PickerInput): { entries: PickerEntry[]
 /** Whether a canonical name is the same model as another (used to find a named model in the list regardless of route). */
 export const sameCanonical = (left: ModelIdentifier, right: ModelIdentifier): boolean => canonicalModelName(left) === canonicalModelName(right);
 
-/** The line the task page and the preview show while nobody has chosen. */
-export const defaultModelLine = (model: SecondReviewModelRef, previousNoLongerFits: boolean): string =>
-  `Using default: ${model.modelId} (${previousNoLongerFits ? "previous no longer fits" : "change"})`;
-
-export type { SecondReviewMode };
+/** The line the task page and the preview show while nobody has chosen: "Using default: <model> (change)", or "(previous no longer fits)" when the earlier default dropped out. */
+export const defaultModelLine = (model: SecondReviewModelRef, previousNoLongerFits: boolean): string => secondReviewedByLine({ ...model, choice: "default", defaultChanged: previousNoLongerFits });

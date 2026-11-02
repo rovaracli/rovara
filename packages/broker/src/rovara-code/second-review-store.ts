@@ -1,7 +1,7 @@
 // Second review by another AI company (SH34): what the broker keeps on the TASK RECORD about it, and the writes that keep it. Nothing here touches the workflow snapshot: a second review is an ADDED opinion, so
 // its operation's result never reaches `submitWorkflowReview`, `reviewCleared`, the latest-review-for-candidate lookup, the pull request's Reviews section or `requireCrossCompanyReview`. It lives beside the workflow
 // (as `reviewSameModel` does), keyed by the candidate it is about.
-import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, blockingFindings, workflowFindingProblem, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type WorkflowSendBackProblem } from "@agentx/contracts";
+import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, workflowFindingProblem, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type WorkflowSendBackProblem } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
 import { SECOND_REVIEW_OPERATION, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
@@ -120,7 +120,9 @@ export function secondReviewTaskView(task: { secondOpinion?: unknown; secondRevi
   const kind = opinion.mode === "on" ? "Second review" : "Second opinion (not blocking)";
   return {
     lines: [`${kind} (${name}): ${String(blocking.length)} ${blocking.length === 1 ? "finding" : "findings"}${opinion.downgraded === undefined ? "" : ", shown as an opinion only because this model has not yet passed the replay check"}`,
-      ...blocking.slice(0, 5).map((finding) => `- ${plainLine(finding.text, 300)}`)],
+      ...blocking.slice(0, 5).map((finding) => `- ${plainLine(finding.text, 300)}`),
+      // Which model reviewed and why (the default says how to change it).
+      plainLine(secondReviewedByLine({ provider: report.provider, modelId: report.version, choice: opinion.choice, defaultChanged: opinion.defaultChanged }), 160)],
     needsAcknowledgement: false, acknowledged: false,
   };
 }
