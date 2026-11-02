@@ -261,6 +261,8 @@ export async function recordRunCost(
   input: { path: EstimatePath; endedAt: string },
 ): Promise<"recorded" | "already_recorded" | "skipped"> {
   if (task.orgId === undefined) return "skipped";
+  // A task with a purpose (setup draft, diagnosis, setup run) never feeds the estimates, whoever calls this (SH-2).
+  if (task.purpose !== undefined) return "skipped";
   if (task.runCostRecordedAt !== undefined) return "already_recorded";
   const costUsd = await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;

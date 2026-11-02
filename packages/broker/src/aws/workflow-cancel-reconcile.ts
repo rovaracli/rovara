@@ -16,7 +16,7 @@ import { continueRedirectAfterStop } from "../agent-sessions/redirect-hook.js";
 
 type WorkflowMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
 /** A setup draft (Rovara Code, Task 10) is no step of a workflow: nothing here ever blocks a step for it. */
-type RunMode = WorkflowMode | "SETUP_DRAFT" | "SPEC_WRITE";
+type RunMode = WorkflowMode | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE";
 type Client = Pick<DynamoDBDocumentClient, "send">;
 
 /** The workflow stage a run of each mode occupies while it runs. */
@@ -62,7 +62,7 @@ export function stopBlocksWorkflowStep(task: StoppedRunTask, run: StoppedRunOper
 function runsRunningStep(task: StoppedRunTask, run: StoppedRunOperation): boolean {
   const workflow = task.workflow;
   const mode = run.workflowMode;
-  if (workflow === undefined || mode === undefined || mode === "SETUP_DRAFT" || mode === "SPEC_WRITE" || run.kind !== "task") return false;
+  if (workflow === undefined || mode === undefined || mode === "SETUP_DRAFT" || mode === "SETUP_AGENT" || mode === "SPEC_WRITE" || run.kind !== "task") return false;
   if (task.closedAt !== undefined || task.workspaceId !== run.workspaceId) return false;
   if (workflow.state !== "RUNNING" || workflow.stage !== WORKFLOW_STEP_STAGE[mode]) return false;
   if (run.workflowDependencies !== undefined) return false;
@@ -86,7 +86,7 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
     if (task === undefined || !parsed.success) return false;
     const workflow = parsed.data;
     const mode = run.workflowMode;
-    if (mode === undefined || mode === "SETUP_DRAFT" || mode === "SPEC_WRITE" || !runsRunningStep({ closedAt: task.closedAt, workspaceId: task.workspaceId, workflow }, run)) return false;
+    if (mode === undefined || mode === "SETUP_DRAFT" || mode === "SETUP_AGENT" || mode === "SPEC_WRITE" || !runsRunningStep({ closedAt: task.closedAt, workspaceId: task.workspaceId, workflow }, run)) return false;
     if (mode === "FEEDBACK_REVIEW") {
       const binding = run.workflowFeedbackReview;
       if (binding === undefined || workflow.revision !== binding.workflowRevision || workflow.taskId !== binding.taskId

@@ -15,6 +15,7 @@ import {
   E2E_REPLAY_CHECKS_FEATURE,
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
+  SETUP_AGENT_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
@@ -387,6 +388,10 @@ async function forWorkerFeatures(
   // Rovara proposes a project's setup (Task 10; version 2 with citations, meta repo lane B): an older worker would fail the mode at its own parse, or answer a draft this broker
   // no longer reads, so the mode is never sent to it.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // SH14: a setup run that runs commands is never sent to a worker that does not list it (an older worker fails the mode at its own parse). The field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_AGENT" && !features.includes(SETUP_AGENT_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.

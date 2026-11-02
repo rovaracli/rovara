@@ -650,7 +650,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Lane E: the project's MCP context sources, for an Understand, Plan, Plan-check or Review stage; authorized by the operation's `context-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/context-tools") return json(await handleContextTools(dependencies, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
-      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback)$/.exec(
+      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent)$/.exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {

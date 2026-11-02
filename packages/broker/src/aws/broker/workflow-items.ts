@@ -37,6 +37,7 @@ import { prHeadItems } from "../../rovara-code/tracking-events.js";
 import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
+import { setupAgentEndItems } from "../../rovara-code/setup-agent.js";
 import { testEnvDraftEndItems } from "../../test-env/draft.js";
 import { diagnosisEndItems } from "../../diagnosis/deep.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
@@ -477,6 +478,12 @@ export async function completedWorkflowItems(
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return [...setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now),
       ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now)];
+  }
+  // SH14: a setup run's result is its proposal and summary (or the fixed reason there is none), written with the result; a person's stop, if one was recorded, is passed so the end can tell it from a system cancel.
+  if (task?.purpose === "setup_agent") {
+    const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
+      ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
+    return setupAgentEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }
   // Live interaction F3: a deep diagnosis's result is its diagnosis (or none), written with the result and unable to fail it.
   if (task?.purpose === "diagnosis") return diagnosisEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError }, now);

@@ -235,6 +235,8 @@ export interface DeveloperTaskRecord {
    */
   /** Setup agent: who pressed Stop, written before the cancel (rovara-code/setup-agent.ts). A cancelled run is a person's stop only when this is here; a system cancel has none. */
   setupAgentStop?: { by: string; at: string };
+  /** SH14: the limits a setup run started with (fixed at start; the worker is sent these, read again through `effectiveSetupAgentLimits`). */
+  setupAgentLimits?: { commands: number; sameStepTries: number; wallClockMin: number; budgetCents: number; hostAsks: number };
   /** SH13: how far a running setup run has got, for the Live wall tile: the highest journal position stored and when. Fixed words and numbers only. */
   setupAgentProgress?: { commands: number; at: string };
   setupAgentResult?: { status: "ready"; proposal: SetupProposal; summary: SetupRunSummary; stop: SetupRunEndWord } | { status: "failed"; stop: SetupRunEndWord; failure: string; proposal?: SetupProposal; summary?: SetupRunSummary };
@@ -326,7 +328,7 @@ export interface DeveloperTaskPointerRecord {
   /** The first instructions, until the prepare's result queues them (R3). */
   pendingPrompt?: string;
   /** The first plan-only operation is selected by the broker, never by the request. */
-  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT";
+  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT" | "SETUP_AGENT";
   /** Set when the task was cancelled before its instructions ran (R16). */
   cancelledAt?: string;
 }

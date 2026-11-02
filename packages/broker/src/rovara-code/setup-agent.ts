@@ -310,8 +310,11 @@ export interface SetupAgentRunRequest {
 export interface SetupAgentStarter {
   /** Starts the run as `caller`. A repeat of `request.requestId` answers the first run's result and starts nothing. */
   start(caller: DeveloperCaller, request: SetupAgentRunRequest): Promise<AgentRunResult>;
-  /** Cancels the run's task as its owner. A task that is already over is left as it is. */
-  cancel(request: { orgId: OrgId; ownerDeveloperId: string; taskId: string; requestId: string }): Promise<void>;
+  /**
+   * Cancels the run's task. `stoppedBy` is the maintainer who pressed Stop: the cancel is recorded as THEIR action (the audit names the actual stopper), and it works when the run's owner has been
+   * removed (the maintainer's own authority, which the route has just checked, is what stops it). `ownerDeveloperId` is the run's owner, for the record only. A task that is already over is left as it is.
+   */
+  cancel(request: { orgId: OrgId; ownerDeveloperId: string; taskId: string; requestId: string; stoppedBy: DeveloperCaller }): Promise<void>;
 }
 
 export interface SetupAgentDependencies {
@@ -417,7 +420,9 @@ export async function stopSetupAgent(deps: SetupAgentDependencies, caller: Devel
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const state = await readState(deps, caller.orgId, name, latest.revision);
-  if (state.view.status !== "running" || state.pointer === undefined) return new StatusReply(200, state.view);
+  // A run that reads as stale ("failed", never reported an end) may still have a live task: Stop reaches it too, so a maintainer is never left with a run they cannot end.
+  const staleButLive = state.view.status === "failed" && state.view.failure === SETUP_AGENT_FAILURES.stale && state.view.summary === undefined;
+  if ((state.view.status !== "running" && !staleButLive) || state.pointer === undefined) return new StatusReply(200, state.view);
   if (deps.starter === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
   // Who pressed Stop is written BEFORE the cancel (the first stop stands), so the end can tell a person's stop from a cancel the system made; a write that fails cancels nothing.
   await deps.documentClient.send(new UpdateCommand({
@@ -425,7 +430,7 @@ export async function stopSetupAgent(deps: SetupAgentDependencies, caller: Devel
     ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":stop": { by: caller.developerId, at: new Date(deps.now()).toISOString() } },
   }));
   await deps.starter.cancel({
-    orgId: caller.orgId, ownerDeveloperId: state.pointer.requestedBy, taskId: state.pointer.taskId, requestId: derivedRequestId(`${state.pointer.taskId}|${parsed.data.requestId}`, "stop"),
+    orgId: caller.orgId, ownerDeveloperId: state.pointer.requestedBy, taskId: state.pointer.taskId, requestId: derivedRequestId(`${state.pointer.taskId}|${parsed.data.requestId}`, "stop"), stoppedBy: caller,
   });
   return new StatusReply(202, await setupAgentState(deps, caller.orgId, name, latest.revision));
 }

@@ -38,7 +38,7 @@ interface World {
   db: FakeDynamoDb;
   deps: SetupAgentDependencies;
   started: Array<{ caller: DeveloperCaller; request: SetupAgentRunRequest }>;
-  cancelled: Array<{ orgId: string; ownerDeveloperId: string; taskId: string; requestId: string }>;
+  cancelled: Array<{ orgId: string; ownerDeveloperId: string; taskId: string; requestId: string; stoppedBy: DeveloperCaller }>;
   clock: { now: number };
 }
 
@@ -411,13 +411,14 @@ describe("the end of a run: the result is read again and stored in the task's ow
 });
 
 describe("stopping a run", () => {
-  it("cancels the running task as the person who started it, even when another maintainer pressed Stop, with a request id that is the same every time", async () => {
+  it("cancels the running task as the person who PRESSED Stop (the owner is only named for the record), with a request id that is the same every time", async () => {
     const w = world();
     const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
     const requestId = randomUUID();
     const reply = await stopSetupAgent(w.deps, caller(PAT), NAME, { requestId });
     expect(reply.statusCode).toBe(202);
-    expect(w.cancelled).toEqual([{ orgId: TEST_ORG, ownerDeveloperId: OMAR, taskId: (first as { taskId: string }).taskId, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as string }]);
+    expect(w.cancelled).toHaveLength(1);
+    expect(w.cancelled[0]).toMatchObject({ orgId: TEST_ORG, ownerDeveloperId: OMAR, taskId: (first as { taskId: string }).taskId, stoppedBy: { developerId: PAT } });
     await stopSetupAgent(w.deps, caller(PAT), NAME, { requestId });
     expect(w.cancelled[1]!.requestId).toBe(w.cancelled[0]!.requestId);
   });
@@ -463,6 +464,17 @@ describe("stopping a run", () => {
     expect(after.statusCode).toBe(200);
     expect(after.body).toMatchObject({ status: "ready" });
     expect(w.cancelled).toHaveLength(0);
+  });
+
+  it("a maintainer can stop a run that reads as stale (its task may still be live), but not one that failed with a report", async () => {
+    const w = world();
+    const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
+    w.clock.now += 10 * 24 * 3_600_000;
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).status).toBe("failed");
+    const reply = await stopSetupAgent(w.deps, caller(PAT), NAME, body());
+    expect(reply.statusCode).toBe(202);
+    expect(w.cancelled).toHaveLength(1);
+    expect(w.cancelled[0]).toMatchObject({ taskId: (first as { taskId: string }).taskId, stoppedBy: { developerId: PAT } });
   });
 
   it("does not hide a cancel that failed", async () => {

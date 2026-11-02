@@ -32,6 +32,7 @@ import { creatorCheckOf, orgOfRecord, routingOf } from "./scope-helpers.js";
 import { chatGptTaskToken, recordChatGptFallback } from "./task-operations.js";
 import { afterWorkerEvents } from "./lessons-report.js";
 import { recordTerminalResult } from "./terminal-result.js";
+import { handleSetupAgentCallback } from "../../rovara-code/setup-agent-callback.js";
 import { readStoredCandidateSourceExport } from "./workflow-items.js";
 
 export async function handleCallback(
@@ -80,6 +81,11 @@ export async function handleCallback(
   if (action === "chatgpt-token") return json(await chatGptTaskToken(dependencies, operation), request.requestId);
   if (action === "chatgpt-status") return json(await recordChatGptFallback(dependencies, operation, parseBody(request.body)), request.requestId);
   const body = parseBody(request.body);
+  // SH14 (switch `su`): the setup run's one action. The capability has it only for a SETUP_AGENT operation; the handler checks the switch and that the operation is a running setup run.
+  if (action === "setup-agent") {
+    if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a setup run");
+    return json(await handleSetupAgentCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, operation, body), request.requestId);
+  }
   if (action === "events") {
     const accepted = await appendEvents(dependencies, operation, body);
     // Learning v2: the worker's load report and loaded-knowledge record, where lessons are on (lessons-report.ts; never fails the events).

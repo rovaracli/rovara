@@ -95,7 +95,7 @@ export interface OperationRecord extends Operation {
   chatgptFallback?: "limit" | "revoked" | "model";
   /** #342: the Slack thread a ChatGPT task was asked from, where a fallback is told; absent for a developer task (its own thread). */
   chatgptThread?: { teamId: string; channelId: string; threadTs: string };
-  workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SPEC_WRITE" | undefined;
+  workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE" | undefined;
   candidateSourceRef?: { key: string; sha256: string; byteLength: number; candidateDigest: string };
   /** The build source manifest the worker exported for that candidate, or why there is none (see StoredCandidateBuildSourceSchema); absent when the worker sent nothing. */
   candidateBuildSource?: StoredCandidateBuildSource;
@@ -177,7 +177,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "setup-agent">;
   expiresAt: number;
 }
 
@@ -302,6 +302,8 @@ export interface CapabilityOptions {
   agentTools?: boolean;
   /** Lane E: list the project's MCP context sources and call them (`/v1/internal/context-tools`); granted to an Understand, Plan, Plan-check or Review operation of a project that has sources, never to Build. */
   contextTools?: boolean;
+  /** SH14: a setup run (switch `su`) reports its journal, asks for websites and takes a person's commands through one action (`POST .../setup-agent`); granted only to a SETUP_AGENT operation. */
+  setupAgent?: boolean;
 }
 
 export function issueCapability(
@@ -338,6 +340,7 @@ export function issueCapability(
       ...(options.agentSkills === true ? ["agent-skills" as const] : []),
       ...(options.agentTools === true ? ["agent-tools" as const] : []),
       ...(options.contextTools === true ? ["context-tools" as const] : []),
+      ...(options.setupAgent === true ? ["setup-agent" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,
   };
