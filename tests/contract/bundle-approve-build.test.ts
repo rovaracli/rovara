@@ -303,7 +303,7 @@ describe("agentx bundle approve, Enterprise", () => {
 describe("the kit is part of the signed bundle", () => {
   it("names its entry as a .mjs file under synth-kit/, nothing else", async () => {
     const { SynthKitManifestSchema } = await import("@agentx/contracts");
-    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40) };
+    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40), files: { "synth.mjs": "c".repeat(64) } };
     expect(SynthKitManifestSchema.safeParse({ ...kit, entry: "synth-kit/synth.mjs" }).success).toBe(true);
     for (const entry of ["synth-kit/synth.js", "other/synth.mjs", "synth.mjs", "synth-kit/../x.mjs"]) expect(SynthKitManifestSchema.safeParse({ ...kit, entry }).success, entry).toBe(false);
   });
