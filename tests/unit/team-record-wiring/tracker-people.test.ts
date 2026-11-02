@@ -221,6 +221,21 @@ describe("a tool the company has not connected is never read", () => {
   });
 });
 
+describe("an org that connected its tools before it wrote anything", () => {
+  it("is in the scheduled jobs' directory as soon as one of its changes is refused for want of a linked person, so the hourly read finds its people", async () => {
+    const reads = { count: 0, limits: [] as number[] };
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users: [T({ sourceId: "lin-priya", email: "priya@acme.test", emailVerified: true })], reads })] });
+    await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source: "linear", scope: "linear:team/t1", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-sam", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(0);
+    await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "create", organizationId: "lin-org", actor: { id: "lin-priya" }, data: { id: "i1", teamId: "t1", title: "t", creatorId: "lin-priya", updatedAt: "2026-10-30T10:00:00.000Z" } } });
+    expect(linksOf(db)).toStrictEqual([]);
+    const summary = await runtime.jobs.run("hourly");
+    expect(summary.orgs).toBe(1);
+    expect(reads.count).toBe(1);
+    expect(linksOf(db).map((item) => item.developerId)).toStrictEqual(["dev-priya"]);
+  });
+});
+
 describe("the admin's mapping", () => {
   const priya = { system: "linear", sourceId: "lin-priya", by: "dev-sam" };
   const users = [T({ sourceId: "lin-priya", displayName: "Priya R" }), T({ sourceId: "lin-sam", displayName: "Sam K" })];

@@ -367,6 +367,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (needsLinkedAuthor(draft)) {
         log("record.unlinked_skipped", { source: draft.source });
         await skipped.count(orgId, draft.project, draft.source).catch(() => log("record.unlinked_count_failed", {}));
+        // The org joins the scheduled jobs' directory now: the hourly job is what reads its connected tools' people and links them, so an org whose first changes were all refused must be reached by it.
+        await listOrg(orgId).catch(() => log("record.list_org_failed", {}));
         return { status: "refused", reason: "author_not_linked" } as never;
       }
       try { return await directSink.put(draft); } catch (error) {
