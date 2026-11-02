@@ -8,6 +8,7 @@ import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { learnedLessonsEnabled } from "../../packages/broker/src/lessons/switch.js";
+import { verifyResultsEnabled } from "../../packages/broker/src/verification/switch.js";
 import { decisionCardsEnabled, proofEvidenceEnabled } from "../../packages/broker/src/proof/switch.js";
 import { configKey } from "../../packages/cli/src/config/keys.js";
 import { OPERATOR_PARAMETERS } from "../../packages/cli/src/deploy/parameters.js";
@@ -29,6 +30,8 @@ const SWITCHES = [
   { name: "decision cards", parameter: "DecisionCardsEnabled", setting: "decisionCards" as const, code: "dk", variable: "DECISION_CARDS_ENABLED", key: "decisionCards.enabled", on: decisionCardsEnabled },
   // Lessons reach the agent (follow-up S3 of the wire-lessons review): apart from the Team record's flag, off by default.
   { name: "learned lessons", parameter: "LearnedLessonsEnabled", setting: "learnedLessons" as const, code: "ll", variable: "LEARNED_LESSONS_ENABLED", key: "learnedLessons.enabled", on: learnedLessonsEnabled },
+  // Four test results (setup and test health): off by default, its own switch.
+  { name: "verify results", parameter: "VerifyResultsEnabled", setting: "verifyResults" as const, code: "vx", variable: "VERIFY_RESULTS_ENABLED", key: "verifyResults.enabled", on: verifyResultsEnabled },
 ];
 
 describe.each(SWITCHES)("the $name switch", ({ parameter, setting, code, variable, key, on }) => {

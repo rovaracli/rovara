@@ -1291,6 +1291,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
+      // Four test results (setup and test health): its own switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("verifyResults", signInParameters.verifyResultsEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
