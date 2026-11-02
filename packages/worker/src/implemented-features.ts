@@ -41,8 +41,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.liveSteer.v1",
   // SH14: the setup run that runs commands (setup-agent-run.ts), on the run's own network with the DNS-watch helper. Listed only by a worker image that carries the helper script and the setup sandbox guard.
   SETUP_AGENT_FEATURE,
-  // NH-1: the nightly run (nightly-run.ts): the Prove sequence over the approved environment, with one rerun of failures and the coverage map, reported through the nightly action.
-  NIGHTLY_RUN_FEATURE,
   // SH30: company recipes offered to the detectors (test-env-detect.ts `recipes`).
   SETUP_RECIPES_FEATURE,
   // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
@@ -74,4 +72,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "prepare.registries.v1",
   // Enterprise foundations P8: the repository credential exchange takes an ssh key as well as a token or a password (repository-credentials.ts, git-auth.ts).
   "repository.credentialKinds.v1",
+  // NH-1: the nightly run (nightly-run.ts): the Prove sequence over the approved environment, with one rerun of failures and the coverage map, reported through the nightly action.
+  NIGHTLY_RUN_FEATURE,
 ] as const satisfies readonly WorkerInvocationFeature[];
