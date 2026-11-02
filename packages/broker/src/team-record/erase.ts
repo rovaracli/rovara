@@ -236,7 +236,7 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     }
     return false;
   },
-  // Live interaction Fix with agent (diagnosis/store.ts): the person-link row of each diagnosis they asked for is deleted (the diagnosis stays and names no one), then the index. Bounded passes; not done
+  // Live interaction Fix with agent (diagnosis/store.ts): each diagnosis they asked for is deleted (its model text can hold a name; DG-1 S5) with its person-link row, then the index. Bounded passes; not done
   // means the next run resumes it.
   async diagnoses(context) {
     if (context.who.developerId === undefined) return true;

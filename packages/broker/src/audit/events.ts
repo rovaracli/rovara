@@ -659,7 +659,7 @@ export function auditDiagnosisProposed(input: AuditBuilderBase & { diagnosisId: 
   return build("diagnosis.proposed", input, { kind: "diagnosis", id: input.diagnosisId }, { total, dropped: input.dropped, ...counts });
 }
 
-/** `occurrence`: `auditOccurrence(diagnosisId, approvalId)`. A person pressed "Propose this change": `related` links the ordinary `approval.requested` id; nothing is applied by this event. */
+/** `occurrence`: `auditOccurrence(diagnosisId, approvalId)`. A person pressed "Apply this change": `related` links the ordinary `approval.requested` id; nothing is applied by this event. */
 export function auditDiagnosisProposalRaised(input: AuditBuilderBase & { diagnosisId: string; proposalKind: string; approvalId: string }): AuditEventInput {
   return build("diagnosis.proposal_raised", { ...input, related: [input.approvalId, ...(input.related ?? [])] }, { kind: "diagnosis", id: input.diagnosisId }, { proposalKind: input.proposalKind });
 }

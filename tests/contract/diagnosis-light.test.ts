@@ -267,18 +267,40 @@ describe("the turn, the answer and what a person reads", () => {
 });
 
 describe("erasing the person", () => {
-  it("removes the link to the person and the index, and keeps the diagnosis", async () => {
+  it("DG-1 S5: removes every diagnosis the person asked for (the model text can hold a name), its link and the index; another person's diagnosis stays", async () => {
     const w = diagnosisWorld();
     const status = await start(w, PRIYA);
-    await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: status.diagnosisId, outcome: "ANSWERED", text: answerOf({ summary: "It failed.", proposals: [] }) });
+    const NAME = "Priya Ramanathan";
+    await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: status.diagnosisId, outcome: "ANSWERED", text: answerOf({ summary: `It failed after ${NAME} pushed.`, proposals: [{ kind: "explain", text: `${NAME} changed the setup.` }] }) });
+    // Another person's diagnosis of another error.
+    w.retried();
+    const other = await start(w, ARJUN);
+    await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: other.diagnosisId, outcome: "ANSWERED", text: answerOf({ summary: "It failed.", proposals: [{ kind: "explain", text: "Nothing to see." }] }) });
     expect(w.w.db.get(diagnosisKey(ORG_A, status.diagnosisId, "PERSON"))).toBeDefined();
+    expect(JSON.stringify(w.w.db.get(diagnosisKey(ORG_A, status.diagnosisId, "RECORD")))).toContain(NAME);
     await expect(eraseDiagnosisPerson(w.diagnosis, ORG_A, PRIYA)).resolves.toMatchObject({ complete: true, removed: 1 });
-    expect(w.w.db.get(diagnosisKey(ORG_A, status.diagnosisId, "PERSON"))).toBeUndefined();
-    expect([...w.w.db.items.keys()].some((key) => key.includes("DIAGNOSISBY#"))).toBe(false);
-    expect(await readDiagnosisRecord(w.diagnosis, ORG_A, status.diagnosisId)).toMatchObject({ diagnosisId: status.diagnosisId });
-    expect(JSON.stringify([...w.w.db.items.values()].filter((item) => String((item as { pk?: string }).pk).includes("DIAGNOSIS#")))).not.toContain(PRIYA);
-    // It is idempotent, and it never touches another person's.
+    for (const sk of ["PERSON", "RECORD", "REQUEST"] as const) expect(w.w.db.get(diagnosisKey(ORG_A, status.diagnosisId, sk)), sk).toBeUndefined();
+    expect([...w.w.db.items.keys()].some((key) => key.includes(`DIAGNOSISBY#${PRIYA}`))).toBe(false);
+    expect(await readDiagnosisRecord(w.diagnosis, ORG_A, status.diagnosisId)).toBeUndefined();
+    // Nothing of the diagnosis is left anywhere in the table: no name, and no id of the person.
+    const left = JSON.stringify([...w.w.db.items.values()].filter((item) => String((item as { pk?: string }).pk).includes(status.diagnosisId)));
+    expect(left).not.toContain(NAME);
+    expect(left).not.toContain(PRIYA);
+    // The other person's diagnosis is as it was.
+    expect(await readDiagnosisRecord(w.diagnosis, ORG_A, other.diagnosisId)).toMatchObject({ diagnosisId: other.diagnosisId });
+    expect(w.w.db.get(diagnosisKey(ORG_A, other.diagnosisId, "PERSON"))).toBeDefined();
+    // It is idempotent.
     await expect(eraseDiagnosisPerson(w.diagnosis, ORG_A, PRIYA)).resolves.toMatchObject({ complete: true, removed: 0 });
+  });
+
+  it("DG-1 S5: the error's open place is let go with the diagnosis, so it can be asked about again; and an answer that arrives after the erase writes nothing", async () => {
+    const w = diagnosisWorld();
+    const waiting = await start(w, PRIYA);
+    await eraseDiagnosisPerson(w.diagnosis, ORG_A, PRIYA);
+    await expect(completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: waiting.diagnosisId, outcome: "ANSWERED", text: answerOf({ summary: "It failed.", proposals: [{ kind: "explain", text: "x" }] }) })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(w.w.db.get(diagnosisKey(ORG_A, waiting.diagnosisId, "RECORD"))).toBeUndefined();
+    const again = await start(w, ARJUN);
+    expect(again.diagnosisId).not.toBe(waiting.diagnosisId);
   });
 
   it("a waiting diagnosis whose person was erased cannot be answered", async () => {
@@ -286,5 +308,65 @@ describe("erasing the person", () => {
     const status = await start(w, PRIYA);
     await eraseDiagnosisPerson(w.diagnosis, ORG_A, PRIYA);
     await expect(prepareDiagnosisTurn(w.diagnosis, { orgId: ORG_A, diagnosisId: status.diagnosisId })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("DG-1 S1: an organization-wide daily ceiling on the light diagnoses Rovara pays for", () => {
+  const errorRef = (n: number) => ErrorRefSchema.parse({ kind: "operation_failed", code: `TASK_FAILED_${String(n)}`, subject: { taskId: randomUUID() }, at: "2026-10-22T09:00:00.000Z" });
+  const people = Array.from({ length: 12 }, (_, index) => `${String(index % 10)}${String(index)}`.padEnd(64, "a"));
+  const admit = (w: DiagnosisWorld, n: number, who: string, project: string, rovaraPaid?: { turnsPerDay: number; centsPerDay: number }) =>
+    admitDiagnosis(w.diagnosis, { orgId: ORG_A, developerId: who, requestId: randomUUID(), tier: "light", errorRef: errorRef(n), project, ...(rovaraPaid === undefined ? {} : { rovaraPaid }) });
+  const orgCounter = (w: DiagnosisWorld) => w.w.db.get({ pk: `ORG#${ORG_A}#DIAGNOSISRATE`, sk: "light_org#all" }) ?? [...w.w.db.items.entries()].find(([key]) => key.includes("light_org#all"))?.[1];
+
+  it("many people on many projects cannot pass the org's turns for the day, whatever the person and project limits allow; the next day starts again", async () => {
+    const w = diagnosisWorld();
+    const cap = { turnsPerDay: 5, centsPerDay: 10_000 };
+    for (let n = 0; n < 5; n += 1) await admit(w, n, people[n]!, `project-${String(n)}`, cap);
+    await expect(admit(w, 50, people[6]!, "project-9", cap)).rejects.toThrow("Fix with agent has reached today's limit for your company.");
+    await expect(admit(w, 51, people[7]!, "project-8", cap)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    w.w.clock.now += 86_400_000;
+    await expect(admit(w, 52, people[6]!, "project-9", cap)).resolves.toMatchObject({ created: true });
+  });
+
+  it("the dollar ceiling holds on its own: each Rovara-paid turn is counted at the key's cap (25 cents), so 60 cents allows two turns, and the counter is Rovara's own record of the spend", async () => {
+    const w = diagnosisWorld();
+    const cap = { turnsPerDay: 1_000, centsPerDay: 60 };
+    await admit(w, 1, people[0]!, "a", cap);
+    await admit(w, 2, people[1]!, "b", cap);
+    expect(orgCounter(w)).toMatchObject({ count: 2, cents: 50 });
+    await expect(admit(w, 3, people[2]!, "c", cap)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(orgCounter(w)).toMatchObject({ count: 2, cents: 50 });
+  });
+
+  it("an open diagnosis of the same error and a repeat of a request spend nothing against it", async () => {
+    const w = diagnosisWorld({ edition: "public" });
+    const first = await start(w, PRIYA);
+    await start(w, ARJUN);
+    await start(w, PRIYA);
+    expect(first.state).toBe("queued");
+    expect(orgCounter(w)).toMatchObject({ count: 1, cents: 25 });
+  });
+
+  it("Public counts its turns by default, with the contract's limits; Enterprise (the customer pays) counts none", async () => {
+    const pub = diagnosisWorld({ edition: "public" });
+    await start(pub, PRIYA);
+    expect(orgCounter(pub)).toMatchObject({ count: 1, cents: 25 });
+    const ent = diagnosisWorld({ edition: "enterprise" });
+    await start(ent, PRIYA);
+    expect(orgCounter(ent)).toBeUndefined();
+    // The deployment's own ceiling is read from the dependencies, and a full day refuses the start in the org's words and queues nothing.
+    const small = diagnosisWorld({ edition: "public" });
+    small.diagnosis.rovaraPaidLimits = { turnsPerDay: 1, centsPerDay: 1_000 };
+    await start(small, PRIYA);
+    small.retried();
+    await expect(start(small, ARJUN)).rejects.toThrow("Fix with agent has reached today's limit for your company.");
+    expect(small.sent).toHaveLength(1);
+  });
+
+  it("the person's and the project's own limits are still answered in their own words when they are the full ones", async () => {
+    const w = diagnosisWorld();
+    const cap = { turnsPerDay: 1_000, centsPerDay: 100_000 };
+    for (let n = 0; n < DIAGNOSIS_RATE.lightPerPersonPerHour; n += 1) await admit(w, n, PRIYA, "web", cap);
+    await expect(admit(w, 99, PRIYA, "web", cap)).rejects.toThrow("You've asked for a lot of diagnoses lately.");
   });
 });

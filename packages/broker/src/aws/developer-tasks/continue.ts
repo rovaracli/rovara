@@ -164,6 +164,17 @@ function resumeRequestId(spendRequestId: string, what: string): string {
 }
 
 /**
+ * What a held start's preparation is asked for, the same as its first start asked for (`start.ts`): a checkout list and read-only where it had them, and the setup draft's preparation (the meta
+ * repository read, no devcontainer, no setup command) for BOTH a setup draft and a deep diagnosis (DG-1 S4: a held deep diagnosis used to be prepared as an ordinary read-only run).
+ */
+export function heldPreparationOptions(task: Pick<DeveloperTaskRecord, "purpose">, held: NonNullable<NonNullable<DeveloperTaskRecord["budgetPause"]>["firstDispatch"]>) {
+  return {
+    ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true as const } : {}),
+    ...(task.purpose === "setup_draft" || task.purpose === "diagnosis" ? { setupDraft: true as const } : {}),
+  };
+}
+
+/**
  * A run held at its start (run limit 0) is dispatched now that its limit was raised (Task 15's paused start): in one transaction, conditional on the pause
  * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
  * setup watch starts and the pause is removed. The preparation's success then starts the task, or wakes the agent-step engine.
@@ -173,7 +184,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}), ...(task.purpose === "setup_draft" ? { setupDraft: true } : {}) });
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, heldPreparationOptions(task, held));
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [

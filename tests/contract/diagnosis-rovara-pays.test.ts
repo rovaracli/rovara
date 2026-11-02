@@ -38,6 +38,8 @@ describe("a Rovara-paid turn", () => {
     expect(minted).toHaveBeenCalledTimes(1);
     const input = minted.mock.calls[0]![1] as Record<string, unknown>;
     expect(input).toMatchObject({ orgId: ORG, purpose: "turn", refId: "Ev1234567890", maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, models: ["the-model-alias"] });
+    // DG-1 S1: the key answers to Rovara's support team in the proxy, so none of it lands on the customer's team budget.
+    expect(input["rovaraPaid"]).toBe(true);
     expect(input).not.toHaveProperty("developerId");
     expect(input).not.toHaveProperty("tags");
     expect(input["maxBudgetUsd"]).toBeLessThanOrEqual(0.5);
@@ -55,5 +57,6 @@ describe("a Rovara-paid turn", () => {
     expect(admit).toHaveBeenCalledTimes(1);
     const input = minted.mock.calls[0]?.[1] as Record<string, unknown> | undefined;
     if (input !== undefined) expect(input["maxBudgetUsd"]).not.toBe(DIAGNOSIS_LIGHT_BUDGET_USD);
+    if (input !== undefined) expect(input).not.toHaveProperty("rovaraPaid");
   });
 });

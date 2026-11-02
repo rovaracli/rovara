@@ -9,6 +9,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { admitDiagnosis, settleDiagnosis } from "../../packages/broker/src/diagnosis/store.js";
+import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -194,5 +195,15 @@ describe("the deep tier on the real broker", () => {
     const off = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
     expect(off.status).toBe(404);
     expect(t.db.find((item) => item.entityType === "DIAGNOSIS_REQUEST" && item.tier === "deep")).toHaveLength(0);
+  });
+});
+
+describe("DG-1 S4: a deep start that waited for its run limit", () => {
+  const held = { operationId: "00000000-0000-4000-8000-000000000001" };
+  it("is prepared as the setup draft's read-only preparation is, as its first start was, and an ordinary held run is not", () => {
+    expect(heldPreparationOptions({ purpose: "diagnosis" }, { ...held, readOnly: true })).toEqual({ readOnly: true, setupDraft: true });
+    expect(heldPreparationOptions({ purpose: "setup_draft" }, { ...held, readOnly: true })).toEqual({ readOnly: true, setupDraft: true });
+    expect(heldPreparationOptions({}, held)).toEqual({});
+    expect(heldPreparationOptions({ purpose: "setup_agent" }, held)).toEqual({});
   });
 });

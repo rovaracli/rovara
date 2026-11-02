@@ -338,6 +338,12 @@ export type DiagnosisTier = z.infer<typeof DiagnosisTierSchema>;
 
 /** Light: 10 per person per hour, 50 per project per day. Deep: 3 per person per day. */
 export const DIAGNOSIS_RATE = { lightPerPersonPerHour: 10, lightPerProjectPerDay: 50, deepPerPersonPerDay: 3 } as const;
+/**
+ * DG-1 S1: the most light diagnoses ROVARA pays for (Public) for one organization in a day, whoever asks and whichever project. `turns` is the count; `cents` is the worst case Rovara can owe for them (each
+ * turn's key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, so a turn is counted at that cap). Either one full refuses the next request with the ordinary "asked a lot lately" words. Per person and per project
+ * limits still apply. Raising these is a reviewed code change.
+ */
+export const DIAGNOSIS_ROVARA_PAID_ORG_LIMITS = { turnsPerDay: 100, centsPerDay: 1_500 } as const;
 /** `DIAGNOSIS#<id>` is kept this long (days). */
 export const DIAGNOSIS_RETENTION_DAYS = 30;
 /** The same ErrorRef answers the existing diagnosis for this long (seconds). */
@@ -354,7 +360,7 @@ export const DIAGNOSIS_SETTINGS_TARGETS = ["code_settings", "setup_item", "playb
 
 const ProposalText = (max: number) => z.string().min(1).max(max);
 /** A value a settings change moves from or to: a small primitive, never an object (so nothing structured can ride in it). */
-const SettingValueSchema = z.union([z.string().max(500), z.number().finite(), z.boolean(), z.null()]);
+export const SettingValueSchema = z.union([z.string().max(500), z.number().finite(), z.boolean(), z.null()]);
 
 export const DiagnosisProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("explain"), text: ProposalText(2_000) }).strict(),
@@ -381,24 +387,28 @@ export const DIAGNOSIS_PROPOSAL_KINDS = ["explain", "retry_with_note", "redirect
  * egress, model endpoints and MCP servers, so this is an allow-list of safe, named settings and not a list of forbidden words: a deny-list is bypassed by the next spelling
  * (`tierZero`, `toolServers`, `model.url`). Adding a path here is a reviewed one-line change. Values are checked too: an enum word, a boolean or a plain relative file path, never free text.
  */
-type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boolean" } | { kind: "relative_path" };
+type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boolean" } | { kind: "relative_path" } | { kind: "devcontainer_path" };
 export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS_TARGETS)[number], Readonly<Record<string, PrefillValue>>>> = {
   code_settings: { mergeMethod: { kind: "enum", values: ["squash", "merge"] } },
-  setup_item: { "devcontainer.configPath": { kind: "relative_path" } },
+  // DG-1 S2: only a path a dev container can really be read from (the setup proposal's own pattern), never any relative file.
+  setup_item: { "devcontainer.configPath": { kind: "devcontainer_path" } },
   // Replaces: the T0 rows `e2e.screenshots` and `e2e.traces`. No ordinary route changes a project's end-to-end capture (the project definition's `e2e` policy is changed by an administrator with
-  // `agentx admin project register`), so a "Propose this change" for it would have no path to raise it into. Until a How-we-work route exists for a path, it is explain-and-link only.
+  // `agentx admin project register`), so a "Apply this change" for it would have no path to raise it into. Until a How-we-work route exists for a path, it is explain-and-link only.
   playbook: {},
   connector: {},
   model_access: {},
 };
 
 const RELATIVE_PATH = /^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,199}$/u;
+/** The setup proposal's `DEVCONTAINER_PATH_PATTERN`, repeated: this file is part of the browser entry and imports nothing heavy. A test keeps the two the same. */
+export const DIAGNOSIS_DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
 
 function prefillValueOk(rule: PrefillValue, value: unknown): boolean {
   // A value that redaction would change looks like a secret (a token, a key, a credential in a URL): never prefilled, on any target or path.
   if (typeof value === "string" && redactText(value) !== value) return false;
   if (rule.kind === "boolean") return typeof value === "boolean";
   if (rule.kind === "enum") return typeof value === "string" && rule.values.includes(value);
+  if (rule.kind === "devcontainer_path") return typeof value === "string" && DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.test(value);
   return typeof value === "string" && RELATIVE_PATH.test(value) && !value.startsWith("/");
 }
 

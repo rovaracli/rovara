@@ -383,6 +383,18 @@ describe("the /key/list audit", () => {
     expect(proxy.seen.filter((entry) => entry.path === "/key/block").every((entry) => /^[0-9a-f]{64}$/.test(String(entry.body!.key)))).toBe(true);
   });
 
+  it("DG-1 S1: a key of Rovara's support team holds to the catalog alone: its org label is not compared with the team, an alias or a model that is not in the catalog is blocked", async () => {
+    const proxy = litellm();
+    const good = scoped([CATALOG[0]!], { team_id: "rovara-support", metadata: { orgId: ORG, rovaraPaid: true } });
+    const bad = [
+      scoped([OWN], { team_id: "rovara-support", metadata: { orgId: ORG } }), scoped([], { team_id: "rovara-support" }), scoped(["*"], { team_id: "rovara-support" }),
+      scoped([CATALOG[0]!], { team_id: "rovara-support", aliases: { friendly: CATALOG[0]! } }), scoped([CATALOG[0]!], { team_id: "rovara-support", allowed_routes: ["llm_api_routes"] }),
+    ];
+    proxy.keys.push(good, ...bad);
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 1 + bad.length, blocked: bad.length, truncated: false });
+    expect(good.blocked).toBeUndefined();
+  });
+
   it("leaves legacy keys alone (the older llm_api_routes key has no models and is bounded by its scoped team), and keys that are blocked or expired", async () => {
     const proxy = litellm();
     proxy.keys.push(

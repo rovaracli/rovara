@@ -1,12 +1,13 @@
-// Live interaction F4: "Propose this change". A diagnosis never changes a setting; when a maintainer presses the button the broker reads everything again (the stored proposal against the allow-list and the
+// Live interaction F4: "Apply this change". A diagnosis never changes a setting; when a maintainer presses the button the broker reads everything again (the stored proposal against the allow-list and the
 // deny-list, the person's role, `from` against the setting now, every citation against its source) and only then raises the change through the ORDINARY route, as that person, naming no more than the one setting.
 import { randomUUID } from "node:crypto";
 import { DIAGNOSIS_PREFILL_ALLOW as BROKER_ALLOW } from "@agentx/contracts"; // the package the broker itself imports
 import { describe, expect, it } from "vitest";
-import { DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "../../packages/contracts/src/index.js";
+import { DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_APPLY_BUTTON_LABEL, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN, DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "../../packages/contracts/src/index.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { completeDiagnosis, startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { proposeDiagnosisChange, type DiagnosisProposePorts } from "../../packages/broker/src/diagnosis/propose.js";
+import { readDiagnosisRecord } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, MAX, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";
 import { MIA } from "../support/agent-session-world.js";
 
@@ -16,8 +17,8 @@ const answer = (value: unknown) => JSON.stringify(value);
 const mergeChange = (extra: Record<string, unknown> = {}) => ({ kind: "settings_change", target: "code_settings", path: "mergeMethod", from: "squash", to: "merge", citations: [`doc:merge-method "${MERGE_QUOTE}"`], ...extra });
 const deviceChange = (extra: Record<string, unknown> = {}) => ({ kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: ".devcontainer/devcontainer.json", to: ".devcontainer/web/devcontainer.json", citations: [`repo:web:.devcontainer/web/devcontainer.json@${COMMIT} "image"`], ...extra });
 
-function ports(overrides: Partial<{ mergeMethod: string; configPath: string | undefined; hasContainer: boolean; revision: number; file: (path: string) => string | undefined | Error; noReader: boolean; repositories: Array<{ name: string; url: string }> }> = {}) {
-  const calls = { put: [] as unknown[][], update: [] as unknown[][], read: [] as unknown[][] };
+function ports(overrides: Partial<{ mergeMethod: string; configPath: string | undefined; hasContainer: boolean; revision: number; file: (path: string) => string | undefined | Error; noReader: boolean; repositories: Array<{ name: string; url: string }>; defaultBranchFile: (path: string) => string | undefined | Error; noDefaultBranchReader: boolean }> = {}) {
+  const calls = { put: [] as unknown[][], update: [] as unknown[][], read: [] as unknown[][], defaultRead: [] as unknown[][] };
   const settings: CodeSettings = { allowSelfApproval: false, mergeMethod: (overrides.mergeMethod ?? "squash") as "squash", codeReviewers: [], revision: 3 };
   const value: DiagnosisProposePorts = {
     project: async () => ({
@@ -28,6 +29,12 @@ function ports(overrides: Partial<{ mergeMethod: string; configPath: string | un
     codeSettings: async () => settings,
     putCodeSettings: async (...args) => { calls.put.push(args); return new StatusReply(200, {}); },
     updateSettings: async (...args) => { calls.update.push(args); return {}; },
+    ...(overrides.noDefaultBranchReader === true ? {} : { readDefaultBranchFile: async (...args: unknown[]) => {
+      calls.defaultRead.push(args);
+      const read = (overrides.defaultBranchFile ?? (() => '{ "image": "node:22" }'))(String(args[2]));
+      if (read instanceof Error) throw read;
+      return read;
+    } }),
     ...(overrides.noReader === true ? {} : { readFile: async (...args) => {
       calls.read.push(args);
       const read = (overrides.file ?? (() => 'the "image": "node:22" line'))(String(args[2]));
@@ -44,8 +51,13 @@ async function ready(w: DiagnosisWorld, proposals: unknown[]) {
   await completeDiagnosis(w.diagnosis, { orgId: ORG_A, diagnosisId: status.diagnosisId, outcome: "ANSWERED", text: answer({ summary: "The settings are wrong.", proposals }) });
   return status.diagnosisId;
 }
-const propose = (w: DiagnosisWorld, p: DiagnosisProposePorts | undefined, id: string, who: string = MAX, index = 1, requestId: string = randomUUID()) =>
-  proposeDiagnosisChange(w.diagnosis, p, w.w.caller(who), id, { requestId, index });
+/** What the screen shows for the proposal at `index`: its target, path, from and to, as the person's press echoes them (DG-1 S3). A number that is not a settings change shows a placeholder. */
+async function shownOf(w: DiagnosisWorld, id: string, index: number): Promise<{ target: string; path: string; from: unknown; to: unknown }> {
+  const proposal = (await readDiagnosisRecord(w.diagnosis, ORG_A, id))?.proposals[index];
+  return proposal?.kind === "settings_change" ? { target: proposal.target, path: proposal.path, from: proposal.from, to: proposal.to } : { target: "code_settings", path: "mergeMethod", from: "squash", to: "merge" };
+}
+const propose = async (w: DiagnosisWorld, p: DiagnosisProposePorts | undefined, id: string, who: string = MAX, index = 1, requestId: string = randomUUID(), shown?: Record<string, unknown>) =>
+  proposeDiagnosisChange(w.diagnosis, p, w.w.caller(who), id, { requestId, index, ...(shown ?? await shownOf(w, id, index)) });
 /** Writes a stored proposal exactly as given, bypassing the reading a real answer goes through (a record from older code, or a tampered one). */
 function tamper(w: DiagnosisWorld, id: string, proposals: DiagnosisProposal[]): void {
   const key = diagnosisKey(ORG_A, id, "RECORD");
@@ -130,7 +142,9 @@ describe("refused, and nothing applied", () => {
     await refused((w) => ready(w, [deviceChange()]), ports({ file: () => new Error("GitHub is down") }), MAX, /could not read again/u);
     await refused((w) => ready(w, [deviceChange()]), ports({ file: () => "nothing relevant here" }), MAX, /did not find it/u);
     await refused((w) => ready(w, [deviceChange()]), ports({ file: () => undefined }), MAX, /did not find it/u);
-    await refused((w) => ready(w, [deviceChange()]), ports({ repositories: [{ name: "api", url: "https://github.com/acme/api.git" }] }), MAX, /could not read again/u);
+    // (the container's own repository is not one of the project's: the file check refuses first, with its own words)
+    await refused((w) => ready(w, [deviceChange()]), ports({ repositories: [{ name: "api", url: "https://github.com/acme/api.git" }] }), MAX, /could not check/u);
+    await refused((w) => ready(w, [mergeChange({ citations: [`repo:api:README.md@${COMMIT} "xyz"`] })]), ports({ repositories: [{ name: "web", url: "https://github.com/acme/web.git" }] }), MAX, /could not read again/u);
     await refused((w) => ready(w, [mergeChange({ citations: [`doc:merge-method "${MERGE_QUOTE}"`, `repo:web:README.md@${COMMIT} "absent"`] })]), ports({ file: () => "present" }), MAX, /did not find it/u);
   });
 
@@ -176,14 +190,103 @@ describe("refused, and nothing applied", () => {
     await expect(propose(w, p.value, id, MAX, 0)).rejects.toThrow(/not a change that can be proposed/u);
     await expect(propose(w, p.value, id, MAX, 2)).rejects.toThrow(/not a change that can be proposed/u);
     await expect(propose(w, p.value, id, MAX, 7)).rejects.toThrow(/not a change that can be proposed/u);
-    await expect(proposeDiagnosisChange(w.diagnosis, p.value, w.w.caller(MAX), id, { requestId: "no", index: 1 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(proposeDiagnosisChange(w.diagnosis, p.value, w.w.caller(MAX), id, { requestId: randomUUID(), index: 1, mergeMethod: "merge" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    const shown = await shownOf(w, id, 1);
+    await expect(proposeDiagnosisChange(w.diagnosis, p.value, w.w.caller(MAX), id, { requestId: "no", index: 1, ...shown })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(proposeDiagnosisChange(w.diagnosis, p.value, w.w.caller(MAX), id, { requestId: randomUUID(), index: 1, ...shown, mergeMethod: "merge" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    // DG-1 S3: a press that does not say what it is applying is not a press (an old client sending only the number).
+    await expect(proposeDiagnosisChange(w.diagnosis, p.value, w.w.caller(MAX), id, { requestId: randomUUID(), index: 1 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(propose(w, p.value, "dgn_zzzzzzzzzzzzzzzzzzzz")).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(propose(w, undefined, id)).rejects.toThrow(/can't be proposed from here/u);
-    await expect(proposeDiagnosisChange({ ...w.diagnosis, enabled: false }, p.value, w.w.caller(MAX), id, { requestId: randomUUID(), index: 1 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(proposeDiagnosisChange({ ...w.diagnosis, enabled: false }, p.value, w.w.caller(MAX), id, { requestId: randomUUID(), index: 1, ...shown })).rejects.toMatchObject({ code: "NOT_FOUND" });
     const waiting = diagnosisWorld();
     const queued = await startLightDiagnosis(waiting.diagnosis, waiting.caller(PRIYA), { requestId: randomUUID(), errorRef: waiting.ref() });
     await expect(propose(waiting, p.value, queued.diagnosisId)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(p.calls.put).toHaveLength(0);
+  });
+});
+
+describe("DG-1 S3: the press is bound to the change that was shown", () => {
+  it("a press whose target, path, from or to differs from the stored proposal at that index applies nothing, even when the index is a different real proposal", async () => {
+    const w = diagnosisWorld();
+    const id = await ready(w, [mergeChange(), deviceChange()]);
+    const before = snapshot(w);
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["the other proposal's change on this index", { target: "setup_item", path: "devcontainer.configPath", from: ".devcontainer/devcontainer.json", to: ".devcontainer/web/devcontainer.json" }],
+      ["a different `to`", { ...(await shownOf(w, id, 1)), to: "squash" }],
+      ["a different `from`", { ...(await shownOf(w, id, 1)), from: "merge" }],
+      ["a different path", { ...(await shownOf(w, id, 1)), path: "devcontainer.configPath" }],
+      ["a different target", { ...(await shownOf(w, id, 1)), target: "setup_item" }],
+      ["`from` shown as unset", { ...(await shownOf(w, id, 1)), from: null }],
+    ];
+    for (const [label, shown] of cases) {
+      const p = ports();
+      await expect(propose(w, p.value, id, MAX, 1, randomUUID(), shown), label).rejects.toThrow(/not the one on record/u);
+      expect(p.calls.put, label).toHaveLength(0);
+      expect(p.calls.update, label).toHaveLength(0);
+    }
+    expect(snapshot(w)).toBe(before);
+    // The same press with what the screen showed applies.
+    const p = ports();
+    await expect(propose(w, p.value, id, MAX, 1)).resolves.toMatchObject({ outcome: "applied" });
+    expect(p.calls.put).toHaveLength(1);
+  });
+});
+
+describe("DG-1 S2: the dev container path", () => {
+  it("only a dev container path is ever stored as a proposal: any other relative file is dropped by the allow-list", async () => {
+    for (const to of ["scripts/ci/devcontainer.json", "package.json", ".devcontainer/a/b/devcontainer.json", ".devcontainer/web/other.json", "devcontainer.json"]) {
+      const w = diagnosisWorld();
+      const id = await ready(w, [deviceChange({ to })]);
+      const record = await readDiagnosisRecord(w.diagnosis, ORG_A, id);
+      expect(record?.proposals.some((proposal) => proposal.kind === "settings_change"), to).toBe(false);
+    }
+    const w = diagnosisWorld();
+    const id = await ready(w, [deviceChange({ to: ".devcontainer.json" })]);
+    expect((await readDiagnosisRecord(w.diagnosis, ORG_A, id))?.proposals.some((proposal) => proposal.kind === "settings_change")).toBe(true);
+  });
+
+  it("and the press refuses a stored proposal that names another file (a record from older code), whatever its citation says", async () => {
+    const w = diagnosisWorld();
+    const id = await ready(w, []);
+    tamper(w, id, [deviceChange({ to: "scripts/ci/devcontainer.json", citations: [`repo:web:scripts/ci/devcontainer.json@${COMMIT} "image"`] }) as DiagnosisProposal]);
+    const p = ports();
+    await expect(propose(w, p.value, id)).rejects.toThrow(/not a change that can be proposed/u);
+    expect(p.calls.update).toHaveLength(0);
+  });
+
+  it("the file must be in the container's repository on its default branch now: missing, unreadable, no reader and an unknown repository all refuse, and the right one applies", async () => {
+    const attempt = async (p: ReturnType<typeof ports>, expected: RegExp) => {
+      const w = diagnosisWorld();
+      const id = await ready(w, [deviceChange()]);
+      await expect(propose(w, p.value, id)).rejects.toThrow(expected);
+      expect(p.calls.update).toHaveLength(0);
+    };
+    await attempt(ports({ defaultBranchFile: () => undefined }), /isn't in the repository/u);
+    await attempt(ports({ defaultBranchFile: () => new Error("GitHub is down") }), /could not check/u);
+    await attempt(ports({ noDefaultBranchReader: true }), /could not check/u);
+    await attempt(ports({ repositories: [{ name: "api", url: "https://github.com/acme/api.git" }] }), /could not check/u);
+    const w = diagnosisWorld();
+    const id = await ready(w, [deviceChange()]);
+    const p = ports();
+    await expect(propose(w, p.value, id)).resolves.toMatchObject({ outcome: "applied" });
+    expect(p.calls.defaultRead[0]!.slice(1, 3)).toEqual(["https://github.com/acme/web.git", ".devcontainer/web/devcontainer.json"]);
+  });
+
+  it("the merge method needs no file", async () => {
+    const w = diagnosisWorld();
+    const id = await ready(w, [mergeChange()]);
+    const p = ports({ noDefaultBranchReader: true });
+    await expect(propose(w, p.value, id)).resolves.toMatchObject({ outcome: "applied" });
+  });
+});
+
+describe("DG-2: the button says what it does", () => {
+  it("the press applies at once as the maintainer's own save, so the button is \"Apply this change\"; the old words are gone from the code that names it", () => {
+    expect(DIAGNOSIS_APPLY_BUTTON_LABEL).toBe("Apply this change");
+    expect(DIAGNOSIS_APPLY_BUTTON_LABEL).not.toMatch(/propose/iu);
+  });
+  it("the browser-safe copy of the dev container pattern is the setup proposal's own", () => {
+    expect(DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.source).toBe(DEVCONTAINER_PATH_PATTERN.source);
+    expect(DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.flags).toBe(DEVCONTAINER_PATH_PATTERN.flags);
   });
 });

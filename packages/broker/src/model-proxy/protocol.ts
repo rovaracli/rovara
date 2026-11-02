@@ -47,6 +47,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
       ttlSeconds: z.number().int().min(1).max(MAX_TTL_SECONDS),
       models: z.array(z.string().min(1).max(512)).min(1).max(MAX_KEY_MODELS).optional(),
       tags: MintTagsSchema.optional(),
+      rovaraPaid: z.literal(true).optional(),
     }).strict(),
   }).strict(),
   z.object({
