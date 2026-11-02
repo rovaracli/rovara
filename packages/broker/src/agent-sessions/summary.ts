@@ -394,6 +394,11 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
       default: status = "waiting";
     }
   }
+  // A setup run (SH13): its tile says what it is doing in fixed words and a count, whatever the generic branches read (it has no workflow stage and no agent-step run to name a step).
+  if (task.purpose === "setup_agent" && (status === "running" || status === "starting")) {
+    const commands = task.setupAgentProgress?.commands;
+    step = commands === undefined || commands < 1 ? "Setting up the project" : `Setting up the project: ${String(commands)} ${commands === 1 ? "command" : "commands"} run`;
+  }
   const needsPeople = [...waitingOn.people];
   // The person the task waits on is its owner now (Plan 5 Task 12a); a task whose owner can't be read waits on no one by name.
   const waitingOwner = tryEffectiveTaskOwner(task)?.developerId;

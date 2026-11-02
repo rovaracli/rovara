@@ -45,6 +45,8 @@ const ROWS: readonly Row[] = [
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId*2", ".startedBy"],
   // Wiring A (LR-W1): who started the task, read to tell the initiator apart from a third party's send-back or revert in a lesson's evidence; it decides nothing about who owns the task now
   ["lessons/task-subject.ts", "taskStartActor", "history", ".developerId", ".startedBy*2"],
+  // SH12: a setup website ask is credited to the person the BROKER recorded as the starter of its setup run (read from the run's own task record), and a press is refused unless that still matches; it decides nothing about who owns the task now
+  ["rovara-code/setup-host-ask.ts", "setupRunStarterOf", "history", ".developerId*2", ".startedBy"],
   // I3: the reference rows of a commit's attribution store the person a reference stood for (the requester or approver of a task); it decides nothing about who owns the task
   // I3: the publication names the person who ASKED for the work (the task's creator, as it was when the task started), not whoever owns it now; it decides nothing about who owns the task
   ["aws/developer-tasks/publication.ts", "startTaskWorkflowPublicationFromSystem", "history", ".developerId"],

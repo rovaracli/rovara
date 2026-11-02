@@ -249,6 +249,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/test-env/health.ts",
       // 2026-11-02, sh-health-wire (SH28): a proposed fix task (`TEST_ENV_PROPOSED_FIX_TASK`, written once per key, never updated) expires after 30 days (TTL_MS) if nobody starts or dismisses it; only proposed-tasks.ts writes it.
       "packages/broker/src/test-env/proposed-tasks.ts",
+      // 2026-11-02, sh-setup-wire (SH12-SH15): the setup run's journal entries, its command counter, its host-ask items (31 days) and the setup-run proposal index (7 days) are working rows of one setup run, meant to expire; none is a durable record.
+      "packages/broker/src/rovara-code/setup-journal.ts", "packages/broker/src/rovara-code/setup-run-proposal.ts", "packages/broker/src/rovara-code/setup-command.ts", "packages/broker/src/rovara-code/setup-host-ask.ts",
       // 2026-10-31, the lanes merged into cloud/next. Each writes rows that are meant to expire, none a durable record, and each was read for that:
       // Meta repo lane E (context sources): the loaded-knowledge manifest of a run, a source's call and byte counters, the kept quotes and citations of a result, and a source change's history item.
       "packages/broker/src/developer/loaded-knowledge.ts", "packages/broker/src/context-sources/usage.ts", "packages/broker/src/context-sources/quotes.ts",

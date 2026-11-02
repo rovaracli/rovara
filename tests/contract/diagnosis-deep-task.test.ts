@@ -204,6 +204,8 @@ describe("DG-1 S4: a deep start that waited for its run limit", () => {
     expect(heldPreparationOptions({ purpose: "diagnosis" }, { ...held, readOnly: true })).toEqual({ readOnly: true, setupDraft: true });
     expect(heldPreparationOptions({ purpose: "setup_draft" }, { ...held, readOnly: true })).toEqual({ readOnly: true, setupDraft: true });
     expect(heldPreparationOptions({}, held)).toEqual({});
-    expect(heldPreparationOptions({ purpose: "setup_agent" }, held)).toEqual({});
+    // A setup run (SH14) is prepared read-only as its first start was.
+    expect(heldPreparationOptions({ purpose: "setup_agent" }, held)).toEqual({ setupDraft: true });
+    expect(heldPreparationOptions({ purpose: "coding" as never }, held)).toEqual({});
   });
 });

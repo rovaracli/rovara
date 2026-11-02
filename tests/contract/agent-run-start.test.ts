@@ -473,6 +473,15 @@ describe("startAgentRun", () => {
     expect(t.taskCount()).toBe(0);
   });
 
+  it("a payer the rules named moments ago (payerFromRules) that no longer matches is a retryable busy answer, never a charge to someone else (the setup run's start)", async () => {
+    const t = await setup();
+    const same = await startAgentRun(t.starter(), t.request({ payer: { kind: "member", developerId: MAYA.developerId }, payerFromRules: true }));
+    expect(same.taskId).toBeTruthy();
+    const moved = await refusal(startAgentRun(t.starter(), t.request({ requestId: randomUUID(), payer: { kind: "project", project: "payments" }, payerFromRules: true })));
+    expect(moved).toEqual({ code: "WORKSPACE_BUSY", message: "the project's payment settings changed while starting; try again with the same request_id" });
+    expect(t.taskCount()).toBe(1);
+  });
+
   it("resolves an autonomous start through the roster first, then starts it with the agent as its payer", async () => {
     const t = await setup();
     const agentId = await t.agentOf(TRIAGE, { name: "Watcher", roster: false });

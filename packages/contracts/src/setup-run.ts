@@ -117,6 +117,8 @@ export const SetupJournalEntrySchema = z
     /** The command downloads code and runs it. It ran only in the setup sandbox, and it is never turned into an approved command without the item consent card. */
     flagged: z.boolean(),
     blockedHosts: z.array(SetupHostSchema).max(SETUP_BLOCKED_HOSTS_MAX),
+    /** Set on an AGENT command that ran after a person's command (the position of the latest one before it): the sandbox may hold what that command changed, so what this command shows is evidence of the run, not of the repository alone. */
+    afterPersonCommandN: z.number().int().min(1).max(SETUP_JOURNAL_MAX_ENTRIES).optional(),
     /** Plain text, no control characters other than newline and tab. */
     tail: z.string().max(SETUP_JOURNAL_TAIL_BYTES).regex(/^[\P{Cc}\n\t]*$/u, "plain text"),
     startedAt: z.string().datetime(),
@@ -208,3 +210,15 @@ export const SetupValueSourceSchema = z.union([
   z.literal(SETUP_PERSON_SOURCE),
 ]);
 export type SetupValueSource = z.infer<typeof SetupValueSourceSchema>;
+
+// ---- on the wire to the worker (SH14)
+
+/** A worker that lists this runs a setup run (`workflowMode: "SETUP_AGENT"`); the broker sends one only to such a worker. */
+export const SETUP_AGENT_FEATURE = "task.setupAgent.v1" as const;
+
+/**
+ * What the broker tells the worker about a setup run: the limits the run started with (the project's setting cut down to the company's lock, fixed at start). Nothing else: the repositories and the
+ * commit each is read at come from the preparation manifest the broker wrote (the default branch's head as the broker resolved it), never from a field of this payload.
+ */
+export const SetupAgentWireSchema = z.object({ limits: SetupAgentLimitsSchema }).strict();
+export type SetupAgentWire = z.infer<typeof SetupAgentWireSchema>;

@@ -272,7 +272,7 @@ const SELECTION_METHOD_RANK: Record<string, number> = { full: 0, coverage_map: 1
 
 /**
  * Whether `next` runs FEWER of a project's tests than `previous` did: the selection method moved from running everything toward choosing tests (full, then a coverage map, then an import graph, then a declared
- * mapping), a check began to name which tests it runs (`selectArgs`, added or changed), or an entry was taken out of what always runs or of the files that make the whole suite run. A change that only runs more is not narrowing.
+ * mapping), a check began to name which tests it runs (`selectArgs`, added or changed), a check was taken out, or an entry was taken out of what always runs or of the files that make the whole suite run. A change that only runs more is not narrowing.
  */
 export function selectionNarrowed(previous: TestEnvironmentBody, next: TestEnvironmentBody): boolean {
   const rank = (method: string): number => SELECTION_METHOD_RANK[method] ?? Number.POSITIVE_INFINITY;
@@ -283,6 +283,8 @@ export function selectionNarrowed(previous: TestEnvironmentBody, next: TestEnvir
     const was = before.get(check.id);
     if (was !== undefined && check.selectArgs !== undefined && JSON.stringify(was.selectArgs ?? null) !== JSON.stringify(check.selectArgs)) return true;
   }
+  // A check taken out of the environment is narrowing too: what it ran no longer runs (a proposal built from a setup run replaces the repositories' checks, and must not drop an approved one unseen).
+  if ([...before.keys()].some((id) => !nextIds.has(id))) return true;
   if (previous.selection.alwaysRun.some((id) => nextIds.has(id) && !next.selection.alwaysRun.includes(id))) return true;
   return previous.selection.fullSuiteOn.some((glob) => !next.selection.fullSuiteOn.includes(glob));
 }

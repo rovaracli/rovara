@@ -7,9 +7,15 @@ import { z } from "zod";
 /** A worker that lists this accepts the `steer` invocation; the broker sends it only to such a worker (an older one is never sent it, and the message stays a note). */
 export const LIVE_STEER_FEATURE = "task.liveSteer.v1" as const;
 
-/** The steps a message can reach while they run: the ones that read a person's notes at their start (planning and coding). Reviews, plan checks and checks never take one. */
-export const LIVE_STEER_STEPS = ["UNDERSTAND", "PLAN", "IMPLEMENT"] as const;
+/**
+ * The steps a message can reach while they run: the ones that read a person's notes at their start (planning and coding), and the setup run (SH13, `SETUP`: its operation mode is `SETUP_AGENT`).
+ * Reviews, plan checks and checks never take one.
+ */
+export const LIVE_STEER_STEPS = ["UNDERSTAND", "PLAN", "IMPLEMENT", "SETUP"] as const;
 export type LiveSteerStep = (typeof LIVE_STEER_STEPS)[number];
+
+/** The operation mode (`workflowMode`) of a step that takes a message, when it is not the step's own name: the setup run's mode is `SETUP_AGENT`, its step `SETUP`. */
+export const LIVE_STEER_STEP_OF_MODE: Readonly<Record<string, (typeof LIVE_STEER_STEPS)[number]>> = { SETUP_AGENT: "SETUP" };
 
 /**
  * What the message is to the agent. `owner_instruction`: it came from the task's owner, so it is an instruction as long as it stays inside the approved plan. `information`: it came from

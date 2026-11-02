@@ -29,6 +29,7 @@ import type { TestEnvDeps } from "../../org/test-environment.js";
 import { setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { shownLine } from "../../org/shown-line.js";
 import { derivedRequestId } from "../../rovara-code/setup-draft.js";
+import { refuseSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { refusedCommand } from "../../test-env/draft.js";
 import { PROVED_CHECK_KINDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
 import { getSignIn } from "./authentication.js";
@@ -171,6 +172,7 @@ export async function applyProposalCommands(
 ): Promise<Omit<TestEnvApplyAnswer, "state">> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change the project's settings");
   const { definition } = input;
+  await refuseSetupRunProposal({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, input.name, input.body);
   if (definition.revision !== input.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "The project's settings changed since you looked. Reload and try again.");
   const first = definition.repositories[0]?.path;
   if (first === undefined) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.oneDirectory);

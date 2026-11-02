@@ -49,6 +49,7 @@ import {
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
 import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from "../../org/test-env-approval.js";
 import { setupDraftState } from "../../rovara-code/setup-draft.js";
+import { readSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun, proveReportFromSetupCheck } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
@@ -129,6 +130,10 @@ async function shownProposal(deps: DeveloperRouteDependencies, project: ProjectV
     const body = await readProposal(store, project.orgId, project.name, edited.digest).catch(() => undefined);
     if (body !== undefined) return { body, digest: edited.digest, source: "edited" };
   }
+  // A setup run's proposal (SH15): shown as Rovara's, never as a person's edit.
+  const fromRun = await readSetupRunProposal(store, project.orgId, project.name);
+  const runBody = fromRun === undefined ? undefined : await readProposal(store, project.orgId, project.name, fromRun.digest).catch(() => undefined);
+  if (fromRun !== undefined && runBody !== undefined) return { body: runBody, digest: fromRun.digest, source: "setup" };
   const candidate = draft.status === "ready" ? mergeDraftWithApproved(draft.draft.environment, approved?.environment) : undefined;
   if (candidate === undefined) return undefined;
   const digest = testEnvDigest(candidate);

@@ -73,7 +73,12 @@ export type DecisionItem =
    * in the card's words, `blockedResult` the fixed result label. `knownFailingTests` is how many tests "Mark as known failing" would add (0: the card has no such action). All of it is the broker's own record,
    * never a worker's, a model's or a repository's words.
    */
-  | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number; unconfirmedFailing: number });
+  | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number; unconfirmedFailing: number })
+  /**
+   * SH12: a website the setup run needs, one card per host per project. `host` is a plain DNS name the broker checked; `from` is the repository file and line that led to it and `journalN` the setup command
+   * that hit it: both are shown quoted and marked "from the repository", never read as instructions. `staffStep` is true where Rovara staff also approve the website (Cloud).
+   */
+  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean; /** The name has a punycode (`xn--`) label: it may look like another name. */ international?: boolean | undefined; /** A person's own command hit this website: who typed it, as a label (never a name). */ typedBy?: string | undefined });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -110,7 +115,7 @@ export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BA
 
 const APPROVABLE: ReadonlySet<DecisionKind> = new Set<DecisionKind>([
   "approve_plan", "approve_requirements", "approve_design", "merge", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask",
-  "approve_spend", "approve_test_env", "confirm_env_change",
+  "approve_spend", "approve_test_env", "confirm_env_change", "setup_host",
 ]);
 
 const usd = (value: number): string => `$${value.toFixed(2)}`;
@@ -198,6 +203,19 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
           ...(item.unconfirmedFailing > 0 ? [chip("test_proof", "Failing in checks that failed before", plural(item.unconfirmedFailing, "more test", "more tests") + ", not confirmed older", "bad")] : []),
         ],
         why: "The code did not fail: the test setup could not give a verdict.",
+      };
+    case "setup_host":
+      return {
+        question: plainLine(`Let the setup of this project reach ${item.host}?`, 160),
+        next: item.staffStep ? "The website is added to this project's list; Rovara staff then approve it before it works." : "The website is added to this project's list, and setup tries again.",
+        evidence: [
+          chip("environment", "Website", item.host, "warning"),
+          ...(item.international === true ? [chip("risk", "Name", "international name", "warning")] : []),
+          ...(item.from === undefined ? [] : [chip("other", "From the repository", `${item.from.path}:${String(item.from.line)}`, "unknown")]),
+          ...(item.journalN === undefined ? [] : [chip("checks", "Setup command", `#${String(item.journalN)} was blocked`, "unknown")]),
+          ...(item.typedBy === undefined ? [] : [chip("other", "Typed by", item.typedBy, "warning")]),
+        ],
+        why: "A setup command could not reach this website. Allow it only if you know what it is.",
       };
     case "confirm_env_change":
       return { question: "Accept this change to the test setup?", next: "The running task continues on the new setup.", evidence: [chip("environment", "Changed", item.what, "warning")], why: "The setup changed while the task was running." };

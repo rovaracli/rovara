@@ -12,6 +12,7 @@
 //   - a command that downloads code and runs it is marked in the journal record (`flagged`); the proposal reader flags it again and never turns it into an item;
 //   - a command has a time limit even when the model names none;
 //   - the answer is read by the draft's reader (`readSetupProposalAnswer`): bounded, redacted, cited, secrets by name only. Repository text and command output are data.
+import { isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { agentXError, isCredentialKey, redactText, remoteCodeReason, type SetupProposal, type SetupRunEndWord } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
@@ -21,6 +22,8 @@ import type { CollectedProcess, CollectedProcessOptions } from "./collected-proc
 import { asksForCodeChange } from "./setup-agent-prompt.js";
 import { SETUP_AGENT_MAX_OUTPUT_TOKENS } from "./setup-agent-journal.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
+import type { SetupScan } from "./setup-scan.js";
+import type { TrackedPaths } from "./setup-citations.js";
 import { MASK_OPTIONS, SANDBOX_INIT, TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, TaskSandbox, type TaskSandboxOptions } from "./task-sandbox.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 
@@ -36,6 +39,8 @@ export const SETUP_COMMAND_TAIL_BYTES = 4_096;
 /** What a refused command prints, in fixed words. */
 export const SETUP_COMMAND_REFUSED_TEXT = "Rovara did not run this command because the setup run has ended.";
 const CAPTURE_BYTES = 64 * 1024;
+/** Said before a command's output when only its last 4 KiB is shown. */
+export const SETUP_OUTPUT_CUT_TEXT = "[the earlier output was left out; this is the last part]";
 
 // ---- no credential reaches the sandbox
 
@@ -62,8 +67,9 @@ export function credentialShapedVariables(environment: Readonly<Record<string, s
 
 const ALLOWED_RUN_FLAGS: ReadonlyMap<string, number> = new Map([
   ["--detach", 0], ["--name", 1], ["--label", 1], ["--network", 1], ["--user", 1], ["--cpus", 1], ["--memory", 1], ["--memory-swap", 1], ["--pids-limit", 1],
-  ["--cap-drop", 1], ["--security-opt", 1], ["--volume", 1], ["--tmpfs", 1], ["--workdir", 1], ["--entrypoint", 1],
+  ["--cap-drop", 1], ["--security-opt", 1], ["--volume", 1], ["--tmpfs", 1], ["--workdir", 1], ["--entrypoint", 1], ["--dns", 1], ["--ip", 1],
 ]);
+const SETUP_NETWORK_NAME = /^agentx-setup-[0-9a-f]{12}$/u;
 const REFUSED_RUN = "AgentX refused to start the setup sandbox: its container options are not the sandbox's";
 
 /**
@@ -75,7 +81,7 @@ const REFUSED_RUN = "AgentX refused to start the setup sandbox: its container op
  *   - flags the sandbox does not use (an environment variable in any spelling, `--privileged`, `--device`, `--pid`...) are refused as unknown.
  * Throws `RUNTIME_UNAVAILABLE` with a fixed sentence (no argument is repeated, since an argument could be a secret).
  */
-export function assertSetupSandboxRunArgs(args: readonly string[], options: { rootPath: string }): void {
+export function assertSetupSandboxRunArgs(args: readonly string[], options: { rootPath: string; network?: { name: string; ip: string; helperIp: string } | undefined }): void {
   const refuse = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", REFUSED_RUN); };
   const root = resolve(options.rootPath);
   if (!isAbsolute(root) || root === "/" || args[0] !== "run") return refuse();
@@ -95,7 +101,16 @@ export function assertSetupSandboxRunArgs(args: readonly string[], options: { ro
   if (index >= args.length || args.slice(index + 1).join(" ") !== "-- sleep infinity" || args.some((argument) => argument.includes("docker.sock"))) return refuse();
   const only = (flag: string): string | undefined => (seen.get(flag)?.length === 1 ? seen.get(flag)![0] : undefined);
   const exactly = (flag: string, value: string): boolean => only(flag) === value;
-  if (!exactly("--network", TASK_SANDBOX_NETWORK) || !exactly("--user", TASK_SANDBOX_USER) || !exactly("--cap-drop", "ALL") || !exactly("--security-opt", "no-new-privileges")) return refuse();
+  // The network is the shared task network, or exactly the run's own network with exactly the one address the run gave the sandbox and no other.
+  if (options.network === undefined ? seen.has("--ip") : !(exactly("--network", options.network.name) && exactly("--ip", options.network.ip))) return refuse();
+  if (options.network === undefined && !exactly("--network", TASK_SANDBOX_NETWORK)) return refuse();
+  // `--dns`: IP addresses only, at most three (a name out of a repository can never become a resolver).
+  // On the run's own network the network's name has the run network's shape and the ONE resolver is the run's helper; on the shared network at most three addresses.
+  const dnsServers = seen.get("--dns") ?? [];
+  if (options.network !== undefined) {
+    if (!SETUP_NETWORK_NAME.test(options.network.name) || dnsServers.length !== 1 || dnsServers[0] !== options.network.helperIp) return refuse();
+  } else if (dnsServers.length > 3 || dnsServers.some((server) => isIP(server) === 0)) return refuse();
+  if (!exactly("--user", TASK_SANDBOX_USER) || !exactly("--cap-drop", "ALL") || !exactly("--security-opt", "no-new-privileges")) return refuse();
   if (!exactly("--workdir", root) || !exactly("--entrypoint", SANDBOX_INIT) || !exactly("--volume", `${root}:${root}`) || !seen.has("--detach")) return refuse();
   if (!/^[1-9][0-9]{0,6}$/u.test(only("--pids-limit") ?? "")) return refuse();
   const cpus = seen.get("--cpus");
@@ -150,7 +165,7 @@ export function assertSetupSandboxExecArgs(args: readonly string[]): void {
  * The Docker seam of a setup sandbox for the workspace `rootPath`. `run` must pass `assertSetupSandboxRunArgs`; `exec` (and the file tools' byte-exact exec) must pass `assertSetupSandboxExecArgs`.
  * Everything else (inspect, network, rm, ps) passes. Wraps the real Docker, or a fake in a test.
  */
-export function guardedSetupDocker(docker: DockerCli = createDockerCli(), options: { rootPath: string }): DockerCli {
+export function guardedSetupDocker(docker: DockerCli = createDockerCli(), options: { rootPath: string; network?: { name: string; ip: string; helperIp: string } | undefined }): DockerCli {
   return {
     async run(args: readonly string[], runOptions?: CollectedProcessOptions): Promise<CollectedProcess> {
       if (args[0] === "run") assertSetupSandboxRunArgs(args, options);
@@ -168,7 +183,9 @@ export function guardedSetupDocker(docker: DockerCli = createDockerCli(), option
 
 /** The setup sandbox: the R56 task sandbox, through the guarded Docker seam. Nothing falls back to the local shell. */
 export function createSetupSandbox(options: Omit<TaskSandboxOptions, "docker"> & { docker?: DockerCli }): TaskSandbox {
-  return new TaskSandbox({ ...options, docker: guardedSetupDocker(options.docker, { rootPath: options.rootPath }) });
+  const helperIp = options.dns?.[0];
+  if (options.network !== undefined && (options.dns?.length !== 1 || helperIp === undefined)) throw agentXError("CONFIG_INVALID", "a setup sandbox on a run network has exactly its helper as resolver");
+  return new TaskSandbox({ ...options, docker: guardedSetupDocker(options.docker, { rootPath: options.rootPath, network: options.network === undefined ? undefined : { ...options.network, helperIp: helperIp! } }) });
 }
 
 // ---- tracked files are left alone
@@ -314,18 +331,19 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
         const result = await input.base.exec(command, cwd, {
           ...options,
           timeout,
-          onData: (data) => {
-            captured = (captured + data.toString("utf8")).slice(-CAPTURE_BYTES);
-            options.onData(data);
-          },
+          // What the command prints is kept here and the model is shown only its last 4 KiB (below), never the stream: a turn's input is bounded by the margin the governor prices (`SETUP_NEXT_TURN_MARGIN_TOKENS`).
+          // Pi's own cap on a tool's output (2,000 lines or 50 KB) still applies on top, and is the larger of the two.
+          onData: (data) => { captured = (captured + data.toString("utf8")).slice(-CAPTURE_BYTES); },
         });
         exitCode = result.exitCode;
       } catch (error) {
         failure = error;
         timedOut = error instanceof Error && error.message.startsWith("timeout:");
       }
+      const tail = commandTail(captured);
+      if (tail !== "") options.onData(Buffer.from(`${Buffer.byteLength(captured, "utf8") > Buffer.byteLength(tail, "utf8") ? `${SETUP_OUTPUT_CUT_TEXT}\n` : ""}${tail}`));
       const record: SetupCommandRecord = {
-        command: redactText(command), flagged, ...(decision?.allow === true && decision.ticket !== undefined ? { ticket: decision.ticket } : {}), exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail: commandTail(captured), startedAt,
+        command: redactText(command), flagged, ...(decision?.allow === true && decision.ticket !== undefined ? { ticket: decision.ticket } : {}), exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail, startedAt,
       };
       await input.hooks?.afterCommand?.(record);
       if (input.checkFiles !== undefined) {
@@ -348,10 +366,10 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
  * these tools, so it has the shell and no write or edit tool.
  */
 export function setupAgentSessionParts(input: { sandbox: TaskSandbox; shell: SetupAgentShell }): {
-  workflowMode: "IMPLEMENT"; agentTools: readonly string[]; bashOperations: BashOperations; fileTools: ReturnType<TaskSandbox["fileOpsTarget"]>; sequentialTools: true; maxOutputTokens: number;
+  workflowMode: "SETUP"; agentTools: readonly string[]; bashOperations: BashOperations; fileTools: ReturnType<TaskSandbox["fileOpsTarget"]>; sequentialTools: true; maxOutputTokens: number;
 } {
   // Sequential tools: the governor counts a command when it is allowed, but one command at a time is also what the journal and the live view show. The output cap bounds what one turn can cost.
-  return { workflowMode: "IMPLEMENT", agentTools: SETUP_AGENT_TOOLS, bashOperations: input.shell.operations, fileTools: input.sandbox.fileOpsTarget(), sequentialTools: true, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS };
+  return { workflowMode: "SETUP", agentTools: SETUP_AGENT_TOOLS, bashOperations: input.shell.operations, fileTools: input.sandbox.fileOpsTarget(), sequentialTools: true, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS };
 }
 
 // ---- the final answer
@@ -373,10 +391,14 @@ export async function finishSetupAgent(input: {
   repositories: ReadonlyArray<SetupDraftRepository>;
   metaRepo?: string | undefined;
   records: ReadonlyArray<Pick<SetupCommandRecord, "flagged">>;
+  /** The scan taken before the agent ran and the files of the resolved commit (setup-citations.ts). */
+  scan?: SetupScan | undefined;
+  tracked?: TrackedPaths | undefined;
 }): Promise<SetupAgentOutcome> {
   if (input.verdict === undefined || !input.verdict.ok) return { ok: false, end: "changed_repository_files", errors: [input.verdict === undefined ? "the repositories were not checked" : input.verdict.reason] };
   const read = await readSetupProposalAnswer(input.finalText, {
     basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories: input.repositories, ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }),
+    ...(input.scan === undefined ? {} : { scan: input.scan }), ...(input.tracked === undefined ? {} : { tracked: input.tracked }),
   });
   if (!read.ok) return { ok: false, end: "infrastructure", errors: read.errors };
   return { ok: true, end: asksForCodeChange(input.finalText) ? "needs_code_change" : "proposed", proposal: read.proposal, answered: read.answered, flaggedRan: input.records.filter((record) => record.flagged).length };

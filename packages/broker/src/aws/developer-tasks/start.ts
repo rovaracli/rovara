@@ -58,6 +58,7 @@ import { setupWatchKey } from "../stuck-setup.js";
 import { setupNoteForStart, withFirstEvent } from "../../rovara-code/setup-status.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { setupDraftPointerItem } from "../../rovara-code/setup-draft.js";
+import { setupAgentPointerItem } from "../../rovara-code/setup-agent.js";
 import { prepareRun, readRunRequest, runLimitsOf, runStartItems, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../../agents/runs.js";
 import { bindingItems, threadBindingItems } from "../../agent-sessions/bindings.js";
 import { createTaskSessionItems, sessionStarterFor } from "../../agent-sessions/create.js";
@@ -347,7 +348,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const paused = prepared?.paused === true;
   // Plan 6 Task 10: Rovara drafting the project's dev setup. A read-only look at the repositories with no workflow; paid, admitted and limited like a Quick plan.
   // Live interaction F3: a deep diagnosis is the same read-only look (the boundary, the start rules and the planning limit are a setup draft's); only its purpose, its result and its pointer differ.
-  const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined;
+  const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined || run?.setupAgent !== undefined;
   if (settingUpDraft && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "a setup draft is a coding run of Rovara Code"));
   // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
@@ -387,7 +388,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   }
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
-  let startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
+  // SH14: a setup run starts at its own budget (the setup limits, $4 by default), not at the Quick plan's planning limit.
+  let startLimitUsd = deps.modelAccess === undefined ? undefined : run?.setupAgent !== undefined ? run.setupAgent.limits.budgetCents / 100 : await startingLimitUsd(deps, {
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
@@ -504,7 +506,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
     ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
     ...(run?.codeIntent?.retryOf === undefined ? {} : { retryOfTaskId: run.codeIntent.retryOf }),
-    ...(settingUpDraft ? run?.diagnosis !== undefined ? { purpose: "diagnosis" as const, diagnosis: run.diagnosis } : { purpose: "setup_draft" as const } : {}),
+    ...(settingUpDraft ? run?.diagnosis !== undefined ? { purpose: "diagnosis" as const, diagnosis: run.diagnosis } : run?.setupAgent !== undefined ? { purpose: "setup_agent" as const, setupAgentLimits: run.setupAgent.limits } : { purpose: "setup_draft" as const } : {}),
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
@@ -535,7 +537,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
     // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
     conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
-    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: "SETUP_DRAFT" as const } : {}),
+    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: run?.setupAgent !== undefined ? "SETUP_AGENT" as const : "SETUP_DRAFT" as const } : {}),
   };
   const turn = aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",
@@ -581,6 +583,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // Plan 6 Task 10: the project's pointer to this draft, in this same transaction; it holds only while the pointer is the one the route read.
     ...(run?.setupDraft === undefined ? [] : [setupDraftPointerItem(deps.tableName, {
       orgId: deps.orgId, project: request.project, taskId, requestId: request.requestId, requestedBy: caller.developerId, basedOnRevision: revision, startedAt: receivedAt, seenTaskId: run.setupDraft.seenTaskId,
+    })]),
+    // SH14: the project's pointer to this setup run (one run per project), in this same transaction; it holds only while the pointer is the one the route read.
+    ...(run?.setupAgent === undefined ? [] : [setupAgentPointerItem(deps.tableName, {
+      orgId: deps.orgId, project: request.project, taskId, requestId: request.requestId, requestedBy: caller.developerId, basedOnRevision: revision, startedAt: receivedAt, limits: run.setupAgent.limits, seenTaskId: run.setupAgent.seenTaskId,
     })]),
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {

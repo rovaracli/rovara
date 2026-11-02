@@ -194,6 +194,8 @@ export const BROKER_SETTINGS = {
   setupRecipes: { code: "sp", variable: "SETUP_RECIPES_ENABLED" },
   // Nightly health (setup-test-health SH28, switch `nh`): the nightly run decides the project's health ("Setup needs repair" with a Fix setup card, a start banner, an optional proposed fix task). Stack parameter NightlyHealthEnabled, "0" by default: the broker reads it as NIGHTLY_HEALTH_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   nightlyHealth: { code: "nh", variable: "NIGHTLY_HEALTH_ENABLED" },
+  // Setup agent (sh-setup-wire, SH14; design setup-test-health switch `su`): "Set up this project" can start a live setup run that runs commands in a setup sandbox, and the host-ask cards and the run's routes exist. Stack parameter SetupAgentEnabled, "0" by default: the broker reads it as SETUP_AGENT_ENABLED, and the setup agent is on only when it is exactly "1". Hard-gated at deploy by the five Linux checks of deferred check SH-1 (the per-run network and the DNS watch helper). Packed setting, not a Lambda variable (ENV-ROOM).
+  setupAgent: { code: "su", variable: "SETUP_AGENT_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;
