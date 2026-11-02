@@ -64,7 +64,7 @@ describe("the wiring and the nightly baseline", () => {
 
   const newFailing = async (db: FakeDynamoDb, names: string[], env: NodeJS.ProcessEnv = { VERIFY_RESULTS_ENABLED: "1" }) => {
     const deps = fixSetupDependencies({ documentClient: db, tableName: "state", now: () => NOW } as never, env, async () => pack(names));
-    return deps.newFailingChecks === undefined ? undefined : deps.newFailingChecks(taskOf);
+    return deps.newFailingChecks === undefined ? undefined : deps.newFailingChecks(taskOf, undefined);
   };
 
   it("names the checks that failed before and also have a failing test the usable nightly does not show (the auto-fix policy sends those back), only while vx is on", async () => {
@@ -74,6 +74,26 @@ describe("the wiring and the nightly baseline", () => {
     expect(await newFailing(bench({ ageMs: 8 * 86_400_000 }), ["Y"])).toEqual(["unit"]);
     expect(await newFailing(bench({ branch: "release" }), ["Y"])).toEqual(["unit"]);
     for (const value of [undefined, "0", "true", " 1"]) expect(await newFailing(bench({}), ["Y", "Z"], value === undefined ? {} : { VERIFY_RESULTS_ENABLED: value }), String(value)).toBeUndefined();
+  });
+
+  it("names a check that failed on the original code when the broker has no pack for this code, or the pack does not name it (nothing about its tests is confirmed)", async () => {
+    const withVerification = (rows: Array<{ checkId: string; status: string }>) => ({ ...taskOf, workflow: { candidate: { digest: "d".repeat(64) }, verification: { candidateDigest: "d".repeat(64), results: rows } } }) as unknown as DeveloperTaskRecord;
+    const task2 = withVerification([{ checkId: "unit", status: "FAILED" }, { checkId: "api", status: "FAILED" }, { checkId: "lint", status: "FAILED" }, { checkId: "ok", status: "PASS" }]);
+    const originals = { unit: "failed", api: "cannot-run", lint: "passed", ok: "failed" };
+    const call = async (read: () => Promise<undefined | ReturnType<typeof pack>>) => (await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, read).newFailingChecks!(task2, originals));
+    // No pack: every failed check that failed on the original code. A check that passed there is not one (it is a regression, which the classifier already sends back).
+    expect([...await call(async () => undefined)].sort()).toEqual(["api", "unit"]);
+    // A pack that names only unit (and knows its test): api is still unconfirmed.
+    expect(await call(async () => pack(["Y"]))).toEqual(["api"]);
+    // Without the facts of the original run nothing is claimed.
+    expect(await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, async () => undefined).newFailingChecks!(task2, undefined)).toEqual([]);
+  });
+
+  it("compares the nightly with the task's own base branch: a task whose pull request targets another branch gets no excuse", async () => {
+    const db = bench({});
+    db.set({ pk: `DEVTASK#${taskOf.taskId}`, sk: "MERGE_TRACKING#repo#1", entityType: "MERGE_TRACKING", state: "open", baseBranch: "release" });
+    expect(await newFailing(db, ["Y"])).toEqual(["unit"]);
+    expect(await run(db, ["Y"])).toBeUndefined();
   });
 
   it("offers the mark for a test a usable nightly lists", async () => {

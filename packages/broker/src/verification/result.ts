@@ -107,21 +107,35 @@ function unclearE2e(facts: AutoFixFacts): "code" | "original_fails" | "original_
   return groups.every((result) => result === "passed") ? "code" : "cause_unknown";
 }
 
+/** A check with no per-test data to read at all: no test counts, or a count of zero failures while the check failed. */
+export const hasNoTestData = (check: EvidencePack["checks"][number]): boolean => check.tests === undefined || check.tests.failed + check.tests.errored === 0;
+
+/**
+ * The failing tests of a check, when the pack gives usable per-test data for it: every failing test named once (distinct names) and as many names as the count says. Undefined when it does not (no test
+ * counts, a count of zero while the check failed, fewer names than the count, or a name twice): the data cannot say which tests failed, so nothing about them can be confirmed.
+ */
+export function readableFailingTests(check: EvidencePack["checks"][number]): string[] | undefined {
+  if (check.tests === undefined) return undefined;
+  const declared = check.tests.failed + check.tests.errored;
+  if (declared === 0) return undefined;
+  const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored").map((test) => test.name);
+  if (failed.length !== declared || new Set(failed).size !== failed.length) return undefined;
+  return failed;
+}
+
 /**
  * Whether a check that failed on the original code too has a failing test that was NOT failing before (owner decision, Opus re-check M2): a failing test the already-failing set does not know (the last usable nightly's
- * failures and a maintainer's marks for this check; with no usable nightly, only the marks), a failing test the change itself added (`newTests`), or failing tests the pack does not name. A check with no test
- * counts at all (a lint, say) has none to judge. Such a check is a failure of the CODE ("Code failed", the code goes back), never "Blocked by environment": the old failure must not hide a new one.
+ * failures and a maintainer's marks for this check; with no usable nightly, only the marks), a failing test the change itself added (`newTests`), or failing tests the pack does not name (or names twice).
+ * A check of the `test` kind whose per-test data cannot be read (no test counts, a count of zero while it failed, because the pack dropped them as disagreeing with the check) is the same: unconfirmed. A check of
+ * another kind (a lint, say) has no tests to judge. Such a check is a failure of the CODE ("Code failed", the code goes back), never "Blocked by environment": the old failure must not hide a new one.
  */
 export function hasUnconfirmedFailingTest(check: EvidencePack["checks"][number], alreadyFailing: readonly KnownFailingEntry[]): boolean {
-  if (check.tests === undefined) return false;
-  const declared = check.tests.failed + check.tests.errored;
-  if (declared === 0) return false;
-  const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
-  if (failed.length !== declared) return true;
+  const failed = readableFailingTests(check);
+  if (failed === undefined) return hasNoTestData(check) ? check.kind === "test" : true;
   const anyCheck = new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string"));
   const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
-  const added = new Set(check.tests.newTests);
-  return failed.some((test) => added.has(test.name) || !(anyCheck.has(test.name) || perCheck.has(`${check.checkId}\u0000${test.name}`)));
+  const added = new Set(check.tests!.newTests);
+  return failed.some((name) => added.has(name) || !(anyCheck.has(name) || perCheck.has(`${check.checkId}\u0000${name}`)));
 }
 
 /** The checks (by ID) that failed on the original code too but have a failing test that was not failing before (see `hasUnconfirmedFailingTest`): the broker's input to the auto-fix policy while the four results are on. */
@@ -136,12 +150,11 @@ function knownFailingExcused(failing: readonly EvidencePack["checks"][number][],
   const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
   return failing.every((check) => {
     if (check.after !== "failed" || check.class !== "already_failing" || check.tests === undefined) return false;
-    const failedTests = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
     // A test the change itself added cannot have been failing before it: the worker's own list of new tests is never a reason to excuse one.
     const added = new Set(check.tests.newTests);
-    // Every failure must be named (the names are capped) and known (a nightly failure in any check, a mark for this check); a check that failed with no failing test named (it did not run its tests) is not excused.
-    return check.tests.failed + check.tests.errored > 0 && failedTests.length === check.tests.failed + check.tests.errored
-      && failedTests.every((test) => !added.has(test.name) && (anyCheck.has(test.name) || perCheck.has(`${check.checkId}\u0000${test.name}`)));
+    // Every failure must be named once (the names are capped) and known (a nightly failure in any check, a mark for this check); a check that failed with no failing test named (it did not run its tests) is not excused.
+    const failedTests = readableFailingTests(check);
+    return failedTests !== undefined && failedTests.every((name) => !added.has(name) && (anyCheck.has(name) || perCheck.has(`${check.checkId}\u0000${name}`)));
   });
 }
 
@@ -198,6 +211,8 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   if (originalFailingChecks.length > 0) originalFails = true;
   // A check that failed before AND has a failing test that was not failing before is the code's fault (M2): the old failure does not hide the new one.
   if (originalFailingChecks.some((check) => hasUnconfirmedFailingTest(check, input.alreadyFailing))) codeReasons.push("new_failing_test");
+  // A check the policy saw fail on the original code that the pack does not name at all (or there is no pack for this code) has no per-test data at all: nothing about its failures is confirmed, so it is the same (M2).
+  if (failedOnOriginal.some((result) => !evidenceChecks.some((check) => check.checkId === result.checkId))) codeReasons.push("new_failing_test");
 
   // ---- 1. Code failed wins; environment faults are still listed
   if (codeReasons.length > 0) return { decided: true, result: "code_failed", reasons: unique([...codeReasons, ...blockedReasons, ...(originalFails && !excused() ? ["fails_on_original_code" as const] : [])]) };

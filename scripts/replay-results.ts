@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
-  AUTO_FIX_CODE_CLASS, EvidencePackSchema, WorkflowSnapshotSchema, classifyBlockedWorkflow, wholeTaskSpendUsd,
+  AUTO_FIX_CODE_CLASS, E2E_PROJECT_CHECK_ID, EvidencePackSchema, WorkflowSnapshotSchema, classifyBlockedWorkflow, wholeTaskSpendUsd,
   type AutoFixBudget, type AutoFixFacts, type TestingResult, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { testingViewOf } from "../packages/broker/src/rovara-code/testing-section.js";
@@ -49,19 +49,27 @@ const BUDGET: AutoFixBudget = { enabled: false, dayBudgetHasRoom: false, baselin
 /** Codes whose class is "code" and that are about the tests (a review's findings have their own section, not a test result). */
 const isTestCodeFault = (code: keyof typeof AUTO_FIX_CODE_CLASS): boolean => AUTO_FIX_CODE_CLASS[code] === "code" && code !== "review-findings";
 
+/** A check that failed on the original code (by the original-code facts) that the evidence pack of THIS code does not name, or there is no such pack: it has no per-test data, so nothing about its failures is confirmed (M2). */
+function failedBeforeWithoutData(workflow: WorkflowSnapshot, facts: AutoFixFacts, current: z.infer<typeof EvidencePackSchema> | undefined): boolean {
+  const results = workflow.verification?.candidateDigest === workflow.candidate?.digest ? workflow.verification?.results ?? [] : [];
+  return results.some((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED" && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run")
+    && !(current?.checks ?? []).some((check) => check.checkId === result.checkId));
+}
+
 /** Whether the stored fields show a failure of the code, by the auto-fix code classes and the evidence pack's own regression class (not by the result rules). */
 export function hasCodeSignal(workflow: WorkflowSnapshot, facts: AutoFixFacts, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[] = []): boolean {
   const blocked = workflow.state === "BLOCKED" && (workflow.stage === "VERIFY" || workflow.stage === "REVIEW");
   if (blocked && classifyBlockedWorkflow(workflow, facts).some((signal) => isTestCodeFault(signal.code))) return true;
   const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
   // Owner decision (M2): a check that failed before with a failing test outside the already-failing list (or one the change added) is the code's fault too.
-  return current?.checks.some((check) => check.after === "failed" && (check.class === "regression" || (check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)))) === true;
+  return current?.checks.some((check) => check.after === "failed" && (check.class === "regression" || (check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)))) === true
+    || failedBeforeWithoutData(workflow, facts, current);
 }
 
-/** The suspect checks: failed on the original code too, with a failing test the already-failing list does not show, one the change added, or failing tests the pack does not name. */
-export function hasSuspectCheck(workflow: WorkflowSnapshot, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[]): boolean {
+/** The suspect checks: failed on the original code too, with a failing test the already-failing list does not show, one the change added, failing tests the pack does not name (or names twice), a test check whose per-test data cannot be read (a compile or import break runs no test), or a check the pack does not cover. */
+export function hasSuspectCheck(workflow: WorkflowSnapshot, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[], facts: AutoFixFacts = {}): boolean {
   const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
-  return current?.checks.some((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)) === true;
+  return current?.checks.some((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)) === true || failedBeforeWithoutData(workflow, facts, current);
 }
 
 /** The classifier under test; the check passes the real one, and a test passes a broken one to prove the check can fail. */
@@ -79,7 +87,7 @@ export function replayOne(raw: unknown, viewOf: ViewOf = testingViewOf): ReplayR
   const pack = evidence?.data;
   const known = snapshot.data.alreadyFailing ?? [];
   const codeSignal = hasCodeSignal(flow, facts, pack, known);
-  const suspect = hasSuspectCheck(flow, pack, known);
+  const suspect = hasSuspectCheck(flow, pack, known, facts);
   const outcome = viewOf({ workflow: flow, facts, budget: BUDGET, evidence: pack, alreadyFailing: known, planned: snapshot.data.planned });
   return { taskId, verdict: outcome.view === undefined ? (outcome.waiting === "unreadable" ? "unreadable" : "undecided") : outcome.view.result, codeSignal, suspect };
 }

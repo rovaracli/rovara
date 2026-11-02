@@ -2,10 +2,10 @@
 // `fixSetup` port and the ask is exactly what it was. The cause is derived from the policy's own codes (never from text), and the tests a "Mark as known failing" could add come from the broker's evidence pack
 // of the task's current code (only while the proof switch gives a pack), never from the worker's words.
 import { failingOnOriginalTests, fixSetupCauseOf, recordFixSetup, FIX_SETUP_MARKABLE_CAUSE } from "../../test-env/fix-setup.js";
-import { usableNightlyFailing } from "../../test-env/nightly-usable.js";
+import { taskBaseBranches, usableNightlyFailing } from "../../test-env/nightly-usable.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
 import { newFailingCheckIds } from "../../verification/result.js";
-import type { EvidencePack } from "@agentx/contracts";
+import { E2E_PROJECT_CHECK_ID, type EvidencePack } from "@agentx/contracts";
 import { verifyResultsEnabled } from "../../verification/switch.js";
 import type { AutofixDependencies } from "../workflow-autofix-runner.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
@@ -24,13 +24,18 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
   return {
     // The checks that failed before and also have a failing test that was not failing before (owner decision, M2): the auto-fix policy sends them back as the code's fault. Reads the broker's pack and the same
     // already-failing list the result classifier uses (a usable nightly and the maintainers' marks).
-    async newFailingChecks(task) {
+    async newFailingChecks(task, checkOriginal) {
       const digest = task.workflow?.candidate?.digest;
       if (digest === undefined || task.orgId === undefined) return [];
       const pack = await packOf({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId }, digest);
-      if (pack === undefined) return [];
       const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
-      return newFailingCheckIds(pack, await alreadyFailingForResults(store, task.orgId, task.project));
+      const fromPack = pack === undefined ? [] : newFailingCheckIds(pack, await alreadyFailingForResults(store, task.orgId, task.project, { taskBranches: await taskBaseBranches(store, task.taskId) }));
+      // A check that failed on the original code that the pack does not name (or there is no pack for this code) has no per-test data: nothing about its failures is confirmed (M2), the same answer the result classifier gives.
+      const covered = new Set((pack?.checks ?? []).map((check) => check.checkId));
+      const uncovered = (task.workflow?.verification?.candidateDigest === digest ? task.workflow.verification.results : [])
+        .filter((result) => result.status === "FAILED" && result.checkId !== E2E_PROJECT_CHECK_ID && (checkOriginal?.[result.checkId] === "failed" || checkOriginal?.[result.checkId] === "cannot-run") && !covered.has(result.checkId))
+        .map((result) => result.checkId);
+      return [...new Set([...fromPack, ...uncovered])];
     },
     fixSetup: {
       async record(task, ask) {
@@ -44,7 +49,7 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
           const port = readPack === undefined ? evidenceRouteDependencies(dependencies, env).evidence : undefined;
           const reader: PackReader | undefined = readPack ?? (port === undefined ? undefined : (key, at) => port.pack(key, at));
           const pack = await reader?.({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId }, digest).catch(() => undefined);
-          const nightly = (await usableNightlyFailing(store, task.orgId, task.project).catch(() => undefined)) ?? [];
+          const nightly = (await usableNightlyFailing(store, task.orgId, task.project, { taskBranches: await taskBaseBranches(store, task.taskId) }).catch(() => undefined)) ?? [];
           offer = failingOnOriginalTests(pack, nightly);
         }
         // A check that failed before AND has a failing test that was not failing before is the code's fault (Code failed, the code goes back): that is not a setup problem, so no Fix setup card is opened for it.

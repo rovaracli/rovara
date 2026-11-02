@@ -22,6 +22,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { DecisionItem } from "../decisions/project.js";
+import { hasNoTestData, readableFailingTests } from "../verification/result.js";
 import { FIX_SETUP_BROWSER_MESSAGE, type FixSetupAnswer } from "../decisions/performer.js";
 import { KnownFailingTestId, knownFailingWrite, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "./known-failing.js";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
@@ -80,15 +81,17 @@ export function failingOnOriginalTests(pack: EvidencePack | undefined, nightlyFa
   const confirmed = new Map<string, MarkableTest>();
   let unconfirmed = 0;
   for (const check of checks) {
-    if (check.tests === undefined) return undefined;
-    const declared = check.tests.failed + check.tests.errored;
-    if (declared === 0) return undefined;
-    const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
-    // Failing tests the pack does not name cannot be confirmed.
-    unconfirmed += Math.max(0, declared - failed.length);
-    const added = new Set(check.tests.newTests);
-    for (const test of failed) {
-      if (!added.has(test.name) && nightly.has(test.name) && KnownFailingTestId.safeParse(test.name).success) confirmed.set(`${check.checkId}\u0000${test.name}`, { name: test.name, checkId: check.checkId });
+    const failed = readableFailingTests(check);
+    if (failed === undefined) {
+      // No usable per-test data. A check of another kind (a lint, say) has no tests to judge and offers nothing; a test check whose data cannot be read (no counts, a zero count while it failed, dropped as
+      // disagreeing with the check, a name twice) cannot confirm any failure: that is the code's fault, not a setup problem.
+      if (hasNoTestData(check) && check.kind !== "test") return undefined;
+      unconfirmed += Math.max(1, check.tests === undefined ? 0 : check.tests.failed + check.tests.errored);
+      continue;
+    }
+    const added = new Set(check.tests!.newTests);
+    for (const name of failed) {
+      if (!added.has(name) && nightly.has(name) && KnownFailingTestId.safeParse(name).success) confirmed.set(`${check.checkId}\u0000${name}`, { name, checkId: check.checkId });
       else unconfirmed += 1;
     }
   }

@@ -29,6 +29,30 @@ const codeFault = () => snapshot("t-code", workflow({ stage: "VERIFY", ...failed
 const oldFailing = (names: string[], newTests: string[] = []) => pack([{ before: "failed", after: "failed", class: "already_failing", tests: { total: 10, passed: 10 - names.length, failed: names.length, skipped: 0, errored: 0, newTests, names: names.map((name) => ({ name, status: "failed" })) } }]);
 const failedOld = { stage: "VERIFY", verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [{ checkId: "unit", status: "FAILED" }] } };
 
+describe("a check that failed before with no usable per-test data (M2, second Opus re-check)", () => {
+  const base = (id: string, evidence: unknown) => snapshot(id, workflow(failedOld, "BLOCKED"), { ...(evidence === undefined ? {} : { evidence }), alreadyFailing: ["Y"], facts: { checkOriginal: { unit: "failed" } } });
+  const noCounts = pack([{ before: "failed", after: "failed", class: "already_failing" }]);
+  const zero = oldFailing([]);
+
+  it("flags a compile or import break (no test counts, a zero count), a pack for other code, and no pack at all; each is Code failed", () => {
+    const report = replayResults([base("t-nocounts", noCounts), base("t-zero", zero), base("t-nopack", undefined), base("t-other", { ...oldFailing(["Y"]), candidateDigest: "9".repeat(64) }), base("t-fine", oldFailing(["Y"]))]);
+    expect(report.suspect).toEqual(["t-nocounts", "t-zero", "t-nopack", "t-other"]);
+    expect(report.byVerdict).toMatchObject({ code_failed: 4, partially_verified: 1 });
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags a failing name that appears twice", () => {
+    expect(replayResults([base("t-twice", oldFailing(["Y", "Y"]))]).suspect).toEqual(["t-twice"]);
+  });
+
+  it("is a violation when a classifier calls such a task Blocked by environment", () => {
+    const asBlocked: ViewOf = () => ({ view: { schemaVersion: 1, result: "blocked_by_environment", reasons: ["fails_on_original_code"], rows: [{ label: "Unit tests", command: "pytest -q", status: "blocked", reason: "fails_on_original_code" }] } });
+    const report = replayResults([base("t-nopack", undefined)], asBlocked);
+    expect(report.codeLabelledEnvironment).toEqual(["t-nopack"]);
+    expect(report.ok).toBe(false);
+  });
+});
+
 describe("suspect checks (M2: owner decision)", () => {
   const task = (id: string, names: string[], alreadyFailing: string[], newTests: string[] = []) => snapshot(id, workflow(failedOld, "BLOCKED"), { evidence: oldFailing(names, newTests), alreadyFailing, facts: { checkOriginal: { unit: "failed" } } });
 

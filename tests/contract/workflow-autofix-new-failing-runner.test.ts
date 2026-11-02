@@ -53,6 +53,14 @@ describe("the runner and a check that failed before with a new failing test", ()
     expect(t.writes).toEqual([]);
   });
 
+  it("hands the port the original-code facts the runner has (the port uses them for a check the pack does not name)", async () => {
+    const seen: unknown[] = [];
+    const t = bench(flow(), async (_task, originals) => { seen.push(originals); return ["unit"]; });
+    expect(await t.run()).toBe("SENT_BACK");
+    expect(seen).toHaveLength(1);
+    expect(seen[0] === undefined || typeof seen[0] === "object").toBe(true);
+  });
+
   it("without the port (vx off) the same block is asked about exactly as before, and nothing is sent back", async () => {
     moves.sendBack.mockClear();
     const t = bench(flow());

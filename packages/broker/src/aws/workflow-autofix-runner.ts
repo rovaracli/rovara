@@ -70,7 +70,7 @@ export interface AutofixDependencies {
   /** AUTOREQUALIFY: stops the task's idle worker so the retry runs on a fresh one (used when the block is a kernel mismatch between worker and test machine). */
   recycleWorker?(task: DeveloperTaskRecord): Promise<unknown>;
   /** Setup and test health (owner decision, M2): the checks (by ID) that failed on the original code too but have a failing test that was not failing before, from the broker's evidence pack. Absent while `vx` is off. */
-  newFailingChecks?(task: DeveloperTaskRecord): Promise<readonly string[]>;
+  newFailingChecks?(task: DeveloperTaskRecord, checkOriginal: Readonly<Record<string, string>> | undefined): Promise<readonly string[]>;
   /**
    * Setup and test health (SH17): when Rovara asks about a fault of the test environment, the ask is also a Fix setup card for the project's maintainers. Absent while `vx` is off, so the ask is exactly what it
    * was. A failure here never changes the outcome: the ask itself is already stored.
@@ -194,7 +194,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
   // Setup and test health (owner decision, M2): a check that failed on the original code too but has a failing test that was not failing before is the code's fault, so it is sent back like any code fault. The port
   // exists only while `vx` is on (and reads the broker's own evidence pack); a failure to read it leaves the facts as they were.
   if (deps.newFailingChecks !== undefined && (codes.has("check-failed-cause-unknown") || codes.has("fails-on-original-code") || codes.has("check-failed"))) {
-    const ids = await deps.newFailingChecks(task).catch(() => undefined);
+    const ids = await deps.newFailingChecks(task, facts.checkOriginal).catch(() => undefined);
     if (ids !== undefined && ids.length > 0) facts.newFailingChecks = ids;
   }
   if (codes.has("cancelled") || classes.some((entry) => entry.code === "cancelled-by-owner")) facts.ownerCancelled = await deps.ownerCancelledChecks(task);

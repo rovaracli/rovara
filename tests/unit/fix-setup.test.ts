@@ -154,8 +154,10 @@ describe("the tests a card could mark", () => {
     expect(failingOnOriginalTests(undefined, ["a"])).toBeUndefined();
     expect(failingOnOriginalTests(pack([]), ["a"])).toBeUndefined();
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { class: "regression" })]), ["a"])).toBeUndefined();
+    // A check that is not a test kind (here with no kind at all) and has no test counts has no tests to judge; a TEST check with none cannot confirm anything: the code's fault (M2).
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: undefined })]), ["a"])).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: undefined, kind: "test" })]), ["a"])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toEqual({ tests: [], unconfirmed: 2, codeFault: true });
   });
 
   it("never offers a name that is not shown in full (over 200 characters or with whitespace; it is unconfirmed), and not more than one card shows", () => {

@@ -224,7 +224,7 @@ describe("opening the page before confirming holds on every route (M3)", () => {
       ...(method === "POST" ? { body: new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString() } : {}),
     }, new URL(`${CELL}/v1/app/approve/${card.approvalId}`));
     const route = (cookie: string) => routeApprovalRequest(
-      { ...deps, requireDecide: (request: Parameters<typeof requireDecideSession>[1]) => requireDecideSession(context, request) } as unknown as ApprovalDependencies,
+      { ...deps, requireDecide: (request: Parameters<typeof requireDecideSession>[1]) => requireDecideSession(context, request) },
       { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "admin" } as never,
       { method: "POST", path: `/v1/app/approvals/${card.approvalId}/decide`, requestId: "r", headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: CELL, "content-type": "application/json" }, body: JSON.stringify({ csrf: csrfTokenFor(cookie), requestId: randomUUID(), decision: "APPROVE" }) },
       new URL(`${CELL}/v1/app/approvals/${card.approvalId}/decide`),
