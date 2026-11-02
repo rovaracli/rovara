@@ -1358,7 +1358,7 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal,
-          ...(invocation.payload.testEnvDetect === true ? await testEnvDraftResult({ rootPath: canonicalRoot, repositories: manifest.repositories, setupProposal: read.proposal }) : {}) };
+          ...(invocation.payload.testEnvDetect === true ? await testEnvDraftResult({ rootPath: canonicalRoot, repositories: manifest.repositories, setupProposal: read.proposal, ...(invocation.payload.testEnvRecipes === undefined ? {} : { recipes: invocation.payload.testEnvRecipes }) }) : {}) };
       } else if (specBinding !== undefined) {
         let read = readSpecWriteAnswer(finalText ?? "", specBinding);
         // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.

@@ -3024,6 +3024,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "The foundation's session manager security group",
       "Type": "String",
     },
+    "SetupAgentEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: Set up this project can start a live setup run that runs commands in a sandbox (turn on only after the five Linux checks of SH-1 pass and the worker image that carries task.setupAgent.v1 is deployed); 0: setup is the read-only draft, the prove run and the confirm card, as before",
+      "Type": "String",
+    },
     "SetupRecipesEnabled": {
       "AllowedValues": [
         "0",

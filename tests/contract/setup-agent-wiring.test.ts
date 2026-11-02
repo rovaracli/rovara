@@ -182,6 +182,35 @@ describe("the end", () => {
   });
 });
 
+const taskInvocation = (payload: Record<string, unknown>) => ({
+  protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "x".repeat(40),
+  payload: { conversationId: randomUUID(), prompt: "p", ...payload },
+});
+
+describe("the payload on the wire", () => {
+  it("a setup run carries its limits, and only a setup run does; it carries nothing else of a read-only look", () => {
+    const limits = { limits: SETUP_AGENT_LIMITS_DEFAULT };
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_AGENT", setupAgent: limits })).success).toBe(true);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_AGENT" })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_DRAFT", setupAgent: limits })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ setupAgent: limits })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_AGENT", setupAgent: limits, testEnvDetect: true })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_AGENT", setupAgent: { limits: { ...SETUP_AGENT_LIMITS_DEFAULT, commands: 1000 } } })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_AGENT", setupAgent: { limits: SETUP_AGENT_LIMITS_DEFAULT, repository: "x" } })).success).toBe(false);
+  });
+  it("company recipes (SH30, switch sp) are offered to a detection only", () => {
+    const offer = { recipeId: "node-npm", revision: 1, setupCommands: [], checks: [] };
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_DRAFT", testEnvDetect: true, testEnvRecipes: [] })).success).toBe(true);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "SETUP_DRAFT", testEnvRecipes: [offer] })).success).toBe(false);
+    expect(WorkerInvocationSchema.safeParse(taskInvocation({ workflowMode: "PLAN", testEnvDetect: true })).success).toBe(false);
+  });
+  it("the worker lists both features it implements", async () => {
+    const { WORKER_IMPLEMENTED_FEATURES } = await import("../../packages/worker/src/implemented-features.js");
+    expect(WORKER_IMPLEMENTED_FEATURES).toContain("task.setupAgent.v1");
+    expect(WORKER_IMPLEMENTED_FEATURES).toContain("task.setupRecipes.v1");
+  });
+});
+
 describe("the feature", () => {
   it("is listed by the schema and required by delivery", () => {
     expect(SETUP_AGENT_FEATURE).toBe("task.setupAgent.v1");

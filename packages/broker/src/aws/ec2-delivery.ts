@@ -16,6 +16,7 @@ import {
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
   SETUP_AGENT_FEATURE,
+  SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
@@ -388,6 +389,10 @@ async function forWorkerFeatures(
   // Rovara proposes a project's setup (Task 10; version 2 with citations, meta repo lane B): an older worker would fail the mode at its own parse, or answer a draft this broker
   // no longer reads, so the mode is never sent to it.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // SH30 (switch `sp`): a setup draft that is offered company recipes is never sent to a worker that does not list it (it would detect without them and say nothing); the field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.testEnvRecipes !== undefined && !features.includes(SETUP_RECIPES_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // SH14: a setup run that runs commands is never sent to a worker that does not list it (an older worker fails the mode at its own parse). The field is never dropped.
