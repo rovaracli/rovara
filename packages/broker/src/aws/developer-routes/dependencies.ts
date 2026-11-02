@@ -15,6 +15,7 @@ import {
   type MergeTrackingItem,
 } from "@agentx/contracts";
 import { latestRevision } from "../../org/project-settings.js";
+import { cutText } from "../developer-tasks/common.js";
 import { readProjectMeta, requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { survivorOf } from "../../org/project-members.js";
 import { evaluateProjectAuthority } from "../../developer/task-project-access.js";
@@ -333,7 +334,10 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
       cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
       // Stop & redirect while the plan waits for approval: the caller's own request for changes, through the task's decision (their authority as a task owner is checked there).
-      requestPlanChanges: async (task, input) => { await decideTaskWorkflow(taskDeps, caller, task.taskId, { requestId: input.requestId, expectedRevision: input.expectedRevision, decision: "REQUEST_CHANGES", reason: input.reason, artifactDigest: input.artifactDigest }); },
+      requestPlanChanges: async (task, input) => {
+        // The decision keeps its own bound (500 characters); the planner is told the whole instruction (LR-2).
+        await decideTaskWorkflow(taskDeps, caller, task.taskId, { requestId: input.requestId, expectedRevision: input.expectedRevision, decision: "REQUEST_CHANGES", reason: cutText(input.reason, 500), artifactDigest: input.artifactDigest }, { changeText: input.reason });
+      },
       // Plan 6 Task 5: Understand starts again as soon as people answered. A failed start is the answer's dispatch row's to redo, so it is logged by name and not raised.
       startUnderstanding: async (task, workflowRevision) => {
         try {

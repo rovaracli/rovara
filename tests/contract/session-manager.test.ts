@@ -55,6 +55,36 @@ async function provisionToReady(sessions: SessionManager, workspaceId: string) {
   return sessions.markReady(workspaceId, 1);
 }
 
+describe("session manager: the worker's features (LR-1)", () => {
+  it("records what the worker listed when the session becomes READY, so the broker can read it", async () => {
+    const { sessions, workspaceId, session } = setup();
+    await sessions.ensureSession({ workspaceId, binding });
+    await sessions.markVolume(workspaceId, 1, "vol-0123456789abcdef0");
+    await sessions.markInstance(workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10");
+    await sessions.markReady(workspaceId, 1, ["task.ownerRedirect.v1", "task.liveSteer.v1"]);
+    expect(session()).toMatchObject({ state: "READY", workerFeatures: ["task.ownerRedirect.v1", "task.liveSteer.v1"] });
+    expect((await sessions.get(workspaceId))?.workerFeatures).toEqual(["task.ownerRedirect.v1", "task.liveSteer.v1"]);
+  });
+
+  it("records an empty list as empty (a worker that lists nothing), and no list as unknown: a list from an earlier generation is not kept", async () => {
+    const { db, sessions, workspaceId, session } = setup();
+    await sessions.ensureSession({ workspaceId, binding });
+    await sessions.markVolume(workspaceId, 1, "vol-0123456789abcdef0");
+    await sessions.markInstance(workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10");
+    // A stale list, as an earlier generation would have left it.
+    db.set({ ...(session() as Record<string, unknown>), workerFeatures: ["task.ownerRedirect.v1"] });
+    await sessions.markReady(workspaceId, 1);
+    expect(session()).not.toHaveProperty("workerFeatures");
+    expect((await sessions.get(workspaceId))?.workerFeatures).toBeUndefined();
+    const second = setup();
+    await second.sessions.ensureSession({ workspaceId: second.workspaceId, binding });
+    await second.sessions.markVolume(second.workspaceId, 1, "vol-0123456789abcdef0");
+    await second.sessions.markInstance(second.workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10");
+    await second.sessions.markReady(second.workspaceId, 1, []);
+    expect(second.session()).toMatchObject({ workerFeatures: [] });
+  });
+});
+
 describe("session manager: first provisioning", () => {
   it("starts generation 1 in the chosen zone, parks the dispatched record and indexes the state", async () => {
     const { db, sessions, startExecution, workspaceId, session } = setup();

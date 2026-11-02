@@ -53,6 +53,8 @@ export type BrokerNameKind =
   | "kmsKeyArn"
   /** A state machine's name; the variable gets its ARN. */
   | "stateMachineArn"
+  /** A Lambda function's name; the variable gets its ARN (`arn:<partition>:lambda:<region>:<account>:function:<name>`). */
+  | "lambdaFunctionArn"
   /** A role's name, in the environment's role path; the variable gets its ARN. */
   | "roleArn"
   /** A Cognito user pool's id; the variable gets the pool's issuer URL (`https://cognito-idp.<region>.amazonaws.com/<id>`). */
@@ -96,6 +98,8 @@ export const BROKER_NAMES = {
   slackThreadsTable: { code: "sl", variable: "SLACK_THREADS_TABLE_NAME", kind: "name" },
   turnRecordsTable: { code: "tr", variable: "TURN_RECORDS_TABLE_NAME", kind: "name" },
   planEvidenceFunction: { code: "pe", variable: "PLAN_EVIDENCE_FUNCTION_NAME", kind: "name" },
+  // Live interaction A2 (peek): the dispatcher the broker invokes to read a running task's working tree for an Ask. The broker holds lambda:InvokeFunction on this one function and nothing else (control-plane.ts).
+  dispatcherFunction: { code: "dp", variable: "DISPATCHER_FUNCTION_ARN", kind: "lambdaFunctionArn" },
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },
   slackRequestQueue: { code: "sq", variable: "SLACK_REQUEST_QUEUE_URL", kind: "queueUrl" },
   slackOrchestratorRole: { code: "so", variable: "SLACK_ORCHESTRATOR_ROLE_ARN", kind: "roleArn" },

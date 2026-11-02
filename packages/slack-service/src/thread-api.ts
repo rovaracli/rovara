@@ -94,8 +94,8 @@ export function createThreadApi(options: { controlPlaneUrl: string; signedFetch:
     async ensureWorkspace(requestId) {
       return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", threadWorkspaceRequest(requestId), "thread workspace request failed"));
     },
-    async taskAnswerWorkspace(requestId, taskId, commentId) {
-      const taskAnswer = commentId === undefined ? { taskId } : { taskId, commentId };
+    async taskAnswerWorkspace(requestId, taskId, commentId, noteTs) {
+      const taskAnswer = { taskId, ...(commentId === undefined ? {} : { commentId }), ...(noteTs === undefined ? {} : { noteTs }) };
       return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", { ...threadWorkspaceRequest(requestId), taskAnswer }, "task answer workspace request failed"));
     },
     async markCommentAnswered(input) {

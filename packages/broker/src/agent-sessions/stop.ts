@@ -48,7 +48,7 @@ export interface SessionControlHost {
   retryWorkflow(task: DeveloperTaskRecord, requestId: string): Promise<void>;
   /**
    * Stop & redirect while the plan waits for approval: the owner's request for changes with the instruction as its words, through the task's own decision (it checks who may decide, the revision and the plan's
-   * digest, and is idempotent by the request id). Without it a redirect of a plan that waits is refused.
+   * digest, and is idempotent by the request id). `reason` is the whole instruction, up to the redirect limit; the decision records the first 500 characters of it and the planner is given all of it. Without it a redirect of a plan that waits is refused.
    */
   requestPlanChanges?(task: DeveloperTaskRecord, input: { requestId: string; expectedRevision: number; artifactDigest: string; reason: string }): Promise<void>;
   /** `startAgentRun`, which resolves the payer and applies the roster, budget and version rules; it is idempotent by the request's `requestId`. */

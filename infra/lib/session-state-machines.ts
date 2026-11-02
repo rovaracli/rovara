@@ -264,7 +264,8 @@ export function provisionerDefinition(props: SessionStateMachineProps): State {
       StartProbing: { Type: "Pass", Assign: { probes: 0 }, Next: "WaitToProbe" },
       WaitToProbe: { Type: "Wait", Seconds: PROBE_INTERVAL_SECONDS, Next: "ProbePing" },
       ProbePing: step(props, { action: "probePing", privateIp: "{% $privateIp %}" }, {
-        Assign: { healthy: "{% $states.result.Payload.healthy %}", probes: "{% $probes + 1 %}" },
+        // The probe step always answers a `features` array (empty when the worker listed none); `[]` keeps it an array whatever its length.
+        Assign: { healthy: "{% $states.result.Payload.healthy %}", features: "{% $states.result.Payload.features[] %}", probes: "{% $probes + 1 %}" },
         Catch: [toCleanup],
         Next: "WorkerHealthy",
       }),
@@ -281,7 +282,8 @@ export function provisionerDefinition(props: SessionStateMachineProps): State {
         Assign: { failure: `worker did not answer /ping within ${(PROBE_ATTEMPTS * PROBE_INTERVAL_SECONDS) / 60} minutes` },
         Next: "Cleanup",
       },
-      MarkReady: step(props, { action: "markReady", workspaceId: "{% $workspaceId %}", generation: "{% $generation %}" }, {
+      // The features the last probe heard on /ping go on the session, so the broker (which cannot reach port 8080) can ask what this worker supports (LR-1).
+      MarkReady: step(props, { action: "markReady", workspaceId: "{% $workspaceId %}", generation: "{% $generation %}", workerFeatures: "{% $features %}" }, {
         Catch: [toCleanup],
         Next: "Provisioned",
       }),

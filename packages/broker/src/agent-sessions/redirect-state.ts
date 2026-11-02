@@ -120,6 +120,19 @@ export function redirectEndItems(deps: Pick<RedirectStateDependencies, "tableNam
   ];
 }
 
+/**
+ * A condition on the redirect's record for each restart's transaction (LR-3, the B1 residual): the step starts only while the redirect is still `restarting`. A Stop that ended the redirect between the
+ * claim and the commit makes this fail, so the restart starts nothing and the Stop stands.
+ */
+export function redirectRestartingCheck(deps: Pick<RedirectStateDependencies, "tableName">, record: Pick<RedirectRecord, "taskId" | "requestId">): TransactItem {
+  return {
+    ConditionCheck: {
+      TableName: deps.tableName, Key: redirectKey(record.taskId, record.requestId), ConditionExpression: "attribute_exists(pk) AND #state = :restarting",
+      ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":restarting": "restarting" },
+    },
+  };
+}
+
 /** Ends a redirect on its own (with `extra` items in the same transaction, such as its audit item): `true` when this call ended it, `false` when another call had (the state was not one of `from`). */
 export async function endRedirect(deps: RedirectStateDependencies, record: Pick<RedirectRecord, "taskId" | "requestId">, from: readonly RedirectState[], to: RedirectState, extra: readonly TransactItem[] = []): Promise<boolean> {
   try {
@@ -134,14 +147,14 @@ export async function endRedirect(deps: RedirectStateDependencies, record: Pick<
 /**
  * A Stop wins over a redirect that is still `stopping` (fix round 1, B1): the person pressed Stop after redirecting, so the step must stay stopped. Called by the task's cancel (the one Stop,
  * the session's Stop and the task route all run) before it asks for the stop, with the request id of that cancel: the redirect's own cancel has the redirect's request id and does not end itself.
- * Ends the open redirect `failed` and removes its marker, conditional on it still being `stopping`; a redirect already being restarted (`restarting`) is left to its restart, whose run the Stop then
- * cancels like any running step. Never throws. Answers whether it ended one.
+ * Ends the open redirect `failed` and removes its marker, conditional on it still being `stopping` or `restarting`. A restart that has claimed the redirect but not yet committed then finds the redirect ended
+ * (`redirectRestartingCheck` rides in its transaction) and starts nothing; one that committed already has a running step, which the Stop then cancels like any other. Never throws. Answers whether it ended one.
  */
 export async function endRedirectForStop(deps: RedirectStateDependencies, taskId: string, cancelRequestId: string): Promise<boolean> {
   try {
     const open = await readOpenRedirect(deps, taskId);
     if (open === undefined || open.requestId === cancelRequestId) return false;
-    return await endRedirect(deps, { taskId, requestId: open.requestId }, ["stopping"], "failed");
+    return await endRedirect(deps, { taskId, requestId: open.requestId }, ["stopping", "restarting"], "failed");
   } catch {
     // A redirect that could not be ended here is ended by the sweep; the Stop is not failed for it.
     return false;
@@ -185,3 +198,28 @@ export const hourlyRedirects = (deps: RedirectStateDependencies, orgId: OrgId, t
  * a redirect leaves both as they were (it is the same attempt, so a loop of redirects is counted together); a send-back, a plan approval or a revised plan add a decision and begin a new attempt.
  */
 export const stepRedirects = (deps: RedirectStateDependencies, orgId: OrgId, taskId: string, step: string, attempt: number, limit: number) => counterStep(deps, STEP_COUNTER(taskId, step, attempt), orgId, limit, deps.now(), undefined);
+
+/** The most pages (of 50) of a task's redirect records one read looks at; a task gets 3 redirects per step attempt, so this is far more than are ever live. */
+const RECORD_PAGES_MAX = 10;
+
+/**
+ * The task's redirect records that read, newest first. The keys are by request id (random), so every page is read, not the first, and the newest is then exact (N2). For the Retry that keeps a redirect's
+ * instruction (LR-2).
+ */
+export async function listTaskRedirects(deps: RedirectStateDependencies, taskId: string): Promise<RedirectRecord[]> {
+  const items: Item[] = [];
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < RECORD_PAGES_MAX; page += 1) {
+    const answer = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": "REDIRECT#" }, Limit: 50, ConsistentRead: true,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    items.push(...(answer.Items ?? []));
+    start = answer.LastEvaluatedKey;
+    if (start === undefined) break;
+  }
+  return items
+    .map((item) => RedirectRecordSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([key]) => !HOUSEKEEPING.has(key)))))
+    .flatMap((parsed) => (parsed.success && parsed.data.taskId === taskId ? [parsed.data] : []))
+    .sort((left, right) => (left.createdAt < right.createdAt ? 1 : left.createdAt > right.createdAt ? -1 : 0));
+}

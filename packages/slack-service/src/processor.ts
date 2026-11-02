@@ -61,7 +61,7 @@ export interface ThreadServiceApi {
   cancelOperation?(workspaceId: string, operationId: string): Promise<CancelOutcome>;
   createConversation(workspaceId: string): Promise<string>;
   /** A task thread's read-only view for answering a question (workspace mode `task-answer`); nothing is prepared or run on it. */
-  taskAnswerWorkspace?(requestId: string, taskId: string, commentId?: string): Promise<SlackThreadWorkspaceResult>;
+  taskAnswerWorkspace?(requestId: string, taskId: string, commentId?: string, noteTs?: string): Promise<SlackThreadWorkspaceResult>;
   /** Marks a saved task-thread note answered, so the planner's next step skips it. */
   markThreadNoteAnswered?(input: SlackThreadNoteAnsweredRequest): Promise<void>;
   /** Spec 061 slice 2: AgentX's answer to a task page comment, or that it could not answer. */

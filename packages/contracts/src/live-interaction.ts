@@ -14,8 +14,8 @@ type Edition = "enterprise" | "public";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Switches. Three packed settings in the design (`rd`, `ak`, and the fix switch), all OFF by default. The design named the third `fx`, but `fx` is already the autofix
-// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. `ak` is in BROKER_SETTINGS (as `liveAsk`, stack parameter LiveAskEnabled; A3, once both deploy gates below held). `rd` and `fd`
-// are NOT yet: adding one needs the stack parameter, the CLI key and the broker-settings test table in one change (wiring pending in the lane report).
+// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. All three are in BROKER_SETTINGS (`liveRedirect`, `liveAsk`, `liveFix`), each with its stack parameter,
+// CLI key and a row in the broker-settings test table; `ak` and `fd` are held by the deploy gates below.
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export const LIVE_INTERACTION_FLAGS = {
@@ -39,7 +39,7 @@ export function liveInteractionFlagOn(value: string | undefined): boolean {
   return value === "1";
 }
 
-/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker; an older one gets an ordinary owner note and the outcome says so. */
+/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker: for an older one a coding redirect is refused before anything is stopped (it is never degraded to a note). */
 export const OWNER_REDIRECT_FEATURE = "task.ownerRedirect.v1" as const;
 /** A worker that lists this answers the read-only `peek` call (diff stat and patch of the working tree). Optional for the pilot (A2). */
 export const PEEK_FEATURE = "task.peek.v1" as const;
@@ -82,7 +82,7 @@ export type RedirectState = (typeof REDIRECT_STATES)[number];
 export const REDIRECT_OUTCOMES = ["restarted", "revise_started", "left_blocked", "refused"] as const;
 export type RedirectOutcome = (typeof REDIRECT_OUTCOMES)[number];
 /** Why a redirect is refused or fell back, as fixed words (never the instruction). */
-export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available", "nothing_to_send_back"] as const;
+export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available", "nothing_to_send_back", "step_not_redirectable"] as const;
 export type RedirectRefusal = (typeof REDIRECT_REFUSALS)[number];
 
 /** The `reason` a steer message carries when it is a redirect's instruction. */
@@ -113,6 +113,8 @@ export const REDIRECT_REFUSAL_MESSAGES: Readonly<Record<Exclude<RedirectRefusal,
   not_available: "Stop & redirect isn't available for this task right now. You can stop it, or send the agent a message.",
   /** The same sentence a send-back to coding gives: a blocked check or review restarts coding only when there is a failed check or a review finding to send back (fix round 1, S3). */
   nothing_to_send_back: "there is no current failed check or review finding to send back to coding",
+  /** The two steps that are advice or a later stage, not work to redirect: the check of a plan, and the review of a pull request's comments (LR-2). The page shows this sentence where it would offer the redirect. */
+  step_not_redirectable: "The check of a plan and the review of a pull request's comments can't be redirected. You can stop it, or send the agent a message.",
 };
 /** The line a restarted step always starts with: the stopped run may have left a file half written. */
 export const REDIRECT_RESTART_NOTE = "The previous run was stopped in the middle of a step; check the current state of the files before going on." as const;

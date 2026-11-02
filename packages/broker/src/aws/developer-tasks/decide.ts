@@ -157,9 +157,12 @@ export async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteD
  */
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
-  options: { via?: "PAGE"; note?: string } = {},
+  /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
+  options: { via?: "PAGE"; note?: string; changeText?: string } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
+  // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
+  const promptRequest = options.changeText === undefined ? request : { ...request, reason: options.changeText };
   const access = await decidableTask(deps, caller, taskId, request.requestId);
   const { task } = access;
   if (task.workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
@@ -371,11 +374,11 @@ export async function decideTaskWorkflow(
   // A task that started before structured plans moves to them at its next planning step: the planning instructions around
   // this request are the only format instruction, and the old Markdown goes in as data.
   const basePrompt = loaded.format === "structured"
-    ? structuredWorkflowPrompt({ ...loaded, markdown: plan }, request, mode, nextPhase, currentArtifactType, {
+    ? structuredWorkflowPrompt({ ...loaded, markdown: plan }, promptRequest, mode, nextPhase, currentArtifactType, {
       chosen: ownerAnswers === "recommended" ? [] : ownerAnswers.chosen, changed, comments,
     })
     : request.decision === "REQUEST_CHANGES"
-      ? `Revise the current ${planDocumentKindName(currentArtifactType)}. Requested changes: ${request.reason}\n\nReturn the complete revised document. Do not edit files.\n\n${previousMarkdownBlock(plan)}${comments}`
+      ? `Revise the current ${planDocumentKindName(currentArtifactType)}. Requested changes: ${promptRequest.reason}\n\nReturn the complete revised document. Do not edit files.\n\n${previousMarkdownBlock(plan)}${comments}`
       : mode === "PLAN"
         ? `Prepare the next owner-review document for this request. The owner approved the ${planDocumentKindName(currentArtifactType)} (sha256 ${currentPlan.sha256}) below. Write the ${nextPhase === "DESIGN" ? "design" : "coding plan"} as the planning instructions describe, building on the approved document. Do not edit files.\n\n${previousMarkdownBlock(plan)}${comments}`
         : `Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. Do not push branches or create pull requests; AgentX handles publication after the required gates.\n\nApproved plan (sha256 ${currentPlan.sha256}):\n${plan}${comments}`;

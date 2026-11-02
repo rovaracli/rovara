@@ -47,6 +47,10 @@ export const WorkspaceSessionStateSchema = z.enum([
   "DELETED",
 ]);
 
+/** The most features, and the longest name, a session records for its worker (a worker lists a few dozen; the bounds only keep a damaged answer out of the table). */
+export const WORKER_FEATURES_MAX = 300;
+export const WORKER_FEATURE_MAX_CHARS = 100;
+
 /**
  * The compute state of one ec2-ebs workspace, stored at `workspaceSessionKey(workspaceId)` in the
  * same partition as the workspace's OPERATION# items. `generation` counts provisioning attempts and
@@ -73,6 +77,11 @@ export const WorkspaceSessionSchema = z
      * PENDING; markFailed fails their operations. Stored as a DynamoDB string set.
      */
     waitingOutboxIds: z.array(z.string().uuid()).optional(),
+    /**
+     * What the worker listed on /ping when the session manager found it healthy (`markReady`), kept for the READY generation so the broker can ask "does this worker support X?" without a network path
+     * to the worker (LR-1). Absent on a session that became READY before this was recorded, or whose worker listed nothing: readers treat absent as unknown and fail closed.
+     */
+    workerFeatures: z.array(z.string().min(1).max(WORKER_FEATURE_MAX_CHARS)).max(WORKER_FEATURES_MAX).optional(),
     /** Consecutive failed health probes of a READY worker, counted by the reconciler (#86). */
     pingFailures: z.number().int().positive().optional(),
   })

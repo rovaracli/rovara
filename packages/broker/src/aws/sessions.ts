@@ -259,11 +259,15 @@ export class SessionManager {
     }
   }
 
-  /** PROVISIONING → READY once the worker answered its health probe, then re-sends the parked work. */
-  async markReady(workspaceId: string, generation: number): Promise<{ requeued: string[] }> {
+  /**
+   * PROVISIONING → READY once the worker answered its health probe, then re-sends the parked work. `workerFeatures` is what the worker listed on that probe (LR-1): kept on the session for as long as it is
+   * READY so the broker can read what the worker supports. Without it the list a previous generation left is taken away, so an unknown list is never mistaken for an old one.
+   */
+  async markReady(workspaceId: string, generation: number, workerFeatures?: readonly string[]): Promise<{ requeued: string[] }> {
     const now = this.now();
     const moved = await this.conditional(this.update(workspaceId, {
-      set: { state: "READY", readyAt: now, lastActivityAt: now },
+      set: { state: "READY", readyAt: now, lastActivityAt: now, ...(workerFeatures === undefined ? {} : { workerFeatures: [...workerFeatures] }) },
+      ...(workerFeatures === undefined ? { remove: ["workerFeatures" as const] } : {}),
       when: { state: "PROVISIONING", generation },
       require: ["instanceId", "privateIp", "volumeId"],
     }));

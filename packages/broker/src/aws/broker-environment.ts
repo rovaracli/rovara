@@ -101,6 +101,10 @@ function build(spec: BrokerNameSpec, value: string, env: MutableEnvironment): st
       const scope = requiredScope(env, needed);
       return `arn:${scope.partition}:states:${scope.region}:${scope.account}:stateMachine:${value}`;
     }
+    case "lambdaFunctionArn": {
+      const scope = requiredScope(env, needed);
+      return `arn:${scope.partition}:lambda:${scope.region}:${scope.account}:function:${value}`;
+    }
     case "roleArn": {
       const scope = requiredScope(env, needed);
       const name = env.AGENTX_ENV;

@@ -49,7 +49,11 @@ export const SLACK_TASK_CONTEXT_MAX_CHARS = 40_000;
  * What a Slack service adds to POST /v1/threads/workspace to ask for task mode in a task's own thread. `commentId` names
  * a task page comment being answered, so the broker adds that comment's place and thread to the task context.
  */
-export const SlackTaskAnswerRequestSchema = z.object({ taskId: z.string().uuid(), commentId: z.string().uuid().optional() }).strict();
+export const SlackTaskAnswerRequestSchema = z.object({
+  taskId: z.string().uuid(), commentId: z.string().uuid().optional(),
+  /** The saved thread reply this question answers (a thread question, not a page comment): with it, the broker marks a question it refuses in fixed words by this reply, so that question is not recorded as an Ask (LA-6, N5). */
+  noteTs: z.string().regex(/^\d{10}\.\d{6}$/).optional(),
+}).strict();
 export type SlackTaskAnswerRequest = z.infer<typeof SlackTaskAnswerRequestSchema>;
 
 /** The body of POST /v1/service/tasks/thread-notes/answered: which saved thread note a question answer covers. */

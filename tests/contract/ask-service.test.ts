@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askCountKey, askErasedAliasPk, orgBanKey, orgMemberKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, askCountKey, askRequestKey, askErasedAliasPk, orgBanKey, orgMemberKey, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
@@ -66,6 +66,9 @@ describe("model access for an Ask", () => {
     const ref = await queuedAsk(t);
     const run = async () => {
       mint.mockClear();
+      // This test asks for many keys for one Ask; the Ask's own two-key limit is tested apart (LA-5, M2).
+      const request = t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId))!;
+      t.w.db.set({ ...request, keysTaken: 0 });
       const reply = await handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1234567890" }), "/v1/asks/model-access");
       expect(reply?.statusCode).toBe(200);
       const guard = mint.mock.calls[0]![5] as { checks: Array<Record<string, unknown>>; refusal: () => { code: string } } | undefined;
@@ -94,6 +97,64 @@ describe("model access for an Ask", () => {
       expect(await holds(before), JSON.stringify(change)).toBe(false);
       t.w.db.set(original);
     }
+  });
+
+  it("mints for an Ask no more than twice (the turn's key, and one for a turn the queue delivered again), and not once the Ask is older than its 15-minute lock (LA-5, M2)", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const body = (turnId: string) => t.request("/asks/model-access", { ...ref, turnId, model: { provider: "amazon-bedrock", modelId: "m" } });
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000001"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000002"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000003"), "/v1/asks/model-access")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(mint).toHaveBeenCalledTimes(2);
+    // An Ask past its lock mints nothing, even though its request item still says "queued" for up to a day.
+    const old = world();
+    const oldRef = await queuedAsk(old);
+    old.w.clock.now += 16 * 60_000;
+    await expect(handleAskServiceRoute(old.dependencies, old.ask, old.request("/asks/model-access", { ...oldRef, turnId: "Ev0000000009", model: { provider: "amazon-bedrock", modelId: "m" } }), "/v1/asks/model-access")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it("a mint that fails gives its key place back, so failures do not use up the Ask's two places (N3)", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const body = (turnId: string) => t.request("/asks/model-access", { ...ref, turnId, model: { provider: "amazon-bedrock", modelId: "m" } });
+    mint.mockRejectedValueOnce(new Error("proxy down")).mockRejectedValueOnce(new Error("proxy down"));
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000001"), "/v1/asks/model-access")).rejects.toThrow("proxy down");
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000002"), "/v1/asks/model-access")).rejects.toThrow("proxy down");
+    expect((t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId)) as { keysTaken?: number }).keysTaken).toBe(0);
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000003"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    expect((await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000004"), "/v1/asks/model-access"))?.statusCode).toBe(200);
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000005"), "/v1/asks/model-access")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("two requests at the same moment for the last key place: one gets it (LA-5, M2)", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const body = (turnId: string) => t.request("/asks/model-access", { ...ref, turnId, model: { provider: "amazon-bedrock", modelId: "m" } });
+    await handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000001"), "/v1/asks/model-access");
+    const results = await Promise.allSettled([
+      handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000002"), "/v1/asks/model-access"),
+      handleAskServiceRoute(t.dependencies, t.ask, body("Ev0000000003"), "/v1/asks/model-access"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it("mints nothing for an Ask on an archived project, and the Ask itself is refused in the project's words (LA-5, M5)", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const task = t.w.db.get({ pk: `DEVTASK#${t.made.taskId}`, sk: "META" })! as unknown as DeveloperTaskRecord;
+    t.w.db.set({ ...projectMetaKey(ORG_A, task.project), entityType: "PROJECT_META", status: "archived" });
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev0000000001", model: { provider: "amazon-bedrock", modelId: "m" } }), "/v1/asks/model-access"))
+      .rejects.toThrow(projectArchivedMessage(task.project));
+    expect(mint).not.toHaveBeenCalled();
+    const { submitAsk } = await import("../../packages/broker/src/agent-sessions/ask.js");
+    await expect(submitAsk(t.ask, t.w.caller(PRIYA), t.made.sessionId, { requestId: randomUUID(), question: "Why again?" })).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
   });
 
   it("is refused for anyone but the orchestrator role, and mints nothing", async () => {

@@ -316,7 +316,7 @@ export async function retryCiFix(
 export async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
   /** Stop & redirect (keep the plan): the restart carries the owner's framed instruction to the worker, keeps the cap window and leaves that message out of the prompt's notes. `request.instructions` is then a fixed sentence, never the owner's words. */
-  redirect?: { ownerRedirect: OwnerRedirectInvocation; skipNoteIds: readonly string[] },
+  redirect?: { ownerRedirect: OwnerRedirectInvocation; skipNoteIds: readonly string[]; /** False for the person's own plain Retry that gives the instruction again (LR-2): it starts a new window of the cap as any Retry does. */ keepWindow?: false },
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const workflow = task.workflow!;
@@ -354,7 +354,7 @@ export async function retryWorkflowImplementation(
   };
   return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
     request: request.instructions, response: workflowDependencies === undefined ? "Restarting the coding step" : "Restarting the approved ordered work plan", ...(workflowDependencies === undefined ? {} : { workflowDependencies }),
-    ...(redirect === undefined ? {} : { keepWindow: true as const, ownerRedirect: redirect.ownerRedirect, skipNoteIds: redirect.skipNoteIds }) });
+    ...(redirect === undefined ? {} : { ...(redirect.keepWindow === false ? {} : { keepWindow: true as const }), ownerRedirect: redirect.ownerRedirect, skipNoteIds: redirect.skipNoteIds }) });
 }
 
 /**

@@ -3,8 +3,8 @@
 // Deploy order: the dispatcher and the worker image carrying task.ownerRedirect.v1 first, then the broker with the flag off, then the flag on.
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { describe, expect, it } from "vitest";
-import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, WORKER_PING_FEATURES_FIELD, workspaceSessionKey } from "@agentx/contracts";
+import { describe, expect, it, vi } from "vitest";
+import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, workspaceSessionKey } from "@agentx/contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
@@ -62,33 +62,31 @@ describe("the Stop & redirect switch in the control plane", () => {
   });
 });
 
-describe("asking a task's worker what it supports", () => {
+describe("reading what a task's worker supports (LR-1: the session manager records it; the broker never reaches the worker)", () => {
   const seed = (session: Record<string, unknown> | undefined) => {
     const db = new FakeDynamoDb();
     if (session !== undefined) db.set({ ...workspaceSessionKey("ws-1"), ...session });
     return { documentClient: db, tableName: "state" } as never;
   };
-  const ping = (body: unknown, status = 200) => (async (url: unknown) => { pinged.push(String(url)); return new Response(JSON.stringify(body), { status }); }) as typeof fetch;
-  const pinged: string[] = [];
 
-  it("pings the ready worker's private address and lists its invocation features", async () => {
-    pinged.length = 0;
-    const features = await workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" }, ping({ status: "Healthy", [WORKER_PING_FEATURES_FIELD]: [OWNER_REDIRECT_FEATURE, "task.liveSteer.v1", 4] }));
-    expect(features).toEqual([OWNER_REDIRECT_FEATURE, "task.liveSteer.v1"]);
-    expect(pinged).toEqual(["http://10.0.1.7:8080/ping"]);
+  it("lists the features the ready session recorded, and reaches no network", async () => {
+    const fetched = vi.fn(async () => { throw new Error("test: the broker must not call the worker"); });
+    vi.stubGlobal("fetch", fetched);
+    try {
+      expect(await workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7", workerFeatures: [OWNER_REDIRECT_FEATURE, "task.liveSteer.v1"] }), { workspaceId: "ws-1" })).toEqual([OWNER_REDIRECT_FEATURE, "task.liveSteer.v1"]);
+      expect(await workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7", workerFeatures: [] }), { workspaceId: "ws-1" })).toEqual([]);
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
-  it("answers nothing for a workspace with no ready worker (it never wakes one), and no features for a worker built before the field existed", async () => {
-    pinged.length = 0;
-    expect(await workspaceWorkerFeatures(seed(undefined), { workspaceId: "ws-1" }, ping({}))).toBeUndefined();
-    expect(await workspaceWorkerFeatures(seed({ state: "STOPPED", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" }, ping({}))).toBeUndefined();
-    expect(await workspaceWorkerFeatures(seed({ state: "READY" }), { workspaceId: "ws-1" }, ping({}))).toBeUndefined();
-    expect(pinged).toEqual([]);
-    expect(await workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" }, ping({ status: "Healthy" }))).toEqual([]);
-  });
-
-  it("rejects when the worker answers an error status or not at all", async () => {
-    await expect(workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" }, ping({}, 503))).rejects.toThrow("HTTP 503");
-    await expect(workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" }, async () => { throw new Error("timeout"); })).rejects.toThrow("timeout");
+  it("is unknown (fail closed) for a workspace with no ready session, a session recorded without a list, or a damaged list", async () => {
+    expect(await workspaceWorkerFeatures(seed(undefined), { workspaceId: "ws-1" })).toBeUndefined();
+    expect(await workspaceWorkerFeatures(seed({ state: "STOPPED", workerFeatures: [OWNER_REDIRECT_FEATURE] }), { workspaceId: "ws-1" })).toBeUndefined();
+    expect(await workspaceWorkerFeatures(seed({ state: "PROVISIONING", workerFeatures: [OWNER_REDIRECT_FEATURE] }), { workspaceId: "ws-1" })).toBeUndefined();
+    expect(await workspaceWorkerFeatures(seed({ state: "READY", privateIp: "10.0.1.7" }), { workspaceId: "ws-1" })).toBeUndefined();
+    expect(await workspaceWorkerFeatures(seed({ state: "READY", workerFeatures: [OWNER_REDIRECT_FEATURE, 4] }), { workspaceId: "ws-1" })).toBeUndefined();
+    expect(await workspaceWorkerFeatures(seed({ state: "READY", workerFeatures: OWNER_REDIRECT_FEATURE }), { workspaceId: "ws-1" })).toBeUndefined();
   });
 });

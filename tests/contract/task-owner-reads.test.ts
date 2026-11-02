@@ -106,7 +106,9 @@ const ROWS: readonly Row[] = [
   // the model key of an Ask is paid by the project's rule for the member who asked; the sign-in method the requester record names is the task creator's (it decides nothing about who owns the task)
   ["aws/broker/ask-service.ts", "handleAskServiceRoute", "history", ".provider"],
   // a note a person sent from a session, as the Ask context lists it: the note's own sender (not the task's creator)
-  ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId"],
+  ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId", ".slackUserId"],
+  // a Slack reply's own sender (the note's author, not the task's creator), matched to the People list to tell a member's information from outsider text (LA-5, M7); it decides nothing about who owns the task
+  ["agent-sessions/ask-readers.ts", "createAskReaders>outsider", "other-record", ".slackUserId"],
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],
