@@ -45,6 +45,21 @@ function harness({ limits: limitOverrides, ...over }: Partial<Omit<SetupGovernor
   return { governor, clock, spend, stops, timers, blocked, entries, record, run };
 }
 
+describe("a person's command in the journal", () => {
+  it("every agent command after a person's command says so (the sandbox may hold what it changed), and commands before it do not", () => {
+    const h = harness();
+    h.run("npm ci");
+    h.governor.recordPersonCommand(h.record("pip install -e ."));
+    h.run("pytest -q");
+    h.run("ls");
+    h.governor.recordPersonCommand(h.record("make clean"));
+    h.run("make test");
+    const entries = h.governor.entries();
+    expect(entries.map((entry) => [entry.n, entry.source, entry.afterPersonCommandN])).toEqual([[1, "agent", undefined], [2, "person", undefined], [3, "agent", 2], [4, "agent", 2], [5, "person", undefined], [6, "agent", 5]]);
+    for (const entry of entries) expect(SetupJournalEntrySchema.safeParse(entry).success).toBe(true);
+  });
+});
+
 describe("cents", () => {
   it("rounds a part of a cent up and refuses figures it cannot trust", () => {
     expect(centsFromDollars(0)).toBe(0);

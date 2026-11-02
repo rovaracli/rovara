@@ -124,6 +124,8 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   private readonly now: () => number;
   private readonly startedAt: number;
   private readonly journal: SetupJournalEntry[] = [];
+  /** The position of the latest person's command so far: every agent command after it says so (`afterPersonCommandN`). */
+  private lastPersonN: number | undefined;
   private readonly failures = new Map<string, number>();
   /** Agent commands that were allowed and have not reported yet, in total and by step: counted against the limits at the moment they are allowed, so parallel tool calls cannot all pass. */
   private inflight = 0;
@@ -313,11 +315,13 @@ export class SetupAgentGovernor implements SetupAgentHooks {
       timedOut: record.timedOut,
       flagged: record.flagged,
       blockedHosts: hosts,
+      ...(source === "agent" && this.lastPersonN !== undefined ? { afterPersonCommandN: this.lastPersonN } : {}),
       tail: record.tail.slice(0, SETUP_JOURNAL_TAIL_BYTES),
       startedAt: isoOf(record.startedAt, this.now()),
     });
     if (!parsed.success) return undefined;
     this.journal.push(parsed.data);
+    if (source === "person") this.lastPersonN = parsed.data.n;
     this.input.onEntry?.(parsed.data);
     return parsed.data;
   }

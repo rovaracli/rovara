@@ -16,19 +16,22 @@ import { latestRevision } from "../org/project-settings.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { appendSetupJournal, SETUP_JOURNAL_BATCH_MAX } from "./setup-journal.js";
-import { finishSetupCommand, takeSetupCommand } from "./setup-command.js";
+import { finishSetupCommand, readSetupCommand, takeSetupCommand } from "./setup-command.js";
+import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 import { listHostAsks, requestHostAsk } from "./setup-host-ask.js";
 import { setupAgentEnabled } from "./setup-agent-switch.js";
 import { SETUP_AGENT_WORKFLOW_MODE } from "./setup-agent.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
-export interface SetupAgentCallbackDependencies { documentClient: Client; tableName: string; now: () => number; audit?: AuditRuntime }
+export interface SetupAgentCallbackDependencies { documentClient: Client; tableName: string; now: () => number; audit?: AuditRuntime; signInTableName?: string }
 /** The authenticated operation, as the callback route read it. */
 export interface SetupAgentOperation { kind: string; workflowMode?: string | undefined; status: string; workspaceId: string; orgId?: string | undefined }
 
 const HostSchema = z.object({
   kind: z.literal("host"),
   host: z.string().min(1).max(300),
+  /** The place of the person's command that was running when the website was blocked (its number in "Run a command"). The broker looks up who typed it; the worker never names a person. */
+  viaCommandSeq: z.number().int().min(1).max(20).optional(),
   journalN: z.number().int().min(1).max(400).optional(),
   from: z.object({ path: z.string().min(1).max(500), line: z.number().int().min(1).max(10_000_000) }).strict().optional(),
 }).strict();
@@ -71,14 +74,21 @@ export async function handleSetupAgentCallback(deps: SetupAgentCallbackDependenc
       const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, run.orgId, run.project);
       const projectDomains = latest?.definition.network?.allowedDomains ?? [];
       const prodDeny = await prodDenyOf(deps, run.orgId, run.project);
-      const outcome = await requestHostAsk(table, { ...run, host: body.host, projectDomains, prodDeny, ...(body.journalN === undefined ? {} : { journalN: body.journalN }), ...(body.from === undefined ? {} : { from: body.from }) });
+      // Who typed the command that hit the website, from the broker's own stored command of THIS run (a place that is not this run's, or a command not yet handed over, names nobody).
+      const via = body.viaCommandSeq === undefined ? undefined : await readSetupCommand(table, run, body.viaCommandSeq);
+      const typedBy = via !== undefined && via.state !== "queued" ? via.by : undefined;
+      const outcome = await requestHostAsk(table, { ...run, host: body.host, projectDomains, prodDeny, ...(typedBy === undefined ? {} : { typedBy }), ...(body.journalN === undefined ? {} : { journalN: body.journalN }), ...(body.from === undefined ? {} : { from: body.from }) });
       // A fixed word and nothing else: the worker learns whether it may wait for an answer, never why in words of its own.
       return { outcome: outcome.outcome, ...(outcome.outcome === "refused" ? { reason: outcome.reason } : {}) };
     }
     case "poll": {
-      const command = await takeSetupCommand(table, run);
+      const command = await takeSetupCommand(table, run, async (by) => {
+        // The typist must still be able to change this project (read live now): a demoted or removed person's command is dropped, not run.
+        if (deps.signInTableName === undefined) return false;
+        try { await readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: deps.now }, { orgId: run.orgId, project: run.project, actorId: by }); return true; } catch { return false; }
+      });
       const asks = (await listHostAsks(table, run.orgId, run.project, ["open", "approved", "refused"])).filter((ask) => ask.taskId === run.taskId).slice(0, 20);
-      return { ...(command === undefined ? {} : { command }), hosts: asks.map((ask) => ({ host: ask.host, state: ask.state })) };
+      return { ...(command === undefined ? {} : { command: { seq: command.seq, command: command.command } }), hosts: asks.map((ask) => ({ host: ask.host, state: ask.state })) };
     }
     case "command_done":
       return { finished: await finishSetupCommand(table, run, { seq: body.seq, journalN: body.journalN }) };

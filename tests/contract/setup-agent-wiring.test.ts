@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey, type OrgId,
+  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey,
 } from "../../packages/contracts/src/index.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { recordRunCost } from "../../packages/broker/src/spend/estimate.js";
@@ -14,7 +14,7 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 
 afterEach(() => { delete process.env.SETUP_AGENT_ENABLED; delete process.env.DECISION_CARDS_ENABLED; });
 const ROUTE = `/v1/app/projects/${NAME}/setup-agent`;
-const orgId = TEST_ORG as OrgId;
+const orgId = TEST_ORG;
 
 async function bench(): Promise<Bench> {
   const audit = capturingAuditDeps();
@@ -97,7 +97,7 @@ describe("with the switch on", () => {
     expect(tasks(t)).toEqual([]);
     expect((await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() })).status).toBe(202);
     expect((await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() })).status).toBe(409);
-    expect((await t.dev(MAYA, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "ls" })).status).toBe(403);
+    expect((await t.web(MAYA, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "ls" })).status).toBe(403);
     expect((await t.dev(MAYA, "POST", `${ROUTE}/stop`, { requestId: randomUUID() })).status).toBe(403);
   });
 });
@@ -114,16 +114,24 @@ describe("the worker's callback", () => {
     expect(journal.body).toMatchObject({ status: "running", entries: [{ n: 1, command: "npm ci", source: "agent" }] });
     expect(t.db.get(taskKey(task.taskId))).toMatchObject({ setupAgentProgress: { commands: 1 } });
     // A person's command: queued by the route, handed over once by poll.
-    const queued = await t.dev(OMAR, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "pip --version" });
-    expect(queued.status).toBe(202);
+    // A token is refused; a browser session with an old sign-in is refused; a fresh browser session queues it.
+    const token = await t.dev(OMAR, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "pip --version" });
+    expect(token.status).toBe(403);
+    t.ageSignIn(OMAR, 30);
+    const stale = await t.web(OMAR, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "pip --version" });
+    expect(stale.status).toBeGreaterThanOrEqual(401);
+    t.ageSignIn(OMAR, 1);
+    const queued = await t.web(OMAR, "POST", `${ROUTE}/command`, { requestId: randomUUID(), command: "pip --version" });
+    expect(queued.status, JSON.stringify(queued.body)).toBe(202);
     const polled = await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "poll" });
     expect(polled).toMatchObject({ command: { seq: 1, command: "pip --version" }, hosts: [] });
+    expect(JSON.stringify(polled)).not.toContain(OMAR.developerId);
     expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "poll" })).toMatchObject({ hosts: [] });
     expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "command_done", seq: 1, journalN: 2 })).toMatchObject({ finished: true });
     // A host ask: credited to the starter the broker recorded, never to a person named in the request.
-    const asked = await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "host", host: "artifactory.acme-build.io", journalN: 1, from: { path: "pip.conf", line: 2 } });
+    const asked = await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "host", host: "artifactory.acme-build.io", journalN: 1, from: { path: "pip.conf", line: 2 }, viaCommandSeq: 1 });
     expect(asked).toMatchObject({ outcome: "created" });
-    expect(t.db.find((item) => item.entityType === "SETUP_HOST_ASK")).toMatchObject([{ requestedBy: OMAR.developerId, taskId: task.taskId, state: "open" }]);
+    expect(t.db.find((item) => item.entityType === "SETUP_HOST_ASK")).toMatchObject([{ requestedBy: OMAR.developerId, typedBy: OMAR.developerId, taskId: task.taskId, state: "open" }]);
     expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "host", host: "pastebin.com" })).toMatchObject({ outcome: "refused", reason: "paste_site" });
     expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "poll" })).toMatchObject({ hosts: [{ host: "artifactory.acme-build.io", state: "open" }] });
   });
@@ -132,7 +140,7 @@ describe("the worker's callback", () => {
     process.env.SETUP_AGENT_ENABLED = "1";
     const t = await bench();
     const { task, own } = await started(t);
-    for (const body of [{ kind: "host", host: "a.acme-build.io", requestedBy: MAYA.developerId }, { kind: "poll", taskId: task.taskId }, { kind: "other" }, { kind: "journal", entries: [] }]) {
+    for (const body of [{ kind: "host", host: "a.acme-build.io", requestedBy: MAYA.developerId }, { kind: "host", host: "a.acme-build.io", typedBy: MAYA.developerId }, { kind: "poll", taskId: task.taskId }, { kind: "other" }, { kind: "journal", entries: [] }]) {
       await expect(t.callback(task.workspaceId, own.id, "setup-agent", body)).rejects.toThrow();
     }
     expect(t.db.find((item) => item.entityType === "SETUP_HOST_ASK")).toEqual([]);
@@ -159,7 +167,7 @@ describe("the end", () => {
     const state = await t.dev(OMAR, "GET", ROUTE);
     expect(state.body).toMatchObject({ status: "failed", stop: "attempts_used" });
     const record = t.db.get(taskKey(task.taskId)) as never;
-    expect(await recordRunCost({ documentClient: t.db, tableName: "state", modelAccess: {} as never } as never, record, { path: "TASK", endedAt: new Date().toISOString() })).toBe("skipped");
+    expect(await recordRunCost({ documentClient: t.db, tableName: "state", modelAccess: {} as never }, record, { path: "TASK", endedAt: new Date().toISOString() })).toBe("skipped");
     expect(t.db.get(taskKey(task.taskId))).not.toHaveProperty("runCostRecordedAt");
   });
 

@@ -72,7 +72,7 @@ export type DecisionItem =
    * SH12: a website the setup run needs, one card per host per project. `host` is a plain DNS name the broker checked; `from` is the repository file and line that led to it and `journalN` the setup command
    * that hit it: both are shown quoted and marked "from the repository", never read as instructions. `staffStep` is true where Rovara staff also approve the website (Cloud).
    */
-  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean; /** The name has a punycode (`xn--`) label: it may look like another name. */ international?: boolean | undefined });
+  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean; /** The name has a punycode (`xn--`) label: it may look like another name. */ international?: boolean | undefined; /** A person's own command hit this website: who typed it, as a label (never a name). */ typedBy?: string | undefined });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -193,6 +193,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
           ...(item.international === true ? [chip("risk", "Name", "international name", "warning")] : []),
           ...(item.from === undefined ? [] : [chip("other", "From the repository", `${item.from.path}:${String(item.from.line)}`, "unknown")]),
           ...(item.journalN === undefined ? [] : [chip("checks", "Setup command", `#${String(item.journalN)} was blocked`, "unknown")]),
+          ...(item.typedBy === undefined ? [] : [chip("other", "Typed by", item.typedBy, "warning")]),
         ],
         why: "A setup command could not reach this website. Allow it only if you know what it is.",
       };

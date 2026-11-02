@@ -1,7 +1,7 @@
 // Setup agent routes (sh-setup-wire, SH14; design setup-test-health 3.4): `/v1/app/projects/{name}/setup-agent`, `.../stop`, `.../command` and `.../journal`. They exist only while the `su` switch is on and, with
 // it off, `routeSetupAgent` answers undefined at once and the path falls through as any unknown path does (nothing is read, nothing is written). Everything the routes decide is in
 // `rovara-code/setup-agent.ts` (start, stop, state), `setup-command.ts` (a person's command) and `setup-journal.ts`; this file builds their dependencies from the developer API's.
-import { agentXError, ROVARA_CODE_AGENT_ID, projectAllows, type OrgId, type Payer } from "@agentx/contracts";
+import { agentXError, ROVARA_CODE_AGENT_ID, projectAllows, type Payer } from "@agentx/contracts";
 import { resolveRunPayer, startAgentRun } from "../../agents/runs.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { StatusReply } from "../status-reply.js";
@@ -15,6 +15,7 @@ import { readSetupJournal } from "../../rovara-code/setup-journal.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
+import { requireFreshSignIn } from "./test-environment-wizard.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal))?$/u;
@@ -53,6 +54,7 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
     },
     // The project's own limits and the company's lock have no stored setting yet (SH29 holds the lock; the project setting is a later screen): a run uses the defaults, which a lock could only lower.
     limitSettings: async () => ({}),
+    requireFreshSignIn: async (who) => { await requireFreshSignIn(deps, who); },
     payerFor: async (who, project): Promise<Payer> => {
       if (deps.agents === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
       return (await resolveRunPayer(deps.agents, { orgId: who.orgId, project, agentId: ROVARA_CODE_AGENT_ID, origin: "app", startedBy: { developerId: who.developerId } })).payer;
@@ -88,6 +90,6 @@ async function readJournalRoute(setup: SetupAgentDependencies, caller: Developer
   const after = Number(url.searchParams.get("after") ?? "0");
   if (!Number.isInteger(after) || after < 0 || after > 400) throw agentXError("CONFIG_INVALID", "after: a journal position");
   if (state.pointer === undefined) return new StatusReply(200, { entries: [], status: state.view.status });
-  const entries = await readSetupJournal(setup, { orgId: caller.orgId as OrgId, project: found.name, taskId: state.pointer.taskId }, after);
+  const entries = await readSetupJournal(setup, { orgId: caller.orgId, project: found.name, taskId: state.pointer.taskId }, after);
   return new StatusReply(200, { status: state.view.status, entries });
 }

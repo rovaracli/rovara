@@ -92,7 +92,7 @@ export interface TaskInvocationResult {
   reopened: boolean;
   /** Spec 051 FR-007: AgentX's check of the agent's work, with outputs cut to fit (compactCheckReport). */
   checks?: CheckReport;
-  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT" | "SPEC_WRITE";
+  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
   setupProposal?: SetupProposal;
   /** Live interaction F3: a deep diagnosis's answer (the model's JSON text, cut). The broker reads it again; this copy is never trusted. */
@@ -642,7 +642,7 @@ async function runTask(
   // A setup draft is a planning session too: read, grep, find and ls only, one deadline, a no-activity limit.
   const planning = invocation.payload.workflowMode === "PLAN" || critiquing || settingUpDraft || writingSpec;
   const payloadMode = invocation.payload.workflowMode;
-  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" || payloadMode === "SPEC_WRITE" ? "PLAN" : payloadMode ?? "IMPLEMENT";
+  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" || payloadMode === "SPEC_WRITE" ? "PLAN" : (payloadMode === "SETUP_AGENT" ? undefined : payloadMode) ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const planCritique = payloadMode === "PLAN_CRITIQUE";

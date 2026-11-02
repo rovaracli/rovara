@@ -117,6 +117,8 @@ export const SetupJournalEntrySchema = z
     /** The command downloads code and runs it. It ran only in the setup sandbox, and it is never turned into an approved command without the item consent card. */
     flagged: z.boolean(),
     blockedHosts: z.array(SetupHostSchema).max(SETUP_BLOCKED_HOSTS_MAX),
+    /** Set on an AGENT command that ran after a person's command (the position of the latest one before it): the sandbox may hold what that command changed, so what this command shows is evidence of the run, not of the repository alone. */
+    afterPersonCommandN: z.number().int().min(1).max(SETUP_JOURNAL_MAX_ENTRIES).optional(),
     /** Plain text, no control characters other than newline and tab. */
     tail: z.string().max(SETUP_JOURNAL_TAIL_BYTES).regex(/^[\P{Cc}\n\t]*$/u, "plain text"),
     startedAt: z.string().datetime(),

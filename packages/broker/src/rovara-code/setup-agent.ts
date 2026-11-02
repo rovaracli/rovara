@@ -332,6 +332,8 @@ export interface SetupAgentDependencies {
   latest(orgId: OrgId, project: string): Promise<{ revision: number; definition: StoredProjectDefinition } | undefined>;
   /** The project's own setup-run limits and the company's lock, as stored (any shape: `effectiveSetupAgentLimits` reads them and never throws). */
   limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown }>;
+  /** SH14: throws unless the caller has a fresh browser sign-in (within 10 minutes), as the test-environment approvals ask. Absent: a person's command is refused. */
+  requireFreshSignIn?(caller: DeveloperCaller): Promise<void>;
   /** Who pays for a task this person starts in this project: `resolveRunPayer`'s answer for an app start. */
   payerFor(caller: DeveloperCaller, project: string): Promise<Payer>;
 }

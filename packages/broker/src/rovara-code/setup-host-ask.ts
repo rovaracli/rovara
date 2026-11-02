@@ -28,10 +28,11 @@ import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditSetupHostAsked, auditSetupHostRefused } from "../audit/events.js";
 import { failedIndexes } from "../agents/table-writes.js";
-import { commitReviewedProjectAllowedDomains, proposeProjectAllowedDomains, readProjectAllowedDomainsReview } from "../org/project-allowed-domains.js";
+import { commitReviewedProjectAllowedDomains, decideProjectAllowedDomainProposal, proposeProjectAllowedDomains, readProjectAllowedDomainsReview } from "../org/project-allowed-domains.js";
 import { decideSecondPersonApproval } from "../org/second-person-approval.js";
 import { readAllowedDomainActorConditions, readSecondPersonApprovalEvidence } from "../org/second-person-evidence.js";
 import { takeRateAt } from "../developer/page-comments.js";
+import { livePersonLabel } from "../agent-sessions/live-steer.js";
 import { taskKey } from "../developer/task-records.js";
 import type { DecisionItem } from "../decisions/project.js";
 import { perform, type KindHandler } from "../decisions/performer.js";
@@ -84,22 +85,24 @@ type SuffixKind = "paste_site" | "link_shortener" | "tunnel" | "webhook_sink" | 
 const SUFFIXES: ReadonlyArray<readonly [SuffixKind, readonly string[]]> = [
   ["paste_site", ["pastebin.com", "paste.ee", "hastebin.com", "dpaste.org", "dpaste.com", "0bin.net", "rentry.co", "ix.io", "termbin.com", "transfer.sh", "file.io", "anonfiles.com", "gofile.io", "catbox.moe", "temp.sh", "wetransfer.com", "ntfy.sh"]],
   ["link_shortener", ["bit.ly", "t.co", "tinyurl.com", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at", "t.ly", "tiny.cc", "s.id", "rb.gy", "v.gd"]],
-  ["tunnel", ["ngrok.io", "ngrok.app", "ngrok-free.app", "ngrok-free.dev", "ngrok.dev", "trycloudflare.com", "loca.lt", "localtunnel.me", "serveo.net", "pagekite.me", "tunnelmole.net", "lhr.life", "localhost.run", "playit.gg", "portmap.io", "devtunnels.ms", "bore.pub", "zrok.io"]],
+  ["tunnel", ["ngrok.io", "ngrok.app", "ngrok-free.app", "ngrok-free.dev", "ngrok.dev", "trycloudflare.com", "loca.lt", "localtunnel.me", "serveo.net", "pagekite.me", "tunnelmole.net", "lhr.life", "localhost.run", "playit.gg", "portmap.io", "devtunnels.ms", "bore.pub", "zrok.io", "ts.net", "pinggy.io", "ngrok.com", "duckdns.org", "ddns.net", "no-ip.org", "no-ip.biz", "no-ip.com", "hopto.org", "zapto.org", "sytes.net", "myftp.org"]],
   ["webhook_sink", ["webhook.site", "requestbin.com", "requestbin.net", "pipedream.net", "interact.sh", "oast.fun", "oast.live", "oast.me", "oast.online", "oast.pro", "oast.site", "oastify.com", "burpcollaborator.net", "canarytokens.com", "beeceptor.com", "hookbin.com", "mockbin.org", "requestcatcher.com", "dnslog.cn", "ceye.io", "requestrepo.com"]],
   ["raw_storage", [
     "blob.core.windows.net", "storage.googleapis.com", "r2.cloudflarestorage.com", "r2.dev", "digitaloceanspaces.com", "backblazeb2.com", "wasabisys.com", "s3.amazonaws.com", "amazonaws.com.cn", "firebasestorage.googleapis.com",
     "web.app", "firebaseapp.com", "workers.dev", "pages.dev", "netlify.app", "vercel.app", "herokuapp.com", "glitch.me", "repl.co", "replit.dev",
-    "cloudfront.net", "github.io", "azurewebsites.net", "fly.dev", "onrender.com", "surge.sh", "ipfs.io",
+    "cloudfront.net", "github.io", "azurewebsites.net", "fly.dev", "onrender.com", "surge.sh", "ipfs.io", "gitlab.io", "bitbucket.io", "appspot.com", "azurestaticapps.net",
   ]],
   // A name that resolves to whatever address its first labels spell: a way to name any machine.
-  ["ip_in_name", ["nip.io", "sslip.io", "xip.io", "traefik.me", "localtest.me", "lvh.me", "vcap.me"]],
+  ["ip_in_name", ["nip.io", "sslip.io", "xip.io", "traefik.me", "localtest.me", "lvh.me", "vcap.me", "rbndr.us", "1u.ms"]],
 ];
 /** `raw.` and `gist.` of GitHub's user-content host: anyone's file (the host itself is a regex so the outbound inventory keeps its one owner for the name). */
 const GITHUB_USER_FILES = /^(?:raw|gist)\.githubusercontent\.com$/u;
 /** `<id>.lambda-url.<region>.on.aws`: a function URL anyone can create. */
 const LAMBDA_URL = /(?:^|\.)lambda-url\.[a-z0-9-]+\.on\.aws$/u;
 /** Last labels that name no public website: they mean something only inside one network (or are reserved). */
-const PRIVATE_LAST_LABELS: ReadonlySet<string> = new Set(["localhost", "local", "internal", "lan", "arpa", "onion", "test", "example", "invalid", "corp"]);
+const PRIVATE_LAST_LABELS: ReadonlySet<string> = new Set(["localhost", "local", "internal", "lan", "arpa", "onion", "test", "example", "invalid", "corp", "localdomain", "intranet", "home", "svc"]);
+/** The cloud metadata name (the host itself and anything under it). */
+const PRIVATE_SUFFIXES: readonly string[] = ["metadata.goog"];
 /** Four numbers joined by dots or dashes anywhere in the name (`10-0-0-5.example.com`, `10.0.0.5.example.com`). */
 const IP_IN_NAME = /(?:^|[.-])\d{1,3}([.-])\d{1,3}\1\d{1,3}\1\d{1,3}(?:$|[.-])/u;
 const IPV4_ALL_DIGITS = /^[0-9.]+$/u;
@@ -123,7 +126,9 @@ export function refuseSetupHost(host: string, prodDeny?: TestEnvProdDeny): Setup
   const lower = raw.toLowerCase();
   if (IPV4_ALL_DIGITS.test(lower) || /^0x[0-9a-f]+$/u.test(lower)) return "address_literal";
   const labels = lower.split(".");
-  if (PRIVATE_LAST_LABELS.has(labels[labels.length - 1]!)) return "private_name";
+  if (PRIVATE_LAST_LABELS.has(labels[labels.length - 1]!) || PRIVATE_SUFFIXES.some((suffix) => coveredBySuffix(lower, suffix))) return "private_name";
+  // A dynamic-DNS name (`<name>.ddns.<anything>`) points wherever its owner says.
+  if (labels.includes("ddns")) return "tunnel";
   if (!SetupHostSchema.safeParse(lower).success) return "not_a_host";
   if (lower.length > SETUP_HOST_CARD_MAX) return "too_long";
   if (IP_IN_NAME.test(lower)) return "ip_in_name";
@@ -154,6 +159,8 @@ const AskRowSchema = z.object({
   journalN: z.number().int().min(1).max(400).optional(),
   from: z.object({ path: z.string().min(1).max(500), line: z.number().int().min(1).max(10_000_000) }).strict().optional(),
   askedAt: z.string().datetime(), joined: z.number().int().min(0).max(1_000_000),
+  /** The person who typed the command (in a setup run's "Run a command" box) whose blocked website led to this ask. Set by the broker from its own record of that command, never from the worker. */
+  typedBy: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   decidedAt: z.string().datetime().optional(), decidedBy: z.string().optional(), refusalWords: z.string().max(200).optional(), resultRevision: z.number().int().positive().optional(),
   expiresAt: z.string().datetime().optional(),
 }).passthrough();
@@ -177,6 +184,8 @@ async function readAsk(table: HostAskTable, orgId: OrgId, project: string, host:
   return parsed.data;
 }
 
+/** A row whose store lifetime has passed (the table deletes it some time later): it is no longer an ask, whatever its state says. */
+const rowExpired = (row: Row, nowMs: number): boolean => typeof row[INDEX_EXPIRY_ATTRIBUTE] === "number" && row[INDEX_EXPIRY_ATTRIBUTE] <= nowMs / 1000;
 const refusedAndExpired = (ask: SetupHostAsk, nowMs: number): boolean => ask.state === "refused" && ask.expiresAt !== undefined && Date.parse(ask.expiresAt) <= nowMs;
 
 /** The asks of one project, newest first (a damaged row is skipped, never guessed at). */
@@ -190,7 +199,7 @@ export async function listHostAsks(table: HostAskTable, orgId: OrgId, project: s
     })) as { Items?: Row[]; LastEvaluatedKey?: Row };
     for (const raw of result.Items ?? []) {
       const parsed = AskRowSchema.safeParse(raw);
-      if (parsed.success && parsed.data.orgId === orgId && parsed.data.project === project && states.includes(parsed.data.state) && !refusedAndExpired(parsed.data, table.now())) out.push(parsed.data);
+      if (parsed.success && parsed.data.orgId === orgId && parsed.data.project === project && states.includes(parsed.data.state) && !refusedAndExpired(parsed.data, table.now()) && !rowExpired(raw, table.now())) out.push(parsed.data);
     }
     start = result.LastEvaluatedKey;
     if (start === undefined) break;
@@ -215,10 +224,12 @@ export async function refusedCountsOf(table: HostAskTable, orgId: OrgId, project
  * The person the BROKER recorded as the run's starter, from the run's own task record: the setup-run task of this company and project, started by `startedBy` (a start on someone's behalf) or its
  * creator. Undefined for any task that is not such a run. This is the only source of an ask's requester: no worker, payload or request names a person.
  */
-export async function setupRunStarterOf(table: Pick<HostAskTable, "documentClient" | "tableName">, orgId: OrgId, project: string, taskId: string): Promise<string | undefined> {
+export async function setupRunStarterOf(table: Pick<HostAskTable, "documentClient" | "tableName">, orgId: OrgId, project: string, taskId: string, options: { requireRunning?: boolean } = {}): Promise<string | undefined> {
   if (!z.string().uuid().safeParse(taskId).success) return undefined;
   const task = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: Row }).Item;
   if (task === undefined || task["purpose"] !== "setup_agent" || task["orgId"] !== orgId || task["project"] !== project) return undefined;
+  // A NEW ask comes from a run that is going: a closed or ended run asks nothing (an approval of an earlier ask does not need the run to be going).
+  if (options.requireRunning === true && (task["closedAt"] !== undefined || task["agentRunEnd"] !== undefined || task["setupAgentResult"] !== undefined)) return undefined;
   const startedBy = (task["startedBy"] as { developerId?: unknown } | undefined)?.developerId;
   const starter = typeof startedBy === "string" ? startedBy : task["developerId"];
   return typeof starter === "string" && /^[a-f0-9]{64}$/u.test(starter) ? starter : undefined;
@@ -244,6 +255,8 @@ export interface HostAskInput {
   /** The project's own allowed websites now (to say "already allowed"). */
   projectDomains: readonly string[];
   prodDeny?: TestEnvProdDeny | undefined;
+  /** The person who typed the command that hit the blocked website, when one did: filled in by the broker from its own stored command (the worker names only the command's place), never from a payload. */
+  typedBy?: string | undefined;
 }
 
 async function countRefusal(table: HostAskTable, input: HostAskInput, kind: SetupHostRefusal): Promise<void> {
@@ -259,18 +272,19 @@ async function countRefusal(table: HostAskTable, input: HostAskInput, kind: Setu
  * racing for a new host make one row; the 21st open ask of a project is `too_many_open`, by a conditional write on the counter.
  */
 export async function requestHostAsk(table: HostAskTable, input: HostAskInput): Promise<HostAskOutcome> {
-  const requestedBy = await setupRunStarterOf(table, input.orgId, input.project, input.taskId);
+  const requestedBy = await setupRunStarterOf(table, input.orgId, input.project, input.taskId, { requireRunning: true });
   if (requestedBy === undefined) return { outcome: "no_run" };
   const host = typeof input.host === "string" ? (input.host.endsWith(".") ? input.host.slice(0, -1) : input.host) : "";
   const reason = refuseSetupHost(host, input.prodDeny);
   if (reason !== undefined) { await countRefusal(table, input, reason); return { outcome: "refused", reason, words: SETUP_HOST_REFUSAL_WORDS[reason] }; }
   const name = host.toLowerCase();
   if (hostAlreadyAllowed(name, input.projectDomains)) return { outcome: "already_allowed" };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  let recounted = false;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const existing = await readAsk(table, input.orgId, input.project, name);
     const nowMs = table.now();
     // An approved ask whose host is no longer covered (the project's list moved on) does not block a new ask; an expired refusal neither.
-    const replaceable = existing === undefined || refusedAndExpired(existing, nowMs) || existing.state === "approved";
+    const replaceable = existing === undefined || refusedAndExpired(existing, nowMs) || existing.state === "approved" || rowExpired(existing, nowMs);
     if (!replaceable && existing !== undefined) {
       if (existing.state === "refused") return { outcome: "refused_before", ask: existing };
       // Open: join. The count is bounded by a conditional write; at the bound the join is simply not counted.
@@ -284,21 +298,22 @@ export async function requestHostAsk(table: HostAskTable, input: HostAskInput): 
     const row = AskRowSchema.parse({
       ...askKey(input.orgId, input.project, name), entityType: "SETUP_HOST_ASK", orgId: input.orgId, project: input.project, host: name, state: "open", requestedBy, taskId: input.taskId,
       ...(input.journalN === undefined ? {} : { journalN: input.journalN }), ...(input.from === undefined ? {} : { from: { path: input.from.path.slice(0, 500), line: input.from.line } }),
+      ...(input.typedBy === undefined ? {} : { typedBy: input.typedBy }),
       askedAt: new Date(nowMs).toISOString(), joined: 0, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + STORE_TTL_S,
     });
     const event = auditSetupHostAsked({
       orgId: input.orgId, actor: { kind: "system", id: "rovara" }, occurredAt: row.askedAt, occurrence: auditOccurrence(input.project, hostAskSubjectId(input.orgId, input.project, name), row.askedAt),
-      projectName: input.project, askId: hostAskSubjectId(input.orgId, input.project, name), taskId: input.taskId, journalN: input.journalN, host: name, onBehalfOf: requestedBy,
+      projectName: input.project, askId: hostAskSubjectId(input.orgId, input.project, name), taskId: input.taskId, journalN: input.journalN, host: name, onBehalfOf: requestedBy, ...(input.typedBy === undefined ? {} : { typedBy: input.typedBy }),
     });
     const pending = auditPending(table, event);
     try {
       await table.documentClient.send(new TransactWriteCommand({ TransactItems: [
         // 0: the ask. A new row, an expired refusal, or an approved one whose host is not covered now. Never an open row.
-        { Put: { TableName: table.tableName, Item: row, ConditionExpression: "attribute_not_exists(pk) OR (#state = :refused AND expiresAt <= :now) OR #state = :approved", ExpressionAttributeNames: { "#state": "state" },
-          ExpressionAttributeValues: { ":refused": "refused", ":approved": "approved", ":now": new Date(nowMs).toISOString() } } },
+        { Put: { TableName: table.tableName, Item: row, ConditionExpression: "attribute_not_exists(pk) OR (#state = :refused AND expiresAt <= :now) OR #state = :approved OR #ttl <= :nowSec", ExpressionAttributeNames: { "#state": "state", "#ttl": INDEX_EXPIRY_ATTRIBUTE },
+          ExpressionAttributeValues: { ":refused": "refused", ":approved": "approved", ":now": new Date(nowMs).toISOString(), ":nowSec": Math.floor(nowMs / 1000) } } },
         // 1: the cap.
-        { Update: { TableName: table.tableName, Key: countKey(input.orgId, input.project), UpdateExpression: "SET #open = if_not_exists(#open, :zero) + :one, entityType = :type",
-          ConditionExpression: "attribute_not_exists(#open) OR #open < :max", ExpressionAttributeNames: { "#open": "open" }, ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":max": SETUP_HOST_OPEN_MAX, ":type": "SETUP_HOST_OPEN_COUNT" } } },
+        { Update: { TableName: table.tableName, Key: countKey(input.orgId, input.project), UpdateExpression: "SET #open = if_not_exists(#open, :zero) + :one, entityType = :type, #ttl = :ttl",
+          ConditionExpression: "attribute_not_exists(#open) OR #open < :max", ExpressionAttributeNames: { "#open": "open", "#ttl": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":max": SETUP_HOST_OPEN_MAX, ":type": "SETUP_HOST_OPEN_COUNT", ":ttl": Math.floor(nowMs / 1000) + STORE_TTL_S } } },
         // 2: the company index.
         { Put: { TableName: table.tableName, Item: { ...indexKey(input.orgId, input.project, name), entityType: "SETUP_HOST_OPEN", orgId: input.orgId, project: input.project, host: name, ask: row, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + STORE_TTL_S } } },
         ...pending,
@@ -306,7 +321,12 @@ export async function requestHostAsk(table: HostAskTable, input: HostAskInput): 
     } catch (error) {
       const failed = failedIndexes(error);
       if (failed === undefined) throw error;
-      if (failed.has(1)) return { outcome: "too_many_open" };
+      if (failed.has(1)) {
+        // The counter says full. Asks that expired from the table were never subtracted, so before refusing it is counted again from the asks that are really open; a counter that was too high is set right
+        // (only if nobody moved it meanwhile) and the ask is tried again.
+        if (!recounted && await recountOpenAsks(table, input.orgId, input.project)) { recounted = true; continue; }
+        return { outcome: "too_many_open" };
+      }
       if (failed.has(0)) continue; // raced: read again and join
       continue;
     }
@@ -316,13 +336,34 @@ export async function requestHostAsk(table: HostAskTable, input: HostAskInput): 
   throw unavailable();
 }
 
+/**
+ * Sets the project's open-asks counter to the number of asks that are really open (rows still in the table and not expired), when that is LESS than the counter says. The write holds only while the counter
+ * is what was read, so a concurrent create or settle wins. Answers whether the counter was lowered.
+ */
+async function recountOpenAsks(table: HostAskTable, orgId: OrgId, project: string): Promise<boolean> {
+  const seen = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: countKey(orgId, project), ConsistentRead: true })) as { Item?: Row }).Item?.["open"];
+  if (typeof seen !== "number") return false;
+  const real = (await listHostAsks(table, orgId, project, ["open"])).length;
+  if (real >= seen) return false;
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName, Key: countKey(orgId, project), UpdateExpression: "SET #open = :real, #ttl = :ttl", ConditionExpression: "#open = :seen",
+      ExpressionAttributeNames: { "#open": "open", "#ttl": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":real": real, ":seen": seen, ":ttl": Math.floor(table.now() / 1000) + STORE_TTL_S },
+    }));
+    return true;
+  } catch (error) {
+    if (isConditionalFailure(error)) return false;
+    throw error;
+  }
+}
+
 // ---- the card item
 
 export function hostAskItem(ask: SetupHostAsk, input: { staffStep: boolean }): Extract<DecisionItem, { kind: "setup_host" }> {
   const subjectId = hostAskSubjectId(ask.orgId, ask.project, ask.host);
   const base = `/app/projects/${ask.project}`;
   return {
-    kind: "setup_host", subjectId, project: ask.project, host: ask.host, staffStep: input.staffStep, international: isInternationalName(ask.host), taskId: ask.taskId,
+    kind: "setup_host", subjectId, project: ask.project, host: ask.host, staffStep: input.staffStep, international: isInternationalName(ask.host), taskId: ask.taskId, ...(ask.typedBy === undefined ? {} : { typedBy: livePersonLabel(ask.typedBy) }),
     ...(ask.from === undefined ? {} : { from: ask.from }), ...(ask.journalN === undefined ? {} : { journalN: ask.journalN }),
     title: `Allow ${ask.host}`, createdAt: ask.askedAt, openPath: `${base}/settings`, contentVersion: `${ask.host}@${ask.askedAt}`,
   };
@@ -352,7 +393,7 @@ export async function hostAskItemsFor(ports: HostItemPorts, who: { orgId: string
     for (const item of result.Items ?? []) {
       read += 1;
       const parsed = AskRowSchema.safeParse(item["ask"]);
-      if (!parsed.success || parsed.data.orgId !== orgId || parsed.data.state !== "open" || !allowed.has(parsed.data.project) || item["project"] !== parsed.data.project || item["host"] !== parsed.data.host) continue;
+      if (rowExpired(item, ports.now()) || !parsed.success || parsed.data.orgId !== orgId || parsed.data.state !== "open" || !allowed.has(parsed.data.project) || item["project"] !== parsed.data.project || item["host"] !== parsed.data.host) continue;
       out.push(hostAskItem(parsed.data, { staffStep: ports.staffStep }));
     }
     start = result.LastEvaluatedKey;
@@ -421,7 +462,7 @@ async function settle(deps: HostDecisionDeps, input: HostDecisionInput, ask: Set
         },
       } },
       { Delete: { TableName: deps.tableName, Key: indexKey(input.orgId, input.project, ask.host) } },
-      { Update: { TableName: deps.tableName, Key: countKey(input.orgId, input.project), UpdateExpression: "ADD #open :minus", ExpressionAttributeNames: { "#open": "open" }, ExpressionAttributeValues: { ":minus": -1 } } },
+      { Update: { TableName: deps.tableName, Key: countKey(input.orgId, input.project), UpdateExpression: "SET #ttl = :ttl ADD #open :minus", ExpressionAttributeNames: { "#open": "open", "#ttl": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":minus": -1, ":ttl": Math.floor(nowMs / 1000) + STORE_TTL_S } } },
       ...pending,
     ] }));
   } catch (error) {
@@ -478,7 +519,8 @@ export async function approveHostAsk(deps: HostDecisionDeps, input: HostDecision
   const evidence = await readSecondPersonApprovalEvidence(dependencies, { orgId: input.orgId, project: input.project, proposerId: ask.requestedBy, approverId: input.by });
   const decision = decideSecondPersonApproval(evidence.decisionInput);
   if (decision.mode === "sole_owner_exception" && input.soleOwnerAcknowledged !== true) throw agentXError("FORBIDDEN", "Explicitly acknowledge the sole-owner website exception.");
-  const auditDetails = { origin: "setup_host_ask", askId: hostAskSubjectId(input.orgId, input.project, host), pressedBy: input.by };
+  // The audit shows who pressed, who started the run (the proposer) and, when a person's own command hit the website, who typed it: each of them, even when they are the same person.
+  const auditDetails = { origin: "setup_host_ask", askId: hostAskSubjectId(input.orgId, input.project, host), pressedBy: input.by, ...(ask.typedBy === undefined ? {} : { typedBy: ask.typedBy }) };
   const asStale = (error: unknown): never => { throw isCode(error, "IDEMPOTENCY_CONFLICT") ? agentXError("CHANGE_STALE", "This website ask changed. Review it again.") : error; };
   const proposal = await proposeProjectAllowedDomains(dependencies, {
     orgId: input.orgId, project: input.project, by: ask.requestedBy, auditDetails,
@@ -499,7 +541,21 @@ export async function refuseHostAsk(deps: HostDecisionDeps, input: HostDecisionI
   await requireApprover(deps, input.orgId, input.by);
   const ask = await readAsk(deps, input.orgId, input.project, host);
   if (ask === undefined || ask.state !== "open") throw agentXError("CHANGE_STALE", "This website ask is no longer open.");
+  // An earlier press whose commit failed may have left this ask's own website proposal pending (it blocks every other website change for a day). "Not now" ends it, as a rejection by the person refusing.
+  // Best effort: a proposal that cannot be ended does not stop the refusal, and it lapses by itself.
+  await rejectLeftoverProposal(deps, input, ask).catch(() => undefined);
   await settle(deps, { ...input, host }, ask, "refused", { words: "A person refused it.", reason: "person" });
+}
+
+async function rejectLeftoverProposal(deps: HostDecisionDeps, input: HostDecisionInput, ask: SetupHostAsk): Promise<void> {
+  const dependencies = { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
+  const review = await readProjectAllowedDomainsReview(dependencies, { orgId: input.orgId, project: input.project, by: input.by });
+  const live = review.liveProposal;
+  if (live === null || live.status !== "pending" || live.proposal.proposalId !== hostProposalId(ask, review.baseRevision)) return;
+  await decideProjectAllowedDomainProposal(dependencies, {
+    orgId: input.orgId, project: input.project, by: input.by,
+    body: { requestId: input.requestId, proposalId: live.proposal.proposalId, decision: "reject", reason: "Not now (setup website ask)" },
+  });
 }
 
 /** The state a setup run reads to learn whether its ask was answered: `open`, `approved` (still waits for staff on Cloud), or `refused`. Undefined when there is none. */

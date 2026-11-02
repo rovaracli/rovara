@@ -10,6 +10,7 @@
 //     taken and not finished within the longest a command may run is treated as finished, so a worker that died does not block the box for good.
 // Nothing here executes anything. The command's text sits in the table for the length of the run's retention and nowhere else (no log line, no event).
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectAllows, redactText, setupDraftKey, type OrgId } from "@agentx/contracts";
 import { StatusReply } from "../aws/status-reply.js";
@@ -35,6 +36,8 @@ export const SETUP_COMMAND_WORDS = {
   oneLine: "A command is one line of plain text, up to 1,000 characters.",
   secret: "That looks like it holds a secret. Rovara does not run commands with secrets in them.",
   who: "only a project maintainer can run a command in a setup run",
+  browserOnly: "Run a command from Rovara's web app: a command needs a signed-in browser, not a token.",
+  signInAgain: "Sign in again to run a command.",
 } as const;
 
 /** The command a person may run: one plain line, not empty, not too long, and exactly what the redactor would leave. Returns the text, or the fixed sentence for why not. */
@@ -49,6 +52,7 @@ interface Scope { orgId: OrgId; project: string; taskId: string }
 const partition = (scope: Scope) => setupDraftKey(scope.orgId, scope.project).pk;
 const counterKey = (scope: Scope) => ({ pk: partition(scope), sk: `CMDCOUNT#${scope.taskId}` });
 const commandKey = (scope: Scope, seq: number) => ({ pk: partition(scope), sk: `CMD#${scope.taskId}#${String(seq).padStart(3, "0")}` });
+const commandHash = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 const requestKey = (scope: Scope, requestId: string) => ({ pk: partition(scope), sk: `CMDREQ#${scope.taskId}#${requestId}` });
 
 async function get(client: Client, tableName: string, key: { pk: string; sk: string }): Promise<Item | undefined> {
@@ -84,7 +88,8 @@ export type QueueOutcome = { status: 202 | 200; seq: number; state: CommandState
 export async function queueSetupCommand(table: { documentClient: Client; tableName: string; now: () => number }, scope: Scope, input: { requestId: string; command: string; by: string }): Promise<QueueOutcome> {
   const repeat = await get(table.documentClient, table.tableName, requestKey(scope, input.requestId));
   if (repeat !== undefined) {
-    if (repeat["by"] !== input.by || typeof repeat["seq"] !== "number") throw agentXError("IDEMPOTENCY_CONFLICT", "Use a fresh request id for a different command.");
+    // The same request id means the same command from the same person: other text (or another person) is a conflict, never answered with the first command.
+    if (repeat["by"] !== input.by || typeof repeat["seq"] !== "number" || repeat["commandHash"] !== commandHash(input.command)) throw agentXError("IDEMPOTENCY_CONFLICT", "Use a fresh request id for a different command.");
     const first = commandOf(await get(table.documentClient, table.tableName, commandKey(scope, repeat["seq"])), scope);
     return { status: 200, seq: repeat["seq"], state: first?.state ?? "done" };
   }
@@ -113,14 +118,15 @@ export async function queueSetupCommand(table: { documentClient: Client; tableNa
             state: "queued", createdAt: at, [INDEX_EXPIRY_ATTRIBUTE]: expiry,
           },
         } },
-        { Put: { TableName: table.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: { ...requestKey(scope, input.requestId), entityType: "SETUP_COMMAND_REQUEST", seq, by: input.by, [INDEX_EXPIRY_ATTRIBUTE]: expiry } } },
+        { Put: { TableName: table.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: { ...requestKey(scope, input.requestId), entityType: "SETUP_COMMAND_REQUEST", seq, by: input.by, commandHash: commandHash(input.command), [INDEX_EXPIRY_ATTRIBUTE]: expiry } } },
       ] }));
       return { status: 202, seq, state: "queued" };
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
       // Another request took the place, or this very request committed first: read again.
       const again = await get(table.documentClient, table.tableName, requestKey(scope, input.requestId));
-      if (again !== undefined && again["by"] === input.by && typeof again["seq"] === "number") return { status: 200, seq: again["seq"], state: "queued" };
+      if (again !== undefined && again["by"] === input.by && typeof again["seq"] === "number" && again["commandHash"] === commandHash(input.command)) return { status: 200, seq: again["seq"], state: "queued" };
+      if (again !== undefined) throw agentXError("IDEMPOTENCY_CONFLICT", "Use a fresh request id for a different command.");
     }
   }
   throw agentXError("WORKSPACE_BUSY", SETUP_COMMAND_WORDS.busy);
@@ -130,7 +136,11 @@ export async function queueSetupCommand(table: { documentClient: Client; tableNa
  * The worker asks for the next command of its run. Returns it once and marks it taken; a second ask while it is out returns nothing. The scope comes from the authenticated operation.
  * The text returned is the person's, exactly as accepted: the worker runs it and shows the result to the agent as data.
  */
-export async function takeSetupCommand(table: { documentClient: Client; tableName: string; now: () => number }, scope: Scope): Promise<{ seq: number; command: string } | undefined> {
+export async function takeSetupCommand(
+  table: { documentClient: Client; tableName: string; now: () => number }, scope: Scope,
+  /** Whether the person who typed it may still change this project (read live at hand-over). A command whose typist was demoted or removed is dropped, never run. Absent: nothing is handed over. */
+  mayStillRun?: (by: string) => Promise<boolean>,
+): Promise<{ seq: number; command: string; by: string } | undefined> {
   const counter = await get(table.documentClient, table.tableName, counterKey(scope));
   const count = typeof counter?.["count"] === "number" ? counter["count"] : 0;
   if (count === 0) return undefined;
@@ -145,17 +155,28 @@ export async function takeSetupCommand(table: { documentClient: Client; tableNam
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") return undefined;
     throw error;
   }
-  return { seq: latest.seq, command: latest.command };
+  if (mayStillRun === undefined || !(await mayStillRun(latest.by).catch(() => false))) {
+    // The typist can no longer act: the command is finished without running (it must not hold the box).
+    await finishSetupCommand(table, scope, { seq: latest.seq, skipped: true }).catch(() => false);
+    return undefined;
+  }
+  return { seq: latest.seq, command: latest.command, by: latest.by };
+}
+
+/** One stored command of the run (its typist and state), or undefined. Reads only this run's rows. */
+export async function readSetupCommand(table: { documentClient: Client; tableName: string }, scope: Scope, seq: number): Promise<StoredCommand | undefined> {
+  if (!Number.isInteger(seq) || seq < 1 || seq > SETUP_PERSON_COMMANDS_MAX) return undefined;
+  return commandOf(await get(table.documentClient, table.tableName, commandKey(scope, seq)), scope);
 }
 
 /** The worker says the command finished and which journal position holds its result. Only a taken command can finish; a repeat changes nothing. */
-export async function finishSetupCommand(table: { documentClient: Client; tableName: string; now: () => number }, scope: Scope, input: { seq: number; journalN?: number | undefined }): Promise<boolean> {
+export async function finishSetupCommand(table: { documentClient: Client; tableName: string; now: () => number }, scope: Scope, input: { seq: number; journalN?: number | undefined; skipped?: boolean }): Promise<boolean> {
   if (!Number.isInteger(input.seq) || input.seq < 1 || input.seq > SETUP_PERSON_COMMANDS_MAX) return false;
   try {
     await table.documentClient.send(new UpdateCommand({
-      TableName: table.tableName, Key: commandKey(scope, input.seq), UpdateExpression: "SET #state = :done, doneAt = :at" + (input.journalN === undefined ? "" : ", journalN = :n"),
-      ConditionExpression: "#state = :taken AND taskId = :task", ExpressionAttributeNames: { "#state": "state" },
-      ExpressionAttributeValues: { ":done": "done", ":taken": "taken", ":task": scope.taskId, ":at": new Date(table.now()).toISOString(), ...(input.journalN === undefined ? {} : { ":n": input.journalN }) },
+      TableName: table.tableName, Key: commandKey(scope, input.seq), UpdateExpression: "SET #state = :done, doneAt = :at" + (input.journalN === undefined ? "" : ", journalN = :n") + (input.skipped === true ? ", skipped = :yes" : ""),
+      ConditionExpression: input.skipped === true ? "(#state = :taken OR #state = :queued) AND taskId = :task" : "#state = :taken AND taskId = :task", ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":done": "done", ":taken": "taken", ...(input.skipped === true ? { ":queued": "queued", ":yes": true } : {}), ":task": scope.taskId, ":at": new Date(table.now()).toISOString(), ...(input.journalN === undefined ? {} : { ":n": input.journalN }) },
     }));
     return true;
   } catch (error) {
@@ -170,6 +191,11 @@ export async function finishSetupCommand(table: { documentClient: Client; tableN
  */
 export async function runSetupCommand(deps: SetupAgentDependencies, caller: DeveloperCaller, rawName: string, rawBody: unknown): Promise<StatusReply> {
   if (!deps.enabled) throw agentXError("NOT_FOUND", "route not found");
+  // A command runs code in the setup sandbox, so it is a person's own act at their keyboard: a signed-in browser session whose sign-in is fresh, never a token (a CLI token, an MCP client or a leaked one).
+  // Both checks come before anything about the project or the run is read.
+  if (caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_COMMAND_WORDS.browserOnly);
+  if (deps.requireFreshSignIn === undefined) throw agentXError("FORBIDDEN", SETUP_COMMAND_WORDS.signInAgain);
+  await deps.requireFreshSignIn(caller);
   const found = await deps.projectFor(caller, rawName);
   if (!projectAllows(found.role, "edit_settings")) throw agentXError("FORBIDDEN", SETUP_COMMAND_WORDS.who);
   const parsed = SetupCommandBodySchema.safeParse(rawBody);

@@ -834,8 +834,8 @@ export function auditTaskStopDecision(input: AuditBuilderBase & {
  * `occurrence`: `auditOccurrence(project, askId, askedAt)`. The ask a setup run raised for a website it could not reach. The actor is the system acting for the person who started the run (their id is in the
  * details, with the host); nothing is granted by an ask. `journalN` is the run's journal position of the command that was blocked, when there is one.
  */
-export function auditSetupHostAsked(input: AuditBuilderBase & { projectName: string; askId: string; taskId: string; journalN?: number | undefined; host: string; onBehalfOf: string }): AuditEventInput {
-  return build("setup.host_asked", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { host: input.host, onBehalfOf: input.onBehalfOf } }] }, { kind: "project", name: input.projectName },
+export function auditSetupHostAsked(input: AuditBuilderBase & { projectName: string; askId: string; taskId: string; journalN?: number | undefined; host: string; onBehalfOf: string; typedBy?: string | undefined }): AuditEventInput {
+  return build("setup.host_asked", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { host: input.host, onBehalfOf: input.onBehalfOf, ...(input.typedBy === undefined ? {} : { typedBy: input.typedBy }) } }] }, { kind: "project", name: input.projectName },
     { askId: input.askId, taskId: input.taskId, journalN: input.journalN });
 }
 

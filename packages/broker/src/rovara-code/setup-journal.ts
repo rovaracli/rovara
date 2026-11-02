@@ -62,8 +62,8 @@ export async function appendSetupJournal(table: JournalTable, scope: JournalScop
   if (highest > 0) {
     await table.documentClient.send(new UpdateCommand({
       TableName: table.tableName, Key: taskKey(scope.taskId), UpdateExpression: "SET setupAgentProgress = :progress",
-      ConditionExpression: "purpose = :purpose AND (attribute_not_exists(setupAgentProgress) OR setupAgentProgress.commands < :commands)",
-      ExpressionAttributeValues: { ":progress": { commands: highest, at: new Date(table.now()).toISOString() }, ":purpose": "setup_agent", ":commands": highest },
+      ConditionExpression: "purpose = :purpose AND orgId = :org AND (attribute_not_exists(setupAgentProgress) OR setupAgentProgress.commands < :commands)",
+      ExpressionAttributeValues: { ":progress": { commands: highest, at: new Date(table.now()).toISOString() }, ":purpose": "setup_agent", ":org": scope.orgId, ":commands": highest },
     })).catch(() => undefined);
   }
   return { stored, repeated, refused };

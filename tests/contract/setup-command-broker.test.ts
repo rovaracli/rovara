@@ -24,7 +24,7 @@ const T0 = Date.parse("2026-11-02T10:00:00.000Z");
 const fakeToken = () => ["gh", "p_"].join("") + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const scope = { orgId, project, taskId: TASK };
 
-async function world(options: { running?: boolean; enabled?: boolean; role?: ProjectRole } = {}) {
+async function world(options: { running?: boolean; enabled?: boolean; role?: ProjectRole; fresh?: boolean } = {}) {
   const db = new FakeDynamoDb();
   const clock = { now: T0 };
   if (options.running !== false) {
@@ -41,11 +41,14 @@ async function world(options: { running?: boolean; enabled?: boolean; role?: Pro
     requireNewWork: async () => undefined,
     latest: async () => ({ revision: 1, definition: {} as never }),
     limitSettings: async () => ({}), payerFor: async () => ({ kind: "member", developerId: OWNER }) as never,
+    // The route's real check reads the browser session's sign-in time; here a flag stands for "signed in within 10 minutes".
+    requireFreshSignIn: async () => { if (options.fresh === false) throw Object.assign(new Error("Sign in again"), { code: "REAUTH_REQUIRED" }); },
   } satisfies SetupAgentDependencies;
-  const caller = (developerId = MAINTAINER): DeveloperCaller => ({ orgId, developerId, name: "Maya", orgRole: "member", sessionId: "s", amr: "oidc" }) as unknown as DeveloperCaller;
+  const caller = (developerId = MAINTAINER, browserSession: boolean = true): DeveloperCaller => ({ orgId, developerId, name: "Maya", orgRole: "member", sessionId: "s", amr: "oidc", ...(browserSession ? { browserSession: true } : {}) }) as unknown as DeveloperCaller;
   const post = (body: unknown, who = MAINTAINER) => runSetupCommand(deps, caller(who), project, body);
+  const postAsToken = (body: unknown) => runSetupCommand(deps, caller(MAINTAINER, false), project, body);
   const table = { documentClient: db, tableName: "state", now: () => clock.now };
-  return { db, clock, deps, post, table };
+  return { db, clock, deps, post, postAsToken, table };
 }
 const has = (text: string): unknown => expect.stringContaining(text);
 const body = (command: string, requestId = randomUUID()) => ({ requestId, command });
@@ -61,6 +64,32 @@ describe("checkPersonCommand", () => {
   it("refuses a command with a secret in it rather than running a redacted form of it", () => {
     expect(checkPersonCommand(`curl -H "Authorization: Bearer ${fakeToken()}" https://x`)).toEqual({ ok: false, reason: "secret" });
     expect(checkPersonCommand(`echo ${fakeToken()}`)).toEqual({ ok: false, reason: "secret" });
+  });
+});
+
+describe("who may type a command", () => {
+  it("a token caller (a CLI token, an MCP client, a leaked one) is refused before anything is read, even a maintainer's", async () => {
+    const w = await world();
+    const reads: string[] = [];
+    const original = w.db.send.bind(w.db);
+    (w.db as { send: unknown }).send = async (command: { constructor: { name: string } }) => { reads.push(command.constructor.name); return original(command as never); };
+    await expect(w.postAsToken(body("ls"))).rejects.toMatchObject({ code: "FORBIDDEN", message: has(SETUP_COMMAND_WORDS.browserOnly) });
+    expect(reads).toEqual([]);
+    expect(rows(w, "CMD#")).toEqual([]);
+  });
+  it("a browser session whose sign-in is stale is refused before anything is read", async () => {
+    const w = await world({ fresh: false });
+    await expect(w.post(body("ls"))).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect(rows(w, "CMD#")).toEqual([]);
+  });
+  it("a deployment with no freshness check refuses (fail closed)", async () => {
+    const w = await world();
+    const { requireFreshSignIn: _gone, ...without } = w.deps; void _gone;
+    await expect(runSetupCommand(without, { orgId, developerId: MAINTAINER, browserSession: true } as unknown as DeveloperCaller, project, body("ls"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("a fresh browser session of a maintainer is accepted", async () => {
+    const w = await world();
+    expect((await w.post(body("ls"))).statusCode).toBe(202);
   });
 });
 
@@ -98,6 +127,13 @@ describe("POST setup-agent/command", () => {
     stopped.db.set({ ...taskPointerKey(WORKSPACE), taskId: TASK, cancelledAt: new Date(T0).toISOString() });
     await expect(stopped.post(body("ls"))).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
   });
+  it("a request id reused with different text is refused, not answered with the first command", async () => {
+    const w = await world();
+    const requestId = randomUUID();
+    await w.post(body("ls", requestId));
+    await expect(w.post(body("rm -rf /tmp/x", requestId))).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(rows(w, "CMD#")).toHaveLength(1);
+  });
   it("a repeat of the request id is the first command and queues nothing; the same id from another person is a conflict", async () => {
     const w = await world();
     const requestId = randomUUID();
@@ -114,7 +150,7 @@ describe("one at a time, and a bounded number", () => {
     const w = await world();
     await w.post(body("one"));
     await expect(w.post(body("two"))).rejects.toMatchObject({ code: "WORKSPACE_BUSY", message: has(SETUP_COMMAND_WORDS.busy) });
-    expect(await takeSetupCommand(w.table, scope)).toEqual({ seq: 1, command: "one" });
+    expect(await takeSetupCommand(w.table, scope, async () => true)).toMatchObject({ seq: 1, command: "one" });
     await expect(w.post(body("two"))).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     expect(await finishSetupCommand(w.table, scope, { seq: 1, journalN: 3 })).toBe(true);
     expect((await w.post(body("two"))).body).toEqual({ seq: 2, state: "queued" });
@@ -122,7 +158,7 @@ describe("one at a time, and a bounded number", () => {
   it("a command taken by a worker that never finished stops holding the box after the longest a command may run", async () => {
     const w = await world();
     await w.post(body("one"));
-    await takeSetupCommand(w.table, scope);
+    await takeSetupCommand(w.table, scope, async () => true);
     w.clock.now += SETUP_COMMAND_TAKEN_STALE_MS - 1;
     await expect(w.post(body("two"))).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     w.clock.now += 2;
@@ -132,7 +168,7 @@ describe("one at a time, and a bounded number", () => {
     const w = await world();
     for (let i = 1; i <= SETUP_PERSON_COMMANDS_MAX; i += 1) {
       await w.post(body(`echo ${String(i)}`));
-      await takeSetupCommand(w.table, scope);
+      await takeSetupCommand(w.table, scope, async () => true);
       await finishSetupCommand(w.table, scope, { seq: i });
     }
     await expect(w.post(body("one more"))).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS", message: has(SETUP_COMMAND_WORDS.limit) });
@@ -146,13 +182,31 @@ describe("one at a time, and a bounded number", () => {
 });
 
 describe("delivery to the worker", () => {
+  it("is dropped when the typist can no longer change the project: the command finishes without running and frees the box", async () => {
+    const w = await world();
+    await w.post(body("make test"));
+    expect(await takeSetupCommand(w.table, scope, async () => false)).toBeUndefined();
+    expect(rows(w, "CMD#")[0]).toMatchObject({ state: "done", skipped: true });
+    expect((await w.post(body("two"))).statusCode).toBe(202);
+  });
+  it("is dropped when the live check is missing or fails (fail closed), and handed over when it passes with the typist named", async () => {
+    const w = await world();
+    await w.post(body("a"));
+    expect(await takeSetupCommand(w.table, scope)).toBeUndefined();
+    const v = await world();
+    await v.post(body("b"));
+    expect(await takeSetupCommand(v.table, scope, async () => { throw new Error("down"); })).toBeUndefined();
+    const ok = await world();
+    await ok.post(body("c"));
+    expect(await takeSetupCommand(ok.table, scope, async (by) => by === MAINTAINER)).toEqual({ seq: 1, command: "c", by: MAINTAINER });
+  });
   it("hands a command over once, only to the run it was queued for", async () => {
     const w = await world();
     await w.post(body("make test"));
-    expect(await takeSetupCommand(w.table, { ...scope, taskId: randomUUID() })).toBeUndefined();
-    expect(await takeSetupCommand(w.table, { ...scope, project: "other" })).toBeUndefined();
-    expect(await takeSetupCommand(w.table, scope)).toEqual({ seq: 1, command: "make test" });
-    expect(await takeSetupCommand(w.table, scope)).toBeUndefined();
+    expect(await takeSetupCommand(w.table, { ...scope, taskId: randomUUID() }, async () => true)).toBeUndefined();
+    expect(await takeSetupCommand(w.table, { ...scope, project: "other" }, async () => true)).toBeUndefined();
+    expect(await takeSetupCommand(w.table, scope, async () => true)).toMatchObject({ seq: 1, command: "make test" });
+    expect(await takeSetupCommand(w.table, scope, async () => true)).toBeUndefined();
     expect(rows(w, "CMD#")[0]).toMatchObject({ state: "taken" });
   });
   it("nothing to hand over when nothing was queued", async () => {
@@ -163,7 +217,7 @@ describe("delivery to the worker", () => {
     const w = await world();
     await w.post(body("ls"));
     expect(await finishSetupCommand(w.table, scope, { seq: 1 })).toBe(false);
-    await takeSetupCommand(w.table, scope);
+    await takeSetupCommand(w.table, scope, async () => true);
     expect(await finishSetupCommand(w.table, { ...scope, taskId: randomUUID() }, { seq: 1 })).toBe(false);
     expect(await finishSetupCommand(w.table, scope, { seq: 99 })).toBe(false);
     expect(await finishSetupCommand(w.table, scope, { seq: 1, journalN: 4 })).toBe(true);
@@ -219,6 +273,12 @@ describe("the journal", () => {
     expect(w.db.get(taskKey(TASK))).toMatchObject({ setupAgentProgress: { commands: 2 } });
     await appendSetupJournal(w.table, scope, [entry(5)]);
     expect(w.db.get(taskKey(TASK))).toMatchObject({ setupAgentProgress: { commands: 5 } });
+  });
+  it("does not touch the count of a task of another company", async () => {
+    const w = await world();
+    w.db.set({ ...w.db.get(taskKey(TASK))!, orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+    await appendSetupJournal(w.table, scope, [entry(1)]);
+    expect(w.db.get(taskKey(TASK))).not.toHaveProperty("setupAgentProgress");
   });
   it("does not touch a task that is not a setup run", async () => {
     const w = await world();

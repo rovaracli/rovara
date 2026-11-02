@@ -90,6 +90,10 @@ describe("refuseSetupHost: hosts that get no card", () => {
     ["abc.ngrok-free.app", "tunnel"], ["abc.ngrok-free.dev", "tunnel"], ["x.trycloudflare.com", "tunnel"], ["x.devtunnels.ms", "tunnel"], ["bore.pub", "tunnel"], ["x.zrok.io", "tunnel"],
     ["webhook.site", "webhook_sink"], ["abc.oast.fun", "webhook_sink"], ["x.pipedream.net", "webhook_sink"], ["x.oastify.com", "webhook_sink"], ["x.dnslog.cn", "webhook_sink"], ["x.ceye.io", "webhook_sink"], ["x.requestrepo.com", "webhook_sink"],
     ["acct.blob.core.windows.net", "raw_storage"], ["storage.googleapis.com", "raw_storage"], ["bucket.r2.cloudflarestorage.com", "raw_storage"], ["x.workers.dev", "raw_storage"],
+    ["x.rbndr.us", "ip_in_name"], ["x.1u.ms", "ip_in_name"], ["x.tail1234.ts.net", "tunnel"], ["x.pinggy.io", "tunnel"], ["x.ngrok.com", "tunnel"], ["x.duckdns.org", "tunnel"], ["x.ddns.net", "tunnel"], ["x.ddns.acme-build.io", "tunnel"],
+    ["x.no-ip.org", "tunnel"], ["x.hopto.org", "tunnel"],
+    ["x.gitlab.io", "raw_storage"], ["x.bitbucket.io", "raw_storage"], ["x.appspot.com", "raw_storage"], ["x.azurestaticapps.net", "raw_storage"],
+    ["db.localdomain", "private_name"], ["wiki.intranet", "private_name"], ["router.home", "private_name"], ["api.svc", "private_name"], ["metadata.goog", "private_name"], ["x.metadata.goog", "private_name"],
     ["abc123.lambda-url.us-east-1.on.aws", "raw_storage"], ["d111.cloudfront.net", "raw_storage"], ["someone.github.io", "raw_storage"], ["gist.githubusercontent.com", "raw_storage"], ["raw.githubusercontent.com", "raw_storage"],
     ["x.azurewebsites.net", "raw_storage"], ["x.fly.dev", "raw_storage"], ["x.onrender.com", "raw_storage"], ["x.surge.sh", "raw_storage"], ["ipfs.io", "raw_storage"],
   ] as const)("%s is refused as %s", (host, kind) => {
@@ -172,6 +176,35 @@ describe("requestHostAsk: one ask per host per project, asked for by the run's r
     expect(askRow(w)).toBeUndefined();
     expect(openCount(w)).toBeUndefined();
   });
+  it("asks nothing for a run that is not going: a closed run, one with an end recorded, one with a result", async () => {
+    for (const over of [{ closedAt: "2026-11-02T08:00:00.000Z" }, { agentRunEnd: { state: "COMPLETE", at: "2026-11-02T08:00:00.000Z" } }, { setupAgentResult: { status: "failed" } }]) {
+      const w = world();
+      runTask(w.db, TASK, over);
+      expect(await w.ask()).toEqual({ outcome: "no_run" });
+      expect(askRow(w)).toBeUndefined();
+    }
+    // The approval of an ask made while the run was going does not need the run to be going.
+    const w = world();
+    await w.ask();
+    runTask(w.db, TASK, { agentRunEnd: { state: "COMPLETE", at: "2026-11-02T08:00:00.000Z" } });
+    expect((await approveHostAsk(w.deps, { orgId, project, host: HOST, by: ADMIN, requestId: randomUUID() })).state).toBe("applied");
+  });
+  it("records who typed the command that hit the website, and the card and the audit say so; the presser is recorded too, even when it is the same person", async () => {
+    const w = world();
+    const created = await w.ask({ typedBy: MEMBER });
+    if (created.outcome !== "created") throw new Error("ask");
+    expect(askRow(w)).toMatchObject({ typedBy: MEMBER, requestedBy: OWNER });
+    expect(JSON.stringify(w.audit.recordedBy("setup.host_asked")[0]!.details)).toContain(MEMBER);
+    const [card] = projectDecisionCards([hostAskItem(created.ask, { staffStep: true })]).cards;
+    expect(card!.evidence.find((chip) => chip.label === "Typed by")!.value).toMatch(/^person p_[0-9a-f]{6}$/u);
+    expect(card!.evidence.find((chip) => chip.label === "Typed by")!.value).not.toContain(MEMBER);
+    await approveHostAsk(w.deps, { orgId, project, host: HOST, by: ADMIN, requestId: randomUUID() });
+    for (const event of [...w.audit.recordedBy("project.allowed_domains_proposed"), ...w.audit.recordedBy("project.allowed_domains_changed")]) {
+      const details = JSON.stringify(event.details);
+      expect(details).toContain(MEMBER);
+      expect(details).toContain(ADMIN);
+    }
+  });
   it("counts, per run and kind, the hosts refused without a card", async () => {
     const w = world();
     await w.ask({ host: "pastebin.com" });
@@ -228,6 +261,30 @@ describe("requestHostAsk: one ask per host per project, asked for by the run's r
     expect(outcomes.filter((o) => o.outcome === "too_many_open")).toHaveLength(5);
     expect(openCount(w)).toBe(SETUP_HOST_OPEN_MAX);
     expect(await listHostAsks(w.table, orgId, project)).toHaveLength(SETUP_HOST_OPEN_MAX);
+  });
+  it("twenty asks that expire from the table do not jam the project: the counter is counted again from the asks really open", async () => {
+    const w = world();
+    for (let i = 0; i < SETUP_HOST_OPEN_MAX; i += 1) await w.ask({ host: `h${String(i)}.acme-build.io` });
+    expect(await w.ask({ host: "extra.acme-build.io" })).toEqual({ outcome: "too_many_open" });
+    w.clock.now = T0 + 32 * 86_400_000;
+    expect(await listHostAsks(w.table, orgId, project)).toHaveLength(0);
+    expect((await w.ask({ host: "extra.acme-build.io" })).outcome).toBe("created");
+    expect(openCount(w)).toBe(1);
+  });
+  it("does not lower a counter that is right: with twenty really open asks the twenty-first still waits", async () => {
+    const w = world();
+    for (let i = 0; i < SETUP_HOST_OPEN_MAX; i += 1) await w.ask({ host: `h${String(i)}.acme-build.io` });
+    expect(await w.ask({ host: "extra.acme-build.io" })).toEqual({ outcome: "too_many_open" });
+    expect(openCount(w)).toBe(SETUP_HOST_OPEN_MAX);
+  });
+  it("the counter lives as long as the asks do, and is refreshed on every write", async () => {
+    const w = world();
+    await w.ask();
+    const first = (w.db.get({ pk: projectPk(orgId, project), sk: "SETUP_HOST_OPEN_COUNT" }) as { indexExpiresAt?: number }).indexExpiresAt;
+    expect(first).toBeGreaterThan(T0 / 1000);
+    w.clock.now += 86_400_000;
+    await w.ask({ host: "second.acme-build.io" });
+    expect((w.db.get({ pk: projectPk(orgId, project), sk: "SETUP_HOST_OPEN_COUNT" }) as { indexExpiresAt?: number }).indexExpiresAt).toBeGreaterThan(first!);
   });
   it("a settled ask gives its place back", async () => {
     const w = world();
@@ -477,6 +534,24 @@ describe("approveHostAsk: the project's own website change, never a grant by its
     for (let i = 0; i < 11; i += 1) attempts.push(await approveHostAsk(w.deps, { orgId, project, host: HOST, by: OWNER, requestId: randomUUID() }).catch((error: unknown) => error));
     expect(attempts.slice(0, 10).every((e) => (e as { code?: string }).code === "FORBIDDEN")).toBe(true);
     expect(attempts[10]).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+  });
+  it("Not now ends a pending proposal an earlier failed press left behind, and not another person's", async () => {
+    const w = world();
+    await w.ask();
+    const ask = askRow(w) as { askedAt: string };
+    const mine = hostProposalId({ orgId, project, host: HOST, askedAt: ask.askedAt }, 1);
+    await proposeProjectAllowedDomains({ ...w.deps, audit: w.audit.audit }, { orgId, project, by: OWNER, body: { requestId: mine, expectedRevision: 1, allowedDomains: [HOST] } });
+    expect(w.db.get({ pk: projectPk(orgId, project), sk: "EGRESS_PROPOSAL_LIVE" })).toBeDefined();
+    await refuseHostAsk(w.deps, { orgId, project, host: HOST, by: ADMIN, requestId: randomUUID() });
+    expect(w.db.get({ pk: projectPk(orgId, project), sk: `EGRESS_PROPOSAL#${mine}` })).toMatchObject({ state: "rejected", decidedBy: ADMIN });
+    expect(w.db.get({ pk: projectPk(orgId, project), sk: "EGRESS_PROPOSAL_LIVE" })).toBeUndefined();
+    // Another person's waiting change stays.
+    const other = world();
+    await other.ask();
+    const foreign = randomUUID();
+    await proposeProjectAllowedDomains({ ...other.deps, audit: other.audit.audit }, { orgId, project, by: OWNER, body: { requestId: foreign, expectedRevision: 1, allowedDomains: ["other.acme-build.io"] } });
+    await refuseHostAsk(other.deps, { orgId, project, host: HOST, by: ADMIN, requestId: randomUUID() });
+    expect(other.db.get({ pk: projectPk(orgId, project), sk: `EGRESS_PROPOSAL#${foreign}` })).toMatchObject({ state: "pending" });
   });
   it("refusing changes nothing about the project's websites", async () => {
     const w = world();

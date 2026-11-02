@@ -84,7 +84,7 @@ export async function handleCallback(
   // SH14 (switch `su`): the setup run's one action. The capability has it only for a SETUP_AGENT operation; the handler checks the switch and that the operation is a running setup run.
   if (action === "setup-agent") {
     if (cancelClaims !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "a cancel cannot reach a setup run");
-    return json(await handleSetupAgentCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, operation, body), request.requestId);
+    return json(await handleSetupAgentCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), ...(dependencies.developer === undefined ? {} : { signInTableName: dependencies.developer.signInTableName }) }, operation, body), request.requestId);
   }
   if (action === "events") {
     const accepted = await appendEvents(dependencies, operation, body);
