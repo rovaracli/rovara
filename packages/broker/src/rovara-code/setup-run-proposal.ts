@@ -1,7 +1,7 @@
 // The test-environment proposal a setup run made (SH15 fix round): a small marker beside the proposal saying THIS proposal came from the setup run `taskId`, which request made it, and what that request answered.
 //   - the wizard shows a marked proposal (as Rovara's, with the sources of its commands), and credits nothing to a person's edit: the edited mark is never set for it;
 //   - a repeat of the same request answers the same thing and stores nothing again (replays are tied to the request id);
-//   - the wizard refuses to put a marked proposal's commands into the project's settings (`refuseSetupRunProposal`): the Prove has to run on the proposal itself before settings change, which is a follow-up;
+//   - no proposal's commands reach the settings before approval (TE-2: `applyProposalCommands` refuses every unapproved proposal, and the approval writes only what the proposal's own candidate check ran); `refuseSetupRunProposal` is no longer called by the wizard;
 //   - a person's own edit, or going back to Rovara's draft, replaces it (`clearEditedProposal` removes the marker too).
 import { GetCommand, PutCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, testEnvDigest, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";

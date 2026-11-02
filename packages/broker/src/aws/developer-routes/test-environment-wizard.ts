@@ -1,6 +1,7 @@
 // Setup wizard (E4), the parts of the test-environment routes that go beyond propose / prove / approve:
 //   edit              a maintainer's EDITED proposal body: validated like any environment, then stored as a proposal (never approved by it)
-//   apply-commands    put the proposal's commands into the project's settings, through the settings save every other change uses, so the setup check can run them
+//   apply-commands    put the APPROVED environment's commands into the project's settings, through the settings save every other change uses. Refused for any proposal that is not approved yet (TE-2): tasks read the
+//                     applied settings, so a command reaches them only after a candidate check ran it, a Prove read that check, and an approval re-verified it (`approveChecked` calls this after approving)
 //   request-approval  ask a second person to confirm a less-safe change, on the confirmation page (a fresh sign-in)
 // and the facts the wizard shows: what will run, where each value came from, what approving needs, and how the second person's card stands.
 //
@@ -29,12 +30,13 @@ import type { TestEnvDeps } from "../../org/test-environment.js";
 import { setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { shownLine } from "../../org/shown-line.js";
 import { derivedRequestId } from "../../rovara-code/setup-draft.js";
-import { refuseSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { refusedCommand } from "../../test-env/draft.js";
-import { PROVED_CHECK_KINDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
+import { commandsToApply } from "../../test-env/candidate-commands.js";
+import { TEST_ENV_REFUSAL_WORDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
 import { getSignIn } from "./authentication.js";
 import { startProjectSetupCheck } from "./project-archive-setup.js";
 import { putProjectSettings } from "./project-settings.js";
+import { CANDIDATE_APPLY_WORDS, deriveCandidateProve } from "./test-environment-candidate.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export const TEST_ENV_EDIT_WORDS = {
@@ -117,39 +119,8 @@ export async function editTestEnvironment(
 
 // ---- apply the proposal's commands to the project's settings
 
-type Skipped = TestEnvApplyAnswer["skipped"][number];
-
-const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
-const SETTINGS_COMMANDS_MAX = 16;
-
-/** What a proposal adds to a project's commands, and what it leaves out and why. Pure: the project's settings save does the rest. */
-export function commandsToApply(
-  body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string,
-): { setup: ProjectCommand[]; readiness: ProjectCommand[]; skipped: Skipped[] } {
-  const skipped = new Map<Skipped["reason"], number>();
-  const skip = (reason: Skipped["reason"]) => skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
-  const wanted = (command: ProjectCommand, have: ProjectCommand[]): boolean => {
-    if (refusedCommand(command)) { skip("download_and_run"); return false; }
-    // The settings save runs every command in the project's first repository: a command for another directory can't be put there.
-    if (command.cwd !== firstRepositoryPath) { skip("different_directory"); return false; }
-    return !have.some((candidate) => sameCommand(candidate, command));
-  };
-  const setup = [...current.setup], readiness = [...current.readiness];
-  const added = { setup: [] as ProjectCommand[], readiness: [] as ProjectCommand[] };
-  const add = (target: ProjectCommand[], fresh: ProjectCommand[], command: ProjectCommand) => {
-    if (!wanted(command, target)) return;
-    if (target.length >= SETTINGS_COMMANDS_MAX) { skip("too_many"); return; }
-    target.push(command); fresh.push(command);
-  };
-  for (const repo of body.repos) {
-    for (const command of repo.setupCommands) add(setup, added.setup, command);
-    for (const check of repo.checks) {
-      if (!PROVED_CHECK_KINDS.includes(check.kind)) { skip("not_needed"); continue; }
-      add(readiness, added.readiness, check.command);
-    }
-  }
-  return { setup: added.setup, readiness: added.readiness, skipped: [...skipped].map(([reason, count]) => ({ reason, count })) };
-}
+// `commandsToApply` and the lists a candidate check runs live in `test-env/candidate-commands.ts` (both the check and the approval's write use them); it is re-exported here.
+export { commandsToApply };
 
 /**
  * Who the save is credited to. The mark is what protects a person's value: a later suggestion or meta-repo plan that would replace a value a person set is flagged as a conflict. So the commands stay a person's when
@@ -162,8 +133,9 @@ export function originOfSave(definition: { setup: readonly ProjectCommand[]; rea
 }
 
 /**
- * Puts the proposal's commands into the project's settings, after the commands already there (a command a person typed is never replaced), through the settings save every other change uses: the maintainer's
- * role, the revision they looked at, the command rules and the meta repo's ownership of a setting all apply, and what it changes is marked as set by Rovara. Then the setup check starts, so it can run them.
+ * Puts the APPROVED environment's commands into the project's settings, after the commands already there (a command a person typed is never replaced), through the settings save every other change uses: the maintainer's
+ * role, the revision they looked at, the command rules and the meta repo's ownership of a setting all apply, and what it changes is marked as set by Rovara. Refused unless the environment is approved, and unless a
+ * candidate check at this settings revision ran exactly these commands (TE-2). Then the project's own setup check starts, so its status follows the new settings.
  * Nothing is saved when there is nothing to add.
  */
 export async function applyProposalCommands(
@@ -171,8 +143,10 @@ export async function applyProposalCommands(
   input: { name: string; role: ProjectRole | undefined; body: TestEnvironmentBody; requestId: string; expectedRevision: number; /** The proposal is a maintainer's own edit, so its commands are theirs. */ edited: boolean; definition: { revision: number; repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origins?: ProjectOrigins | undefined } },
 ): Promise<Omit<TestEnvApplyAnswer, "state">> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change the project's settings");
+  // TE-2: tasks read the applied settings, so a proposal's commands are never applied before it is approved (every kind of proposal: the detectors', an edit, a setup run's).
+  const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, input.name);
+  if (approved === undefined || testEnvDigest(approved.environment) !== testEnvDigest(input.body)) throw agentXError("CONFIG_INVALID", CANDIDATE_APPLY_WORDS.notApproved);
   const { definition } = input;
-  await refuseSetupRunProposal({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, input.name, input.body);
   if (definition.revision !== input.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "The project's settings changed since you looked. Reload and try again.");
   const first = definition.repositories[0]?.path;
   if (first === undefined) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.oneDirectory);
@@ -181,6 +155,9 @@ export async function applyProposalCommands(
   const plan = commandsToApply(input.body, definition, first);
   const added = [...plan.setup, ...plan.readiness];
   if (added.length === 0) return { added: [], skipped: plan.skipped, settingsRevision: definition.revision, setupCheck: "not_needed" };
+  // What is written is what a candidate check ran, at this settings revision: the Prove is read again here, and the lists must be the check's own.
+  const proven = await deriveCandidateProve(deps, caller.orgId, input.name, input.body, definition);
+  if (!proven.ok) throw agentXError("CONFIG_INVALID", TEST_ENV_REFUSAL_WORDS[proven.refusal]);
   const saved = await putProjectSettings(deps, caller, encodeURIComponent(input.name), {
     requestId: input.requestId, expectedRevision: input.expectedRevision,
     ...(plan.setup.length === 0 ? {} : { setupCommands: [...definition.setup, ...plan.setup].map(formatCommandLine) }),

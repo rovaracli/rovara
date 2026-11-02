@@ -13,6 +13,7 @@ import { healthPortsOf } from "../../packages/broker/src/test-env/health-wiring.
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { candidatePassed } from "../support/candidate-check.js";
 
 const NAME = "web";
 const ENV = `/v1/app/projects/${NAME}/test-environment`;
@@ -75,13 +76,9 @@ async function setup() {
     await h.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT", ...result } });
     return { task, invocation };
   };
-  /** The project's setup check, passed: the check's workspace is ready at revision 1. */
-  const setupCheckPassed = (revision = 1, startedAt = new Date().toISOString()) => {
-    h.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "READY" });
-    const meta = h.db.get(projectMetaKey(TEST_ORG, NAME)) as Record<string, unknown>;
-    h.db.set({ ...meta, ...projectMetaKey(TEST_ORG, NAME), setupCheck: { workspaceId: "ws-check", revision, startedAt, startedBy: OMAR.developerId } });
-  };
-  return { ...h, contributor, ask, drafted, setupCheckPassed, operations };
+  /** The proposal's candidate check, passed (TE-2): its workspace is ready at revision 1, with the commands the check ran. */
+  const candidateCheckPassed = (digest: string, options: Parameters<typeof candidatePassed>[2] = {}) => candidatePassed(h.db, { orgId: TEST_ORG, project: NAME, digest, developerId: OMAR.developerId }, options);
+  return { ...h, contributor, ask, drafted, candidateCheckPassed, operations };
 }
 type Setup = Awaited<ReturnType<typeof setup>>;
 
@@ -149,13 +146,13 @@ describe("with the switch on", () => {
       // No setup check yet: not proved, and the words say what to do.
       const early = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
       expect(early.status).toBe(400);
-      expect(errorOf(early).message).toContain("setup check");
+      expect(errorOf(early).message).toContain("check of this test environment");
       // And an unproved proposal cannot be approved.
       const unproved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
       expect(unproved.status).toBe(400);
-      expect(errorOf(unproved).message).toContain("setup check");
-      // With a passing setup check but no recorded proof, the store itself still refuses.
-      t.setupCheckPassed();
+      expect(errorOf(unproved).message).toContain("check of this test environment");
+      // With a passing candidate check but no recorded proof, the store itself still refuses.
+      t.candidateCheckPassed(digest);
       const notRecorded = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
       expect(notRecorded.status).toBe(400);
       expect(errorOf(notRecorded).message).toContain("prove");
@@ -203,17 +200,17 @@ describe("with the switch on", () => {
       await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() });
       await t.dev(OMAR, "POST", `${ENV}/propose`, {});
       const digest = testEnvDigest(draftBody());
-      t.setupCheckPassed();
+      const workspace = t.candidateCheckPassed(digest);
       expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
-      t.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "PREPARATION_FAILED" });
+      t.db.set({ pk: `WORKSPACE#${workspace}`, sk: "META", status: "PREPARATION_FAILED" });
       const stopped = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
       expect(stopped.status).toBe(400);
-      expect(errorOf(stopped).message).toContain("setup check");
+      expect(errorOf(stopped).message).toContain("check of this test environment");
       expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#REV#"))).toEqual([]);
-      t.setupCheckPassed();
+      t.candidateCheckPassed(digest);
       const requestId = randomUUID();
       expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId })).status).toBe(200);
-      t.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "PREPARATION_FAILED" });
+      t.db.set({ pk: `WORKSPACE#${workspace}`, sk: "META", status: "PREPARATION_FAILED" });
       expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId })).body).toMatchObject({ revision: 1, replayed: true });
     });
   });
@@ -266,19 +263,23 @@ describe("with the switch on", () => {
     });
   });
 
-  it("is not proved by a setup check that ran other commands, one on older settings, or one that failed", async () => {
+  it("is not proved by a candidate check that ran other commands, one from older settings, or one that failed", async () => {
     const t = await setup();
     await withSwitch("1", async () => {
-      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("pytest", ["-q"], 1800), kind: "test" }] }] })) });
       const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("pytest", ["-q"], 1800), kind: "test" }] }] });
+      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf(body) });
       await t.dev(OMAR, "POST", `${ENV}/propose`, {});
       const digest = testEnvDigest(body);
-      t.setupCheckPassed();
+      // A check that ran only the settings' own commands (not the proposal's pytest) proves nothing for the proposal.
+      const workspace = t.candidateCheckPassed(digest, { lists: { setup: [command("make", ["old-setup"], 900)], readiness: [command("make", ["old-test"], 1800)] } });
       const differs = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
       expect(differs.status).toBe(400);
-      expect(errorOf(differs).message).toContain("Apply");
+      expect(errorOf(differs).message).toContain("not among the commands the check ran");
+      // A check from older settings: the record is keyed by the revision, so this revision has none.
+      t.candidateCheckPassed(digest, { revision: 7 });
+      t.db.set({ ...(t.db.get(`WORKSPACE#${workspace}`, "META") as Record<string, unknown>), status: "READY" });
       // A failed check.
-      t.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "PREPARATION_FAILED" });
+      t.candidateCheckPassed(digest, { status: "PREPARATION_FAILED" });
       expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(400);
       expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#PROVE#"))).toEqual([]);
     });
@@ -295,7 +296,7 @@ describe("a task's checks", () => {
     const proposed = await t.dev(OMAR, "POST", `${ENV}/propose`, {});
     expect(proposed.status, JSON.stringify(proposed.body)).toBe(200);
     const digest = testEnvDigest(draft.environment);
-    t.setupCheckPassed();
+    t.candidateCheckPassed(digest);
     expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
     const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
@@ -351,7 +352,7 @@ describe("the nightly schedule after an approval", () => {
     await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() });
     await t.dev(OMAR, "POST", `${ENV}/propose`, {});
     const digest = testEnvDigest(draftBody());
-    t.setupCheckPassed();
+    t.candidateCheckPassed(digest);
     await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
     return t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
   };

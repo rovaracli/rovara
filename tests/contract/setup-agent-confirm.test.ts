@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { sanitizeSetupProposal, testEnvDigest } from "../../packages/contracts/src/index.js";
 import { environmentFromProposal } from "../../packages/broker/src/rovara-code/setup-confirm.js";
 import { OMAR } from "../support/developer-task-broker.js";
-import { TEST_ORG } from "../support/orgs.js";
 import { ENV, NAME, errorOf, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 
@@ -62,7 +61,7 @@ describe("confirm: Use this setup", () => {
     await finished(t);
     const reply = await confirm(t);
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    expect(reply.body).toMatchObject({ used: ["setup-web", "tests-web"], left: [], proved: false, next: "apply_commands" });
+    expect(reply.body).toMatchObject({ used: ["setup-web", "tests-web"], left: [], proved: false, next: "check" });
     const digest = String(reply.body.digest);
     const state = await t.state();
     // Shown as Rovara's (a setup run), never as a person's edit, with where each command came from; no edited mark was set.
@@ -107,13 +106,13 @@ describe("confirm: Use this setup", () => {
     expect(chosen.body).toMatchObject({ used: ["setup-web", "tests-web"], unchecked: ["tests-web"] });
   });
 
-  it("the commands of a setup run's proposal can't be put into the project's settings: the wizard refuses before approval, and the settings stay as they were", async () => {
+  it("the commands of a setup run's proposal can't be put into the project's settings: apply-commands is refused before approval (for every proposal), and the settings stay as they were", async () => {
     const t = await bench();
     await finished(t);
     const digest = String((await confirm(t)).body.digest);
     const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
     expect(applied.status).toBe(400);
-    expect(errorOf(applied).message).toMatch(/only when the environment is approved after a passing proof/);
+    expect(errorOf(applied).message).toMatch(/when the test environment is approved, after a check ran them/);
     expect(t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision > 1)).toEqual([]);
     // A person's own edit of the same environment is theirs, and is not refused by this.
     const edited = await t.dev(OMAR, "POST", `${ENV}/edit`, { environment: { ...((await t.state()).proposal as unknown as { environment: object }).environment, roundBudgetMin: 30, capture: { screenshots: "failed", video: false, traces: false }, nightly: { enabled: false, cronUtc: "0 7 * * *", branch: "main" } } });
@@ -149,23 +148,50 @@ describe("confirm: Use this setup", () => {
     expect(proposal.needs.secondPerson).toBe(true);
   });
 
-  it("cannot be applied without a passing Prove from the project's setup check on a fresh workspace, and the agent's workspace is never that check's", async () => {
+  it("B1: a setup run's proposal is approved only with the approver's fresh browser sign-in: a token is refused, a stale sign-in is asked again, a fresh one approves and writes exactly what was checked", async () => {
+    const t = await bench();
+    await finished(t);
+    const digest = String((await confirm(t)).body.digest);
+    // The real path stores each value's source as a file and line, or "model": the proposal itself is marked as a setup run's.
+    t.candidatePassed(digest);
+    expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+    expect((await t.state()).proposal!.needs.freshSignIn).toBe(true);
+    const viaToken = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+    expect(viaToken.status, JSON.stringify(viaToken.body)).toBe(403);
+    expect(errorOf(viaToken).message).toContain("in a browser");
+    t.ageSignIn(OMAR, 11);
+    expect(errorOf(await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).code).toBe("REAUTH_REQUIRED");
+    expect(t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision > 1)).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toEqual([]);
+    t.ageSignIn(OMAR, 1);
+    const fresh = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    const settings = t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { setup: Array<{ args: string[] }> } };
+    expect(settings.definition.setup.map((entry) => entry.args.join(" "))).toContain("ci");
+  });
+
+  it("S3: the reply names the next step as the check, then the Prove, then the approval", async () => {
+    const t = await bench();
+    await finished(t);
+    const reply = await confirm(t);
+    expect(reply.body).toMatchObject({ proved: false, next: "check" });
+  });
+
+  it("cannot be approved without a passing Prove from the proposal's own candidate check on a fresh workspace, and the agent's workspace is never that check's", async () => {
     const t = await bench();
     const task = await finished(t);
     const digest = String((await confirm(t)).body.digest);
-    // Approving a proposal nobody proved is refused by the wizard's own rule.
+    // Approving a proposal nobody checked is refused by the wizard's own rule.
     const early = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
     expect(early.status).toBe(400);
-    expect(errorOf(early).message).toMatch(/setup check first/i);
-    // A setup check that passed does not prove commands the settings do not have: the commands must be applied first, then checked.
-    t.setupCheckPassed();
-    const check = t.db.get("PROJECT#" + TEST_ORG + "#" + NAME, "META") as { setupCheck?: { workspaceId: string } } | undefined;
-    void check;
+    expect(errorOf(early).message).toMatch(/check of this test environment first/i);
+    // A check that ran other commands than the proposal's proves nothing for it.
+    const workspaceId = t.candidatePassed(digest, { lists: { setup: [], readiness: [] } });
     const proveFirst = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
     expect(proveFirst.status).toBe(400);
-    expect(errorOf(proveFirst).message).toMatch(/not among the commands|Apply/i);
-    // The check's workspace is the broker's own fresh one ("ws-check" here); the setup run's workspace is another and is never read for a proof.
-    expect(task.workspaceId).not.toBe("ws-check");
+    expect(errorOf(proveFirst).message).toMatch(/not among the commands the check ran/i);
+    // The check's workspace is the broker's own fresh one; the setup run's workspace is another and is never read for a proof.
+    expect(task.workspaceId).not.toBe(workspaceId);
   });
 
   it("leaves out an item whose citation failed the re-read, and says so", async () => {

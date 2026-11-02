@@ -5,8 +5,9 @@
 //   GET  /v1/app/projects/{name}/test-environment                where it stands: the approved revision, the draft, the proposal (what will run, where each value came from, whether it is proved, what approving needs)
 //   POST /v1/app/projects/{name}/test-environment/propose        store the proposal for the latest setup draft (the body comes from the stored draft, never from the request)
 //   POST /v1/app/projects/{name}/test-environment/edit           a maintainer's edited body, stored as a proposal (test-environment-wizard.ts)
-//   POST /v1/app/projects/{name}/test-environment/apply-commands put the proposal's commands into the project's settings, so the setup check can run them
-//   POST /v1/app/projects/{name}/test-environment/prove          derive the Prove report of a proposal from the project's setup check (prove-from-setup-check.ts)
+//   POST /v1/app/projects/{name}/test-environment/check          run the proposal's CANDIDATE check: a fresh workspace prepared from the commands the proposal would put in the settings, before any is applied (TE-2)
+//   POST /v1/app/projects/{name}/test-environment/apply-commands put the APPROVED environment's commands into the settings (refused for a proposal that is not approved; the approval does this itself)
+//   POST /v1/app/projects/{name}/test-environment/prove          derive the Prove report of a proposal from ITS candidate check (prove-from-setup-check.ts)
 //   POST /v1/app/projects/{name}/test-environment/request-approval  make the second person's confirmation card for a less-safe change
 //   POST /v1/app/projects/{name}/test-environment/approve        approve a proved proposal as the next revision
 //
@@ -18,6 +19,7 @@ import {
   projectAllows,
   TestEnvApplyBodySchema,
   TestEnvApproveBodySchema,
+  TestEnvCheckBodySchema,
   TestEnvEditBodySchema,
   TestEnvProposeBodySchema,
   TestEnvProveBodySchema,
@@ -39,29 +41,29 @@ import {
 } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { confirmationReply } from "../../agent-sessions/shares.js";
-import { setupStateOf } from "../../org/project-setup-check.js";
 import { latestRevision } from "../../org/project-settings.js";
-import { readProjectMeta } from "../../developer/project-roles.js";
 import {
-  approveTestEnvironment, clearEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
+  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
 import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from "../../org/test-env-approval.js";
-import { setupDraftState } from "../../rovara-code/setup-draft.js";
+import { derivedRequestId, setupDraftState } from "../../rovara-code/setup-draft.js";
 import { readSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
-import { TEST_ENV_REFUSAL_WORDS, commandsNotRun, proveReportFromSetupCheck } from "../../test-env/prove-from-setup-check.js";
+import { commandsMissingFromSettings } from "../../test-env/candidate-commands.js";
+import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
-import { setupCheckDepsOf } from "./project-list.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
+import { startCandidateSetupCheck } from "./project-archive-setup.js";
+import { candidateStateOf, deriveCandidateProve } from "./test-environment-candidate.js";
 import { TEST_ENV_EDIT_WORDS, applyProposalCommands, editTestEnvironment, requireFreshSignIn, runsOf } from "./test-environment-wizard.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-export const TEST_ENV_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-environment(?:\/(propose|prove|approve|edit|apply-commands|request-approval))?$/u;
+export const TEST_ENV_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-environment(?:\/(propose|prove|approve|edit|apply-commands|request-approval|check))?$/u;
 export const isTestEnvironmentPath = (pathname: string): boolean => TEST_ENV_PATH.test(pathname);
 
 /** What the routes do after an approval (the nightly schedule follows the approved environment). A failure here never undoes the approval. */
@@ -122,6 +124,14 @@ async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name
   return state.basedOnRevision < revision ? { status: "stale" } : { status: "ready", draft: stored.draft };
 }
 
+/** The stored proposal of a digest, or (after its 7 days) the approved environment it became. */
+async function proposalOrApproved(store: TestEnvDeps, orgId: OrgId, name: string, digest: string): Promise<TestEnvironmentBody | undefined> {
+  const stored = await readProposal(store, orgId, name, digest);
+  if (stored !== undefined) return stored;
+  const approved = await readApprovedTestEnvironment(store, orgId, name);
+  return approved !== undefined && testEnvDigest(approved.environment) === digest ? approved.environment : undefined;
+}
+
 /** The proposal the wizard shows: a maintainer's edit when there is one that is still stored, else the one the latest setup draft makes (when it was proposed). */
 async function shownProposal(deps: DeveloperRouteDependencies, project: ProjectView, approved: TestEnvironment | undefined, draft: Awaited<ReturnType<typeof currentDraft>>): Promise<{ body: TestEnvironmentBody; digest: string; source: "setup" | "edited" } | undefined> {
   const store = testEnvStoreOf(deps);
@@ -151,7 +161,8 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     const report = await readTestEnvProveReport(store, project.orgId, project.name, shown.digest);
     const lessSafe = testEnvLessSafeChanges(approved?.environment, shown.body);
     const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body);
-    const { valueSources } = await readProposalSources(store, project.orgId, project.name, shown.digest);
+    const candidate = await candidateStateOf(deps, project.orgId, project.name, shown.digest, latest.definition);
+    const { valueSources, origin } = await readProposalSources(store, project.orgId, project.name, shown.digest);
     let approval: "none" | "pending" | "approved" | "expired" = "none";
     if (lessSafe.length > 0 && deps.agents !== undefined) {
       approval = await testEnvCardStateOf(deps.agents, { orgId: project.orgId, project: project.name, digest: shown.digest, expectedRevision: approved?.revision ?? 0, askedBy: project.developerId }).catch(() => "none" as const);
@@ -160,13 +171,14 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
       proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
-      needs: { freshSignIn: lessSafe.length > 0 || risk === "high", secondPerson: lessSafe.length > 0 },
+      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
+      check: checkOf(candidate.setup),
     };
   }
   return {
-    ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment) } }),
+    ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment), ...await approvedGapOf(deps, project, approved.environment, latest.definition) } }),
     draft: draft.status === "ready"
       ? { status: "ready", notes: draft.draft.notes, questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
       : { status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
@@ -192,12 +204,22 @@ const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
-/** The Prove report of a proposal from the project's setup check as it stands NOW. */
+/** S2: an approved environment whose commands are not all in the settings (the write after the approval did not land, or the settings changed since), and where the check of THAT digest stands at the settings revision as it is now. */
+async function approvedGapOf(deps: DeveloperRouteDependencies, project: ProjectView, environment: TestEnvironmentBody, definition: Awaited<ReturnType<typeof latestOf>>["definition"]): Promise<{ commandsNotInSettings: number; check: NonNullable<TestEnvironmentState["proposal"]>["check"] }> {
+  const missing = commandsMissingFromSettings(environment, definition);
+  return { commandsNotInSettings: missing, check: missing === 0 ? { status: "unchecked" } : checkOf((await candidateStateOf(deps, project.orgId, project.name, testEnvDigest(environment), definition)).setup) };
+}
+
+/** Where the proposal's candidate check stands at the settings as they are now (a failing step is a redacted one-liner, cut to what the page shows). */
+function checkOf(setup: Awaited<ReturnType<typeof candidateStateOf>>["setup"]): NonNullable<TestEnvironmentState["proposal"]>["check"] {
+  const failedStep = setup.failedStep === undefined ? undefined : [...setup.failedStep].slice(0, 400).join("");
+  return { status: setup.status, ...(failedStep === undefined || failedStep === "" ? {} : { failedStep }) };
+}
+
+/** The Prove report of a proposal from its own candidate check as it stands NOW (TE-2: never from the applied settings or the project's own setup check). */
 async function deriveProve(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, proposal: TestEnvironmentBody) {
   const latest = await latestOf(deps, orgId, name);
-  const meta = await readProjectMeta({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, name);
-  const setup = await setupStateOf(setupCheckDepsOf(deps), meta, latest.definition);
-  return proveReportFromSetupCheck({ environment: proposal, definition: { revision: latest.definition.revision, setup: latest.definition.setup, readiness: latest.definition.readiness }, setup, nowMs: deps.now() });
+  return deriveCandidateProve(deps, orgId, name, proposal, latest.definition);
 }
 
 /** `/v1/app/projects/{name}/test-environment*`: the reply, or undefined when the switch is off or the path is not one of these. */
@@ -244,12 +266,25 @@ export async function routeTestEnvironment(
     const parsed = TestEnvApplyBodySchema.safeParse(body);
     if (!parsed.success) throw bodyError(parsed.error);
     if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change the project's settings");
-    const proposal = await readProposal(store, caller.orgId, name, parsed.data.digest);
+    // The proposal is read from its stored copy, or (after its 7 days) from the approved revision it became. Nothing is applied for a proposal that is not approved: `applyProposalCommands` refuses it.
+    const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
     if (proposal === undefined) throw refuse("no_proposal");
     const latest = await latestOf(deps, caller.orgId, name);
     const applied = await applyProposalCommands(deps, caller, { name, role, body: proposal, requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, edited: (await readEditedProposal(store, caller.orgId, name))?.digest === parsed.data.digest, definition: latest.definition });
     logDeveloperEvent({ event: "developer.test_env_commands_applied", orgId: caller.orgId, project: name, digest: parsed.data.digest, added: String(applied.added.length) });
     return new StatusReply(200, { ...applied, state: await stateOf(deps, project) });
+  }
+
+  if (action === "check") {
+    const parsed = TestEnvCheckBodySchema.safeParse(body);
+    if (!parsed.success) throw bodyError(parsed.error);
+    if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a check of a test environment");
+    // The proposal, or the approved environment it became (to run its check again after the settings changed).
+    const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
+    if (proposal === undefined) throw refuse("no_proposal");
+    const started = await startCandidateSetupCheck(deps, caller, encodeURIComponent(name), { requestId: parsed.data.requestId, digest: parsed.data.digest, body: proposal, ...(await proposalIsSetupRun(store, caller.orgId, name, parsed.data.digest) ? { origin: "setup_run" as const } : {}) });
+    logDeveloperEvent({ event: "developer.test_env_check_requested", orgId: caller.orgId, project: name, digest: parsed.data.digest, replayed: String(started.statusCode === 200) });
+    return new StatusReply(started.statusCode, await stateOf(deps, project));
   }
 
   if (action === "prove") {
@@ -302,13 +337,18 @@ export async function approveChecked(
   const current = await readApprovedTestEnvironment(store, caller.orgId, name);
   let approvedBySignedInAtMs: number | undefined;
   let approval: Awaited<ReturnType<typeof confirmedTestEnvApproval>>;
+  let setupRunMark = false;
   if (current === undefined || testEnvDigest(current.environment) !== input.digest) {
     const proposal = await readProposal(store, caller.orgId, name, input.digest);
     if (proposal !== undefined) {
+      // TE-2: the proof is the proposal's own candidate check, read again now (a check that failed or went out of date since the Prove stops the approval before anything is written).
       const again = await deriveProve(deps, caller.orgId, name, proposal);
       if (!again.ok) throw refuse(again.refusal);
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
-      if (lessSafe.length > 0 || testEnvApprovalRisk(proposal) === "high") approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
+      // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
+      const setupRun = again.candidate?.origin === "setup_run" || await proposalIsSetupRun(store, caller.orgId, name, input.digest);
+      setupRunMark = setupRun;
+      if (lessSafe.length > 0 || testEnvApprovalRisk(proposal) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
       if (lessSafe.length > 0 && deps.agents !== undefined) {
         approval = await confirmedTestEnvApproval(deps.agents, { orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, askedBy: caller.developerId });
       }
@@ -316,16 +356,35 @@ export async function approveChecked(
   }
   const approvedNow = await approveTestEnvironment(testEnvApprovalStoreOf(deps), {
     orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, requestId: input.requestId, approvedBy: caller.developerId, role,
-    ...(approval === undefined ? {} : { approval }), ...(approvedBySignedInAtMs === undefined ? {} : { approvedBySignedInAtMs }),
+    ...(approval === undefined ? {} : { approval }), ...(approvedBySignedInAtMs === undefined ? {} : { approvedBySignedInAtMs }), ...(setupRunMark ? { setupRun: true } : {}),
   });
   logDeveloperEvent({ event: "developer.test_env_approved", orgId: caller.orgId, project: name, revision: String(approvedNow.revision), replayed: String(approvedNow.replayed) });
+  // TE-2: only now do the approved environment's commands reach the settings, and only as the candidate check ran them. A failure here never undoes the approval: the commands stay out of the settings (the
+  // state says how many are not in yet), and the apply can be asked for again once the check is run again.
+  const approved = await readApprovedTestEnvironment(store, caller.orgId, name, approvedNow.revision);
+  if (approved !== undefined) await applyApprovedCommands(deps, caller, role, name, approved.environment, input.requestId);
   if (hooks.onApproved !== undefined) {
     try {
-      const approved = await readApprovedTestEnvironment(store, caller.orgId, name, approvedNow.revision);
       if (approved !== undefined) await hooks.onApproved(caller.orgId, name, approved, { replayed: approvedNow.replayed });
     } catch (error) {
       logDeveloperEvent({ event: "developer.test_env_after_approval_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
     }
   }
   return approvedNow;
+}
+
+/** Writes the approved environment's commands into the settings (a no-op when they are already there). Never throws: the approval stands. */
+async function applyApprovedCommands(deps: DeveloperRouteDependencies, caller: DeveloperCaller, role: ProjectView["role"], name: string, environment: TestEnvironmentBody, requestId: string): Promise<void> {
+  const store = testEnvStoreOf(deps);
+  try {
+    const latest = await latestOf(deps, caller.orgId, name);
+    const digest = testEnvDigest(environment);
+    const applied = await applyProposalCommands(deps, caller, {
+      name, role, body: environment, requestId: derivedRequestId(requestId, "test-env-apply"), expectedRevision: latest.definition.revision,
+      edited: (await readEditedProposal(store, caller.orgId, name))?.digest === digest, definition: latest.definition,
+    });
+    logDeveloperEvent({ event: "developer.test_env_commands_applied", orgId: caller.orgId, project: name, digest, added: String(applied.added.length), by: "approval" });
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.test_env_commands_not_applied", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
+  }
 }

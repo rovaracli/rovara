@@ -15,6 +15,7 @@ import {
 } from "@agentx/contracts";
 import { STUCK_SETUP_MS } from "../aws/stuck-setup.js";
 import { chargeConflict, chargeItems, limitReached } from "../developer/limits.js";
+import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, candidateExpiry } from "./test-env-candidate.js";
 import type { ProjectMetaItem } from "../developer/project-roles.js";
 import type { WorkspaceCharge } from "../developer/task-records.js";
 
@@ -96,7 +97,11 @@ async function recordedFailure(deps: SetupCheckDependencies, workspaceId: string
 
 /** The setup status of a project, derived from its META and the check's workspace on every read. */
 export async function setupStateOf(deps: SetupCheckDependencies, meta: ProjectMetaItem | undefined, definition: SetupCheckedDefinition): Promise<AppProjectSummary["setup"]> {
-  const check = meta?.setupCheck;
+  return setupStateOfCheck(deps, meta?.setupCheck, definition);
+}
+
+/** The status of one check (the project's own, or a proposal's candidate check): derived from the check's workspace on every read. */
+export async function setupStateOfCheck(deps: SetupCheckDependencies, check: NonNullable<ProjectMetaItem["setupCheck"]> | undefined, definition: SetupCheckedDefinition): Promise<AppProjectSummary["setup"]> {
   if (check === undefined) return { status: "unchecked" };
   const checked = { checkedRevision: check.revision, checkedAt: check.startedAt };
   if (check.revision < definition.revision) return { status: "outdated", ...checked };
@@ -151,6 +156,11 @@ export interface SetupCheckStart {
   limits: { member: number; organization: number };
   /** The workspace of the `setupCheck` this start read in META (undefined when it read none): the write holds only while that is still the one there. */
   seenWorkspaceId: string | undefined;
+  /**
+   * TE-2: a CANDIDATE check of a test-environment proposal. It does not touch META's `setupCheck` (the project's own check): its record is kept under the proposal's digest and the settings revision, with the exact
+   * command lists the workspace was prepared with. `seenWorkspaceId` is then the workspace of the earlier candidate record this start read.
+   */
+  candidate?: { digest: string; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origin?: "setup_run" | undefined };
 }
 
 /**
@@ -163,6 +173,24 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
   const at = new Date(deps.now());
   const seconds = Math.floor(at.getTime() / 1000);
   const check: NonNullable<ProjectMetaItem["setupCheck"]> = { workspaceId: input.workspaceId, revision: input.revision, startedAt: at.toISOString(), startedBy: input.actorId };
+  const notArchived = { ConditionCheck: {
+    TableName: deps.tableName,
+    Key: projectMetaKey(input.orgId, input.project),
+    ConditionExpression: "attribute_not_exists(#status) OR #status <> :archived",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: { ":archived": "archived" },
+  } };
+  const candidateRecord = input.candidate === undefined ? undefined : { Put: {
+    TableName: deps.tableName,
+    Item: {
+      ...candidateCheckKey(input.orgId, input.project, input.candidate.digest, input.revision), entityType: CANDIDATE_CHECK_ENTITY, orgId: input.orgId, project: input.project, digest: input.candidate.digest,
+      workspaceId: input.workspaceId, revision: input.revision, startedAt: check.startedAt, startedBy: input.actorId, setup: [...input.candidate.setup], readiness: [...input.candidate.readiness], ...(input.candidate.origin === undefined ? {} : { origin: input.candidate.origin }),
+      [INDEX_EXPIRY_ATTRIBUTE]: candidateExpiry(deps.now()),
+    },
+    // Only over the record this start read (or none, or one past its expiry that the TTL has not yet removed).
+    ConditionExpression: input.seenWorkspaceId === undefined ? `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now` : "workspaceId = :seen",
+    ExpressionAttributeValues: input.seenWorkspaceId === undefined ? { ":now": seconds } : { ":seen": input.seenWorkspaceId },
+  } };
   const meta = { Update: {
     TableName: deps.tableName,
     Key: projectMetaKey(input.orgId, input.project),
@@ -193,7 +221,7 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
   } };
   try {
     // The slot first, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...chargeItems(deps.tableName, input.charge, input.limits, input.workspaceId), ...input.preparation, record, watch, meta, request] }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...chargeItems(deps.tableName, input.charge, input.limits, input.workspaceId), ...input.preparation, record, watch, candidateRecord === undefined ? meta : notArchived, ...(candidateRecord === undefined ? [] : [candidateRecord]), request] }));
     return true;
   } catch (error) {
     if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;

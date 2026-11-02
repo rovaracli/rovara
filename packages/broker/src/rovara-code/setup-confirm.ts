@@ -2,9 +2,10 @@
 //
 // The hard rule (owner, 2026-11-02): a setup run's proposal is applied only after (1) the broker re-read every citation from the code host (`verifiedView`, final) and (2) a passing Prove on a NEW workspace the broker
 // prepares, never the agent's. This file is step 1 and the hand-over to step 2; it applies NOTHING itself:
-//   - it saves no setting, starts no check and approves nothing. It stores the verified commands as the test-environment PROPOSAL (`editTestEnvironment`, the maintainer's own path), where the wizard's existing
-//     steps take over: put the commands in the settings, run the project's setup check (a fresh workspace the broker prepares from the default branch; the agent's workspace is never reused and a report is never
-//     read from a worker), derive the Prove from that check, and approve. `approveTestEnvironment` refuses an environment with no passing Prove for exactly its digest;
+//   - it saves no setting, starts no check and approves nothing. It stores the verified commands as the test-environment PROPOSAL (`proposeTestEnvironment`, marked `origin: "setup_run"` on the proposal itself),
+//     where the wizard's steps take over (TE-2): run the proposal's own CHECK (a fresh workspace the broker prepares from the settings' commands plus the proposal's, before anything is applied; the agent's workspace
+//     is never reused and a report is never read from a worker), derive the Prove from that check, and approve with a fresh browser sign-in (the mark asks for it). The approval, and only the approval, writes the
+//     commands that check ran into the settings. `approveTestEnvironment` refuses an environment with no passing Prove for exactly its digest;
 //   - an item whose citation FAILED the re-read is left out, and so is any command that fetches and runs code or holds a secret-shaped value (`refusedCommand`);
 //   - the reply says `proved: false` until the wizard has a passing Prove for this digest, and the page keeps its approve step behind the wizard's, not behind this reply.
 // Pure where it can be: `environmentFromProposal` builds the environment and says what it left out; `confirmSetupAgent` is the checked sequence.
@@ -164,8 +165,8 @@ export async function confirmSetupAgent(deps: SetupConfirmDependencies, caller: 
   const stored = await deps.propose(caller, name, role, merged, made.valueSources);
   const reply = {
     digest: stored.digest, used: made.used, unchecked: made.unchecked, left: made.left,
-    // Applying needs the wizard's next steps; nothing is proved yet.
-    proved: false, next: "apply_commands",
+    // Nothing is applied or proved yet: the next step is the proposal's own check, then the Prove, then the approval (which writes the commands).
+    proved: false, next: "check",
   };
   // This proposal came from this run, by this request: the wizard shows it as Rovara's and refuses to put its commands into the settings before it is approved.
   await writeSetupRunProposal(deps, caller.orgId, name, { digest: stored.digest, taskId: view.taskId ?? "", requestId: body.requestId, by: caller.developerId, reply });
