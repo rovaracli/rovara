@@ -3,8 +3,12 @@
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
 import { describe, expect, it } from "vitest";
 import {
-  BEDROCK_REGION_PREFIXES, BEDROCK_VENDOR_PREFIXES, canonicalModelName, forbiddenModelMatcher, isUnrecognisedBedrockModel, modelCompany, sameModelOrUnrecognised, type ModelIdentifier,
+  BEDROCK_REGION_PREFIXES, BEDROCK_VENDOR_PREFIXES, ModelSourceSchema, canonicalModelName, forbiddenModelMatcher, isUnrecognisedBedrockModel, legacyAliasModelName, modelCompany, sameModelOrUnrecognised, sourceAlias,
+  type ModelIdentifier,
 } from "@agentx/contracts";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { E2E_AGENT_ELIGIBLE_MODELS } from "../../packages/contracts/src/e2e-agent-models.generated.js";
 import { listPricesPerMillion } from "../../packages/model-runtime/src/catalog.js";
 import { resolveStageModel, type StageModelInput } from "../../packages/broker/src/model-selection/resolver.js";
@@ -38,7 +42,7 @@ describe("the Bedrock region prefixes", () => {
     const claude = ids.filter((id) => id.includes("anthropic.claude"));
     expect(claude.length).toBeGreaterThanOrEqual(22);
     for (const id of claude) {
-      expect(canonicalModelName(bedrock(id))).toBe(canonicalModelName({ provider: "anthropic", modelId: id.slice(id.indexOf("claude-")) }));
+      expect(canonicalModelName(bedrock(id))).toBe(canonicalModelName({ provider: "anthropic", modelId: id.slice(id.indexOf("claude-")).replace(/-v\d+(?::\d+)?$/, "") }));
       expect(modelCompany(bedrock(id))).toBe("anthropic");
       expect(isUnrecognisedBedrockModel(bedrock(id))).toBe(false);
     }
@@ -99,11 +103,29 @@ describe("a Bedrock id with a prefix nobody listed", () => {
     expect(isUnrecognisedBedrockModel(bedrock("ZZ.Anthropic.claude-opus-5"))).toBe(true);
     expect(isUnrecognisedBedrockModel(bedrock("zz.openai.gpt-5.4"))).toBe(true);
     expect(modelCompany(UNKNOWN)).toBe("other");
-    // Not shaped <unknown>.<vendor>.*: left alone.
-    expect(isUnrecognisedBedrockModel(bedrock("zz.claude-opus-5"))).toBe(false);
-    expect(isUnrecognisedBedrockModel(bedrock("claude-opus-5"))).toBe(false);
     expect(isUnrecognisedBedrockModel({ provider: "openrouter", modelId: "zz.anthropic.claude-opus-5" })).toBe(false);
-    expect(isUnrecognisedBedrockModel(bedrock("us.zz.claude-opus-5"))).toBe(false);
+    expect(isUnrecognisedBedrockModel({ provider: "anthropic", modelId: "claude-opus-5" })).toBe(false);
+  });
+
+  it.each([
+    ["a second prefix", "us.jp.anthropic.claude-opus-5"],
+    ["a doubled region", "us.us.anthropic.claude-opus-5"],
+    ["an empty segment", "us..anthropic.claude-opus-5"],
+    ["a foundation-model ARN", "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5"],
+    ["an inference-profile ARN", "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc123"],
+    ["a bare id", "claude-opus-5"],
+    ["a region and no vendor", "zz.claude-opus-5"],
+    ["a region and a bare id", "us.zz.claude-opus-5"],
+    ["a percent-escaped dot", "us%2Eanthropic.claude-opus-5"],
+    ["a zero-width character", "us.anthropic.claude-opus\u200b-5"],
+    ["a Cyrillic look-alike", "us.anthropic.claude-\u043Fpus-5"],
+    ["a space", "us.anthropic.claude opus-5"],
+    ["a slash", "us.anthropic/claude-opus-5"],
+    ["a trailing dot", "us.anthropic."],
+  ])("reads %s as unrecognised", (_name, modelId) => {
+    expect(isUnrecognisedBedrockModel(bedrock(modelId))).toBe(true);
+    expect(forbiddenModelMatcher([OPUS_5])(bedrock(modelId))).toBe(true);
+    expect(forbiddenModelMatcher([])(bedrock(modelId))).toBe(false);
   });
 
   it("is forbidden whenever anything is forbidden, and by no empty list", () => {
@@ -203,5 +225,72 @@ describe("the plan check's and the review's model choice", () => {
     expect(reviewerModelFor({ ...base, builderModel: OPUS_5, sources: [jp] })).toEqual({ chosenBy: "rovara", model: { provider: "amazon-bedrock", modelId: "jp.anthropic.claude-opus-5" }, sameModelAsBuilder: true });
     expect(reviewerModelFor({ ...base, builderModel: SONNET_5, sources: [UNKNOWN] })).toMatchObject({ chosenBy: "rovara", sameModelAsBuilder: true });
     expect(reviewerModelFor({ ...base, builderModel: SONNET_5, sources: [UNKNOWN, OPUS_5] })).toMatchObject({ model: { modelId: "claude-opus-5" }, sameModelAsBuilder: false });
+  });
+});
+
+/** The name the model proxy's aliases were built from before 0.4.29. A literal copy, so a change to the shipped function shows up here. */
+const FROZEN_ALIAS_NAME = (model: ModelIdentifier): string => {
+  let id = model.modelId;
+  if (model.provider === "amazon-bedrock") id = id.replace(/^(?:us|eu|apac|global)\./, "").replace(/^anthropic\./, "");
+  if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "");
+  return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
+};
+const CATALOG: ModelIdentifier[] = [
+  ...amazonBedrockProvider().getModels().map((entry) => bedrock(entry.id)),
+  ...anthropicProvider().getModels().map((entry) => ({ provider: "anthropic", modelId: entry.id })),
+  ...openaiProvider().getModels().map((entry) => ({ provider: "openai", modelId: entry.id })),
+  ...openrouterProvider().getModels().map((entry) => ({ provider: "openrouter", modelId: entry.id })),
+];
+
+describe("proxy aliases and stored sources do not move", () => {
+  it("names every catalog model's alias exactly as before, though canonicalModelName now reads more of it", () => {
+    expect(CATALOG.length).toBeGreaterThan(300);
+    let moved = 0;
+    for (const model of CATALOG) {
+      expect(legacyAliasModelName(model), model.modelId).toBe(FROZEN_ALIAS_NAME(model));
+      expect(sourceAlias("org_aaaaaaaaaaaaaaaaaaaa", "src_bbbbbbbbbbbbbbbbbbbb", model), model.modelId).toBe(`org_aaaaaaaaaaaaaaaaaaaa.src_bbbbbbbbbbbbbbbbbbbb.${FROZEN_ALIAS_NAME(model)}`);
+      if (canonicalModelName(model) !== FROZEN_ALIAS_NAME(model)) moved += 1;
+    }
+    // The canonical name did move for these (so the test above is not vacuous): geographies, bare -vN and OpenRouter variants.
+    expect(moved).toBeGreaterThan(100);
+  });
+
+  it("still reads a stored source that lists the us. and the jp. form of one model", () => {
+    const source = {
+      kind: "bedrock", sourceId: "src_bbbbbbbbbbbbbbbbbbbb", label: "Company", roleArn: "arn:aws:iam::123456789012:role/test-models", region: "us-west-2", externalId: "rovara-org_aaaaaaaaaaaaaaaaaaaa", tested: true,
+      models: [{ catalog: bedrock("us.anthropic.claude-sonnet-5") }, { catalog: bedrock("jp.anthropic.claude-sonnet-5") }],
+    };
+    expect(ModelSourceSchema.safeParse(source).success).toBe(true);
+    // A real duplicate is still refused.
+    expect(ModelSourceSchema.safeParse({ ...source, models: [{ catalog: bedrock("us.anthropic.claude-sonnet-5") }, { catalog: bedrock("anthropic.claude-sonnet-5") }] }).success).toBe(false);
+  });
+});
+
+describe("a bare version and an OpenRouter variant do not make another model", () => {
+  const OPUS_46: ModelIdentifier = { provider: "anthropic", modelId: "claude-opus-4-6" };
+  it("reads us.anthropic.claude-opus-4-6-v1 and anthropic/claude-opus-4.6:batch as claude-opus-4-6", () => {
+    for (const model of [bedrock("us.anthropic.claude-opus-4-6-v1"), bedrock("global.anthropic.claude-opus-4-6-v1"), bedrock("anthropic.claude-opus-4-6-v1:0"), { provider: "openrouter", modelId: "anthropic/claude-opus-4.6:batch" }, { provider: "openrouter", modelId: "anthropic/claude-opus-4.6" }]) {
+      expect(canonicalModelName(model), model.modelId).toBe("claude-opus-4-6");
+      expect(forbiddenModelMatcher([OPUS_46])(model), model.modelId).toBe(true);
+      expect(sameModelOrUnrecognised(model, OPUS_46), model.modelId).toBe(true);
+    }
+    expect(recommendCriticModel({}, OPUS_46, [bedrock("us.anthropic.claude-opus-4-6-v1")])).toMatchObject({ sameModelAsPlanner: true });
+  });
+
+  it("does not collapse a version number that is part of a name (a deepseek or a qwen model)", () => {
+    expect(canonicalModelName({ provider: "openrouter", modelId: "deepseek/deepseek-v3" })).toBe("deepseek-v3");
+    expect(canonicalModelName({ provider: "openrouter", modelId: "deepseek/deepseek-v3.2" })).toBe("deepseek-v3-2");
+    expect(canonicalModelName(bedrock("deepseek.v3-v1:0"))).toBe("deepseek-v3");
+    expect(canonicalModelName(bedrock("deepseek.v3.2"))).toBe("deepseek-v3-2");
+  });
+
+  it("collapses nothing in the catalogs except the same model on another geography, version suffix or variant", () => {
+    const byName = new Map<string, ModelIdentifier[]>();
+    for (const model of CATALOG) byName.set(canonicalModelName(model), [...(byName.get(canonicalModelName(model)) ?? []), model]);
+    // A crude, independent reading of the same id: drop the geography, the maker, a variant, a revision and a date.
+    const crude = (model: ModelIdentifier): string => model.modelId.toLowerCase().replace(/^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./, "").replace(/^[a-z0-9]+[./]/, "")
+      .replace(/:[a-z][a-z0-9_-]*$/, "").replace(/:\d+$/, "").replace(/-v\d+$/, "").replace(/-\d{8}$/, "").replaceAll(".", "-");
+    const unexplained = [...byName].filter(([, models]) => new Set(models.map(FROZEN_ALIAS_NAME)).size > 1 && new Set(models.map(crude)).size > 1).map(([name, models]) => `${name}: ${models.map((model) => `${model.provider}:${model.modelId}`).join(" | ")}`);
+    expect(unexplained).toEqual([]);
   });
 });

@@ -96,15 +96,20 @@ const BEDROCK_REGION_PREFIX = new RegExp(`^(?:${BEDROCK_REGION_PREFIXES.join("|"
 const bedrockWithoutRegion = (modelId: string): string => modelId.toLowerCase().replace(BEDROCK_REGION_PREFIX, "");
 const isBedrock = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "amazon-bedrock";
 
+/** What follows a Bedrock id's vendor: letters, digits, `.`, `_`, `-`, then at most one `:<revision>` (`-v1:0`). Nothing else is a Bedrock model id. */
+const BEDROCK_ID_BODY = /^[a-z0-9][a-z0-9._-]*(?::\d+)?$/;
+
 /**
- * Whether `model` is a Bedrock id shaped `<segment>.<known vendor>.*` whose first segment is neither a listed geography nor a vendor: a geography Rovara has not learned. Its model cannot be read,
- * so callers fail closed: refuse it whenever any model is forbidden, and never take it as a different model from another.
+ * Whether `model` is a Bedrock id Rovara cannot read. A readable id is `[<listed geography>.]<known vendor>.<body>` in plain ASCII (`jp.anthropic.claude-opus-5`, `deepseek.v3.2`, `us-gov.openai.gpt-oss-120b-1:0`);
+ * anything else is unrecognised: a geography Rovara has not learned (`zz.anthropic.claude-opus-5`), a second prefix (`us.jp.anthropic.*`), `..`, an ARN, an escaped or look-alike character, a stray `:0`.
+ * Callers fail closed: refuse it whenever any model is forbidden, and never take it as a different model from another.
  */
 export function isUnrecognisedBedrockModel(model: ModelIdentifier): boolean {
   if (!isBedrock(model)) return false;
-  const [first, second, ...rest] = model.modelId.toLowerCase().split(".");
-  if (first === undefined || second === undefined || rest.length === 0) return false;
-  return !(BEDROCK_REGION_PREFIXES as readonly string[]).includes(first) && !(BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(first) && (BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(second);
+  const rest = bedrockWithoutRegion(model.modelId);
+  const dot = rest.indexOf(".");
+  if (dot < 1 || !(BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(rest.slice(0, dot))) return true;
+  return !BEDROCK_ID_BODY.test(rest) || rest.includes("..") || rest.endsWith(".");
 }
 
 /** Whether a model is forbidden: it has a forbidden entry's canonical name, or it is an unrecognised Bedrock id and anything at all is forbidden. Build once per list. */
@@ -145,7 +150,19 @@ export function modelCompany(model: ModelIdentifier): ModelCompany {
  */
 export function canonicalModelName(model: ModelIdentifier): string {
   let id = model.modelId;
-  if (isBedrock(model)) id = bedrockWithoutRegion(id).replace(/^anthropic\./, "");
+  if (isBedrock(model)) id = bedrockWithoutRegion(id).replace(/^anthropic\./, "").replace(/:\d+$/, "").replace(/-v\d+$/, "");
+  if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "").replace(/:[a-z][a-z0-9_-]*$/i, "");
+  return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
+}
+
+/**
+ * The name this file gave a model before Bedrock's geographies beyond us, eu, apac and global were read (before 0.4.29), kept exactly as it was and NEVER to be changed. It names things that outlive a
+ * release: the proxy alias a company source's model is registered under (the model proxy holds the old aliases and nothing reconciles them), and the uniqueness of the models in a stored source. A
+ * change here would rename every alias, or make a stored source fail to read. Routing, forbidden models and "different model" rules use `canonicalModelName`, which may and does grow.
+ */
+export function legacyAliasModelName(model: ModelIdentifier): string {
+  let id = model.modelId;
+  if (model.provider === "amazon-bedrock") id = id.replace(/^(?:us|eu|apac|global)\./, "").replace(/^anthropic\./, "");
   if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "");
   return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
 }

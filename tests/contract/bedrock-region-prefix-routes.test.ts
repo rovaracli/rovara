@@ -1,7 +1,8 @@
 // The model picker and the company model policy read a forbidden model through every Bedrock geography, and fail closed on a prefix nobody listed.
-import { expect, it } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, developerOrgKey, orgMemberKey, orgMetaKey, type ModelIdentifier } from "@agentx/contracts";
+import { describe, expect, it } from "vitest";
+import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, DEFAULT_AGENT_GUARDRAILS, forbiddenModelMatcher, agentGuardrailsKey, developerOrgKey, orgMemberKey, orgMetaKey, type ModelIdentifier } from "@agentx/contracts";
 import type { AwsBrokerInput } from "../../packages/broker/src/aws/broker.js";
+import { readGuardrails } from "../../packages/broker/src/agents/guardrails.js";
 import { getModels } from "../../packages/broker/src/agents/models-route.js";
 import { getCompanyModelSelectionPolicy } from "../../packages/broker/src/model-selection/company-read.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -47,4 +48,26 @@ it("shows a forbidden model as denied in the company policy through a jp geograp
   expect(status("jp.anthropic.claude-opus-5")).toBe("denied");
   expect(rows.filter((row) => row.status === "denied").map((row) => row.model.modelId)).toContain("jp.anthropic.claude-opus-5");
   expect(rows.some((row) => row.model.modelId === "jp.anthropic.claude-sonnet-5" && row.status !== "denied")).toBe(true);
+});
+
+describe("a forbidden-model list holding one model twice", () => {
+  const PAIR = [OPUS_5, JP_OPUS];
+
+  it("still reads from storage and from a pending approval's schema, and a new save of it is refused", async () => {
+    const org = "org_aaaaaaaaaaaaaaaaaaaa";
+    const db = new FakeDynamoDb();
+    db.set({ ...agentGuardrailsKey(org), revision: 3, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: PAIR } });
+    const read = await readGuardrails({ documentClient: db, tableName: "state" }, org);
+    expect(read.forbiddenModels).toEqual(PAIR);
+    // The approval record parses `next` with the reader's schema.
+    expect(AgentGuardrailsSchema.safeParse({ ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: PAIR }).success).toBe(true);
+    // A new save is refused, in the same words as for any duplicate.
+    const refused = AgentGuardrailsWriteSchema.safeParse({ ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: PAIR });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues[0]).toMatchObject({ path: ["forbiddenModels", 1], message: "claude-opus-5 is listed twice" });
+    expect(AgentGuardrailsWriteSchema.safeParse({ ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [OPUS_5, JP_SONNET] }).success).toBe(true);
+    // Both entries forbid, so a duplicate is harmless for enforcement.
+    const forbidden = forbiddenModelMatcher(read.forbiddenModels);
+    expect([OPUS_5, JP_OPUS, US_GOV_OPUS, UPPER_OPUS, JP_SONNET].map(forbidden)).toEqual([true, true, true, true, false]);
+  });
 });
