@@ -149,6 +149,12 @@ export interface NightlyRunPort {
    * the fire is skipped (`branch_not_default`) unless the two are the same. Undefined when it cannot be read (the fire is then `head_unreadable`). Left out by a port that does not know (older tests).
    */
   defaultBranchOf?(input: { orgId: OrgId; project: string }): Promise<string | undefined>;
+  /**
+   * Whether the project uses private package registries. The nightly's preparation is read-only (the Prove sequence runs the project's setup itself, in the sandbox), and a read-only preparation carries no registry
+   * pointer or credential exchange, so setup would fail on a 401 and read as a broken environment. Until nightly preparations can carry the pointer safely, such a project is skipped (`registries_unsupported`), which is
+   * never "needs repair". Undefined when it cannot be read (`head_unreadable`). Left out by a port that does not know (older tests).
+   */
+  usesRegistries?(input: { orgId: OrgId; project: string }): Promise<boolean | undefined>;
   /** The branch's head commit now, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
   /**
@@ -187,11 +193,18 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   const env = await readApprovedTestEnvironment(deps, orgId, project);
   if (env === undefined) return skip("environment_missing");
   if (!env.environment.nightly.enabled) return skip("nightly_off");
+  // Services (mocks, pre-prod probes) cannot be started by a nightly run yet: no preparation, no task, and a neutral reason (never "needs repair").
+  if (env.environment.services.length > 0) return skip("services_unsupported");
   const branch = env.environment.nightly.branch;
   if (deps.runs.defaultBranchOf !== undefined) {
     const defaultBranch = await deps.runs.defaultBranchOf({ orgId, project }).catch(() => undefined);
     if (defaultBranch === undefined) return skip("head_unreadable");
     if (defaultBranch !== branch) return skip("branch_not_default");
+  }
+  if (deps.runs.usesRegistries !== undefined) {
+    const registries = await deps.runs.usesRegistries({ orgId, project }).catch(() => undefined);
+    if (registries === undefined) return skip("head_unreadable");
+    if (registries) return skip("registries_unsupported");
   }
   const head = await deps.runs.headOf({ orgId: orgId, project, branch }).catch(() => undefined);
   if (head === undefined || !/^[a-f0-9]{40}$/u.test(head)) return skip("head_unreadable");

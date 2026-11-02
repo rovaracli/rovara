@@ -16,7 +16,7 @@ import { nightlyRunPort } from "../../test-env/nightly-run.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { agentRunStarterFrom } from "./dependency-wiring.js";
-import { defaultBranchHeadOf, repositoryDefaultBranchOf } from "./nightly-head.js";
+import { defaultBranchHeadOf, projectUsesRegistries, repositoryDefaultBranchOf } from "./nightly-head.js";
 
 const sha = (value: unknown): string => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const MAP_READ_MAX_BYTES = 8 * 1_048_576 + 4_096;
@@ -65,6 +65,7 @@ export function nightlyRunsOf(dependencies: AwsBrokerDependencies, tasks: Develo
     },
     resolveOwner: (orgId, developerId) => resolveSurvivor({ signInStore: agents.signInStore, ...(agents.resolveDeveloper === undefined ? {} : { resolveDeveloper: agents.resolveDeveloper }) }, orgId, developerId),
     defaultBranchOf: ({ orgId, project }) => repositoryDefaultBranchOf(dependencies, orgId, project),
+    usesRegistries: ({ orgId, project }) => projectUsesRegistries(dependencies, orgId, project),
     headOf: ({ orgId, project, branch }) => defaultBranchHeadOf(dependencies, orgId, project, branch),
     startAgentRun: (request) => startAgentRun(starter, request),
   });

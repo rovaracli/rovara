@@ -35,6 +35,8 @@ export interface NightlyRunDependencies extends TestEnvDeps {
   admitProject(input: { orgId: OrgId; project: string }): Promise<void>;
   /** The project's repository's default branch, or undefined when it cannot be read. */
   defaultBranchOf(input: { orgId: OrgId; project: string }): Promise<string | undefined>;
+  /** Whether the project uses private package registries, or undefined when it cannot be read. */
+  usesRegistries(input: { orgId: OrgId; project: string }): Promise<boolean | undefined>;
   /** The head commit of the branch, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
   /** The person an id names read as whoever they were merged into (`resolveSurvivor`): a merged duplicate approver would otherwise own the run. */
@@ -57,6 +59,7 @@ export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
   return {
     admit: (input) => deps.admitProject({ orgId: input.orgId, project: input.project }),
     defaultBranchOf: (input) => deps.defaultBranchOf(input),
+    usesRegistries: (input) => deps.usesRegistries(input),
     headOf: (input) => deps.headOf(input),
     async startRun(input) {
       const approver = await readApprovedBy(deps, input.orgId, input.project, input.envRevision);

@@ -34,6 +34,15 @@ export async function repositoryDefaultBranchOf(dependencies: AwsBrokerDependenc
   }
 }
 
+/** Whether the project's latest definition lists private package registries; undefined when the project cannot be read. */
+export async function projectUsesRegistries(dependencies: AwsBrokerDependencies, orgId: OrgId, project: string): Promise<boolean | undefined> {
+  try {
+    return ((await requireLatestProject(dependencies, orgId, project)).definition.registries ?? []).length > 0;
+  } catch {
+    return undefined;
+  }
+}
+
 export function nightlyHeadReaderOf(dependencies: AwsBrokerDependencies, env: NodeJS.ProcessEnv = process.env): NightlyHeadReader | undefined {
   if (!verifyResultsEnabled(env)) return undefined;
   return (orgId: OrgId, project: string) => (branch: string) => defaultBranchHeadOf(dependencies, orgId, project, branch);
