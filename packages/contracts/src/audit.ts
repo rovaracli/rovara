@@ -287,6 +287,15 @@ export const AUDIT_ACTIONS = [
   "company_domain.verified",
   "company_domain.lost",
   "company_domain.removed",
+  // Company setup recipes and locks (SH29): ids, digests and fixed words only. A recipe's text, its hosts and a project's name never go in a fact.
+  "setup_recipe.proposed",
+  "setup_recipe.created",
+  "setup_recipe.approved",
+  "setup_recipe.revoked",
+  "setup_recipe.scope_changed",
+  "setup_locks.changed",
+  "setup_locks.proposed",
+  "setup_locks.approved",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -543,6 +552,15 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_domain.verified": ["wasState", "tookOver"],
   "company_domain.lost": ["missingDays"],
   "company_domain.removed": ["wasState"],
+  // Setup recipes: `authority` is `fresh_sign_in` or `project_maintainer`; `bodyDigest` is the recipe body's sha256. Locks: the digests before and after, whether the change loosened, `approvalMode` second_person or sole_owner_exception.
+  "setup_recipe.proposed": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.created": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.approved": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.revoked": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.scope_changed": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_locks.changed": ["revision", "previousDigest", "nextDigest", "loosened", "authority"],
+  "setup_locks.proposed": ["revision", "previousDigest", "nextDigest", "loosened", "authority"],
+  "setup_locks.approved": ["revision", "previousDigest", "nextDigest", "loosened", "authority", "approvalMode", "membershipVersion"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
