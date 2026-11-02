@@ -128,7 +128,7 @@ describe("when a finding counts as fixed", () => {
     const change = trackChangeOf(task({ secondOpinion: roundOne }), task({ secondOpinion: roundTwo }));
     if (changed !== undefined) changing(change, ...changed);
     await applyTrackChange(s, TEST_ORG, change);
-    const rows = await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, secondReviewModelKey(roundOne.opinion.report!.provider === MODEL.provider ? MODEL : OTHER));
+    const rows = await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, secondReviewModelKey(roundOne.opinion.report.provider === MODEL.provider ? MODEL : OTHER));
     return { change, outcomes: rows.find((row) => row.candidateDigest === DIGEST(1))!.findings.map((entry) => entry.outcome) };
   }
 
