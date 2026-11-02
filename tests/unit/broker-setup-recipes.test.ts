@@ -681,8 +681,33 @@ describe("fix round 1: repository names come from the broker's records, secrets 
       }
     }
     expect(store.recipes.size).toBe(0);
+    // Fix round 3: shell strings, spaced and quoted forms, YAML, Yarn variables, and `key=` with the value in the next argument.
+    const bypasses: Array<[string, string[]]> = [
+      ["shell string", ["-c", "npm config set //h/:_authToken abc"]],
+      ["shell string with quotes", ["-c", "npm config set '//h/:_authToken' 'abc' && npm ci"]],
+      ["spaces around =", ["config", "set", "_authToken = abc"]],
+      ["yaml", ["-e", "npmAuthToken: abc"]],
+      ["yaml, quoted value", ["-e", "npmAuthIdent: \"abc\""]],
+      ["quoted key", ["config", "set", "\"//h/:_authToken\"=abc"]],
+      ["yarn token variable", ["YARN_NPM_AUTH_TOKEN=abc", "yarn", "install"]],
+      ["yarn ident variable", ["YARN_NPM_AUTH_IDENT=abc"]],
+      ["yarn variable, value next, 3 args", ["env", "YARN_NPM_AUTH_TOKEN", "abc"]],
+      ["yarn ident, value next, 3 args", ["env", "YARN_NPM_AUTH_IDENT", "abc"]],
+      ["yarn variable in a shell string", ["-c", "export YARN_NPM_AUTH_IDENT dXNlcjpwYXNz"]],
+      ["yarn variable, value next", ["YARN_NPM_AUTH_TOKEN", "abc"]],
+      ["key= then value next", ["config", "set", "//h/:_authToken=", "abc"]],
+      ["_auth= then value next", ["--_auth=", "abc"]],
+      ["env prefix", ["-c", "NPM_CONFIG__AUTH=1 _auth=abc npm ci"]],
+      ["upper case", ["config", "set", "//h/:_AUTHTOKEN=abc"]],
+    ];
+    for (const [name, args] of bypasses) {
+      for (const input of [body({ setupCommands: [cmd("sh", args)] }), body({ updateCommands: [cmd("sh", args)] }), body({ checks: [{ id: "unit", label: "Unit", command: cmd("sh", args), kind: "test" }] })]) {
+        expect(await code(createRecipeAsAdmin(deps, admin, { body: input })), name).toBe("CONFIG_INVALID");
+      }
+    }
+    expect(store.recipes.size).toBe(0);
     // Positive controls: other settings, and a bare key with no value, are fine.
-    for (const args of [["config", "set", "registry", "https://registry.example.com/"], ["config", "get", "//registry.example.com/:_authToken"], ["config", "set", "fund", "false"]]) {
+    for (const args of [["config", "set", "registry", "https://registry.example.com/"], ["config", "get", "//registry.example.com/:_authToken"], ["config", "set", "fund", "false"], ["-c", "npm config get //h/:_authToken"], ["config", "set", "_authority", "x"], ["run", "authenticate", "--_authors"]]) {
       expect(await code(createRecipeAsAdmin(deps, admin, { body: body({ label: args.join(" "), setupCommands: [cmd("npm", args)] }) })), args.join(" ")).toBe("NO_ERROR");
     }
     store.recipes.clear();

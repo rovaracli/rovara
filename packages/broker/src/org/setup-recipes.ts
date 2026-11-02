@@ -261,15 +261,22 @@ const iso = (deps: SetupRecipeDeps): string => deps.now().toISOString();
 
 /** Whether redaction would change anything in the body: a credential in a URL, a flag value, a key-shaped string. A recipe is shared text, so it must hold none. */
 /**
- * An npm/Yarn auth setting named by a key and given any value, in the same argument (`//host/:_authToken=abc`) or the next one (`config set //host/:_authToken abc`): `_authToken`, `_auth`, `_password`, `npmAuthToken`,
- * `npmAuthIdent`. The value need not look like a key; the setting itself is the secret's place. A bare key with nothing after it is not a value.
+ * An npm/Yarn auth setting given a value: the key (`_authToken`, `_auth`, `_password`, `npmAuthToken`, `npmAuthIdent`, `YARN_NPM_AUTH_TOKEN`, `YARN_NPM_AUTH_IDENT`) anywhere in an argument, then separators (space, quote,
+ * `=`, `:`) and a non-empty value in the same argument (`//h/:_authToken=abc`, `_authToken = abc`, `npmAuthToken: abc`, `"//h/:_authToken"=abc`, `sh -c "npm config set //h/:_authToken abc"`), or the key ending the
+ * argument (with or without a trailing `=`) and the NEXT argument as the value (`config set //h/:_authToken abc`, `_authToken=` then `abc`). The value need not look like a key. A key with nothing after it
+ * and no argument after it (`npm config get //h/:_authToken`) names a setting without giving it a value.
  */
-const AUTH_SETTING = /(?:^|[^A-Za-z0-9])(?:_authToken|_auth|_password|npmAuthToken|npmAuthIdent)(?:=(.*))?$/iu;
+const AUTH_KEY = /(?<![A-Za-z0-9])(?:_authToken|_auth|_password|npmAuthToken|npmAuthIdent|YARN_NPM_AUTH_TOKEN|YARN_NPM_AUTH_IDENT)(?![A-Za-z0-9_])/giu;
 function setsAuthValue(args: readonly string[]): boolean {
   return args.some((arg, index) => {
-    const match = AUTH_SETTING.exec(arg);
-    if (match === null) return false;
-    return (match[1] !== undefined && match[1].length > 0) || (!arg.includes("=") && index + 1 < args.length);
+    for (const match of arg.matchAll(AUTH_KEY)) {
+      const rest = arg.slice(match.index + match[0].length);
+      const separators = /^[\s"'=:]*/u.exec(rest)?.[0] ?? "";
+      const value = rest.slice(separators.length);
+      if (separators.length > 0 && value.length > 0) return true;
+      if (value.length === 0 && index + 1 < args.length) return true;
+    }
+    return false;
   });
 }
 
