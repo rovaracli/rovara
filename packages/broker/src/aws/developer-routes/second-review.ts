@@ -109,7 +109,7 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
    */
   const commit = async (change: SettingsUpdate, event: Omit<AuditEventInput, "eventId" | "orgId" | "actor" | "occurredAt">): Promise<void> => {
     const when = new Date(at).toISOString();
-    const full: AuditEventInput = { ...event, eventId: auditEventId(event.action, caller.orgId, when, caller.developerId, randomUUID()), orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: when } as AuditEventInput;
+    const full: AuditEventInput = { ...event, eventId: auditEventId(event.action, caller.orgId, when, caller.developerId, randomUUID()), orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: when };
     const put = auditPending(auditDeps, full)[0]?.Put;
     if (put === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change, { Put: put }] }));

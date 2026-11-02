@@ -550,7 +550,7 @@ describe("the start, with a database behind it", () => {
   const GPT_ID: ModelIdentifier = { provider: "openai", modelId: "gpt-5.5" };
   function world(settings: Record<string, unknown>, options: { failOperations?: boolean; opinion?: unknown } = {}) {
     const db = new FakeDynamoDb();
-    db.set({ ...orgMetaKey(ORG as never), pk: orgMetaKey(ORG as never).pk, sk: "SECONDREVIEW#SETTINGS", entityType: "SECOND_REVIEW_SETTINGS", ...settings });
+    db.set({ ...orgMetaKey(ORG), pk: orgMetaKey(ORG).pk, sk: "SECONDREVIEW#SETTINGS", entityType: "SECOND_REVIEW_SETTINGS", ...settings });
     db.set({ pk: "WORKSPACE#w", sk: "OPERATION#b1", entityType: "OPERATION", kind: "task", conversationId: "c", workflowMode: "IMPLEMENT", status: "SUCCEEDED", model: GPT_ID });
     const client = options.failOperations !== true ? db : { send: async (command: { input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
       if (command.input?.ExpressionAttributeValues?.[":prefix"] === "OPERATION#") throw new Error("the table is not answering");
@@ -582,7 +582,7 @@ describe("the start, with a database behind it", () => {
   it("L7: by default the payload has no context (the second reviewer sees only the change); same_as_first says so on the wire; cr off is unchanged", async () => {
     const byDefault = await start(world({ default: "shadow" }));
     expect(byDefault.field).not.toHaveProperty("context");
-    expect(byDefault.field!).toEqual({ candidates: expect.any(Array) });
+    expect(byDefault.field).toEqual({ candidates: expect.any(Array) as unknown[] });
     const shared = await start(world({ default: "shadow", context: "same_as_first" }));
     expect(shared.field).toMatchObject({ context: "same_as_first" });
     // A stored value that is not one of the two words reads as the narrower.
@@ -614,7 +614,7 @@ describe("L2: a routed model's report must also come from the route provider", (
 
 describe("M3: the usage event stays the telemetry the activity index reads", () => {
   it("is exactly the telemetry shape for the second reviewer's tries too, which are told apart by their artifact names", () => {
-    const usage = createTaskUsageTelemetry({ tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01 } as never, { provider: "openrouter", modelId: "openai/gpt-5.5" }, "SUCCEEDED");
+    const usage = createTaskUsageTelemetry({ tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01 }, { provider: "openrouter", modelId: "openai/gpt-5.5" }, "SUCCEEDED");
     expect(TaskUsageTelemetrySchema.safeParse(usage).success).toBe(true);
     expect(reviewUsageArtifactName("CRITIC", undefined)).toBe("workflow-review-critic-usage.json");
     expect(reviewUsageArtifactName("CRITIC", 2)).toBe("workflow-second-review-2-usage.json");

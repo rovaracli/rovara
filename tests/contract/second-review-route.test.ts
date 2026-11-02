@@ -189,7 +189,7 @@ describe("what the second reviewer sees (L7, option C)", () => {
     expect(events(audit)).toEqual([]);
     expect(await t.web(OMAR, "POST", PATH, { action: "context", context: "same_as_first" })).toMatchObject({ status: 200, body: { status: "applied", context: "same_as_first" } });
     expect(events(audit)[0]).toMatchObject({ action: "company.second_review_context_changed", actor: { id: OMAR.developerId }, facts: { to: "same_as_first", widens: true } });
-    expect((await get(t, GPT_BUILDER)).body).toMatchObject({ context: "same_as_first", alsoSees: expect.stringMatching(/also sees what the first reviewer sees/u) });
+    expect((await get(t, GPT_BUILDER)).body).toMatchObject({ context: "same_as_first", alsoSees: expect.stringMatching(/also sees what the first reviewer sees/u) as string });
     await t.web(OMAR, "POST", PATH, { action: "context", context: "change_only" });
     expect(events(audit)[1]).toMatchObject({ facts: { to: "change_only", widens: false } });
   });
@@ -216,11 +216,11 @@ describe("settings are written field by field (L5, L6)", () => {
     expect(context.ExpressionAttributeNames["#f"]).toBe("context");
     // Applied in either order against the same item, both stay.
     const db = new FakeDynamoDb();
-    for (const update of [context, choice]) await db.send(new UpdateCommand(update as never));
+    for (const update of [context, choice]) await db.send(new UpdateCommand(update));
     const item = db.get(choice.Key.pk, choice.Key.sk) as Record<string, unknown>;
     expect(item).toMatchObject({ models: [{ provider: "p", modelId: "m" }], context: "same_as_first" });
     // Clearing removes only models.
-    await db.send(new UpdateCommand(companyChoiceUpdate(table, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", models: undefined, by: "d", at: 3 }).Update as never));
+    await db.send(new UpdateCommand(companyChoiceUpdate(table, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", models: undefined, by: "d", at: 3 }).Update));
     const after = db.get(choice.Key.pk, choice.Key.sk) as Record<string, unknown>;
     expect(after.models).toBeUndefined();
     expect(after.context).toBe("same_as_first");

@@ -966,7 +966,7 @@ export async function runWorkflowReviews(input: {
   // SR-1: the second reviewer's outcome, awaited here (it has been running beside the reviews above since the diff was built). A failure here never changes the reports above.
   if (secondRun !== undefined) {
     const second = await secondRun;
-    if (second.fatal !== undefined) throw second.fatal;
+    if (second.fatal !== undefined) throw second.fatal instanceof Error ? second.fatal : new Error("the second review ended the run");
     input.onSecondReview?.(second.result);
   }
   return reports;

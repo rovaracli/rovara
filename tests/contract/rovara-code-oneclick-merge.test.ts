@@ -74,7 +74,7 @@ describe("one click from the web app", () => {
       const row = () => w.db.get(taskKey(w.taskId))!;
       w.db.set({ ...row(), workflow: { ...(row().workflow as object), candidate: { digest } } });
       w.db.set({ ...row(), secondOpinion: { candidateDigest: digest, opinion, recordedAt: new Date(w.clock.now).toISOString() } });
-      const words = secondReviewMergeWait(row() as never)!;
+      const words = secondReviewMergeWait(row())!;
       expect(words).toContain("Second review did not run");
       expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: words });
       expect(await codeOf(tokenPress(w))).toEqual({ code: "MERGE_NOT_READY", message: words });
