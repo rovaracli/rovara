@@ -8,7 +8,7 @@
 //   no `setupCheck` -> unchecked; a newer revision exists -> outdated; the workspace is PREPARING -> checking (failed after 50 minutes, the limit
 //   the sweep fails a stalled check at); PREPARATION_FAILED -> failed, with the failing step read from the prepare's recorded error; anything else
 //   -> ready. A workspace the check closed reads as the status it had when it closed (`closedFrom`).
-import { QueryCommand, TransactWriteCommand, GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, TransactWriteCommand, GetCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText,
   type AppProjectSummary, type OrgId, type OrgKey, type ProjectCommand,
@@ -238,5 +238,27 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
       if (reached !== undefined) throw agentXError("WORKSPACE_LIMIT", setupCheckLimitMessage(reached, input.limits));
     }
     return false;
+  }
+}
+
+/**
+ * TE-3: makes a passed CANDIDATE check the project's own setup check at `revision` (what a setup draft's save just made), so the same commands are not run twice. It only writes META's `setupCheck` when the
+ * project is not archived and holds no check at `revision` or later (a newer check is never replaced). True when it wrote.
+ */
+export async function adoptCandidateAsProjectCheck(
+  deps: SetupCheckDependencies, input: { orgId: OrgId; project: string; workspaceId: string; startedAt: string; actorId: string; revision: number },
+): Promise<boolean> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: projectMetaKey(input.orgId, input.project),
+      UpdateExpression: "SET setupCheck = :check",
+      ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(#status) OR #status <> :archived) AND (attribute_not_exists(setupCheck) OR setupCheck.revision < :revision)",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":check": { workspaceId: input.workspaceId, revision: input.revision, startedAt: input.startedAt, startedBy: input.actorId }, ":archived": "archived", ":revision": input.revision },
+    }));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+    throw error;
   }
 }

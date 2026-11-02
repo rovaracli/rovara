@@ -46,9 +46,10 @@ const REVIEW = [
 ];
 const READY = { status: "ready", basedOnRevision: 2, proposal: PROPOSAL, review: REVIEW };
 
-interface Options { draft?: unknown; applied?: Record<string, unknown>; startStatus?: number; path?: string; theme?: "light" | "dark" }
+interface Options { draft?: unknown; applied?: Record<string, unknown>; sequence?: Array<Record<string, unknown>>; startStatus?: number; path?: string; theme?: "light" | "dark" }
 function setup(element: ReactElement, options: Options = {}) {
   let draft: unknown = options.draft ?? { status: "none", basedOnRevision: 2 };
+  const sequence = [...(options.sequence ?? [])];
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/me") return { status: 200, body: me };
     if (request.path === "/v1/app/github/installations") return { status: 200, body: { installations: [{ installationId: 55, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active" }] } };
@@ -56,7 +57,7 @@ function setup(element: ReactElement, options: Options = {}) {
     if (request.path === "/v1/app/projects/web") return { status: 200, body: project() };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "GET") return { status: 200, body: { ...(draft as object), requestId: "gateway-1" } };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "POST") { draft = { status: "drafting", basedOnRevision: 2 }; return { status: options.startStatus ?? 202, body: { ...(draft as object), requestId: "gateway-2" } }; }
-    if (request.path === "/v1/app/projects/web/setup-draft/apply") return { status: 200, body: { project: project({ setupCommands: ["npm ci"] }, 3), warnings: [], setupCheck: "started", results: [], ...options.applied, requestId: "gateway-3" } };
+    if (request.path === "/v1/app/projects/web/setup-draft/apply") return { status: 200, body: { project: project({ setupCommands: ["npm ci"] }, 3), warnings: [], setupCheck: "started", results: [], ...(sequence.length > 0 ? sequence.shift() : options.applied), requestId: "gateway-3" } };
     if (request.path === "/v1/app/projects" && request.method === "POST") return { status: 200, body: { duplicate: false, project: { definition: { name: "web" }, registeredAt: "2026-10-30T00:00:00.000Z" }, requestId: "gateway-4" } };
     if (request.path.startsWith("/v1/app/agents?")) return { status: 200, body: { agents: [] } };
     return { status: 200, body: { project: project(), warnings: [] } };
@@ -104,12 +105,61 @@ it("ticks nothing for a command that is not checked or whose citation has no quo
 it("applies the ticked suggestions by id and says what happened to each, then shows the saved setup", async () => {
   const f = setup(h(OnboardScreen), { draft: READY, applied: { results: [{ id: "setup-web", kind: "setup", outcome: "applied" }] } });
   await screen.findByText("npm ci");
-  fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
   await waitFor(() => expect(posts(f, "/setup-draft/apply")).toHaveLength(1));
   expect(posts(f, "/setup-draft/apply")[0]!.body).toMatchObject({ expectedRevision: 2, items: [{ id: "setup-web" }] });
   expect(JSON.stringify(posts(f, "/setup-draft/apply")[0]!.body)).not.toContain("useSuggestion");
   await screen.findByText("Applied.");
   await waitFor(() => expect(screen.getByLabelText("Setup commands")).toHaveProperty("value", "npm ci"));
+  f.close();
+});
+
+const CHECKING = { id: "setup-web", kind: "setup", outcome: "checking", message: "Rovara is running these commands on a fresh machine. Nothing is saved until they pass." };
+
+/** The page asks again every ten seconds while a check runs; a test does not wait for that. */
+function quickPolling() {
+  const real = globalThis.setTimeout;
+  return vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, ms?: number, ...args: unknown[]) => real(handler, ms === 10_000 ? 0 : ms, ...args)) as typeof setTimeout);
+}
+
+it("Check and apply: says the commands are being checked on a fresh machine, saves nothing meanwhile, asks again with the same request until the check has finished, then shows the saved setup", async () => {
+  const quick = quickPolling();
+  const f = setup(h(OnboardScreen), { draft: READY, sequence: [{ results: [CHECKING] }, { results: [CHECKING] }, { project: project({ setupCommands: ["npm ci"] }, 3), results: [{ id: "setup-web", kind: "setup", outcome: "applied" }] }] });
+  await screen.findByText("npm ci");
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
+  await screen.findByText("Rovara is running these commands on a fresh machine. Nothing is saved until they pass.");
+  expect(screen.getByLabelText("Setup commands")).toHaveProperty("value", "");
+  await screen.findByText("Applied.");
+  const sent = posts(f, "/setup-draft/apply");
+  expect(sent).toHaveLength(3);
+  expect(new Set(sent.map((request) => (request.body as { requestId: string }).requestId)).size).toBe(1);
+  expect(new Set(sent.map((request) => JSON.stringify((request.body as { items: unknown }).items))).size).toBe(1);
+  await waitFor(() => expect(screen.getByLabelText("Setup commands")).toHaveProperty("value", "npm ci"));
+  quick.mockRestore();
+  f.close();
+});
+
+it("Check and apply: a check that fails shows the reason, saves nothing, stops asking, and a new press is a new request", async () => {
+  const quick = quickPolling();
+  const failed = { id: "setup-web", kind: "setup", outcome: "check_failed", message: "These commands did not pass the check on a fresh machine, so nothing was saved.", reason: "setup: npm ci - exited 1: boom" };
+  const f = setup(h(OnboardScreen), { draft: READY, sequence: [{ project: project({}, 2), results: [CHECKING] }, { project: project({}, 2), results: [failed] }, { project: project({}, 2), results: [failed] }, { project: project({}, 2), results: [CHECKING] }] });
+  await screen.findByText("npm ci");
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
+  await screen.findByText("These commands did not pass the check on a fresh machine, so nothing was saved.");
+  expect((await screen.findByRole("alert")).textContent).toContain("setup: npm ci - exited 1: boom");
+  expect(screen.getByLabelText("Setup commands")).toHaveProperty("value", "");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check and apply" })).toHaveProperty("disabled", false));
+  expect(posts(f, "/setup-draft/apply")).toHaveLength(2);
+  // Pressing the main button again is not a new check; "Check again" is, and says so.
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
+  await waitFor(() => expect(posts(f, "/setup-draft/apply").length).toBeGreaterThanOrEqual(3));
+  expect(JSON.stringify(posts(f, "/setup-draft/apply")[2]!.body)).not.toContain("checkAgain");
+  fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(posts(f, "/setup-draft/apply").length).toBeGreaterThanOrEqual(4));
+  const sent = posts(f, "/setup-draft/apply");
+  expect(sent[3]!.body).toMatchObject({ checkAgain: true });
+  expect((sent[3]!.body as { requestId: string }).requestId).not.toBe((sent[0]!.body as { requestId: string }).requestId);
+  quick.mockRestore();
   f.close();
 });
 
@@ -122,7 +172,7 @@ it("never ticks or replaces a value the person typed: it says what they have, an
   expect(tests).toHaveProperty("checked", false);
   fireEvent.click(screen.getByRole("checkbox", { name: /^Use Rovara's for tests/ }));
   expect(tests).toHaveProperty("checked", true);
-  fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
   await waitFor(() => expect(posts(f, "/setup-draft/apply")).toHaveLength(1));
   expect(posts(f, "/setup-draft/apply")[0]!.body).toMatchObject({ items: [{ id: "setup-web" }, { id: "tests-web", useSuggestion: true }] });
   f.close();
