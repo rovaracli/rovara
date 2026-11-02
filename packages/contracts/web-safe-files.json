@@ -91,6 +91,7 @@
   "packages/contracts/src/test-environment-wire.ts",
   "packages/contracts/src/test-environment.ts",
   "packages/contracts/src/test-proof.ts",
+  "packages/contracts/src/tracker-people-web.ts",
   "packages/contracts/src/trigger-specs.ts",
   "packages/contracts/src/verification-result.ts",
   "packages/contracts/src/web-hash.ts",
