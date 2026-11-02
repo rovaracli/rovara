@@ -3,8 +3,8 @@
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it } from "vitest";
 import { SecondOpinionSchema, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint, type SecondOpinion } from "../../packages/contracts/src/index.js";
-import { applyTrackChange, fileHash, findingKey, indexSecondReviewTrack, readTrackRecord, readTrackRows, trackChangeOf, trackRowKey, trackStoreOf, TRACK_RETENTION_DAYS, type TrackChange, type TrackStore } from "../../packages/broker/src/rovara-code/second-review-track.js";
-import { indexTogether } from "../../packages/broker/src/aws/outbox-publisher.js";
+import { applyTrackChange, fileHash, findingKey, indexSecondReviewTrack, readTrackRecord, TRACK_RECORD_DAYS, readTrackRows, trackChangeOf, trackRowKey, trackStoreOf, TRACK_RETENTION_DAYS, type TrackChange, type TrackStore } from "../../packages/broker/src/rovara-code/second-review-track.js";
+import { indexTogether, secondReviewTrackIndex } from "../../packages/broker/src/aws/outbox-publisher.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { OMAR, MAYA } from "../support/developer-task-broker.js";
@@ -216,6 +216,71 @@ describe("a second opinion run again on the same code", () => {
   });
 });
 
+describe("a re-run keeps what was decided, and a merge finds the latest answered row", () => {
+  const T1 = "2026-10-05T00:00:00.000Z", T2 = "2026-10-07T00:00:00.000Z", T3 = "2026-10-08T00:00:00.000Z";
+  const unavailable = SecondOpinionSchema.parse({ mode: "shadow", unavailableReason: "no-answer", blockingCount: 0, blocked: false, wouldHaveBlocked: false, unavailable: true });
+
+  it("carries over every decided finding of the replaced row, also one the re-run does not raise again; open ones are not carried", async () => {
+    const db = new FakeDynamoDb();
+    const s = trackStoreOf({ documentClient: db, tableName: "state" });
+    const first = task({ secondOpinion: stored(1, ["a", "b", "c"], T1) });
+    await applyTrackChange(s, TEST_ORG, trackChangeOf(undefined, first));
+    // "a" was accepted as a risk (wrong); "b" was fixed (set directly); "c" is open.
+    const accepted = task({ secondOpinion: stored(1, ["a", "b", "c"], T1), workflow: { stage: "REVIEW", reviews: [], acceptedFindings: [{ candidateDigest: DIGEST(1), role: "CRITIC", fingerprint: fp("a") }] } });
+    await applyTrackChange(s, TEST_ORG, trackChangeOf(first, accepted));
+    await applyTrackChange(s, TEST_ORG, { moves: [{ ref: { model: KEY, recordedAt: T1, taskId: "task-1", candidateDigest: DIGEST(1) }, to: "fixed", only: new Set([fp("b")]), changed: new Set([fileHash(FILE)]) }] });
+    // The same code again; the re-run raises only "d".
+    const again = task({ secondOpinion: stored(1, ["d"], T2) });
+    await applyTrackChange(s, TEST_ORG, trackChangeOf(accepted, again));
+    const rows = await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.findings.map((entry) => [entry.fp, entry.outcome]).sort()).toEqual([[fp("d"), "open"], [fp("a"), "wrong"], [fp("b"), "fixed"]].sort());
+  });
+
+  it("a merge marks the findings standing on the latest ANSWERED row wrong when the latest opinion gave no answer", async () => {
+    const db = new FakeDynamoDb();
+    const s = trackStoreOf({ documentClient: db, tableName: "state" });
+    const answered = task({ secondOpinion: stored(1, ["a", "b"], T1) });
+    await applyTrackChange(s, TEST_ORG, trackChangeOf(undefined, answered));
+    // A re-run for the next code gave no answer; the task then merges.
+    const failed = task({ secondOpinion: { candidateDigest: DIGEST(2), recordedAt: T3, opinion: unavailable } });
+    const merged = task({ secondOpinion: { candidateDigest: DIGEST(2), recordedAt: T3, opinion: unavailable }, workflow: { stage: "MERGED", reviews: [], acceptedFindings: [] } });
+    const change = trackChangeOf(failed, merged);
+    expect(change).toMatchObject({ mergedTask: "task-1", moves: [] });
+    await applyTrackChange(s, TEST_ORG, change);
+    expect((await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY))[0]!.findings.map((entry) => entry.outcome)).toEqual(["wrong", "wrong"]);
+    // The pointer follows the latest answered row, also across a re-run.
+    const rerun = task({ secondOpinion: stored(1, ["a", "z"], T2) });
+    await applyTrackChange(s, TEST_ORG, trackChangeOf(answered, rerun));
+    const row = (await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY));
+    expect(row).toHaveLength(1);
+    expect(row[0]!.recordedAt).toBe(T2);
+  });
+
+  it("when the latest opinion is answered the merge still marks that row (as before), and with no answered row nothing happens", async () => {
+    const db = new FakeDynamoDb();
+    const s = trackStoreOf({ documentClient: db, tableName: "state" });
+    const failed = task({ secondOpinion: { candidateDigest: DIGEST(2), recordedAt: T3, opinion: unavailable } });
+    const merged = task({ secondOpinion: { candidateDigest: DIGEST(2), recordedAt: T3, opinion: unavailable }, workflow: { stage: "MERGED", reviews: [], acceptedFindings: [] } });
+    expect(await applyTrackChange(s, TEST_ORG, trackChangeOf(failed, merged))).toEqual({ created: 0, moved: 0 });
+  });
+});
+
+describe("the settings page reads a window", () => {
+  it(`counts the last ${String(TRACK_RECORD_DAYS)} days by default, and the window it is given instead`, async () => {
+    const db = new FakeDynamoDb();
+    const now = Date.parse("2026-11-01T12:00:00.000Z");
+    const ago = (days: number) => new Date(now - days * 86_400_000).toISOString();
+    seedTrackRow(db, MODEL, { at: ago(120), task: "old", fixed: 4 });
+    seedTrackRow(db, MODEL, { at: ago(91), task: "edge", fixed: 2 });
+    seedTrackRow(db, MODEL, { at: ago(89), task: "recent", fixed: 1, open: 1 });
+    seedTrackRow(db, MODEL, { at: ago(2), task: "new", wrong: 1 });
+    const table = { documentClient: db, tableName: "state" };
+    expect(await readTrackRecord(table, TEST_ORG, KEY, undefined, now)).toMatchObject({ reviews: 2, findings: 3, agreed: 1, wrong: 1 });
+    expect(await readTrackRecord(table, TEST_ORG, KEY, { from: ago(150), to: ago(80) }, now)).toMatchObject({ reviews: 3, findings: 8 });
+  });
+});
+
 describe("reading the track record at scale", () => {
   const at = (n: number) => new Date(Date.UTC(2026, 9, 1) + n * 60_000).toISOString();
 
@@ -226,7 +291,7 @@ describe("reading the track record at scale", () => {
     for (let n = 0; n < 50; n += 1) seedTrackRow(db, other, { at: at(n), task: `o${String(n)}`, fixed: 1 });
     const table = { documentClient: db, tableName: "state" };
     expect(await readTrackRows(table, TEST_ORG, KEY)).toHaveLength(2600);
-    const record = await readTrackRecord(table, TEST_ORG, KEY);
+    const record = await readTrackRecord(table, TEST_ORG, KEY, undefined, Date.parse("2026-11-01T00:00:00.000Z"));
     expect(record).toMatchObject({ reviews: 2600, findings: 2600, agreed: 2600 });
     // A window is a key range, bounds included.
     const window = await readTrackRows(table, TEST_ORG, KEY, { from: at(100), to: at(2099) });
@@ -268,6 +333,19 @@ describe("the stream indexer", () => {
     expect(await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY)).toHaveLength(1);
   });
 
+  it("runs only while the install switch cr is on: with it off nothing is read or written, with it on the same batch is indexed", async () => {
+    const db = new FakeDynamoDb();
+    const reads: unknown[] = [];
+    const spy = { send: (command: unknown) => { reads.push(command); return db.send(command as never); } };
+    const batch = [record(undefined, task({ taskId: "t-a", secondOpinion: stored(1, ["x"], "2026-10-05T00:00:00.000Z") }))];
+    const index = (env: NodeJS.ProcessEnv) => secondReviewTrackIndex(() => ({ documentClient: spy, tableName: "state" }), () => TEST_ORG, env);
+    for (const env of [{}, { SECOND_REVIEW_ENABLED: "0" }, { SECOND_REVIEW_ENABLED: "true" }, { SECOND_REVIEW_ENABLED: " 1" }]) await index(env)(batch);
+    expect(reads).toEqual([]);
+    expect(await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY)).toHaveLength(0);
+    await index({ SECOND_REVIEW_ENABLED: "1" })(batch);
+    expect(await readTrackRows({ documentClient: db, tableName: "state" }, TEST_ORG, KEY)).toHaveLength(1);
+  });
+
   it("is one of the stream indexes and the others do not wait on it or hide its failure", async () => {
     const order: string[] = [];
     const logs = [] as string[];
@@ -305,7 +383,7 @@ describe("the track record", () => {
     const db = new FakeDynamoDb();
     seedTrackRow(db, MODEL, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 1 });
     seedTrackRow(db, MODEL, { at: "2026-10-03T12:00:00.000Z", task: "t2", fixed: 5 }, "org_bbbbbbbbbbbbbbbbbbbb");
-    expect(await readTrackRecord({ documentClient: db, tableName: "state" }, TEST_ORG, KEY)).toMatchObject({ reviews: 1, agreed: 1 });
+    expect(await readTrackRecord({ documentClient: db, tableName: "state" }, TEST_ORG, KEY, undefined, Date.parse("2026-11-01T00:00:00.000Z"))).toMatchObject({ reviews: 1, agreed: 1 });
     expect(trackRowKey(TEST_ORG, { model: KEY, recordedAt: "2026-10-02T12:00:00.000Z", taskId: "t1", candidateDigest: DIGEST(1) }).sk).toContain(KEY);
   });
 });
@@ -318,8 +396,8 @@ describe("on the settings page", () => {
       await t.person(MAYA, "member");
       const models = ((await t.web(OMAR, "GET", "/v1/app/org/second-review?builder=openai:gpt-5.5")).body as { models: Array<{ model: { provider: string; modelId: string } }> }).models.map((entry) => entry.model);
       await t.web(OMAR, "POST", "/v1/app/org/second-review", { action: "choose", primary: models[0] });
-      seedTrackRow(t.db, models[0]!, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 2, wrong: 1, firstCleared: true });
-      seedTrackRow(t.db, models[1]!, { at: "2026-10-03T12:00:00.000Z", task: "t2", fixed: 7 });
+      seedTrackRow(t.db, models[0]!, { at: new Date(Date.now() - 5 * 86_400_000).toISOString(), task: "t1", fixed: 2, wrong: 1, firstCleared: true });
+      seedTrackRow(t.db, models[1]!, { at: new Date(Date.now() - 4 * 86_400_000).toISOString(), task: "t2", fixed: 7 });
       const seen = (await t.web(MAYA, "GET", "/v1/app/org/second-review?builder=openai:gpt-5.5")).body as { trackRecord: Record<string, unknown> };
       expect(seen.trackRecord).toMatchObject({ model: secondReviewModelKey(models[0]!), reviews: 1, findings: 3, agreed: 2, wrong: 1, open: 0, caughtMissedByFirst: 2 });
     } finally { delete process.env.SECOND_REVIEW_ENABLED; }

@@ -156,6 +156,8 @@ export const SECOND_REVIEW_BAR = {
   /** Dismissed blocking findings must stay UNDER one per this many tasks. */
   dismissedUnderOnePerTasks: 5,
   shadowDays: 14,
+  /** The shadow phase needs at least this many answered second opinions counted (a few findings over two weeks is not a track record). */
+  shadowMinReviews: 10,
   /** Agreed findings must be MORE than this many in 10 (3 is 30%). */
   shadowAgreedOverTenths: 3,
 } as const;
@@ -228,11 +230,13 @@ export const SecondReviewShadowResultSchema = z.object({
   days: z.number().int().min(0).max(3650),
   findings: z.number().int().min(0).max(1_000_000),
   agreed: z.number().int().min(0).max(1_000_000),
+  /** Answered second opinions counted. Absent (a verdict written before it existed) is none, so it cannot pass the bar. */
+  reviews: z.number().int().min(0).max(1_000_000).optional(),
 }).strict().refine((result) => result.agreed <= result.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] });
 export type SecondReviewShadowResult = z.infer<typeof SecondReviewShadowResultSchema>;
 
 export function secondReviewShadowPassed(result: SecondReviewShadowResult): boolean {
-  return result.days >= SECOND_REVIEW_BAR.shadowDays && result.findings > 0 && result.agreed * 10 > result.findings * SECOND_REVIEW_BAR.shadowAgreedOverTenths;
+  return result.days >= SECOND_REVIEW_BAR.shadowDays && (result.reviews ?? 0) >= SECOND_REVIEW_BAR.shadowMinReviews && result.findings > 0 && result.agreed * 10 > result.findings * SECOND_REVIEW_BAR.shadowAgreedOverTenths;
 }
 
 /**
@@ -247,7 +251,7 @@ export const SecondReviewVerdictSchema = z.object({
   replayRunId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
   baseline: z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict(),
   /** The shadow window (it must start after the replay run) and what it counted. */
-  shadow: z.object({ startedAt: z.string().datetime(), endedAt: z.string().datetime(), findings: z.number().int().min(0).max(1_000_000), agreed: z.number().int().min(0).max(1_000_000) }).strict()
+  shadow: z.object({ startedAt: z.string().datetime(), endedAt: z.string().datetime(), findings: z.number().int().min(0).max(1_000_000), agreed: z.number().int().min(0).max(1_000_000), reviews: z.number().int().min(0).max(1_000_000).optional() }).strict()
     .refine((window) => window.agreed <= window.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] }),
   createdAt: z.string().datetime(),
   /** Who recorded it: a Rovara staff member (Public) or the install (Enterprise); never a project member. */
@@ -272,7 +276,7 @@ export function secondReviewVerdictHolds(verdict: SecondReviewVerdict, run: Seco
   const ended = Date.parse(verdict.shadow.endedAt);
   const replayed = Date.parse(run.ranAt);
   if ([started, ended, replayed].some(Number.isNaN) || started <= replayed || ended < started) return false;
-  return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed });
+  return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed, ...(verdict.shadow.reviews === undefined ? {} : { reviews: verdict.shadow.reviews }) });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------

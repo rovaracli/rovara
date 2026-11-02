@@ -110,23 +110,32 @@ describe("told once per change", () => {
     expect(await readNotice(stuck, TEST_ORG)).toBeDefined();
   });
 
-  it("remembers the last key marked seen: the same problem coming back within a week is written already seen, a different one is told at once, a later recurrence is told again", async () => {
+  it("remembers the last key marked seen only while the notice stays open: the same problem coming back within a week is written already seen, a different one is told at once", async () => {
+    const t = table();
+    const different = problemOf(notRunning([{ model: OTHER, why: "not-routable" }]))!;
+    await noteQualification(t, TEST_ORG, choiceLost, 1_000);
+    expect(await markNoticeSeen(t, TEST_ORG, choiceLost.key, 1_500)).toBe(true);
+    // Another problem replaces it before the reviewer ever recovered: told at once. Then the first one returns.
+    expect(await noteQualification(t, TEST_ORG, different, 2_000)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: different.key, status: "open" });
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 3_000)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "seen" });
+    // After a week it is told again.
+    expect(await noteQualification(t, TEST_ORG, different, 4_000)).toBe("written");
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 1_500 + NOTICE_RESEEN_QUIET_MS + 1)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "open" });
+  });
+
+  it("a recurrence after the notice CLOSED is a new card, even for the key that was marked seen", async () => {
     const t = table();
     await noteQualification(t, TEST_ORG, choiceLost, 1_000);
     expect(await markNoticeSeen(t, TEST_ORG, choiceLost.key, 1_500)).toBe(true);
     for (const at of [2_000, 2_100, 2_200]) await noteQualification(t, TEST_ORG, undefined, at);
     expect(await readNotice(t, TEST_ORG)).toBeUndefined();
     expect(await noteQualification(t, TEST_ORG, choiceLost, 3_000)).toBe("written");
-    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "seen" });
-    const different = problemOf(notRunning([{ model: OTHER, why: "not-routable" }]))!;
-    expect(await noteQualification(t, TEST_ORG, different, 4_000)).toBe("written");
-    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: different.key, status: "open" });
-    // The earlier key is still the one remembered as seen, and it is quiet only for a week.
-    expect(await noteQualification(t, TEST_ORG, choiceLost, 5_000)).toBe("written");
-    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "seen" });
-    await noteQualification(t, TEST_ORG, undefined, 6_000); await noteQualification(t, TEST_ORG, undefined, 6_100); await noteQualification(t, TEST_ORG, undefined, 6_200);
-    expect(await noteQualification(t, TEST_ORG, choiceLost, 1_500 + NOTICE_RESEEN_QUIET_MS + 1)).toBe("written");
     expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "open" });
+    const items = await secondReviewNoticeItemsFor({ table: t, isAdmin: () => true }, { orgId: TEST_ORG, developerId: "d" });
+    expect(items).toHaveLength(1);
   });
 
   it("'seen' puts it away without closing the problem, and the same problem is not told again; only the notice with that key", async () => {

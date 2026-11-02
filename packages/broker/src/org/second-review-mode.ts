@@ -109,6 +109,12 @@ function settingUpdate(deps: ModeDeps, input: { orgId: string; scope: ModeScope;
   return { Update: { TableName: deps.table.tableName, Key: key, UpdateExpression: expression, ConditionExpression: guard.expression, ExpressionAttributeNames: names, ExpressionAttributeValues: values } };
 }
 
+/** A check, in the same transaction, that the company has not been lowered since `seen` was read (the stamp is what it was, or still absent). */
+function loweredCheck(deps: ModeDeps, orgId: string, seen: SecondReviewSettings): TransactItem {
+  const guard = sameAsRead([["loweredAt", seen.companyLoweredAt]], "c");
+  return { ConditionCheck: { TableName: deps.table.tableName, Key: { pk: orgPk(orgId), sk: SECOND_REVIEW_SETTINGS_SK }, ConditionExpression: guard.expression, ExpressionAttributeNames: guard.names, ...(Object.keys(guard.values).length === 0 ? {} : { ExpressionAttributeValues: guard.values }) } };
+}
+
 const auditFor = (deps: ModeDeps, event: Parameters<ModeAudit["pending"]>[0], actorId: string, at: number) => deps.audit.pending(event, actorId, at);
 const eventTarget = (orgId: string, scope: ModeScope) => (scope.kind === "company" ? { kind: "org" as const, id: orgId.slice(0, 100) } : { kind: "project" as const, name: scope.project });
 
@@ -149,7 +155,9 @@ export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: st
     if (to === "on" && !alreadyOn && !input.onAllowed) return { ok: false, code: "verdict_missing" };
     const audit = auditFor(deps, { action: "company.second_review_mode_changed", target: eventTarget(orgId, scope), facts: { ...facts, mode: "direct" } }, input.requestedBy, at);
     if (audit === undefined) return { ok: false, code: "audit_unavailable" };
-    const result = await sendTransaction(deps, [settingUpdate(deps, { orgId, scope, to, clear, seen, by: input.requestedBy, at }), audit.put]);
+    // A project's pin is also conditional on the company not having been lowered since it was read: a pin that races a lowering commits first or fails, never lands after it unnoticed.
+    const unlowered: TransactItem[] = scope.kind === "project" ? [loweredCheck(deps, orgId, seen)] : [];
+    const result = await sendTransaction(deps, [settingUpdate(deps, { orgId, scope, to, clear, seen, by: input.requestedBy, at }), ...unlowered, audit.put]);
     if (result === "cancelled") return { ok: false, code: "stale" };
     await audit.flush();
     return { ok: true, status: "applied", mode: to };

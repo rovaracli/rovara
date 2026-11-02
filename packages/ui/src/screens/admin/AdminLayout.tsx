@@ -8,9 +8,11 @@ import { Button } from "../../design/Button.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { ApiError } from "../../api/errors.js";
-import { createSecondReviewApi, secondReviewKey } from "../../api/second-review.js";
+import { createSecondReviewApi } from "../../api/second-review.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import "./admin.css";
+/** Whether the second opinion page exists on this install, asked once per session. */
+const secondReviewProbeKey = ["second-review-probe"] as const;
 interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
 export function useAdminContext() { return useOutletContext<AdminContext>(); }
 const narrowViewport = () => false;
@@ -29,10 +31,14 @@ export function AdminLayout() {
  // A cached navigation role is not authority to open the directory. Recheck on entry and window focus.
  const identity = useQuery({ queryKey: ["admin", "identity"], queryFn: () => api.get("/v1/app/me", AppMeResponseReaderSchema), enabled: supported, staleTime: 0, gcTime: 0, refetchOnMount: "always" });
  // The second opinion page exists only while the install's `cr` switch is on: with it off the broker answers the page's read with 404, as for any unknown path, and the link is not shown. (There is no per-page flag in
- // the host's features for it, so the read itself is the switch.) Any other answer, an error included, keeps the link: the page then says what is wrong.
+ // the host's features for it, so the read itself is the switch.) The answer is asked once per session and kept (its own key, outside the admin cache that is purged when access is lost): entering the admin area again does not
+ // ask again, and switching `cr` on while the app is open shows the link after a reload. Any other answer, an error included, keeps the link: the page then says what is wrong.
  const reviewApi = useMemo(() => createSecondReviewApi(host), [host]);
- const secondReview = useQuery({ queryKey: secondReviewKey, queryFn: () => reviewApi.state(), enabled: supported && identity.isSuccess && (identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin"), refetchOnWindowFocus: false });
- const secondReviewOff = secondReview.error instanceof ApiError && secondReview.error.status === 404;
+ const secondReview = useQuery({
+  queryKey: secondReviewProbeKey, enabled: supported && identity.isSuccess && (identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin"), staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false,
+  queryFn: async () => { try { await reviewApi.state(); return true; } catch (error) { if (error instanceof ApiError && error.status === 404) return false; throw error; } },
+ });
+ const secondReviewOff = secondReview.data === false;
  const location = useLocation();
  const state = location.state as { roleChange?: { orgId?: string; developerId?: string; role?: string } } | null;
  const receipt = state?.roleChange;

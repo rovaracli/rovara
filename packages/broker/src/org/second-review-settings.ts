@@ -28,6 +28,8 @@ export interface SecondReviewSettings {
   companyLock?: SecondReviewMode | undefined;
   /** The project's mode as it counts NOW. A project pinned `on` stops counting once the company has been LOWERED since the pin was written (the lowering reaches the project too); it counts again only when an admin pins it afresh. */
   projectMode?: SecondReviewMode | undefined;
+  /** When the company was last LOWERED (ms), as read. A pin written against it is conditional on it, so a pin racing a lowering fails. */
+  companyLoweredAt?: number | undefined;
   /** The project's stored mode, whether or not it still counts. The writer guards its transaction with this one. */
   projectModeStored?: SecondReviewMode | undefined;
   /** The company's choice (primary, then backup). Undefined: nobody chose. An empty list: a choice that could not be read. */
@@ -52,15 +54,30 @@ async function get(table: SettingsTable, key: { pk: string; sk: string }): Promi
   return (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
 }
 
+/** Every verdict row of the company, paged through to the end (a company may hold more than one page of models). */
+async function allVerdictRows(table: SettingsTable, orgId: string): Promise<Item[]> {
+  const rows: Item[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const response = await table.documentClient.send(new QueryCommand({
+      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, Limit: 50, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": VERDICT_PREFIX },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    rows.push(...(response.Items ?? []));
+    start = response.LastEvaluatedKey;
+  } while (start !== undefined);
+  return rows;
+}
+
 /** Reads everything the plan needs. A read that fails is the caller's to handle (the start treats it as "no second review", never as a looser setting). */
 export async function readSecondReviewSettings(table: SettingsTable, orgId: string, project: string): Promise<SecondReviewSettings> {
   const [company, projectItem, verdictRows] = await Promise.all([
     get(table, { pk: orgPk(orgId), sk: SECOND_REVIEW_SETTINGS_SK }),
     get(table, secondReviewProjectKey(orgId, project)),
-    table.documentClient.send(new QueryCommand({ TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, Limit: 50, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": VERDICT_PREFIX } })) as Promise<{ Items?: Item[] }>,
+    allVerdictRows(table, orgId),
   ]);
   const verdicts: SecondReviewVerdict[] = [];
-  for (const row of verdictRows.Items ?? []) { const parsed = SecondReviewVerdictSchema.safeParse(row.verdict); if (parsed.success) verdicts.push(parsed.data); }
+  for (const row of verdictRows) { const parsed = SecondReviewVerdictSchema.safeParse(row.verdict); if (parsed.success) verdicts.push(parsed.data); }
   // The replay runs a verdict names, read by their key (a company may hold more runs than a page): a run that is missing or unreadable is absent, so the verdict does not hold.
   const replayRuns: SecondReviewReplayRun[] = [];
   for (const runId of new Set(verdicts.map((verdict) => verdict.replayRunId))) {
@@ -72,7 +89,7 @@ export async function readSecondReviewSettings(table: SettingsTable, orgId: stri
   const pinnedAt = typeof projectItem?.modeAt === "number" ? projectItem.modeAt : 0;
   const lapsed = stored === "on" && loweredAt !== undefined && pinnedAt <= loweredAt;
   return {
-    companyDefault: modeOf(company?.default), companyLock: modeOf(company?.lock), projectMode: lapsed ? undefined : stored, projectModeStored: stored,
+    companyDefault: modeOf(company?.default), companyLock: modeOf(company?.lock), projectMode: lapsed ? undefined : stored, projectModeStored: stored, companyLoweredAt: loweredAt,
     context: SecondReviewContextSchema.safeParse(company?.context).data ?? "change_only", companyModels: modelsOf(company), projectModels: modelsOf(projectItem), verdicts, replayRuns,
   };
 }

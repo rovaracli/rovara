@@ -116,7 +116,7 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
     const topSuggestion = picker.suggested[0]?.model;
     const primary = chosen.models?.[0] ?? (plan?.run === true ? plan.model : plan === undefined ? topSuggestion : undefined);
     const evidence = primary === undefined ? null : evidenceViewOf(settings, primary);
-    const trackRecord = primary === undefined ? null : await readTrackRecord(table, caller.orgId, secondReviewModelKey(primary)).catch(() => null);
+    const trackRecord = primary === undefined ? null : await readTrackRecord(table, caller.orgId, secondReviewModelKey(primary), undefined, deps.now()).catch(() => null);
     const pending = await openModeChanges(table, caller.orgId, deps.now()).catch(() => []);
     const notice = await readNotice(table, caller.orgId).catch(() => undefined);
     return new StatusReply(200, {

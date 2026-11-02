@@ -17,7 +17,7 @@ export const replayRun = (model: SecondReviewModelRef, over: Partial<SecondRevie
   ({ runId: "run-1", ranAt: "2026-10-01T00:00:00.000Z", candidate: model, baseline: BASELINE, cases: passingCases(), ...over });
 export const verdictFor = (model: SecondReviewModelRef, over: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({
   model: secondReviewModelKey(model), replayRunId: "run-1", baseline: BASELINE,
-  shadow: { startedAt: "2026-10-02T00:00:00.000Z", endedAt: "2026-10-20T00:00:00.000Z", findings: 10, agreed: 5 }, createdAt: "2026-10-21T00:00:00.000Z", createdBy: "staff:test", ...over,
+  shadow: { startedAt: "2026-10-02T00:00:00.000Z", endedAt: "2026-10-20T00:00:00.000Z", findings: 10, agreed: 5, reviews: 10 }, createdAt: "2026-10-21T00:00:00.000Z", createdBy: "staff:test", ...over,
 });
 /** Evidence that holds for `model`. */
 export function seedHoldingEvidence(db: FakeDynamoDb, model: SecondReviewModelRef, org: string = TEST_ORG): void {
@@ -40,9 +40,11 @@ export function seedTrackRow(db: FakeDynamoDb, model: SecondReviewModelRef, inpu
   db.set({ ...trackRowKey(org, row), entityType: "SECOND_REVIEW_TRACK", orgId: org, ...row });
   return row;
 }
-/** A shadow window the bar accepts: 15 days, 10 findings, 5 agreed. */
+/** A shadow window the bar accepts: 16 days, 10 reviews, 10 findings, 5 agreed. */
 export function seedPassingShadow(db: FakeDynamoDb, model: SecondReviewModelRef, org: string = TEST_ORG): void {
   seedTrackRow(db, model, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 3, open: 1, firstCleared: true }, org);
   seedTrackRow(db, model, { at: "2026-10-09T12:00:00.000Z", task: "t2", fixed: 2, wrong: 4 }, org);
   seedTrackRow(db, model, { at: "2026-10-18T12:00:00.000Z", task: "t3" }, org);
+  // Seven more answered opinions that raised nothing: ten reviews in all.
+  for (let n = 4; n <= 10; n += 1) seedTrackRow(db, model, { at: `2026-10-${String(n + 3).padStart(2, "0")}T12:00:00.000Z`, task: `t${String(n)}` }, org);
 }

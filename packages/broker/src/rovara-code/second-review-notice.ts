@@ -73,7 +73,7 @@ export function observationOf(plan: SecondReviewPlan): QualificationProblem | un
 /** The notice closes after this many starts in a row in which the reviewer qualified, or after this long since the first of them, whichever comes first. */
 export const NOTICE_CLOSE_AFTER_STARTS = 3;
 export const NOTICE_CLOSE_AFTER_MS = 24 * 3_600_000;
-/** A problem that comes back with the key an admin last marked seen is written already seen if that was within this long. */
+/** While a notice stays open, a problem that comes back with the key an admin last marked seen is written already seen if that was within this long. */
 export const NOTICE_RESEEN_QUIET_MS = 7 * 86_400_000;
 
 export interface StoredNotice { key: string; code: NoticeCode; models: QualificationProblem["models"]; createdAt: string; status: "open" | "seen"; seenAt?: string }
@@ -108,10 +108,11 @@ export async function noteQualification(table: SettingsTable, orgId: string, obs
       const since = typeof item.okSince === "string" && !Number.isNaN(Date.parse(item.okSince)) ? item.okSince : new Date(at).toISOString();
       const enough = starts >= NOTICE_CLOSE_AFTER_STARTS || at - Date.parse(since) >= NOTICE_CLOSE_AFTER_MS;
       const names = { "#s": "status", "#k": "key" };
-      const guard = { ConditionExpression: "#k = :key AND #s <> :closed", ExpressionAttributeNames: enough ? names : { ...names, "#o": "okStarts", "#os": "okSince" } };
+      const guard = { ConditionExpression: "#k = :key AND #s <> :closed", ExpressionAttributeNames: enough ? { ...names, "#ls": "lastSeenKey", "#la": "lastSeenAt" } : { ...names, "#o": "okStarts", "#os": "okSince" } };
       await table.documentClient.send(new UpdateCommand({
         TableName: table.tableName, Key: keyFor(orgId), ...guard,
-        UpdateExpression: enough ? "SET #s = :closed" : "SET #o = :starts, #os = :since",
+        // Closing forgets what was seen: the memory of a seen key belongs to a notice that stays open, so a problem that comes back after a close is a new card.
+        UpdateExpression: enough ? "SET #s = :closed REMOVE #ls, #la" : "SET #o = :starts, #os = :since",
         ExpressionAttributeValues: enough ? { ":closed": "closed", ":key": item.key } : { ":closed": "closed", ":key": item.key, ":starts": starts, ":since": since },
       })).catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
       return enough ? "closed" : "recovering";

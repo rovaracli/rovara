@@ -42,7 +42,7 @@ function mount(options: { state?: Partial<State>; respond?: (request: ApiRequest
   query.setQueryData(["nav"], nav);
   const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/second-review"] });
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
-  return { ...f, ...view, current, close: () => { view.unmount();router.dispose();query.clear(); } };
+  return { ...f, ...view, current, router, query, close: () => { view.unmount();router.dispose();query.clear(); } };
 }
 const posts = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
 
@@ -242,6 +242,26 @@ it("tells the admin when the model stopped qualifying, with the server's fixed w
   await screen.findByText("The second opinion model needs attention");
   expect(screen.queryByRole("button", { name: "I've seen it" })).toBeNull();
   seen.close();
+});
+
+it("asks once per session whether the page exists: coming back into the admin area does not ask again, and the link stays", async () => {
+  const f = mount();
+  await screen.findByRole("heading", { name: "Second opinion" });
+  await screen.findByRole("link", { name: "Second opinion" });
+  const gets = () => f.request.mock.calls.filter(([request]) => request.path === PATH && request.method === "GET").length;
+  const first = gets();
+  // The page's own read and the nav's one question.
+  expect(first).toBe(2);
+  await f.router.navigate("/app/nowhere-in-particular");
+  await screen.findByRole("heading", { name: "Not found" });
+  expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
+  await f.router.navigate("/app/admin/second-review");
+  await screen.findByRole("heading", { name: "Second opinion" });
+  await screen.findByRole("link", { name: "Second opinion" });
+  // Only the page's own read is asked again (its cache is dropped when the admin area is left); the nav's question is answered from the session's cache.
+  expect(gets()).toBe(first + 1);
+  expect(f.query.getQueryData(["second-review-probe"])).toBe(true);
+  f.close();
 });
 
 it("is absent while the switch is off, and a failed load can be retried", async () => {

@@ -6,8 +6,8 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
-import { replayRun, seedPassingShadow, seedTrackRow } from "../support/second-review-evidence.js";
-import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
+import { replayRun, seedPassingShadow, seedTrackRow, verdictFor } from "../support/second-review-evidence.js";
+import { readSecondReviewSettings, secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
 import { INSTALL_OPERATOR_ROUTES, requireStaffRouteAllowed } from "../../packages/broker/src/aws/broker/staff-routes.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -140,6 +140,21 @@ describe("the verdict", () => {
     expect((await settingsOf(t)).evidence).toMatchObject({ holds: false, verdict: { shadowDays: 0, shadowPassed: false } });
   });
 
+  it("needs at least 10 counted reviews: nine over a long window with plenty of agreement do not hold, ten do", async () => {
+    const { t, model } = await bench();
+    await staff(t, REPLAY, { orgId: TEST_ORG, run: replayRun(model) });
+    for (let n = 0; n < 9; n += 1) seedTrackRow(t.db, model, { at: `2026-10-${String(3 + 2 * n).padStart(2, "0")}T12:00:00.000Z`, task: `r${String(n)}`, fixed: 2, wrong: 1 });
+    const nine = await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window });
+    expect(nine.body).toMatchObject({ holds: false, shadow: { reviews: 9, days: 16, findings: 27, agreed: 18, passed: false } });
+    expect((await settingsOf(t)).evidence).toMatchObject({ holds: false, verdict: { shadowPassed: false } });
+    seedTrackRow(t.db, model, { at: "2026-10-19T12:00:00.000Z", task: "r9", fixed: 1 });
+    const ten = await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window });
+    expect(ten.body).toMatchObject({ holds: true, shadow: { reviews: 10, passed: true } });
+    // A verdict written before the count existed cannot pass the bar.
+    t.db.set({ ...secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(model, { shadow: { startedAt: "2026-10-02T00:00:00.000Z", endedAt: "2026-10-20T00:00:00.000Z", findings: 10, agreed: 5 } }) });
+    expect((await settingsOf(t)).evidence?.holds).toBe(false);
+  });
+
   it("a short or disagreeing window is stored as it is and does NOT hold (the bar decides, not the writer)", async () => {
     const { t, model } = await bench();
     await staff(t, REPLAY, { orgId: TEST_ORG, run: replayRun(model) });
@@ -148,6 +163,23 @@ describe("the verdict", () => {
     const stored = await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window, endedAt: "2026-10-21T00:00:00.000Z" });
     expect(stored).toMatchObject({ status: 201, body: { holds: false, shadow: { findings: 6, agreed: 1, passed: false } } });
     expect((await settingsOf(t)).evidence?.holds).toBe(false);
+  });
+});
+
+describe("reading the verdicts of a company", () => {
+  it("pages through all of them: a verdict past the first page still counts", async () => {
+    const { t, model } = await bench();
+    for (let n = 0; n < 60; n += 1) {
+      const other = { provider: "openrouter", modelId: `a/m${String(n).padStart(3, "0")}` };
+      t.db.set({ ...secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(other)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(other) });
+    }
+    // Sorts last: only a read that goes past the first page of 50 sees it.
+    const last = { provider: "openrouter", modelId: "z/last" };
+    t.db.set({ ...secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(last)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(last) });
+    const settings = await readSecondReviewSettings({ documentClient: t.db, tableName: "state" }, TEST_ORG, "");
+    expect(settings.verdicts).toHaveLength(61);
+    expect(settings.verdicts.map((entry) => entry.model)).toContain(secondReviewModelKey(last));
+    void model;
   });
 });
 

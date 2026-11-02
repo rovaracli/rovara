@@ -28,6 +28,9 @@ export const trackPrefix = (model: string): string => `${TRACK_PREFIX}${part(mod
 export const trackRowKey = (orgId: string, row: Pick<SecondReviewTrackRow, "model" | "recordedAt" | "taskId" | "candidateDigest">) =>
   ({ pk: orgPk(orgId), sk: `${trackPrefix(row.model)}${row.recordedAt}#${part(row.taskId)}#${row.candidateDigest.slice(0, 16)}` });
 
+/** The pointer from a task to its latest answered row. (`TRACKLAST#` sorts after every `TRACK#<model>#` range, so a model's window read never meets it.) */
+const latestKey = (orgId: string, taskId: string) => ({ pk: orgPk(orgId), sk: `SECONDREVIEW#TRACKLAST#${part(taskId)}` });
+
 const StoredOpinionSchema = z.object({ candidateDigest: z.string().regex(/^[a-f0-9]{64}$/u), opinion: SecondOpinionSchema, recordedAt: z.string().datetime() }).strict();
 type StoredOpinion = z.infer<typeof StoredOpinionSchema>;
 const opinionOf = (image: Record<string, unknown> | undefined): StoredOpinion | undefined => {
@@ -61,6 +64,8 @@ export interface TrackChange {
   create?: SecondReviewTrackRow;
   /** The earlier row of the SAME code by the SAME model (a second opinion run again): `create` replaces it, and the outcomes already decided on it are carried over. */
   replaces?: RowRef;
+  /** The task merged and its latest opinion gave no answer: its latest ANSWERED row (kept in a pointer) is marked wrong for the findings still standing. */
+  mergedTask?: string;
   moves: Array<{
     ref: RowRef; to: "fixed" | "wrong";
     /** Only these findings (all of the row's open findings when absent). */
@@ -102,14 +107,17 @@ export function trackChangeOf(previous: Record<string, unknown> | undefined, nex
     // A new round by the SAME model: the findings of the earlier code that this round no longer raises (by stable key) were fixed, if the new code changed the file they cite. Another model's silence says nothing.
     if (answered(was) && sameModel && was.candidateDigest !== now.candidateDigest) change.moves.push({ ref: refOf(taskId, was), to: "fixed", except: raisedBy(now) });
   }
+  // Merged with findings still standing: not agreed with either.
+  const merged = nextWorkflow?.stage === "MERGED" && (previous?.workflow as { stage?: unknown } | undefined)?.stage !== "MERGED";
   // Findings the owner accepted as risks since the last update, for the code the task holds: not agreed with.
   if (answered(now)) {
     const before = acceptedKeys(previous);
     const fresh = [...acceptedKeys(next)].filter((key) => !before.has(key) && key.startsWith(`${now.candidateDigest}|`)).map((key) => key.split("|")[1]!);
     if (fresh.length > 0) change.moves.push({ ref: refOf(taskId, now), to: "wrong", only: new Set(fresh) });
-    // Merged with findings still standing: not agreed with either.
-    const merged = nextWorkflow?.stage === "MERGED" && (previous?.workflow as { stage?: unknown } | undefined)?.stage !== "MERGED";
     if (merged) change.moves.push({ ref: refOf(taskId, now), to: "wrong" });
+  } else if (merged && now !== undefined) {
+    // The latest opinion is one that gave no answer (a re-run failed): the findings that stand are those of the latest row that did.
+    change.mergedTask = taskId;
   }
   return change;
 }
@@ -120,6 +128,8 @@ export interface TrackStore {
   create(item: Record<string, unknown>): Promise<void>;
   /** Deletes a row (the earlier row a re-run replaced). Deleting a missing row is not an error. */
   remove(key: { pk: string; sk: string }): Promise<void>;
+  /** Points a task at its latest answered row, unless the pointer already names a later one. */
+  setLatest(item: Record<string, unknown>): Promise<void>;
   /** Replaces the findings only if the row is still at `rev`; false: it moved, and nothing was written. */
   move(key: { pk: string; sk: string }, findings: SecondReviewTrackRow["findings"], rev: number): Promise<boolean>;
 }
@@ -130,6 +140,11 @@ export function trackStoreOf(table: SettingsTable): TrackStore {
     async get(key) { return (await send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item; },
     async create(item) {
       try { await send(new PutCommand({ TableName: table.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" })); } catch (error) { if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error; }
+    },
+    async setLatest(item) {
+      try {
+        await send(new PutCommand({ TableName: table.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk) OR recordedAt < :r", ExpressionAttributeValues: { ":r": item.recordedAt } }));
+      } catch (error) { if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error; }
     },
     async remove(key) { await send(new DeleteCommand({ TableName: table.tableName, Key: key })); },
     async move(key, findings, rev) {
@@ -161,17 +176,28 @@ export async function applyTrackChange(store: TrackStore, orgId: string, change:
     const replaced = change.replaces === undefined ? undefined : trackRowKey(orgId, change.replaces);
     const newKey = trackRowKey(orgId, row);
     if (replaced !== undefined && replaced.sk !== newKey.sk) {
-      // The same code reviewed again: what was already decided about a finding stays decided.
+      // The same code reviewed again: what was already decided about a finding stays decided, including a finding this run does not raise again.
       const earlier = rowOf(await store.get(replaced));
-      if (earlier !== undefined) row = { ...row, findings: row.findings.map((finding) => {
-        const decided = earlier.findings.find((old) => old.outcome !== "open" && (old.key !== undefined && finding.key !== undefined ? old.key === finding.key : old.fp === finding.fp));
-        return decided === undefined ? finding : { ...finding, outcome: decided.outcome };
-      }) };
+      if (earlier !== undefined) {
+        const same = (left: SecondReviewTrackRow["findings"][number], right: SecondReviewTrackRow["findings"][number]): boolean => (left.key !== undefined && right.key !== undefined ? left.key === right.key : left.fp === right.fp);
+        const decided = earlier.findings.filter((old) => old.outcome !== "open");
+        const merged = row.findings.map((finding) => { const found = decided.find((old) => same(old, finding)); return found === undefined ? finding : { ...finding, outcome: found.outcome }; });
+        const kept = decided.filter((old) => !row.findings.some((finding) => same(old, finding)));
+        // Decided findings are never the ones dropped to stay within the row's size.
+        row = { ...row, findings: [...merged.slice(0, Math.max(0, 20 - kept.length)), ...kept].slice(0, 20) };
+      }
     }
     await store.create({ ...newKey, entityType: "SECOND_REVIEW_TRACK", orgId, [INDEX_EXPIRY_ATTRIBUTE]: expiryOf(row.recordedAt), ...row }); created += 1;
     if (replaced !== undefined && replaced.sk !== newKey.sk) await store.remove(replaced);
+    // The task's pointer to its latest answered row (a later merge with no newer answer still finds it).
+    await store.setLatest({ ...latestKey(orgId, row.taskId), entityType: "SECOND_REVIEW_TRACK_LAST", orgId, recordedAt: row.recordedAt, ref: { model: row.model, recordedAt: row.recordedAt, taskId: row.taskId, candidateDigest: row.candidateDigest }, [INDEX_EXPIRY_ATTRIBUTE]: expiryOf(row.recordedAt) });
   }
-  for (const move of change.moves) {
+  const moves = [...change.moves];
+  if (change.mergedTask !== undefined) {
+    const ref = (await store.get(latestKey(orgId, change.mergedTask)))?.ref as Partial<RowRef> | undefined;
+    if (typeof ref?.model === "string" && typeof ref.recordedAt === "string" && typeof ref.taskId === "string" && typeof ref.candidateDigest === "string") moves.push({ ref: { model: ref.model, recordedAt: ref.recordedAt, taskId: ref.taskId, candidateDigest: ref.candidateDigest }, to: "wrong" });
+  }
+  for (const move of moves) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const key = trackRowKey(orgId, move.ref);
       const row = rowOf(await store.get(key));
@@ -205,7 +231,7 @@ export async function indexSecondReviewTrack(records: readonly StreamRecord[], s
       if (next.entityType !== "DEVELOPER_TASK" || next.secondOpinion === undefined) continue;
       const previous = entry.dynamodb?.OldImage === undefined ? undefined : unmarshall(entry.dynamodb.OldImage) as Record<string, unknown>;
       const change = trackChangeOf(previous, next);
-      if (change.create === undefined && change.moves.length === 0) continue;
+      if (change.create === undefined && change.moves.length === 0 && change.mergedTask === undefined) continue;
       // Which files the new code changed, asked only when a finding could be fixed. With no port, or no answer, nothing is counted as fixed.
       const toDigest = opinionOf(next)?.candidateDigest;
       for (const move of change.moves) {
@@ -247,7 +273,11 @@ export async function readTrackRows(table: SettingsTable, orgId: string, model: 
   return rows;
 }
 
-/** The track record of a model on a company, optionally for a window of dates. */
-export async function readTrackRecord(table: SettingsTable, orgId: string, model: string, window?: { from: string; to: string }): Promise<SecondReviewTrackRecord> {
-  return summarizeSecondReviewTrack(model, await readTrackRows(table, orgId, model, window), window);
+/** The settings page shows the last this many days of a model's record (a verdict names its own window instead). */
+export const TRACK_RECORD_DAYS = 90;
+
+/** The track record of a model on a company for a window of dates: the one given (a verdict's), else the last `TRACK_RECORD_DAYS` days up to `now`. */
+export async function readTrackRecord(table: SettingsTable, orgId: string, model: string, window?: { from: string; to: string }, now: number = Date.now()): Promise<SecondReviewTrackRecord> {
+  const range = window ?? { from: new Date(now - TRACK_RECORD_DAYS * 86_400_000).toISOString(), to: new Date(now).toISOString() };
+  return summarizeSecondReviewTrack(model, await readTrackRows(table, orgId, model, range), range);
 }

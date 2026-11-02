@@ -269,7 +269,7 @@ describe("what the settings screen reads", () => {
     for (const query of [QUERY, PATH, `${QUERY}&project=${NAME}`]) { const parsed = parse(await t.web(OMAR, "GET", query)); expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues)).toBe(true); }
     await setMode(t, OMAR, "on");
     await setMode(t, OMAR, "shadow");
-    seedTrackRow(t.db, model, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 1 });
+    seedTrackRow(t.db, model, { at: new Date(Date.now() - 5 * 86_400_000).toISOString(), task: "t1", fixed: 1 });
     for (const who of [OMAR, MAYA]) { const parsed = parse(await t.web(who, "GET", QUERY)); expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues)).toBe(true); }
     expect(parse(await t.web(OMAR, "GET", QUERY)).data).toMatchObject({ pendingLowering: true, evidence: { holds: true }, trackRecord: { reviews: 1, agreed: 1 } });
   });
@@ -336,6 +336,33 @@ describe("the mode writer on its own", () => {
     expect(await ask(false)).toEqual({ ok: false, code: "not_eligible" });
     // An admin gets past that check (and stops at the missing ledger here).
     expect(await ask(true)).toEqual({ ok: false, code: "audit_unavailable" });
+  });
+});
+
+describe("a pin racing a lowering", () => {
+  it("fails as stale when the company is lowered between the read and the write, and the project is not pinned", async () => {
+    const { t, audit } = await withEvidence();
+    await setMode(t, OMAR, "shadow");
+    const original = t.db.send.bind(t.db);
+    let raced = 0;
+    t.db.send = (async (command: { input?: { TransactItems?: Array<{ Update?: { Key?: { sk?: string } } }> } }) => {
+      if (raced === 0 && command.input?.TransactItems?.some((item) => item.Update?.Key?.sk?.startsWith("SECONDREVIEW#PROJECT#") === true)) {
+        raced += 1;
+        // A lowering commits first: the company item is stamped.
+        t.db.set({ ...(t.db.get(orgMetaKey(TEST_ORG).pk, "SECONDREVIEW#SETTINGS") as Record<string, unknown>), loweredAt: Date.now() });
+      }
+      return original(command as never);
+    });
+    const before = modeEvents(audit).length;
+    const raceResult = await setProject(t, OMAR, "on");
+    t.db.send = original;
+    expect(raced).toBe(1);
+    expect(raceResult.status).toBe(409);
+    expect(modeEvents(audit)).toHaveLength(before);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes.project).toBeNull();
+    // Asked again after the lowering was read, it is accepted and counts.
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ project: "on", effective: "on" });
   });
 });
 

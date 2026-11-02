@@ -50,7 +50,7 @@ export async function recordReplayRun(deps: EvidenceDeps, input: { orgId: string
   return result === "ok" ? { ok: true, summary } : { ok: false, code: "run_exists" };
 }
 
-export interface VerdictRecord { verdict: SecondReviewVerdict; holds: boolean; replay: SecondReviewReplaySummary; shadow: { days: number; findings: number; agreed: number; passed: boolean } }
+export interface VerdictRecord { verdict: SecondReviewVerdict; holds: boolean; replay: SecondReviewReplaySummary; shadow: { days: number; findings: number; agreed: number; reviews: number; passed: boolean } }
 
 /**
  * Stores the evidence for one model: the replay run it rests on (already stored) and a shadow window. The shadow counts are the broker's own, from the company's track record for that window. The window must start
@@ -73,11 +73,11 @@ export async function recordVerdict(deps: EvidenceDeps, input: { orgId: string; 
   // The window the evidence rests on is what was counted: from the first to the last row, never the span the writer typed.
   const verdict = SecondReviewVerdictSchema.safeParse({
     model: key, replayRunId: run.runId, baseline: run.baseline,
-    shadow: { startedAt: counted.firstAt, endedAt: counted.lastAt, findings: counted.findings, agreed: counted.agreed },
+    shadow: { startedAt: counted.firstAt, endedAt: counted.lastAt, findings: counted.findings, agreed: counted.agreed, reviews: counted.reviews },
     createdAt: new Date(at).toISOString(), createdBy: input.by,
   });
   if (!verdict.success) return { ok: false, code: "invalid" };
-  const shadow = { days: counted.days, findings: counted.findings, agreed: counted.agreed };
+  const shadow = { days: counted.days, findings: counted.findings, agreed: counted.agreed, reviews: counted.reviews };
   const audit = deps.audit.pending({ action: "company.second_review_verdict_recorded", target: orgTarget(input.orgId), facts: { model: key.slice(0, 128), runId: run.runId, days: shadow.days, findings: shadow.findings, agreed: shadow.agreed } }, input.by, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
   const result = await commit(deps, [{ Put: { TableName: deps.table.tableName, Item: { ...secondReviewVerdictKey(input.orgId, key), entityType: "SECOND_REVIEW_VERDICT", verdict: verdict.data } } }], audit);
@@ -117,7 +117,7 @@ export function evidenceViewOf(settings: Pick<SecondReviewSettings, "verdicts" |
   return {
     model: { provider: model.provider, modelId: model.modelId }, holds: verdictHoldsFor(settings, model),
     verdict: verdict === undefined ? null : { recordedAt: verdict.createdAt, withdrawn: verdict.withdrawnAt !== undefined, shadowDays: days, shadowFindings: verdict.shadow.findings, shadowAgreed: verdict.shadow.agreed,
-      shadowPassed: secondReviewShadowPassed({ days, findings: verdict.shadow.findings, agreed: verdict.shadow.agreed }) },
+      shadowPassed: secondReviewShadowPassed({ days, findings: verdict.shadow.findings, agreed: verdict.shadow.agreed, ...(verdict.shadow.reviews === undefined ? {} : { reviews: verdict.shadow.reviews }) }) },
     replay: run === undefined ? null : summarizeSecondReviewReplay(run.cases),
   };
 }
