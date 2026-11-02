@@ -36,7 +36,7 @@ import type { AccessCheckPort } from "../../packages/broker/src/team-record/acce
 import {
   Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, defaultFacts, directory, embedder, memberSpan, settings, verifier,
 } from "../unit/lessons/lesson-helpers.js";
-import { FakeActors, FakeConfig, FakeDistiller, FakeMode, FakePushIndex, FakeRovaraPrs } from "./team-record-ingest-fakes.js";
+import { FakeActors, FakeConfig, FakeDistiller, FakeEdited, FakeMode, FakePushIndex, FakeRovaraPrs } from "./team-record-ingest-fakes.js";
 import { ORG_A, T0, addSource, world as recordWorld, type World as RecordWorld } from "./team-record-core.js";
 
 export { BASE, MERGED, PROJECT, WS };
@@ -80,7 +80,9 @@ export class Capture {
     notesOptIn: async () => false,
     directory: { channelInfo: async (_team, channel) => this.channels[channel] },
   });
-  readonly tickets = createTicketRecorder({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
+  /** TRW-4 (B1): production always passes the port that marks an item an editor other than its author touched. */
+  readonly edited = new FakeEdited();
+  readonly tickets = createTicketRecorder({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config, edited: this.edited });
   readonly rovara = createRovaraEmitter({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
   /** The real reader of the rows the emitter wrote (who sent a task back, their standing, their words). */
   get outcomeRows() { return tableOutcomeRows(this.record.table); }

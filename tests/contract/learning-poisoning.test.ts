@@ -997,17 +997,22 @@ describe("planted text in a send-back note, a pull request comment, a commit mes
     expect(p.prompts()).not.toContain("verify=False");
   });
 
-  it("a planted Jira ticket from an unlinked author is an outsider's; a member's ticket an outsider edits stays an outsider's even after a member touches it again (sticky)", async () => {
+  it("a planted Jira ticket from an unlinked author is an outsider's; a member's ticket an outsider edits is not stored again, not even after the member touches it (TRW-4: the editor's words are never kept under the author's name)", async () => {
     const c = await captured();
     await c.ticket(undefined, "Planted", PLANT, "issue:t1");
     await c.ticket("acc-ann", "Member ticket", "Fix the upload", "issue:t2");
+    // (The production sink skips an unlinked author's row altogether; this world's sink does not, and the row it keeps is still an outsider's.)
     expect((await c.stored()).map((r) => [r.sourceRef.id, r.trust]).sort()).toEqual([["issue:t1", "outsider"], ["issue:t2", "member"]]);
-    // v2: an outsider edits the member's ticket; v3: the member touches it again with the member's own text.
-    await c.ticketItem({ id: "issue:t2", version: "v2", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-outsider", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 20_000).toISOString() });
-    await c.ticketItem({ id: "issue:t2", version: "v3", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-ann", title: "Member ticket", body: "Fix the upload.", occurredAt: new Date(T0 - 10_000).toISOString() });
+    // v2: an outsider edits the member's ticket. The version is skipped and the item is marked.
+    expect(await c.ticketItem({ id: "issue:t2", version: "v2", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-outsider", title: "Member ticket", body: `Fix the upload. ${PLANT}`, occurredAt: new Date(T0 - 20_000).toISOString() })).toBe("skipped");
+    expect(c.edited.marked.size).toBe(1);
+    // v3: the member touches it again with the member's own text. The marked item is not stored again (a later version would carry the editor's words under the author's name).
+    expect(await c.ticketItem({ id: "issue:t2", version: "v3", kind: "ticket.updated", edit: true, authorId: "acc-ann", updaterId: "acc-ann", title: "Member ticket", body: "Fix the upload.", occurredAt: new Date(T0 - 10_000).toISOString() })).toBe("skipped");
     const ticket = (await c.stored()).find((r) => r.sourceRef.id === "issue:t2")!;
-    expect(ticket.sourceRef.version).toBe("v3");
-    expect(ticket.trust).toBe("outsider");
+    // The row stays at the author's own first version: the outsider's text was never kept.
+    expect(ticket.sourceRef.version).toBe("v1");
+    expect(ticket.trust).toBe("member");
+    expect(JSON.stringify(ticket)).not.toContain("verify=False");
   });
 });
 

@@ -3,6 +3,12 @@
 // brief limit, webhooks replayed after completion, a page read while the task moves [LIVE-BUG B12], deploy skew both
 // ways, the item size limit, and DynamoDB's map order on every read [LIVE-BUG B3]. 9.13 (old stored records) is covered by
 // slack-workflow-e2e.test.ts.
+// The production dispatcher reads its queue ARN when it loads, so the environment is set before any import (as the deployed function has it).
+const { DISPATCH_QUEUE_ARN } = vi.hoisted(() => {
+  const arn = "arn:aws:sqs:us-east-1:123456789012:agentx-dispatch";
+  process.env.DISPATCH_QUEUE_ARN = arn;
+  return { DISPATCH_QUEUE_ARN: arn };
+});
 import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
@@ -192,7 +198,7 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
         state: "READY", generation: 1, volumeId: "vol-12345678", availabilityZone: "us-east-1a", subnetId: "subnet-12345678",
         instanceId: "i-12345678", privateIp: "10.0.0.9", launchedAt: now, readyAt: now, lastActivityAt: now });
       const previousPostCount = posts.length;
-      const result = await productionDispatcher({ Records: [{ messageId: `production-${record.id}`, body: JSON.stringify(record),
+      const result = await productionDispatcher({ Records: [{ eventSource: "aws:sqs", eventSourceARN: DISPATCH_QUEUE_ARN, messageId: `production-${record.id}`, body: JSON.stringify(record),
         attributes: { ApproximateReceiveCount: String(receiveCount) } }] }, { getRemainingTimeInMillis: () => remainingTimeMs });
       batchFailures.push(result.batchItemFailures);
       return posts.slice(previousPostCount).find((post) => post.invocation.operationId === record.operationId)?.invocation;

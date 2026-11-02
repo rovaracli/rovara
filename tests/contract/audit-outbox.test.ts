@@ -830,6 +830,9 @@ describe("I4: the builders", () => {
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
     ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
+    // Setup agent website asks (SH12)
+    ["auditSetupHostAsked", (occurrence) => builders.auditSetupHostAsked({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", taskId: "task_1", journalN: 4, host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" })],
+    ["auditSetupHostRefused", (occurrence) => builders.auditSetupHostRefused({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", refusal: "person", host: "docs.corp.example" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -888,6 +891,20 @@ describe("I4: the builders", () => {
     expect(remembered("remember").eventId).not.toBe(remembered("forget").eventId);
     const notApplied = builders.auditRuleNotApplied({ ...base, occurrence: "rul_1", projectName: "web", suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
     expect(notApplied.facts).toStrictEqual({ suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
+  });
+
+  it("the setup host events target the project by name, keep the website in the org's details only, and ask and refusal of one ask get different ids", () => {
+    const asked = builders.auditSetupHostAsked({ ...base, occurrence: "ask_1", projectName: "web", askId: "ask_1", taskId: "task_1", host: "docs.corp.example", onBehalfOf: "dev_1" });
+    expect(asked).toMatchObject({ action: "setup.host_asked", target: { kind: "project", name: "web" }, facts: { askId: "ask_1", taskId: "task_1" } });
+    expect(asked.facts).not.toHaveProperty("typedBy");
+    expect(asked.details).toContainEqual({ subject: "org", fields: { host: "docs.corp.example", onBehalfOf: "dev_1" } });
+    const typed = builders.auditSetupHostAsked({ ...base, occurrence: "ask_1", projectName: "web", askId: "ask_1", taskId: "task_1", host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" });
+    expect(typed.details).toContainEqual({ subject: "org", fields: { host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" } });
+    const refused = builders.auditSetupHostRefused({ ...base, occurrence: "ask_1", projectName: "web", askId: "ask_1", refusal: "person", host: "docs.corp.example" });
+    expect(refused).toMatchObject({ action: "setup.host_refused", target: { kind: "project", name: "web" }, facts: { askId: "ask_1", refusal: "person" } });
+    expect(refused.details).toContainEqual({ subject: "org", fields: { host: "docs.corp.example" } });
+    for (const event of [asked, typed, refused]) expect(JSON.stringify({ ...event, details: undefined, target: undefined })).not.toContain("docs.corp.example");
+    expect(asked.eventId).not.toBe(refused.eventId);
   });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {
