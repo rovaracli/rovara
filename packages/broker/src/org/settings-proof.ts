@@ -3,7 +3,7 @@
 //   - A change made with an API key is HELD (`held`): it is not in the settings. It is written only when its own check passes, at the settings revision it was made against.
 // This module is the stored record and the pure reading of it. One item per project (`PROJECT#.../SETTINGS_PROOF`); each part is written as a whole, with a condition on the part it replaces. No command text
 // is ever shown from here: the lists are kept so the check, the write and the undo use exactly what was proved.
-import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { canonicalJson, projectMetaKey, type OrgId, type OrgKey, type ProjectCommand, type StoredProjectDefinition } from "@agentx/contracts";
 
 type Send = { send(command: unknown): Promise<unknown> };
@@ -69,6 +69,24 @@ export async function readProof(deps: ProofStoreDependencies, orgId: OrgId, proj
   return { ...(proven === undefined ? {} : { proven }), ...(saved === undefined ? {} : { saved }), ...(held === undefined ? {} : { held }), ...(lastUndo === undefined ? {} : { lastUndo }) };
 }
 
+/** The partition the periodic settle reads: one watch per project with a check under way (a saved change or a held one), so nothing waits for a page view. */
+export const SETTINGS_PROOF_WATCH_PK = "SETTINGS_PROOF_WATCH";
+const watchKey = (orgId: OrgId, project: string): OrgKey => ({ pk: SETTINGS_PROOF_WATCH_PK, sk: `${orgId}#${project}` });
+
+/** The projects whose checks are being waited on, oldest watch first, at most `limit`. */
+export async function watchedProofs(deps: ProofStoreDependencies, limit: number): Promise<Array<{ orgId: OrgId; project: string }>> {
+  const response = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": SETTINGS_PROOF_WATCH_PK }, Limit: limit, ConsistentRead: true })) as { Items?: Array<{ orgId?: unknown; project?: unknown }> };
+  return (response.Items ?? []).flatMap((item) => (typeof item.orgId === "string" && typeof item.project === "string" ? [{ orgId: item.orgId, project: item.project }] : []));
+}
+
+/** Whether a project's proof still has a check being waited on. */
+export const waitingOn = (proof: ProofItem | undefined): boolean =>
+  proof?.saved?.status === "checking" || proof?.held?.status === "checking" || proof?.held?.status === "applying";
+
+export async function dropWatch(deps: ProofStoreDependencies, orgId: OrgId, project: string): Promise<void> {
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: watchKey(orgId, project) }));
+}
+
 type Part = "proven" | "saved" | "held" | "lastUndo";
 interface Guard { expression: string; values: Record<string, unknown>; names?: Record<string, string> }
 
@@ -84,6 +102,11 @@ export async function writePart(deps: ProofStoreDependencies, orgId: OrgId, proj
       ExpressionAttributeNames: { "#project": "project", "#part": part, ...(guard?.names ?? {}) },
       ExpressionAttributeValues: { ":entity": SETTINGS_PROOF_ENTITY, ":org": orgId, ":project": project, ":value": JSON.parse(JSON.stringify(value)) as unknown, ":now": new Date(deps.now()).toISOString(), ...(guard?.values ?? {}) },
     }));
+    // A check now under way is watched, so the periodic settle sees it end whichever way it ends (a result, the 50-minute sweep, a failed dispatch).
+    const status = (value as { status?: unknown }).status;
+    if ((part === "saved" || part === "held") && (status === "checking" || status === "applying")) {
+      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...watchKey(orgId, project), entityType: "SETTINGS_PROOF_WATCH", orgId, project, since: new Date(deps.now()).toISOString() } }));
+    }
     return true;
   } catch (error) {
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;

@@ -36,7 +36,7 @@ async function get(client: Client, tableName: string, key: { pk: string; sk: str
 }
 
 /** Fails a check's prepare that never reported, as the stuck-setup sweep fails a task's: the operation FAILED and the workspace PREPARATION_FAILED. False when a result landed first. */
-async function failStalledPrepare(client: Client, tableName: string, workspaceId: string, workspace: Item, now: string): Promise<boolean> {
+async function failStalledPrepare(client: Client, tableName: string, workspaceId: string, workspace: Item, now: string, onlyUnclaimed = false): Promise<boolean> {
   const operationId = workspace.activeOperationId;
   if (typeof operationId !== "string") return false;
   const operation = await get(client, tableName, { pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` });
@@ -46,11 +46,12 @@ async function failStalledPrepare(client: Client, tableName: string, workspaceId
       { Update: {
         TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` },
         UpdateExpression: "SET #status = :failed, updatedAt = :now, #error = :error",
-        ConditionExpression: "(#status = :accepted OR #status = :dispatching OR #status = :running OR #status = :cancelRequested) AND fence = :fence",
+        // TE-4 (`onlyUnclaimed`): a check replaced by a newer change is failed only while the dispatcher has not claimed it, in the same write that fails it: a claim landing after the caller looked cancels this.
+        ConditionExpression: `(#status = :accepted OR ${onlyUnclaimed ? "" : "#status = :dispatching OR "}#status = :running OR #status = :cancelRequested) AND fence = :fence`,
         ExpressionAttributeNames: { "#status": "status", "#error": "error" },
         ExpressionAttributeValues: {
           ":failed": "FAILED", ":now": now, ":error": STALLED_CHECK_ERROR, ":fence": operation.fence,
-          ":accepted": "ACCEPTED", ":dispatching": "DISPATCHING", ":running": "RUNNING", ":cancelRequested": "CANCEL_REQUESTED",
+          ":accepted": "ACCEPTED", ":running": "RUNNING", ":cancelRequested": "CANCEL_REQUESTED", ...(onlyUnclaimed ? {} : { ":dispatching": "DISPATCHING" }),
         },
       } },
       { Update: {
@@ -106,7 +107,7 @@ export async function closeSetupCheck(
     if (workspace.status === "PREPARING") {
       if (!options.stalled && options.stop !== true) return "busy";
       if (!options.stalled && !await mayStopPrepare(client, tableName, workspaceId, workspace)) return "busy";
-      if (!await failStalledPrepare(client, tableName, workspaceId, workspace, now)) return "busy";
+      if (!await failStalledPrepare(client, tableName, workspaceId, workspace, now, !options.stalled)) return "busy";
       workspace = await get(client, tableName, { pk: `WORKSPACE#${workspaceId}`, sk: "META" });
       if (workspace === undefined) continue;
     }

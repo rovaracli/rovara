@@ -140,6 +140,7 @@ async function setup(options: { memberLimit?: number } = {}) {
   };
   return { ...h, audit, stream, person, web, key, candidates, finishCheck, reportNewest, workspaceStatus, definitions, latest, meta, proofItem, view, settle, proveCurrent, browserSave, tokenSave, COMMANDS, taskProject };
 }
+type Setup = Awaited<ReturnType<typeof setup>>;
 const lists = (setupCommands: unknown[], readiness: unknown[]) => ({ setup: setupCommands, readiness });
 
 // ---- a person in a browser
@@ -757,5 +758,76 @@ describe("what a held change is written as, and what is recorded (S1 to S5)", ()
     };
     await t.reportNewest("SUCCEEDED");
     expect(t.latest()).toMatchObject({ revision: 1, setup: [OLD_SETUP] });
+  });
+});
+
+describe("a check that ends with no result callback is acted on by the recovery run (B2 remainder)", () => {
+  const recovery = (t: Setup) => t.handler({ source: "agentx.workflow-merge-recovery" });
+  const watches = (t: Setup) => t.db.find((item) => item.entityType === "SETTINGS_PROOF_WATCH");
+  /** What the 50-minute sweep (or a failed dispatch) leaves: the prepare FAILED and the workspace PREPARATION_FAILED, and no callback. */
+  const endedWithNoCallback = (t: Setup, workspaceId: string) => {
+    const workspace = t.db.get(`WORKSPACE#${workspaceId}`, "META") as Record<string, unknown>;
+    const operation = t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId)[0]!;
+    t.db.set({ ...operation, status: "FAILED", error: "did not finish within 50 minutes" });
+    t.db.set({ ...workspace, status: "PREPARATION_FAILED", activeOperationId: undefined });
+  };
+
+  it("a held change whose check ended with no callback is dropped and its sender told, and the watch ends", async () => {
+    const t = await setup();
+    await t.person(MAYA, "member", "maintainer");
+    await t.tokenSave(t.COMMANDS, MAYA);
+    expect(watches(t)).toHaveLength(1);
+    endedWithNoCallback(t, t.candidates()[0]!.workspaceId);
+    expect((await recovery(t)).statusCode).toBe(200);
+    expect(t.proofItem()?.held).toMatchObject({ status: "failed", noticeAt: expect.any(String) as string });
+    expect(t.latest().revision).toBe(1);
+    expect(watches(t)).toHaveLength(0);
+  });
+
+  it("a browser save whose check ended with no callback is marked failed for its saver, and the watch ends", async () => {
+    const t = await setup();
+    await t.browserSave(t.COMMANDS);
+    endedWithNoCallback(t, t.candidates()[0]!.workspaceId);
+    await recovery(t);
+    expect(t.proofItem()?.saved).toMatchObject({ status: "failed", noticeAt: expect.any(String) as string });
+    expect(watches(t)).toHaveLength(0);
+  });
+
+  it("a held change whose check never reports is dropped with a notice after a while, with nobody reading; one still waiting stays watched", async () => {
+    const t = await setup();
+    await t.tokenSave(t.COMMANDS);
+    await recovery(t);
+    expect(t.proofItem()?.held?.status).toBe("checking");
+    expect(watches(t)).toHaveLength(1);
+    const key = settingsProofKey(TEST_ORG, NAME);
+    const whole = t.db.get(key.pk, key.sk) as Record<string, unknown>;
+    t.db.set({ ...whole, held: { ...(whole.held as object), heldAt: new Date(Date.now() - 4 * 3_600_000).toISOString() } });
+    await recovery(t);
+    expect(t.proofItem()?.held).toMatchObject({ status: "failed", reason: expect.stringContaining("did not finish in time") as string, noticeAt: expect.any(String) as string });
+    expect(watches(t)).toHaveLength(0);
+  });
+});
+
+describe("S4: the stop is one conditional write", () => {
+  it("a check the dispatcher claims between the look and the stop is left running", async () => {
+    const t = await setup();
+    await t.browserSave(t.COMMANDS);
+    const first = t.candidates()[0]!;
+    const real = t.db.send.bind(t.db);
+    let armed = true;
+    (t.db as unknown as { send: unknown }).send = async (sent: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
+      const answer = await real(sent as never);
+      // The first read of the check's operation: then the dispatcher claims it.
+      if (armed && sent.constructor.name === "GetCommand" && sent.input?.Key?.pk === `WORKSPACE#${first.workspaceId}` && String(sent.input.Key.sk).startsWith("OPERATION#")) {
+        armed = false;
+        const operation = t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === first.workspaceId)[0]!;
+        t.db.set({ ...operation, status: "DISPATCHING" });
+      }
+      return answer;
+    };
+    await t.browserSave({ testCommands: ["npm run verify"] });
+    expect(armed).toBe(false);
+    expect(t.workspaceStatus(first.workspaceId)).toBe("PREPARING");
+    expect(t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === first.workspaceId).map((item) => item.status)).toEqual(["DISPATCHING"]);
   });
 });

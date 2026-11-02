@@ -106,7 +106,7 @@ import { learningFirstTick } from "../../spend/settlement-job.js";
 import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 import { installSettingsProofSettler } from "../developer-routes/settings-proof-hook.js";
-import { settleSettingsProofOfCheck } from "../developer-routes/settings-proof.js";
+import { settleSettingsProofOfCheck, sweepSettingsProofs } from "../developer-routes/settings-proof.js";
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const dependencies = brokerDependencies(input);
@@ -393,6 +393,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "evidence.erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { pending: 0, finished: 0 };
         });
+        // TE-4: saved or held setup commands waiting on a check are settled here too, so a check that ended with no result callback (or never) is acted on and its sender told. Its own small budget; a fault only means the next minute tries again.
+        const settingsProofs = await sweepSettingsProofs(developerRouteDependencies, { limit: 25, budgetMs: 5_000 }).catch(() => ({ settled: 0, left: 0 }));
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
@@ -406,7 +408,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         });
         // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
         const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
-        return json({ ...result, tracking, woken, evidence }, "workflow-merge-recovery");
+        return json({ ...result, tracking, woken, evidence, settingsProofs }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);

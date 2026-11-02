@@ -22,7 +22,7 @@ import { ManagedByFileError, SETTINGS_STALE_MESSAGE, latestRevision, type Latest
 import { adoptCandidateAsProjectCheck, setupCheckRecordKey, setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
 import {
-  PROOF_WORDS, heldAsLists, settingsProofKey, listsOfDefinition, provenNotNewerThan, readProof, reasonLine, sameProofLists, whileStill, writePart,
+  PROOF_WORDS, dropWatch, heldAsLists, settingsProofKey, waitingOn, watchedProofs, listsOfDefinition, provenNotNewerThan, readProof, reasonLine, sameProofLists, whileStill, writePart,
   type HeldBody, type HeldChange, type ProofItem, type ProofLists, type SavedProof,
 } from "../../org/settings-proof.js";
 import { draftCommandLists, draftCommandsDigest, type DraftCommandLists } from "../../rovara-code/setup-draft-check.js";
@@ -258,6 +258,32 @@ export async function settleSettingsProofOfCheck(routeDeps: () => DeveloperRoute
   const record = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: setupCheckRecordKey(workspaceId), ConsistentRead: true }))) as { Item?: { orgId?: unknown; project?: unknown } }).Item;
   if (typeof record?.orgId !== "string" || typeof record.project !== "string") return;
   await settleSettingsProof(deps, record.orgId, record.project);
+}
+
+/**
+ * The periodic settle (the broker's every-minute recovery run): every project with a check being waited on is settled, so a check that ended without a result callback (the 50-minute sweep, a prepare that could
+ * not be dispatched, a cancel), or a held change whose check never reported, is acted on and its sender told without anyone opening the page. Bounded: at most `limit` projects and `budgetMs`, oldest first; a
+ * project whose checks are all settled leaves the watch. Never throws.
+ */
+export async function sweepSettingsProofs(routeDeps: () => DeveloperRouteDependencies | undefined, options: { limit?: number; budgetMs?: number } = {}): Promise<{ settled: number; left: number }> {
+  const deps = routeDeps();
+  if (deps === undefined) return { settled: 0, left: 0 };
+  const store = storeOf(deps);
+  const deadline = Date.now() + (options.budgetMs ?? 5_000);
+  let settled = 0;
+  let left = 0;
+  try {
+    for (const { orgId, project } of await watchedProofs(store, options.limit ?? 25)) {
+      if (settled > 0 && Date.now() >= deadline) { left += 1; continue; }
+      await settleSettingsProof(deps, orgId, project);
+      settled += 1;
+      if (!waitingOn(await readProof(store, orgId, project))) await dropWatch(store, orgId, project);
+      else left += 1;
+    }
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.settings_proof_sweep_failed", error: error instanceof Error ? error.name : "unknown" });
+  }
+  return { settled, left };
 }
 
 // ---- what the page is told
