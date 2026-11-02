@@ -21,6 +21,9 @@ async function tree(files: Record<string, string | Buffer>): Promise<string> {
 const rep = (char: string, n: number) => char.repeat(n);
 const githubToken = () => ["gh", "p_", rep("a", 36)].join("");
 const awsKeyId = () => ["AK", "IA", rep("Q", 16)].join("");
+// AWS's two documented example credentials (an access key id and its secret), built from parts.
+const documentedKeyId = () => ["AKIAIOSFODNN7", "EXAMPLE"].join("");
+const documentedSecret = () => ["wJalrXUtnFEMI/K7MDENG/bPxRfiCY", "EXAMPLEKEY"].join("");
 const pemHeader = () => ["-----BEGIN ", "RSA PRIV", "ATE KEY-----"].join("");
 const urlWithPassword = () => ["https://", "ci:", rep("p", 12), "@git.example.com/org/repo.git"].join("");
 const found = (result: SecretScanResult) => (result.ok ? [] : result.reason === "found" ? result.findings : [{ kind: result.detail, path: "" }]);
@@ -70,10 +73,22 @@ describe("secret scan", () => {
 
   it("accepts documentation examples and placeholders: the AWS example key, a user name with no password, ${TOKEN} in a URL", async () => {
     const root = await tree({
-      "svc/README.md": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+      "svc/README.md": `AWS_ACCESS_KEY_ID=${documentedKeyId()}\naws_secret_access_key = ${documentedSecret()}\n`,
       "svc/clone.sh": "git clone git@github.com:acme/repo.git\ngit clone https://ci:${TOKEN}@git.example.com/o/r.git\n",
     });
     expect((await scanTreeForSecrets(root)).ok).toBe(true);
+  });
+
+  it("only the two documented AWS examples are skipped: a key-shaped token or secret that merely contains EXAMPLE is still found", async () => {
+    const keyId = ["AK", "IA", "ABCDEFGHI", "EXAMPLE"].join("");
+    const secret = [rep("q", 33), "EXAMPLE"].join("");
+    expect(keyId).toHaveLength(20);
+    expect(secret).toHaveLength(40);
+    const root = await tree({ "svc/env.txt": `AWS_ACCESS_KEY_ID=${keyId}\n`, "svc/aws.cfg": `aws_secret_access_key = ${secret}\n` });
+    expect(Object.fromEntries(found(await scanTreeForSecrets(root)).map((f) => [f.path, f.kind]))).toEqual({ "svc/env.txt": "token", "svc/aws.cfg": "aws_secret" });
+    // the documented values themselves are accepted, and one character different is not
+    const near = await tree({ "svc/a.txt": `${documentedKeyId().slice(0, -1)}X\n` });
+    expect(found(await scanTreeForSecrets(near)).map((f) => f.kind)).toEqual(["token"]);
   });
 
   it("dependency folders: a private key in a package's test fixture passes, a provider token does not", async () => {

@@ -57,8 +57,16 @@ const MIN_FORBIDDEN_LENGTH = 8;
 /** Folders whose contents are installed packages and caches, not the project's own files. */
 export const DEPENDENCY_DIRECTORIES: ReadonlySet<string> = new Set(["node_modules", ".venv", "venv", "site-packages", ".tox", ".m2", ".gradle", ".yarn", ".pnpm-store", ".cargo", ".npm", ".nuget", ".bundle"]);
 
-/** Well-known documentation examples, which are no one's secret. */
-const EXAMPLE_VALUES = /AKIAIOSFODNN7EXAMPLE|wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY|[A-Za-z0-9]*EXAMPLE[A-Za-z0-9]*/u;
+/**
+ * The two example credentials AWS prints in its own documentation (an access key id and its secret), which are no one's secret. Matched EXACTLY: a token that merely contains the word is still a token. Built from
+ * parts so the whole values are not in this source.
+ */
+const DOCUMENTED_EXAMPLES: ReadonlySet<string> = new Set([
+  ["AKIAIOSFODNN7", "EXAMPLE"].join(""),
+  ["wJalrXUtnFEMI/K7MDENG/bPxRfiCY", "EXAMPLEKEY"].join(""),
+]);
+/** Whether `value` is exactly one of the documented examples. */
+const isDocumentedExample = (value: string): boolean => DOCUMENTED_EXAMPLES.has(value);
 
 // Provider token formats. Each needs the provider's own prefix and a body of the provider's length, so ordinary text does not match.
 const TOKEN_FORMATS: ReadonlyArray<RegExp> = [
@@ -100,16 +108,16 @@ function findInText(text: string, parts: readonly string[], dependency: boolean)
   if (PRIVATE_KEY_BLOCK.test(text) && !dependency) return "private_key";
   for (const format of TOKEN_FORMATS) {
     const match = format.exec(text);
-    if (match !== null && !EXAMPLE_VALUES.test(match[0])) return "token";
+    if (match !== null && !isDocumentedExample(match[0])) return "token";
   }
   if (dependency) return undefined;
   if (URL_PASSWORD.test(text)) {
     const match = URL_PASSWORD.exec(text)!;
     // `user:${TOKEN}@host` and `user:$PASSWORD@host` are placeholders; `user:password@localhost` in an example is still refused (we cannot know it is one).
-    if (!/:[$%{<]/u.test(match[0].slice(match[0].indexOf("://") + 3)) && !EXAMPLE_VALUES.test(match[0])) return "url_password";
+    if (!/:[$%{<]/u.test(match[0].slice(match[0].indexOf("://") + 3))) return "url_password";
   }
   const aws = AWS_SECRET_ASSIGNMENT.exec(text);
-  if (aws !== null && !EXAMPLE_VALUES.test(aws[0])) return "aws_secret";
+  if (aws !== null && !isDocumentedExample(aws[0].slice(-40))) return "aws_secret";
   if (REGISTRY_CONFIG_NAMES.has(name) && REGISTRY_AUTH_LINE.test(text)) return "credential_file";
   return undefined;
 }
