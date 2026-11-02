@@ -30,3 +30,8 @@
 .rv-admin-branch-inspection{display:grid;gap:var(--rv-space-3)}
 .rv-admin-branch-inspection p,.rv-admin-branch-inspection code{overflow-wrap:anywhere}
 .rv-admin-branch-inspection label{display:flex;gap:var(--rv-space-3);align-items:center;flex-wrap:wrap}
+/* Company domain verification. */
+.rv-admin-domains{list-style:none;padding:0;margin:var(--rv-space-4) 0;display:grid;gap:var(--rv-space-4)}
+.rv-admin-domains>li{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4)}
+.rv-admin-record{display:grid;grid-template-columns:max-content 1fr;gap:var(--rv-space-2) var(--rv-space-4);margin:var(--rv-space-2) 0}
+.rv-admin-record dd{margin:0;overflow-wrap:anywhere}

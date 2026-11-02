@@ -773,6 +773,31 @@ export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on
   return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source, ...(input.previousSource === undefined ? {} : { previousSource: input.previousSource }) });
 }
 
+// Company domain verification (owner decision 2026-11-02) ----------------------------------------------------------------
+
+type DomainEventInput = AuditBuilderBase & { domain: string };
+const domainDetails = (input: DomainEventInput): AuditDetailPart[] => [...(input.details ?? []), { subject: "org", fields: { domain: input.domain } }];
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt)`. A domain the company added (not yet proven; any number of companies may add the same one). The domain is a detail. */
+export function auditCompanyDomainAdded(input: DomainEventInput): AuditEventInput {
+  return build("company_domain.added", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, {});
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The check found the company's token (the actor is the person who pressed Check now, or the system for the daily re-check). `tookOver`: the proof moved the domain from another company's lost claim. */
+export function auditCompanyDomainVerified(input: DomainEventInput & { wasState: "pending" | "lost"; tookOver?: boolean }): AuditEventInput {
+  return build("company_domain.verified", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState, tookOver: input.tookOver === true });
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The record has been gone for the whole grace period; the domain stops counting (the actor is the system). */
+export function auditCompanyDomainLost(input: DomainEventInput & { missingDays: number }): AuditEventInput {
+  return build("company_domain.lost", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { missingDays: input.missingDays });
+}
+
+/** `occurrence`: `auditOccurrence(domain, claimedAt)`. An owner removed the domain. */
+export function auditCompanyDomainRemoved(input: DomainEventInput & { wasState: "pending" | "verified" | "lost" }): AuditEventInput {
+  return build("company_domain.removed", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState });
+}
+
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });

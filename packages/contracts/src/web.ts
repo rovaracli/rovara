@@ -142,5 +142,6 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 // Learning v2 L3b: the Lessons tab, the Sources tab and the task page's lessons list.
 export * from "./app-lessons.js";
 
+export * from "./company-domains-web.js";
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
 export * from "./app-known-failing.js";

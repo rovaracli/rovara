@@ -3,6 +3,7 @@
 import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
+import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import "../org/task-stop-unpriced.js";
 import "../org/task-stop-editing.js";
@@ -431,6 +432,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && url.pathname === "/v1/app/install") return getInstallInfo(deps);
   if (isSsoRoute(url.pathname)) return routeSsoRequest(deps, caller, request, url.pathname);
+  // Company domain verification: the owner's domains page (owner only; every edition).
+  if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };

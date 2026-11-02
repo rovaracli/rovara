@@ -4,8 +4,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CATEGORY_TITLES, HOST_RULES, checkAgainstRules, renderOutboundDoc } from "./outbound-allowlist.js";
-import { foundHostsIn, scanOutboundHosts, withoutComments } from "./scan-outbound-hosts.js";
+import { CATEGORY_TITLES, DNS_LOOKUP_RULES, HOST_RULES, checkAgainstRules, renderOutboundDoc } from "./outbound-allowlist.js";
+import { foundHostsIn, scanDnsLookupFiles, scanOutboundHosts, withoutComments } from "./scan-outbound-hosts.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const DOC = join(ROOT, "docs", "enterprise", "outbound.md");
@@ -48,6 +48,24 @@ describe("the hosts the code can reach", () => {
     if (process.env.UPDATE_OUTBOUND_DOC === "1") writeFileSync(DOC, expected);
     expect(existsSync(DOC), "docs/enterprise/outbound.md is missing: run this test with UPDATE_OUTBOUND_DOC=1").toBe(true);
     expect(readFileSync(DOC, "utf8")).toBe(expected);
+  });
+});
+
+describe("the names the code looks up in DNS", () => {
+  it("lists every file that imports Node's DNS, and no file that no longer does", () => {
+    const listed = DNS_LOOKUP_RULES.flatMap((rule) => rule.files).sort();
+    expect(scanDnsLookupFiles(ROOT)).toEqual(listed);
+  });
+
+  it("lists the company domain verification lookup, with what it asks and how it is bounded", () => {
+    const rule = DNS_LOOKUP_RULES.find((entry) => entry.files.includes("packages/broker/src/org/company-domains/resolver.ts"));
+    expect(rule?.why).toMatch(/_rovara-verify/);
+    expect(rule?.why).toMatch(/not followed/);
+    expect(rule?.why).toMatch(/6 seconds/);
+  });
+
+  it("says in the document where the lookups are", () => {
+    expect(readFileSync(DOC, "utf8")).toMatch(/## Names looked up in DNS[\s\S]*company-domains\/resolver\.ts/);
   });
 });
 

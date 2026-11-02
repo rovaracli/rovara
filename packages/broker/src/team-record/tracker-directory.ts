@@ -6,7 +6,7 @@ import { z } from "zod";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
 import { isErasedActor } from "./erased.js";
-import { AUTOLINK_LINKED_WHY, autoLinkRefusal, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
+import { AUTOLINK_LINKED_WHY, autoLinkRefusal, exactAutoLinkEmail, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { clearUnmatchedTrackerUser, developerOfTrackerAuthor, isAutoLinkSuppressed, noteUnmatchedTrackerUser, pruneUnmatchedTrackerUsers, shownName } from "./identity-links.js";
 import type { RecordLog, TeamRecordTable } from "./types.js";
 
@@ -86,8 +86,57 @@ export function linearUsersReader(input: { fetch: typeof fetch; graphqlUrl: stri
   };
 }
 
+/**
+ * The accounts the company MANAGES, from the Atlassian organization admin API (public docs: `GET https://api.atlassian.com/admin/v1/orgs/{orgId}/users`, "Returns a list of managed accounts in an
+ * organization", `Authorization: Bearer <API key>`, scope `read:accounts:admin`, paged with `links.next`). `ids` holds the `account_id` of every ACTIVE `atlassian` account listed; `complete` is false when the
+ * list was cut short (a page cap or the time cap), so an account missing from it is then "cannot tell", never "not managed". `undefined`: the key was refused or the answer unreadable (nothing is guessed).
+ * The key goes to that one host and nowhere else: no redirect is followed, and a next link to another host or organization ends the read.
+ */
+export type ManagedAccounts = { ids: ReadonlySet<string>; complete: boolean };
+export const ATLASSIAN_ADMIN_ORIGIN = "https://api.atlassian.com";
+export const MANAGED_PAGES_MAX = 100;
+export const MANAGED_READ_MS = 20_000;
+const ManagedPage = z.object({
+  data: z.array(z.object({ account_id: z.string().min(1).max(200), account_type: z.string().max(40).nullish(), account_status: z.string().max(40).nullish() }).passthrough()).max(5_000),
+  links: z.object({ next: z.string().max(2_000).nullish() }).passthrough().nullish(),
+}).passthrough();
+
+export function atlassianManagedAccountsReader(input: { fetch: typeof fetch; atlassianOrgId: string; apiKey: string; now?: () => number }): () => Promise<ManagedAccounts | undefined> {
+  const now = input.now ?? Date.now;
+  const path = `/admin/v1/orgs/${encodeURIComponent(input.atlassianOrgId)}/users`;
+  return async () => {
+    const started = now();
+    const ids = new Set<string>();
+    let url: string | undefined = `${ATLASSIAN_ADMIN_ORIGIN}${path}`;
+    for (let pages = 0; url !== undefined; pages += 1) {
+      if (pages >= MANAGED_PAGES_MAX || now() - started >= MANAGED_READ_MS) return { ids, complete: false };
+      let page: z.infer<typeof ManagedPage>;
+      try {
+        const response = await input.fetch(url, { method: "GET", headers: { authorization: `Bearer ${input.apiKey}`, accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+        if (!response.ok) return undefined;
+        const text = await cappedText(response);
+        const parsed = text === undefined ? undefined : ManagedPage.safeParse(JSON.parse(text));
+        if (parsed === undefined || !parsed.success) return undefined;
+        page = parsed.data;
+      } catch { return undefined; }
+      for (const account of page.data) if (account.account_type === "atlassian" && account.account_status === "active") ids.add(account.account_id);
+      const next: string | null | undefined = page.links?.next;
+      if (typeof next !== "string" || next === "") break;
+      // `links.next` is a full URL, a path or a bare cursor (the docs do not say which): a URL or path is followed only on this host, for this organization's own user list; a bare cursor is added to that same address.
+      let target: URL;
+      try {
+        if (/^[A-Za-z0-9_\-=.~+/]{1,500}$/u.test(next) && !next.startsWith("/") && !next.includes("://")) target = new URL(`${ATLASSIAN_ADMIN_ORIGIN}${path}?cursor=${encodeURIComponent(next)}`);
+        else target = new URL(next, `${ATLASSIAN_ADMIN_ORIGIN}${path}`);
+      } catch { return { ids, complete: false }; }
+      if (target.origin !== ATLASSIAN_ADMIN_ORIGIN || target.pathname !== path || target.username !== "" || target.password !== "") return { ids, complete: false };
+      url = target.href;
+    }
+    return { ids, complete: true };
+  };
+}
+
 /** Jira Cloud: the site's people through the connection's account email and API token. Only real people (`atlassian` accounts, not apps or customers) who are active; a hidden email is no email. */
-export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string }): ConnectedTracker["readUsers"] {
+export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; email: string; apiToken: string; /** Which accounts the company manages (the organization admin API); absent: company control is `unavailable` for everyone. */ managed?: () => Promise<ManagedAccounts | undefined> }): ConnectedTracker["readUsers"] {
   return async ({ after, limit }) => {
     const startAt = after === undefined ? 0 : Number.parseInt(after, 10);
     if (!Number.isInteger(startAt) || startAt < 0 || startAt > 100_000) throw new Error("bad cursor");
@@ -99,10 +148,13 @@ export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; e
     const text = await cappedText(response);
     const parsed = text === undefined ? undefined : JiraUsers.safeParse(JSON.parse(text));
     if (parsed === undefined || !parsed.success) throw new Error("jira answered with something unreadable");
-    // Whether an account is MANAGED by the company is in the Atlassian Admin API (an organization admin's key), which a site's API token cannot reach: it is recorded as unavailable, so no Jira person links by themselves.
+    // Whether an account is MANAGED by the company is in the Atlassian organization admin API, which a site's API token cannot reach: only a company that supplied a read-only organization admin key has an answer.
+    // Without one, or when the answer is unreadable, or the account is not in a list that was cut short, control is `unavailable`: no Jira person links by themselves.
+    const managed = input.managed === undefined || !parsed.data.some((user) => user.accountType === "atlassian" && user.active !== false) ? undefined : await input.managed().catch(() => undefined);
+    const controlOf = (accountId: string): CompanyControl => (managed === undefined ? "unavailable" : managed.ids.has(accountId) ? "yes" : managed.complete ? "no" : "unavailable");
     const users: TrackerUser[] = parsed.data.filter((user) => user.accountType === "atlassian" && user.active !== false).map((user) => {
       const email = typeof user.emailAddress === "string" && user.emailAddress !== "" ? user.emailAddress : undefined;
-      return { sourceId: user.accountId, displayName: shownName(user.displayName || undefined, user.accountId), ...(email === undefined ? {} : { email }), control: "unavailable" as const };
+      return { sourceId: user.accountId, displayName: shownName(user.displayName || undefined, user.accountId), ...(email === undefined ? {} : { email }), control: controlOf(user.accountId) };
     });
     // Jira pages by position, over everyone it lists (apps included), so a full page means there may be more.
     return { users, ...(parsed.data.length >= size ? { next: String(startAt + parsed.data.length) } : {}) };
@@ -157,6 +209,15 @@ export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tra
   let after = resumable ? stamp.resume!.after : undefined;
   if (stamp.resume !== undefined && !resumable) deps.log?.("record.tracker_cursor_dropped", { kind: tracker.kind });
   const result: SyncResult = { read: 0, linked: 0, alreadyLinked: 0, unmatched: 0, complete: false };
+  // The switch and the company's verified domains are read once per run (not once per person): a run is a few seconds, and a change made during it applies from the next.
+  let autoLinkRead: { enabled: boolean; domains: ReadonlySet<string> | undefined } | undefined;
+  const autoLinkState = async () => {
+    if (autoLinkRead !== undefined) return autoLinkRead;
+    const enabled = deps.autoLink === undefined ? false : await deps.autoLink.enabled(orgId).catch(() => false);
+    const domains = enabled && deps.autoLink !== undefined ? await deps.autoLink.domains.domainsOf(orgId).catch(() => undefined) : undefined;
+    autoLinkRead = { enabled, domains };
+    return autoLinkRead;
+  };
   try {
     for (;;) {
       const page = await tracker.readUsers({ ...(after === undefined ? {} : { after }), limit: USERS_PER_PAGE });
@@ -166,12 +227,12 @@ export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tra
         if (await isErasedActor(deps.table, orgId, tracker.system, { sourceId: user.sourceId })) { await clearUnmatchedTrackerUser(deps.table, orgId, link); continue; }
         if (await developerOfTrackerAuthor(deps.table, orgId, link) !== undefined) { result.alreadyLinked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); continue; }
         // Opt-in automatic linking: the switch, then the three conditions (the third is the exact match of a member's verified sign-in email, made by `linkByVerifiedEmail`). The first that fails is the person's reason.
-        const enabled = deps.autoLink === undefined ? false : await deps.autoLink.enabled(orgId).catch(() => false);
-        const domains = enabled && deps.autoLink !== undefined ? await deps.autoLink.domains.domainsOf(orgId).catch(() => undefined) : undefined;
+        const { enabled, domains } = await autoLinkState();
         let reason: AutoLinkReason | undefined = autoLinkRefusal({ enabled, email: user.email, domains, guest: user.guest === true, control: user.control, suppressed: enabled && await isAutoLinkSuppressed(deps.table, orgId, link) });
         let linked = false;
-        if (reason === undefined && user.email !== undefined) {
-          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: user.email, emailVerified: true, displayName: user.displayName, via: "auto", why: AUTOLINK_LINKED_WHY }); } catch { linked = false; }
+        const exact = user.email === undefined ? undefined : exactAutoLinkEmail(user.email);
+        if (reason === undefined && exact !== undefined) {
+          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: exact, emailVerified: true, displayName: user.displayName, via: "auto", why: AUTOLINK_LINKED_WHY }); } catch { linked = false; }
           if (!linked) reason = "no_matching_member";
         }
         if (linked) { result.linked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); } else { result.unmatched += 1; await noteUnmatchedTrackerUser(deps.table, orgId, { ...link, displayName: user.displayName, at: new Date(deps.now()).toISOString(), ...(reason === undefined ? {} : { reason }) }); }
