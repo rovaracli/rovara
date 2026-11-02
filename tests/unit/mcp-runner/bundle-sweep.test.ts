@@ -80,10 +80,10 @@ describe("review M10, N4: the controller sweeps the bundle store, counting the r
   it("keeps the marks in the install's table: a restarted controller does not start the 30 days again", async () => {
     const marks = new Map<string, number>();
     const shared = { get: async (name: string) => marks.get(name), set: async (name: string, at: number) => { marks.set(name, at); }, clear: async (name: string) => { marks.delete(name); } };
-    const first = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: shared as never } });
+    const first = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: shared } });
     await sweepAt(first, 0);
     expect([...marks.keys()]).toEqual([hash("1")]);
-    const restarted = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: shared as never } });
+    const restarted = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: shared } });
     await sweepAt(restarted, 31);
     expect(restarted.calls.removed).toEqual([hash("1")]);
     expect([...marks.keys()]).toEqual([]);
@@ -91,7 +91,7 @@ describe("review M10, N4: the controller sweeps the bundle store, counting the r
   it("removes nothing, and marks nothing it cannot be sure of, when a mark cannot be read or written", async () => {
     for (const broken of [{ get: async () => { throw new Error("denied"); } }, { set: async () => { throw new Error("denied"); } }]) {
       const base = { get: async () => NOW - 40 * DAY, set: async () => undefined, clear: async () => undefined };
-      const w = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: { ...base, ...(Object.keys(broken)[0] === "set" ? { get: async () => undefined } : {}), ...broken } as never } });
+      const w = world({ held: [{ hash: hash("1"), lastModified: NOW - 100 * DAY }], referenced: [], sweep: { ...SWEEP, bundleMarks: { ...base, ...(Object.keys(broken)[0] === "set" ? { get: async () => undefined } : {}), ...broken } } });
       await expect(w.controller.reconcile()).resolves.toBeUndefined();
       expect(w.calls.removed, Object.keys(broken)[0]).toEqual([]);
       expect(w.logs.some(([event]) => event === "mcp_controller.bundle_mark_failed")).toBe(true);

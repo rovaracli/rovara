@@ -260,7 +260,7 @@ describe("review B1: an address-based server paused for a tools change is review
   it("is audited as an approval of an address-based server, with no install pin", async () => {
     const w = await httpWorld();
     const events: Array<Record<string, unknown>> = [];
-    w.deps.audit = async (event) => { events.push(event as never); };
+    w.deps.audit = async (event) => { events.push(event); };
     await w.pause();
     const review = await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId);
     await reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, review.toolsHash);

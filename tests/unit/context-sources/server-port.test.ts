@@ -264,7 +264,7 @@ describe("review B1: the approved tool list is kept on every call", () => {
           const first = await w.port.open(ORG, server, signal(), ["search_tickets", "get_ticket"]);
           expect(first.tools).toHaveLength(2);
           await first.close();
-          change(w.tools as never);
+          change(w.tools);
           await expect(w.port.open(ORG, server, signal(), ["search_tickets", "get_ticket"])).rejects.toMatchObject({ code: "FORBIDDEN" });
           const paused = (await w.store.get(ORG, "mcpsim000001"))!;
           expect(paused.status).toBe("changed_needs_review");
@@ -279,7 +279,7 @@ describe("review B1: the approved tool list is kept on every call", () => {
         it(`pauses the server and returns no list when ${label}, for the listing the settings page ticks from`, async () => {
           const w = world({ entries: [entry()], ...options });
           await w.seed();
-          change(w.tools as never);
+          change(w.tools);
           await expect(w.port.listAll!(ORG, server, signal())).rejects.toMatchObject({ code: "FORBIDDEN" });
           expect((await w.store.get(ORG, "mcpsim000001"))!.status).toBe("changed_needs_review");
         });
@@ -288,11 +288,9 @@ describe("review B1: the approved tool list is kept on every call", () => {
         const w = world({ entries: [entry()], ...options });
         await w.seed();
         w.tools.push({ ...evil });
-        const real = w.store.pause;
         w.store.pause = async () => { throw new Error("table down"); };
         await expect(w.port.open(ORG, server, signal(), ["search_tickets"])).rejects.toMatchObject({ code: "FORBIDDEN" });
         expect(w.calls).toEqual([]);
-        w.store.pause = real;
       });
     });
   }

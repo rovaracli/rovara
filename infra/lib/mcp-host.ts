@@ -9,7 +9,7 @@
 //     decided by security groups, not by routes: each server's own group (made by the controller at approval) holds only its approved destinations as /32, and the install task's group only the
 //     registry ranges (or, with public npm, HTTPS anywhere: the one 0.0.0.0/0 rule in this file);
 //   - the INSTALL task definition `rovara-mcp-install` (static, no task role); serve and probe definitions are registered by the controller from `buildRunnerTaskDefinition`;
-//   - two roles of consequence: the runner EXECUTION role (image pull, logs, and the `mcp*` secrets of this org only) and the controller's TASK role (ECS limited to `rovara-mcp-*`
+//   - two roles of consequence: the runner EXECUTION role (image pull, logs, and the `mcppkg*` package-run secrets of this org only) and the controller's TASK role (ECS limited to `rovara-mcp-*`
 //     families and the cluster, PassRole of that one execution role, security groups by tag, the bundle bucket, and three partitions of the state table);
 //   - the BUNDLE bucket: its own KMS key, TLS only, no public access, versioned.
 // No rule here is 0.0.0.0/0 and no task has a task role.
@@ -294,7 +294,7 @@ export class McpHost extends Construct {
       generateSecretString: { excludePunctuation: true, passwordLength: 48 },
     });
 
-    // ---- the runner execution role: image pull, logs, this org's `mcp*` secrets, nothing else ---------------------------------------------------------------------------
+    // ---- the runner execution role: image pull, logs, this org's package-run (`mcppkg*`) secrets, nothing else ---------------------------------------------------------------------------
     this.runnerExecutionRole = new iam.Role(this, "RunnerExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": stack.account } } }),
       description: "Rovara MCP runner tasks: pulls the runner image, writes logs, reads the secrets of approved servers. Containers cannot use it.",
@@ -364,7 +364,7 @@ export class McpHost extends Construct {
       conditions: { StringEquals: { "ecs:CreateAction": ["RunTask", "RegisterTaskDefinition"] } },
     });
     // Residual (review M3): IAM cannot tell an execution role from a task role in `iam:PassRole`, so a faulty RegisterTaskDefinition could set `taskRoleArn` to this same role and give a package
-    // GetSecretValue on every `mcp*` secret of the org, including address-based servers' tokens, which share that prefix. The control is in code: a definition is run only after it is read back from ECS
+    // GetSecretValue on every package-run secret of the org (since review S1 the role no longer reaches address-based servers' tokens, whose ids never start `mcppkg`). The control is in code: a definition is run only after it is read back from ECS
     // and found equal to what the controller builds, with no task role (`definitionMatches`, ecs-resources.ts), and a contract test asserts `taskRoleArn` is absent on every runner family.
     policy({
       sid: "PassTheRunnerExecutionRoleOnly", actions: ["iam:PassRole"], resources: [this.runnerExecutionRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },

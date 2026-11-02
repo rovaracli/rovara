@@ -126,7 +126,7 @@ describe("controller main: the registry", () => {
     await expect(reg(async () => ({ entries, unreadable: 1 })).referencedBundles!()).rejects.toThrow(/cannot be read/u);
     await expect(reg(async () => { throw new Error("table down"); }).referencedBundles!()).rejects.toThrow();
   });
-  it("review N1: with no entry, a test reads a secret only under a package-run proposal id (an address-based server\'s token, between its storing and its entry, is never handed out)", async () => {
+  it("review N1: with no entry, a test reads a secret only under a package-run proposal id (an address-based server's token, between its storing and its entry, is never handed out)", async () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
     const none = registry(undefined);
     expect(await none.probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
