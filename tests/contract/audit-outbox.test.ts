@@ -846,6 +846,7 @@ describe("I4: the builders", () => {
     ["auditRecordTrackerPersonMapped", (occurrence) => builders.auditRecordTrackerPersonMapped({ ...base, occurrence, details, memberId: "dev_1", source: "jira" })],
     ["auditRecordTrackerPersonUnmapped", (occurrence) => builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence, details, memberId: "dev_1", source: "linear" })],
     ["auditRecordTrackerAutolinkChanged", (occurrence) => builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence, details, enabled: true })],
+    ["auditSetupRecipeChange", (occurrence) => builders.auditSetupRecipeChange({ ...base, occurrence, details, action: "setup_recipe.approved", facts: { recipeId: "rcp_" + "1".repeat(20), revision: 2, bodyDigest: "a".repeat(64), authority: "fresh_sign_in" } })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
   ];
 

@@ -63,6 +63,7 @@ import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
 import { testEnvPlanFor } from "../../test-env/task-plan.js";
 import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
 import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
@@ -510,6 +511,9 @@ export async function taskOperationParts(
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
     ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
+  // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
+  const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
+  if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
   const nightlyRun = isNightlyOperation(task, input.workflowMode) && task?.nightlyRun !== undefined
     ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task.nightlyRun) : undefined;
   const invocation: WorkerInvocation = {
@@ -543,6 +547,7 @@ export async function taskOperationParts(
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
+      ...(recipeOffers.length > 0 ? { testEnvRecipes: recipeOffers } : {}),
       // SH14: the limits the setup run started with, read again through the contract (a damaged value is held to the defaults). A worker without "task.setupAgent.v1" is refused the run at delivery, never sent it without the field.
       ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: setupAgentWireOf(task) } : {}),
       // NH-1: what the nightly run was started to run (the broker fixed it at the fire). A worker without "task.nightlyRun.v1" is refused the run at delivery, never sent it without the field.

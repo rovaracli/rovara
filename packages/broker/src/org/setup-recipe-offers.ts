@@ -3,14 +3,14 @@
 //
 // Main branch only (ED-1): nothing here reads a repository, a branch or a SHA. The offers are chosen by company, project and status; WHICH offer fits is decided by the run, from the default-branch files it reads.
 import { OrgIdSchema, SETUP_RECIPE_OFFERS_MAX, SETUP_RECIPE_OFFERS_MAX_BYTES, SetupRecipeOfferSchema, parseSetupRecipeSource, type OrgId, type SetupRecipeOffer, type TestEnvValueSource } from "@agentx/contracts";
-import { SETUP_RECIPES_MAX_PER_ORG, recipeOfferedTo, type SetupRecipeDeps, type StoredRecipe } from "./setup-recipes.js";
+import { SETUP_RECIPES_MAX_PER_ORG, recipeOfferedTo, type CompanyLocksReader, type SetupRecipeDeps, type StoredRecipe } from "./setup-recipes.js";
 
-type Reads = Pick<SetupRecipeDeps, "store">;
+/** The recipe rows, and the company locks as su-musts' store reads them (absent: no lock). */
+type Reads = Pick<SetupRecipeDeps, "store"> & { locks?: CompanyLocksReader | undefined };
 
 /** Whether a recipe may be used for a project now: approved, of this company, offered to the project by scope, and its dev container image (if any) on the company's list when the lock has one. */
 async function usableFor(deps: Reads, orgId: OrgId, project: string, recipes: readonly StoredRecipe[]): Promise<StoredRecipe[]> {
-  const locks = await deps.store.getLocks(orgId);
-  const images = locks?.orgId === orgId ? locks.locks.devcontainerImages : undefined;
+  const images = (await deps.locks?.getCompanySetupLocks(orgId))?.devcontainerImages;
   return recipes.filter((recipe) => recipe.orgId === orgId && recipe.status === "approved" && recipeOfferedTo(recipe, project)
     && (images === undefined || recipe.body.devcontainerBaseImage === undefined || images.includes(recipe.body.devcontainerBaseImage)));
 }

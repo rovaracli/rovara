@@ -70,6 +70,18 @@ export function createPlanQualityNegotiationRecorder(input: { documentClient: Dy
   };
 }
 
+/** Clears the setup draft operation's record of the company recipes it was offered, when delivery dropped them for an older worker (SH30). Idempotent. */
+export function createSetupRecipesNegotiationRecorder(input: { documentClient: DynamoDBDocumentClient; tableName?: string }) {
+  return async (record: Ec2OutboxRecord): Promise<void> => {
+    await input.documentClient.send(new UpdateCommand({
+      TableName: input.tableName ?? requiredEnvironment("STATE_TABLE_NAME"),
+      Key: { pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}` },
+      UpdateExpression: "REMOVE setupRecipeOffers",
+      ConditionExpression: "attribute_exists(pk)",
+    }));
+  };
+}
+
 export function createWorkflowE2EReadinessValidator(input: { documentClient: DynamoDBDocumentClient; tableName?: string }) {
   return async (record: Ec2OutboxRecord, invocation: WorkerInvocation): Promise<"ORDINARY" | "READINESS" | "PARKED"> => {
     if (invocation.kind !== "resume") return "ORDINARY";
@@ -693,6 +705,7 @@ const deliverEc2 = createEc2Delivery({
   })(),
   applicationPlanNotNegotiated: createApplicationPlanNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   planQualityNotNegotiated: createPlanQualityNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
+  setupRecipesNotNegotiated: createSetupRecipesNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   validateWorkflowE2EReadiness: createWorkflowE2EReadinessValidator({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   guardProjectSetupDispatch,
   async progress(record, message) {

@@ -19,6 +19,7 @@ import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSpli
 import * as T from "./company-text.js";
 import { LearningSuggestionsRow } from "./LearningSuggestionsRow.js";
 import { KnownFailingPolicyRow } from "./KnownFailingPolicyRow.js";
+import { SetupRecipesLink } from "./SetupRecipesScreen.js";
 import "./how-we-work.css";
 
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
@@ -34,6 +35,7 @@ export function HowWeWorkCompanyScreen() {
   <p><Link to="/app/admin/models/steps">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   <KnownFailingPolicyRow />
+  <SetupRecipesLink />
   {notice?.kind === "saved" && <p role="status">{T.SAVED}</p>}
   {notice?.kind === "saved_reload_failed" && <p role="alert">{T.SAVED_RELOAD_FAILED} <Button onClick={() => { setNotice(undefined);void read.refetch(); }}>Reload</Button></p>}
   <ReadSection read={read} label="Company model defaults">{policy => <Editor key={read.dataUpdatedAt} policy={policy} notice={notice} setNotice={setNotice} reread={reread} reload={() => { setNotice(undefined);void read.refetch(); }} />}</ReadSection>

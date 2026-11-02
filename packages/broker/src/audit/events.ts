@@ -925,3 +925,15 @@ export function auditRecordTrackerPersonUnmapped(input: AuditBuilderBase & { mem
 export function auditRecordTrackerAutolinkChanged(input: AuditBuilderBase & { enabled: boolean }): AuditEventInput {
   return build("record.tracker_autolink_changed", input, { kind: "org", id: input.orgId }, { enabled: input.enabled });
 }
+
+// Company setup recipes (SH29) --------------------------------------------------------------------------------
+
+export type SetupRecipeAuditAction = "setup_recipe.proposed" | "setup_recipe.created" | "setup_recipe.approved" | "setup_recipe.revoked" | "setup_recipe.scope_changed";
+
+/**
+ * `occurrence`: `auditOccurrence(recipeId or "locks", revision, action)` (every change adds one revision). The target is the company. Facts are ids, digests and fixed words only: a recipe's commands, hosts and label,
+ * and the projects it is offered to, never go in.
+ */
+export function auditSetupRecipeChange(input: AuditBuilderBase & { action: SetupRecipeAuditAction; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}

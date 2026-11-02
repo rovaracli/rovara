@@ -94,6 +94,11 @@ export interface Ec2DeliveryDependencies {
    */
   planQualityNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
   /**
+   * Called, before the invocation is posted, when the company recipes offered to a setup draft were dropped for a worker that does not list them: the operation record then stops saying which recipes were offered (the
+   * run cannot have used any). Required like its siblings: a missing recorder is a wiring error (`CONFIG_INVALID`), not a draft that goes out with the record still saying recipes were offered.
+   */
+  setupRecipesNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
+  /**
    * The schemaVersion of the admission a CHECKS invocation's reference names, read from the stored object and held to the reference's content address; undefined when it
    * cannot be read. With it, the dispatcher does not trust the reference's `kind` alone: a reference whose kind disagrees with its admission is refused before delivery.
    * Without it (a deployment that cannot read admissions) only the kind decides, and the worker still cross-checks.
@@ -207,6 +212,12 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
         throw agentXError("CONFIG_INVALID", "the application plan version was dropped for this worker but no applicationPlanNotNegotiated recorder is configured");
       }
       await dependencies.applicationPlanNotNegotiated(record);
+    }
+    if (invocation.kind === "task" && invocation.payload.testEnvRecipes !== undefined && !(sent.kind === "task" && sent.payload.testEnvRecipes !== undefined)) {
+      if (dependencies.setupRecipesNotNegotiated === undefined) {
+        throw agentXError("CONFIG_INVALID", "the company recipes were dropped for this worker but no setupRecipesNotNegotiated recorder is configured");
+      }
+      await dependencies.setupRecipesNotNegotiated(record);
     }
     if (invocation.kind === "task" && asksForPlanQuality(invocation.payload.prompt)
       && !(sent.kind === "task" && asksForPlanQuality(sent.payload.prompt))) {
@@ -413,10 +424,6 @@ async function forWorkerFeatures(
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
-  // SH30 (switch `sp`): a setup draft that is offered company recipes is never sent to a worker that does not list it (it would detect without them and say nothing); the field is never dropped.
-  if (invocation.kind === "task" && invocation.payload.testEnvRecipes !== undefined && !features.includes(SETUP_RECIPES_FEATURE)) {
-    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
-  }
   // SH14: a setup run that runs commands is never sent to a worker that does not list it (an older worker fails the mode at its own parse). The field is never dropped.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_AGENT" && !features.includes(SETUP_AGENT_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
@@ -604,7 +611,13 @@ async function forWorkerFeatures(
   if (coveragePathUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_coverage_path_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
-  const withAttribution = withoutCoveragePath(withoutSecondReviewer(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), secondReviewerUnsupported), coveragePathUnsupported);
+  // SH30 (switch `sp`): company recipes only ADD a starting point to the detected draft, so a worker that does not list them (or does not detect at all, which the recipes need) is sent the run without them and drafts as
+  // before; the operation's record of the offers is cleared by the recorder in `deliver`, and this line records that recipes did not run. Replaces: refusing the setup draft.
+  const recipesUnsupported = invocation.kind === "task" && invocation.payload.testEnvRecipes !== undefined && (detectUnsupported || !features.includes(SETUP_RECIPES_FEATURE));
+  if (recipesUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.setup_recipes_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  const withAttribution = withoutCoveragePath(withoutSecondReviewer(withoutTestEnvRecipes(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), recipesUnsupported), secondReviewerUnsupported), coveragePathUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -1027,6 +1040,14 @@ function withoutEvidenceCapture(invocation: WorkerInvocation, drop: boolean): Wo
   if (!drop || invocation.kind !== "task") return invocation;
   const payload = { ...invocation.payload };
   delete payload.evidenceCapture;
+  return { ...invocation, payload };
+}
+
+/** The invocation without the company recipes offered to the setup draft when `drop` (and the very object back otherwise). */
+function withoutTestEnvRecipes(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.testEnvRecipes;
   return { ...invocation, payload };
 }
 

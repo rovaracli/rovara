@@ -197,6 +197,8 @@ describe("the event catalog", () => {
       "rule.suggestions_set",
       // company domain verification
       "company_domain.added", "company_domain.verified", "company_domain.lost", "company_domain.removed",
+      // company setup recipes (SH29)
+      "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored",
     ]);

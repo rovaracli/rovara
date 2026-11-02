@@ -31,18 +31,19 @@ const PROPOSAL = {
   proved: false, proveSteps: [], needs: { freshSignIn: false, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 0,
 };
 const state = (over: Record<string, unknown> = {}) => TestEnvironmentStateSchema.parse({ draft: { status: "ready", notes: ["Found a package.json."], questions: [], pendingServices: [] }, ...over });
-const project = (status = "unchecked", revision = 2) => ({
-  name: "web", description: "Customer fixes", status: "active", latestRevision: revision, repositories: [{ fullName: "acme/web", defaultBranch: "main" }], myRole: "maintainer",
+const project = (status = "unchecked", revision = 2, role = "maintainer") => ({
+  name: "web", description: "Customer fixes", status: "active", latestRevision: revision, repositories: [{ fullName: "acme/web", defaultBranch: "main" }], myRole: role,
   setup: { status, ...(status === "ready" ? { checkedRevision: revision, checkedAt: "2026-11-01T12:00:00.000Z" } : {}) }, settings: { setupCommands: [], testCommands: [], devcontainer: null, allowedDomains: [] },
   createdAt: "2026-10-23T12:00:00.000Z", createdBy: { developerId: "a".repeat(64), name: "Maya" },
 });
-interface Options { read?: { status: number; body: unknown }; setupStatus?: string; answers?: Record<string, { status: number; body: unknown }> }
+interface Options { role?: string; share?: { status: number; body: unknown }; read?: { status: number; body: unknown }; setupStatus?: string; answers?: Record<string, { status: number; body: unknown }> }
 function setup(options: Options = {}) {
   let current = options.read ?? { status: 200, body: state() };
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/me") return { status: 200, body: me };
     if (request.path === "/v1/app/github/installations") return { status: 200, body: { installations: [{ installationId: 55, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active" }] } };
-    if (request.path === "/v1/app/projects/web") return { status: 200, body: project(options.setupStatus ?? "unchecked") };
+    if (request.path === "/v1/app/projects/web") return { status: 200, body: project(options.setupStatus ?? "unchecked", 2, options.role) };
+    if (request.path === "/v1/app/projects/web/setup-recipe") return options.share ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
     if (request.path === "/v1/app/projects/web/setup-draft") return { status: 200, body: { status: "none", basedOnRevision: 2, requestId: "g" } };
     if (request.path === "/v1/app/projects/web/test-environment" && request.method === "GET") return { status: current.status, body: current.status === 200 ? { ...(current.body as object), requestId: "gateway-1" } : current.body };
     const answer = options.answers?.[request.path.replace("/v1/app/projects/web/test-environment", "")];
@@ -262,4 +263,28 @@ it("edits the proposal as JSON: a body that isn't JSON is refused here, a valid 
   expect(posts(f, "/test-environment/edit")[0]!.body).toMatchObject({ environment: { roundBudgetMin: 45 } });
   expect(within(region).queryByLabelText("Edit the test environment")).toBeNull();
   f.close();
+});
+
+it("offers a maintainer 'Share as company recipe' under the approved environment, only when recipes are on and the setup is fully in the settings (F8)", async () => {
+  const approved = { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY };
+  const share = { status: 200, body: { repositories: ["web"], markerFiles: ["package.json"], hasApprovedEnvironment: true } };
+  const on = setup({ read: { status: 200, body: state({ approved }) }, share });
+  expect(await screen.findByRole("region", { name: "Company recipe" })).toBeTruthy();
+  on.close();
+  const off = setup({ read: { status: 200, body: state({ approved }) } });
+  await section();
+  await waitFor(() => expect(off.request.mock.calls.some(([r]) => r.path.endsWith("/setup-recipe"))).toBe(true));
+  expect(screen.queryByRole("region", { name: "Company recipe" })).toBeNull();
+  off.close();
+  const none = setup({ read: { status: 200, body: state() }, share });
+  await section();
+  expect(screen.queryByRole("region", { name: "Company recipe" })).toBeNull();
+  none.close();
+  // A viewer's page never asks (no refusal logged), even with recipes on and an approved environment.
+  const viewer = setup({ read: { status: 200, body: state({ approved }) }, share, role: "viewer" });
+  await section();
+  await waitFor(() => expect(viewer.request.mock.calls.some(([r]) => r.path.endsWith("/test-environment"))).toBe(true));
+  expect(viewer.request.mock.calls.some(([r]) => r.path.endsWith("/setup-recipe"))).toBe(false);
+  expect(screen.queryByRole("region", { name: "Company recipe" })).toBeNull();
+  viewer.close();
 });

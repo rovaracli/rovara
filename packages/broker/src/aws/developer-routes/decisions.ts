@@ -36,6 +36,7 @@ import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
+import { companyApprovedHostMarks } from "../../org/setup-recipe-host-marks.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { specChoiceItemsFor } from "../developer-tasks/spec-wiring.js";
 import { secondReviewNoticeItemsFor } from "../../rovara-code/second-review-notice.js";
@@ -101,7 +102,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           approveTestEnvItemsFor(testEnvCards, who),
           envChangeItemsFor({ store, task: loadTask }, who),
           fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
-          hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true }, who) : Promise.resolve([]),
+          hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true, companyApproved: (orgId, project) => companyApprovedHostMarks(hostDeps, { orgId, project, cloud: deps.cloud === true }) }, who) : Promise.resolve([]),
           // Second review (`cr`): the model that gives the second opinion stopped qualifying, told to the company's owners and admins. Empty while `cr` is off.
           secondReviewEnabled(env) ? secondReviewNoticeItemsFor({ table, isAdmin: (person) => (person as DeveloperCaller).orgRole === "owner" || (person as DeveloperCaller).orgRole === "admin" }, who) : Promise.resolve([]),
         ]);

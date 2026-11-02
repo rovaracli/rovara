@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AgentXError, orgMemberKey, orgMetaKey, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
 import {
   LOCKS_PENDING_TTL_MS, SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
-  recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupRecipeDeps,
+  recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupLocksDeps, type SetupRecipeDeps,
 } from "../../packages/broker/src/org/setup-recipes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { memorySetupRecipeStore } from "../support/memory-setup-recipe-store.js";
@@ -32,6 +32,8 @@ const body = (changes: Record<string, unknown> = {}): SetupRecipeBody => SetupRe
 });
 const FITS = { markerFiles: ["pyproject.toml"], registryHosts: ["pypi.internal.example.com"] };
 
+/** su-musts' reader, as the recipe code uses it: only the dev container image list, from the locks store. */
+const readerOf = (deps: SetupLocksDeps) => ({ getCompanySetupLocks: async (orgId: OrgId) => (await deps.store.getLocks(orgId))?.locks });
 function harness(options: { admins?: string[]; maintainers?: Record<string, string[]>; refusedHosts?: string[]; repositoryNames?: Record<string, string[]> } = {}) {
   // The rows the evidence's conditions fence: the org META with its membership version, and the two admins' member records.
   const db = new FakeDynamoDb();
@@ -53,7 +55,7 @@ function harness(options: { admins?: string[]; maintainers?: Record<string, stri
   const calls: string[] = [];
   // Two eligible admins by default; tests change this to make a one-admin company or a recent loss.
   const evidence = { complete: true, membershipVersion: 7, ownerIds: [ADMIN], eligibleIds: [ADMIN, SECOND_ADMIN], lastEligibleLossAtMs: null as number | null };
-  const deps: SetupRecipeDeps = {
+  const deps: SetupRecipeDeps & SetupLocksDeps = {
     store: {
       ...store,
       getRecipe: (...args) => { calls.push("store"); return store.getRecipe(...args); },
@@ -242,24 +244,24 @@ describe("who a recipe is offered to", () => {
   it("offers only approved recipes, to projects in scope, whose fingerprint fits", async () => {
     const { deps, admin, maintainer } = harness();
     const proposed = await proposeRecipe(deps, maintainer, { project: "orders", body: body() });
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     const approved = await approveRecipe(deps, admin, { recipeId: proposed.recipeId, expectedRevision: 1, expectedDigest: proposed.bodyDigest });
-    const offered = await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: FITS });
+    const offered = await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: FITS });
     expect(offered).toEqual([{ recipeId: approved.recipeId, revision: 2, bodyDigest: approved.bodyDigest, body: approved.body }]);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: { markerFiles: ["package.json"], registryHosts: [] } })).toEqual([]);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: { markerFiles: [], registryHosts: [] } })).toEqual([]);
-    expect(await offeredRecipes(deps, { orgId: OTHER_ORG, project: "anything", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: { markerFiles: ["package.json"], registryHosts: [] } })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: { markerFiles: [], registryHosts: [] } })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: OTHER_ORG, project: "anything", repository: FITS })).toEqual([]);
   });
 
   it("offers only to the listed projects when the admin says so, and back to all", async () => {
     const { deps, admin } = harness();
     const created = await createRecipeAsAdmin(deps, admin, { body: body(), scope: { kind: "projects", projects: ["orders", "billing"] } });
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "search", repository: FITS })).toEqual([]);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "search", repository: FITS })).toEqual([]);
     expect(await code(setRecipeScope(deps, admin, { recipeId: created.recipeId, expectedRevision: 9, scope: { kind: "company" } }))).toBe("CHANGE_STALE");
     const widened = await setRecipeScope(deps, admin, { recipeId: created.recipeId, expectedRevision: 1, scope: { kind: "company" } });
     expect(widened.revision).toBe(2);
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "search", repository: FITS })).length).toBe(1);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "search", repository: FITS })).length).toBe(1);
   });
 
   it("stops offering a revoked recipe, and keeps it", async () => {
@@ -268,7 +270,7 @@ describe("who a recipe is offered to", () => {
     expect(await code(revokeRecipe(deps, admin, { recipeId: created.recipeId, expectedRevision: 5 }))).toBe("CHANGE_STALE");
     const revoked = await revokeRecipe(deps, admin, { recipeId: created.recipeId, expectedRevision: 1 });
     expect(revoked.status).toBe("revoked");
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     expect(await companyApprovedHosts(deps, ORG)).toEqual([]);
     expect(store.recipes.size).toBe(1);
     expect(store.audit.map((entry) => entry.action)).toEqual(["recipe_created", "recipe_revoked"]);
@@ -278,13 +280,13 @@ describe("who a recipe is offered to", () => {
     const { deps, admin, admin2 } = harness();
     await createRecipeAsAdmin(deps, admin, { body: body() });
     await setCompanyLocks(deps, admin, { locks: { devcontainerImages: ["mcr.microsoft.com/devcontainers/go:1.23"] }, expectedRevision: null });
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     // Widening the list is a loosening: a second admin approves it.
     const waiting = await setCompanyLocks(deps, admin, { locks: { devcontainerImages: ["mcr.microsoft.com/devcontainers/python:3.12"] }, expectedRevision: 1 });
     expect(waiting.status).toBe("needs_second_admin");
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     await approveLocksChange(deps, admin2, { expectedRevision: waiting.locks.revision, expectedDigest: waiting.locks.pending!.digest });
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
   });
 
   it("lists the hosts approved through recipes, once each, for approved recipes only", async () => {

@@ -308,6 +308,12 @@ export const AUDIT_ACTIONS = [
   "company_domain.verified",
   "company_domain.lost",
   "company_domain.removed",
+  // Company setup recipes (SH29; the company's locks are su-musts', with their own setup.locks_* actions): ids, digests and fixed words only. A recipe's text, its hosts and a project's name never go in a fact.
+  "setup_recipe.proposed",
+  "setup_recipe.created",
+  "setup_recipe.approved",
+  "setup_recipe.revoked",
+  "setup_recipe.scope_changed",
   // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
   "project.setup_restored",
 ] as const;
@@ -587,6 +593,12 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_domain.verified": ["wasState", "tookOver"],
   "company_domain.lost": ["missingDays"],
   "company_domain.removed": ["wasState"],
+  // Setup recipes: `authority` is `fresh_sign_in` or `project_maintainer`; `bodyDigest` is the recipe body's sha256.
+  "setup_recipe.proposed": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.created": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.approved": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.revoked": ["recipeId", "revision", "bodyDigest", "authority"],
+  "setup_recipe.scope_changed": ["recipeId", "revision", "bodyDigest", "authority"],
   // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
   "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
 };
