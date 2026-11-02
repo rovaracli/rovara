@@ -10,7 +10,7 @@ const repository = savedEnvRepositoryName({ env: "test", orgId: "org-1", project
 const secret = ["login", "-", "p".repeat(30)].join("");
 const registry = "111122223333.dkr.ecr.us-west-2.amazonaws.com";
 const payload = { repository, digest: `sha256:${"d".repeat(64)}`, testEnvRevision: 4, environmentKey: "a".repeat(64), taskTestEnvRevision: 4 };
-const login = { registry, repository, username: "AWS", password: secret, expiresAt: "2026-11-02T13:00:00.000Z" };
+const login = { registry, repository, username: "AWS" as const, password: secret, expiresAt: "2026-11-02T13:00:00.000Z" };
 
 describe("the saved environment field", () => {
   it("is strict: a tag, another repository name, a login of any kind, an extra field and a missing pin are refused (a stored invocation holds no credential)", () => {

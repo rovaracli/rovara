@@ -9,6 +9,8 @@ import {
   type RegistryImage, type RegistryPort, type SavedEnvDeps, type SavedEnvImageRecord, type SavedEnvState,
 } from "../../packages/broker/src/test-env/saved-env.js";
 import { expectedRepositoryPolicy, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
+import { panelView, resetFromPanel, savedEnvPanel } from "../../packages/broker/src/test-env/saved-env-panel.js";
+import { SavedEnvPanelSchema } from "@agentx/contracts";
 import { installSavedEnv } from "../../packages/broker/src/aws/broker/saved-env-prepare.js";
 import { heldPreparationDispatch, newWorkspacePreparation } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { memorySavedEnvStore } from "../support/memory-saved-env-store.js";
@@ -451,7 +453,7 @@ describe("stale marks and what a task may use", () => {
 describe("archive and delete", () => {
   it("an archived project keeps its images, queues no rebuild and the reason is recorded", async () => {
     expect(ARCHIVE_POLICY).toContain("keeps its saved images");
-    const w = world(); seed(w, { images: [imageOf(dig(1), { status: "stale" })], job: { jobId: "j", leaseToken: "t", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, createdAt: iso(T0), leaseUntil: iso(T0 + 1000) } });
+    const w = world(); seed(w, { images: [imageOf(dig(1), { status: "stale" })], job: { jobId: "j", leaseToken: "t", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + 1000) } });
     expect((await onProjectArchived(w.deps, ids, true)).ok).toBe(true);
     const row = w.store.rows.get("org-1#proj-1")!;
     expect(row.images).toHaveLength(1);
@@ -473,7 +475,7 @@ describe("archive and delete", () => {
     const listed: RegistryImage[] = [{ digest: dig(1), tags: ["a"], pushedAt: iso(T0) }, { digest: dig(2), tags: [], pushedAt: iso(T0) }];
     const order: string[] = [];
     const w = world({ images: listed, registry: { deleteRepository: async () => { order.push(`repository deleted; row deleted=${String(w.store.rows.get("org-1#proj-1")?.deleted)}`); return "deleted" as const; } } });
-    seed(w, { images: [imageOf(dig(1))], health: "healthy", job: { jobId: "j", leaseToken: "t", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, createdAt: iso(T0), leaseUntil: iso(T0 + SAVED_ENV_JOB_LEASE_MS) } });
+    seed(w, { images: [imageOf(dig(1))], health: "healthy", job: { jobId: "j", leaseToken: "t", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + SAVED_ENV_JOB_LEASE_MS) } });
     expect(await onProjectDeleted(w.deps, ids)).toEqual({ ok: true, deleted: 2 });
     expect(order).toEqual(["repository deleted; row deleted=true"]);
     expect(w.calls.deleted).toEqual([]);
@@ -780,5 +782,68 @@ describe("the stored invocation holds no credential (SH25 review M1/M2)", () => 
     expect(text).not.toMatch(/"(password|username|auth|authorizationToken)"/u);
     const none = await heldPreparationDispatch(reading, projectRecord, first.workspace.id, first.operationId, OWNER, { testEnvPin: APPROVED, setupDraft: true });
     expect(JSON.stringify(none.items)).not.toContain("savedEnv");
+  });
+});
+
+describe("the Environment panel (SH26)", () => {
+  it("shows health, the saved copy's age and the reason of the last rebuild, as fixed words and numbers only", () => {
+    const state = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [imageOf(dig(1), { recordedAt: iso(T0 - 3 * 86_400_000 - 1000) })], health: "healthy" as const, lastRebuildReason: "key_changed" as const };
+    const view = panelView(state, T0, "maintainer");
+    expect(SavedEnvPanelSchema.safeParse(view).success).toBe(true);
+    expect(view).toEqual({ health: "healthy", image: { builtAt: iso(T0 - 3 * 86_400_000 - 1000), ageDays: 3, status: "ready" }, lastRebuildReason: "key_changed", canReset: true });
+    expect(JSON.stringify(view)).not.toContain(dig(1));
+    expect(JSON.stringify(view)).not.toContain(repository);
+    expect(panelView(undefined, T0, "maintainer")).toEqual({ health: "never_proved", canReset: true });
+  });
+
+  it("says a queued job is waiting, a dispatched one is running, and an expired lease is neither", () => {
+    const job = { jobId: "j", leaseToken: "l", reason: "stale" as const, approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + 3_600_000) };
+    const base = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [], health: "needs_repair" as const };
+    expect(panelView({ ...base, job }, T0, "viewer").rebuild).toEqual({ state: "queued", reason: "stale" });
+    expect(panelView({ ...base, job: { ...job, dispatchedAt: iso(T0) } }, T0, "viewer").rebuild).toEqual({ state: "running", reason: "stale" });
+    expect(panelView({ ...base, job: { ...job, leaseUntil: iso(T0 - 1) } }, T0, "viewer").rebuild).toBeUndefined();
+    expect(panelView({ ...base, resetRequested: true }, T0, "viewer").rebuild).toEqual({ state: "queued", reason: "reset" });
+  });
+
+  it("carries the last failure as a fixed word only", () => {
+    const base = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [], health: "needs_repair" as const };
+    expect(panelView({ ...base, lastFailure: "secret_found", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure).toEqual({ at: iso(T0), reason: "secret_found" });
+    expect(panelView({ ...base, lastFailure: "Boom: <b>x</b> 123", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure?.reason).toBe("oombxb");
+  });
+
+  it("only a maintainer of a live project can reset", () => {
+    const state = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [], health: "never_proved" as const };
+    expect(panelView(state, T0, "maintainer").canReset).toBe(true);
+    expect(panelView(state, T0, "contributor").canReset).toBe(false);
+    expect(panelView(state, T0, "viewer").canReset).toBe(false);
+    expect(panelView({ ...state, archived: true }, T0, "maintainer").canReset).toBe(false);
+  });
+
+  it("the panel does not exist with `sv` off", async () => {
+    expect(await savedEnvPanel(world({ enabled: false }).deps, ids, { projectRole: "maintainer" })).toEqual({ ok: false, reason: "disabled" });
+    expect((await savedEnvPanel(world().deps, ids, { projectRole: "viewer" })).ok).toBe(true);
+  });
+
+  it("a maintainer's Reset queues a rebuild and the answer is the new panel; the person is in the audit entry", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+    const done = await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer" });
+    expect(done).toMatchObject({ ok: true, status: "queued", panel: { rebuild: { state: "queued", reason: "reset" }, lastRebuildReason: "reset", canReset: true } });
+    expect(w.store.log.some((entry) => entry.action === "reset_requested" && entry.actor === "person-1")).toBe(true);
+  });
+
+  it("a contributor or viewer cannot reset: nothing is written or audited", async () => {
+    for (const projectRole of ["contributor", "viewer"] as const) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+      const before = structuredClone(w.store.rows.get("org-1#proj-1"));
+      expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole })).toEqual({ ok: false, reason: "not_maintainer" });
+      expect(w.store.rows.get("org-1#proj-1")).toEqual(before);
+      expect(w.store.log).toEqual([]);
+    }
+    expect(await resetFromPanel(world({ enabled: false }).deps, ids, { actorId: "person-1", projectRole: "maintainer" })).toEqual({ ok: false, reason: "disabled" });
+  });
+
+  it("a Reset with nothing to build from says so", async () => {
+    const w = world({ approved: undefined }); seed(w, { images: [] });
+    expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer" })).toMatchObject({ ok: true, status: "nothing_to_do" });
   });
 });

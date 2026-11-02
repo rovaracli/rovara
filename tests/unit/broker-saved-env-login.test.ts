@@ -6,7 +6,7 @@ const REGISTRY = "111122223333.dkr.ecr.us-west-2.amazonaws.com";
 const REPOSITORY = "rovara-env/test/oaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PASSWORD = ["login", "-", "p".repeat(30)].join("");
 const DIGEST = `sha256:${"d".repeat(64)}`;
-const login = { registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: "2026-11-02T13:00:00.000Z" };
+const login = { registry: REGISTRY, repository: REPOSITORY, username: "AWS" as const, password: PASSWORD, expiresAt: "2026-11-02T13:00:00.000Z" };
 
 function context(over: Partial<SavedEnvLoginContext> & { operation?: Partial<Awaited<ReturnType<SavedEnvLoginContext["readOperation"]>>> } = {}) {
   const asked: unknown[] = [];
