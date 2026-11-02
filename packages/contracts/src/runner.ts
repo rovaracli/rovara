@@ -138,31 +138,80 @@ export function findRunnerForbiddenField(value: unknown, allowed: readonly strin
   return visit(value, [], false);
 }
 
-/** Runs before the shape is read: the byte bound first (so the scan is bounded), then the forbidden fields, each with its own sentence. */
+const SIZE_WALK_MAX_DEPTH = 64;
+
+/**
+ * Whether `raw` is certainly larger than `maxBytes` as JSON, found by a walk that adds up a LOWER bound of its size (a string is at least its length in bytes, a key its length plus 3, a value 1) and stops the moment
+ * the bound is passed or the nesting is deeper than any message can be. It never builds the JSON text, so it costs at most about `maxBytes` of work however large or deep the value is, and cannot overflow the stack.
+ */
+function certainlyOverBytes(raw: unknown, maxBytes: number): boolean {
+  let bound = 0;
+  const visit = (node: unknown, depth: number): boolean => {
+    if (depth > SIZE_WALK_MAX_DEPTH) return true;
+    if (typeof node === "string") bound += node.length + 2;
+    else if (Array.isArray(node)) {
+      bound += 2;
+      for (const item of node) {
+        bound += 1;
+        if (bound > maxBytes || visit(item, depth + 1)) return true;
+      }
+    } else if (node !== null && typeof node === "object") {
+      bound += 2;
+      for (const key of Object.keys(node)) {
+        bound += key.length + 4;
+        if (bound > maxBytes || visit((node as Record<string, unknown>)[key], depth + 1)) return true;
+      }
+    } else bound += 1;
+    return bound > maxBytes;
+  };
+  return visit(raw, 0);
+}
+
+/**
+ * Runs before the shape is read: the byte bound first (a walk that never builds the JSON text, then the exact size), then the forbidden fields, each with its own sentence. The whole function is guarded: a value
+ * that cannot be read (a cycle, a BigInt, a getter that throws, nesting that overflows the stack) is a refusal, never a throw.
+ */
 const refuseUnsafeMessage = (allowed: readonly string[], maxBytes: number) => (raw: unknown, context: z.RefinementCtx): void => {
-  if (utf8Bytes(JSON.stringify(raw) ?? "") > maxBytes) {
-    context.addIssue({ code: "custom", message: `a runner message is at most ${String(maxBytes)} bytes` });
-    return;
+  try {
+    if (certainlyOverBytes(raw, maxBytes) || utf8Bytes(JSON.stringify(raw) ?? "") > maxBytes) {
+      context.addIssue({ code: "custom", message: `a runner message is at most ${String(maxBytes)} bytes` });
+      return;
+    }
+    const found = findRunnerForbiddenField(raw, allowed);
+    if (found === undefined) return;
+    context.addIssue({
+      code: "custom",
+      message: found.reason === "forbidden"
+        ? `a runner job or result may not carry ${found.path}: model credentials, edit permissions and secrets stay central`
+        : found.reason === "too_many_fields" ? `a runner message has more fields than the largest valid message (${String(RUNNER_SCAN_MAX_KEYS)}), at ${found.path}` : `a runner message is nested too deeply, at ${found.path}`,
+    });
+  } catch {
+    context.addIssue({ code: "custom", message: "a runner message could not be read" });
   }
-  const found = findRunnerForbiddenField(raw, allowed);
-  if (found === undefined) return;
-  context.addIssue({
-    code: "custom",
-    message: found.reason === "forbidden"
-      ? `a runner job or result may not carry ${found.path}: model credentials, edit permissions and secrets stay central`
-      : found.reason === "too_many_fields" ? `a runner message has more fields than the largest valid message (${String(RUNNER_SCAN_MAX_KEYS)}), at ${found.path}` : `a runner message is nested too deeply, at ${found.path}`,
-  });
 };
+
+/**
+ * Reads a message body as it arrived (text): refused by its length BEFORE it is parsed when it cannot fit (a body's length in characters is at most its size in bytes), then parsed. The caller then hands the value to
+ * the schema of its message. `limit` is the message's own byte bound: a grant `RUNNER_GRANT_MAX_BYTES`, a result `RUNNER_RESULT_MAX_BYTES`, a lease or heartbeat `RUNNER_MESSAGE_MAX_BYTES`.
+ */
+export function readRunnerBody(body: string, limit: number): { ok: true; value: unknown } | { ok: false; reason: "too_large" | "not_json" } {
+  if (typeof body !== "string" || body.length > limit || utf8Bytes(body) > limit) return { ok: false, reason: "too_large" };
+  try {
+    return { ok: true, value: JSON.parse(body) as unknown };
+  } catch {
+    return { ok: false, reason: "not_json" };
+  }
+}
 
 // ---- commands
 
-/** Zero-width, bidi and other format characters (Unicode Cf) hide text from a person reading a command. */
-const HAS_FORMAT_CHARACTER = /\p{Cf}/u;
+/** Zero-width, bidi and other format characters (Unicode Cf) hide text from a person reading a command, and control characters (ESC, CR, LF, NUL ...) rewrite what a terminal or log shows. */
+const HAS_HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}]/u;
 
 /** A command as a runner is given it: the project's command, with no credential-shaped environment name or value, no credential-shaped argument and no hidden characters. */
 export const RunnerCommandSchema = ProjectCommandSchema.superRefine((command, context) => {
-  const text = [command.executable, ...command.args, ...Object.values(command.env ?? {})];
-  if (text.some((item) => HAS_FORMAT_CHARACTER.test(item))) context.addIssue({ code: "custom", message: "a runner command may not carry zero-width, bidirectional or other format characters" });
+  const text = [command.cwd, command.executable, ...command.args, ...Object.values(command.env ?? {})];
+  if (text.some((item) => HAS_HIDDEN_CHARACTER.test(item))) context.addIssue({ code: "custom", message: "a runner command may not carry control characters or zero-width, bidirectional or other format characters" });
   if (text.some((item) => redactText(item) !== item)) context.addIssue({ code: "custom", message: "a runner command may not carry a credential" });
   if (Object.keys(command.env ?? {}).some(forbiddenRunnerEnvName)) context.addIssue({ code: "custom", path: ["env"], message: "a runner command may not set a credential or model-access variable" });
 });
@@ -236,22 +285,42 @@ export function runnerJobDigest(job: RunnerJob): string {
 }
 
 /**
- * Whether a non-setup job is made only of an approved environment's commands, given the environment itself (the control plane reads it by `job.environmentDigest`). Pure. The environment's digest must be the
- * job's; every command must be exactly one of the environment's setup or check commands (canonical JSON, so the arguments, directory, timeout and environment all match); and every environment variable
- * name must be one the environment itself names (the allow-list; the name checks above are only the defence). A `setup_command` job is checked by its approval digest instead.
+ * Whether a non-setup job is made only of an approved environment's commands, given the approved environment (its revision and body; the control plane reads it by `job.environmentDigest`). Pure. In order:
+ *   - the body's digest is the job's, and the revision is the one the workspace pin names;
+ *   - the pin names exactly the environment's repositories;
+ *   - every environment variable name is one the environment itself names (the allow-list; the name checks above are only the defence);
+ *   - every command is exactly one of the commands its KIND may carry (canonical JSON, so the arguments, directory, timeout and environment all match): `run_checks` carries check commands only, never a
+ *     setup command; `prove` and `nightly` carry setup and check commands;
+ *   - no command is listed twice.
+ * A `setup_command` job is checked by its approval digest instead.
  */
-export function checkRunnerJobEnvironment(job: RunnerJob, environment: TestEnvironmentBody): { ok: true } | { ok: false; reason: "not_an_environment_job" | "wrong_environment" | "command_not_in_environment" | "env_name_not_in_environment" } {
+export function checkRunnerJobEnvironment(job: RunnerJob, approved: { revision: number; environment: TestEnvironmentBody }): { ok: true } | { ok: false; reason: RunnerEnvironmentRefusal } {
   if (job.kind === "setup_command") return { ok: false, reason: "not_an_environment_job" };
+  const environment = approved.environment;
   if (testEnvDigest(environment) !== job.environmentDigest) return { ok: false, reason: "wrong_environment" };
-  const approved = environment.repos.flatMap((repo) => [...repo.setupCommands, ...repo.checks.map((check) => check.command)]);
-  const approvedForms = new Set(approved.map((command) => canonicalJson(command)));
-  const approvedNames = new Set(approved.flatMap((command) => Object.keys(command.env ?? {})));
+  if (approved.revision !== job.workspace.envRevision) return { ok: false, reason: "wrong_revision" };
+  const pinned = job.workspace.repositories.map((repository) => repository.repositoryId).sort();
+  const owned = environment.repos.map((repo) => repo.repositoryId).sort();
+  if (pinned.length !== owned.length || pinned.some((id, at) => id !== owned[at])) return { ok: false, reason: "wrong_repositories" };
+  const setupCommands = environment.repos.flatMap((repo) => repo.setupCommands);
+  const checkCommands = environment.repos.flatMap((repo) => repo.checks.map((check) => check.command));
+  const everyForm = new Set([...setupCommands, ...checkCommands].map((command) => canonicalJson(command)));
+  const allowedForms = new Set((job.kind === "run_checks" ? checkCommands : [...setupCommands, ...checkCommands]).map((command) => canonicalJson(command)));
+  const approvedNames = new Set([...setupCommands, ...checkCommands].flatMap((command) => Object.keys(command.env ?? {})));
+  const seen = new Set<string>();
   for (const command of job.commands) {
     if (Object.keys(command.env ?? {}).some((name) => !approvedNames.has(name))) return { ok: false, reason: "env_name_not_in_environment" };
-    if (!approvedForms.has(canonicalJson(command))) return { ok: false, reason: "command_not_in_environment" };
+    const form = canonicalJson(command);
+    if (!everyForm.has(form)) return { ok: false, reason: "command_not_in_environment" };
+    if (!allowedForms.has(form)) return { ok: false, reason: "command_not_allowed_for_kind" };
+    if (seen.has(form)) return { ok: false, reason: "duplicate_command" };
+    seen.add(form);
   }
   return { ok: true };
 }
+
+export type RunnerEnvironmentRefusal =
+  | "not_an_environment_job" | "wrong_environment" | "wrong_revision" | "wrong_repositories" | "env_name_not_in_environment" | "command_not_in_environment" | "command_not_allowed_for_kind" | "duplicate_command";
 
 // ---- the lease
 
@@ -366,10 +435,12 @@ export type RunnerHeartbeatAck = z.infer<typeof RunnerHeartbeatAckSchema>;
 /** What the control plane knows when a message arrives: the clock and the current fence for the operation. The lease's redeemed flag is the caller's, kept centrally. */
 export interface RunnerCheckState { redeemed: boolean; now: number; currentFence: number }
 
-export type RunnerHeartbeatRefusal = "stale_fence" | "not_yet_valid" | "expired" | "wrong_job" | "wrong_lease" | "wrong_capability" | "already_redeemed";
+export type RunnerHeartbeatRefusal = "bad_clock" | "bad_command_index" | "stale_fence" | "not_yet_valid" | "expired" | "wrong_job" | "wrong_lease" | "wrong_capability" | "already_redeemed";
 
 /** Whether a heartbeat belongs to the lease a record describes, is within its life and carries its capability. Does not touch the result token. */
 export function checkRunnerHeartbeat(record: RunnerLeaseRecord, beat: RunnerHeartbeat, state: RunnerCheckState): { ok: true } | { ok: false; reason: RunnerHeartbeatRefusal } {
+  // Fail closed: a clock that is not a number would make every time comparison false, which reads as "within the lease".
+  if (!Number.isFinite(state.now)) return { ok: false, reason: "bad_clock" };
   if (state.redeemed) return { ok: false, reason: "already_redeemed" };
   if (beat.fence !== state.currentFence || record.lease.fence !== state.currentFence) return { ok: false, reason: "stale_fence" };
   if (state.now < Date.parse(record.lease.issuedAt)) return { ok: false, reason: "not_yet_valid" };
@@ -377,6 +448,7 @@ export function checkRunnerHeartbeat(record: RunnerLeaseRecord, beat: RunnerHear
   if (beat.jobId !== record.job.jobId) return { ok: false, reason: "wrong_job" };
   if (beat.leaseId !== record.lease.leaseId) return { ok: false, reason: "wrong_lease" };
   if (!sameDigest(sha256Hex(beat.heartbeatCapability), record.heartbeatCapabilitySha256)) return { ok: false, reason: "wrong_capability" };
+  if (beat.commandIndex !== undefined && beat.commandIndex >= record.job.commands.length) return { ok: false, reason: "bad_command_index" };
   return { ok: true };
 }
 
@@ -430,7 +502,7 @@ export const RunnerResultSchema = z.unknown()
   });
 
 export type RunnerResultRefusal =
-  | "already_redeemed" | "stale_fence" | "not_yet_valid" | "expired"
+  | "bad_clock" | "already_redeemed" | "stale_fence" | "not_yet_valid" | "expired" | "finished_outside_lease"
   | "wrong_job" | "wrong_lease" | "wrong_runner" | "wrong_job_digest" | "wrong_token" | "wrong_workspace" | "too_many_commands" | "incomplete";
 
 /**
@@ -439,10 +511,14 @@ export type RunnerResultRefusal =
  * stored hash, without stopping at the first difference. Returns fixed words, never the runner's. This is the check that keeps a result evidence: it binds the claim to the lease. It does not make any claim true.
  */
 export function checkRunnerResult(record: RunnerLeaseRecord, result: RunnerResult, state: RunnerCheckState): { ok: true } | { ok: false; reason: RunnerResultRefusal } {
+  if (!Number.isFinite(state.now)) return { ok: false, reason: "bad_clock" };
   if (state.redeemed) return { ok: false, reason: "already_redeemed" };
   if (result.fence !== state.currentFence || record.lease.fence !== state.currentFence) return { ok: false, reason: "stale_fence" };
   if (state.now < Date.parse(record.lease.issuedAt)) return { ok: false, reason: "not_yet_valid" };
   if (state.now > Date.parse(record.lease.hardDeadlineAt)) return { ok: false, reason: "expired" };
+  // When the runner says it finished must fall inside the lease it was given (a malformed time is not inside it).
+  const finished = Date.parse(result.finishedAt);
+  if (!(finished >= Date.parse(record.lease.issuedAt) && finished <= Date.parse(record.lease.hardDeadlineAt))) return { ok: false, reason: "finished_outside_lease" };
   if (result.jobId !== record.job.jobId) return { ok: false, reason: "wrong_job" };
   if (result.leaseId !== record.lease.leaseId || result.kind !== record.job.kind) return { ok: false, reason: "wrong_lease" };
   if (result.runnerId !== record.lease.runnerId) return { ok: false, reason: "wrong_runner" };

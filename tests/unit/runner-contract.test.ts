@@ -1,10 +1,10 @@
 // SH35: the team build runner contract (R3). Strict job kinds, no model credentials or edit permissions on a job, jobs made only of approved commands, bounded sizes, a signed grant, a lease that binds a result
 // to one job, and a result that is only evidence.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  RUNNER_GRANT_MAX_BYTES, RUNNER_GRANT_SIGNER, RUNNER_JOB_KINDS, RUNNER_JOB_MAX_TOTAL_SECONDS, RUNNER_LEASE_MAX_SECONDS, RUNNER_MAX_COMMANDS, RUNNER_OUTPUT_TAIL_BYTES, RUNNER_RESULT_MAX_BYTES, RUNNER_SCAN_MAX_KEYS,
+  RUNNER_GRANT_MAX_BYTES, RUNNER_GRANT_SIGNER, RUNNER_JOB_KINDS, RUNNER_JOB_MAX_TOTAL_SECONDS, RUNNER_LEASE_MAX_SECONDS, RUNNER_MAX_COMMANDS, RUNNER_MESSAGE_MAX_BYTES, RUNNER_OUTPUT_TAIL_BYTES, RUNNER_RESULT_MAX_BYTES, RUNNER_SCAN_MAX_KEYS,
   RunnerGrantSchema, RunnerHeartbeatAckSchema, RunnerHeartbeatSchema, RunnerIdSchema, RunnerJobSchema, RunnerLeaseSchema, RunnerResultSchema, TestEnvironmentBodySchema,
-  checkRunnerHeartbeat, checkRunnerJobEnvironment, checkRunnerResult, findRunnerForbiddenField, forbiddenRunnerEnvName, runnerCommandDigest, runnerGrantSigningInput, runnerJobDigest, runnerLeaseRecord, testEnvDigest,
+  checkRunnerHeartbeat, checkRunnerJobEnvironment, readRunnerBody, checkRunnerResult, findRunnerForbiddenField, forbiddenRunnerEnvName, runnerCommandDigest, runnerGrantSigningInput, runnerJobDigest, runnerLeaseRecord, testEnvDigest,
   type RunnerCheckState, type RunnerJob,
 } from "../../packages/contracts/src/index.js";
 
@@ -100,27 +100,50 @@ describe("an environment job is made only of an approved environment's commands 
     prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
   });
   const digest = testEnvDigest(environment);
+  const approved = { revision: 3, environment };
   const make = (commands: unknown[], over: Record<string, unknown> = {}): RunnerJob => RunnerJobSchema.parse(job({ kind: "prove", environmentDigest: digest, commands, ...over }));
 
   it("accepts the environment's setup and check commands, exactly", () => {
-    expect(checkRunnerJobEnvironment(make([setup, unit]), environment)).toEqual({ ok: true });
+    expect(checkRunnerJobEnvironment(make([setup, unit]), approved)).toEqual({ ok: true });
+  });
+
+  it("binds the workspace: the environment's revision and exactly its repositories", () => {
+    expect(checkRunnerJobEnvironment(make([unit], { workspace: { ...workspace(), envRevision: 4 } }), approved)).toEqual({ ok: false, reason: "wrong_revision" });
+    expect(checkRunnerJobEnvironment(make([unit]), { revision: 2, environment })).toEqual({ ok: false, reason: "wrong_revision" });
+    const pin = (ids: string[]) => ({ ...workspace(), repositories: ids.map((repositoryId) => ({ repositoryId, commit: COMMIT })) });
+    expect(checkRunnerJobEnvironment(make([unit], { workspace: pin(["service", "other"]) }), approved)).toEqual({ ok: false, reason: "wrong_repositories" });
+    expect(checkRunnerJobEnvironment(make([unit], { workspace: pin(["other"]) }), approved)).toEqual({ ok: false, reason: "wrong_repositories" });
+    expect(checkRunnerJobEnvironment(make([unit], { workspace: pin(["service"]) }), approved)).toEqual({ ok: true });
+  });
+
+  it("is kind-specific: run_checks carries check commands only, prove and nightly carry setup and checks", () => {
+    const of = (kind: string, commands: unknown[]) => RunnerJobSchema.parse(job({ kind, environmentDigest: digest, commands }));
+    expect(checkRunnerJobEnvironment(of("run_checks", [unit]), approved)).toEqual({ ok: true });
+    expect(checkRunnerJobEnvironment(of("run_checks", [setup]), approved)).toEqual({ ok: false, reason: "command_not_allowed_for_kind" });
+    expect(checkRunnerJobEnvironment(of("run_checks", [unit, setup]), approved)).toEqual({ ok: false, reason: "command_not_allowed_for_kind" });
+    for (const kind of ["prove", "nightly"]) expect(checkRunnerJobEnvironment(of(kind, [setup, unit]), approved), kind).toEqual({ ok: true });
+  });
+
+  it("refuses a command listed twice", () => {
+    expect(checkRunnerJobEnvironment(make([unit, unit]), approved)).toEqual({ ok: false, reason: "duplicate_command" });
+    expect(checkRunnerJobEnvironment(make([setup, unit, setup]), approved)).toEqual({ ok: false, reason: "duplicate_command" });
   });
 
   it("refuses another environment, a command that is not in it, and a changed command", () => {
-    expect(checkRunnerJobEnvironment(make([unit], { environmentDigest: "d".repeat(64) }), environment)).toEqual({ ok: false, reason: "wrong_environment" });
-    expect(checkRunnerJobEnvironment(make([command({ executable: "sh", args: ["-c", "echo hi"] })]), environment)).toEqual({ ok: false, reason: "command_not_in_environment" });
-    expect(checkRunnerJobEnvironment(make([{ ...unit, args: ["-q", "tests/unit", "--extra"] }]), environment)).toEqual({ ok: false, reason: "command_not_in_environment" });
-    expect(checkRunnerJobEnvironment(make([{ ...unit, timeoutSeconds: 1_801 }]), environment)).toEqual({ ok: false, reason: "command_not_in_environment" });
+    expect(checkRunnerJobEnvironment(make([unit], { environmentDigest: "d".repeat(64) }), approved)).toEqual({ ok: false, reason: "wrong_environment" });
+    expect(checkRunnerJobEnvironment(make([command({ executable: "sh", args: ["-c", "echo hi"] })]), approved)).toEqual({ ok: false, reason: "command_not_in_environment" });
+    expect(checkRunnerJobEnvironment(make([{ ...unit, args: ["-q", "tests/unit", "--extra"] }]), approved)).toEqual({ ok: false, reason: "command_not_in_environment" });
+    expect(checkRunnerJobEnvironment(make([{ ...unit, timeoutSeconds: 1_801 }]), approved)).toEqual({ ok: false, reason: "command_not_in_environment" });
   });
 
   it("holds every environment variable name to the names the environment itself sets", () => {
-    expect(checkRunnerJobEnvironment(make([{ ...unit, env: { CI: "1" } }]), environment)).toEqual({ ok: false, reason: "command_not_in_environment" });
+    expect(checkRunnerJobEnvironment(make([{ ...unit, env: { CI: "1" } }]), approved)).toEqual({ ok: false, reason: "command_not_in_environment" });
     // The same command with a name the environment never sets is refused for the name first.
-    expect(checkRunnerJobEnvironment(make([{ ...unit, env: { EXTRA_FLAG: "1" } }]), environment)).toEqual({ ok: false, reason: "env_name_not_in_environment" });
+    expect(checkRunnerJobEnvironment(make([{ ...unit, env: { EXTRA_FLAG: "1" } }]), approved)).toEqual({ ok: false, reason: "env_name_not_in_environment" });
   });
 
   it("is not for a setup command, which is bound by its approval digest", () => {
-    expect(checkRunnerJobEnvironment(RunnerJobSchema.parse(setupJob()), environment)).toEqual({ ok: false, reason: "not_an_environment_job" });
+    expect(checkRunnerJobEnvironment(RunnerJobSchema.parse(setupJob()), approved)).toEqual({ ok: false, reason: "not_an_environment_job" });
   });
 });
 
@@ -175,6 +198,18 @@ describe("a job never carries model credentials or edit permissions", () => {
       expect(ok(RunnerJobSchema, job({ commands: [command({ executable: `pytest${hidden}` })] })), `exe ${label}`).toBe(false);
     }
     expect(ok(RunnerJobSchema, job({ commands: [command({ args: ["-q", "tests/é/日本"] })] }))).toBe(true);
+  });
+
+  it("refuses control characters (ESC, CR, LF, NUL, DEL) and format characters in the directory, the executable, arguments and values", () => {
+    for (const bad of ["\u001b", "\r", "\n", "\u0000", "\u007f", "\u0007", "\u200b", "\u202e"]) {
+      const label = JSON.stringify(bad);
+      expect(ok(RunnerJobSchema, job({ commands: [command({ args: [`-q${bad}x`] })] })), `arg ${label}`).toBe(false);
+      expect(ok(RunnerJobSchema, job({ commands: [command({ env: { CI: `1${bad}` } })] })), `env ${label}`).toBe(false);
+      expect(ok(RunnerJobSchema, job({ commands: [command({ executable: `pytest${bad}` })] })), `exe ${label}`).toBe(false);
+      expect(ok(RunnerJobSchema, job({ commands: [command({ cwd: `ser${bad}vice` })] })), `cwd ${label}`).toBe(false);
+    }
+    // The command schema itself holds the rule, whatever the path schema thinks of the directory.
+    expect(messages(RunnerJobSchema, job({ commands: [command({ args: ["a\nb"] })] }))).toContain("control characters");
   });
 
   it("allows the two lease secrets in their one place each only", () => {
@@ -345,6 +380,19 @@ describe("a result is evidence bound to its lease (G)", () => {
     expect(checkRunnerResult(record, parsed({ workspace: { ...workspace(), repositories: [{ repositoryId: "service", commit: "b".repeat(40) }] } }), state())).toEqual({ ok: false, reason: "wrong_workspace" });
   });
 
+  it("fails closed on a clock that is not a finite number, and on a stale-fence value that is not a number", () => {
+    for (const now of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, undefined as unknown as number, "now" as unknown as number]) {
+      expect(checkRunnerResult(record, parsed(), state({ now })), String(now)).toEqual({ ok: false, reason: "bad_clock" });
+    }
+  });
+
+  it("refuses a finishedAt outside the lease window", () => {
+    expect(checkRunnerResult(record, parsed({ finishedAt: at(-1) }), state())).toEqual({ ok: false, reason: "finished_outside_lease" });
+    expect(checkRunnerResult(record, parsed({ finishedAt: at(3_601) }), state())).toEqual({ ok: false, reason: "finished_outside_lease" });
+    expect(checkRunnerResult(record, parsed({ finishedAt: at(0) }), state())).toEqual({ ok: true });
+    expect(checkRunnerResult(record, parsed({ finishedAt: at(3_600) }), state())).toEqual({ ok: true });
+  });
+
   it("holds no more commands than the job has, and all of them when it says finished", () => {
     expect(checkRunnerResult(record, parsed({ commands: [commandResult(0), commandResult(1), commandResult(2)] }), state())).toEqual({ ok: false, reason: "too_many_commands" });
     expect(checkRunnerResult(record, parsed({ commands: [commandResult(0)] }), state())).toEqual({ ok: false, reason: "incomplete" });
@@ -393,6 +441,16 @@ describe("heartbeats use their own capability and never spend the result token",
     expect(ok(RunnerHeartbeatAckSchema, { action: "run_more" })).toBe(false);
   });
 
+  it("fails closed on a clock that is not a finite number, and on a command index the job does not have", () => {
+    for (const now of [Number.NaN, Number.POSITIVE_INFINITY, undefined as unknown as number]) {
+      expect(checkRunnerHeartbeat(record, parsedBeat(), state({ now })), String(now)).toEqual({ ok: false, reason: "bad_clock" });
+    }
+    // The grant above has one command: index 0 is its own, index 1 is not.
+    expect(checkRunnerHeartbeat(record, parsedBeat({ commandIndex: 0 }), state())).toEqual({ ok: true });
+    expect(checkRunnerHeartbeat(record, parsedBeat({ commandIndex: 1 }), state())).toEqual({ ok: false, reason: "bad_command_index" });
+    expect(checkRunnerHeartbeat(record, parsedBeat({ commandIndex: 63 }), state())).toEqual({ ok: false, reason: "bad_command_index" });
+  });
+
   it("is accepted for its own lease, fence and time, and refused otherwise", () => {
     expect(checkRunnerHeartbeat(record, parsedBeat(), state())).toEqual({ ok: true });
     expect(checkRunnerHeartbeat(record, parsedBeat({ heartbeatCapability: "Z".repeat(43) }), state())).toEqual({ ok: false, reason: "wrong_capability" });
@@ -404,6 +462,61 @@ describe("heartbeats use their own capability and never spend the result token",
     expect(checkRunnerHeartbeat(record, parsedBeat(), state({ now: NOW + 61_000 }))).toEqual({ ok: false, reason: "expired" });
     expect(checkRunnerHeartbeat(record, parsedBeat({ jobId: OPERATION_ID }), state())).toEqual({ ok: false, reason: "wrong_job" });
     expect(checkRunnerHeartbeat(record, parsedBeat({ leaseId: OPERATION_ID }), state())).toEqual({ ok: false, reason: "wrong_lease" });
+  });
+});
+
+describe("a message that cannot be read is a refusal, never a throw, and is sized before it is written out", () => {
+  it("does not build the JSON text of a value that is certainly too large", () => {
+    const spy = vi.spyOn(JSON, "stringify");
+    try {
+      const huge = { ...lease(), padding: "x".repeat(RUNNER_MESSAGE_MAX_BYTES + 1) };
+      const refused = RunnerLeaseSchema.safeParse(huge);
+      expect(spy).not.toHaveBeenCalled();
+      const manyItems = { ...lease(), padding: new Array<number>(RUNNER_MESSAGE_MAX_BYTES).fill(1) };
+      const refusedItems = RunnerLeaseSchema.safeParse(manyItems);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+      expect(refused.success).toBe(false);
+      expect(refusedItems.success).toBe(false);
+      expect(JSON.stringify(refused.error?.issues)).toContain("bytes");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("turns a cycle, a BigInt, a throwing getter and absurd nesting into a refusal", () => {
+    const cyclic: Record<string, unknown> = { ...lease() };
+    cyclic["self"] = cyclic;
+    const withBigInt = { ...lease(), padding: 10n };
+    const throwing = { ...lease() };
+    Object.defineProperty(throwing, "boom", { enumerable: true, get: () => { throw new TypeError("boom"); } });
+    let deep: unknown = 1;
+    for (let level = 0; level < 200_000; level += 1) deep = { a: deep };
+    for (const [name, value] of Object.entries({ cyclic, withBigInt, throwing, deep: { ...lease(), deep } })) {
+      for (const schema of [RunnerLeaseSchema, RunnerJobSchema, RunnerGrantSchema, RunnerResultSchema, RunnerHeartbeatSchema]) {
+        expect(() => schema.safeParse(value), name).not.toThrow();
+        expect(schema.safeParse(value).success, name).toBe(false);
+      }
+    }
+    expect(() => findRunnerForbiddenField(deep)).not.toThrow();
+  });
+
+  it("refuses a body by its length before parsing it", () => {
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      const big = `{"a":"${"x".repeat(RUNNER_MESSAGE_MAX_BYTES)}"}`;
+      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      expect(readRunnerBody(big, RUNNER_MESSAGE_MAX_BYTES)).toEqual({ ok: false, reason: "too_large" });
+      expect(parse).not.toHaveBeenCalled();
+      expect(encode).not.toHaveBeenCalled();
+      encode.mockRestore();
+      // Characters are not bytes: a body of 2-byte characters under the length limit can still be over the byte limit.
+      expect(readRunnerBody(JSON.stringify({ a: "é".repeat(40) }), 80)).toEqual({ ok: false, reason: "too_large" });
+    } finally {
+      parse.mockRestore();
+    }
+    expect(readRunnerBody("not json", 100)).toEqual({ ok: false, reason: "not_json" });
+    expect(readRunnerBody('{"a":1}', 100)).toEqual({ ok: true, value: { a: 1 } });
   });
 });
 
