@@ -172,8 +172,10 @@ export interface PauseStore {
    * Fix round 2: for an approval made before descriptions were hashed. At the first start with no change in names and schemas, the controller records the hash of what the tools say NOW (this is
    * trust on first use: a description changed between the approval and that start is not caught, and nothing earlier than that start can be). Later starts compare to it, and a difference
    * pauses the server like any other tools change. It names the approval it was made for, so it never applies to another.
+   * SR-7 H2: an item that is there but does not read as a baseline answers "damaged". The controller then pauses the server for review and writes nothing over the item: a damaged baseline is never
+   * replaced by a new one (that would be trust on first use again, chosen by whoever damaged it). The admin's one-click re-approve makes a current (hash version 2) approval, which needs no baseline.
    */
-  baseline(serverId: string): Promise<{ approvedHash: string; bundleHash: string; contentHash: string } | undefined>;
+  baseline(serverId: string): Promise<{ approvedHash: string; bundleHash: string; contentHash: string } | "damaged" | undefined>;
   setBaseline(serverId: string, baseline: { approvedHash: string; bundleHash: string; contentHash: string }): Promise<void>;
 }
 
@@ -581,7 +583,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           if (legacy === undefined || legacy !== approved.toolsHash) changed = true;
           else {
             const base = await pauses.baseline(serverId);
-            if (base !== undefined && base.approvedHash === approved.toolsHash && base.bundleHash === approved.spec.bundleHash) changed = base.contentHash !== observed;
+            if (base === "damaged") { log("mcp_controller.baseline_damaged", { serverId }); changed = true; }
+            else if (base !== undefined && base.approvedHash === approved.toolsHash && base.bundleHash === approved.spec.bundleHash) changed = base.contentHash !== observed;
             else { await pauses.setBaseline(serverId, { approvedHash: approved.toolsHash, bundleHash: approved.spec.bundleHash, contentHash: observed }); changed = false; }
           }
         }

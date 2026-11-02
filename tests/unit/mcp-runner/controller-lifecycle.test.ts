@@ -728,6 +728,18 @@ describe("fix round 2, review N2: a changed tool description pauses the server l
       expect(w.runner.stops.map((stop) => stop.reason)).toContain("failed");
     }
   });
+  it("SR-7 H2: a damaged baseline fails closed: the server is paused for review, nothing is written over the damaged item, and no task is left", async () => {
+    const memory = memoryPauses();
+    const written: unknown[] = [];
+    const damaged = { ...memory, baseline: async () => "damaged" as const, setBaseline: async (...args: unknown[]) => { written.push(args); } };
+    const w = await lifecycle({ ...control({ description: "Reads a page." }), controller: { pauses: damaged, toolsHashOf: withDescriptions, legacyToolsHashOf: toolsHashOfNames }, approved: { [ID]: approvedOf({ toolsHashVersion: 1 }) } });
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    expect(await (await mcp(w.brokerUrl, ID)).json()).toEqual({ error: "needs_review" });
+    expect(written).toEqual([]);
+    expect(w.runner.stops.map((stop) => stop.reason)).toContain("tools_changed");
+    expect(w.runner.started("serve")).toHaveLength(1);
+    expect(await memory.get(ID)).toEqual({ toolsHash: toolsHashOfNames([tool("x")]), bundleHash: BUNDLE });
+  });
   it("treats a version 1 approval as changed when the controller has no way to compute the old hash", async () => {
     const w = await lifecycle({ controller: { toolsHashOf: withDescriptions }, approved: { [ID]: approvedOf({ toolsHashVersion: 1 }) } });
     expect((await mcp(w.brokerUrl, ID)).status).toBe(409);

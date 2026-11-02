@@ -33,10 +33,20 @@ describe("the controller's pause store", () => {
     await expect(pauses.setBaseline(SERVER, { approvedHash: A, bundleHash: B, contentHash: "x" })).rejects.toThrow(/three hashes/u);
     await expect(pauses.baseline("../x")).rejects.toThrow();
   });
-  it("reads a damaged baseline as one that matches no approval, never as none", async () => {
+  it("SR-7 H2: reads a damaged baseline as damaged (never as none, and never as a baseline that matches nothing), however it is damaged", async () => {
     const { db, pauses } = setup();
-    await db.send(new PutCommand({ TableName: "state", Item: { pk: orgScoped(ORG, "MCPSLOT"), sk: `BASE#${SERVER}`, approvedHash: 5 } }));
-    expect(await pauses.baseline(SERVER)).toEqual({ approvedHash: "", bundleHash: "", contentHash: "" });
+    const key = { pk: orgScoped(ORG, "MCPSLOT"), sk: `BASE#${SERVER}` };
+    const good = { approvedHash: A, bundleHash: B, contentHash: "c".repeat(64) };
+    for (const [label, item] of [
+      ["a number", { ...key, approvedHash: 5 }], ["a missing hash", { ...key, approvedHash: A, bundleHash: B }], ["a hash that is not hex", { ...key, ...good, contentHash: "z".repeat(64) }],
+      ["a short hash", { ...key, ...good, bundleHash: "b".repeat(63) }], ["an upper case hash", { ...key, ...good, approvedHash: "A".repeat(64) }], ["only the key", { ...key }],
+    ] as const) {
+      await db.send(new PutCommand({ TableName: "state", Item: item }));
+      expect(await pauses.baseline(SERVER), label).toBe("damaged");
+    }
+    // and an intact one still reads as itself
+    await db.send(new PutCommand({ TableName: "state", Item: { ...key, ...good } }));
+    expect(await pauses.baseline(SERVER)).toEqual(good);
   });
   it("never writes the registry's partition", async () => {
     const { db, pauses } = setup();
