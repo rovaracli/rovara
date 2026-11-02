@@ -41,7 +41,8 @@ export function foldForMatching(text: string): string {
 
 /** Hidden characters out, then markup out, then trimmed and cut to `maxChars` (code points). */
 export function cleanLessonText(text: string, maxChars: number): string {
-  const cleaned = neutraliseMarkup(stripLessonHiddenCharacters(text)).trim();
+  // U+2028 / U+2029 are line breaks to a reader and to a regex `\s` but not to a split on "\n": they become ordinary newlines here, so every later "one line" step sees them.
+  const cleaned = neutraliseMarkup(stripLessonHiddenCharacters(text).replace(/[\u2028\u2029]/gu, "\n")).trim();
   const points = [...cleaned];
   return points.length <= maxChars ? cleaned : points.slice(0, maxChars).join("").trimEnd();
 }
