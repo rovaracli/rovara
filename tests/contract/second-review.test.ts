@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, canonicalModelName, configuredSecondReviewMode, modelCompany, secondReviewShadowPassed, stricterSecondReviewMode,
+  HowWeWorkStageSchema, SECOND_REVIEW_BAR, canonicalModelName, forbiddenModelMatcher, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, configuredSecondReviewMode, modelCompany, secondReviewModelKey, secondReviewShadowPassed, stricterSecondReviewMode,
   summarizeSecondReviewReplay, workflowFindingFingerprint, type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
 import {
@@ -30,7 +30,7 @@ const plan = (overrides: Partial<SecondReviewPlanInput> = {}): SecondReviewPlan 
 });
 const ran = (result: SecondReviewPlan) => (result.run ? { mode: result.mode, model: `${result.model.provider}/${result.model.modelId}`, company: result.company, downgraded: result.downgraded } : { skipped: result.reason });
 
-const VERDICT = (model: ModelIdentifier, overrides: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({ model: canonicalModelName(model), replayPassed: true, shadowPassed: true, decidedAt: "2026-11-20T00:00:00.000Z", ...overrides });
+const VERDICT = (model: ModelIdentifier, overrides: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({ model: secondReviewModelKey(model), replayPassed: true, shadowPassed: true, decidedAt: "2026-11-20T00:00:00.000Z", ...overrides });
 
 describe("the setting review.otherCompany", () => {
   it("is off unless somebody chose; the project's choice beats the company's default", () => {
@@ -136,6 +136,60 @@ describe("planSecondReview: which model", () => {
     expect(ran(plan({ project: { approved: [SONNET, GPT] } }))).toMatchObject({ model: "openai/gpt-5.5" });
     expect(ran(plan({ unusable: [NOVA_PREMIER, NOVA_PRO] }))).toMatchObject({ model: "openai/gpt-5.5" });
     expect(ran(plan({ project: { approved: [SONNET] } }))).toEqual({ skipped: "no-candidate" });
+  });
+});
+
+describe("a test or a verdict is about one revision (F1)", () => {
+  const NOVA_PRO_V2: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v2:0" };
+  it("the key drops a geography and nothing else", () => {
+    expect(secondReviewModelKey({ provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" })).toBe(secondReviewModelKey({ provider: "Amazon-Bedrock", modelId: "EU.amazon.nova-pro-v1:0" }));
+    expect(secondReviewModelKey(NOVA_PRO)).not.toBe(secondReviewModelKey(NOVA_PRO_V2));
+    expect(canonicalModelName(NOVA_PRO)).toBe(canonicalModelName(NOVA_PRO_V2)); // the family reads the same: that is why the key is not the canonical name
+  });
+
+  it("a driving test of v1 does not pass v2", () => {
+    const gate = drivingTestGate([{ provider: "amazon-bedrock", modelId: "amazon.nova-pro-v1:0", outcome: "passed", testedAt: "2026-11-01T00:00:00.000Z" }]);
+    expect(gate(NOVA_PRO)).toBe(true);
+    expect(gate(NOVA_PRO_V2)).toBe(false);
+    expect(ran(plan({ sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: gate }))).toEqual({ skipped: "untested" });
+  });
+
+  it("a verdict on v1 does not give v2 on", () => {
+    const both = plan({ mode: "on", sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: passed(NOVA_PRO_V2), verdicts: [VERDICT(NOVA_PRO)] });
+    expect(ran(both)).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", model: "amazon-bedrock/us.amazon.nova-pro-v2:0" });
+    expect(ran(plan({ mode: "on", sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: passed(NOVA_PRO_V2), verdicts: [VERDICT(NOVA_PRO_V2)] }))).toMatchObject({ mode: "on" });
+  });
+});
+
+describe("the latest driving test (F3)", () => {
+  const at = (testedAt: string, outcome: "passed" | "failed"): DrivingTestRecord => ({ provider: "amazon-bedrock", modelId: "amazon.nova-pro-v1:0", outcome, testedAt });
+  it("compares the times as times: an offset time is not ordered by its text", () => {
+    // 2026-11-01T00:00+05:00 is 2026-10-31T19:00Z, EARLIER than 2026-10-31T20:00Z although its text sorts later.
+    expect(drivingTestGate([at("2026-10-31T20:00:00.000Z", "failed"), at("2026-11-01T00:00:00.000+05:00", "passed")])(NOVA_PRO)).toBe(false);
+    expect(drivingTestGate([at("2026-11-01T00:00:00.000+05:00", "passed"), at("2026-10-31T20:00:00.000Z", "failed")])(NOVA_PRO)).toBe(false);
+    expect(drivingTestGate([at("2026-10-31T20:00:00.000Z", "passed"), at("2026-11-01T00:00:00.000+05:00", "failed")])(NOVA_PRO)).toBe(true);
+  });
+
+  it("a failed result wins a tie, in either order; an unreadable time is the oldest", () => {
+    expect(drivingTestGate([at("2026-11-01T00:00:00.000Z", "passed"), at("2026-11-01T00:00:00.000Z", "failed")])(NOVA_PRO)).toBe(false);
+    expect(drivingTestGate([at("2026-11-01T00:00:00.000Z", "failed"), at("2026-11-01T00:00:00.000Z", "passed")])(NOVA_PRO)).toBe(false);
+    expect(drivingTestGate([at("not a time", "passed"), at("2026-11-01T00:00:00.000Z", "failed")])(NOVA_PRO)).toBe(false);
+    expect(drivingTestGate([at("not a time", "failed"), at("2026-11-01T00:00:00.000Z", "passed")])(NOVA_PRO)).toBe(true);
+  });
+});
+
+describe("a forbidden model is forbidden whatever the case of its provider (F2)", () => {
+  const forbiddenGpt: ModelIdentifier[] = [{ provider: "openrouter", modelId: "openai/gpt-5" }];
+  it("matches by canonical name across provider spellings", () => {
+    expect(canonicalModelName({ provider: "OpenRouter", modelId: "openai/gpt-5" })).toBe(canonicalModelName(forbiddenGpt[0]!));
+    expect(forbiddenModelMatcher(forbiddenGpt)({ provider: "OpenRouter", modelId: "openai/gpt-5" })).toBe(true);
+    expect(forbiddenModelMatcher(forbiddenGpt)({ provider: "OPENROUTER", modelId: "OpenAI/GPT-5" })).toBe(true);
+    expect(forbiddenModelMatcher([{ provider: "OpenRouter", modelId: "openai/gpt-5" }])({ provider: "openrouter", modelId: "openai/gpt-5" })).toBe(true);
+  });
+
+  it("the second reviewer is not chosen from a forbidden model spelled in another case", () => {
+    const gpt: ModelIdentifier = { provider: "OpenRouter", modelId: "openai/gpt-5" };
+    expect(ran(plan({ forbidden: forbiddenGpt, sources: [SONNET, gpt], drivingTestPassed: passed(gpt) }))).toEqual({ skipped: "no-candidate" });
   });
 });
 

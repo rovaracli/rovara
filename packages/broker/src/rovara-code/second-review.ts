@@ -7,7 +7,7 @@
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
 import {
-  SecondOpinionSchema, canonicalModelName, blockingFindings, modelCompany,
+  SecondOpinionSchema, blockingFindings, canonicalModelName, modelCompany, secondReviewModelKey,
   type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondReviewMode, type SecondReviewSkipReason, type SecondReviewVerdict,
   type WorkflowReviewReport,
 } from "@agentx/contracts";
@@ -27,18 +27,19 @@ export interface DrivingTestRecord {
 }
 
 /**
- * The gate for "a model that has not passed the driving test is refused": a model passes only when the LATEST test on record for its provider and canonical name passed. A model never tested, a model
- * whose last test failed, and a model of a provider with no record are all refused. The canonical name is used, not the exact id, because a geography prefix (`eu.amazon.nova-pro-v1:0`) is the same
- * model; the test says whether the model can follow the tool and output shape, which a geography does not change.
+ * The gate for "a model that has not passed the driving test is refused": a model passes only when the LATEST test on record for its provider and exact revision (`secondReviewModelKey`) passed. A model never
+ * tested, a model whose last test failed, a test of another revision (v1 does not cover v2), and a model of a provider with no record are all refused. A geography (`eu.amazon.nova-pro-v1:0`) is the same
+ * model. "Latest" compares the times as times (not as text), an unreadable time is older than any readable one, and on a tie a failed result wins.
  */
 export function drivingTestGate(records: readonly DrivingTestRecord[]): (model: ModelIdentifier) => boolean {
+  const timeOf = (record: DrivingTestRecord): number => { const at = Date.parse(record.testedAt); return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at; };
   const latest = new Map<string, DrivingTestRecord>();
   for (const record of records) {
-    const key = `${record.provider.toLowerCase()}\0${canonicalModelName(record)}`;
+    const key = secondReviewModelKey(record);
     const seen = latest.get(key);
-    if (seen === undefined || seen.testedAt < record.testedAt) latest.set(key, record);
+    if (seen === undefined || timeOf(record) > timeOf(seen) || (timeOf(record) === timeOf(seen) && record.outcome === "failed")) latest.set(key, record);
   }
-  return (model) => latest.get(`${model.provider.toLowerCase()}\0${canonicalModelName(model)}`)?.outcome === "passed";
+  return (model) => latest.get(secondReviewModelKey(model))?.outcome === "passed";
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -79,10 +80,10 @@ const preferenceOf = (model: ModelIdentifier): number => {
 
 const selectionOf = (model: ModelIdentifier): ModelSelection => ({ provider: model.provider, modelId: model.modelId });
 
-/** Whether a verdict on record lets `model` run in `on`: the same canonical name, and both the replay check and the shadow phase passed. */
+/** Whether a verdict on record lets `model` run in `on`: the same exact revision (`secondReviewModelKey`), and both the replay check and the shadow phase passed. */
 const verified = (verdicts: readonly SecondReviewVerdict[], model: ModelIdentifier): boolean => {
-  const name = canonicalModelName(model);
-  return verdicts.some((verdict) => verdict.model === name && verdict.replayPassed && verdict.shadowPassed);
+  const key = secondReviewModelKey(model);
+  return verdicts.some((verdict) => verdict.model === key && verdict.replayPassed && verdict.shadowPassed);
 };
 
 /**

@@ -6,6 +6,7 @@
 // task page renders as plain text like the first review's.
 import { z } from "zod";
 import { MODEL_COMPANIES } from "./models.js";
+import { bedrockWithoutRegion } from "./models-node.js";
 import { WorkflowReviewReportSchema } from "./task-workflow.js";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -23,6 +24,16 @@ export const SecondReviewProjectSettingSchema = z.object({ otherCompany: SecondR
 export const SecondReviewCompanySettingSchema = z.object({ default: SecondReviewModeSchema.optional(), lock: SecondReviewModeSchema.optional() }).strict();
 export type SecondReviewProjectSetting = z.infer<typeof SecondReviewProjectSettingSchema>;
 export type SecondReviewCompanySetting = z.infer<typeof SecondReviewCompanySettingSchema>;
+
+/**
+ * What a driving test or a verdict is about: the exact model REVISION, not the family. `canonicalModelName` drops a Bedrock revision on purpose (so a forbidden `nova-pro` covers every version), but a test or a
+ * verdict on `amazon.nova-pro-v1:0` says nothing about `amazon.nova-pro-v2:0`. The key is the provider and the model id with a Bedrock geography dropped (`us.amazon.nova-pro-v1:0` and `eu.amazon.nova-pro-v1:0` are
+ * the same model, v1 and v2 are not); any other provider's id is lower-cased as it is.
+ */
+export function secondReviewModelKey(model: { provider: string; modelId: string }): string {
+  const provider = model.provider.toLowerCase();
+  return `${provider}:${provider === "amazon-bedrock" ? bedrockWithoutRegion(model.modelId) : model.modelId.toLowerCase()}`;
+}
 
 const modeRank = (mode: SecondReviewMode): number => SECOND_REVIEW_MODES.indexOf(mode);
 
@@ -167,7 +178,7 @@ export function secondReviewShadowPassed(result: SecondReviewShadowResult): bool
  * a person (an admin) can withdraw it. A verdict for one model says nothing about another.
  */
 export const SecondReviewVerdictSchema = z.object({
-  /** `canonicalModelName` of the candidate. */
+  /** `secondReviewModelKey` of the candidate: the exact revision, so a verdict on v1 never covers v2. */
   model: z.string().min(1).max(256),
   replayPassed: z.boolean(),
   shadowPassed: z.boolean(),
