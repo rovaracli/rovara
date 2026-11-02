@@ -308,13 +308,13 @@ export async function proveAfterAgent(input: {
   }
 }
 
-const defaultRealPath = (path: string): Promise<string> => realpath(path).catch(() => resolve(path));
+export const defaultRealPath = (path: string): Promise<string> => realpath(path).catch(() => resolve(path));
 
 /**
  * Whether two workspaces are the same folder, or one is inside the other, after links are followed and the paths are written out in full (a link, `..` or a trailing slash does not make a folder new).
  * The agent's `.git/config`, hooks and untracked files live in its workspace, so a fresh sandbox must share none of it.
  */
-async function sharesWorkspace(left: string, right: string, real: (path: string) => Promise<string>): Promise<boolean> {
+export async function sharesWorkspace(left: string, right: string, real: (path: string) => Promise<string>): Promise<boolean> {
   const [a, b] = await Promise.all([real(left).then((path) => resolve(path)), real(right).then((path) => resolve(path))]);
   return a === b || a.startsWith(b.endsWith(sep) ? b : `${b}${sep}`) || b.startsWith(a.endsWith(sep) ? a : `${a}${sep}`);
 }
