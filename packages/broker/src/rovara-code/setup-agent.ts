@@ -149,6 +149,8 @@ export interface SetupAgentView {
   limits: SetupAgentLimits;
   taskId?: string;
   startedAt?: string;
+  /** The run's session, when it has one: the Live wall's steer messages go to it (SH13). */
+  sessionId?: string;
   /** How the run ended. `proposed`, or a limit's word (a partial proposal), when `ready`. */
   stop?: SetupRunEndWord;
   summary?: SetupRunSummary;
@@ -191,10 +193,11 @@ export async function readState(
   const pointer = item as unknown as SetupAgentPointer;
   // The limits the run started with. A pointer whose limits do not read is held to the defaults (never looser).
   const limits = effectiveSetupAgentLimits(pointer.limits);
-  const base = { basedOnRevision: pointer.basedOnRevision, limits, taskId: pointer.taskId, startedAt: pointer.startedAt };
+  const base: Pick<SetupAgentView, "basedOnRevision" | "limits" | "taskId" | "startedAt" | "sessionId"> = { basedOnRevision: pointer.basedOnRevision, limits, taskId: pointer.taskId, startedAt: pointer.startedAt };
   const failed = (stop: SetupRunEndWord, failure: string, extra: Partial<SetupAgentView> = {}): { view: SetupAgentView; pointer: SetupAgentPointer } => ({ view: { status: "failed", ...base, stop, failure, ...extra }, pointer });
   const task = (await getItem(deps.documentClient, deps.tableName, taskKey(pointer.taskId))) as DeveloperTaskRecord | undefined;
   if (task === undefined || task.orgId !== orgId || task.purpose !== "setup_agent") return failed("infrastructure", SETUP_AGENT_FAILURES.stale);
+  if (typeof task.sessionId === "string") base.sessionId = task.sessionId;
   const result = task.setupAgentResult;
   if (result?.status === "ready") {
     return { view: { status: "ready", ...base, stop: result.stop, summary: result.summary, proposal: result.proposal }, pointer };
@@ -386,7 +389,7 @@ function derivedRequestId(requestId: string, purpose: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-async function maintainerOf(deps: SetupAgentDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {
+export async function maintainerOf(deps: SetupAgentDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {
   if (!deps.enabled) throw agentXError("NOT_FOUND", "route not found");
   const found = await deps.projectFor(caller, rawName);
   if (!projectAllows(found.role, "edit_settings")) throw agentXError("FORBIDDEN", WHO_MAY);

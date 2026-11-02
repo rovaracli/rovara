@@ -11,14 +11,19 @@ import { latestRevision } from "../../org/project-settings.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { getSetupAgent, readState, startSetupAgent, stopSetupAgent, type SetupAgentDependencies, type SetupAgentStarter } from "../../rovara-code/setup-agent.js";
 import { runSetupCommand } from "../../rovara-code/setup-command.js";
+import { confirmSetupAgent, type SetupConfirmDependencies } from "../../rovara-code/setup-confirm.js";
+import { listHostAsks } from "../../rovara-code/setup-host-ask.js";
 import { readSetupJournal } from "../../rovara-code/setup-journal.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
-import { requireFreshSignIn } from "./test-environment-wizard.js";
+import { editTestEnvironment, requireFreshSignIn } from "./test-environment-wizard.js";
+import { mergeDraftWithApproved, testEnvStoreOf } from "./test-environment.js";
+import { readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal))?$/u;
+export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal|confirm))?$/u;
 
 /**
  * The starter a setup run uses: the ordinary agent run start (so the person's role, the payer RULES, the allowed models, the budget floor and the run limit all apply as for any task) with the run's
@@ -81,7 +86,18 @@ export async function routeSetupAgent(deps: DeveloperRouteDependencies, caller: 
   if (tail === "stop" && request.method === "POST") return stopSetupAgent(setup, caller, name, jsonBody(request));
   if (tail === "command" && request.method === "POST") return runSetupCommand(setup, caller, name, jsonBody(request));
   if (tail === "journal" && request.method === "GET") return readJournalRoute(setup, caller, name, url);
+  if (tail === "confirm" && request.method === "POST") return confirmSetupAgent(confirmDepsOf(deps, setup, caller, env), caller, name, jsonBody(request));
   return undefined;
+}
+
+/** The confirm step's dependencies: the test-environment store and its proposal path (the maintainer's own `editTestEnvironment`), and the approved environment the proposal keeps what a person set in. */
+function confirmDepsOf(deps: DeveloperRouteDependencies, setup: SetupAgentDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv): SetupConfirmDependencies {
+  const store = testEnvStoreOf(deps);
+  return {
+    ...setup, testEnvironmentOn: testEnvironmentEnabled(env),
+    merge: async (project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(store, caller.orgId, project))?.environment),
+    propose: async (who, project, role, environment) => editTestEnvironment(store, { orgId: who.orgId, developerId: who.developerId, project, role, environment }),
+  };
 }
 
 /** `GET .../setup-agent/journal?after=<n>`: the running (or last) run's journal entries after position `n`, for a maintainer. The run is the project's pointer's: never a task named by the client. */
@@ -93,7 +109,9 @@ async function readJournalRoute(setup: SetupAgentDependencies, caller: Developer
   const state = await readState(setup, caller.orgId, found.name, latest.revision);
   const after = Number(url.searchParams.get("after") ?? "0");
   if (!Number.isInteger(after) || after < 0 || after > 400) throw agentXError("CONFIG_INVALID", "after: a journal position");
-  if (state.pointer === undefined) return new StatusReply(200, { entries: [], status: state.view.status });
+  // The websites the run asked for: the host and where the ask stands, nothing else (a card is decided on the decisions page, by an administrator).
+  const asks = (await listHostAsks(setup, caller.orgId, found.name, ["open", "approved", "refused"])).slice(0, 50).map((ask) => ({ host: ask.host, status: ask.state, ...(ask.journalN === undefined ? {} : { journalN: ask.journalN }), ...(ask.from === undefined ? {} : { from: ask.from }) }));
+  if (state.pointer === undefined) return new StatusReply(200, { entries: [], status: state.view.status, hostAsks: asks });
   const entries = await readSetupJournal(setup, { orgId: caller.orgId, project: found.name, taskId: state.pointer.taskId }, after);
-  return new StatusReply(200, { status: state.view.status, entries });
+  return new StatusReply(200, { status: state.view.status, entries, hostAsks: asks });
 }
