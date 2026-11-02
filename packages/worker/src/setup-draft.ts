@@ -12,7 +12,7 @@ import {
   DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal,
 } from "@agentx/contracts";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
-import { dropUntrackedCitations, isTracked, type TrackedPaths } from "./setup-citations.js";
+import { dropUntrackedCitations, isTracked, trackedScanOf, type TrackedPaths } from "./setup-citations.js";
 
 export interface SetupDraftRepository { name: string; path: string; resolvedCommit?: string | undefined }
 
@@ -126,7 +126,8 @@ export async function readSetupProposalAnswer(
   },
 ): Promise<SetupProposalOutcome> {
   const answer = input.tracked === undefined ? setupProposalAnswerOf(finalText) : dropUntrackedCitations(setupProposalAnswerOf(finalText), input.tracked);
-  const scan = input.scan === undefined ? await scanRepositories(input.rootPath, input.repositories, { metaRepo: input.metaRepo }) : structuredClone(input.scan);
+  const scanned = input.scan === undefined ? await scanRepositories(input.rootPath, input.repositories, { metaRepo: input.metaRepo }) : structuredClone(input.scan);
+  const scan = input.tracked === undefined ? scanned : trackedScanOf(scanned, input.tracked);
   const base: Record<string, unknown> = typeof answer === "object" && answer !== null && !Array.isArray(answer) ? { ...(answer as Record<string, unknown>) } : {};
   const answered = Object.keys(base).length > 0;
   if (!answered) scan.notes.push("Rovara's model did not give an answer that could be read, so only what Rovara found by looking in the folders is listed.");

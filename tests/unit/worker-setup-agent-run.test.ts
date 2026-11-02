@@ -1,7 +1,7 @@
 // The setup run, put together (SH14, worker side), with every outside thing a fake: Docker, the model session and the broker. The things that matter: the run reads the commit the broker resolved
 // (never a pull request head); the sandbox is on the run's own network and the worker is not; the agent's shell and a person's command share ONE serialized no-secret base; the journal, host asks and a
 // person's commands travel over the one callback and never name a person; the sandbox is removed BEFORE the last tracked-files look; and the network is removed at the end, whatever happened.
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,10 +9,11 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
 import { runSetupAgent, serialize, setupRepositoriesOf, type SetupRunInput, type SetupRunPorts } from "../../packages/worker/src/setup-agent-run.js";
 import { createSetupSandbox, type TrackedFilesVerdict } from "../../packages/worker/src/setup-agent.js";
-import { helperRunArgs, networkCreateArgs, setupNetworkAddresses, setupNetworkName, setupNetworkSlot, startRunNetwork } from "../../packages/worker/src/setup-network.js";
+import { helperRunArgs, networkCreateArgs, setupWorkspaceKey, setupNetworkAddresses, setupNetworkName, setupNetworkSlot, startRunNetwork } from "../../packages/worker/src/setup-network.js";
 import type { PiSessionHandle } from "../../packages/worker/src/pi-session.js";
 import type { RunNetwork } from "../../packages/worker/src/setup-network.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
+import { workspaceKey } from "../../packages/worker/src/task-sandbox.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -313,6 +314,25 @@ describe("the network and the helper (deployment code; not run against Docker he
     await expect(startRunNetwork(broken.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
     expect(broken.calls.some((args) => args[0] === "network" && args[1] === "rm")).toBe(true);
     expect(broken.calls.some((args) => args[0] === "rm")).toBe(true);
+  });
+  it("a host interface name that is taken is cured by the next slot; a network of this name is not retried, and its error is never repeated", async () => {
+    let creates = 0;
+    const taken = fakeDocker((args) => (args[0] === "network" && args[1] === "create" ? (++creates === 1 ? { exitCode: 1, stderr: "Error response from daemon: bridge device rvbs7 already exists" } : { exitCode: 0 }) : { exitCode: 0 }));
+    await startRunNetwork(taken.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" });
+    expect(creates).toBe(2);
+    let same = 0;
+    const clash = fakeDocker((args) => (args[0] === "network" && args[1] === "create" ? (++same, { exitCode: 1, stderr: "network with name agentx-setup-abc already exists" }) : { exitCode: 0 }));
+    await expect(startRunNetwork(clash.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
+    expect(same).toBe(1);
+  });
+  it("the workspace label is the key of the REAL path, so a root reached through a link is the same workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "setup-ws-"));
+    roots.push(root);
+    const link = `${root}-link`;
+    await symlink(root, link);
+    roots.push(link);
+    expect(await setupWorkspaceKey(link)).toBe(await setupWorkspaceKey(root));
+    expect(await setupWorkspaceKey(link)).toBe(workspaceKey(await realpath(root)));
   });
   it("gives up with one fixed sentence when no subnet is free, and never repeats the docker error", async () => {
     const full = fakeDocker((args) => (args[0] === "network" && args[1] === "create" ? { exitCode: 1, stderr: "Pool overlaps" } : { exitCode: 0 }));

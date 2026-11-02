@@ -97,11 +97,12 @@ require_model_proxy() { ! named_environment || grep -q '^AGENTX_MODEL_PROXY_URL=
 worker_network_args() {
   if named_environment; then printf '%s\n' --network bridge --publish 8080:8080; else printf '%s\n' --network host; fi
 }
-# Also, for a setup run (rvbs<slot> bridges, which the firewall unit already walls as rvb* bridges: the host's ports, every private range): the helper's port 53 in 172.29.0.0/16 between those bridges, inserted first so
-# the metadata rejection stays on top and this sits above the range drops. Docker's own isolation keeps one run's network from another's.
+# Also, for a setup run (rvbs<slot> bridges, which the firewall unit already walls as rvb* bridges: the host's ports, every private range). With br_netfilter a packet inside one bridge passes DOCKER-USER with
+# -i and -o both that bridge, and the 172.16/12 drop would also drop the helper's replies (source port 53), so two things sit above the range drops, inserted first so the metadata rejection stays on top:
+# replies of a connection already allowed (conntrack), and the helper's port 53 for traffic that stays INSIDE one bridge (physdev), so one run's sandbox cannot reach another run's helper.
 block_imds() {
   local rule
-  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
+  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
     iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   done
 }

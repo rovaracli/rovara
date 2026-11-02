@@ -39,6 +39,8 @@ export const SETUP_COMMAND_TAIL_BYTES = 4_096;
 /** What a refused command prints, in fixed words. */
 export const SETUP_COMMAND_REFUSED_TEXT = "Rovara did not run this command because the setup run has ended.";
 const CAPTURE_BYTES = 64 * 1024;
+/** Said before a command's output when only its last 4 KiB is shown. */
+export const SETUP_OUTPUT_CUT_TEXT = "[the earlier output was left out; this is the last part]";
 
 // ---- no credential reaches the sandbox
 
@@ -329,18 +331,19 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
         const result = await input.base.exec(command, cwd, {
           ...options,
           timeout,
-          onData: (data) => {
-            captured = (captured + data.toString("utf8")).slice(-CAPTURE_BYTES);
-            options.onData(data);
-          },
+          // What the command prints is kept here and the model is shown only its last 4 KiB (below), never the stream: a turn's input is bounded by the margin the governor prices (`SETUP_NEXT_TURN_MARGIN_TOKENS`).
+          // Pi's own cap on a tool's output (2,000 lines or 50 KB) still applies on top, and is the larger of the two.
+          onData: (data) => { captured = (captured + data.toString("utf8")).slice(-CAPTURE_BYTES); },
         });
         exitCode = result.exitCode;
       } catch (error) {
         failure = error;
         timedOut = error instanceof Error && error.message.startsWith("timeout:");
       }
+      const tail = commandTail(captured);
+      if (tail !== "") options.onData(Buffer.from(`${Buffer.byteLength(captured, "utf8") > Buffer.byteLength(tail, "utf8") ? `${SETUP_OUTPUT_CUT_TEXT}\n` : ""}${tail}`));
       const record: SetupCommandRecord = {
-        command: redactText(command), flagged, ...(decision?.allow === true && decision.ticket !== undefined ? { ticket: decision.ticket } : {}), exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail: commandTail(captured), startedAt,
+        command: redactText(command), flagged, ...(decision?.allow === true && decision.ticket !== undefined ? { ticket: decision.ticket } : {}), exitCode, durationMs: Math.max(0, Math.round(now() - startedAt)), timedOut, tail, startedAt,
       };
       await input.hooks?.afterCommand?.(record);
       if (input.checkFiles !== undefined) {

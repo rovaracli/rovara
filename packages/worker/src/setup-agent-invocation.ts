@@ -8,8 +8,8 @@ import type { PreparationManifest } from "./prepare.js";
 import type { WorkerCancellationController } from "./cancel.js";
 import { runSetupAgent, type SetupRunResult } from "./setup-agent-run.js";
 import { createSetupSandbox } from "./setup-agent.js";
-import { startRunNetwork } from "./setup-network.js";
-import { TASK_SANDBOX_IMAGE_ENVIRONMENT, workspaceKey, type TaskShellSelection } from "./task-sandbox.js";
+import { setupWorkspaceKey, startRunNetwork } from "./setup-network.js";
+import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskShellSelection } from "./task-sandbox.js";
 import { setupModelPrice } from "./setup-agent-price.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 
@@ -55,7 +55,7 @@ export async function runSetupAgentInvocation(
     repositories: manifest.repositories,
     ...(manifest.meta === undefined ? {} : { metaRepo: manifest.meta.name }),
     ports: {
-      startNetwork: () => startRunNetwork(docker, { taskId: invocation.operationId, image, workspace: workspaceKey(canonicalRoot) }),
+      startNetwork: async () => startRunNetwork(docker, { taskId: invocation.operationId, image, workspace: await setupWorkspaceKey(canonicalRoot) }),
       createSandbox: (network) => createSetupSandbox({
         rootPath: canonicalRoot, taskId: invocation.operationId, docker, image, environment,
         dns: [network.helperIp], network: { name: network.name, ip: network.sandboxIp },

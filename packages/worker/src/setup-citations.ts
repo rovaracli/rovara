@@ -6,6 +6,7 @@
 // The broker then re-reads what is left from GitHub at the same commit (verifyProposalDetailed) before anything shows the proposal.
 import { agentXError } from "@agentx/contracts";
 import { runIsolatedGit } from "./isolated-repository.js";
+import type { SetupScan } from "./setup-scan.js";
 
 export type TrackedPaths = ReadonlyMap<string, ReadonlySet<string>>;
 const MAX_PATHS = 200_000;
@@ -68,3 +69,22 @@ export function dropUntrackedCitations(answer: unknown, tracked: TrackedPaths): 
 
 /** Whether a repository's file is in the commit (the devcontainer's "exists"). */
 export const isTracked = (tracked: TrackedPaths, repo: string, path: string): boolean => tracked.get(repo)?.has(normal(path)) === true;
+
+/**
+ * The scan's own findings without anything that came from a file the commit does not hold: the scan reads the working tree, and a leftover `kalmius/project.json` or `.claude/settings.json` that was never committed
+ * would otherwise become a proposal item. Each category goes through the same citation rule as the model's answer; a hook or MCP config file the commit lacks is not reported; a spec target with no citation left is
+ * dropped. Pure; the scan is not changed.
+ */
+export function trackedScanOf(scan: SetupScan, tracked: TrackedPaths): SetupScan {
+  const list = (items: unknown[]): unknown[] => dropUntrackedCitations(items, tracked) as unknown[];
+  const specTarget = scan.specTarget === undefined ? undefined : (dropUntrackedCitations([scan.specTarget], tracked) as unknown[])[0];
+  const { specTarget: _specTarget, ...rest } = scan;
+  void _specTarget;
+  return {
+    ...rest,
+    repositories: list(scan.repositories), setup: list(scan.setup), tests: list(scan.tests), checks: list(scan.checks), knowledge: list(scan.knowledge), sources: list(scan.sources),
+    foundNotUsed: scan.foundNotUsed.filter((found) => tracked.get(found.repo) === undefined || [...(tracked.get(found.repo) ?? [])].some((path) => path === found.path || path.startsWith(`${found.path}/`))),
+    notes: [...scan.notes],
+    ...(specTarget === undefined ? {} : { specTarget }),
+  };
+}

@@ -517,7 +517,7 @@ export async function taskOperationParts(
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
       agentSkills: (setupRunStepOf(input.workflowMode, applied?.agentStep)?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
-      agentTools: givesAgentTools(applied),
+      agentTools: runGivesAgentTools(input.workflowMode, applied),
       contextTools: contextToolsOn,
       setupAgent: input.workflowMode === "SETUP_AGENT",
     }),
@@ -591,6 +591,11 @@ export async function taskOperationParts(
  * The plan step's settings a setup run is sent: NONE. The step's time limit would cut a setup run short (its clock is the run's own wall-clock limit, set when it started, which can be longer than a planning
  * step's), and its skills and tool list are the coding agent's, not the setup run's (the worker builds the setup session itself). Every other mode keeps its step.
  */
+/** Whether the run is served connector tools: an agent step's grants, never a setup run's (it has a shell and no connector). */
+export function runGivesAgentTools(mode: string | undefined, applied: Pick<AppliedAgentStep, "agentStep" | "toolGrants"> | undefined): boolean {
+  return mode !== "SETUP_AGENT" && givesAgentTools(applied);
+}
+
 export function setupRunStepOf<T>(mode: string | undefined, step: T | undefined): T | undefined {
   return mode === "SETUP_AGENT" ? undefined : step;
 }

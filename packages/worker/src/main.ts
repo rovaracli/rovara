@@ -28,8 +28,8 @@ import { executeWorkerCancelInvocation } from "./cancel-invocation.js";
 import { handleSteerInvocation } from "./steer-invocation.js";
 import { handlePeekInvocation } from "./peek-invocation.js";
 import { removeLeftoverMaskVolumes } from "./devcontainer.js";
-import { removeLeftoverTaskSandboxes, taskShellSelection, workspaceKey } from "./task-sandbox.js";
-import { removeLeftoverSetupRuns } from "./setup-network.js";
+import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
+import { removeLeftoverSetupRuns, setupWorkspaceKey } from "./setup-network.js";
 import { createDockerCli } from "./swebench/containers.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
@@ -56,7 +56,7 @@ if (taskShellSelection().kind === "sandbox") {
     (error: unknown) => { console.error(`could not remove leftover task sandboxes: ${error instanceof Error ? error.message : String(error)}`); },
   );
   // SH14: a setup run's helper container and network (a crash skips their removal); they go before anything starts, so their /24 slots are free again.
-  await removeLeftoverSetupRuns(workspaceKey(rootPath), createDockerCli()).then(
+  await removeLeftoverSetupRuns(await setupWorkspaceKey(rootPath), createDockerCli()).then(
     (removed) => { if (removed.containers + removed.networks > 0) console.log(JSON.stringify({ component: "worker", event: "setup-run.leftovers.removed", ...removed })); },
     (error: unknown) => { console.error(`could not remove leftover setup runs: ${error instanceof Error ? error.message : String(error)}`); },
   );

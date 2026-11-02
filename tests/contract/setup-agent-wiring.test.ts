@@ -6,7 +6,7 @@ import {
   SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey,
 } from "../../packages/contracts/src/index.js";
 import * as runs from "../../packages/broker/src/agents/runs.js";
-import { setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
+import { runGivesAgentTools, setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { recordRunCost } from "../../packages/broker/src/spend/estimate.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -107,6 +107,13 @@ describe("with the switch on", () => {
     const step = { id: "plan", timeoutSeconds: 600 };
     expect(setupRunStepOf("SETUP_AGENT", step)).toBeUndefined();
     for (const mode of ["PLAN", "IMPLEMENT", "REVIEW", "UNDERSTAND", undefined]) expect(setupRunStepOf(mode, step)).toBe(step);
+  });
+
+  it("serves a setup run no connector tools, even when an agent step grants them", () => {
+    const granted = { agentStep: { kind: "agent" }, toolGrants: true } as never;
+    expect(runGivesAgentTools("SETUP_AGENT", granted)).toBe(false);
+    expect(runGivesAgentTools("IMPLEMENT", granted)).toBe(true);
+    expect(runGivesAgentTools(undefined, granted)).toBe(true);
   });
 
   it("another operation of the same install does not get the action", async () => {

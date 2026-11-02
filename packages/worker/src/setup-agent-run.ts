@@ -73,6 +73,8 @@ export interface SetupRunResult {
   setupRunSummary: SetupRunSummary;
 }
 
+/** A cache write costs 1.25 times the input price: the extra quarter, on top of the input price already counted for it. */
+export const SETUP_CACHE_WRITE_EXTRA = 0.25;
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 /**
@@ -171,12 +173,14 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
       const message = (event as { type?: unknown; message?: { role?: unknown; content?: unknown; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } }).message;
       if ((event as { type?: unknown }).type === "message_end" && message?.role === "assistant") {
         finalText = textOf(message.content) ?? finalText;
-        const used = (message.usage?.input ?? 0) + (message.usage?.cacheRead ?? 0) + (message.usage?.cacheWrite ?? 0);
+        const written = message.usage?.cacheWrite ?? 0;
+        const used = (message.usage?.input ?? 0) + (message.usage?.cacheRead ?? 0) + written;
         const produced = message.usage?.output ?? 0;
         turns += 1;
         if (used > 0) lastInputTokens = used;
         lastOutputTokens = produced;
-        ownSpendUsd += (used * price.inputPerMTok + produced * price.outputPerMTok) / 1_000_000;
+        // Cache writes cost 1.25 times the input price (a read is priced as input here: dearer than it is, never cheaper).
+        ownSpendUsd += ((used + written * SETUP_CACHE_WRITE_EXTRA) * price.inputPerMTok + produced * price.outputPerMTok) / 1_000_000;
         // A spent budget on the proxy (the model call itself was refused for it) is the budget limit, in the run's own words.
         const outcome = assistantOutcome(event);
         const failure = failedTurn(outcome);

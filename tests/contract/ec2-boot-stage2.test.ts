@@ -19,10 +19,9 @@ const legacy = read("packages/worker/ec2/boot-legacy.sh");
 
 /**
  * boot-legacy.sh: boot.sh as it stood on this plan's branch before the split (308a2cf8, the start-of-plan merge of origin/mainline), brought forward by each merge of origin/mainline.
- * sh-setup-wire (SH14): the launcher's `block_imds` also opens a setup run's helper port 53 (named environments only; the legacy worker never runs it), in this file and in boot-stage2.sh alike.
  * Round 4 (mainline 46973735): re-taken after the three-way merge of mainline's boot.sh changes into it (kernel pin, MODEL3 worker environment, qualification diagnostics).
  */
-export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "9cc46e302f2273f083fa3fda74af6d93c04bb2328633c7d86164874de2f68977";
+export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "a731533fe3cd7bca59455befabed6d9f1747022b005a3a1db4e8bf8f5c4c19e1";
 
 /** Constants only the moved functions use: their declarations moved with them, and nothing else in the script changed. */
 const MOVED_DECLARATIONS = [
@@ -42,9 +41,23 @@ const MOVED_FUNCTIONS = [
   "start_e2e_qualification",
 ] as const;
 
+/** `block_imds` with the comment lines just above it. It is the only function allowed to differ between the legacy script and stage 2 (see below). */
+const BLOCK_IMDS_WITH_COMMENT = /(?:^#[^\n]*\n)*^block_imds\(\) \{\n[\s\S]*?^\}\n/mu;
+
 describe("boot-legacy.sh", () => {
   it("is boot.sh as it was at the branch base, byte for byte", () => {
     expect(sha256(legacy)).toBe(BOOT_SH_AT_BRANCH_BASE_SHA256);
+  });
+
+  it("stage 2's block_imds is the legacy one plus the setup run's rules, in a fixed order, and nothing else", () => {
+    const legacyBlock = BLOCK_IMDS_WITH_COMMENT.exec(legacy)?.[0] ?? "";
+    const stageBlock = BLOCK_IMDS_WITH_COMMENT.exec(stage2)?.[0] ?? "";
+    expect(legacyBlock).toContain("block_imds() {");
+    // Every legacy rule is still there, in order and last (so the metadata rejection is inserted after the setup rules and is above them).
+    const rulesOf = (block: string) => [...block.matchAll(/"((?:DOCKER-USER|OUTPUT) [^"]+)"/gu)].map((match) => match[1]);
+    expect(rulesOf(stageBlock).slice(-2)).toEqual(rulesOf(legacyBlock));
+    expect(rulesOf(stageBlock).slice(0, -2).every((rule) => /^DOCKER-USER -i rvbs\+ -o rvbs\+ /u.test(rule!))).toBe(true);
+    expect(stageBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in"))).toEqual(legacyBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in")));
   });
 
   it("knows nothing of stage 2: a legacy worker's single-file boot is unchanged (R58)", () => {
@@ -73,7 +86,8 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     }
     // Everything from pull_contained_image to the end of start_e2e_qualification is in stage 2 unchanged.
     const moved = legacy.slice(legacy.indexOf(firstMoved), mainStart + 1).trimEnd();
-    expect(stage2).toContain(`\n${moved}\n`);
+    // ONE named exception: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it. Everything else is verbatim.
+    expect(stage2.replace(BLOCK_IMDS_WITH_COMMENT, "")).toContain(`\n${moved.replace(BLOCK_IMDS_WITH_COMMENT, "")}\n`);
     for (const name of MOVED_FUNCTIONS) {
       expect(stage1, `${name} left boot.sh`).not.toContain(`\n${name}() {`);
       expect(stage2, `${name} is in stage 2`).toContain(`\n${name}() {`);

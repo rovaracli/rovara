@@ -22,8 +22,11 @@
 //      the public internet and the host's resolvers' port 53 stay open, which is the path the helper's upstream and the sandbox's allowed websites use. Check from inside a sandbox: the gateway (172.29.<slot>.1) on any port, a 10.x address,
 //      the helper on a port other than 53, and another run's helper all fail; the helper's port 53 and a public name resolve. Docker's own isolation chains (after DOCKER-USER) keep one run's network from another's.
 import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { agentXError } from "@agentx/contracts";
 import type { DockerCli } from "./swebench/containers.js";
+import { workspaceKey } from "./task-sandbox.js";
 
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
 export const SETUP_NETWORK_LABEL = "agentx.setup-run";
@@ -35,6 +38,11 @@ export const SETUP_NETWORK_SLOTS = 253;
 export const SETUP_BRIDGE_PREFIX = "rvbs";
 export const SETUP_HELPER_ENTRY = "/opt/agentx/packages/worker/dist/setup-dns-watch-helper.js";
 const NODE = "/usr/local/bin/node";
+
+/** The label value of a workspace: the key of its REAL path, so the worker that starts a run and the one that cleans up after a crash agree even when the root is reached through a link. */
+export async function setupWorkspaceKey(rootPath: string): Promise<string> {
+  return workspaceKey(await realpath(resolve(rootPath)).catch(() => resolve(rootPath)));
+}
 
 export interface RunNetwork {
   name: string;
@@ -103,8 +111,8 @@ export async function startRunNetwork(docker: DockerCli, input: StartRunNetworkI
     const candidate = setupNetworkAddresses(setupNetworkSlot(input.taskId, attempt));
     const created = await call(networkCreateArgs(name, input.taskId, candidate, input.workspace));
     if (created.exitCode === 0) addresses = candidate;
-    // A subnet another run has: try the next. Any other failure ends it.
-    else if (!/pool overlaps|address already in use|overlap|already exists/iu.test(`${created.stderr}${created.stdout}`)) break;
+    // A subnet another run has, or a host interface name that is taken, is cured by the next slot: try it. A network of this name (the same operation twice) is not ("network with name ... already exists" names no bridge), and neither is any other failure: they end it.
+    else if (!/pool overlaps|address already in use|overlap|(?:bridge|device|interface)\b[^\n]*already exists/iu.test(`${created.stderr}${created.stdout}`)) break;
   }
   const fail = async (): Promise<never> => {
     await call(["rm", "--force", helperName]);
