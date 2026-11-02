@@ -2,7 +2,7 @@
 // every kind of server. A real change (other words, other case, an invisible character) must. HTTP servers use the same hash, so an address-based server whose server re-wraps its
 // descriptions between two probes still gets approved.
 import { describe, expect, it } from "vitest";
-import { approveMcpServer, dynamoMcpServerStore, normaliseDescription, proposeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { approveMcpServer, dynamoMcpServerStore, newServerId, normaliseDescription, proposeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import type { DiscoveredTool } from "../../../packages/broker/src/context-sources/settings.js";
 import { GET_TOOL, NOW, ORG, SEARCH_TOOL } from "./fixtures.js";
@@ -79,5 +79,17 @@ describe("SR-7 H3: an address-based (HTTP) server uses the same normalised hash 
       await expect(approveMcpServer(w.deps, admin, entry.serverId), label).rejects.toMatchObject({ code: "CHANGE_STALE" });
       expect((await w.deps.store.get(ORG, entry.serverId))!.status, label).toBe("awaiting_approval");
     }
+  });
+});
+
+describe("review S1: the id of a package-run server, and so the name of its secrets, can be told from an address-based server's", () => {
+  it("starts a package-run id with mcppkg and never lets an address-based id start with it, whatever the random part is", () => {
+    expect(newServerId("stdio", "0123456789abcdef0123")).toBe("mcppkg0123456789abc");
+    expect(newServerId("stdio", "0123456789abcdef0123")).toMatch(/^mcp[a-z0-9]{6,24}$/u);
+    for (const random of ["0123456789abcdef", "pkgabcdef012345", "pkg012345", "PKGx012345", "ppkg1234567890ab", "xpkg012345", "mcppkg123456"]) {
+      expect(newServerId("http", random), random).not.toMatch(/^mcppkg/u);
+      expect(newServerId("http", random), random).toMatch(/^mcp[a-z0-9]{6,24}$/u);
+    }
+    expect(newServerId("http", "pkgabcdef012345").startsWith("mcpxpkg")).toBe(true);
   });
 });

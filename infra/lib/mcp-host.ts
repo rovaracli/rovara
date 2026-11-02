@@ -17,6 +17,7 @@ import {
   Aws, CfnOutput, Duration, RemovalPolicy, Stack, aws_ec2 as ec2, aws_ecs as ecs, aws_elasticloadbalancingv2 as elbv2, aws_iam as iam, aws_kms as kms, aws_logs as logs,
   aws_route53 as route53, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_servicediscovery as servicediscovery, custom_resources as cr,
 } from "aws-cdk-lib";
+import { PACKAGE_SERVER_ID_PREFIX } from "@agentx/contracts";
 import { Construct } from "constructs";
 import { endpointPolicyDocument, enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
@@ -67,7 +68,7 @@ export interface McpHostProps {
   /** The install's table; the controller's role reaches only the three MCP partitions in it. */
   stateTableArn: string;
   stateTableName: string;
-  /** The one org of an Enterprise install, and the install's environment name (its secrets are `agentx/<env>/org-connectors/<org>/mcp*`). */
+  /** The one org of an Enterprise install, and the install's environment name (its package-run secrets are `agentx/<env>/org-connectors/<org>/mcppkg*`). */
   orgId: string;
   agentxEnv: string;
   /** The ranges the INSTALL task may reach over HTTPS besides the endpoints: the customer's package registry. Never the whole internet. Empty (and required to be) with `publicNpm`. */
@@ -304,7 +305,10 @@ export class McpHost extends Construct {
       sid: "PullTheRunnerImage", actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], resources: [repositoryArn],
     }));
     this.runnerExecutionRole.addToPolicy(new iam.PolicyStatement({ sid: "RunnerLogs", actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [runnerLogs.logGroupArn] }));
-    const secretPrefix = `arn:${Aws.PARTITION}:secretsmanager:${region}:${stack.account}:secret:agentx/${props.agentxEnv}/org-connectors/${props.orgId}/mcp`;
+    // Review S1: only PACKAGE-RUN servers' secrets, whose names start `mcppkg` (the id of such a server; see PACKAGE_SERVER_ID_PREFIX in the contracts). An address-based server's token is under an id
+    // that never starts so, and its path is the same org path: with the older `mcp*` this role could read it. A controller that names another secret, or registers a definition with this role as its
+    // TASK role, now reaches package-run secrets of this org only.
+    const secretPrefix = `arn:${Aws.PARTITION}:secretsmanager:${region}:${stack.account}:secret:agentx/${props.agentxEnv}/org-connectors/${props.orgId}/${PACKAGE_SERVER_ID_PREFIX}`;
     this.runnerExecutionRole.addToPolicy(new iam.PolicyStatement({
       sid: "ReadApprovedServerSecrets", actions: ["secretsmanager:GetSecretValue"], resources: [`${secretPrefix}*`],
       conditions: { StringEquals: { "secretsmanager:ResourceTag/rovara:org": props.orgId } },

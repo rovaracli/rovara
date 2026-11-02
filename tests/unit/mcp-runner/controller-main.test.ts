@@ -1,7 +1,7 @@
 // Stdio MCP host redesign, task T6: the controller's process. It refuses to start as root (this inverts the lane E host), reads its settings strictly, and serves only approved entries.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { controllerConfigFromEnv, legacyToolsHashOf, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
+import { controllerConfigFromEnv, legacyToolsHashOf, packageSecretName, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
 import type { McpServerEntry, McpStdioSpec } from "@agentx/contracts";
 import { legacyToolsHash, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 
@@ -81,12 +81,12 @@ describe("controller main: the registry", () => {
   });
   it("T9: a test reads a proposal's secret only while the proposal has no entry or its entry waits for approval (never an approved, disabled or other entry's)", async () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
-    expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
+    expect(await registry(undefined).probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
     expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
     for (const status of ["approved", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status, hasSecret: true })).probeSecret!("mcpsim000001"), status).toBeUndefined();
     // no resolver, or one that fails: no secret
-    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa").probeSecret!("mcpnew0000001")).toBeUndefined();
-    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcpnew0000001")).toBeUndefined();
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa").probeSecret!("mcppkgnew00001")).toBeUndefined();
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcppkgnew00001")).toBeUndefined();
   });
   it("fix round 2 N1: a paused entry's secret goes only into the review and re-approve test of that same server's pinned package", async () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
@@ -121,6 +121,16 @@ describe("controller main: the registry", () => {
     await expect(reg(async () => ({ entries, unreadable: 1 })).referencedBundles!()).rejects.toThrow(/cannot be read/u);
     await expect(reg(async () => { throw new Error("table down"); }).referencedBundles!()).rejects.toThrow();
   });
+  it("review N1: with no entry, a test reads a secret only under a package-run proposal id (an address-based server\'s token, between its storing and its entry, is never handed out)", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const none = registry(undefined);
+    expect(await none.probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
+    for (const id of ["mcpnew0000001", "mcp0123456789abcdef", "mcpxpkgabcdef01", "mcppk", "mcpPKGnew0001"]) expect(await none.probeSecret!(id), id).toBeUndefined();
+  });
+  it("review S1: the name of a secret a task may be given is built only for a package-run id, and is the one the execution role reads", () => {
+    expect(packageSecretName("ent", "org_aaaaaaaaaaaaaaaaaaaa", "mcppkg0123456789abc")).toBe("agentx/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcppkg0123456789abc");
+    for (const id of ["mcp0123456789abcdef", "mcpsim000001", "mcpxpkg0123456789", "../mcppkg0123456", "mcppkg/../x", ""]) expect(() => packageSecretName("ent", "org_aaaaaaaaaaaaaaaaaaaa", id), id).toThrow(/package-run/u);
+  });
   it("SR-7 H1: the equality check also holds the destinations, the size and the tarball's integrity: a paused entry's secret never goes to a task that may reach other addresses, or is another size, or another tarball", async () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
     const withSecret: McpStdioSpec = { ...spec, secretEnv: ["API_KEY"], destinations: [{ host: "jira.corp.example", port: 443 }, { host: "wiki.corp.example", port: 8443 }], size: { cpu: 512, memoryMiB: 1024 } };
@@ -149,7 +159,7 @@ describe("controller main: the registry", () => {
     expect(await registry(http).probeSecret!("mcpsim000001")).toBeUndefined();
     expect(await registry({ ...http, status: "changed_needs_review" }).probeSecret!("mcpsim000001")).toBeUndefined();
     expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
-    expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
+    expect(await registry(undefined).probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
   });
   it("fix round 2: the old hash (names and schemas only) is what a version 1 approval carries, and the controller is given the means to compute it", () => {
     const tools = [{ name: "b", description: "one", inputSchema: { type: "object" } }, { name: "a", description: "two", inputSchema: { type: "object" } }];

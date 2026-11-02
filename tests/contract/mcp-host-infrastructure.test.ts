@@ -281,7 +281,7 @@ describe("no task has a task role, and the install task is a static, locked-down
 });
 
 describe("the runner execution role", () => {
-  it("is assumed by ECS tasks of this account only and reads only this org's `mcp*` secrets that carry the org's tag, pulls only the runner repository, and writes only the runner log group", () => {
+  it("is assumed by ECS tasks of this account only and reads only this org's package-run (`mcppkg*`) secrets that carry the org's tag, pulls only the runner repository, and writes only the runner log group", () => {
     const { json, statementsOf, actionsOf } = synth();
     const role = Object.values(json.Resources).find((resource) => resource.Type === "AWS::IAM::Role" && JSON.stringify(resource.Properties).includes("RunnerExecution") === false && String(at(resource.Properties, "Description")).startsWith("Rovara MCP runner tasks"))!;
     expect(at(role.Properties, "AssumeRolePolicyDocument", "Statement", 0, "Principal", "Service")).toBe("ecs-tasks.amazonaws.com");
@@ -289,7 +289,15 @@ describe("the runner execution role", () => {
     const statements = statementsOf("RunnerExecutionRole");
     const secrets = statements.find((statement) => statement.Sid === "ReadApprovedServerSecrets")!;
     expect(actionsOf(secrets)).toEqual(["secretsmanager:GetSecretValue"]);
-    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcp*`);
+    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcppkg*`);
+    // review S1: what IAM would match. A package-run server's secret, and not an address-based server's token, a connection's key, a hook's secret or another org's secret.
+    const matches = (resource: unknown, arn: string): boolean => {
+      const pattern = ((resource as { "Fn::Join": [string, unknown[]] })["Fn::Join"][1]).map((part) => (typeof part === "string" ? part : "aws")).join("");
+      return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u").test(arn);
+    };
+    const own = (leaf: string): string => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/${ORG}/${leaf}`;
+    expect(matches(secrets.Resource, own("mcppkg0123456789abc-AbCdEf"))).toBe(true);
+    for (const other of [own("mcp0123456789abcdef-AbCdEf"), own("mcpsim000001-AbCdEf"), own("mcpxpkg0123456789-AbCdEf"), own("con_aaaaaaaaaaaaaaaaaaaa-AbCdEf"), `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/org_bbbbbbbbbbbbbbbbbbbb/mcppkg0123456789abc-AbCdEf`, `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-hooks/${ORG}/mcppkg0123456789abc-AbCdEf`]) expect(matches(secrets.Resource, other), other).toBe(false);
     expect(at(secrets, "Condition", "StringEquals", "secretsmanager:ResourceTag/rovara:org")).toBe(ORG);
     const pull = statements.find((statement) => statement.Sid === "PullTheRunnerImage")!;
     expect(JSON.stringify(pull.Resource)).toContain("repository/rovara/mcp-runner");
@@ -380,12 +388,12 @@ describe("the controller's task role is scoped to what the controller makes", ()
     // no write to the registry partition, and no other DynamoDB action anywhere
     expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("dynamodb:")).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query"]);
   });
-  it("reaches Secrets Manager only to find the ARN of this org's `mcp*` secrets, never to read one", () => {
+  it("reaches Secrets Manager only to find the ARN of this org's package-run (`mcppkg*`) secrets, never to read one", () => {
     const { statementsOf, actionsOf } = synth();
     const statements = statementsOf("ControllerTaskRole");
     const describe = find(statements, "ResolveServerSecretArns");
     expect(actionsOf(describe)).toEqual(["secretsmanager:DescribeSecret"]);
-    expect(JSON.stringify(describe.Resource)).toContain(`org-connectors/${ORG}/mcp*`);
+    expect(JSON.stringify(describe.Resource)).toContain(`org-connectors/${ORG}/mcppkg*`);
     expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("secretsmanager:") && action !== "secretsmanager:DescribeSecret")).toEqual([]);
   });
   it("reads and writes only the `bundles/` objects of the bundle bucket, lists that bucket, and uses only its own key", () => {

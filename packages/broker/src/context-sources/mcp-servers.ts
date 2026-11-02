@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
+  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, PACKAGE_SERVER_ID_PREFIX, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
   type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
@@ -427,7 +427,7 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
   if (transport.data.kind === "http" && body.secrets !== undefined) throw agentXError("CONFIG_INVALID", "secrets: a server with an address takes one token, not secrets by name");
   // The values of a package-run server's secrets, as the one JSON document the task reads (checked now; stored below, before the test, because the test task reads them too).
   const secretDocument = transport.data.kind === "stdio" ? stdioSecretDocument(transport.data.spec.secretEnv, body.secrets) : undefined;
-  const serverId = `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`;
+  const serverId = newServerId(transport.data.kind, (deps.newId ?? (() => randomBytes(8).toString("hex")))());
   // A package-run server's secrets are stored under the proposal's own id BEFORE the test (the probe task reads them like the serving task will); they are deleted again if the test fails
   // or the entry cannot be stored. If that delete fails the secret stays, unreferenced: only a test of THIS id can read it (the controller refuses it once the id has an approved or
   // other entry), nothing else is ever given the id, and the secret store's own recovery window applies when it is cleaned up.
@@ -464,6 +464,16 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     await told(deps, { action: "mcp_server.probed", actor, serverId: entry.serverId, purpose: "proposal", toolsHash: entry.probe.toolsHash, bundleHash: spec.bundleHash, toolCount: entry.probe.tools.length });
   }
   return entry;
+}
+
+/**
+ * Review S1. A package-run server's id starts `mcppkg`, and an address-based server's never does (a body that would start `pkg` is given a leading `x`): the id is the last part of the name of the
+ * server's secrets, and the runner execution role reads only `mcppkg*`, so no task can be given an address-based server's token.
+ */
+export function newServerId(kind: "http" | "stdio", random: string): string {
+  const body = random.replace(/[^a-z0-9]/gu, "");
+  if (kind === "stdio") return `${PACKAGE_SERVER_ID_PREFIX}${body.slice(0, 16 - (PACKAGE_SERVER_ID_PREFIX.length - 3))}`;
+  return `mcp${(body.startsWith("pkg") ? `x${body}` : body).slice(0, 16)}`;
 }
 
 /**

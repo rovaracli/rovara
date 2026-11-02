@@ -7,7 +7,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { OrgIdSchema, stdioSpecIfComplete, type McpStdioProposal, type McpStdioSpec } from "@agentx/contracts";
+import { OrgIdSchema, isPackageServerId, stdioSpecIfComplete, type McpStdioProposal, type McpStdioSpec } from "@agentx/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -43,6 +43,15 @@ function isPinnedInstall(test: McpStdioProposal, tested: { lockfileHash: string;
     && tested.lockfileHash === pinned.lockfileHash && tested.bundleHash === pinned.bundleHash;
 }
 
+/**
+ * Review S1: the name of the secret a task is given for a server. Built only for a package-run id (`mcppkg...`): the runner execution role reads only those names, and the controller never
+ * names an address-based server's token to ECS, even by mistake.
+ */
+export function packageSecretName(env: string, orgId: string, serverId: string): string {
+  if (!isPackageServerId(serverId)) throw new Error("only a package-run server has secrets a task may be given");
+  return orgMcpServerSecretName(env, orgId, serverId);
+}
+
 /** An Enterprise install has one org; the controller serves that org's approved stdio entries and nothing else. */
 export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgId: string, secretArn?: (serverId: string) => Promise<string | undefined>): ControllerRegistry {
   const org = OrgIdSchema.parse(orgId);
@@ -73,6 +82,9 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       // Fix round 2 (N1): the one other case is the review and re-approve test of a PAUSED stdio entry, which has secrets and must be tested to be looked at. It gets the secret only when the test
       // is that entry's own pinned install: the same package, arguments, secret names, tarball, addresses and size, and both pinned hashes (SR-7 H1); anything else under that id gets none.
       const entry = await store.get(org, serverId);
+      // Review N1: with no entry, only a package-run proposal's id (`mcppkg...`) has a secret to give. An address-based server's token sits under its id between its storing and its entry, and the
+      // secret of a removed entry whose delete failed may remain: neither is ever handed to a test.
+      if (entry === undefined && !isPackageServerId(serverId)) return undefined;
       if (entry !== undefined && entry.status === "changed_needs_review") {
         const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
         if (entry.hasSecret !== true || pinned === undefined || test === undefined || test.pinned === undefined) return undefined;
@@ -191,7 +203,7 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
     onEgressChange: (change) => { log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }); void events.egress(change); },
   });
   const controller = createMcpController({
-    token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
+    token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => packageSecretName(installEnvironment, orgId, serverId))), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, legacyToolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
     leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),

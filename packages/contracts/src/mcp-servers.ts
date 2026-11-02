@@ -8,6 +8,13 @@ import { z } from "zod";
 export const McpServerIdSchema = z.string().regex(/^mcp[a-z0-9]{6,24}$/);
 
 /**
+ * Review S1. The id of a package-run server starts with this, and the id is the last part of the name of its secrets. The runner execution role may read only secrets whose name starts with it,
+ * so the tokens of address-based servers (ids that never start with it) are out of reach of any task. Address-based ids are made so that they cannot (see `newServerId`).
+ */
+export const PACKAGE_SERVER_ID_PREFIX = "mcppkg";
+export const isPackageServerId = (serverId: string): boolean => McpServerIdSchema.safeParse(serverId).success && serverId.startsWith(PACKAGE_SERVER_ID_PREFIX);
+
+/**
  * `needs_reapproval`: a package-run entry that was stored before the approval bound its install (no lockfile or bundle hash). It is never served and cannot be approved as it
  * is; an admin looks at it again by adding the package again. (Stdio never shipped switched on, so no running install has one; the status exists so that reading an old row
  * never throws and never serves.)
