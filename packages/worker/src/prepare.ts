@@ -33,6 +33,7 @@ import { runCollected, type CollectedProcess } from "./collected-process.js";
 import { describeCommandFailure } from "./command-failure.js";
 import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import { evaluateReadiness, type CommandResult } from "./readiness.js";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { assertLocalTaskExecutionAllowed, taskSandboxFor, taskShellSelection, type TaskShellSelection } from "./task-sandbox.js";
 import { projectCommandEnvironment } from "./git.js";
 import { runIsolatedGit, withIsolatedRepository } from "./isolated-repository.js";
@@ -264,7 +265,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     ?? (target !== undefined && devcontainerCli !== undefined
       ? (command: ProjectCommand) => runDevcontainerCommand(devcontainerCli, target, command)
       : sandbox !== undefined
-        ? (command: ProjectCommand) => sandbox.runCommand(command)
+        ? (command: ProjectCommand) => executionFor(SANDBOX_TARGET, { sandbox }).runCommand(command)
         : (command: ProjectCommand, index: number, root: string) => runProjectCommand(command, index, root, undefined, true));
   // A crashed preparation may have left a registry config (and a token) behind: removed before anything else runs.
   await removeLeftoverRegistryConfigs(canonicalRoot);
