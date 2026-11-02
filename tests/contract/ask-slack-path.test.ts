@@ -224,7 +224,7 @@ describe("a question in a task's thread with the Ask switch on", () => {
     const asks = (t: Awaited<ReturnType<typeof planWaiting>>) => t.harness.db.find((item) => item.entityType === "ASK" && item.audience === "slack");
     const rateCount = (t: Awaited<ReturnType<typeof planWaiting>>) => {
       const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META")! as { orgId: string };
-      return (t.harness.db.get(sessionRateKey(task.orgId as never, "ses_aaaaaaaaaaaaaaaaaaaa", "task", "ask_day")) as { count?: number } | undefined)?.count ?? 0;
+      return (t.harness.db.get(sessionRateKey(task.orgId, "ses_aaaaaaaaaaaaaaaaaaaa", "task", "ask_day")))?.["count"] as number | undefined ?? 0;
     };
     const answered = (t: Awaited<ReturnType<typeof planWaiting>>, threadTs: string, messageTs: string, answer: string) =>
       teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/tasks/thread-notes/answered", { taskId: t.taskId, messageTs, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, ask: { question: "what is left?", answer } });

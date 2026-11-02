@@ -4,10 +4,8 @@
 // nothing, otherwise. The instruction reaches the model framed and as untrusted data, in one place only: the worker's frame for a coding run, the nonce tag below for planning.
 import { randomUUID } from "node:crypto";
 import {
-  REDIRECT_PLANNING_INTRO,
   REDIRECT_REFUSAL_MESSAGES,
   workflowSendBackOffered,
-  workflowRequestId,
   REDIRECT_RETRY_INSTRUCTIONS,
   WORKFLOW_BLOCK_REASONS,
   WORKFLOW_REDIRECT_SEND_BACK_REASON,
@@ -20,8 +18,7 @@ import {
   type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { startRevisedPlan, type RevisedPlanStart } from "../../agent-sessions/live-steer-revise.js";
-import { aiToolTurn, developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { inertReplyText } from "../../developer/prompt-text.js";
+import { aiToolTurn, developerTaskIdentity, taskKey } from "../../developer/task-records.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { E2E_OWNER_SENTENCES } from "../../e2e/owner-sentences.js";
 import { isConditional } from "../broker-shared.js";

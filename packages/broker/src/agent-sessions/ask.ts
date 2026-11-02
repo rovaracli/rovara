@@ -104,7 +104,7 @@ const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", ASK_UNAVAILABLE_MES
 export async function requireProjectNotArchived(deps: Pick<AskDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<void> {
   let archived: boolean;
   try {
-    archived = (await readProjectMeta(deps as never, orgId, project))?.status === "archived";
+    archived = (await readProjectMeta(deps, orgId, project))?.status === "archived";
   } catch {
     throw unavailable();
   }

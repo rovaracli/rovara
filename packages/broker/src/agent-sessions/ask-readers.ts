@@ -103,7 +103,7 @@ async function failingCheckTails(deps: AskReaderDependencies, task: DeveloperTas
  */
 async function listedMembersBySlackId(deps: AskReaderDependencies, task: DeveloperTaskRecord): Promise<Map<string, string>> {
   try {
-    const people = await loadTaskPeople(deps as never, task.taskId);
+    const people = await loadTaskPeople(deps, task.taskId);
     return new Map((people?.people ?? []).filter((person) => person.role !== "denied").map((person) => [person.slackUserId, person.developerId]));
   } catch {
     return new Map();

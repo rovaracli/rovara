@@ -664,7 +664,7 @@ describe("the sweep tells a restart that committed from one that did not (LR-3 N
   /** A redirect of a step, claimed 20 minutes ago and still `restarting`; the workflow is set by each test to where the restart left it. */
   async function claimedLongAgo(step: string, mode: "keep_plan" | "change_plan" = "keep_plan") {
     const t = await setup();
-    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const { taskId, sessionId } = await t.runningCoding();
     const requestId = randomUUID();
     const base = t.task(taskId);
     const record = { requestId, kind: "stop" as const, orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode, blockedRevision: base.workflow.revision, step,

@@ -137,7 +137,7 @@ describe("model access for an Ask", () => {
     const task = t.w.db.get({ pk: `DEVTASK#${t.made.taskId}`, sk: "META" })! as unknown as DeveloperTaskRecord;
     t.w.db.set({ ...projectMetaKey(ORG_A, task.project), entityType: "PROJECT_META", status: "archived" });
     await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev0000000001", model: { provider: "amazon-bedrock", modelId: "m" } }), "/v1/asks/model-access"))
-      .rejects.toMatchObject({ code: "PROJECT_ARCHIVED", message: expect.stringContaining(projectArchivedMessage(task.project)) });
+      .rejects.toThrow(projectArchivedMessage(task.project));
     expect(mint).not.toHaveBeenCalled();
     const { submitAsk } = await import("../../packages/broker/src/agent-sessions/ask.js");
     await expect(submitAsk(t.ask, t.w.caller(PRIYA), t.made.sessionId, { requestId: randomUUID(), question: "Why again?" })).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });

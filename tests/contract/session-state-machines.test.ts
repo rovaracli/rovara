@@ -87,7 +87,7 @@ describe("provisioner", () => {
 
   // LR-1: what the probe heard on /ping goes on the session, so the broker (which cannot reach port 8080) can read the worker's features. The JSONata the machine runs, evaluated for real.
   it("keeps the features of the last probe and hands them to MarkReady", async () => {
-    const assigned = (states.ProbePing!.Assign as Record<string, string>).features!;
+    const assigned = (states.ProbePing as unknown as { Assign: Record<string, string> }).Assign.features!;
     const sent = (states.MarkReady!.Arguments!.Payload as Record<string, string>).workerFeatures!;
     expect(sent).toBe("{% $features %}");
     const heard = (features: unknown) => jsonata(/^\{% (.*) %\}$/s.exec(assigned)![1]!).evaluate({}, { states: { result: { Payload: { healthy: true, status: "Healthy", features } } } }).then((value: unknown) => JSON.parse(JSON.stringify(value)) as unknown);
