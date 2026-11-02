@@ -180,6 +180,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { routeIntake } from "./developer-routes/intake.js";
 import { routeTestEnvironment, testEnvStoreOf } from "./developer-routes/test-environment.js";
 import { routeTestHealth } from "./developer-routes/test-health.js";
+import { routeKnownFailingMarks } from "./developer-routes/known-failing-marks.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
@@ -523,6 +524,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testHealthReply !== undefined) return testHealthReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
+  const knownFailingMarksReply = await routeKnownFailingMarks(deps, caller, request, url);
+  if (knownFailingMarksReply !== undefined) return knownFailingMarksReply;
   const intakeReply = await routeIntake(deps, caller, request, url);
   if (intakeReply !== undefined) return intakeReply;
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);

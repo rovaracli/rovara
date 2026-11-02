@@ -1,8 +1,8 @@
 // Setup and test health SH17 (Opus re-check M4): which nightly baseline may be trusted as "what already fails". Only the last nightly that is RECENT (finished within 7 days) and ran on the SAME branch the tasks
 // are based on (the project's default branch; a project whose repositories do not agree has none). A stale baseline, one from another branch, one that did not fit (truncated) or one that cannot be read is not
-// used at all: its failures excuse nothing and no mark is offered from it. The same rule will serve the later automatic removal of marks.
+// used at all: its failures excuse nothing and no mark is offered from it. The same rule serves the automatic removal of marks (`known-failing-undo.ts`).
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_FAILED_MAX, PROJECT_REVISION_SK_PREFIX, projectPk, type OrgId } from "@agentx/contracts";
+import { NIGHTLY_FAILED_MAX, PROJECT_REVISION_SK_PREFIX, projectPk, type NightlyBaseline, type OrgId } from "@agentx/contracts";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { readNightlyBaseline } from "./nightly.js";
 
@@ -55,23 +55,37 @@ export interface UsableNightlyOptions {
   currentHead?: ((branch: string) => Promise<string | undefined>) | undefined;
 }
 
-/** The failing tests of the last nightly when it is usable (recent or on the branch's unchanged head, the task's base branch, whole), else undefined. */
-export async function usableNightlyFailing(deps: TestEnvDeps, orgId: OrgId, project: string, options: UsableNightlyOptions = {}): Promise<string[] | undefined> {
-  const baseline = await readNightlyBaseline(deps, orgId, project).catch(() => undefined);
-  if (baseline === undefined || baseline.tests.failed > NIGHTLY_FAILED_MAX || baseline.failed.length !== baseline.tests.failed) return undefined;
+/**
+ * Whether `baseline` may be trusted as "what the project's tests do now": whole (its failing set fits), not from the future, on the task's base branch, and either recent (7 days) or run on exactly the branch's
+ * head now. The one rule behind both the excuse for a failing test and the automatic removal of a mark (KF-1).
+ */
+export async function nightlyBaselineUsable(deps: TestEnvDeps, orgId: OrgId, project: string, baseline: NightlyBaseline, options: UsableNightlyOptions = {}): Promise<boolean> {
+  if (baseline.tests.failed > NIGHTLY_FAILED_MAX || baseline.failed.length !== baseline.tests.failed) return false;
   const finished = Date.parse(baseline.finishedAt), now = deps.now();
-  if (!Number.isFinite(finished) || finished > now + FUTURE_SKEW_MS) return undefined;
+  if (!Number.isFinite(finished) || finished > now + FUTURE_SKEW_MS) return false;
   const own = options.taskBranches ?? [];
   if (own.length > 0) {
-    if (!own.every((branch) => branch === baseline.branch)) return undefined;
+    if (!own.every((branch) => branch === baseline.branch)) return false;
   } else {
     const base = await projectBaseBranch(deps, orgId, project);
-    if (base === undefined || baseline.branch !== base) return undefined;
+    if (base === undefined || baseline.branch !== base) return false;
   }
   if (finished < now - NIGHTLY_BASELINE_MAX_AGE_MS) {
     // Older than a week: still what already fails if the branch has not moved since it ran.
     const head = options.currentHead === undefined ? undefined : await options.currentHead(baseline.branch).catch(() => undefined);
-    if (head === undefined || head !== baseline.headSha) return undefined;
+    if (head === undefined || head !== baseline.headSha) return false;
   }
-  return [...baseline.failed];
+  return true;
+}
+
+/** The last nightly baseline when it is usable (`nightlyBaselineUsable`), else undefined. */
+export async function usableNightlyBaseline(deps: TestEnvDeps, orgId: OrgId, project: string, options: UsableNightlyOptions = {}): Promise<NightlyBaseline | undefined> {
+  const baseline = await readNightlyBaseline(deps, orgId, project).catch(() => undefined);
+  return baseline !== undefined && await nightlyBaselineUsable(deps, orgId, project, baseline, options) ? baseline : undefined;
+}
+
+/** The failing tests of the last nightly when it is usable (recent or on the branch's unchanged head, the task's base branch, whole), else undefined. */
+export async function usableNightlyFailing(deps: TestEnvDeps, orgId: OrgId, project: string, options: UsableNightlyOptions = {}): Promise<string[] | undefined> {
+  const baseline = await usableNightlyBaseline(deps, orgId, project, options);
+  return baseline === undefined ? undefined : [...baseline.failed];
 }

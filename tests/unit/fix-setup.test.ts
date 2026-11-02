@@ -281,7 +281,7 @@ describe("Mark as known failing", () => {
     const { h, item } = await opened([mark("new::one")]);
     const old = { checkId: "unit", markedBy: "dev_b", markedAt: "2026-11-01T00:00:00.000Z", epoch: 1 };
     h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", marks: Array.from({ length: KNOWN_FAILING_MAX }, (_, n) => ({ ...old, name: `old${String(n)}` })), version: 1, updatedAt: "2026-11-01T00:00:00.000Z" });
-    await expect(markKnownFailing(h.ports, BROWSER, item, "r")).rejects.toThrow("This project's known-failing list is full (500). Remove some before marking more.");
+    await expect(markKnownFailing(h.ports, BROWSER, item, "r")).rejects.toThrow("This project's known-failing list is full (500). Remove some with Undo on the project page (Environment) before marking more.");
     expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toHaveLength(KNOWN_FAILING_MAX);
     expect(await h.items()).toHaveLength(1);
   });

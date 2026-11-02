@@ -563,6 +563,16 @@ export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { proje
   });
 }
 
+/**
+ * KF-1. `occurrence`: the request id of the undo, or the slot id of the nightly run that showed the tests passing. Facts are a fixed word, counts and hashes, never a test name: `removal` (`undo` or `nightly_passing`),
+ * `testCount` (marks removed), `markEpoch` (the card the mark was made on; 0 when the marks came from several cards), `testSetSha256` (sha256 of the sorted "check, test" lines removed), `rowVersionAfter` and `totalAfter`.
+ */
+export function auditProjectKnownFailingRemoved(input: AuditBuilderBase & { projectName: string; removal: "undo" | "nightly_passing"; testCount: number; markEpoch: number; testSetSha256: string; rowVersionAfter: number; totalAfter: number }): AuditEventInput {
+  return build("project.known_failing_removed", input, { kind: "project", name: input.projectName }, {
+    removal: input.removal, testCount: input.testCount, markEpoch: input.markEpoch, testSetSha256: input.testSetSha256, rowVersionAfter: input.rowVersionAfter, totalAfter: input.totalAfter,
+  });
+}
+
 /** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */
 export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: string; artifactKind: string; retentionClass: string }): AuditEventInput {
   return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });
