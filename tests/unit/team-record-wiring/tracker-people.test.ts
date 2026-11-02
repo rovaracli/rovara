@@ -180,6 +180,40 @@ describe("reads are bounded", () => {
     expect(await syncIsDue(table, ORG_A, tracker.connectionId, clock.at + SYNC_EVERY_MS)).toBe(true);
   });
 
+  it("S5: a saved cursor that keeps failing is dropped after two failed runs and the read starts again from the beginning; so is one older than a day", async () => {
+    const clock = { at: T0 };
+    const db = new FakeDynamoDb({ indexKeys });
+    const asked: Array<string | undefined> = [];
+    const expired = { value: true };
+    const everyone = many(250);
+    const tracker: ConnectedTracker = {
+      connectionId: "con_aaaaaaaaaaaaaaaaaaaa", system: "linear", kind: "linear",
+      async readUsers({ after }) {
+        asked.push(after);
+        if (after === "100" && expired.value) throw new Error("the cursor expired at the tool");
+        const start = after === undefined ? 0 : Number(after);
+        return { users: everyone.slice(start, start + 100), ...(start + 100 < everyone.length ? { next: String(start + 100) } : {}) };
+      },
+    };
+    const table = { documentClient: db, tableName: "TeamRecord" };
+    const deps = { table, now: () => clock.at, linkByVerifiedEmail: async () => false };
+    await syncTrackerUsers(deps, ORG_A, tracker, { maxMs: 0 });
+    expect(asked).toStrictEqual([undefined]);
+    for (let run = 0; run < 2; run += 1) expect(await syncTrackerUsers(deps, ORG_A, tracker, { maxMs: 0 })).toMatchObject({ failed: true });
+    expect(asked).toStrictEqual([undefined, "100", "100"]);
+    // The third try does not use the dead cursor: it starts over (and stops after its page, with a fresh cursor).
+    expired.value = false;
+    expect(await syncTrackerUsers(deps, ORG_A, tracker, { maxMs: 0 })).toMatchObject({ read: 100, complete: false });
+    expect(asked).toStrictEqual([undefined, "100", "100", undefined]);
+    // A cursor a day old is dropped too, even when it never failed.
+    clock.at += 25 * 60 * 60 * 1000;
+    await syncTrackerUsers(deps, ORG_A, tracker, { maxMs: 0 });
+    expect(asked.at(-1)).toBeUndefined();
+    // And a healthy cursor is used.
+    await syncTrackerUsers(deps, ORG_A, tracker, { maxMs: 0 });
+    expect(asked.at(-1)).toBe("100");
+  });
+
   it("never reads more people than the cap in one run", async () => {
     const reads = { count: 0, limits: [] as number[] };
     const { runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users: many(USERS_PER_RUN_MAX + 500), reads })] });
@@ -202,12 +236,18 @@ describe("a tool the company has not connected is never read", () => {
     const tracker = fakeTracker({ system: "linear", users: [T({ sourceId: "lin-sam" })], reads });
     const { runtime, clock } = worldOf({ trackers: [tracker] });
     expect(await runtime.trackerPeople.syncConnection(ORG_A, "con_zzzzzzzzzzzzzzzzzzzz")).toBeUndefined();
+    // S4: a save only marks a connection due; it reads nothing, and a connection the org does not have is marked nowhere.
+    expect(await runtime.trackerPeople.requestSync(ORG_A, "con_zzzzzzzzzzzzzzzzzzzz")).toBe(false);
+    expect(await runtime.trackerPeople.requestSync(ORG_B, "con_aaaaaaaaaaaaaaaaaaaa")).toBe(false);
+    expect(reads.count).toBe(0);
     expect(await runtime.trackerPeople.syncConnection(ORG_B, "con_aaaaaaaaaaaaaaaaaaaa")).toBeUndefined();
     expect(reads.count).toBe(0);
     // The hourly job: an org that never wrote is not in the directory; connecting puts it there.
     await runtime.jobs.run("hourly");
     expect(reads.count).toBe(0);
-    await sync(runtime);
+    expect(await runtime.trackerPeople.requestSync(ORG_A, "con_aaaaaaaaaaaaaaaaaaaa")).toBe(true);
+    expect(reads.count).toBe(0);
+    await runtime.jobs.run("hourly");
     expect(reads.count).toBe(1);
     await runtime.jobs.run("hourly");
     expect(reads.count).toBe(1);
@@ -262,6 +302,35 @@ describe("the admin's mapping", () => {
     await runtime.taps.hook({ orgId: ORG_A, hook, body: issue("create", "lin-priya", "2026-10-30T10:01:00.000Z", "after mapping") });
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => (row.actor as { developerId: string }).developerId)).toStrictEqual(["dev-priya"]);
     expect(await runtime.trackerPeople.list(ORG_A)).toMatchObject({ linked: [{ sourceId: "lin-priya", developerId: "dev-priya", via: "admin", displayName: "Priya R" }] });
+  });
+
+  it("S3: a request id is bound to the exact change: the same change again is answered, not redone or audited twice; another change under the same id is refused, and every audited event names its change", async () => {
+    const { db, runtime, events } = await world();
+    expect(await runtime.trackerPeople.map(ORG_A, { ...priya, developerId: "dev-priya", requestId: "req-1" })).toBe("mapped");
+    expect(await runtime.trackerPeople.unmap(ORG_A, { system: "linear", sourceId: "lin-priya", by: "dev-sam", requestId: "req-2" })).toBe("unmapped");
+    // Replaying the first request does not map her again (it already happened once), and does not audit again.
+    expect(await runtime.trackerPeople.map(ORG_A, { ...priya, developerId: "dev-priya", requestId: "req-1" })).toBe("mapped");
+    expect(linksOf(db)).toStrictEqual([]);
+    expect(events.map((event) => event.action)).toStrictEqual(["record.tracker_person_mapped", "record.tracker_person_unmapped"]);
+    // The same id for ANOTHER change is refused: nothing is changed and nothing is audited.
+    expect(await runtime.trackerPeople.map(ORG_A, { system: "linear", sourceId: "lin-sam", developerId: "dev-sam", by: "dev-sam", requestId: "req-1" })).toBe("request_reused");
+    expect(await runtime.trackerPeople.unmap(ORG_A, { system: "linear", sourceId: "lin-priya", by: "dev-sam", requestId: "req-1" })).toBe("request_reused");
+    expect(linksOf(db)).toStrictEqual([]);
+    expect(events).toHaveLength(2);
+    // Two mappings under different ids are two events with different ids, even when only the person differs.
+    expect(await runtime.trackerPeople.map(ORG_A, { system: "linear", sourceId: "lin-sam", developerId: "dev-priya", by: "dev-sam", requestId: "req-3" })).toBe("mapped");
+    expect(new Set(events.map((event) => (event as unknown as { eventId: string }).eventId)).size).toBe(events.length);
+    expect(JSON.stringify(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_REQUEST"))).not.toContain("lin-");
+  });
+
+  it("S3: the audit id carries the change, so a request id that somehow has no stored marker cannot let a second, different mapping slip past the ledger's de-duplication", async () => {
+    const { db, runtime, events } = await world();
+    await runtime.trackerPeople.map(ORG_A, { ...priya, developerId: "dev-priya", requestId: "req-1" });
+    for (const item of db.find((entry) => entry.entityType === "TEAM_RECORD_TRACKER_REQUEST")) db.delete({ pk: item.pk as string, sk: item.sk as string });
+    await runtime.trackerPeople.map(ORG_A, { system: "linear", sourceId: "lin-sam", developerId: "dev-sam", by: "dev-sam", requestId: "req-1" });
+    const ids = events.map((event) => (event as unknown as { eventId: string }).eventId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it("refuses a person of another org, a tool user nobody listed, and a mapping the ledger could not record (nothing changes)", async () => {
@@ -364,13 +433,16 @@ describe("a saved Linear or Jira connection is read once; the full path from the
     const trackers = connectedTrackersOf({ deps, fetch: fetcher });
     const runtime = createTeamRecordRuntime({ env: ON, documentClient: db, stateTableName: "State", now: () => T0, trackers })!;
     const afterSave = vi.fn(async (saved: { orgId: OrgId; connectionId: string; type: string; hasSecret: boolean }) => {
-      if ((saved.type === "linear" || saved.type === "jira") && saved.hasSecret) await runtime.trackerPeople.syncConnection(saved.orgId, saved.connectionId);
+      if ((saved.type === "linear" || saved.type === "jira") && saved.hasSecret) await runtime.trackerPeople.requestSync(saved.orgId, saved.connectionId);
     });
     const store = new OrgConnectionStore({ ...deps, afterSave, checkEndpoint: async () => undefined });
     await store.put({ orgId: ORG_A, connection: { connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Linear", access: "read" }, by: "a".repeat(64) });
     expect(afterSave).toHaveBeenCalledWith({ orgId: ORG_A, connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", hasSecret: false });
     expect(seen).toStrictEqual([]);
     await store.put({ orgId: ORG_A, connection: { connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Linear", access: "read" }, secret: { apiKey: "lin_api_test_key" }, by: "a".repeat(64) });
+    // S4: the save itself read nothing; the scheduled job reads the users it marked.
+    expect(seen).toStrictEqual([]);
+    await runtime.jobs.run("hourly");
     expect(seen).toStrictEqual([{ url: LINEAR_GRAPHQL, authorization: "lin_api_test_key" }]);
     // Linear reports no verification, so Priya is listed for the admin to map, not linked.
     expect(unmatchedOf(db).map((item) => item.sourceId)).toStrictEqual(["u1"]);

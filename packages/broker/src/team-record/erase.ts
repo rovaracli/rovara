@@ -312,7 +312,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "SKIPPED#", "EDITED#"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "SKIPPED#", "EDITED#"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

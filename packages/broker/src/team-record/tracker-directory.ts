@@ -113,13 +113,21 @@ export interface SyncDependencies {
 export interface SyncResult { read: number; linked: number; alreadyLinked: number; unmatched: number; complete: boolean; failed?: true }
 
 const stampKey = (orgId: OrgId, connectionId: string): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId), sk: `TRSYNC#${connectionId}` });
-interface Stamp { at?: string; complete?: boolean; resume?: { after: string; startedAt: string } }
+interface Stamp { at?: string; complete?: boolean; failedRuns?: number; resume?: { after: string; startedAt: string } }
+/** S5: a saved cursor that has failed this many runs in a row, or is older than a day, is dropped and the read starts again from the beginning (a cursor can expire at the tool). */
+export const RESUME_FAILED_RUNS_MAX = 2;
+export const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 async function readStamp(table: TeamRecordTable, orgId: OrgId, connectionId: string): Promise<Stamp> {
-  const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: stampKey(orgId, connectionId), ConsistentRead: true }))) as { Item?: { at?: unknown; complete?: unknown; resume?: { after?: unknown; startedAt?: unknown } } }).Item;
+  const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: stampKey(orgId, connectionId), ConsistentRead: true }))) as { Item?: { at?: unknown; complete?: unknown; failedRuns?: unknown; resume?: { after?: unknown; startedAt?: unknown } } }).Item;
   return {
-    ...(typeof item?.at === "string" ? { at: item.at } : {}), ...(typeof item?.complete === "boolean" ? { complete: item.complete } : {}),
+    ...(typeof item?.at === "string" ? { at: item.at } : {}), ...(typeof item?.complete === "boolean" ? { complete: item.complete } : {}), ...(typeof item?.failedRuns === "number" ? { failedRuns: item.failedRuns } : {}),
     ...(typeof item?.resume?.after === "string" && typeof item.resume.startedAt === "string" ? { resume: { after: item.resume.after, startedAt: item.resume.startedAt } } : {}),
   };
+}
+
+/** Marks a connection's users as due: the scheduled job reads them at its next run. A save does this instead of reading, so saving a connection never waits on the tool. */
+export async function markSyncDue(table: TeamRecordTable, orgId: OrgId, connectionId: string, nowMs: number): Promise<void> {
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...stampKey(orgId, connectionId), entityType: "TEAM_RECORD_TRACKER_SYNC", orgId, at: new Date(nowMs).toISOString(), complete: false } }));
 }
 
 /** Whether a connection's users are due to be read: never read, or last read more than a day ago, or a run that did not finish. */
@@ -135,8 +143,10 @@ export async function syncIsDue(table: TeamRecordTable, orgId: OrgId, connection
 export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tracker: ConnectedTracker, options: { maxMs: number }): Promise<SyncResult> {
   const started = deps.now();
   const stamp = await readStamp(deps.table, orgId, tracker.connectionId);
-  const runStart = stamp.complete === false && stamp.resume !== undefined ? stamp.resume.startedAt : new Date(started).toISOString();
-  let after = stamp.complete === false ? stamp.resume?.after : undefined;
+  const resumable = stamp.complete === false && stamp.resume !== undefined && (stamp.failedRuns ?? 0) < RESUME_FAILED_RUNS_MAX && started - Date.parse(stamp.resume.startedAt) < RESUME_MAX_AGE_MS;
+  const runStart = resumable ? stamp.resume!.startedAt : new Date(started).toISOString();
+  let after = resumable ? stamp.resume!.after : undefined;
+  if (stamp.resume !== undefined && !resumable) deps.log?.("record.tracker_cursor_dropped", { kind: tracker.kind });
   const result: SyncResult = { read: 0, linked: 0, alreadyLinked: 0, unmatched: 0, complete: false };
   try {
     for (;;) {
@@ -165,6 +175,7 @@ export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tra
   await deps.table.documentClient.send(new PutCommand({
     TableName: deps.table.tableName,
     Item: { ...stampKey(orgId, tracker.connectionId), entityType: "TEAM_RECORD_TRACKER_SYNC", orgId, at: new Date(deps.now()).toISOString(), complete: result.complete, read: result.read, linked: result.linked, unmatched: result.unmatched,
+      failedRuns: result.failed === true ? (resumable ? (stamp.failedRuns ?? 0) : 0) + 1 : 0,
       ...(!result.complete && after !== undefined ? { resume: { after, startedAt: runStart } } : {}) },
   }));
   return result;

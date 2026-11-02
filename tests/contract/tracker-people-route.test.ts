@@ -14,8 +14,8 @@ function fakePeople() {
       linked: [{ system: "linear", sourceId: "lin-priya", developerId: "dev-priya", displayName: "Priya R", via: "admin", at: "2026-11-02T10:00:00.000Z" }],
       truncated: false,
     })),
-    map: vi.fn(async (): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable"> => "mapped"),
-    unmap: vi.fn(async (): Promise<"unmapped" | "not_found" | "audit_unavailable"> => "unmapped"),
+    map: vi.fn(async (): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable" | "request_reused"> => "mapped"),
+    unmap: vi.fn(async (): Promise<"unmapped" | "not_found" | "audit_unavailable" | "request_reused"> => "unmapped"),
     syncConnection: vi.fn(async () => undefined),
   };
 }
@@ -49,6 +49,11 @@ describe("reading", () => {
     expect(people.list).toHaveBeenCalledWith(expect.stringMatching(/^org_/));
     const member = await t.web(MAYA, "GET", PATH);
     expect(member.status).toBe(403);
+    expect(people.list).toHaveBeenCalledTimes(1);
+    // An admin's API token does not read it either: it is for the page, in a browser.
+    const token = await t.dev(OMAR, "GET", PATH);
+    expect(token.status).toBe(403);
+    expect(JSON.stringify(token.body)).toContain("Use a live browser session");
     expect(people.list).toHaveBeenCalledTimes(1);
   });
 });
@@ -96,6 +101,12 @@ describe("changing", () => {
     expect(errorOf(await t.web(OMAR, "POST", PATH, mapBody)).code).toBe("AUDIT_UNAVAILABLE");
     people.unmap.mockResolvedValueOnce("not_found");
     expect(errorOf(await t.web(OMAR, "POST", PATH, { action: "unmap", requestId: REQ, system: "linear", sourceId: "lin-x" })).code).toBe("NOT_FOUND");
+    people.map.mockResolvedValueOnce("request_reused");
+    const reused = await t.web(OMAR, "POST", PATH, mapBody);
+    expect(reused.status).toBe(409);
+    expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
+    people.unmap.mockResolvedValueOnce("request_reused");
+    expect(errorOf(await t.web(OMAR, "POST", PATH, { action: "unmap", requestId: REQ, system: "linear", sourceId: "lin-x" })).code).toBe("IDEMPOTENCY_CONFLICT");
   });
 
   it("refuses a body that is not one of the two actions, with field names only", async () => {

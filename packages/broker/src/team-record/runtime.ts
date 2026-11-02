@@ -9,7 +9,7 @@
 //
 // What this does NOT contain (and the lane report says so): a model. The distiller and the human-edit extractor need the learning lane's `PipelineModel` and its spend gate; until a model is
 // given (`distillModel`), retention B (Public Slack "notes with links") has nowhere to go and the message is processed and DROPPED, which is the safe side of Slack's terms.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
 import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
@@ -42,8 +42,8 @@ import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
-import { syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
-import { auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
+import { markSyncDue, syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
+import { auditOccurrence, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { bySource } from "./store.js";
 import type { PriorEditsPort } from "./sources/ports.js";
@@ -139,9 +139,11 @@ export interface TeamRecordRuntime {
     /** Tool users nobody is linked to (display name and tool id only) and the ones linked (so an admin can unmap one). */
     list(orgId: OrgId): Promise<{ unmatched: UnmatchedTrackerUser[]; linked: LinkedTrackerUser[]; truncated: boolean }>;
     /** Maps an unmatched tool user to a member of the SAME org. `audit_unavailable` when the audit event cannot be written (nothing is changed then). */
-    map(orgId: OrgId, input: TrackerLink & { developerId: string; by: string; requestId: string }): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable">;
-    unmap(orgId: OrgId, input: TrackerLink & { by: string; requestId: string }): Promise<"unmapped" | "not_found" | "audit_unavailable">;
-    /** Reads one connection's users and links or lists them (on connect). Undefined when the org has no such connection (nothing is read). */
+    map(orgId: OrgId, input: TrackerLink & { developerId: string; by: string; requestId: string }): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable" | "request_reused">;
+    unmap(orgId: OrgId, input: TrackerLink & { by: string; requestId: string }): Promise<"unmapped" | "not_found" | "audit_unavailable" | "request_reused">;
+    /** A connection was saved: its users are marked due and the org joins the scheduled jobs, which read them at their next run. Nothing is read here, so a save never waits on the tool. False when the org has no such connection. */
+    requestSync(orgId: OrgId, connectionId: string): Promise<boolean>;
+    /** Reads one connection's users and links or lists them now, within `maxMs`. Undefined when the org has no such connection (nothing is read). */
     syncConnection(orgId: OrgId, connectionId: string, options?: { maxMs?: number }): Promise<SyncResult | undefined>;
   };
   readonly emitter: RovaraEmitter;
@@ -892,6 +894,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     await listOrg(orgId);
     return syncTrackerUsers({ table, now, log, linkByVerifiedEmail: linkVerified }, orgId, tracker, { maxMs });
   }
+  // S3: a request id is single use and bound to the exact change it first named. The same id with the same change answers what it answered (nothing is done twice, nothing is audited twice); the same id with another
+  // change is refused. Written after the change; a crash before it only means the next try does the work again (and its audit event, bound to the same change, is the same event).
+  const requestKey = (orgId: OrgId, requestId: string): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId), sk: `TRREQ#${createHash("sha256").update(requestId).digest("hex")}` });
+  const changeDigest = (change: string): string => createHash("sha256").update(change).digest("hex");
+  async function requestOutcome(orgId: OrgId, requestId: string, change: string): Promise<string | undefined> {
+    const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: requestKey(orgId, requestId), ConsistentRead: true }))) as { Item?: { digest?: unknown; outcome?: unknown } }).Item;
+    if (item === undefined) return undefined;
+    return item.digest === changeDigest(change) && typeof item.outcome === "string" ? item.outcome : "reused";
+  }
+  async function rememberRequest(orgId: OrgId, requestId: string, change: string, outcome: string): Promise<void> {
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...requestKey(orgId, requestId), entityType: "TEAM_RECORD_TRACKER_REQUEST", orgId, digest: changeDigest(change), outcome, at: new Date(now()).toISOString(), indexExpiresAt: Math.floor(now() / 1000) + 90 * 86_400 } })).catch(() => log("record.request_not_remembered", {}));
+  }
   const trackerPeople: TeamRecordRuntime["trackerPeople"] = {
     async list(orgId) {
       const parsed = OrgIdSchema.parse(orgId);
@@ -900,22 +914,39 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     async map(orgId, call) {
       const parsed = OrgIdSchema.parse(orgId);
+      const change = `map|${call.system}|${call.sourceId}|${call.developerId}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : (earlier as "mapped");
       const listed = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(parsed), sk: `${UNMATCHED_PREFIX}${call.system}#${call.sourceId}` }, ConsistentRead: true }))) as { Item?: unknown }).Item;
       if (listed === undefined || !isTrackerSystem(call.system)) return "not_found";
       if ((await orgOfDeveloper(call.developerId)) !== parsed) return "not_member";
-      // The audit event first: a mapping the ledger could not record is not made.
+      // The audit event first: a mapping the ledger could not record is not made. Its id is bound to the EXACT change (a request id alone could be reused for another mapping and the ledger would drop the second event).
       if (input.audit === undefined) return "audit_unavailable";
-      try { await input.audit(auditRecordTrackerPersonMapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: call.requestId, memberId: call.developerId, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
-      return (await mapTrackerUser(table, parsed, { system: call.system, sourceId: call.sourceId, developerId: call.developerId, at: new Date(now()).toISOString() }, membership)) ? "mapped" : "not_member";
+      try { await input.audit(auditRecordTrackerPersonMapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, call.system, call.sourceId, call.developerId), memberId: call.developerId, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      if (!(await mapTrackerUser(table, parsed, { system: call.system, sourceId: call.sourceId, developerId: call.developerId, at: new Date(now()).toISOString() }, membership))) return "not_member";
+      await rememberRequest(parsed, call.requestId, change, "mapped");
+      return "mapped";
     },
     async unmap(orgId, call) {
       const parsed = OrgIdSchema.parse(orgId);
+      const change = `unmap|${call.system}|${call.sourceId}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : (earlier as "unmapped");
       if (!isTrackerSystem(call.system)) return "not_found";
       const linkedTo = await developerOfTrackerAuthor(table, parsed, call);
       if (linkedTo === undefined) return "not_found";
       if (input.audit === undefined) return "audit_unavailable";
-      try { await input.audit(auditRecordTrackerPersonUnmapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: call.requestId, memberId: linkedTo, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
-      return (await unmapTrackerUser(table, parsed, call, new Date(now()).toISOString())) === undefined ? "not_found" : "unmapped";
+      try { await input.audit(auditRecordTrackerPersonUnmapped({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, call.system, call.sourceId, linkedTo), memberId: linkedTo, source: call.system.startsWith("jira") ? "jira" : "linear" })); } catch { return "audit_unavailable"; }
+      if ((await unmapTrackerUser(table, parsed, call, new Date(now()).toISOString())) === undefined) return "not_found";
+      await rememberRequest(parsed, call.requestId, change, "unmapped");
+      return "unmapped";
+    },
+    async requestSync(orgId, connectionId) {
+      const parsed = OrgIdSchema.parse(orgId);
+      if (await input.trackers?.get(parsed, connectionId) === undefined) return false;
+      await listOrg(parsed);
+      await markSyncDue(table, parsed, connectionId, now());
+      return true;
     },
     syncConnection: (orgId, connectionId, options) => syncOne(OrgIdSchema.parse(orgId), connectionId, Math.min(options?.maxMs ?? 5_000, 8_000)),
   };
