@@ -23,6 +23,8 @@ export type TicketWebhookResult = { changes: TicketItem[]; removed: string[]; sy
 const idText = (value: unknown): string | undefined => (typeof value === "string" || typeof value === "number" ? String(value).slice(0, 100) : undefined);
 const str = (value: unknown, max = 2000): string | undefined => (typeof value === "string" && value !== "" ? value.slice(0, max) : undefined);
 /** Per-editor rows: the text an update's source says the field had before (null or missing is the empty text). */
+/** A field of a changelog item by name (`toString` is also an Object method, so it is read through a key, not as a property). */
+const changeValue = (entry: Record<string, unknown> | undefined, key: string): unknown => entry?.[key];
 const before = (value: unknown): string => (typeof value === "string" ? value.slice(0, 70_000) : "");
 
 /** Reads one verified delivery into items to record and ids to remove. Nothing of the body is believed past the hook's tenant. */
@@ -140,8 +142,8 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
     // B1: an UPDATE's description and title come from the changelog item itself: its `fromString` and `toString` are in the SAME format (Jira's wiki markup), so the words the editor added are found by comparing
     // the two. The description in `fields` is Atlassian Document Format flattened to plain text, a different format, and is never compared with `fromString`. With no `toString` there is no text to compare: no words are kept.
     const isUpdate = webhookEvent === "jira:issue_updated";
-    const bodyOf = isUpdate ? str(descriptionChange?.toString, 70_000) : description;
-    const titleOf = isUpdate && summaryChange !== undefined ? str(summaryChange.toString, 500) : undefined;
+    const bodyOf = isUpdate ? str(changeValue(descriptionChange, "toString"), 70_000) : description;
+    const titleOf = isUpdate && summaryChange !== undefined ? str(changeValue(summaryChange, "toString"), 500) : undefined;
     return { system, removed: [], changes: [{
       source: "jira", system, id: `issue:${issueId}`, kind: webhookEvent === "jira:issue_created" ? "ticket.created" : "ticket.updated", scope,
       title: titleOf ?? str(fields.summary, 500) ?? key ?? issueId, ...(bodyOf === undefined ? {} : { body: bodyOf }), ...(state === undefined ? {} : { state }),
