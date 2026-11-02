@@ -40,6 +40,8 @@ export interface EcsResponse {
 }
 
 const MAX_LIST_PAGES = 20;
+/** A family of this feature: `rovara-mcp-` and then a plain name (the same rule as the gateway's, which makes every name). */
+const OWN_FAMILY = /^rovara-mcp-[A-Za-z0-9_-]{1,200}$/u;
 
 export function ecsApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk["ECSClient"]>): EcsApi {
   return {
@@ -105,7 +107,14 @@ export function bundleObjectApiFromS3(client: Pick<S3Client, "send">, bucket: st
 
 /** The task definitions of the per-server families (T7). `latestRevision` reads the definition hash from the revision's tag, so a definition is registered only when it changed. */
 export function ecsDefinitionApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk["ECSClient"]>): EcsDefinitionApi {
+  // Review M2: IAM cannot scope `ecs:DeregisterTaskDefinition` (the Service Authorization Reference lists no resource type for it, and none for Describe or the two List actions), so the controller's
+  // role holds those on "*". What keeps the controller to its own definitions is this: every call here names a family that is `rovara-mcp-` and a plain name, and nothing else is ever sent.
+  const ownFamily = (family: string): string => {
+    if (!OWN_FAMILY.test(family)) throw new Error("the task definition family is not allowed");
+    return family;
+  };
   const listArns = async (family: string): Promise<string[]> => {
+    ownFamily(family);
     const arns: string[] = [];
     let nextToken: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
@@ -125,6 +134,7 @@ export function ecsDefinitionApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk
       return { arn, definition: out.taskDefinition };
     },
     async register(definition: RunnerTaskDefinition) {
+      ownFamily(definition.family);
       const out = await client.send(new sdk.RegisterTaskDefinitionCommand({ ...definition }));
       const arn = out.taskDefinition?.taskDefinitionArn;
       if (arn === undefined) throw new Error("the task definition was not registered");
@@ -138,6 +148,7 @@ export function ecsDefinitionApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk
       }
     },
     async listFamilies(prefix) {
+      ownFamily(prefix);
       const families: string[] = [];
       let nextToken: string | undefined;
       for (let page = 0; page < MAX_LIST_PAGES; page += 1) {

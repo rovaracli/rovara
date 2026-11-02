@@ -107,6 +107,30 @@ describe("ECS task definition adapter (T7)", () => {
     const denied = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(FAMILY, 1)] }), DeregisterTaskDefinitionCommand: () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } });
     await expect(ecsDefinitionApiFromSdk(denied.sdk, denied.client).deregisterAll(FAMILY)).rejects.toThrow("denied");
   });
+  it("review M2: IAM can only allow DeregisterTaskDefinition on \"*\" (no resource type), so the adapter itself never names a definition outside the controller's own families", async () => {
+    const foreign = ["foundation-worker", "rovara-mcp", "rovara-mcpx-serve-a", "rovara-mcp-", "rovara-mcp-serve-a/../../worker", "rovara-mcp-serve-a.*", "rovara-mcp-serve a", "", "ROVARA-MCP-serve-a", `rovara-mcp-${"a".repeat(201)}`];
+    for (const family of foreign) {
+      const { sdk, client, sent } = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn("foundation-worker", 1), arn(family, 1)] }), ListTaskDefinitionFamiliesCommand: () => ({ families: [family] }) });
+      const api = ecsDefinitionApiFromSdk(sdk, client);
+      await expect(api.deregisterAll(family), JSON.stringify(family)).rejects.toThrow(/not allowed/u);
+      await expect(api.latestRevision(family), JSON.stringify(family)).rejects.toThrow(/not allowed/u);
+      await expect(api.register({ family } as never), JSON.stringify(family)).rejects.toThrow(/not allowed/u);
+      expect(sent, JSON.stringify(family)).toEqual([]);
+    }
+    for (const prefix of ["", "rovara", "rovara-mcp", "foundation-"]) {
+      const { sdk, client, sent } = fakeSdk({});
+      await expect(ecsDefinitionApiFromSdk(sdk, client).listFamilies(prefix), prefix).rejects.toThrow(/not allowed/u);
+      expect(sent, prefix).toEqual([]);
+    }
+  });
+  it("review M2: whatever the cloud lists, only revisions of the named own family are deregistered", async () => {
+    const own = "rovara-mcp-probe-mcpnew000001";
+    const { sdk, client, sent } = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn("foundation-worker", 7), arn(own, 2), arn(`${own}-other`, 1), arn(own, 1), "arn:aws:ecs:us-east-1:111111111111:task-definition/rovara-mcp-probe-mcpnew000001"] }) });
+    await ecsDefinitionApiFromSdk(sdk, client).deregisterAll(own);
+    const deregistered = sent.filter((call) => call.command === "DeregisterTaskDefinitionCommand").map((call) => String(call.input.taskDefinition));
+    expect(deregistered).toEqual([arn(own, 2), arn(own, 1)]);
+    expect(deregistered.every((target) => /\/rovara-mcp-[A-Za-z0-9_-]+:\d+$/u.test(target))).toBe(true);
+  });
   it("lists families by prefix, across pages, and refuses endless pages", async () => {
     let page = 0;
     const paged = fakeSdk({ ListTaskDefinitionFamiliesCommand: () => { page += 1; return { families: [`rovara-mcp-serve-a${page}`, `other-${page}`], nextToken: page < 2 ? "t" : undefined }; } });

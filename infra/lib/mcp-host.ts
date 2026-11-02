@@ -234,6 +234,8 @@ export class McpHost extends Construct {
       serviceName: `com.amazonaws.${region}.s3`, vpcEndpointType: "Gateway", vpcId: props.vpcId, routeTableIds: [this.runnerRouteTable.ref], policyDocument: endpointPolicyDocument("s3", region),
     });
     // The controller calls the ECS API (RunTask, StopTask, ...) from private subnets with no internet route, so it needs the ECS interface endpoint. Tasks themselves do not (AWS docs).
+    // Review M7: this endpoint has private DNS on. The foundation's endpoint set (`ENTERPRISE_INTERFACE_ENDPOINT_SERVICES`) must never gain `ecs`, or the deploy fails on a duplicate private DNS name
+    // for ecs.<region>.amazonaws.com; tests/contract/mcp-host-infrastructure.test.ts checks that neither list names it.
     new ec2.CfnVPCEndpoint(this, "EcsEndpoint", {
       serviceName: `com.amazonaws.${region}.ecs`, vpcEndpointType: "Interface", vpcId: props.vpcId, subnetIds: props.subnetIds, securityGroupIds: [props.endpointSecurityGroupId],
       privateDnsEnabled: true, policyDocument: endpointPolicyDocument("ecs", region),
@@ -345,13 +347,19 @@ export class McpHost extends Construct {
     policy({ sid: "ListTasksInTheCluster", actions: ["ecs:ListTasks"], resources: ["*"], conditions: clusterOnly });
     // RegisterTaskDefinition takes the task-definition resource (the family's ARN) and the request's tags (AWS Service Authorization Reference, Amazon ECS): only `rovara-mcp-*` families, only tagged as managed.
     policy({ sid: "RegisterMcpTaskDefinitions", actions: ["ecs:RegisterTaskDefinition"], resources: [families], conditions: { StringEquals: { [`aws:RequestTag/${MCP_MANAGED_TAG.key}`]: MCP_MANAGED_TAG.value } } });
-    // These four take no resource type, so "*" is all IAM allows; they read or remove definitions by name and the controller only names its own families (a code rule, tested in the gateway).
+    // These four take no resource type, so "*" is all IAM allows (checked 2026-11-02 in the Service Authorization Reference for Amazon ECS, https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.md:
+    // DeregisterTaskDefinition, DescribeTaskDefinition, ListTaskDefinitions and ListTaskDefinitionFamilies each list no resource type; only RegisterTaskDefinition lists `task-definition`). They read or
+    // remove definitions by name, and the controller names only its own families: the adapter refuses any family that is not `rovara-mcp-<plain name>` before it sends a call (review M2; tested in
+    // tests/unit/mcp-runner/aws-adapters.test.ts). A faulty or hijacked controller could still deregister another definition by calling the API directly; CloudTrail records every call.
     policy({ sid: "ReadAndRetireTaskDefinitions", actions: ["ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitions", "ecs:ListTaskDefinitionFamilies", "ecs:DeregisterTaskDefinition"], resources: ["*"] });
     // RunTask and RegisterTaskDefinition carry tags; the action that checks them is TagResource, here only as part of those two creations.
     policy({
       sid: "TagOnCreateOnly", actions: ["ecs:TagResource"], resources: [families, ecsArn("task", `${cluster.clusterName}/*`)],
       conditions: { StringEquals: { "ecs:CreateAction": ["RunTask", "RegisterTaskDefinition"] } },
     });
+    // Residual (review M3): IAM cannot tell an execution role from a task role in `iam:PassRole`, so a faulty RegisterTaskDefinition could set `taskRoleArn` to this same role and give a package
+    // GetSecretValue on every `mcp*` secret of the org, including address-based servers' tokens, which share that prefix. The control is in code: a definition is run only after it is read back from ECS
+    // and found equal to what the controller builds, with no task role (`definitionMatches`, ecs-resources.ts), and a contract test asserts `taskRoleArn` is absent on every runner family.
     policy({
       sid: "PassTheRunnerExecutionRoleOnly", actions: ["iam:PassRole"], resources: [this.runnerExecutionRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },
     });

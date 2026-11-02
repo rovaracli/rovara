@@ -5,7 +5,7 @@ import { App, Stack, aws_ecs as ecs } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { McpHost, mcpHostAllowDomains, type McpHostProps } from "../../infra/lib/mcp-host.js";
-import { enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
+import { BROKER_IN_VPC_ENDPOINT_SERVICES, ENTERPRISE_INTERFACE_ENDPOINT_SERVICES, enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource?: unknown; Condition?: Record<string, unknown> };
@@ -332,6 +332,12 @@ describe("the controller's task role is scoped to what the controller makes", ()
     const tagging = find(statements, "TagOnCreateOnly");
     expect(at(tagging, "Condition", "StringEquals", "ecs:CreateAction")).toEqual(["RunTask", "RegisterTaskDefinition"]);
   });
+  it("review M2: the only statements on \"*\" are the ones IAM cannot scope (reads and the definition actions, the task list in the cluster, the group lookup); nothing that runs, passes or writes outside a family is on \"*\"", () => {
+    const { statementsOf, actionsOf } = synth();
+    const wild = statementsOf("ControllerTaskRole").filter((statement) => JSON.stringify(statement.Resource) === '"*"');
+    expect(wild.map((statement) => statement.Sid).sort()).toEqual(["FindSecurityGroups", "ListTasksInTheCluster", "ReadAndRetireTaskDefinitions"]);
+    expect(wild.flatMap(actionsOf).sort()).toEqual(["ec2:DescribeSecurityGroups", "ecs:DeregisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitionFamilies", "ecs:ListTaskDefinitions", "ecs:ListTasks"]);
+  });
   it("may pass the runner execution role and no other, and only to ECS tasks", () => {
     const { statementsOf } = synth();
     const statements = statementsOf("ControllerTaskRole");
@@ -423,6 +429,13 @@ describe("the names the install's DNS firewall must let through", () => {
     expect(enterpriseAllowDomains("us-east-1")).not.toContain("ecs.us-east-1.amazonaws.com");
     expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true })).toContain("ecs.us-east-1.amazonaws.com");
     expect(enterpriseAllowDomains("us-east-1", { stdioMcp: true }).filter((name) => name !== "ecs.us-east-1.amazonaws.com")).toEqual(enterpriseAllowDomains("us-east-1"));
+  });
+  it("review M7: the ECS interface endpoint (private DNS on) is made here only; neither of the foundation's endpoint lists may name `ecs`, or the deploy fails on a duplicate private DNS name", () => {
+    expect((ENTERPRISE_INTERFACE_ENDPOINT_SERVICES as readonly string[]).includes("ecs")).toBe(false);
+    expect((BROKER_IN_VPC_ENDPOINT_SERVICES as readonly string[]).includes("ecs")).toBe(false);
+    const ecsEndpoints = synth().of("AWS::EC2::VPCEndpoint").filter((endpoint) => /\.ecs$/u.test(JSON.stringify(endpoint.ServiceName)) || String(endpoint.ServiceName).endsWith(".ecs"));
+    expect(ecsEndpoints).toHaveLength(1);
+    expect(ecsEndpoints[0]).toMatchObject({ VpcEndpointType: "Interface", PrivateDnsEnabled: true });
   });
   it("refuses a registry that is not an https address without credentials", () => {
     for (const registry of ["http://registry.corp.example.net/", "https://user:pw@registry.corp.example.net/", "not a url", "https://registry.corp.example.net/?token=x"]) expect(() => synth({ npmRegistry: registry }), registry).toThrow(/registry/u);
