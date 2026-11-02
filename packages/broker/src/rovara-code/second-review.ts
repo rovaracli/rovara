@@ -7,49 +7,20 @@
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
 import {
-  SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, canonicalModelName, modelCompany, secondReviewModelKey, secondReviewProviderAllowed, secondReviewVerdictHolds,
-  type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewMode, type SecondReviewReplayRun,
-  type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport,
+  SECOND_REVIEW_CANDIDATES_MAX, SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds,
+  type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type SecondReviewMode, type SecondReviewModelRef,
+  type SecondReviewReplayRun, type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { createHash } from "node:crypto";
 import { inertLine } from "./inert-text.js";
-import { candidatesOf, type CriticModelLimits } from "./critic.js";
-
-// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-// The driving test gate
-// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-/** One model's last driving test, as the model checks record it (`readModelTests`), tagged with the provider whose route it was run on. */
-export interface DrivingTestRecord {
-  provider: string;
-  modelId: string;
-  outcome: "passed" | "failed";
-  testedAt: string;
-}
-
-/**
- * The gate for "a model that has not passed the driving test is refused": a model passes only when the LATEST test on record for its provider and exact revision (`secondReviewModelKey`) passed. A model never
- * tested, a model whose last test failed, a test of another revision (v1 does not cover v2), and a model of a provider with no record are all refused. A geography (`eu.amazon.nova-pro-v1:0`) is the same
- * model. "Latest" compares the times as times (not as text), an unreadable time is older than any readable one, and on a tie a failed result wins.
- */
-export function drivingTestGate(records: readonly DrivingTestRecord[]): (model: ModelIdentifier) => boolean {
-  const timeOf = (record: DrivingTestRecord): number => { const at = Date.parse(record.testedAt); return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at; };
-  const latest = new Map<string, DrivingTestRecord>();
-  for (const record of records) {
-    const key = secondReviewModelKey(record);
-    const seen = latest.get(key);
-    if (seen === undefined || timeOf(record) > timeOf(seen) || (timeOf(record) === timeOf(seen) && record.outcome === "failed")) latest.set(key, record);
-  }
-  return (model) => latest.get(secondReviewModelKey(model))?.outcome === "passed";
-}
+import { type CriticModelLimits } from "./critic.js";
+import { estimateSecondReviewUsd, secondReviewPicker, type PickerInput, type SecondReviewPrice } from "./second-review-picker.js";
+export { estimateSecondReviewUsd, type SecondReviewPrice };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The plan: whether a second review runs, in which mode, on which model
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-/** Amazon's own models come first (owner decision 9: Nova Pro or Premier first), in this order, by canonical name. Everything else keeps the critic's capability order after them. */
-export const SECOND_REVIEW_PREFERRED_MODELS: readonly string[] = ["nova-premier", "nova-pro"];
 
 export interface SecondReviewPlanInput {
   /** The install switch `cr`. */
@@ -64,8 +35,13 @@ export interface SecondReviewPlanInput {
   sources: readonly ModelIdentifier[];
   /** Models an earlier try of this task's second review found the account could not use (`secondReviewModelUnusable`). */
   unusable?: readonly ModelIdentifier[] | undefined;
-  /** `drivingTestGate` over the driving tests on record. */
-  drivingTestPassed: (model: ModelIdentifier) => boolean;
+  /** The company's choice (a primary and an optional backup, in order) and the project's narrowing of it (a subset, never wider). Absent: the default, the top suggestion of the picker, recorded as `default`. */
+  companyModels?: readonly SecondReviewModelRef[] | undefined;
+  projectModels?: readonly SecondReviewModelRef[] | undefined;
+  /** A price per model, for the picker's cost estimate (suggestions say it). */
+  price?: PickerInput["price"];
+  /** The model this task's last second review used while nobody had chosen: when it no longer qualifies the default moves on and the plan says so (`defaultChanged`). */
+  previousDefault?: SecondReviewModelRef | undefined;
   /** The evidence on record and the replay runs it names: `on` is allowed for a model only while `secondReviewVerdictHolds` for one of them (recomputed here, never read as a stored pass). */
   verdicts: readonly SecondReviewVerdict[];
   replayRuns: readonly SecondReviewReplayRun[];
@@ -74,15 +50,26 @@ export interface SecondReviewPlanInput {
 /** What the operation that runs the second review must be started with: its tag (every review lookup leaves it out) and the proxy's model fallback OFF (the model that answers must be the planned one). */
 export const SECOND_REVIEW_OPERATION = { tag: SECOND_REVIEW_OPERATION_TAG, modelFallback: "off" } as const;
 
-export type SecondReviewPlan =
-  | { run: false; reason: SecondReviewSkipReason }
-  | { run: true; mode: "shadow" | "on"; model: ModelSelection; company: Exclude<ModelCompany, "other">; downgraded?: "replay-not-passed"; against: readonly ModelIdentifier[]; operation: typeof SECOND_REVIEW_OPERATION };
+/** Why a model the company named was not used (fixed words). */
+export type SecondReviewSkippedWhy = "not-routable" | "not-allowed" | "same-company" | "company-unknown";
+export interface SecondReviewSkipped { model: SecondReviewModelRef; why: SecondReviewSkippedWhy }
 
-const preferenceOf = (model: ModelIdentifier): number => {
-  const name = canonicalModelName(model);
-  const found = SECOND_REVIEW_PREFERRED_MODELS.findIndex((preferred) => name === preferred || name.startsWith(`${preferred}-`));
-  return found < 0 ? SECOND_REVIEW_PREFERRED_MODELS.length : found;
-};
+export type SecondReviewPlan =
+  | { run: false; reason: SecondReviewSkipReason; skipped?: SecondReviewSkipped[] }
+  | {
+    run: true; mode: "shadow" | "on";
+    /** The first model to try. */
+    model: ModelSelection;
+    /** The models to try, in order (at most `SECOND_REVIEW_CANDIDATES_MAX`; the worker makes at most 3 tries in all). `model` is the first. In `on`, only models whose evidence holds, so a later try never turns a blocking review into a silent one. */
+    candidates: readonly ModelSelection[];
+    company: Exclude<ModelCompany, "other">; downgraded?: "replay-not-passed"; against: readonly ModelIdentifier[]; operation: typeof SECOND_REVIEW_OPERATION;
+    /** Why this list: the company named it, or it is the default (the top suggestion). */
+    choice: SecondReviewChoice;
+    /** Default only: the earlier default no longer qualifies, so the task says "Using default: <new> (previous no longer fits)". */
+    defaultChanged?: true;
+    /** Entries of the company's list that were left out, and why. */
+    skipped: SecondReviewSkipped[];
+  };
 
 const selectionOf = (model: ModelIdentifier): ModelSelection => ({ provider: model.provider, modelId: model.modelId });
 
@@ -93,31 +80,52 @@ const verified = (input: Pick<SecondReviewPlanInput, "verdicts" | "replayRuns">,
 };
 
 /**
- * Whether a second review runs for a task's code, and on which model. It never throws and never picks a model by accident: every refusal is a fixed word.
+ * Whether a second review runs for a task's code, and on which models. It never throws and never picks a model by accident: every refusal is a fixed word.
  * - The switch off, or the configured mode `off`: nothing runs.
- * - The model must be on Amazon Bedrock (`SECOND_REVIEW_PROVIDERS`: a direct OpenAI or Google key is refused), allowed (approved list, not forbidden, not found unusable), from a known company that differs from
- *   EVERY model in `against`, and must have passed the driving test for its exact revision.
- * - Configured `shadow` runs in shadow. Configured `on` runs in `on` only on a model whose evidence still holds; with none it runs in shadow and says `downgraded: "replay-not-passed"`, so a company that set `on`
- *   before the evidence is in is never blocked by an unproven reviewer.
+ * - Models come only from the picker's list: the models the company can use (its connected sources plus Rovara's own, any provider), allowed (approved list, not forbidden, not found unusable), from a known
+ *   company that differs from EVERY model in `against`. There is no driving-test gate: an eligible model runs in shadow at once.
+ * - Nobody has chosen: the top suggestion (then the next, as the worker's backup), recorded as `default`. If the model the task used last time as the default no longer qualifies, the next one is used and the plan
+ *   says `defaultChanged`.
+ * - The company chose (a primary and an optional backup, a project may narrow it, never widen it): exactly those, in that order. One that no longer qualifies is NEVER swapped for another model; when none of
+ *   them qualifies nothing runs (`choice-not-qualifying`) and the caller flags it. `skipped` says why each was left out.
+ * - Configured `shadow` runs in shadow. Configured `on` runs in `on` only on models whose track record still holds (`secondReviewVerdictHolds`: the replay bar and two weeks of shadow); with none it runs in
+ *   shadow and says `downgraded: "replay-not-passed"`, so a company that set `on` before the evidence is in is never blocked by an unproven reviewer.
  */
 export function planSecondReview(input: SecondReviewPlanInput): SecondReviewPlan {
   if (!input.switchOn) return { run: false, reason: "switch-off" };
   if (input.mode === "off") return { run: false, reason: "mode-off" };
   if (input.against.length === 0) return { run: false, reason: "no-reference-model" };
-  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.forbidden, unusable: input.unusable };
-  const different = candidatesOf(limits, input.sources).filter((model) => secondReviewProviderAllowed(model) && input.against.every((other) => differentCompany(model, other)));
-  if (different.length === 0) return { run: false, reason: "no-candidate" };
-  // Stable: models with the same preference keep the critic's strongest-first order.
-  const tested = different.filter(input.drivingTestPassed).map((model, index) => ({ model, index })).sort((left, right) => preferenceOf(left.model) - preferenceOf(right.model) || left.index - right.index).map((entry) => entry.model);
-  if (tested.length === 0) return { run: false, reason: "untested" };
-  const company = (model: ModelIdentifier): Exclude<ModelCompany, "other"> => modelCompany(model) as Exclude<ModelCompany, "other">;
-  const common = { against: [...input.against], operation: SECOND_REVIEW_OPERATION };
-  if (input.mode === "on") {
-    const proven = tested.find((model) => verified(input, model));
-    if (proven !== undefined) return { run: true, mode: "on", model: selectionOf(proven), company: company(proven), ...common };
-    return { run: true, mode: "shadow", model: selectionOf(tested[0]!), company: company(tested[0]!), downgraded: "replay-not-passed", ...common };
+  const picked = secondReviewPicker({ sources: input.sources, project: input.project, forbidden: input.forbidden, unusable: input.unusable, against: input.against, price: input.price, verdicts: input.verdicts, replayRuns: input.replayRuns });
+  const { models: named, choice } = narrowedSecondReviewModels({ company: input.companyModels, project: input.projectModels });
+  const skipped: SecondReviewSkipped[] = [];
+  const find = (model: SecondReviewModelRef) => picked.entries.find((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model));
+  let tested: ModelIdentifier[];
+  let defaultChanged = false;
+  if (choice === "company") {
+    // The company's own choice, in its order. Each entry must still qualify; one that does not is left out and said, never replaced by a model the company did not name.
+    tested = [];
+    for (const entry of named ?? []) {
+      const found = find(entry);
+      const why: SecondReviewSkippedWhy | undefined = found === undefined ? "not-routable" : found.eligible ? undefined : found.ineligibleWhy;
+      if (why === undefined) tested.push(entry); else skipped.push({ model: { provider: entry.provider, modelId: entry.modelId }, why });
+    }
+    if (tested.length === 0) return { run: false, reason: "choice-not-qualifying", skipped };
+  } else {
+    // Nobody chose (a project's subset of nothing is not a choice either): the suggestions in order.
+    const narrowed = named === undefined ? undefined : new Set(named.map(secondReviewModelKey));
+    tested = picked.suggested.filter((entry) => narrowed === undefined || narrowed.has(secondReviewModelKey(entry.model))).map((entry) => entry.model);
+    if (tested.length === 0) return { run: false, reason: "no-candidate", skipped };
+    if (input.previousDefault !== undefined && !tested.some((model) => secondReviewModelKey(model) === secondReviewModelKey(input.previousDefault!))) defaultChanged = true;
   }
-  return { run: true, mode: "shadow", model: selectionOf(tested[0]!), company: company(tested[0]!), ...common };
+  const company = (model: ModelIdentifier): Exclude<ModelCompany, "other"> => modelCompany(model) as Exclude<ModelCompany, "other">;
+  const common = { against: [...input.against], operation: SECOND_REVIEW_OPERATION, choice, skipped, ...(defaultChanged ? { defaultChanged: true as const } : {}) };
+  const listOf = (models: readonly ModelIdentifier[]): ModelSelection[] => models.slice(0, SECOND_REVIEW_CANDIDATES_MAX).map(selectionOf);
+  if (input.mode === "on") {
+    const proven = tested.filter((model) => verified(input, model));
+    if (proven.length > 0) return { run: true, mode: "on", model: selectionOf(proven[0]!), candidates: listOf(proven), company: company(proven[0]!), ...common };
+    return { run: true, mode: "shadow", model: selectionOf(tested[0]!), candidates: listOf(tested), company: company(tested[0]!), downgraded: "replay-not-passed", ...common };
+  }
+  return { run: true, mode: "shadow", model: selectionOf(tested[0]!), candidates: listOf(tested), company: company(tested[0]!), ...common };
 }
 
 /**
@@ -131,19 +139,7 @@ export function againstModels(input: { buildRanModels: ReadonlyArray<ModelIdenti
   return all.filter((model) => { const key = `${model.provider.toLowerCase()}\0${model.modelId.toLowerCase()}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
 
-/**
- * Whether a second review's report says its model could not serve this account, so the next try leaves that model out: a refused key, a model not found or not in the catalog, a 402, `MODEL_NOT_ALLOWED`, a model
- * the install does not serve. NOT `request-rejected` and NOT `unknown`: a request the provider refused includes a prompt over the model's context length (a long diff on a model with a small window), which says
- * nothing about whether the account can use the model, and the first review's rule would wrongly retire it.
- */
-export function secondReviewModelUnusable(report: Pick<WorkflowReviewReport, "modelFailure">): boolean {
-  const failure = report.modelFailure;
-  if (failure === undefined) return false;
-  return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog)\b/u.test(failure)
-    || /\bthe model call failed: [a-z-]+(?: [A-Za-z0-9_]+)? HTTP 402\b/u.test(failure)
-    || /^MODEL_NOT_ALLOWED:/u.test(failure)
-    || /\bis not available on this install\b/u.test(failure);
-}
+export { secondReviewModelUnusable } from "@agentx/contracts";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The opinion: what a finished second review means
@@ -155,23 +151,24 @@ export interface SecondReportCheck {
   report: WorkflowReviewReport;
   /** The digest of the candidate the task has NOW. */
   currentCandidateDigest: string | undefined;
-  /** The model the operation actually ran on (the operation record's `ranModel`), not the one planned. */
-  ranModel: ModelIdentifier | undefined;
+  /** For a model reached through a proxy route, the alias its report names as the model that ran (by `secondReviewModelKey`). */
+  routeAliases?: Readonly<Record<string, string>> | undefined;
 }
 
 /**
- * Accepts a second report only when ALL hold: it is the code review's (CRITIC), it is about the current candidate, and the model that actually answered has the planned model's name and revision and is still a
- * different company from everything in `against`. Anything else is not accepted, and the second opinion is unavailable with the reason. (The operation also ran with the proxy's model fallback off, so a
- * substitute is not expected; this is the check that does not take the worker's word for it.)
+ * Accepts a second report only when ALL hold: it is the code review's (CRITIC), it is about the current candidate, and the model the report says answered (the worker's own provider and version, from the reviewer
+ * session) is one the plan named (its exact revision), and is still a different company from everything in `against`. Anything else is not accepted, and the second opinion is unavailable with the reason. (The
+ * second reviewer runs inside the REVIEW operation, whose record names the FIRST reviewer's model, so the report's own model is the only evidence of what answered; the proxy's model fallback is off for these
+ * calls, so a substitute is not expected: this is the check that does not take the worker's word for what it was asked.)
  */
 export function acceptSecondReport(input: SecondReportCheck): { accepted: true } | { accepted: false; reason: Extract<SecondOpinionUnavailableReason, "wrong-role" | "wrong-candidate" | "wrong-model" | "same-company"> } {
   if (input.report.role !== "CRITIC") return { accepted: false, reason: "wrong-role" };
   if (input.currentCandidateDigest === undefined || input.report.candidateDigest !== input.currentCandidateDigest) return { accepted: false, reason: "wrong-candidate" };
-  const ran = input.ranModel;
-  if (ran === undefined || secondReviewModelKey(ran) !== secondReviewModelKey(input.plan.model)) return { accepted: false, reason: "wrong-model" };
-  // The operation record's model is the broker's own plan, not proof of what answered: the report names the model its reviewer session ran on (the worker reports it), and that must be the planned one too.
-  if (secondReviewModelKey({ provider: input.report.provider, modelId: input.report.version }) !== secondReviewModelKey(input.plan.model)) return { accepted: false, reason: "wrong-model" };
-  if (!input.plan.against.every((other) => differentCompany(ran, other))) return { accepted: false, reason: "same-company" };
+  const ran: ModelIdentifier = { provider: input.report.provider, modelId: input.report.version };
+  // The model that answered is the planned one by its exact name, or (a routed model) by the alias the broker gave its route. The company is the PLANNED model's: an alias says nothing of its maker.
+  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey(ran) || input.routeAliases?.[secondReviewModelKey(candidate)] === input.report.version);
+  if (planned === undefined) return { accepted: false, reason: "wrong-model" };
+  if (!input.plan.against.every((other) => differentCompany(planned, other))) return { accepted: false, reason: "same-company" };
   return { accepted: true };
 }
 
@@ -183,7 +180,7 @@ export interface SecondOpinionInput extends SecondReportCheck {
 /**
  * The second opinion on one candidate. In `shadow` it never blocks; `wouldHaveBlocked` records what `on` would have done, which is what the shadow phase counts. In `on` its blocking findings (the ones the change
  * introduced and that are not advisory, as for the first review) block. A report that is not accepted (`acceptSecondReport`), or that gave no answer (FAILED, INTERRUPTED or UNKNOWN), is UNAVAILABLE: it carries
- * no findings, and `secondReviewBlocksWhenUnavailable` says what that means for `on` (today: nothing blocks).
+ * no findings, and `secondReviewBlocksWhenUnavailable` says what that means for `on` (today: nothing blocks). The opinion names the company of the model that ANSWERED and why that model was chosen.
  */
 export function secondOpinionOf(input: SecondOpinionInput): SecondOpinion {
   const check = acceptSecondReport(input);
@@ -191,11 +188,17 @@ export function secondOpinionOf(input: SecondOpinionInput): SecondOpinion {
   if (input.report.status !== "PASS" && input.report.status !== "FINDINGS") return secondOpinionUnavailable(input.plan, "no-answer", input.report);
   const blocking = blockingFindings(input.report, input.accepted);
   const wouldHaveBlocked = blocking.length > 0;
+  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey({ provider: input.report.provider, modelId: input.report.version }) || input.routeAliases?.[secondReviewModelKey(candidate)] === input.report.version)!;
+  const answered = modelCompany(planned) as Exclude<ModelCompany, "other">;
+  const reportedModel = { provider: planned.provider, modelId: planned.modelId };
   return SecondOpinionSchema.parse({
     mode: input.plan.mode,
     ...(input.plan.downgraded === undefined ? {} : { downgraded: input.plan.downgraded }),
-    company: input.plan.company,
-    report: input.report,
+    company: answered,
+    choice: input.plan.choice,
+    ...(input.plan.defaultChanged === true ? { defaultChanged: true } : {}),
+    // A routed model's report names its route alias; the opinion shows the model the broker planned.
+    report: { ...input.report, provider: reportedModel.provider, version: reportedModel.modelId },
     blockingCount: Math.min(blocking.length, 20),
     blocked: input.plan.mode === "on" && wouldHaveBlocked,
     wouldHaveBlocked,
@@ -207,16 +210,13 @@ export function secondOpinionOf(input: SecondOpinionInput): SecondOpinion {
  * An unavailable second opinion: no findings, nothing blocked. `report` is kept only for `no-answer` (the failed report says why, for the page); any other reason drops it, since it was not accepted. `company` is
  * absent when no model was ever chosen (`no-candidate`).
  */
-export function secondOpinionUnavailable(plan: { mode: "shadow" | "on"; company?: Exclude<ModelCompany, "other"> | undefined; downgraded?: "replay-not-passed" | undefined }, reason: SecondOpinionUnavailableReason, report?: WorkflowReviewReport): SecondOpinion {
+export function secondOpinionUnavailable(plan: { mode: "shadow" | "on"; company?: Exclude<ModelCompany, "other"> | undefined; downgraded?: "replay-not-passed" | undefined; choice?: SecondReviewChoice | undefined }, reason: SecondOpinionUnavailableReason, report?: WorkflowReviewReport): SecondOpinion {
   return SecondOpinionSchema.parse({
-    mode: plan.mode, ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), ...(plan.company === undefined ? {} : { company: plan.company }),
+    mode: plan.mode, ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), ...(plan.company === undefined ? {} : { company: plan.company }), ...(plan.choice === undefined ? {} : { choice: plan.choice }),
     ...(report !== undefined && reason === "no-answer" ? { report } : {}), unavailableReason: reason,
     blockingCount: 0, blocked: false, wouldHaveBlocked: false, unavailable: true,
   });
 }
-
-/** The most tries one second review makes in all (owner decision, 2026-11-02): the first, one retry on the same model, then the next allowed candidate. */
-export const SECOND_REVIEW_TRIES_MAX = 3;
 
 /** What a second review that cannot run means (owner decision, 2026-11-02, "Retry, then flag"). */
 export interface UnavailableDecision {
@@ -243,31 +243,6 @@ export function secondReviewUnavailableDecision(input: { mode: SecondReviewMode;
 
 /** Kept for callers that only ask whether it blocks: it never does. */
 export const secondReviewBlocksWhenUnavailable = (input: { mode: SecondReviewMode; reason: SecondOpinionUnavailableReason }): boolean => secondReviewUnavailableDecision(input).blocks;
-
-export interface SecondReviewAttempt {
-  model: ModelIdentifier;
-  /** The mode the try was planned in. */
-  mode: "shadow" | "on";
-  /** `no-answer`: no report, a failed or unaccepted one (a context-length rejection is this, never `unusable`). `unusable`: the account cannot use the model (`secondReviewModelUnusable`). */
-  outcome: "no-answer" | "unusable";
-}
-
-export type SecondReviewNextTry = { try: Extract<SecondReviewPlan, { run: true }> } | { giveUp: SecondOpinionUnavailableReason };
-
-/**
- * The next try of a second review that has not answered yet, at most `SECOND_REVIEW_TRIES_MAX` in all: a model that gave no answer is tried once more; a model that gave no answer twice, or that the account cannot use,
- * is left out, and the next allowed candidate is planned. When the review started in `on`, a later try that would only run in shadow (the next candidate has no evidence to run in `on`) is NOT taken: that would swap a
- * blocking review for a silent one, so it gives up instead and the result is flagged. Gives up with `no-candidate` when nothing was ever tried and nothing can be, else with `no-answer`.
- */
-export function nextSecondReviewTry(input: SecondReviewPlanInput, attempts: readonly SecondReviewAttempt[]): SecondReviewNextTry {
-  if (attempts.length >= SECOND_REVIEW_TRIES_MAX) return { giveUp: "no-answer" };
-  const noAnswerCount = (model: ModelIdentifier): number => attempts.filter((attempt) => attempt.outcome === "no-answer" && secondReviewModelKey(attempt.model) === secondReviewModelKey(model)).length;
-  const leftOut = [...(input.unusable ?? []), ...attempts.filter((attempt) => attempt.outcome === "unusable" || noAnswerCount(attempt.model) >= 2).map((attempt) => attempt.model)];
-  const next = planSecondReview({ ...input, unusable: leftOut });
-  if (!next.run) return { giveUp: attempts.length === 0 ? "no-candidate" : "no-answer" };
-  if (attempts.some((attempt) => attempt.mode === "on") && next.mode !== "on") return { giveUp: "no-answer" };
-  return { try: next };
-}
 
 /**
  * Where a second opinion may be shown. The task page: any opinion with an answer, and an unavailable `on`; shadow that did not run is silent. The pull request: only an `on` opinion that blocked, or an `on` one that
@@ -323,14 +298,6 @@ export function secondOpinionPrLines(opinion: SecondOpinion, accepted?: readonly
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Cost and admission
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-/** A catalog price per million tokens. */
-export interface SecondReviewPrice { inputUsdPerMTok: number; outputUsdPerMTok: number }
-
-/** The most one second review is estimated to cost, from the catalog's price and the largest request it may make. No prompt caching is assumed (a model on Bedrock may not support it), so the estimate is the full input price. */
-export function estimateSecondReviewUsd(price: SecondReviewPrice, tokens: { input: number; maxOutput: number }): number {
-  return (tokens.input * price.inputUsdPerMTok + tokens.maxOutput * price.outputUsdPerMTok) / 1_000_000;
-}
 
 export type SecondReviewAdmission = { admit: true } | { admit: false; reason: Extract<SecondOpinionUnavailableReason, "budget" | "not-run"> };
 

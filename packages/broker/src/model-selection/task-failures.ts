@@ -6,8 +6,7 @@ export function reviewFailures(operations: ReadonlyArray<Record<string, unknown>
   let sinceLatestBuild = 0;
   const from = typeof latestBuild?.createdAt === "string" ? latestBuild.createdAt : "";
   for (const item of operations) {
-    // A second review (by another company, SH34) is its own operation: its failures are not the first review's and never retire a model for it.
-    if (item.workflowMode !== "REVIEW" || item.secondReview === true) continue;
+    if (item.workflowMode !== "REVIEW") continue;
     let failed: ModelSelection | undefined;
     let unusable = false;
     if (item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined)) {

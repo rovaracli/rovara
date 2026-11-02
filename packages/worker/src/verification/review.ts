@@ -32,7 +32,7 @@ import {
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
@@ -731,7 +731,15 @@ export async function runWorkflowReviews(input: {
   onProgress?: (message: string) => void;
   /** Called once per reviewer session with what it loaded and left out, as references only (K1 C5a). */
   onLoadedKnowledge?: (manifest: LoadedKnowledgeManifest, role: "CRITIC" | "SECURITY") => void;
-  onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED" }) => Promise<void>;
+  onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED"; secondReviewTry?: number }) => Promise<void>;
+  /**
+   * SR-1: the second reviewer (another AI company's model), run AFTER the reviews above in this same operation, as an extra code review with its own model: a bounded loop of at most 3 tries in all (the same model
+   * once more, then the next candidate; a context-length rejection is no answer, never an unusable model). Its report is handed to `onSecondReview` only, never added to the reports returned here.
+   */
+  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }> };
+  onSecondReview?: (result: SecondReviewResult) => void;
+  /** Internal: this call is one try of the second reviewer (its number, from 1). */
+  secondReviewTry?: number;
 }): Promise<Array<ReturnType<typeof WorkflowReviewReportSchema.parse>>> {
   assertFileToolsContained(input.fileTools === undefined ? {} : { fileTools: input.fileTools });
   const manifest = createCandidateManifest(input.candidate);
@@ -926,6 +934,30 @@ export async function runWorkflowReviews(input: {
       ...(partialDiff ? { partialDiff: true as const } : {}),
       recordedAt,
     }));
+  }
+  // SR-1: the second reviewer. Only after the normal reviews, only when the code review ran, and never when the operation was stopped. A failure here never changes the reports above.
+  if (input.secondReviewer !== undefined && roles.includes("CRITIC")) {
+    const { secondReviewer, onSecondReview, reviewSpec: _spec, onSpecReview: _onSpec, reviewers: _reviewers, model: _model, piAdapter: _adapter, onUsage, ...rest } = input;
+    void _spec; void _onSpec; void _reviewers; void _model; void _adapter;
+    const tries: SecondReviewTry[] = [];
+    let last: (typeof reports)[number] | undefined;
+    const refs = secondReviewer.candidates.map((candidate) => ({ provider: candidate.model.provider, modelId: candidate.model.modelId }));
+    for (let ref = nextSecondReviewModel(refs, tries); ref !== undefined && !(input.signal?.aborted ?? false); ref = nextSecondReviewModel(refs, tries)) {
+      const chosen = secondReviewer.candidates.find((candidate) => secondReviewModelKey(candidate.model) === secondReviewModelKey(ref!))!;
+      const number = tries.length + 1;
+      let report: (typeof reports)[number] | undefined;
+      try {
+        [report] = await runWorkflowReviews({ ...rest, model: chosen.model, ...(chosen.piAdapter === undefined ? {} : { piAdapter: chosen.piAdapter }), reviewers: ["CRITIC"], secondReviewTry: number,
+          ...(onUsage === undefined ? {} : { onUsage: (usage) => onUsage({ ...usage, secondReviewTry: number }) }) });
+      } catch (error) {
+        // A base whose rule files cannot be verified ends the whole run, as for the first review.
+        if (isRuleFilesUnverified(error)) throw error;
+        report = undefined;
+      }
+      tries.push({ model: ref, outcome: secondReviewTryOutcome(report) });
+      last = report ?? last;
+    }
+    onSecondReview?.({ ...(last === undefined ? {} : { report: last }), tries: tries.length });
   }
   return reports;
 }

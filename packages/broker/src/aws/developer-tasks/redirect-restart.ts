@@ -2,6 +2,7 @@
 // session actor of the task functions (their project role is checked again, their payer pays, and the restart keeps their cap window: a redirect never resets it, and never goes on over a pause that
 // waits for an approval). Each starts a step only from the workflow at exactly the revision the redirect recorded, in the one transaction that moves the workflow, and throws, having started
 // nothing, otherwise. The instruction reaches the model framed and as untrusted data, in one place only: the worker's frame for a coding run, the nonce tag below for planning.
+import { secondReviewSendBackProblems } from "../../rovara-code/second-review-store.js";
 import { randomUUID } from "node:crypto";
 import {
   REDIRECT_REFUSAL_MESSAGES,
@@ -140,7 +141,7 @@ export async function sendBackForRedirect(deps: DeveloperTaskRouteDependencies, 
     sequenceStart: workflow.workflowDependenciesProgress?.at(-1)?.sequence ?? workflowDependencies.sequenceStart ?? 0,
     resumeProgress: [],
   };
-  const problems = sendBackProblemsPromptSection(sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), promptTagId(task, redirectRestartRequestId(record)));
+  const problems = sendBackProblemsPromptSection([...sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), ...secondReviewSendBackProblems(task, workflow)], promptTagId(task, redirectRestartRequestId(record)));
   const prompt = (notes: string) => `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nOwner note (the owner's own instructions for this step): ${REDIRECT_RETRY_INSTRUCTIONS}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, {

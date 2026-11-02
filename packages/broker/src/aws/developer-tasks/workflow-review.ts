@@ -1,4 +1,5 @@
 import { specReviewGate } from "./spec-wiring.js";
+import { secondReviewSendBackProblems } from "../../rovara-code/second-review-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   UNDERSTAND_TIMEOUT_MINUTES,
@@ -345,7 +346,7 @@ export async function startTaskWorkflowImplementationFromSystem(
   const requestId = workflowRequestId("agentx-program-implement", taskId, workflow.revision, workflow.programStepId);
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   // A step sent back by its reviews or checks is given what they found; a step that simply follows another is given the plan.
-  const found = sendBackProblems(workflow);
+  const found = [...sendBackProblems(workflow), ...secondReviewSendBackProblems(task, workflow)];
   // Plan 6 Task 15: the first run of a fix for failing CI is told what CI said (kept when the round started), not the plan again: the coder has the plan in its conversation. What the fix's own
   // reviews and checks find goes back to the coder as any send-back does, with the CI fix's mark still on the run.
   let prompt: string;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { secondReviewSendBackProblems } from "../../rovara-code/second-review-store.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   startWorkflowPlanAfterUnderstand,
@@ -335,7 +336,7 @@ export async function autoSendBackToCodingFromSystem(
     resumeProgress: [],
   };
   // The problems are check and reviewer output, marked untrusted, as in the owner's Send back; there is no owner note, only Rovara's fixed one.
-  const problems = sendBackProblemsPromptSection(sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), promptTagId(task, requestId));
+  const problems = sendBackProblemsPromptSection([...sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), ...secondReviewSendBackProblems(task, workflow)], promptTagId(task, requestId));
   const prompt = (notes: string) => `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nNote (written by AgentX, which sent this back by itself): ${input.reason}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId, prompt, next, automatic: true,

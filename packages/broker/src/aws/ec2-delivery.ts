@@ -20,6 +20,7 @@ import {
   SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_DETECT_FEATURE,
+  SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   credentialKindsOfWorkerFeatures,
@@ -581,7 +582,13 @@ async function forWorkerFeatures(
   if (detectUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_detect_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, detection: "not_run" }));
   }
-  const withAttribution = withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported);
+  // SR-1 (switch `cr`): the second reviewer only ADDS an opinion to a review, so a worker that does not list it is sent the review without the field and runs it as today; its result then has no second-review key,
+  // which the broker reads as "did not run: older worker" (flagged in `on`, silent in shadow). The review itself is never refused for it.
+  const secondReviewerUnsupported = invocation.kind === "task" && invocation.payload.workflowSecondReviewer !== undefined && !features.includes(SECOND_REVIEWER_FEATURE);
+  if (secondReviewerUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.second_reviewer_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  const withAttribution = withoutSecondReviewer(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), secondReviewerUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -1005,6 +1012,13 @@ function withoutTestEnvDetect(invocation: WorkerInvocation, drop: boolean): Work
   if (!drop || invocation.kind !== "task") return invocation;
   const payload = { ...invocation.payload };
   delete payload.testEnvDetect;
+  return { ...invocation, payload };
+}
+
+function withoutSecondReviewer(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowSecondReviewer;
   return { ...invocation, payload };
 }
 

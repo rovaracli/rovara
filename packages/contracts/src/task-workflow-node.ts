@@ -1,3 +1,4 @@
+import { SECOND_REVIEW_BLOCK_REASON } from "./second-review.js";
 import { DigestSchema } from "./workflow-dependencies.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, SYNC_BACKOFF_MINUTES, isBranchSyncGiveUpReason, type BranchSyncReason, type WorkflowBranchSync, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackAutonomySchema, type FeedbackCiFailures, type WorkflowFeedbackAutonomy,
@@ -2081,6 +2082,8 @@ export function workflowSendBackOffered(workflow: {
   // Only evidence about the current code counts: a review or check of older code describes code that is gone.
   const current = workflow.candidate?.digest;
   if (workflow.stage === "REVIEW") {
+    // SR-1: the second review (switch `cr`, `on`) blocked a review that passed: the findings are on the task's second opinion, and sending the work back is how they are fixed.
+    if (workflow.blockReason === SECOND_REVIEW_BLOCK_REASON) return current !== undefined;
     return current !== undefined && workflow.reviews?.some((review) => review.candidateDigest === current
       && review.findings?.some((finding) => findingBlocks(finding, review.role)
         && !findingAccepted(finding, review.role, review.candidateDigest, workflow.acceptedFindings))) === true;
