@@ -1,6 +1,7 @@
 // Setup and test health SH28: the joints. Each is undefined or a no-op with the `nh` switch off, so the callers' flow is today's flow.
 import { describe, expect, it } from "vitest";
 import { AUTO_FIX_CODES, projectMetaKey, type AutoFixCode, type OrgId } from "@agentx/contracts";
+import { withTestingNotice } from "../../packages/broker/src/aws/developer-tasks/health-notice.js";
 import { blockedByEnvironmentHook, blockedReasonsOf, healthPortsOf, recordNightlyResultWithHealth, setupProvedHook } from "../../packages/broker/src/test-env/health-wiring.js";
 import { noteBlockedTask, readProjectHealth } from "../../packages/broker/src/test-env/health.js";
 import { nightlyHooks } from "../../packages/broker/src/test-env/nightly-wiring.js";
@@ -119,5 +120,54 @@ describe("recording a nightly with the health listener", () => {
     const h = harness();
     await expect(recordNightlyResultWithHealth(h.deps, {} as never, { orgId: ORG, project: PROJECT, result: {} }, {})).rejects.toThrow(/could not be read/);
     await expect(recordNightlyResultWithHealth(h.deps, {} as never, { orgId: ORG, project: PROJECT, result: {} }, ON)).rejects.toThrow(/could not be read/);
+  });
+});
+
+describe("callers retry a health update that failed (F2)", () => {
+  const flaky = (h: ReturnType<typeof harness>, failures: number) => {
+    let left = failures;
+    return { ...h.deps, documentClient: { send: (command: unknown) => (left-- > 0 ? Promise.reject(Object.assign(new Error("throttled"), { name: "ThrottlingException" })) : h.db.send(command as never)) } };
+  };
+
+  it("the auto-fix hook tries again before giving up, and counts the task once", async () => {
+    const h = harness();
+    const hook = blockedByEnvironmentHook(flaky(h, 2), ON)!;
+    await hook(task("task_1"), ["host-blocked"]);
+    expect((await readProjectHealth(h.deps, ORG, PROJECT))?.blocked).toHaveLength(1);
+    const giving = harness();
+    await expect(blockedByEnvironmentHook(flaky(giving, 3), ON)!(task("task_1"), ["host-blocked"])).rejects.toThrow(/throttled/);
+  });
+
+  it("the approval hook tries again too", async () => {
+    const h = harness();
+    const ports = healthPortsOf(h.deps);
+    for (const id of ["task_1", "task_2", "task_3"]) await noteBlockedTask(h.deps, ports, { orgId: ORG, project: PROJECT, taskId: id, reason: "host_blocked" });
+    await setupProvedHook(flaky(h, 1), ON)!(ORG, PROJECT);
+    expect(await stateOf(h)).toBe("healthy");
+  });
+});
+
+describe("the task notice never delays a start (F7)", () => {
+  const view = { taskId: "t" } as never;
+  it("shows no banner and returns at the deadline when the health read hangs", async () => {
+    const hung = { documentClient: { send: () => new Promise<never>(() => undefined) }, tableName: "state", now: () => T0 };
+    const started = Date.now();
+    const answer = await withTestingNotice(hung, { orgId: ORG, project: PROJECT }, view, ON, 25);
+    expect(answer).toBe(view);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("is the view itself when the switch is off, and when the read fails", async () => {
+    const h = harness();
+    expect(await withTestingNotice(h.deps, { orgId: ORG, project: PROJECT }, view, {})).toBe(view);
+    const broken = { documentClient: { send: () => Promise.reject(new Error("down")) }, tableName: "state", now: () => T0 };
+    expect(await withTestingNotice(broken, { orgId: ORG, project: PROJECT }, view, ON)).toBe(view);
+  });
+
+  it("adds the notice only when the project needs repair, within the deadline", async () => {
+    const h = harness();
+    const ports = healthPortsOf(h.deps);
+    for (const id of ["task_1", "task_2", "task_3"]) await noteBlockedTask(h.deps, ports, { orgId: ORG, project: PROJECT, taskId: id, reason: "host_blocked" });
+    expect(await withTestingNotice(h.deps, { orgId: ORG, project: PROJECT }, view, ON)).toMatchObject({ testingNotice: { state: "needs_repair" } });
   });
 });

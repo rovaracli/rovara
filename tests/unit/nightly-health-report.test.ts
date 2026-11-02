@@ -21,7 +21,7 @@ describe("the nightly result's counts and health block", () => {
   });
 
   it("is never read by the broker as disagreeing: the result parses and the class is the classifier's own", () => {
-    expect(nightlyHealthOf(resultOf(nightlyCountsAndHealth(facts())))).toEqual({ class: "tests", ranFrom: "fresh" });
+    expect(nightlyHealthOf(resultOf(nightlyCountsAndHealth(facts())))).toEqual({ class: "tests", setupProved: true, ranFrom: "fresh" });
     expect(nightlyHealthOf(resultOf(nightlyCountsAndHealth(facts({ tally: { passed: 100, failures: 0, errors: 0, skipped: 0 } }))))).toEqual({ class: "passed", ranFrom: "fresh" });
     expect(nightlyHealthOf(resultOf(nightlyCountsAndHealth(facts({ tally: { passed: 5, failures: 0, errors: 95, skipped: 0 } }))))).toEqual({ class: "environment", cause: "collection_errors", ranFrom: "fresh" });
     const setupFailed = allPassed.map((entry) => (entry.step === "setup" ? { ...entry, status: "failed" as const } : entry));

@@ -43,7 +43,11 @@ export type NightlyHealthReport = z.infer<typeof NightlyHealthReportSchema>;
 
 /** What the broker keeps of the classification, beside the baseline (never inside it, so an older broker still reads the baseline). `cause` is one of the fixed cause words of the classifier. */
 export const StoredNightlyHealthSchema = z
-  .object({ class: z.enum(["passed", "environment", "tests", "unclear"]), cause: z.string().regex(/^[a-z_]{1,40}$/u).optional(), ranFrom: z.enum(NIGHTLY_RAN_FROM) })
+  .object({
+    class: z.enum(["passed", "environment", "tests", "unclear"]), cause: z.string().regex(/^[a-z_]{1,40}$/u).optional(), ranFrom: z.enum(NIGHTLY_RAN_FROM),
+    /** Only with class `tests`: the night had the evidence that the setup works (see `classifyNightlyHealth`). Absent reads as false. */
+    setupProved: z.boolean().optional(),
+  })
   .strict();
 export type StoredNightlyHealth = z.infer<typeof StoredNightlyHealthSchema>;
 

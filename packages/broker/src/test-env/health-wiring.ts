@@ -38,13 +38,22 @@ export function blockedReasonsOf(codes: readonly AutoFixCode[]): TestingBlockedR
   return [...reasons];
 }
 
+/** Attempts at a health update that failed: the state may be stored and its card not yet opened, and a repeat does the card again. */
+export const HEALTH_NOTE_ATTEMPTS = 3;
+async function retried<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await run(); } catch (error) { if (attempt >= HEALTH_NOTE_ATTEMPTS) throw error; }
+  }
+}
+
 /** For the auto-fix runner: when it gives up on a task and the faults are the environment's, the project's blocked-task count goes up. Advisory: the caller ignores a failure. */
 export function blockedByEnvironmentHook(deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): ((task: { taskId: string; orgId?: OrgId | undefined; project: string }, codes: readonly AutoFixCode[]) => Promise<void>) | undefined {
   if (!healthWiringOn(env)) return undefined;
   const ports = healthPortsOf(deps);
   return async (task, codes) => {
-    if (task.orgId === undefined) return;
-    for (const reason of blockedReasonsOf(codes)) await noteBlockedTask(deps, ports, { orgId: task.orgId, project: task.project, taskId: task.taskId, reason });
+    const orgId = task.orgId;
+    if (orgId === undefined) return;
+    for (const reason of blockedReasonsOf(codes)) await retried(() => noteBlockedTask(deps, ports, { orgId, project: task.project, taskId: task.taskId, reason }));
   };
 }
 
@@ -52,6 +61,6 @@ export function blockedByEnvironmentHook(deps: TestEnvDeps, env: NodeJS.ProcessE
 export function setupProvedHook(deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): ((orgId: OrgId, project: string) => Promise<void>) | undefined {
   if (!healthWiringOn(env)) return undefined;
   const ports = healthPortsOf(deps);
-  return async (orgId, project) => { await noteSetupProved(deps, ports, { orgId, project }); };
+  return async (orgId, project) => { await retried(() => noteSetupProved(deps, ports, { orgId, project })); };
 }
 

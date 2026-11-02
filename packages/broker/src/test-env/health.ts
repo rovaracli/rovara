@@ -5,14 +5,16 @@
 //   healthy       a passing night, or a newly proved setup. Open Fix setup cards for the project are closed.
 //   needs_repair  "Setup needs repair": a night whose SETUP (not its tests) failed, or 3 tasks blocked by the same environment cause within 24 hours. A Fix setup card goes to the maintainers (one per project per
 //                 cause; later tasks join it). New tasks STILL START (owner decision 7): they only get a banner, "testing may be blocked". Nothing in this file can refuse or pause a start.
-//   tests_failing a night that ran and had assertion failures next to passes. The environment works (the setup steps passed, the tests ran), so an earlier repair state ends and its card closes; the failing tests are the
-//                 already-failing set (nightly.ts). If the project turned on `nightly.proposeFixTask` (OFF by default), ONE proposed task is made per new set of failing tests, never started on its own.
+//   tests_failing a night that ran with assertion failures next to passes. When the night PROVES the setup works (`setupProved`: a check ran, the code was put in place, both test steps ran), an earlier repair state
+//                 ends and its card closes (owner decision 2026-11-02, replacing design 6.2's "only a passing nightly"); the failing tests are the already-failing set (nightly.ts). A thin night (no evidence the
+//                 setup works) leaves a repair state and its cards as they are. If the project turned on `nightly.proposeFixTask` (OFF by default), ONE proposed task is open per project, for the newest set of
+//                 failing tests, never started on its own.
 //   not_sure      an unclear night ("Rovara isn't sure"). It never clears a repair state and never closes a card: only a passing night, a night that shows the setup works, or a newly proved setup does.
 // A night that carries no step words (an older worker) changes nothing.
 //
-// Data: one item per project (`TESTENV#HEALTH`) holding the state and the small bounded facts it needs (the recent blocked tasks, the failing set's key, the keys already proposed), written with a version check
+// Data: one item per project (`TESTENV#HEALTH`) holding the state and the small bounded facts it needs (the recent blocked tasks, the failing set's key and first day), written with a version check
 // and re-tried when two events meet. The Fix setup card and the proposed task are PORTS: SH17 (the Fix setup card, lane sh-results-wire) and the proposed-task store are wired to them by the controller. Each port
-// call is repeatable (it is keyed by the cause or by the set), because a failed write is retried from the start.
+// call is repeatable (it is keyed by the cause or by the set) and is made AFTER the state is stored, from the state itself, so a retry of a failed call does the same thing.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, canonicalJson, projectAllows, projectPk, type OrgId, type ProjectRole, type StoredNightlyHealth, type TestingBlockedReason } from "@agentx/contracts";
@@ -35,7 +37,6 @@ export const BLOCKED_WINDOW_MS = 24 * HOUR_MS;
 /** This many tasks blocked by the same cause inside the window set "Setup needs repair". */
 export const BLOCKED_TASKS_FOR_REPAIR = 3;
 const BLOCKED_KEPT_MAX = 20;
-const PROPOSED_KEYS_KEPT = 5;
 const PROPOSED_TEST_IDS_MAX = 20;
 const WRITE_ATTEMPTS = 4;
 /** The health item expires this long after it was last written, so a project nobody checks any more does not keep a repair state for ever. A nightly run writes it at least every few days. */
@@ -69,13 +70,12 @@ export const ProjectHealthSchema = z
     /** When the state last changed. */
     since: Iso,
     updatedAt: Iso,
-    lastNightly: z.object({ slotId: Sha256, finishedAt: Iso, headSha: z.string().regex(/^[a-f0-9]{40}$/u) }).strict().optional(),
+    /** The last night read. `recordedAt` is the BROKER's clock when it recorded the night, and is what orders nights; `finishedAt` is the worker's word, shown only. */
+    lastNightly: z.object({ slotId: Sha256, finishedAt: Iso, recordedAt: Iso, headSha: z.string().regex(/^[a-f0-9]{40}$/u) }).strict().optional(),
     /** Recent tasks blocked by a setup cause, newest last. */
     blocked: z.array(z.object({ taskId: TaskId, cause: Cause, at: Iso }).strict()).max(BLOCKED_KEPT_MAX),
     /** The current set of failing tests (a hash of their ids), the day it first failed, and how many. */
     failingSet: z.object({ key: Sha256, count: z.number().int().min(1).max(NIGHTLY_FAILED_MAX), sinceDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u) }).strict().optional(),
-    /** The sets a task was proposed for, newest last. */
-    proposedKeys: z.array(Sha256).max(PROPOSED_KEYS_KEPT),
   })
   .strict();
 export type ProjectHealth = z.infer<typeof ProjectHealthSchema>;
@@ -96,7 +96,11 @@ export interface FixSetupCardPort {
 export const FIX_SETUP_CARDS_PENDING_SH17: FixSetupCardPort = { openOrJoin: () => Promise.resolve(), resolve: () => Promise.resolve() };
 
 export interface ProposedFixTaskPort {
-  /** Makes one PROPOSED task (never started on its own). `key` names the set of failing tests: the same key is the same proposal, so repeating the call makes no second one. */
+  /**
+   * Makes one PROPOSED task (never started on its own). `key` names the set of failing tests. REQUIREMENT: the port dedupes DURABLY by `key`: while the key is stored (open or dismissed, until it expires) a
+   * repeated call changes nothing. The health logic calls it on every night that has the set, because it keeps no memory of what it proposed; a port that forgets would propose again. `testIds` and `title` are
+   * DATA: whatever builds a task from a proposal must never put them into an instruction as if they were text to follow.
+   */
   propose(input: { orgId: OrgId; project: string; key: string; title: string; failingCount: number; testIds: readonly string[] }): Promise<void>;
 }
 
@@ -113,43 +117,106 @@ const SETTINGS_SK = "TESTENV#HEALTH#SETTINGS";
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** The project's stored health, or undefined when none was ever recorded. A stored item that does not read back is an error: damaged health is never "no health" and never "healthy". */
-export async function readProjectHealth(deps: ReadDeps, orgId: OrgId, project: string): Promise<ProjectHealth | undefined> {
+type Stored =
+  | { kind: "none" }
+  | { kind: "ok"; health: ProjectHealth }
+  /** The item is there but is not a health of this version. `rawVersion` is its own write counter when it has a sane one. */
+  | { kind: "unreadable"; rawVersion: number | undefined }
+  /** Written by a newer release (schemaVersion above 1): this release leaves it alone. */
+  | { kind: "newer" };
+
+async function readStored(deps: ReadDeps, orgId: OrgId, project: string): Promise<Stored> {
   const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, HEALTH_SK), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
-  if (item === undefined) return undefined;
+  if (item === undefined) return { kind: "none" };
+  const written = item.health as { schemaVersion?: unknown } | null | undefined;
+  if (typeof written?.schemaVersion === "number" && written.schemaVersion > 1) return { kind: "newer" };
   const parsed = ProjectHealthSchema.safeParse(item.health);
-  if (!parsed.success) throw agentXError("RUNTIME_UNAVAILABLE", "the project health could not be read");
-  return parsed.data;
+  if (parsed.success) return { kind: "ok", health: parsed.data };
+  return { kind: "unreadable", rawVersion: typeof item.version === "number" && Number.isInteger(item.version) && item.version >= 0 && item.version < 1_000_000_000 ? item.version : undefined };
 }
 
-type Effect = () => Promise<void>;
+/** The project's stored health, or undefined when none was ever recorded. A stored item this release cannot read is an error: damaged health is never "no health" and never "healthy". */
+export async function readProjectHealth(deps: ReadDeps, orgId: OrgId, project: string): Promise<ProjectHealth | undefined> {
+  const stored = await readStored(deps, orgId, project);
+  if (stored.kind === "none") return undefined;
+  if (stored.kind !== "ok") throw agentXError("RUNTIME_UNAVAILABLE", "the project health could not be read");
+  return stored.health;
+}
+
+/** What a plan wants done once its state is stored. Every effect is repeatable. */
+type Effect =
+  | { kind: "open_card"; cause: string; source: "nightly" | "tasks"; taskIds: readonly string[] }
+  | { kind: "resolve_cards"; reason: "nightly_passed" | "nightly_setup_ok" | "setup_proved" }
+  | { kind: "propose"; key: string; title: string; failingCount: number; testIds: readonly string[] };
 interface Plan { next: ProjectHealth; effects: Effect[] }
 
-/** Runs `plan` against the current state: its effects first (each is repeatable), then the state with a version check. A write that meets another write starts again from what is stored now. */
-async function applyPlan(deps: TestEnvDeps, orgId: OrgId, project: string, plan: (previous: ProjectHealth | undefined, now: number) => Plan | undefined): Promise<ProjectHealth | undefined> {
+const logHealth = (event: string, orgId: OrgId, project: string): void => { console.log(JSON.stringify({ component: "broker", level: "warn", event, orgId, project })); };
+
+/** The card effects that say the project needs repair, from the state itself (so a retry after a failed effect does the same thing). */
+function repairCardOf(next: ProjectHealth): Effect {
+  const tasks = next.source === "tasks";
+  return { kind: "open_card", cause: next.cause ?? "other", source: tasks ? "tasks" : "nightly", taskIds: tasks ? next.blocked.filter((entry) => entry.cause === next.cause).map((entry) => entry.taskId) : [] };
+}
+
+/**
+ * Runs the effects of a plan AFTER its state is stored, so a write that lost to another can never leave a card behind. Before a card effect the stored state is read again: if another event has written since,
+ * an effect that contradicts it (opening a card for a project that no longer needs repair, closing cards for one that does) is skipped, and that event's own effects stand. The window between this read and the
+ * port call is the port's to close; it is a single read wide.
+ */
+async function runEffects(deps: ReadDeps, ports: HealthPorts, orgId: OrgId, project: string, next: ProjectHealth, effects: readonly Effect[]): Promise<void> {
+  for (const effect of effects) {
+    if (effect.kind === "propose") {
+      await ports.proposals.propose({ orgId, project, key: effect.key, title: effect.title, failingCount: effect.failingCount, testIds: effect.testIds });
+      continue;
+    }
+    const current = await readStored(deps, orgId, project);
+    if (current.kind === "ok" && current.health.version !== next.version) {
+      const repairing = current.health.state === "needs_repair";
+      if (effect.kind === "open_card" ? !repairing : repairing) continue;
+    }
+    if (effect.kind === "open_card") await ports.cards.openOrJoin({ orgId, project, cause: effect.cause, source: effect.source, taskIds: effect.taskIds });
+    else await ports.cards.resolve({ orgId, project, reason: effect.reason });
+  }
+}
+
+/**
+ * Runs `plan` against the stored state and writes the result with a version check, then runs the plan's effects. A write that meets another write starts again from what is stored now.
+ *   - an item this release cannot read (damaged, schemaVersion 1): it is replaced by a Put conditioned on its raw version, and the plan starts from NOTHING: a blocked-task tally is never built on damaged data;
+ *   - an item from a newer release: logged and left alone, nothing is written.
+ */
+async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, project: string, plan: (previous: ProjectHealth | undefined, now: number) => Plan | undefined): Promise<ProjectHealth | undefined> {
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
-    const previous = await readProjectHealth(deps, orgId, project);
+    const stored = await readStored(deps, orgId, project);
+    if (stored.kind === "newer") { logHealth("project_health.newer_schema_skipped", orgId, project); return undefined; }
+    if (stored.kind === "unreadable") logHealth("project_health.unreadable_replaced", orgId, project);
+    const previous = stored.kind === "ok" ? stored.health : undefined;
     const now = deps.now();
     const planned = plan(previous, now);
     if (planned === undefined) return previous;
-    for (const effect of planned.effects) await effect();
-    const next = ProjectHealthSchema.parse({ ...planned.next, version: (previous?.version ?? 0) + 1, updatedAt: iso(now) });
+    const baseVersion = stored.kind === "ok" ? stored.health.version : stored.kind === "unreadable" ? (stored.rawVersion ?? 0) : 0;
+    const next = ProjectHealthSchema.parse({ ...planned.next, version: baseVersion + 1, updatedAt: iso(now) });
+    let condition: { ConditionExpression: string; ExpressionAttributeValues?: Record<string, unknown> };
+    if (stored.kind === "none") condition = { ConditionExpression: "attribute_not_exists(pk)" };
+    else if (stored.kind === "ok") condition = { ConditionExpression: "version = :version", ExpressionAttributeValues: { ":version": stored.health.version } };
+    else if (stored.rawVersion !== undefined) condition = { ConditionExpression: "version = :version", ExpressionAttributeValues: { ":version": stored.rawVersion } };
+    else condition = { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(version)" };
     try {
       await deps.documentClient.send(new PutCommand({
         TableName: deps.tableName,
         Item: { ...keyOf(orgId, project, HEALTH_SK), entityType: "TEST_ENV_HEALTH", orgId, project, version: next.version, health: next, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + HEALTH_TTL_MS) / 1000) },
-        ConditionExpression: previous === undefined ? "attribute_not_exists(pk)" : "version = :version",
-        ...(previous === undefined ? {} : { ExpressionAttributeValues: { ":version": previous.version } }),
+        ...condition,
       }));
-      return next;
     } catch (error) {
       if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      continue;
     }
+    await runEffects(deps, ports, orgId, project, next, planned.effects);
+    return next;
   }
   throw agentXError("CHANGE_STALE", "the project health changed while it was being updated");
 }
 
-const blank = (now: number, over: Partial<ProjectHealth> & Pick<ProjectHealth, "state" | "source">): ProjectHealth => ({ schemaVersion: 1, version: 1, since: iso(now), updatedAt: iso(now), blocked: [], proposedKeys: [], ...over });
+const blank = (now: number, over: Partial<ProjectHealth> & Pick<ProjectHealth, "state" | "source">): ProjectHealth => ({ schemaVersion: 1, version: 1, since: iso(now), updatedAt: iso(now), blocked: [], ...over });
 
 // ---- the project's setting: proposed fix tasks (off by default)
 
@@ -194,106 +261,109 @@ export async function setProposeFixTask(deps: TestEnvDeps, input: { orgId: OrgId
 
 export const failingSetKey = (testIds: readonly string[]): string => createHash("sha256").update(canonicalJson([...new Set(testIds)].sort())).digest("hex");
 const safeBranch = (branch: string): string => (/^[A-Za-z0-9._/-]{1,60}$/u.test(branch) ? branch : "the default branch");
+/** Fixed words, a count, a plain branch name and a day. Test ids never go into it. */
 const proposalTitle = (count: number, branch: string, sinceDay: string): string => `${count} ${count === 1 ? "test" : "tests"} failing on ${safeBranch(branch)} since ${sinceDay}`;
 
 /**
- * A night was recorded (bind this to `recordNightlyResult`'s listener with `nightlyHealthListener`). See the file header for what each class does. A night older than the one on record changes nothing. The effects
- * (the card, the proposed task) are repeatable, so a failed attempt is simply run again by the worker's retry.
+ * A night was recorded (bind this to `recordNightlyResult`'s listener with `nightlyHealthListener`). See the file header for what each class does. Nights are ordered by the BROKER's clock (`recordedAt`); a night
+ * recorded before the one on record changes nothing. The card and the proposed task are done after the state is stored and follow from the state, so the worker's retry of a failed attempt does them again.
  */
 export async function applyNightlyRecorded(deps: TestEnvDeps, ports: HealthPorts, event: NightlyRecorded, options: { proposeFixTask: boolean }): Promise<ProjectHealth | undefined> {
   const night: StoredNightlyHealth | undefined = event.health;
   if (night === undefined) return undefined;
   const { orgId, project } = event;
-  const lastNightly = { slotId: event.slotId, finishedAt: event.baseline.finishedAt, headSha: event.baseline.headSha };
-  return applyPlan(deps, orgId, project, (previous, now) => {
-    if (previous?.lastNightly !== undefined && Date.parse(previous.lastNightly.finishedAt) > Date.parse(lastNightly.finishedAt)) return undefined;
-    const keep = { lastNightly, blocked: previous?.blocked ?? [], proposedKeys: previous?.proposedKeys ?? [] };
+  const lastNightly = { slotId: event.slotId, finishedAt: event.baseline.finishedAt, recordedAt: event.baseline.recordedAt, headSha: event.baseline.headSha };
+  return applyPlan(deps, ports, orgId, project, (previous, now) => {
+    if (previous?.lastNightly !== undefined && Date.parse(previous.lastNightly.recordedAt) > Date.parse(lastNightly.recordedAt)) return undefined;
+    const blocked = previous?.blocked ?? [];
     const changed = (state: ProjectHealthState, cause: string | undefined): string => (previous?.state === state && previous.cause === cause ? previous.since : iso(now));
+    // The set of failing tests carries through nights that say nothing about it, so the day it started does not reset.
+    const carried = previous?.failingSet === undefined ? {} : { failingSet: previous.failingSet };
     switch (night.class) {
       case "passed":
-        return {
-          next: blank(now, { state: "healthy", source: "nightly", since: changed("healthy", undefined), lastNightly, proposedKeys: keep.proposedKeys }),
-          effects: [() => ports.cards.resolve({ orgId, project, reason: "nightly_passed" })],
-        };
+        return { next: blank(now, { state: "healthy", source: "nightly", since: changed("healthy", undefined), lastNightly }), effects: [{ kind: "resolve_cards", reason: "nightly_passed" }] };
       case "environment": {
         const cause = night.cause ?? "other";
-        return {
-          next: blank(now, { state: "needs_repair", cause, source: "nightly", since: changed("needs_repair", cause), lastNightly, proposedKeys: keep.proposedKeys, blocked: keep.blocked }),
-          effects: [() => ports.cards.openOrJoin({ orgId, project, cause, source: "nightly", taskIds: [] })],
-        };
+        const next = blank(now, { state: "needs_repair", cause, source: "nightly", since: changed("needs_repair", cause), lastNightly, blocked, ...carried });
+        return { next, effects: [repairCardOf(next)] };
       }
       case "tests": {
-        const effects: Effect[] = [() => ports.cards.resolve({ orgId, project, reason: "nightly_setup_ok" })];
         // The set can be named only when it fit whole (the same test the already-failing set uses): a truncated set is never proposed.
         const { baseline } = event;
         const nameable = baseline.tests.failed > 0 && baseline.tests.failed <= NIGHTLY_FAILED_MAX && baseline.failed.length === baseline.tests.failed;
         let failingSet: ProjectHealth["failingSet"];
-        let proposedKeys = keep.proposedKeys;
+        const effects: Effect[] = [];
         if (nameable) {
           const key = failingSetKey(baseline.failed);
           failingSet = { key, count: baseline.failed.length, sinceDay: previous?.failingSet?.key === key ? previous.failingSet.sinceDay : iso(Date.parse(baseline.finishedAt)).slice(0, 10) };
-          if (options.proposeFixTask && !proposedKeys.includes(key)) {
-            const { count, sinceDay } = failingSet;
-            const testIds = baseline.failed.slice(0, PROPOSED_TEST_IDS_MAX);
-            effects.push(() => ports.proposals.propose({ orgId, project, key, title: proposalTitle(count, baseline.branch, sinceDay), failingCount: count, testIds }));
-            proposedKeys = [...proposedKeys, key].slice(-PROPOSED_KEYS_KEPT);
-          }
+          // Asked on every night that has the set: the store keeps what it already has (the port's requirement), the health keeps no memory of it.
+          if (options.proposeFixTask) effects.push({ kind: "propose", key, title: proposalTitle(failingSet.count, baseline.branch, failingSet.sinceDay), failingCount: failingSet.count, testIds: baseline.failed.slice(0, PROPOSED_TEST_IDS_MAX) });
         }
-        return { next: blank(now, { state: "tests_failing", source: "nightly", since: changed("tests_failing", undefined), lastNightly, proposedKeys, ...(failingSet === undefined ? {} : { failingSet }) }), effects };
+        const setupProved = night.setupProved === true;
+        // A repair state ends only on a night that PROVES the setup works (every setup step ran and passed, a check ran, both test steps ran). A thin night with failing tests leaves it, and its cards, as they are.
+        if (previous?.state === "needs_repair" && !setupProved) {
+          const next: ProjectHealth = { ...previous, lastNightly, ...(failingSet === undefined ? {} : { failingSet }) };
+          return { next, effects: [repairCardOf(next), ...effects] };
+        }
+        if (setupProved) effects.unshift({ kind: "resolve_cards", reason: "nightly_setup_ok" });
+        return { next: blank(now, { state: "tests_failing", source: "nightly", since: changed("tests_failing", undefined), lastNightly, ...(failingSet === undefined ? {} : { failingSet }) }), effects };
       }
-      case "unclear":
+      case "unclear": {
         // Never clears a repair state and never closes a card. A project that was fine, or failing tests, is "not sure"; one that needs repair stays so.
-        return previous?.state === "needs_repair"
-          ? { next: { ...previous, lastNightly }, effects: [] }
-          : { next: blank(now, { state: "not_sure", cause: night.cause ?? "other", source: "nightly", since: changed("not_sure", night.cause ?? "other"), lastNightly, proposedKeys: keep.proposedKeys, blocked: keep.blocked }), effects: [] };
+        if (previous?.state === "needs_repair") {
+          const next: ProjectHealth = { ...previous, lastNightly };
+          return { next, effects: [repairCardOf(next)] };
+        }
+        const cause = night.cause ?? "other";
+        return { next: blank(now, { state: "not_sure", cause, source: "nightly", since: changed("not_sure", cause), lastNightly, blocked, ...carried }), effects: [] };
+      }
     }
   });
 }
 
 /**
  * A task ended "Blocked by environment" (design 6.2: 3 tasks in 24 hours with the same cause set "Setup needs repair"). Only reasons that point at the setup count (`BLOCKED_REASON_POINTS_AT_SETUP`); any
- * other reason changes nothing. A task counts once. When the project already needs repair for this cause, the task joins the open card.
+ * other reason changes nothing. A task counts once per cause. When the project already needs repair for this cause, the task joins the open card. A caller retries an error from this: the state may be stored
+ * and the card not yet opened, and a repeat does the card again.
  */
 export async function noteBlockedTask(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string; taskId: string; reason: TestingBlockedReason }): Promise<ProjectHealth | undefined> {
   const taskId = TaskId.safeParse(input.taskId);
   if (!taskId.success || BLOCKED_REASON_POINTS_AT_SETUP[input.reason] !== true) return undefined;
   const { orgId, project } = input;
   const cause = input.reason;
-  return applyPlan(deps, orgId, project, (previous, now) => {
+  return applyPlan(deps, ports, orgId, project, (previous, now) => {
     const recent = (previous?.blocked ?? []).filter((entry) => now - Date.parse(entry.at) < BLOCKED_WINDOW_MS && !(entry.taskId === taskId.data && entry.cause === cause));
     const blocked = [...recent, { taskId: taskId.data, cause, at: iso(now) }].slice(-BLOCKED_KEPT_MAX);
     const same = blocked.filter((entry) => entry.cause === cause);
+    const carried = { ...(previous?.lastNightly === undefined ? {} : { lastNightly: previous.lastNightly }), ...(previous?.failingSet === undefined ? {} : { failingSet: previous.failingSet }) };
     if (same.length >= BLOCKED_TASKS_FOR_REPAIR) {
-      const alreadyRepairing = previous?.state === "needs_repair";
-      const taskIds = same.map((entry) => entry.taskId);
-      return {
-        next: blank(now, {
-          state: "needs_repair", source: previous?.state === "needs_repair" ? previous.source : "tasks",
-          // An earlier cause (the night's, which names the step) stays the project's cause; this one has its own card.
-          cause: alreadyRepairing ? previous.cause ?? cause : cause, since: alreadyRepairing ? previous.since : iso(now),
-          blocked, proposedKeys: previous?.proposedKeys ?? [], ...(previous?.lastNightly === undefined ? {} : { lastNightly: previous.lastNightly }), ...(previous?.failingSet === undefined ? {} : { failingSet: previous.failingSet }),
-        }),
-        effects: [() => ports.cards.openOrJoin({ orgId, project, cause, source: "tasks", taskIds })],
-      };
+      const repairing = previous?.state === "needs_repair" ? previous : undefined;
+      // An earlier cause (the night's, which names the step) stays the project's cause; this one has its own card.
+      const next = blank(now, { state: "needs_repair", source: repairing?.source ?? "tasks", cause: repairing?.cause ?? cause, since: repairing?.since ?? iso(now), blocked, ...carried });
+      return { next, effects: [{ kind: "open_card", cause, source: "tasks", taskIds: same.map((entry) => entry.taskId) }] };
     }
     // Fewer than three: the state does not move. A task blocked for the cause the project already needs repair for joins that card.
     const joins = previous?.state === "needs_repair" && previous.cause === cause;
     return {
       next: previous === undefined ? blank(now, { state: "unknown", source: "tasks", blocked }) : { ...previous, blocked },
-      effects: joins ? [() => ports.cards.openOrJoin({ orgId, project, cause, source: "tasks", taskIds: [taskId.data] })] : [],
+      effects: joins ? [{ kind: "open_card", cause, source: "tasks", taskIds: [taskId.data] }] : [],
     };
   });
 }
 
+/** A repeat of the same approval within this long closes the cards again (the first attempt may have stored the state and failed on the card). */
+const PROVED_REPLAY_MS = 10 * 60_000;
+
 /** A setup was newly proved (a new approved environment revision). A project that needs repair is healthy again and its cards close; the blocked tasks before it no longer count. Anything else is left as it is. */
 export async function noteSetupProved(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string }): Promise<ProjectHealth | undefined> {
   const { orgId, project } = input;
-  return applyPlan(deps, orgId, project, (previous, now) => {
+  return applyPlan(deps, ports, orgId, project, (previous, now) => {
     if (previous === undefined) return undefined;
+    if (previous.state === "healthy" && previous.source === "setup_proved" && now - Date.parse(previous.since) < PROVED_REPLAY_MS) return { next: previous, effects: [{ kind: "resolve_cards", reason: "setup_proved" }] };
     if (previous.state !== "needs_repair") return previous.blocked.length === 0 ? undefined : { next: { ...previous, blocked: [] }, effects: [] };
     return {
-      next: blank(now, { state: "healthy", source: "setup_proved", proposedKeys: previous.proposedKeys, ...(previous.lastNightly === undefined ? {} : { lastNightly: previous.lastNightly }) }),
-      effects: [() => ports.cards.resolve({ orgId, project, reason: "setup_proved" })],
+      next: blank(now, { state: "healthy", source: "setup_proved", ...(previous.lastNightly === undefined ? {} : { lastNightly: previous.lastNightly }), ...(previous.failingSet === undefined ? {} : { failingSet: previous.failingSet }) }),
+      effects: [{ kind: "resolve_cards", reason: "setup_proved" }],
     };
   });
 }

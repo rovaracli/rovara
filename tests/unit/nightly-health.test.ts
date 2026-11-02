@@ -68,8 +68,8 @@ describe("row 1: a step before the tests failed is the environment", () => {
   });
 
   it("does not count a failed test step as a setup fault", () => {
-    expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "failed"), tests: counts(60, 40, 0) }))).toEqual({ class: "tests" });
-    expect(classifyNightlyHealth(run({ steps: withStep("smoke", "failed"), tests: counts(60, 40, 0) }))).toEqual({ class: "tests" });
+    expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "failed"), tests: counts(60, 40, 0) }))).toEqual({ class: "tests", setupProved: true });
+    expect(classifyNightlyHealth(run({ steps: withStep("smoke", "failed"), tests: counts(60, 40, 0) }))).toEqual({ class: "tests", setupProved: true });
   });
 });
 
@@ -103,16 +103,31 @@ describe("row 3: every failure is an error and it touches more than a fifth of t
   });
 
   it("needs no assertion failure at all: one real failure among the errors is not an environment row", () => {
-    expect(classifyNightlyHealth(run({ tests: counts(60, 1, 39) }))).toEqual({ class: "tests" });
+    expect(classifyNightlyHealth(run({ tests: counts(60, 1, 39) }))).toEqual({ class: "tests", setupProved: true });
     expect(classifyNightlyHealth(run({ tests: counts(0, 1, 99) }))).toEqual({ class: "unclear", cause: "all_tests_failed" });
   });
 });
 
 describe("row 4: assertion failures while others passed are the tests", () => {
   it("is tests for any number of failures with some passing", () => {
-    expect(classifyNightlyHealth(run({ tests: counts(99, 1, 0) }))).toEqual({ class: "tests" });
-    expect(classifyNightlyHealth(run({ tests: counts(1, 99, 0) }))).toEqual({ class: "tests" });
-    expect(classifyNightlyHealth(run({ tests: counts(10, 5, 2, 3) }))).toEqual({ class: "tests" });
+    expect(classifyNightlyHealth(run({ tests: counts(99, 1, 0) }))).toEqual({ class: "tests", setupProved: true });
+    expect(classifyNightlyHealth(run({ tests: counts(1, 99, 0) }))).toEqual({ class: "tests", setupProved: true });
+    expect(classifyNightlyHealth(run({ tests: counts(10, 5, 2, 3) }))).toEqual({ class: "tests", setupProved: true });
+  });
+
+  it("says the setup is proved only with the evidence a passing night needs: a check, the code in place, both test steps run (F1)", () => {
+    const failing = counts(60, 40, 0);
+    // Nothing on record but the counts: the tests class stands, the setup is not proved.
+    expect(classifyNightlyHealth({ steps: [], checks: [], tests: failing })).toEqual({ class: "tests", setupProved: false });
+    expect(classifyNightlyHealth(run({ checks: [], tests: failing }))).toEqual({ class: "tests", setupProved: false });
+    expect(classifyNightlyHealth(run({ steps: withStep("smoke", "skipped"), tests: failing }))).toEqual({ class: "tests", setupProved: false });
+    expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "skipped"), tests: failing }))).toEqual({ class: "tests", setupProved: false });
+    const testSteps = NIGHTLY_HEALTH_TEST_STEPS.map((step) => ({ step, status: "passed" }));
+    const skippedSetup = NIGHTLY_HEALTH_SETUP_STEPS.map((step) => ({ step, status: "skipped" }));
+    expect(classifyNightlyHealth(run({ steps: [...skippedSetup, ...testSteps], tests: failing }))).toEqual({ class: "tests", setupProved: false });
+    expect(classifyNightlyHealth(run({ steps: [...skippedSetup.map((entry) => (entry.step === "build" ? { ...entry, status: "passed" } : entry)), ...testSteps], tests: failing }))).toEqual({ class: "tests", setupProved: true });
+    // A failed test step still ran; a setup step that failed is the environment, never tests.
+    expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "failed"), tests: failing }))).toEqual({ class: "tests", setupProved: true });
   });
 });
 
@@ -145,7 +160,7 @@ describe("what the project page shows", () => {
   it("sets 'Setup needs repair' for the environment only", () => {
     expect(nightlyHealthShownAs({ class: "passed" })).toBe("healthy");
     expect(nightlyHealthShownAs({ class: "environment", cause: "setup_failed" })).toBe("needs_repair");
-    expect(nightlyHealthShownAs({ class: "tests" })).toBe("tests_failing");
+    expect(nightlyHealthShownAs({ class: "tests", setupProved: false })).toBe("tests_failing");
     expect(nightlyHealthShownAs({ class: "unclear", cause: "other" })).toBe("not_sure");
     for (const cause of NIGHTLY_ENVIRONMENT_CAUSES) expect(nightlyHealthShownAs({ class: "environment", cause })).toBe("needs_repair");
   });

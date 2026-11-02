@@ -60,7 +60,7 @@ const map = (builtAt = new Date(T0).toISOString()): CoverageMapData => ({ builtA
 function result(slotId: string, over: Record<string, unknown> = {}) {
   const coverage = map();
   return {
-    result: { schemaVersion: 1, slotId, envRevision: 1, branch: "main", headSha: HEAD1, startedAt: new Date(T0).toISOString(), finishedAt: new Date(T0 + 40 * 60_000).toISOString(), durationMs: 40 * 60_000,
+    result: { schemaVersion: 1, slotId, envRevision: 1, branch: "main", headSha: HEAD1, startedAt: new Date(T0 - 40 * 60_000).toISOString(), finishedAt: new Date(T0).toISOString(), durationMs: 40 * 60_000,
       tests: { total: 10, passed: 7, failed: 2, skipped: 1 }, failed: ["tests/test_x.py::bad1", "tests/test_x.py::bad2"], flaky: ["tests/test_y.py::flaky1"], coverageMapRef: coverageMapDigest(coverage), slowest: [{ id: "tests/test_z.py::slow", durationMs: 9_000 }], ...over },
     coverageMap: coverage,
   };
@@ -195,6 +195,7 @@ describe("a fire", () => {
     if (first.outcome !== "started") throw new Error("not started");
     const finished = Date.UTC(2026, 10, 5, 22, 40, 0);
     const data = result(first.slotId, { startedAt: new Date(h.clock.now).toISOString(), finishedAt: new Date(finished).toISOString(), durationMs: finished - h.clock.now });
+    h.clock.now = finished;
     await recordNightlyResult(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap });
     h.heads.value = HEAD2;
     // 06:00 on the next UTC day: a new day, a moved head, an idle project, but only 7 h 20 min since the last run finished.
@@ -317,7 +318,7 @@ describe("recording a result, and what it feeds", () => {
     return Promise.all([
       expect(bad({ tests: { total: 9, passed: 7, failed: 2, skipped: 1 } })).rejects.toThrow(/could not be read/),
       expect(bad({ flaky: ["tests/test_x.py::bad1"] })).rejects.toThrow(/could not be read/),
-      expect(bad({ finishedAt: new Date(T0 - 1_000).toISOString() })).rejects.toThrow(/could not be read/),
+      expect(bad({ finishedAt: new Date(T0 - 41 * 60_000).toISOString() })).rejects.toThrow(/could not be read/),
     ]).then(() => undefined);
   });
 });
@@ -389,17 +390,42 @@ describe("SH27: step words on the nightly result", () => {
     expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "unclear", cause: "unreadable" } });
   });
 
-  it("tells a listener after the baseline is stored; a listener that fails leaves the run claimed so the retry records it again", async () => {
+  it("tells a listener after the baseline is stored; a fault that may pass leaves the run claimed so the retry records it again", async () => {
     const events: Array<Record<string, unknown>> = [];
-    let fail = true;
-    const { h, call } = await recorded({ health: health() }, (event) => { events.push(event as unknown as Record<string, unknown>); return fail ? Promise.reject(new Error("health store down")) : Promise.resolve(); });
-    await expect(call()).rejects.toThrow(/health store down/);
+    let fail: Error | undefined = Object.assign(new Error("table throttled"), { name: "ThrottlingException" });
+    const { h, call } = await recorded({ health: health() }, (event) => { events.push(event as unknown as Record<string, unknown>); return fail === undefined ? Promise.resolve() : Promise.reject(fail); });
+    await expect(call()).rejects.toThrow(/throttled/);
     expect(events[0]).toMatchObject({ orgId: ORG, project: PROJECT, health: { class: "tests" }, baseline: { headSha: HEAD1 } });
     expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(1);
-    fail = false;
+    fail = undefined;
     expect(await call()).toMatchObject({ recorded: true });
     expect(events).toHaveLength(2);
     expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(0);
+  });
+
+  it("a stale health write is retried the same way (CHANGE_STALE); any other listener failure never fails the record (F3)", async () => {
+    const stale = await recorded({ health: health() }, () => Promise.reject(agentXError("CHANGE_STALE", "the project health changed while it was being updated")));
+    await expect(stale.call()).rejects.toThrow(/changed while/);
+    expect(stale.h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(1);
+    for (const failure of [new Error("boom"), agentXError("RUNTIME_UNAVAILABLE", "the project health could not be read"), agentXError("CONFIG_INVALID", "bad")]) {
+      const { h, call } = await recorded({ health: health() }, () => Promise.reject(failure));
+      expect(await call()).toMatchObject({ recorded: true });
+      // The night is recorded and released: the listener's failure changed nothing about the record.
+      expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(0);
+      expect(latest(h)).toMatchObject({ health: { class: "tests" } });
+    }
+  });
+
+  it("refuses a result dated more than five minutes ahead of the broker's clock, before anything is read or claimed (F4)", async () => {
+    for (const over of [{ finishedAt: new Date(T0 + 6 * 60_000).toISOString() }, { startedAt: new Date(T0 + 6 * 60_000).toISOString(), finishedAt: new Date(T0 + 7 * 60_000).toISOString() }, { finishedAt: "2099-01-01T00:00:00.000Z" }]) {
+      const { h, call } = await recorded(over);
+      await expect(call()).rejects.toThrow(/dated in the future/);
+      expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(1);
+      expect(await readNightlyBaseline(h.deps, ORG, PROJECT)).toBeUndefined();
+    }
+    // A little ahead is the worker's clock, not a lie.
+    const near = await recorded({ finishedAt: new Date(T0 + 4 * 60_000).toISOString() });
+    expect(await near.call()).toMatchObject({ recorded: true });
   });
 
   it("a stored classification that does not read back is unclear, never absent and never passed", async () => {

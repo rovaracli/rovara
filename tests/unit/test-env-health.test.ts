@@ -26,22 +26,24 @@ function harness() {
   const deps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capture.audit };
   const calls = { open: [] as Array<Record<string, unknown>>, resolve: [] as Array<Record<string, unknown>>, propose: [] as Array<Record<string, unknown>> };
   const fail = { open: false, propose: false };
+  const proposed = new Set<string>();
   const ports: HealthPorts = {
     cards: {
       openOrJoin: (input) => { if (fail.open) return Promise.reject(new Error("cards down")); calls.open.push({ ...input }); return Promise.resolve(); },
       resolve: (input) => { calls.resolve.push({ ...input }); return Promise.resolve(); },
     },
-    proposals: { propose: (input) => { if (fail.propose) return Promise.reject(new Error("tasks down")); calls.propose.push({ ...input }); return Promise.resolve(); } },
+    // The port's requirement: it dedupes durably by key, so the health logic may ask on every night that has the set.
+    proposals: { propose: (input) => { if (fail.propose) return Promise.reject(new Error("tasks down")); if (!proposed.has(input.key)) { proposed.add(input.key); calls.propose.push({ ...input }); } return Promise.resolve(); } },
   };
   return { db, clock, deps, ports, calls, fail, capture };
 }
 
 let slot = 0;
 let requestCounter = 0;
-function baseline(over: { failed?: string[]; finishedAt?: string; branch?: string; failedCount?: number } = {}): NightlyBaseline {
+function baseline(over: { failed?: string[]; finishedAt?: string; recordedAt?: string; branch?: string; failedCount?: number } = {}): NightlyBaseline {
   const failed = over.failed ?? [];
   return NightlyBaselineSchema.parse({
-    recordedAt: new Date(T0).toISOString(), envRevision: 1, branch: over.branch ?? "main", headSha: HEAD, finishedAt: over.finishedAt ?? new Date(T0).toISOString(),
+    recordedAt: over.recordedAt ?? new Date(T0).toISOString(), envRevision: 1, branch: over.branch ?? "main", headSha: HEAD, finishedAt: over.finishedAt ?? new Date(T0).toISOString(),
     tests: { total: Math.max(100, (over.failedCount ?? 0) + 1), passed: Math.max(100, (over.failedCount ?? 0) + 1) - (over.failedCount ?? failed.length), failed: over.failedCount ?? failed.length, skipped: 0 }, failed, flaky: [],
   });
 }
@@ -51,7 +53,9 @@ const night = (health: StoredNightlyHealth | undefined, over: Parameters<typeof 
 };
 const passed: StoredNightlyHealth = { class: "passed", ranFrom: "fresh" };
 const environment = (cause: string): StoredNightlyHealth => ({ class: "environment", cause, ranFrom: "fresh" });
-const tests: StoredNightlyHealth = { class: "tests", ranFrom: "fresh" };
+const tests: StoredNightlyHealth = { class: "tests", setupProved: true, ranFrom: "fresh" };
+/** A night with failing tests and passing ones but not the evidence that the setup works (an incomplete report). */
+const thinTests: StoredNightlyHealth = { class: "tests", setupProved: false, ranFrom: "fresh" };
 const unclear: StoredNightlyHealth = { class: "unclear", cause: "other", ranFrom: "fresh" };
 const off = { proposeFixTask: false };
 const state = async (h: ReturnType<typeof harness>) => (await readProjectHealth(h.deps, ORG, PROJECT))?.state;
@@ -132,23 +136,28 @@ describe("the nightly run sets the health", () => {
     expect(fresh.db.find((item) => String(item.sk).startsWith("TESTENV#HEALTH"))).toHaveLength(0);
   });
 
-  it("a night older than the one on record is ignored", async () => {
+  it("a night recorded before the one on record is ignored, whatever date the worker put on it (F4)", async () => {
     const h = harness();
-    await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed"), { finishedAt: new Date(T0).toISOString() }), off);
-    await applyNightlyRecorded(h.deps, h.ports, night(passed, { finishedAt: new Date(T0 - DAY).toISOString() }), off);
+    await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed"), { recordedAt: new Date(T0 + 3_600_000).toISOString() }), off);
+    await applyNightlyRecorded(h.deps, h.ports, night(passed, { recordedAt: new Date(T0).toISOString(), finishedAt: "2099-01-01T00:00:00.000Z" }), off);
     expect(await state(h)).toBe("needs_repair");
+    expect(h.calls.resolve).toHaveLength(0);
+    // A worker date far in the past on a night recorded later still counts as the newest.
+    await applyNightlyRecorded(h.deps, h.ports, night(passed, { recordedAt: new Date(T0 + 2 * 3_600_000).toISOString(), finishedAt: "2000-01-01T00:00:00.000Z" }), off);
+    expect(await state(h)).toBe("healthy");
   });
 
-  it("a card that cannot be opened leaves the state unwritten, and the retry does it", async () => {
+  it("a card that cannot be opened is done after the state is stored, and the retry does it (F2)", async () => {
     const h = harness();
     h.fail.open = true;
     const event = night(environment("setup_failed"));
     await expect(applyNightlyRecorded(h.deps, h.ports, event, off)).rejects.toThrow(/cards down/);
-    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
+    expect(await state(h)).toBe("needs_repair");
+    expect(h.calls.open).toHaveLength(0);
     h.fail.open = false;
     await applyNightlyRecorded(h.deps, h.ports, event, off);
     expect(await state(h)).toBe("needs_repair");
-    expect(h.calls.open).toHaveLength(1);
+    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [] }]);
   });
 
   it("keeps the health of one project apart from another's", async () => {
@@ -370,12 +379,12 @@ describe("a proposed fix task from failing tests (off by default per project)", 
     expect(h.calls.propose[0]?.title).toBe("3 tests failing on the default branch since 2026-11-05");
   });
 
-  it("a proposal that cannot be made leaves the night unrecorded, and the retry makes it once", async () => {
+  it("a proposal that cannot be made is retried, and the store (not the health) is what makes it once", async () => {
     const h = harness();
     const event = failingNight(h, ids);
     h.fail.propose = true;
     await expect(applyNightlyRecorded(h.deps, h.ports, event, { proposeFixTask: true })).rejects.toThrow(/tasks down/);
-    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
+    expect(await state(h)).toBe("tests_failing");
     h.fail.propose = false;
     await applyNightlyRecorded(h.deps, h.ports, event, { proposeFixTask: true });
     await applyNightlyRecorded(h.deps, h.ports, event, { proposeFixTask: true });
@@ -427,5 +436,132 @@ describe("the nh switch and the listener", () => {
     await setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled: true, requestId: "request-listener" });
     await listener(night(tests, { failed: ["t2"], finishedAt: new Date(T0 + DAY).toISOString() }));
     expect(h.calls.propose).toHaveLength(1);
+  });
+});
+
+describe("review fixes F1, F2, F3, F6", () => {
+  it("F1: an incomplete night with failing tests leaves 'Setup needs repair' and its card in place, and a night that proves the setup ends it", async () => {
+    const h = harness();
+    await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed")), off);
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(thinTests, { failed: ["t1"], finishedAt: new Date(h.clock.now).toISOString() }), off);
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "setup_failed", failingSet: { count: 1 } });
+    expect(h.calls.resolve).toHaveLength(0);
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(tests, { failed: ["t1"], finishedAt: new Date(h.clock.now).toISOString() }), off);
+    expect(await state(h)).toBe("tests_failing");
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_setup_ok" }]);
+  });
+
+  it("F1: a thin tests night does not close cards for a project that was fine either; it is tests failing", async () => {
+    const h = harness();
+    await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
+    h.calls.resolve.length = 0;
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(thinTests, { failed: ["t1"], finishedAt: new Date(h.clock.now).toISOString() }), off);
+    expect(await state(h)).toBe("tests_failing");
+    expect(h.calls.resolve).toHaveLength(0);
+  });
+
+  it("F2: a card never outlives a state that does not need repair, whichever way two nights are interleaved", async () => {
+    for (const order of ["env-first", "passed-first"] as const) {
+      for (const laterWins of ["env", "passed"] as const) {
+        const h = harness();
+        const open = new Set<string>();
+        h.ports.cards.openOrJoin = (input) => { open.add(input.cause); return Promise.resolve(); };
+        h.ports.cards.resolve = () => { open.clear(); return Promise.resolve(); };
+        const envAt = new Date(T0 + (laterWins === "env" ? 2_000 : 1_000)).toISOString();
+        const passedAt = new Date(T0 + (laterWins === "env" ? 1_000 : 2_000)).toISOString();
+        const env = night(environment("setup_failed"), { recordedAt: envAt });
+        const pass = night(passed, { recordedAt: passedAt });
+        const runs = order === "env-first" ? [applyNightlyRecorded(h.deps, h.ports, env, off), applyNightlyRecorded(h.deps, h.ports, pass, off)] : [applyNightlyRecorded(h.deps, h.ports, pass, off), applyNightlyRecorded(h.deps, h.ports, env, off)];
+        await Promise.all(runs);
+        const finalState = await state(h);
+        expect(finalState, `${order}/${laterWins}`).toBe(laterWins === "env" ? "needs_repair" : "healthy");
+        expect(open.size > 0, `${order}/${laterWins} cards`).toBe(finalState === "needs_repair");
+      }
+    }
+  });
+
+  it("F2: an effect that contradicts a newer state is skipped: a card is not opened for a project that was proved a moment after the write", async () => {
+    const h = harness();
+    let proved = false;
+    const racing = {
+      ...h.deps,
+      documentClient: {
+        send: async (command: unknown) => {
+          const reply = await h.db.send(command as never);
+          const input = (command as { input?: { Item?: { sk?: string; health?: { state?: string } } } }).input;
+          if (!proved && input?.Item?.sk === "TESTENV#HEALTH" && input.Item.health?.state === "needs_repair") {
+            // Another event stores "healthy" between this write and this write's card.
+            proved = true;
+            await noteSetupProved(h.deps, h.ports, { orgId: ORG, project: PROJECT });
+          }
+          return reply;
+        },
+      },
+    };
+    await applyNightlyRecorded(racing, h.ports, night(environment("setup_failed")), off);
+    expect(proved).toBe(true);
+    expect(await state(h)).toBe("healthy");
+    expect(h.calls.open).toHaveLength(0);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "setup_proved" }]);
+  });
+
+  it("F3: a damaged item is replaced, not read: a blocked tally never starts from it", async () => {
+    const h = harness();
+    for (const id of ["task_1", "task_2"]) await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: id, reason: "host_blocked" });
+    const item = h.db.find((entry) => entry.sk === "TESTENV#HEALTH")[0]!;
+    h.db.set({ ...item, health: { ...(item.health as object), blocked: "garbage", state: 7 } });
+    await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: "task_3", reason: "host_blocked" });
+    // The two earlier tasks were in the damaged item: they do not count, and the project is not in repair on a count nobody can trust.
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "unknown", version: Number(item.version) + 1 });
+    expect((await readProjectHealth(h.deps, ORG, PROJECT))?.blocked).toHaveLength(1);
+    expect(h.calls.open).toHaveLength(0);
+  });
+
+  it("F3: a damaged item with no counter, or any other shape, is replaced too; a nightly record is not jammed by it", async () => {
+    const h = harness();
+    h.db.set({ pk: `${ORG}#PROJECT#${PROJECT}`, sk: "TESTENV#HEALTH", health: "garbage" });
+    const item = h.db.find((entry) => entry.sk === "TESTENV#HEALTH")[0]!;
+    h.db.set({ ...item, pk: item.pk, health: null });
+    await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "healthy", version: 1 });
+  });
+
+  it("F3: an item written by a newer release is left alone: nothing is written, no card is touched", async () => {
+    const h = harness();
+    await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
+    const item = h.db.find((entry) => entry.sk === "TESTENV#HEALTH")[0]!;
+    const newer = { ...item, health: { ...(item.health as object), schemaVersion: 2, extra: "new" } };
+    h.db.set(newer);
+    h.calls.resolve.length = 0;
+    expect(await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed"), { recordedAt: new Date(T0 + 1_000).toISOString() }), off)).toBeUndefined();
+    expect(await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: "task_1", reason: "host_blocked" })).toBeUndefined();
+    expect(await noteSetupProved(h.deps, h.ports, { orgId: ORG, project: PROJECT })).toBeUndefined();
+    expect(h.db.find((entry) => entry.sk === "TESTENV#HEALTH")[0]).toEqual(newer);
+    expect(h.calls.open).toHaveLength(0);
+    expect(h.calls.resolve).toHaveLength(0);
+    // Readers do not guess: the banner shows nothing.
+    expect(await taskStartNotice(h.deps, ORG, PROJECT, ON)).toEqual({ allowed: true });
+  });
+
+  it("F6: the failing set and the day it started carry through nights that say nothing about it", async () => {
+    const h = harness();
+    await applyNightlyRecorded(h.deps, h.ports, night(tests, { failed: ["t1", "t2"] }), off);
+    const first = (await readProjectHealth(h.deps, ORG, PROJECT))?.failingSet;
+    expect(first).toMatchObject({ count: 2, sinceDay: "2026-11-05" });
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(unclear, { recordedAt: new Date(h.clock.now).toISOString() }), off);
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed"), { recordedAt: new Date(h.clock.now).toISOString() }), off);
+    expect((await readProjectHealth(h.deps, ORG, PROJECT))?.failingSet).toEqual(first);
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(tests, { failed: ["t1", "t2"], recordedAt: new Date(h.clock.now).toISOString(), finishedAt: new Date(h.clock.now).toISOString() }), off);
+    expect((await readProjectHealth(h.deps, ORG, PROJECT))?.failingSet).toEqual(first);
+    // A passing night ends the set.
+    h.clock.now += DAY;
+    await applyNightlyRecorded(h.deps, h.ports, night(passed, { recordedAt: new Date(h.clock.now).toISOString() }), off);
+    expect((await readProjectHealth(h.deps, ORG, PROJECT))?.failingSet).toBeUndefined();
   });
 });

@@ -47,6 +47,12 @@ const keyOf = (orgId: OrgId, project: string, sk: string) => ({ pk: projectPk(or
 const sha = (value: unknown): string => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
 
+/** How far ahead of the broker's clock a result may be dated: the worker's clock may be a little off. */
+export const NIGHTLY_CLOCK_SKEW_MS = 5 * 60_000;
+const TRANSIENT_NAMES: ReadonlySet<string> = new Set(["ThrottlingException", "ProvisionedThroughputExceededException", "RequestLimitExceeded", "ServiceUnavailable", "InternalServerError", "TimeoutError", "TransactionConflictException", "RequestTimeout"]);
+/** A fault that a repeat may cure: a write that met another write (`CHANGE_STALE`), or an unavailable or throttled table. Everything else (a damaged item, a refused input) would only fail again. */
+const mayPass = (error: unknown): boolean => (error as { code?: unknown } | undefined)?.code === "CHANGE_STALE" || TRANSIENT_NAMES.has(errorName(error));
+
 /** The slot a fire is: the same project and the same scheduled time are one slot. */
 export const nightlySlotId = (orgId: string, project: string, scheduledAt: string): string => sha([orgId, project, new Date(scheduledAt).toISOString()]);
 
@@ -275,7 +281,7 @@ export function nightlyHealthOf(result: NightlyResult): StoredNightlyHealth | un
   const { ranFrom, ...report } = result.health;
   const agrees = report.tests.total === result.tests.total && report.tests.passed === result.tests.passed && report.tests.skipped === result.tests.skipped && report.tests.failures + report.tests.errors === result.tests.failed;
   const verdict = agrees ? classifyNightlyHealth(report) : ({ class: "unclear", cause: "steps_disagree" } as const);
-  return { class: verdict.class, ...("cause" in verdict ? { cause: verdict.cause } : {}), ranFrom: ranFrom ?? "fresh" };
+  return { class: verdict.class, ...("cause" in verdict ? { cause: verdict.cause } : {}), ...(verdict.class === "tests" ? { setupProved: verdict.setupProved } : {}), ranFrom: ranFrom ?? "fresh" };
 }
 
 /**
@@ -291,6 +297,9 @@ export async function recordNightlyResult(
   const parsed = NightlyResultSchema.safeParse(input.result);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", "the nightly result could not be read");
   const result = parsed.data;
+  // The worker's clock is not trusted: a result dated in the future would freeze the "ran recently" gap (and the health's order) for as long as it says. Nothing is read or claimed for it.
+  const horizon = deps.now() + NIGHTLY_CLOCK_SKEW_MS;
+  if (Date.parse(result.finishedAt) > horizon || Date.parse(result.startedAt) > horizon) throw agentXError("CONFIG_INVALID", "the nightly result is dated in the future");
   const lock = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(input.orgId, input.project, "TESTENV#NIGHTLY#ACTIVE"), ConsistentRead: true })) as { Item?: Item }).Item;
   if (lock === undefined || lock.slotId !== result.slotId) throw agentXError("CHANGE_STALE", "no nightly run is waiting for this result");
   let coverageMapBuiltAt: string | undefined;
@@ -322,7 +331,15 @@ export async function recordNightlyResult(
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: history }));
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...keyOf(input.orgId, input.project, "TESTENV#BASELINE#LATEST"), entityType: "TEST_ENV_BASELINE_LATEST", orgId: input.orgId, project: input.project, baseline, ...healthField } }));
   // Before the run is released: a listener that fails leaves the run claimed, so the worker's retry records the same result again (every write above and in the listener is repeatable).
-  if (onRecorded !== undefined) await onRecorded({ orgId: input.orgId, project: input.project, slotId: result.slotId, baseline, health });
+  if (onRecorded !== undefined) {
+    try {
+      await onRecorded({ orgId: input.orgId, project: input.project, slotId: result.slotId, baseline, health });
+    } catch (error) {
+      // The health is advisory: a listener never fails the record. Only a fault that may pass (a stale write, a throttled or unavailable table) is thrown, so the worker's retry records the result again.
+      console.log(JSON.stringify({ component: "broker", level: "warn", event: "test_env.nightly_health_failed", orgId: input.orgId, error: errorName(error) }));
+      if (mayPass(error)) throw error;
+    }
+  }
   await releaseNightly(deps, input.orgId, input.project, result.slotId, false);
   return { recorded: true, flakyCount: result.flaky.length, failingCount: result.tests.failed };
 }
