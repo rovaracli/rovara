@@ -6089,7 +6089,7 @@ describe("a review with a second reviewer from another AI company (SR-1)", () =>
     const original = harness.db.send.bind(harness.db);
     harness.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
     expect((await web(harness, MAYA, "POST", route, body)).status).toBe(200);
-    harness.db.send = original as never;
+    harness.db.send = original;
     const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update?.Key?.pk === `DEVTASK#${setup.taskId}` && JSON.stringify(item).includes("secondReviewAcknowledged")));
     expect(write?.input?.TransactItems?.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
     expect(row().secondReviewAcknowledged).toHaveLength(1);

@@ -167,7 +167,7 @@ describe("a change and its audit are one write (L6)", () => {
     const original = t.db.send.bind(t.db);
     t.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
     expect((await t.web(OMAR, "POST", PATH, { action: "choose", primary: model })).status).toBe(200);
-    t.db.send = original as never;
+    t.db.send = original;
     const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update?.ExpressionAttributeNames?.["#f"] === "models"));
     expect(write?.input?.TransactItems?.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
   });
