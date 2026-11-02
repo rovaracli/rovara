@@ -104,9 +104,9 @@ export interface SetupRecipeStore {
   getLocks(orgId: OrgId): Promise<StoredLocks | undefined>;
   /**
    * As `commitRecipe`. `conditions` are the DynamoDB ConditionChecks of the approval evidence (org membership version, both people's live records): the adapter puts them in the SAME transaction as the write, and
-   * a failed one makes this return false (the caller then answers CHANGE_STALE). An approval is never committed without them.
+   * a failed one makes this return false (the caller then answers CHANGE_STALE). The parameter is REQUIRED so an adapter cannot ignore it by omission: a caller with nothing to fence passes an explicit empty list (a proposal or a stricter change), and an approval always passes the evidence's non-empty list.
    */
-  commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry, conditions?: readonly TransactItem[]): Promise<boolean>;
+  commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry, conditions: readonly TransactItem[]): Promise<boolean>;
 }
 
 // ---- company locks (M8: stricter only)
@@ -433,6 +433,9 @@ export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "store">, org
   return found?.orgId === orgId ? found : undefined;
 }
 
+/** Said out loud where a locks write has nothing to fence: a pending proposal or a stricter change changes nothing about who approves. */
+const NO_CONDITIONS: readonly TransactItem[] = [];
+
 export type SetLocksResult = { status: "applied"; locks: StoredLocks } | { status: "needs_second_admin"; locks: StoredLocks };
 
 /**
@@ -453,11 +456,11 @@ export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCalle
   const loosened = isLoosening(current?.locks, parsed.data);
   if (loosened && current !== undefined) {
     const next: StoredLocks = { ...current, revision, updatedBy: caller.developerId, updatedAt: now, pending: { locks: parsed.data, digest: nextDigest, proposedBy: caller.developerId, proposedAt: now } };
-    if (!await deps.store.commitLocks(next, current.revision, { ...auditOf(deps, caller, "locks_change_proposed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: true })) throw stale();
+    if (!await deps.store.commitLocks(next, current.revision, { ...auditOf(deps, caller, "locks_change_proposed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: true }, NO_CONDITIONS)) throw stale();
     return { status: "needs_second_admin", locks: next };
   }
   const next: StoredLocks = { orgId: caller.orgId, revision, locks: parsed.data, updatedBy: caller.developerId, updatedAt: now };
-  if (!await deps.store.commitLocks(next, current?.revision ?? null, { ...auditOf(deps, caller, "locks_changed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: false })) throw stale();
+  if (!await deps.store.commitLocks(next, current?.revision ?? null, { ...auditOf(deps, caller, "locks_changed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: false }, NO_CONDITIONS)) throw stale();
   return { status: "applied", locks: next };
 }
 

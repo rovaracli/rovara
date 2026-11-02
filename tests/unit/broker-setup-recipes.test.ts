@@ -565,6 +565,16 @@ describe("fix round 1: loosening a lock needs a second admin (owner choice A)", 
         return () => approveLocksChange(h.deps, h.admin, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest });
       }
 
+      it("always passes a conditions list to the store: explicit empty for a proposal or a stricter change, the evidence's fences for an approval", async () => {
+        const h = harness();
+        Object.assign(h.evidence, SOLE);
+        const waiting = await waitingLoosening(h); // a stricter first write, then a loosening proposal
+        expect(h.store.lockCommits).toEqual([{ conditions: 0 }, { conditions: 0 }]);
+        await approveLocksChange(h.deps, h.admin, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest });
+        // META version + the one person (proposer and approver are the same admin).
+        expect(h.store.lockCommits.at(-1)).toEqual({ conditions: 2 });
+      });
+
       it("commits when nothing changed between the read and the write (positive control)", async () => {
         const h = harness();
         const approve = await soleApproval(h);

@@ -6,6 +6,8 @@ import type { RecipeAuditEntry, SetupRecipeStore, StoredLocks, StoredRecipe } fr
 
 export interface MemorySetupRecipeStore extends SetupRecipeStore {
   audit: RecipeAuditEntry[];
+  /** One entry per locks commit: how many conditions it carried. */
+  lockCommits: Array<{ conditions: number }>;
   recipes: Map<string, StoredRecipe>;
   /** Makes the next commit report that the row changed meanwhile. */
   failNextCommit(): void;
@@ -19,10 +21,12 @@ export function memorySetupRecipeStore(conditionDb?: FakeDynamoDb): MemorySetupR
   const recipes = new Map<string, StoredRecipe>();
   const locks = new Map<string, StoredLocks>();
   const audit: RecipeAuditEntry[] = [];
+  const lockCommits: Array<{ conditions: number }> = [];
   let failNext = false;
   const key = (orgId: string, recipeId: string): string => `${orgId}#${recipeId}`;
   return {
     audit,
+    lockCommits,
     recipes,
     failNextCommit() { failNext = true; },
     getRecipe: (orgId, recipeId) => Promise.resolve(recipes.get(key(orgId, recipeId))),
@@ -39,7 +43,10 @@ export function memorySetupRecipeStore(conditionDb?: FakeDynamoDb): MemorySetupR
     async commitLocks(next, expectedRevision, entry, conditions) {
       if (failNext) { failNext = false; return false; }
       if ((locks.get(next.orgId)?.revision ?? null) !== expectedRevision) return false;
-      if (conditions !== undefined && conditions.length > 0) {
+      // A lock commit always says what it fences, even if that is nothing (an explicit empty list): an omitted list is a bug in the caller.
+      if ((conditions as unknown) === undefined) throw new Error("commitLocks needs an explicit conditions list");
+      lockCommits.push({ conditions: conditions.length });
+      if (conditions.length > 0) {
         if (conditionDb === undefined) throw new Error("conditions need a conditionDb");
         try { await conditionDb.send(new TransactWriteCommand({ TransactItems: [...conditions] })); } catch (error) {
           if (error instanceof Error && error.name === "TransactionCanceledException") return false;
