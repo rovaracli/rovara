@@ -2,9 +2,10 @@
 // wrong; every AWS call goes through the staging guard; the token and the environment values are never printed; waits are bounded; and the command line does nothing without its two switches.
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LIMITS, checkConfig, guardedAws, main, phaseDisable, phaseIdle, phaseRestart, phaseStart, runPhase, type SmokeConfig, type SmokeDeps } from "../../staging/mcp-runner-smoke.js";
+import { LIMITS, STAGING_ACCOUNT, STAGING_GUARD_PATH, checkConfig, checkStagingTarget, guardedAws, main, phaseDisable, phaseIdle, phaseRestart, phaseStart, runPhase, type SmokeConfig, type SmokeDeps } from "../../staging/mcp-runner-smoke.js";
 
 const TOKEN = "T".repeat(48);
 const SERVER = "mcpself000001";
@@ -30,6 +31,9 @@ interface World {
   stopAfterMs: number | undefined;
   planted: { lastStatus: string; stoppedReason?: string; runningAfterMs: number; stopsAfterMs: number | undefined; plantedAt?: number; restartedAt?: number };
   failAws: (args: string[]) => boolean;
+  /** What the signed-in account is, and what the cluster's ARN says. */
+  account: string;
+  clusterArn: string;
 }
 
 function healthy(): World {
@@ -43,7 +47,7 @@ function healthy(): World {
     ],
     groupsOfEni: ["sg-0serve000000000001"], egress: [{ IpRanges: [{ CidrIp: "10.42.9.1/32" }] }],
     hostStatus: { warm: 202, release: 200, call: 200 }, stopAfterMs: undefined, planted: { lastStatus: "PENDING", runningAfterMs: 20_000, stopsAfterMs: 90_000 },
-    failAws: () => false,
+    failAws: () => false, account: "944937319445", clusterArn: "arn:aws:ecs:us-west-2:944937319445:cluster/rovara-mcp-test",
   };
 }
 
@@ -63,6 +67,8 @@ function deps(world: World): SmokeDeps {
       world.calls.push(args);
       if (world.failAws(args)) throw new Error("aws exited 254");
       const [service, command] = args;
+      if (service === "sts" && command === "get-caller-identity") return `${world.account}\n`;
+      if (service === "ecs" && command === "describe-clusters") return `${world.clusterArn}\n`;
       if (service === "ecs" && command === "list-tasks") {
         if (world.stopAfterMs !== undefined && world.clock.now - start >= world.stopAfterMs) world.tasks = [];
         return JSON.stringify({ taskArns: world.tasks });
@@ -261,6 +267,48 @@ describe("T12 smoke: safety", () => {
     const source = await code();
     expect(source).not.toMatch(/spawn\("aws"|AWS_PROFILE|--profile|--region|get-secret-value|batch-get-secret-value/u);
     expect(source).toContain("staging-aws.sh");
+  });
+  const smokeEnv = { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_DECLARED_ENV: "SELF_TOKEN", SMOKE_APPROVED: "fixture.staging.internal:443", SMOKE_VPC_PROBE: "10.42.9.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" };
+  it("review M5: its first step asks which account is signed in and where the cluster is, and passes only for the staging account and a cluster in staging's region", async () => {
+    const w = healthy();
+    const ok = await checkStagingTarget(config, deps(w));
+    expect(ok.every((check) => check.ok)).toBe(true);
+    expect(w.calls.map((call) => call.slice(0, 2).join(" "))).toEqual(["sts get-caller-identity", "ecs describe-clusters"]);
+    expect(STAGING_ACCOUNT).toBe("944937319445");
+  });
+  it("review M5: refuses to run any phase, with no host call and no other AWS call, when the account is not staging or the cluster is in another account or region", async () => {
+    const wrong: Array<[string, (w: World) => void]> = [
+      ["another account", (w) => { w.account = "111111111111"; }],
+      ["an empty answer", (w) => { w.account = ""; }],
+      ["the account with more after it", (w) => { w.account = "944937319445 111111111111"; }],
+      ["a cluster in another account", (w) => { w.clusterArn = "arn:aws:ecs:us-west-2:111111111111:cluster/rovara-mcp-test"; }],
+      ["a cluster in another region", (w) => { w.clusterArn = "arn:aws:ecs:us-east-1:944937319445:cluster/rovara-mcp-test"; }],
+      ["another cluster", (w) => { w.clusterArn = "arn:aws:ecs:us-west-2:944937319445:cluster/other"; }],
+      ["no such cluster", (w) => { w.clusterArn = "None"; }],
+      ["a cluster that only ends the same way", (w) => { w.clusterArn = "arn:aws:ecs:us-west-2:944937319445:cluster/x/rovara-mcp-test"; }],
+    ];
+    for (const [label, change] of wrong) {
+      const w = healthy();
+      change(w);
+      const out: string[] = [];
+      expect(await main(["--run", "start"], smokeEnv, { ...deps(w), log: (line) => { out.push(line); } }), label).toBe(1);
+      expect(w.fetches, label).toEqual([]);
+      expect(w.calls.every((call) => (call[0] === "sts" && call[1] === "get-caller-identity") || (call[0] === "ecs" && call[1] === "describe-clusters")), label).toBe(true);
+      expect(out.join("\n"), label).toContain("FAIL");
+      expect(out.join("\n"), label).not.toContain(TOKEN);
+    }
+    for (const failing of ["sts", "describe-clusters"]) {
+      const w = healthy();
+      w.failAws = (args) => args.includes(failing) || args[0] === failing;
+      expect(await main(["--run", "start"], smokeEnv, deps(w)), failing).toBe(1);
+      expect(w.fetches, failing).toEqual([]);
+    }
+  });
+  it("review M5: a real run always uses the staging guard in the owner's tools folder: no environment variable replaces it", async () => {
+    const source = await code();
+    expect(source).not.toContain("ROVARA_STAGING_AWS");
+    expect(STAGING_GUARD_PATH).toBe(join(homedir(), ".local/share/rovara-tools/staging-aws.sh"));
+    expect(source).toMatch(/guardedAws\(STAGING_GUARD_PATH\)/u);
   });
   it("never reads the host's token from AWS: it comes from the environment only", async () => {
     const source = await code();

@@ -2,9 +2,10 @@
 // deployed to staging, by `tests/staging/mcp-runner-smoke.ts --run`. NOTHING here runs by itself, and nothing in the test suite calls AWS: the checks are tested below against fakes.
 //
 // Rules this file keeps:
-//   - every AWS call goes through the staging guard (`staging-aws.sh aws ...`, ROVARA_STAGING_AWS), which pins the account and the region; it never calls `aws` directly, never passes
+//   - every AWS call goes through the staging guard (`staging-aws.sh aws ...`, always the one in ~/.local/share/rovara-tools: no setting replaces it), which pins the account and the region; it never calls `aws` directly, never passes
 //     a profile or a region, and never calls secretsmanager get-secret-value (the host's token arrives in the environment, resolved by `asm-exec`; see the checklist);
 //   - it refuses to run without `--run` and ROVARA_STAGING_SMOKE=1, and refuses an http:// host;
+//   - before any phase it asks (through the guard) which account is signed in and where the named cluster is, and stops unless both are the staging account and the cluster is in us-west-2 (review M5);
 //   - it prints names, counts, codes and times only: never the token, a secret value, or an environment value.
 //
 // The server under test is the test-only package `@rovara-test/selfcheck-mcp` (tests/staging/selfcheck-mcp), published to the install's own registry mirror and approved by an admin
@@ -57,6 +58,28 @@ const FORBIDDEN_ENV_PREFIXES = ["AWS_", "ECS_", "MCP_", "ROVARA_", "NODE_OPTIONS
 const ok = (name: string, detail: string): Check => ({ name, ok: true, detail });
 const bad = (name: string, detail: string): Check => ({ name, ok: false, detail });
 const verdict = (phase: Phase, checks: Check[]): SmokeReport => ({ phase, ok: checks.every((check) => check.ok), checks });
+
+/** The staging account and region (the same as `staging-aws.sh`, which pins them for every call this makes). */
+export const STAGING_ACCOUNT = "944937319445";
+export const STAGING_REGION = "us-west-2";
+export const STAGING_GUARD_PATH = join(homedir(), ".local/share/rovara-tools/staging-aws.sh");
+
+/**
+ * Review M5. The guard pins what each call does, but the program the operator points it at is theirs, and a production environment can be loaded in the same shell. So the first step of every run is
+ * to ask, through the guard, which account is signed in and which cluster the named one is, and to stop unless both are staging's. Nothing else is called (no host call, no phase) on a mismatch.
+ */
+export async function checkStagingTarget(config: SmokeConfig, deps: SmokeDeps): Promise<Check[]> {
+  const checks: Check[] = [];
+  try {
+    const account = (await deps.aws(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])).trim();
+    checks.push(account === STAGING_ACCOUNT ? ok("signed in to the staging account", "the account is the staging account") : bad("signed in to the staging account", "the signed-in account is not the staging account"));
+  } catch { checks.push(bad("signed in to the staging account", "the signed-in account could not be read")); }
+  try {
+    const arn = (await deps.aws(["ecs", "describe-clusters", "--clusters", config.cluster, "--query", "clusters[0].clusterArn", "--output", "text"])).trim();
+    checks.push(arn === `arn:aws:ecs:${STAGING_REGION}:${STAGING_ACCOUNT}:cluster/${config.cluster}` ? ok("the cluster is staging's", `the cluster is in ${STAGING_REGION} in the staging account`) : bad("the cluster is staging's", "the named cluster is not a cluster of the staging account in its region"));
+  } catch { checks.push(bad("the cluster is staging's", "the cluster could not be read")); }
+  return checks;
+}
 
 export function checkConfig(config: SmokeConfig): void {
   let url: URL;
@@ -244,9 +267,17 @@ export async function main(argv: readonly string[], env: Record<string, string |
     return 2;
   }
   const real: SmokeDeps = deps ?? {
-    fetch, aws: guardedAws(env.ROVARA_STAGING_AWS ?? join(homedir(), ".local/share/rovara-tools/staging-aws.sh")), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => { process.stdout.write(`${line}\n`); },
+    fetch, aws: guardedAws(STAGING_GUARD_PATH), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => { process.stdout.write(`${line}\n`); },
   };
-  const report = await runPhase(phase, configFromEnv(env), real);
+  const config = configFromEnv(env);
+  checkConfig(config);
+  const target = await checkStagingTarget(config, real);
+  if (!target.every((check) => check.ok)) {
+    for (const check of target) real.log(`${check.ok ? "ok  " : "FAIL"}  ${check.name}: ${check.detail}`);
+    real.log(`phase ${phase}: not run (this is not the staging account)`);
+    return 1;
+  }
+  const report = await runPhase(phase, config, real);
   for (const check of report.checks) real.log(`${check.ok ? "ok  " : "FAIL"}  ${check.name}: ${check.detail}`);
   real.log(report.ok ? `phase ${phase}: all checks passed` : `phase ${phase}: FAILED`);
   return report.ok ? 0 : 1;
