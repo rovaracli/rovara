@@ -60,7 +60,7 @@ export function dynamoControllerEventStore(deps: { documentClient: DocumentClien
 
 export interface DrainDependencies {
   events: ControllerEventStore;
-  servers: Pick<McpServerStore, "decide">;
+  servers: Pick<McpServerStore, "pause">;
   /** Records one event in the audit trail. Throws when it could not (the event is then left for the next drain). Absent: nothing is recorded (an install with no ledger). */
   audit?: ((orgId: OrgId, sk: string, event: McpControllerEvent) => Promise<void>) | undefined;
   now: () => number;
@@ -77,7 +77,8 @@ export async function drainControllerEvents(deps: DrainDependencies, orgId: OrgI
       if (deps.audit !== undefined) await deps.audit(orgId, sk, event);
       if (event.type === "changed_needs_review") {
         // Only an entry that is still approved with the very tools hash that was approved: if the admin already looked again, this is old news and changes nothing.
-        await deps.servers.decide({ orgId, serverId: event.serverId, from: "approved", to: "changed_needs_review", by: "rovara", at: new Date(deps.now()).toISOString(), toolsHash: event.approved });
+        // Review M8: the pause is recorded as its own time; the approving admin stays on the entry.
+        await deps.servers.pause({ orgId, serverId: event.serverId, toolsHash: event.approved, at: new Date(deps.now()).toISOString() });
       }
       await deps.events.markAudited(orgId, sk);
       handled += 1;

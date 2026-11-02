@@ -2,9 +2,11 @@
 // deployed to staging, by `tests/staging/mcp-runner-smoke.ts --run`. NOTHING here runs by itself, and nothing in the test suite calls AWS: the checks are tested below against fakes.
 //
 // Rules this file keeps:
-//   - every AWS call goes through the staging guard (`staging-aws.sh aws ...`, ROVARA_STAGING_AWS), which pins the account and the region; it never calls `aws` directly, never passes
+//   - every AWS call goes through the staging guard (`staging-aws.sh aws ...`, always the one in ~/.local/share/rovara-tools: no setting replaces it), which pins the account and the region; it never calls `aws` directly, never passes
 //     a profile or a region, and never calls secretsmanager get-secret-value (the host's token arrives in the environment, resolved by `asm-exec`; see the checklist);
 //   - it refuses to run without `--run` and ROVARA_STAGING_SMOKE=1, and refuses an http:// host;
+//   - before any phase it asks (through the guard) which account is signed in and where the named cluster is, and stops unless both are the staging account and the cluster is in us-west-2 (review M5),
+//     and unless the host address the token goes to is the MCP host name staging recorded in its synth settings (review N2; SMOKE_ENV names the staging environment);
 //   - it prints names, counts, codes and times only: never the token, a secret value, or an environment value.
 //
 // The server under test is the test-only package `@rovara-test/selfcheck-mcp` (tests/staging/selfcheck-mcp), published to the install's own registry mirror and approved by an admin
@@ -21,6 +23,8 @@ import { join } from "node:path";
 
 export interface SmokeConfig {
   hostUrl: string;
+  /** The staging install's environment name (`/agentx/<environment>/synth-settings` holds the MCP host name its install recorded). */
+  environment: string;
   hostToken: string;
   /** The approved server's id (`mcp...`). */
   serverId: string;
@@ -58,11 +62,41 @@ const ok = (name: string, detail: string): Check => ({ name, ok: true, detail })
 const bad = (name: string, detail: string): Check => ({ name, ok: false, detail });
 const verdict = (phase: Phase, checks: Check[]): SmokeReport => ({ phase, ok: checks.every((check) => check.ok), checks });
 
+/** The staging account and region (the same as `staging-aws.sh`, which pins them for every call this makes). */
+export const STAGING_ACCOUNT = "944937319445";
+export const STAGING_REGION = "us-west-2";
+export const STAGING_GUARD_PATH = join(homedir(), ".local/share/rovara-tools/staging-aws.sh");
+
+/**
+ * Review M5. The guard pins what each call does, but the program the operator points it at is theirs, and a production environment can be loaded in the same shell. So the first step of every run is
+ * to ask, through the guard, which account is signed in and which cluster the named one is, and to stop unless both are staging's. Nothing else is called (no host call, no phase) on a mismatch.
+ */
+export async function checkStagingTarget(config: SmokeConfig, deps: SmokeDeps): Promise<Check[]> {
+  const checks: Check[] = [];
+  try {
+    const account = (await deps.aws(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])).trim();
+    checks.push(account === STAGING_ACCOUNT ? ok("signed in to the staging account", "the account is the staging account") : bad("signed in to the staging account", "the signed-in account is not the staging account"));
+  } catch { checks.push(bad("signed in to the staging account", "the signed-in account could not be read")); }
+  try {
+    const arn = (await deps.aws(["ecs", "describe-clusters", "--clusters", config.cluster, "--query", "clusters[0].clusterArn", "--output", "text"])).trim();
+    checks.push(arn === `arn:aws:ecs:${STAGING_REGION}:${STAGING_ACCOUNT}:cluster/${config.cluster}` ? ok("the cluster is staging's", `the cluster is in ${STAGING_REGION} in the staging account`) : bad("the cluster is staging's", "the named cluster is not a cluster of the staging account in its region"));
+  } catch { checks.push(bad("the cluster is staging's", "the cluster could not be read")); }
+  // Review N2: the address the host token is sent to must be the MCP host name staging recorded for itself, so the token and the start phase cannot be pointed at another install.
+  try {
+    const value = (await deps.aws(["ssm", "get-parameter", "--name", `/agentx/${config.environment}/synth-settings`, "--query", "Parameter.Value", "--output", "text"])).trim();
+    const recorded = (JSON.parse(value) as { context?: { rovaraMcpHostName?: unknown } }).context?.rovaraMcpHostName;
+    const wanted = new URL(config.hostUrl).hostname.toLowerCase();
+    checks.push(typeof recorded === "string" && recorded !== "" && recorded.toLowerCase() === wanted ? ok("the host is staging's", "the host name is the one staging recorded") : bad("the host is staging's", "the host name is not the one staging recorded for its MCP host"));
+  } catch { checks.push(bad("the host is staging's", "the host name staging recorded could not be read")); }
+  return checks;
+}
+
 export function checkConfig(config: SmokeConfig): void {
   let url: URL;
   try { url = new URL(config.hostUrl); } catch { throw new Error("the host address is not a web address"); }
   if (url.protocol !== "https:") throw new Error("the host must be reached over https");
   if (!/^mcp[a-z0-9]{6,24}$/u.test(config.serverId)) throw new Error("the server id is not valid");
+  if (!/^[a-z][a-z0-9-]{1,30}$/u.test(config.environment)) throw new Error("the staging environment name is not valid");
   if (config.hostToken.length < 43) throw new Error("the host token is missing or too short (resolve it with asm-exec; see the checklist)");
   if (config.runnerSubnets.length === 0 || !config.runnerSubnets.every((subnet) => /^subnet-[0-9a-f]{8,17}$/u.test(subnet))) throw new Error("the runner subnets are not valid");
   if (!/^sg-[0-9a-f]{8,17}$/u.test(config.installSecurityGroup)) throw new Error("the install security group is not valid");
@@ -231,7 +265,7 @@ function configFromEnv(env: Record<string, string | undefined>): SmokeConfig {
   const need = (name: string): string => { const value = env[name]; if (value === undefined || value === "") throw new Error(`${name} is not set`); return value; };
   const target = (name: string): { host: string; port: number } => { const [host, port] = need(name).split(":"); return { host: host ?? "", port: Number(port) }; };
   return {
-    hostUrl: need("MCP_HOST_URL"), hostToken: need("MCP_HOST_TOKEN"), serverId: need("SMOKE_SERVER_ID"), cluster: need("SMOKE_CLUSTER"), controllerService: need("SMOKE_CONTROLLER_SERVICE"),
+    hostUrl: need("MCP_HOST_URL"), environment: need("SMOKE_ENV"), hostToken: need("MCP_HOST_TOKEN"), serverId: need("SMOKE_SERVER_ID"), cluster: need("SMOKE_CLUSTER"), controllerService: need("SMOKE_CONTROLLER_SERVICE"),
     runnerSubnets: need("SMOKE_RUNNER_SUBNETS").split(","), installSecurityGroup: need("SMOKE_INSTALL_SECURITY_GROUP"), declaredEnv: (env.SMOKE_DECLARED_ENV ?? "").split(",").filter(Boolean),
     approved: target("SMOKE_APPROVED"), vpcProbe: target("SMOKE_VPC_PROBE"), internetProbe: target("SMOKE_INTERNET_PROBE"),
   };
@@ -244,9 +278,17 @@ export async function main(argv: readonly string[], env: Record<string, string |
     return 2;
   }
   const real: SmokeDeps = deps ?? {
-    fetch, aws: guardedAws(env.ROVARA_STAGING_AWS ?? join(homedir(), ".local/share/rovara-tools/staging-aws.sh")), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => { process.stdout.write(`${line}\n`); },
+    fetch, aws: guardedAws(STAGING_GUARD_PATH), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => { process.stdout.write(`${line}\n`); },
   };
-  const report = await runPhase(phase, configFromEnv(env), real);
+  const config = configFromEnv(env);
+  checkConfig(config);
+  const target = await checkStagingTarget(config, real);
+  if (!target.every((check) => check.ok)) {
+    for (const check of target) real.log(`${check.ok ? "ok  " : "FAIL"}  ${check.name}: ${check.detail}`);
+    real.log(`phase ${phase}: not run (this is not the staging account)`);
+    return 1;
+  }
+  const report = await runPhase(phase, config, real);
   for (const check of report.checks) real.log(`${check.ok ? "ok  " : "FAIL"}  ${check.name}: ${check.detail}`);
   real.log(report.ok ? `phase ${phase}: all checks passed` : `phase ${phase}: FAILED`);
   return report.ok ? 0 : 1;

@@ -307,10 +307,37 @@ describe("T9: prewarm at stage start", () => {
     expect(await prewarmStdioServers({ host: undefined, servers: w.deps.store, edition: "enterprise", stdioEnabled: true }, ORG, [wiki.serverId])).toBe(0);
     expect(warmed).toEqual([]);
   });
-  it("never throws and never waits: a host that fails or hangs, and a registry that fails, are not the stage's problem; at most 16 are asked", async () => {
+  it("review N3: waits, for a short bound, until the host has accepted each request (so a function that is frozen as soon as it returns has sent them), and no longer", async () => {
+    const { w, wiki } = await setup();
+    const log: string[] = [];
+    const slow: Pick<McpHostControl, "warm"> = { warm: async (id) => { log.push(`start:${id}`); await new Promise((resolve) => setTimeout(resolve, 30)); log.push(`accepted:${id}`); } };
+    const asked = await prewarmStdioServers({ host: slow, servers: w.deps.store, edition: "enterprise", stdioEnabled: true, waitMs: 1_000 }, ORG, [wiki.serverId]);
+    expect(asked).toBe(1);
+    expect(log).toEqual([`start:${wiki.serverId}`, `accepted:${wiki.serverId}`]);
+    // a host that never answers holds the stage for the bound and not a moment longer
+    const hanging: Pick<McpHostControl, "warm"> = { warm: () => new Promise<void>(() => undefined) };
+    const began = Date.now();
+    expect(await prewarmStdioServers({ host: hanging, servers: w.deps.store, edition: "enterprise", stdioEnabled: true, waitMs: 60 }, ORG, [wiki.serverId])).toBe(1);
+    const took = Date.now() - began;
+    expect(took).toBeGreaterThanOrEqual(50);
+    expect(took).toBeLessThan(1_000);
+  });
+  it("review N3: the requests go out together, not one after another, and the default bound is 2 seconds", async () => {
+    const { w, wiki } = await setup();
+    const second = await proposeMcpServer(w.deps, admin, { label: "Wiki 3", transport: PKG, secrets: SECRETS });
+    await approveMcpServer(w.deps, admin, second.serverId);
+    let inFlight = 0;
+    let peak = 0;
+    const host: Pick<McpHostControl, "warm"> = { warm: async () => { inFlight += 1; peak = Math.max(peak, inFlight); await new Promise((resolve) => setTimeout(resolve, 20)); inFlight -= 1; } };
+    await prewarmStdioServers({ host, servers: w.deps.store, edition: "enterprise", stdioEnabled: true }, ORG, [wiki.serverId, second.serverId]);
+    expect(peak).toBe(2);
+    const source = await (await import("node:fs/promises")).readFile("packages/broker/src/context-sources/server-port.ts", "utf8");
+    expect(source).toContain("deps.waitMs ?? 2_000");
+  });
+  it("never throws and never waits for long: a host that fails or hangs, and a registry that fails, are not the stage's problem; at most 16 are asked", async () => {
     const { w, wiki } = await setup();
     const hanging: Pick<McpHostControl, "warm"> = { warm: () => new Promise<void>(() => undefined) };
-    expect(await prewarmStdioServers({ host: hanging, servers: w.deps.store, edition: "enterprise", stdioEnabled: true }, ORG, [wiki.serverId])).toBe(1);
+    expect(await prewarmStdioServers({ host: hanging, servers: w.deps.store, edition: "enterprise", stdioEnabled: true, waitMs: 20 }, ORG, [wiki.serverId])).toBe(1);
     const failing: Pick<McpHostControl, "warm"> = { warm: async () => { throw new Error("down"); } };
     expect(await prewarmStdioServers({ host: failing, servers: w.deps.store, edition: "enterprise", stdioEnabled: true }, ORG, [wiki.serverId])).toBe(1);
     expect(await prewarmStdioServers({ host: failing, servers: { get: async () => { throw new Error("table down"); } }, edition: "enterprise", stdioEnabled: true }, ORG, [wiki.serverId])).toBe(0);

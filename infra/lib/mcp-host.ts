@@ -9,7 +9,7 @@
 //     decided by security groups, not by routes: each server's own group (made by the controller at approval) holds only its approved destinations as /32, and the install task's group only the
 //     registry ranges (or, with public npm, HTTPS anywhere: the one 0.0.0.0/0 rule in this file);
 //   - the INSTALL task definition `rovara-mcp-install` (static, no task role); serve and probe definitions are registered by the controller from `buildRunnerTaskDefinition`;
-//   - two roles of consequence: the runner EXECUTION role (image pull, logs, and the `mcp*` secrets of this org only) and the controller's TASK role (ECS limited to `rovara-mcp-*`
+//   - two roles of consequence: the runner EXECUTION role (image pull, logs, and the `mcppkg*` package-run secrets of this org only) and the controller's TASK role (ECS limited to `rovara-mcp-*`
 //     families and the cluster, PassRole of that one execution role, security groups by tag, the bundle bucket, and three partitions of the state table);
 //   - the BUNDLE bucket: its own KMS key, TLS only, no public access, versioned.
 // No rule here is 0.0.0.0/0 and no task has a task role.
@@ -17,6 +17,7 @@ import {
   Aws, CfnOutput, Duration, RemovalPolicy, Stack, aws_ec2 as ec2, aws_ecs as ecs, aws_elasticloadbalancingv2 as elbv2, aws_iam as iam, aws_kms as kms, aws_logs as logs,
   aws_route53 as route53, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_servicediscovery as servicediscovery, custom_resources as cr,
 } from "aws-cdk-lib";
+import { PACKAGE_SERVER_ID_PREFIX } from "@agentx/contracts";
 import { Construct } from "constructs";
 import { endpointPolicyDocument, enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
@@ -67,7 +68,7 @@ export interface McpHostProps {
   /** The install's table; the controller's role reaches only the three MCP partitions in it. */
   stateTableArn: string;
   stateTableName: string;
-  /** The one org of an Enterprise install, and the install's environment name (its secrets are `agentx/<env>/org-connectors/<org>/mcp*`). */
+  /** The one org of an Enterprise install, and the install's environment name (its package-run secrets are `agentx/<env>/org-connectors/<org>/mcppkg*`). */
   orgId: string;
   agentxEnv: string;
   /** The ranges the INSTALL task may reach over HTTPS besides the endpoints: the customer's package registry. Never the whole internet. Empty (and required to be) with `publicNpm`. */
@@ -234,6 +235,8 @@ export class McpHost extends Construct {
       serviceName: `com.amazonaws.${region}.s3`, vpcEndpointType: "Gateway", vpcId: props.vpcId, routeTableIds: [this.runnerRouteTable.ref], policyDocument: endpointPolicyDocument("s3", region),
     });
     // The controller calls the ECS API (RunTask, StopTask, ...) from private subnets with no internet route, so it needs the ECS interface endpoint. Tasks themselves do not (AWS docs).
+    // Review M7: this endpoint has private DNS on. The foundation's endpoint set (`ENTERPRISE_INTERFACE_ENDPOINT_SERVICES`) must never gain `ecs`, or the deploy fails on a duplicate private DNS name
+    // for ecs.<region>.amazonaws.com; tests/contract/mcp-host-infrastructure.test.ts checks that neither list names it.
     new ec2.CfnVPCEndpoint(this, "EcsEndpoint", {
       serviceName: `com.amazonaws.${region}.ecs`, vpcEndpointType: "Interface", vpcId: props.vpcId, subnetIds: props.subnetIds, securityGroupIds: [props.endpointSecurityGroupId],
       privateDnsEnabled: true, policyDocument: endpointPolicyDocument("ecs", region),
@@ -277,8 +280,10 @@ export class McpHost extends Construct {
     this.bundleBucket = new s3.Bucket(this, "Bundles", {
       encryption: s3.BucketEncryption.KMS, encryptionKey: this.bundleKey, bucketKeyEnabled: true, blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, enforceSSL: true, versioned: true,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED, removalPolicy: RemovalPolicy.RETAIN,
-      // A bundle is an approved artefact and stays as long as its entry does. Replaced versions go after 30 days, and a failed upload leaves nothing behind.
-      lifecycleRules: [{ id: "abort-incomplete-uploads", abortIncompleteMultipartUploadAfter: Duration.days(1) }, { id: "expire-replaced-versions", noncurrentVersionExpiration: Duration.days(30) }],
+      // A bundle is an approved artefact and stays as long as its entry does. Replaced versions go after 30 days, and a failed upload leaves nothing behind. Nothing here expires a CURRENT bundle by
+      // age: the controller's sweep removes one that no entry references after 30 days (review M10; a delete marker in this versioned bucket), the version it covered goes 30 days later, and the
+      // marker is cleaned once nothing is left under it.
+      lifecycleRules: [{ id: "abort-incomplete-uploads", abortIncompleteMultipartUploadAfter: Duration.days(1) }, { id: "expire-replaced-versions", noncurrentVersionExpiration: Duration.days(30), expiredObjectDeleteMarker: true }],
     });
 
     // ---- logs and the load-balancer token -------------------------------------------------------------------------------------------------------------------------------
@@ -289,7 +294,7 @@ export class McpHost extends Construct {
       generateSecretString: { excludePunctuation: true, passwordLength: 48 },
     });
 
-    // ---- the runner execution role: image pull, logs, this org's `mcp*` secrets, nothing else ---------------------------------------------------------------------------
+    // ---- the runner execution role: image pull, logs, this org's package-run (`mcppkg*`) secrets, nothing else ---------------------------------------------------------------------------
     this.runnerExecutionRole = new iam.Role(this, "RunnerExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": stack.account } } }),
       description: "Rovara MCP runner tasks: pulls the runner image, writes logs, reads the secrets of approved servers. Containers cannot use it.",
@@ -300,7 +305,10 @@ export class McpHost extends Construct {
       sid: "PullTheRunnerImage", actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], resources: [repositoryArn],
     }));
     this.runnerExecutionRole.addToPolicy(new iam.PolicyStatement({ sid: "RunnerLogs", actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [runnerLogs.logGroupArn] }));
-    const secretPrefix = `arn:${Aws.PARTITION}:secretsmanager:${region}:${stack.account}:secret:agentx/${props.agentxEnv}/org-connectors/${props.orgId}/mcp`;
+    // Review S1: only PACKAGE-RUN servers' secrets, whose names start `mcppkg` (the id of such a server; see PACKAGE_SERVER_ID_PREFIX in the contracts). An address-based server's token is under an id
+    // that never starts so, and its path is the same org path: with the older `mcp*` this role could read it. A controller that names another secret, or registers a definition with this role as its
+    // TASK role, now reaches package-run secrets of this org only.
+    const secretPrefix = `arn:${Aws.PARTITION}:secretsmanager:${region}:${stack.account}:secret:agentx/${props.agentxEnv}/org-connectors/${props.orgId}/${PACKAGE_SERVER_ID_PREFIX}`;
     this.runnerExecutionRole.addToPolicy(new iam.PolicyStatement({
       sid: "ReadApprovedServerSecrets", actions: ["secretsmanager:GetSecretValue"], resources: [`${secretPrefix}*`],
       conditions: { StringEquals: { "secretsmanager:ResourceTag/rovara:org": props.orgId } },
@@ -345,13 +353,19 @@ export class McpHost extends Construct {
     policy({ sid: "ListTasksInTheCluster", actions: ["ecs:ListTasks"], resources: ["*"], conditions: clusterOnly });
     // RegisterTaskDefinition takes the task-definition resource (the family's ARN) and the request's tags (AWS Service Authorization Reference, Amazon ECS): only `rovara-mcp-*` families, only tagged as managed.
     policy({ sid: "RegisterMcpTaskDefinitions", actions: ["ecs:RegisterTaskDefinition"], resources: [families], conditions: { StringEquals: { [`aws:RequestTag/${MCP_MANAGED_TAG.key}`]: MCP_MANAGED_TAG.value } } });
-    // These four take no resource type, so "*" is all IAM allows; they read or remove definitions by name and the controller only names its own families (a code rule, tested in the gateway).
+    // These four take no resource type, so "*" is all IAM allows (checked 2026-11-02 in the Service Authorization Reference for Amazon ECS, https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.md:
+    // DeregisterTaskDefinition, DescribeTaskDefinition, ListTaskDefinitions and ListTaskDefinitionFamilies each list no resource type; only RegisterTaskDefinition lists `task-definition`). They read or
+    // remove definitions by name, and the controller names only its own families: the adapter refuses any family that is not `rovara-mcp-<plain name>` before it sends a call (review M2; tested in
+    // tests/unit/mcp-runner/aws-adapters.test.ts). A faulty or hijacked controller could still deregister another definition by calling the API directly; CloudTrail records every call.
     policy({ sid: "ReadAndRetireTaskDefinitions", actions: ["ecs:DescribeTaskDefinition", "ecs:ListTaskDefinitions", "ecs:ListTaskDefinitionFamilies", "ecs:DeregisterTaskDefinition"], resources: ["*"] });
     // RunTask and RegisterTaskDefinition carry tags; the action that checks them is TagResource, here only as part of those two creations.
     policy({
       sid: "TagOnCreateOnly", actions: ["ecs:TagResource"], resources: [families, ecsArn("task", `${cluster.clusterName}/*`)],
       conditions: { StringEquals: { "ecs:CreateAction": ["RunTask", "RegisterTaskDefinition"] } },
     });
+    // Residual (review M3): IAM cannot tell an execution role from a task role in `iam:PassRole`, so a faulty RegisterTaskDefinition could set `taskRoleArn` to this same role and give a package
+    // GetSecretValue on every package-run secret of the org (since review S1 the role no longer reaches address-based servers' tokens, whose ids never start `mcppkg`). The control is in code: a definition is run only after it is read back from ECS
+    // and found equal to what the controller builds, with no task role (`definitionMatches`, ecs-resources.ts), and a contract test asserts `taskRoleArn` is absent on every runner family.
     policy({
       sid: "PassTheRunnerExecutionRoleOnly", actions: ["iam:PassRole"], resources: [this.runnerExecutionRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },
     });
@@ -380,6 +394,8 @@ export class McpHost extends Construct {
     // the condition would fail it; the bucket holds nothing but bundles.
     policy({ sid: "ReadAndWriteBundles", actions: ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], resources: [this.bundleBucket.arnForObjects("bundles/*")] });
     policy({ sid: "SeeWhichBundlesExist", actions: ["s3:ListBucket"], resources: [this.bundleBucket.bucketArn] });
+    // Review M10: the sweep removes a bundle no entry references. DeleteObject without a version id only adds a delete marker; there is no DeleteObjectVersion, so the bytes stay for the lifecycle's 30 days.
+    policy({ sid: "RemoveUnreferencedBundles", actions: ["s3:DeleteObject"], resources: [this.bundleBucket.arnForObjects("bundles/*")] });
     policy({ sid: "UseTheBundleKey", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [this.bundleKey.keyArn] });
     const tableKeys = (partition: string) => ({ "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`ORG#${props.orgId}#${partition}`] }, Null: { "dynamodb:LeadingKeys": "false" } });
     policy({ sid: "ReadMcpServerRegistry", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [props.stateTableArn], conditions: tableKeys("MCPSRV") });

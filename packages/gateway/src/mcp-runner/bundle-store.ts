@@ -5,12 +5,15 @@
 // refused downstream too.
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 
 export type BundlePutResult = "stored" | "hash_mismatch" | "too_large";
+
+/** A stored bundle, for the sweep: its sha256 and when it was last written (milliseconds). */
+export interface StoredBundle { hash: string; lastModified: number }
 
 export interface BundleStore {
   /** Reads `source` (at most `maxBytes`), and keeps the bytes under `hash` only if their sha256 is `hash`. */
@@ -18,6 +21,10 @@ export interface BundleStore {
   /** The stored bundle, or undefined. */
   open(hash: string): Promise<{ size: number; stream: Readable } | undefined>;
   has(hash: string): Promise<boolean>;
+  /** Review M10: every bundle held, with when it was written. Absent where the store cannot be swept. Throws when it cannot be read (the sweep then removes nothing). */
+  list?: (() => Promise<StoredBundle[]>) | undefined;
+  /** Review M10: removes one bundle by its sha256, and nothing else. A bundle that is already gone is not an error. Refuses a name that is not a sha256. */
+  remove?: ((hash: string) => Promise<void>) | undefined;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -70,6 +77,20 @@ export function directoryBundleStore(directory: string): BundleStore {
     async has(hash) {
       return SHA256.test(hash) && (await stat(target(hash)).catch(() => undefined))?.isFile() === true;
     },
+    async list() {
+      const found: StoredBundle[] = [];
+      for (const name of await readdir(directory).catch(() => [] as string[])) {
+        const match = /^([0-9a-f]{64})\.tar$/u.exec(name);
+        if (match === null) continue;
+        const info = await stat(join(directory, name)).catch(() => undefined);
+        if (info !== undefined && info.isFile()) found.push({ hash: match[1]!, lastModified: info.mtimeMs });
+      }
+      return found;
+    },
+    async remove(hash) {
+      if (!SHA256.test(hash)) throw new Error("a bundle is named by its sha256");
+      await rm(target(hash), { force: true });
+    },
   };
 }
 
@@ -78,6 +99,10 @@ export interface BundleObjectApi {
   put(input: { key: string; body: Readable; size: number }): Promise<void>;
   get(key: string): Promise<{ size: number; stream: Readable } | undefined>;
   head(key: string): Promise<boolean>;
+  /** Review M10: every object under the prefix, with when it was last written. Throws when the list is not complete (the sweep then removes nothing). */
+  list?: ((prefix: string) => Promise<Array<{ key: string; lastModified: number }>>) | undefined;
+  /** Review M10: removes one object (in a versioned bucket this adds a delete marker; earlier versions expire by the bucket's lifecycle). */
+  remove?: ((key: string) => Promise<void>) | undefined;
 }
 
 /** A store in an object bucket. The bytes are staged on disk first (the hash must be known before anything is kept), then uploaded under `bundles/<hash>`. */
@@ -96,5 +121,21 @@ export function objectBundleStore(api: BundleObjectApi, options: { stagingDirect
     },
     async open(hash) { return SHA256.test(hash) ? api.get(key(hash)) : undefined; },
     async has(hash) { return SHA256.test(hash) && api.head(key(hash)); },
+    ...(api.list === undefined ? {} : {
+      async list() {
+        const found: StoredBundle[] = [];
+        for (const item of await api.list!("bundles/")) {
+          const match = /^bundles\/([0-9a-f]{64})$/u.exec(item.key);
+          if (match !== null) found.push({ hash: match[1]!, lastModified: item.lastModified });
+        }
+        return found;
+      },
+    }),
+    ...(api.remove === undefined ? {} : {
+      async remove(hash) {
+        if (!SHA256.test(hash)) throw new Error("a bundle is named by its sha256");
+        await api.remove!(key(hash));
+      },
+    }),
   };
 }

@@ -27,9 +27,10 @@ export function dynamoPauses(options: { documentClient: DocumentClient; tableNam
       const found = await options.documentClient.send(new GetCommand({ TableName: options.tableName, Key: baseKey(serverId), ConsistentRead: true })) as { Item?: { approvedHash?: unknown; bundleHash?: unknown; contentHash?: unknown } };
       const item = found.Item;
       if (item === undefined) return undefined;
-      // An item that does not read as a baseline is no baseline that matches (the next start writes a new one over it).
+      // SR-7 H2: an item that does not read as a baseline is "damaged", which the controller refuses to start on. It is never read as none (the next start would write a new baseline over it, which
+      // is trust on first use again) and never as a baseline of some other approval.
       return [item.approvedHash, item.bundleHash, item.contentHash].every((value) => typeof value === "string" && HASH.test(value))
-        ? { approvedHash: item.approvedHash as string, bundleHash: item.bundleHash as string, contentHash: item.contentHash as string } : { approvedHash: "", bundleHash: "", contentHash: "" };
+        ? { approvedHash: item.approvedHash as string, bundleHash: item.bundleHash as string, contentHash: item.contentHash as string } : "damaged";
     },
     async setBaseline(serverId, baseline) {
       if (![baseline.approvedHash, baseline.bundleHash, baseline.contentHash].every((value) => HASH.test(value))) throw new Error("a baseline names three hashes");
