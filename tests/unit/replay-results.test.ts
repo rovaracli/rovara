@@ -26,6 +26,41 @@ const verified = () => snapshot("t-verified", workflow({ stage: "REVIEW" }), { e
 const environment = () => snapshot("t-env", workflow({ verification: undefined }, "BLOCKED", WORKFLOW_BLOCK_REASONS.checkRunnerFailed));
 const codeFault = () => snapshot("t-code", workflow({ stage: "VERIFY", ...failedUnit }, "BLOCKED", WORKFLOW_BLOCK_REASONS.regressionFound));
 
+const oldFailing = (names: string[], newTests: string[] = []) => pack([{ before: "failed", after: "failed", class: "already_failing", tests: { total: 10, passed: 10 - names.length, failed: names.length, skipped: 0, errored: 0, newTests, names: names.map((name) => ({ name, status: "failed" })) } }]);
+const failedOld = { stage: "VERIFY", verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [{ checkId: "unit", status: "FAILED" }] } };
+
+describe("suspect checks (M2: owner decision)", () => {
+  const task = (id: string, names: string[], alreadyFailing: string[], newTests: string[] = []) => snapshot(id, workflow(failedOld, "BLOCKED"), { evidence: oldFailing(names, newTests), alreadyFailing, facts: { checkOriginal: { unit: "failed" } } });
+
+  it("counts and reports a check that failed before with a failing test outside the already-failing list (Y old, Z new), or one the change added; the verdict is Code failed", () => {
+    const yz = task("t-yz", ["Y", "Z"], ["Y"]);
+    const added = task("t-added", ["Y", "C"], ["Y", "C"], ["C"]);
+    const known = task("t-known", ["Y"], ["Y"]);
+    const report = replayResults([yz, added, known]);
+    expect(report.suspect).toEqual(["t-yz", "t-added"]);
+    expect(report.byVerdict).toMatchObject({ code_failed: 2, partially_verified: 1 });
+    expect(report.ok).toBe(true);
+    expect(replayText(report)).toContain("SUSPECT a check that failed before has a failing test the already-failing list does not show, or one the change added (must be Code failed): t-yz, t-added");
+  });
+
+  it("is a violation when a classifier does not call a suspect check Code failed (the oracle counts it as the code's fault)", () => {
+    const yz = task("t-yz", ["Y", "Z"], ["Y"]);
+    const asBlocked: ViewOf = () => ({ view: { schemaVersion: 1, result: "blocked_by_environment", reasons: ["fails_on_original_code"], rows: [{ label: "Unit tests", command: "pytest -q", status: "blocked", reason: "fails_on_original_code" }] } });
+    const report = replayResults([yz], asBlocked);
+    expect(report.codeLabelledEnvironment).toEqual(["t-yz"]);
+    expect(report.suspect).toEqual(["t-yz"]);
+    expect(report.ok).toBe(false);
+    const asPartial: ViewOf = () => ({ view: { schemaVersion: 1, result: "partially_verified", reasons: ["known_failing_only"], rows: [{ label: "Unit tests", command: "pytest -q", status: "known_failing", reason: "known_failing_only" }] } });
+    expect(replayResults([yz], asPartial).codeShownAsPassing).toEqual(["t-yz"]);
+  });
+
+  it("with no usable nightly (an empty list) every failing test of a check that failed before is suspect", () => {
+    expect(replayResults([task("t-none", ["Y"], [])]).suspect).toEqual(["t-none"]);
+    expect(hasCodeSignal(workflow(failedOld, "BLOCKED"), {}, oldFailing(["Y"]), [])).toBe(true);
+    expect(hasCodeSignal(workflow(failedOld, "BLOCKED"), {}, oldFailing(["Y"]), ["Y"])).toBe(false);
+  });
+});
+
 describe("replayResults", () => {
   it("is clean for verified, environment and code-failed tasks that are labelled as they should be", () => {
     const report = replayResults([verified(), environment(), codeFault()]);

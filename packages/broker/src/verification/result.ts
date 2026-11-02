@@ -107,6 +107,23 @@ function unclearE2e(facts: AutoFixFacts): "code" | "original_fails" | "original_
   return groups.every((result) => result === "passed") ? "code" : "cause_unknown";
 }
 
+/**
+ * Whether a check that failed on the original code too has a failing test that was NOT failing before (owner decision, Opus re-check M2): a failing test the already-failing set does not know (the last usable nightly's
+ * failures and a maintainer's marks for this check; with no usable nightly, only the marks), a failing test the change itself added (`newTests`), or failing tests the pack does not name. A check with no test
+ * counts at all (a lint, say) has none to judge. Such a check is a failure of the CODE ("Code failed", the code goes back), never "Blocked by environment": the old failure must not hide a new one.
+ */
+export function hasUnconfirmedFailingTest(check: EvidencePack["checks"][number], alreadyFailing: readonly KnownFailingEntry[]): boolean {
+  if (check.tests === undefined) return false;
+  const declared = check.tests.failed + check.tests.errored;
+  if (declared === 0) return false;
+  const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
+  if (failed.length !== declared) return true;
+  const anyCheck = new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string"));
+  const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
+  const added = new Set(check.tests.newTests);
+  return failed.some((test) => added.has(test.name) || !(anyCheck.has(test.name) || perCheck.has(`${check.checkId}\u0000${test.name}`)));
+}
+
 /** Whether every failing check of the evidence failed on the original code too and every failing test of it is in the already-failing set. Anything short of that excuses nothing. */
 function knownFailingExcused(failing: readonly EvidencePack["checks"][number][], alreadyFailing: readonly KnownFailingEntry[]): boolean {
   if (failing.length === 0 || alreadyFailing.length === 0) return false;
@@ -174,6 +191,8 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   const excused = () => knownFailingExcusedAll(failingChecks.filter((check) => check.class !== "regression"), originalFailingChecks, input.alreadyFailing)
     && failedOnOriginal.every((result) => originalFailingChecks.some((check) => check.checkId === result.checkId));
   if (originalFailingChecks.length > 0) originalFails = true;
+  // A check that failed before AND has a failing test that was not failing before is the code's fault (M2): the old failure does not hide the new one.
+  if (originalFailingChecks.some((check) => hasUnconfirmedFailingTest(check, input.alreadyFailing))) codeReasons.push("new_failing_test");
 
   // ---- 1. Code failed wins; environment faults are still listed
   if (codeReasons.length > 0) return { decided: true, result: "code_failed", reasons: unique([...codeReasons, ...blockedReasons, ...(originalFails && !excused() ? ["fails_on_original_code" as const] : [])]) };

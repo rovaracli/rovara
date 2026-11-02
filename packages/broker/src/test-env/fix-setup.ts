@@ -66,14 +66,14 @@ export function fixSetupCauseOf(codes: readonly AutoFixCode[]): FixSetupCause | 
 }
 
 /**
- * The tests a "Mark as known failing" could add. Two things must both hold for a test to be offered: it failed in a check that failed on the original code too (the broker's evidence pack: class
- * `already_failing`, outcome `failed`), AND the project's last nightly baseline on the default branch (`nightlyFailing`, broker-stored, empty when unknown or truncated) lists it as failing. The worker's report of the
- * change's own run decides neither alone: a test the change broke in a check that also failed on old code (B), or a test the change added (C, `newTests`), is never offered. `unconfirmed` counts the failing tests of
- * those checks that were not offered, so the card can say so. Undefined (the card has no such action) when there is no nightly data, no check qualifies, the pack does not name every failing test of a qualifying check,
- * nothing is confirmed, or more tests are confirmed than one card can show.
+ * What a Fix setup card can say about a check that failed on the original code too, from the broker's own evidence pack (class `already_failing`, outcome `failed`) and the project's USABLE nightly baseline
+ * (`nightlyFailing`: recent, the task's base branch, whole; empty when there is none). Owner decision (Opus re-check M2): such a check where every failing test is on the nightly list is a setup problem, and those
+ * tests may be marked; but if it has ANY failing test the nightly list does not show, a failing test the change added (`newTests`), or failing tests the pack does not name, the old failure is hiding a new one: that is
+ * the CODE's fault (`codeFault`), the result is Code failed, and nothing is offered. With no usable nightly, every failing test of such a check is unconfirmed. `unconfirmed` counts them.
+ * Undefined (the card has no mark) when there is no pack, no qualifying check, a check with no test counts, nothing confirmed, or more confirmed than one card shows.
  */
-export function failingOnOriginalTests(pack: EvidencePack | undefined, nightlyFailing: readonly string[]): { tests: MarkableTest[]; unconfirmed: number } | undefined {
-  if (pack === undefined || nightlyFailing.length === 0) return undefined;
+export function failingOnOriginalTests(pack: EvidencePack | undefined, nightlyFailing: readonly string[]): { tests: MarkableTest[]; unconfirmed: number; codeFault: boolean } | undefined {
+  if (pack === undefined) return undefined;
   const checks = pack.checks.filter((check) => check.after === "failed" && check.class === "already_failing");
   if (checks.length === 0) return undefined;
   const nightly = new Set(nightlyFailing);
@@ -81,15 +81,19 @@ export function failingOnOriginalTests(pack: EvidencePack | undefined, nightlyFa
   let unconfirmed = 0;
   for (const check of checks) {
     if (check.tests === undefined) return undefined;
+    const declared = check.tests.failed + check.tests.errored;
+    if (declared === 0) return undefined;
     const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
-    if (check.tests.failed + check.tests.errored === 0 || failed.length !== check.tests.failed + check.tests.errored) return undefined;
+    // Failing tests the pack does not name cannot be confirmed.
+    unconfirmed += Math.max(0, declared - failed.length);
     const added = new Set(check.tests.newTests);
     for (const test of failed) {
       if (!added.has(test.name) && nightly.has(test.name) && KnownFailingTestId.safeParse(test.name).success) confirmed.set(`${check.checkId}\u0000${test.name}`, { name: test.name, checkId: check.checkId });
       else unconfirmed += 1;
     }
   }
-  return confirmed.size > 0 && confirmed.size <= FIX_SETUP_TESTS_MAX ? { tests: [...confirmed.values()], unconfirmed } : undefined;
+  if (unconfirmed > 0) return { tests: [], unconfirmed, codeFault: true };
+  return confirmed.size > 0 && confirmed.size <= FIX_SETUP_TESTS_MAX ? { tests: [...confirmed.values()], unconfirmed: 0, codeFault: false } : undefined;
 }
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -377,7 +381,7 @@ export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Pre
     const scope: KnownFailingScope = { orgId, project: item.project, cause: record.cause, epoch: record.epoch, recordVersion: record.version, testSetSha256, askedBy: caller.developerId };
     const confirmation = await confirmedKnownFailingApproval(ports.approvals.deps, scope);
     if (confirmation === undefined) {
-      await requestKnownFailingCard(ports.approvals.deps, { orgId, developerId: caller.developerId, orgRole: caller.orgRole }, { project: item.project, cause: record.cause, epoch: record.epoch, recordVersion: record.version, testSetSha256, testCount: record.tests.length });
+      await requestKnownFailingCard(ports.approvals.deps, { orgId, developerId: caller.developerId, orgRole: caller.orgRole }, { project: item.project, cause: record.cause, epoch: record.epoch, recordVersion: record.version, testSetSha256, tests: record.tests });
       return "second_person";
     }
     // Throws FORBIDDEN when the approver is no longer eligible, when it is the same person and they are not the company's only owner, and when the company turned the sole-owner exception off.

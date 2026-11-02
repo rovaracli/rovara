@@ -9,7 +9,7 @@ import { agentXError, projectPk, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { KnownFailingEntry } from "../verification/result.js";
-import { alreadyFailingTests } from "./nightly.js";
+import { usableNightlyFailing } from "./nightly-usable.js";
 
 /** The most marks one project can have. A project with more has a bigger problem than a card can fix: a mark that would pass it is refused, not cut. */
 export const KNOWN_FAILING_MAX = 500;
@@ -53,9 +53,9 @@ export async function readKnownFailingRow(deps: Pick<TestEnvDeps, "documentClien
   }
 }
 
-/** The tests the classifier may excuse: the last nightly's failures (`alreadyFailingTests`, empty when truncated; a name matches in any check) and the maintainers' marks (a name in one check). Each unreadable part adds nothing. */
+/** The tests the classifier may excuse: the last USABLE nightly's failures (`usableNightlyFailing`: recent, the task's base branch, whole; otherwise none; a name matches in any check) and the maintainers' marks (a name in one check). Each unreadable part adds nothing. */
 export async function alreadyFailingForResults(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<KnownFailingEntry[]> {
-  const [nightly, marked] = await Promise.all([alreadyFailingTests(deps, orgId, project).catch(() => [] as string[]), readKnownFailingRow(deps, orgId, project)]);
+  const [nightly, marked] = await Promise.all([usableNightlyFailing(deps, orgId, project).then((failing) => failing ?? [], () => [] as string[]), readKnownFailingRow(deps, orgId, project)]);
   return [...nightly, ...(marked?.marks ?? []).map((mark) => ({ name: mark.name, checkId: mark.checkId }))];
 }
 

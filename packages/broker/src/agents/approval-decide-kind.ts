@@ -6,7 +6,8 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { ApprovalIdSchema, LEVEL_WORDS, approvalKey, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -256,6 +257,19 @@ function outcomeOf(record: AnyApprovalRecord | undefined, decision: "approve" | 
   }
 }
 
+// Setup and test health SH17 (Opus re-check M3): the second person's confirmation of a mark must have OPENED the page that lists the tests, the same rule the presser follows on the card. Opening it (the page read) records
+// that this person saw this approval; a confirmation without that record is refused. Declining needs nothing.
+const viewedKey = (orgId: OrgId, approvalId: string, developerId: string) => ({ pk: approvalKey(orgId, approvalId).pk, sk: `VIEWED#${developerId}` });
+export const KNOWN_FAILING_OPEN_FIRST_MESSAGE = "Open this page and read the tests first, then confirm.";
+
+async function markViewed(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>, developerId: string): Promise<void> {
+  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...viewedKey(record.orgId, record.approvalId, developerId), entityType: "APPROVAL_VIEWED", orgId: record.orgId, approvalId: record.approvalId, developerId, viewedAt: new Date(deps.now()).toISOString() } }));
+}
+async function wasViewed(deps: ApprovalDependencies, record: AnyApprovalRecord, developerId: string): Promise<boolean> {
+  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: viewedKey(record.orgId, record.approvalId, developerId), ConsistentRead: true })) as { Item?: unknown };
+  return found.Item !== undefined;
+}
+
 export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
   async function inspect(target: DecideTarget): Promise<DecideInspection> {
     const id = ApprovalIdSchema.safeParse(target.approvalId);
@@ -271,7 +285,9 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     if (record.status !== "PENDING") return { status: "decided", by: await nameOf(deps, record.decidedBy), at: record.decidedAt ?? record.expiresAt };
     // The sweep ends an approval whose time ran out within minutes; until it does, the page treats it as ended.
     if (Date.parse(record.expiresAt) <= deps.now()) return { status: "expired", at: record.expiresAt };
-    return { status: "open", view: await viewOf(deps, record) };
+    const view = await viewOf(deps, record);
+    if (record.kind === "change" && record.subject.kind === "known_failing") await markViewed(deps, record, target.developerId);
+    return { status: "open", view };
   }
 
   async function decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome> {
@@ -281,6 +297,10 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     const caller = id.success ? await callerOf(deps, target, proof) : undefined;
     if (!id.success || caller === undefined) throw agentXError("NOT_FOUND", "approval not found");
     const body = { requestId: requestIdFor(proof, target.approvalId), decision: decision === "approve" ? "APPROVE" : "DECLINE" };
+    if (decision === "approve") {
+      const pending = await getAnyApproval(deps, target.orgId, id.data);
+      if (pending?.kind === "change" && pending.subject.kind === "known_failing" && !await wasViewed(deps, pending, target.developerId)) throw agentXError("CHANGE_STALE", KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    }
     await decideApproval(deps, caller, id.data, body);
     return outcomeOf(await getAnyApproval(deps, target.orgId, id.data), decision);
   }

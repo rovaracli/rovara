@@ -52,15 +52,20 @@ describe("the Testing view: one row per selected check, in order", () => {
     expect(view({ planned: { fullSuite: "not_run" } }).rows.at(-1)).toMatchObject({ status: "not_run", reason: "full_suite_not_run" });
   });
 
-  it("marks a row already failing only when the nightly or maintainers' set covers every failing test; otherwise it is blocked", () => {
+  it("marks a row already failing only when the nightly or maintainers' set covers every failing test; otherwise the code failed", () => {
     const failing = workflow(results(check("unit", "FAILED"), check("lint", "PASS")));
     const evidence = pack([{ after: "failed", class: "already_failing", tests: testsOf(["t::a"]) }, { checkId: "lint", kind: "lint", label: "lint" }]);
     const covered = view({ workflow: failing, evidence, alreadyFailing: ["t::a"] });
     expect(covered).toMatchObject({ result: "partially_verified", reasons: ["known_failing_only"] });
     expect(covered.rows[0]).toEqual({ label: "Unit tests", command: "pytest -q", status: "known_failing", reason: "known_failing_only" });
+    // Not on the list (no usable nightly, or a different test): the code's fault, the row says so (owner decision M2).
     const uncovered = view({ workflow: failing, evidence, alreadyFailing: [] });
-    expect(uncovered).toMatchObject({ result: "blocked_by_environment", reasons: ["fails_on_original_code"] });
-    expect(uncovered.rows[0]).toMatchObject({ status: "blocked", reason: "fails_on_original_code" });
+    expect(uncovered).toMatchObject({ result: "code_failed", reasons: ["new_failing_test", "fails_on_original_code"] });
+    expect(uncovered.rows[0]).toMatchObject({ status: "failed", reason: "new_failing_test" });
+    // Y failed on the old code too, Z is newly failing: Code failed, not Blocked by environment.
+    const yz = pack([{ after: "failed", class: "already_failing", tests: testsOf(["Y", "Z"]) }, { checkId: "lint", kind: "lint", label: "lint" }]);
+    expect(view({ workflow: failing, evidence: yz, alreadyFailing: ["Y"] })).toMatchObject({ result: "code_failed" });
+    expect(view({ workflow: failing, evidence: yz, alreadyFailing: ["Y", "Z"] })).toMatchObject({ result: "partially_verified" });
   });
 
   it("shows a regression as Code failed with a failed row, and a check that never started as blocked", () => {
@@ -127,7 +132,7 @@ describe("the pull request's Testing section", () => {
     for (const row of lines.filter((line) => line.startsWith("| Check number"))) expect(row.split("|").length).toBe(5);
   });
 
-  it("keeps the result and every blocked or not-run row at all five levels, and folds passed rows from level 2", () => {
+  it("keeps the result and every blocked or not-run row at levels 0 to 4, and folds passed rows from level 2", () => {
     const v = many();
     for (let level = 0; level <= 4; level += 1) {
       const lines = testingSectionLines(v, level);
@@ -145,9 +150,10 @@ describe("the pull request's Testing section", () => {
   });
 
   it("is smaller at each level (the description can shrink to fit its byte cap)", () => {
-    const sizes = [0, 1, 2, 3, 4].map((level) => Buffer.byteLength(testingSectionLines(many(), level).join("\n")));
+    const sizes = [0, 1, 2, 3, 4, 5].map((level) => Buffer.byteLength(testingSectionLines(many(), level).join("\n")));
     for (let level = 1; level < sizes.length; level += 1) expect(sizes[level]!).toBeLessThanOrEqual(sizes[level - 1]!);
-    expect(sizes[4]!).toBeLessThan(sizes[0]!);
+    expect(sizes[5]!).toBeLessThan(sizes[0]!);
+    expect(sizes[4]!).toBeLessThan(sizes[3]!);
   });
 
   it("says each reason only in its fixed sentence", () => {
@@ -160,11 +166,42 @@ describe("the whole description with the view", () => {
   const reviews = () => ["Reviews: code review passed; security review passed"];
   const body = (context: PullRequestBodyContext) => rovaraStatusLines(workflow(), context, reviews);
 
-  it("is exactly what it was while the view is absent (the Tests section, its lists and no result line)", () => {
-    const lines = body({});
-    expect(lines).toContain("## Tests");
-    expect(lines.some((line) => line.startsWith("## Testing"))).toBe(false);
-    expect(lines.join("\n")).toContain("- Passed: Unit tests; Lint");
+  // The block as the builder at the base of this lane (f759be005) wrote it for this workflow and these reviews, taken from that commit and pinned here: with `vx` off no view is built, and the block must be these lines.
+  const TODAYS_BLOCK = [
+    "## What changed", "Rovara couldn't list the changed files.", "",
+    "## Tests", "- Tested on head commit 11111111", "- Passed: Unit tests; Lint", "- Tests added: Rovara couldn't list the changed files, so it can't say.", "",
+    "## Reviews", "Reviews: code review passed; security review passed", "",
+    "## Risk: Medium", "- Rovara couldn't list every changed file.",
+  ];
+
+  it("is exactly what the builder wrote before this lane while the view is absent (vx off): the same lines, and the same with the field set to undefined", () => {
+    expect(body({})).toEqual(TODAYS_BLOCK);
+    expect(body({ testing: undefined })).toEqual(TODAYS_BLOCK);
+    expect(body({}).join("\n")).not.toContain("Testing");
+  });
+
+  // L1 (Opus re-check): 64 blocked rows with multibyte labels and commands must still fit, with the result line, however the budget is set.
+  const multibyte = (): TestingView => TestingViewSchema.parse({
+    schemaVersion: 1, result: "blocked_by_environment", reasons: ["check_runner_failed"],
+    rows: Array.from({ length: 64 }, (_, n) => ({ label: `\u691C\u67FB${String(n)} `.repeat(14).trim(), command: `\u5B9F\u884C ${String(n)} `.repeat(14).trim().slice(0, 118), status: "blocked", reason: "check_runner_failed" })),
+  });
+
+  it("64 blocked multibyte rows fit the default budget and a tight one, with the heading and the result line, down to counts at the last resort", () => {
+    const v = multibyte();
+    expect(Buffer.byteLength(testingSectionLines(v, 0).join("\n"))).toBeGreaterThan(15_000);
+    for (const budget of [22_000, 12_000, 9_000, 4_000]) {
+      const lines = rovaraStatusLines(workflow(), { testing: v }, reviews, budget);
+      expect(Buffer.byteLength(lines.join("\n")), `budget ${String(budget)}`).toBeLessThanOrEqual(budget);
+      const text = lines.join("\n");
+      expect(text).toContain("## Testing \u2014 Blocked by environment");
+      expect(text).toContain("Result: 64 checks could not give a result because of the test environment.");
+    }
+    const tight = rovaraStatusLines(workflow(), { testing: v }, reviews, 4_000).join("\n");
+    expect(tight).toContain("- 64 checks blocked: the check runner failed");
+    expect(tight).toContain("Every check, with its command, is listed on the task page.");
+    // At level 4 the labels are cut to about 40 characters.
+    const level4 = testingSectionLines(v, 4).filter((line) => line.startsWith("| "))[2]!;
+    expect(Array.from(level4.split("|")[1]!.trim()).length).toBeLessThanOrEqual(40);
   });
 
   it("with the view, replaces ## Tests by ## Testing and keeps the tested commit and tests-added lines", () => {

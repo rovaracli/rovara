@@ -143,3 +143,47 @@ describe("the company setting always two people", () => {
     expect(knownFailingCards(t)).toHaveLength(2);
   });
 });
+
+// M3 (Opus re-check): the second person's confirmation page lists the tests, and they must have opened it before confirming (the same rule the presser follows on the card).
+import { approvalDecideKind, KNOWN_FAILING_OPEN_FIRST_MESSAGE } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+
+describe("the confirmation page of a mark (M3)", () => {
+  const proof = () => ({ kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date(Date.now() - 60_000).toISOString(), sessionRef: "a".repeat(64) });
+  async function pending() {
+    const made = await bench({ owner: OMAR, maya: true });
+    process.env.VERIFY_RESULTS_ENABLED = "1"; process.env.DECISION_CARDS_ENABLED = "1";
+    await recordFixSetup(store(made.t), { orgId: TEST_ORG, project: NAME, taskId: "22222222-2222-4222-8222-222222222222", cause: "fails-on-original-code", tests: [{ name: `tests/${"long/".repeat(30)}x.py::two`, checkId: "lint" }] });
+    expect((await press(made.t, OMAR)).status).toBe(403);
+    const card = knownFailingCards(made.t)[0] as { approvalId: string };
+    const deps = { documentClient: made.t.db, tableName: "state", modelSignInTableName: "state", signInStore: new DeveloperSignInStore({ documentClient: made.t.db, tableName: "state", now: () => Date.now() }), teamRecordTable: { documentClient: made.t.teamDb, tableName: "team" }, now: () => Date.now() } as unknown as ApprovalDependencies;
+    return { ...made, card, kind: approvalDecideKind(deps), target: { orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: card.approvalId } };
+  }
+
+  it("lists every test the mark covers, each in full with its check", async () => {
+    const { kind, target } = await pending();
+    const inspected = await kind.inspect(target);
+    expect(inspected).toMatchObject({ status: "open", view: { title: "Confirm marking tests as already failing" } });
+    const view = (inspected as { view: { paragraphs: string[]; facts: Array<{ label: string }> } }).view;
+    expect(view.paragraphs[0]).toContain("Confirm marking");
+    expect(view.paragraphs.slice(1)).toEqual(["tests/a.py::one (check unit)", `tests/${"long/".repeat(30)}x.py::two (check lint)`]);
+  });
+
+  it("refuses a confirmation by a person who has not opened the page, accepts it after they have, and lets a decline through", async () => {
+    const { kind, target, t } = await pending();
+    await expect(kind.decide(target, "approve", proof())).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    expect(t.approvals().filter((card) => (card as { status: string }).status === "PENDING")).toHaveLength(1);
+    // Someone else opening it does not count for this person.
+    await kind.inspect({ ...target, developerId: OMAR.developerId }).catch(() => undefined);
+    await expect(kind.decide(target, "approve", proof())).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    await kind.inspect(target);
+    const decided = await kind.decide(target, "approve", proof());
+    expect(decided.message).toMatch(/Approved/u);
+  });
+
+  it("a decline needs no reading", async () => {
+    const { kind, target } = await pending();
+    expect((await kind.decide(target, "decline", proof())).message).toMatch(/Declined/u);
+  });
+});

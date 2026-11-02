@@ -52,9 +52,9 @@ describe("a maintainer's mark counts as already failing", () => {
   const failing = () => workflow({ verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [check("unit", "FAILED")] } });
   const evidence = () => pack([{ after: "failed", class: "already_failing", tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: [], names: [{ name: "t::a", status: "failed" }] } }]);
 
-  it("is Blocked by environment before the mark and Partially verified (already failing) after it", async () => {
+  it("is Code failed before the mark (the test is not on a usable list) and Partially verified (already failing) after it", async () => {
     const t = bench(evidence());
-    expect((await loadTestingView(t.deps, task(), failing(), ON))?.result).toBe("blocked_by_environment");
+    expect((await loadTestingView(t.deps, task(), failing(), ON))?.result).toBe("code_failed");
     t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
     const after = await loadTestingView(t.deps, task(), failing(), ON);
     expect(after).toMatchObject({ result: "partially_verified", reasons: ["known_failing_only"] });
@@ -68,7 +68,7 @@ describe("a mark is for one check", () => {
     const evidence = pack([{}, { checkId: "other", after: "failed", class: "already_failing", tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: [], names: [{ name: "t::a", status: "failed" }] } }]);
     const t = bench(evidence);
     t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
-    expect((await loadTestingView(t.deps, task(), wf, ON))?.result).toBe("blocked_by_environment");
+    expect((await loadTestingView(t.deps, task(), wf, ON))?.result).toBe("code_failed");
     t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "other", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 2, updatedAt: NOW });
     expect((await loadTestingView(t.deps, task(), wf, ON))?.result).toBe("partially_verified");
   });
@@ -78,7 +78,7 @@ describe("a mark is for one check", () => {
     const evidence = pack([{ after: "failed", class: "already_failing", tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: ["t::a"], names: [{ name: "t::a", status: "failed" }] } }]);
     const t = bench(evidence);
     t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
-    expect((await loadTestingView(t.deps, task(), failing, ON))?.result).toBe("blocked_by_environment");
+    expect((await loadTestingView(t.deps, task(), failing, ON))?.result).toBe("code_failed");
   });
 });
 

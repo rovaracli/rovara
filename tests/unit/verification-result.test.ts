@@ -138,7 +138,7 @@ describe("Code failed (4.2 code rows)", () => {
 
   it("wins when the same run also has a test that fails on the original code and is not known failing", () => {
     const evidence = pack([{ checkId: "unit", before: "passed", after: "failed", class: "regression" }, { checkId: "old", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
-    expect(run(passed(), { evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["check_failed", "fails_on_original_code"]));
+    expect(run(passed(), { evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["check_failed", "new_failing_test", "fails_on_original_code"]));
     expect(run(passed(), { evidence, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["check_failed"]));
   });
 
@@ -224,24 +224,28 @@ describe("a test that fails on the original code too (4.2 fails-on-original-code
 
   it("never excuses a test the change itself added, even when its name is in the already-failing set", () => {
     const added = evidence(["t1", "t2"], { tests: tests(["t1", "t2"], { newTests: ["t2"] }) });
-    expect(run(failing(), { facts, evidence: added, alreadyFailing: ["t1", "t2"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: added, alreadyFailing: [{ name: "t1", checkId: "unit" }, { name: "t2", checkId: "unit" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: ["t1", "t2"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: [{ name: "t1", checkId: "unit" }, { name: "t2", checkId: "unit" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
     expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { newTests: ["other"] }) }), alreadyFailing: ["t1"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
   });
 
   it("matches a mark on the test AND its check: a nightly name matches in any check, a mark only in the check it was made for", () => {
     expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "unit" }] })).toEqual(decided("partially_verified", ["known_failing_only"]));
-    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "lint" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "other", checkId: "unit" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "lint" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "other", checkId: "unit" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
   });
 
-  it("is Blocked by environment when a failing test is not known, or nothing is known failing (an unreadable or truncated set excuses nothing)", () => {
-    expect(run(failing(), { facts, evidence: evidence(["t1", "t2"]), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  it("is Code failed (owner decision M2) when a failing test is not known: the old failure does not hide a new one (Y fails on old code, Z newly fails)", () => {
+    expect(run(failing(), { facts, evidence: evidence(["Y", "Z"]), alreadyFailing: ["Y"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["Y"]), alreadyFailing: ["Y"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
   });
 
-  it("is Blocked when the failures are not all named, no test is named, or there is no evidence behind the signal", () => {
-    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { failed: 3, passed: 7 }) }), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  it("is Code failed when no usable nightly exists (nothing is known failing): every failing test of a check that failed before is unconfirmed", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+  });
+
+  it("is Code failed when the pack does not name every failing test; Blocked when no test count is given or there is no evidence behind the signal", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { failed: 3, passed: 7 }) }), alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
     expect(run(failing(), { facts, evidence: pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing" }]), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
     expect(run(failing(), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
   });
@@ -323,7 +327,7 @@ describe("the worker's own words are never trusted", () => {
   it("does not take a worker's test names as known failing: only the broker's nightly set excuses", () => {
     const evidence = pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
     const failing = blocked("VERIFY", undefined, results([check("unit", "FAILED")]));
-    expect(run(failing, { facts: { checkOriginal: { unit: "failed" } }, evidence, alreadyFailing: [] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing, { facts: { checkOriginal: { unit: "failed" } }, evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
   });
 });
 
@@ -381,6 +385,7 @@ describe("Opus review fixes 3 and 4", () => {
       { checkId: "api", before: "failed", after: "failed", class: "already_failing", tests: tests(["t2"]) },
     ]);
     expect(run(two, { facts, evidence: both, alreadyFailing: ["t1", "t2"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
-    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    // One of the two has a failing test nobody knows: the code's fault, whatever the other one is.
+    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
   });
 });

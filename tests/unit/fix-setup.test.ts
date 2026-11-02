@@ -134,34 +134,34 @@ describe("the tests a card could mark", () => {
 
   it("are the failing tests of checks that failed on the original code AND that the nightly baseline lists, once each per check", () => {
     const offer = failingOnOriginalTests(pack([check([["t/a.py::one", "failed"], ["t/a.py::two", "errored"]]), check([["t/a.py::one", "failed"]], { checkId: "lint" })]), ["t/a.py::one", "t/a.py::two", "t/other::x"]);
-    expect(offer).toEqual({ tests: [{ name: "t/a.py::one", checkId: "unit" }, { name: "t/a.py::two", checkId: "unit" }, { name: "t/a.py::one", checkId: "lint" }], unconfirmed: 0 });
+    expect(offer).toEqual({ tests: [{ name: "t/a.py::one", checkId: "unit" }, { name: "t/a.py::two", checkId: "unit" }, { name: "t/a.py::one", checkId: "lint" }], unconfirmed: 0, codeFault: false });
   });
 
-  it("never offers a test the change broke in a check that also failed before (B), or one the change added (C): they are counted apart, not marked", () => {
+  it("never offers a test the change broke in a check that also failed before (B), or one the change added (C): the check is then the code's fault and nothing is offered", () => {
     const evidence = pack([check([["t::A", "failed"], ["t::B", "failed"], ["t::C", "failed"]], {}, ["t::C"])]);
-    expect(failingOnOriginalTests(evidence, ["t::A", "t::C"])).toEqual({ tests: [{ name: "t::A", checkId: "unit" }], unconfirmed: 2 });
+    expect(failingOnOriginalTests(evidence, ["t::A", "t::C"])).toEqual({ tests: [], unconfirmed: 2, codeFault: true });
     // C is nightly-listed here only to prove the new-test list alone keeps it out.
-    expect(failingOnOriginalTests(evidence, ["t::A"])).toEqual({ tests: [{ name: "t::A", checkId: "unit" }], unconfirmed: 2 });
+    expect(failingOnOriginalTests(pack([check([["t::A", "failed"], ["t::C", "failed"]], {}, ["t::C"])]), ["t::A", "t::C"])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
   });
 
-  it("offers no mark at all when there is no nightly data (unknown, truncated or never run), or nothing in it matches", () => {
+  it("with no nightly data (unknown, stale, truncated, never run) or none that matches, every failing test is unconfirmed: nothing is offered and it is the code's fault", () => {
     const evidence = pack([check([["t::A", "failed"]])]);
-    expect(failingOnOriginalTests(evidence, [])).toBeUndefined();
-    expect(failingOnOriginalTests(evidence, ["t::other"])).toBeUndefined();
+    expect(failingOnOriginalTests(evidence, [])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
+    expect(failingOnOriginalTests(evidence, ["t::other"])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
   });
 
-  it("is not offered when the pack is missing, names fewer tests than failed, or the check is not a failure on the original code", () => {
+  it("says nothing when the pack is missing, the check is not a failure on the original code, or it has no test counts; failing tests the pack does not name are unconfirmed", () => {
     expect(failingOnOriginalTests(undefined, ["a"])).toBeUndefined();
     expect(failingOnOriginalTests(pack([]), ["a"])).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toBeUndefined();
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { class: "regression" })]), ["a"])).toBeUndefined();
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: undefined })]), ["a"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toEqual({ tests: [], unconfirmed: 1, codeFault: true });
   });
 
-  it("never offers a name that is not shown in full (over 200 characters or with whitespace), and not more than one card shows", () => {
+  it("never offers a name that is not shown in full (over 200 characters or with whitespace; it is unconfirmed), and not more than one card shows", () => {
     const long = "t".repeat(201);
-    expect(failingOnOriginalTests(pack([check([[long, "failed"]])]), [long])).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([[long, "failed"]])]), [long])).toMatchObject({ tests: [], codeFault: true });
+    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])).toMatchObject({ tests: [], codeFault: true });
     const many = Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => `t${String(n)}`);
     expect(failingOnOriginalTests(pack([check(many.map((name) => [name, "failed"] as [string, string]))]), many)).toBeUndefined();
     const fits = many.slice(0, FIX_SETUP_TESTS_MAX);

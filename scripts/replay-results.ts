@@ -16,6 +16,7 @@ import {
   type AutoFixBudget, type AutoFixFacts, type TestingResult, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { testingViewOf } from "../packages/broker/src/rovara-code/testing-section.js";
+import { hasUnconfirmedFailingTest, type KnownFailingEntry } from "../packages/broker/src/verification/result.js";
 
 const KnownFailingEntrySchema = z.union([z.string().min(1).max(500), z.object({ name: z.string().min(1).max(500), checkId: z.string().min(1).max(64) }).strict()]);
 export const ReplaySnapshotSchema = z.object({
@@ -28,10 +29,12 @@ export const ReplaySnapshotSchema = z.object({
 }).strict();
 
 export type ReplayVerdict = TestingResult | "undecided" | "unreadable";
-export interface ReplayRow { taskId: string; verdict: ReplayVerdict; codeSignal: boolean }
+export interface ReplayRow { taskId: string; verdict: ReplayVerdict; codeSignal: boolean; /** A check that failed on the original code too has a failing test outside the already-failing list, or one the change added. */ suspect: boolean }
 export interface ReplayReport {
   total: number;
   byVerdict: Record<ReplayVerdict, number>;
+  /** Tasks with a SUSPECT check: it failed on the original code too, yet has a failing test the already-failing list does not show or one the change added. Reported whatever the verdict; under the owner's rule the verdict must be Code failed, so one that is not is also listed below. */
+  suspect: string[];
   /** A code failure the result calls Blocked by environment. */
   codeLabelledEnvironment: string[];
   /** A code failure the result calls Verified or Partially verified. */
@@ -47,11 +50,18 @@ const BUDGET: AutoFixBudget = { enabled: false, dayBudgetHasRoom: false, baselin
 const isTestCodeFault = (code: keyof typeof AUTO_FIX_CODE_CLASS): boolean => AUTO_FIX_CODE_CLASS[code] === "code" && code !== "review-findings";
 
 /** Whether the stored fields show a failure of the code, by the auto-fix code classes and the evidence pack's own regression class (not by the result rules). */
-export function hasCodeSignal(workflow: WorkflowSnapshot, facts: AutoFixFacts, evidence: z.infer<typeof EvidencePackSchema> | undefined): boolean {
+export function hasCodeSignal(workflow: WorkflowSnapshot, facts: AutoFixFacts, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[] = []): boolean {
   const blocked = workflow.state === "BLOCKED" && (workflow.stage === "VERIFY" || workflow.stage === "REVIEW");
   if (blocked && classifyBlockedWorkflow(workflow, facts).some((signal) => isTestCodeFault(signal.code))) return true;
   const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
-  return current?.checks.some((check) => check.after === "failed" && check.class === "regression") === true;
+  // Owner decision (M2): a check that failed before with a failing test outside the already-failing list (or one the change added) is the code's fault too.
+  return current?.checks.some((check) => check.after === "failed" && (check.class === "regression" || (check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)))) === true;
+}
+
+/** The suspect checks: failed on the original code too, with a failing test the already-failing list does not show, one the change added, or failing tests the pack does not name. */
+export function hasSuspectCheck(workflow: WorkflowSnapshot, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[]): boolean {
+  const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
+  return current?.checks.some((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)) === true;
 }
 
 /** The classifier under test; the check passes the real one, and a test passes a broken one to prove the check can fail. */
@@ -59,17 +69,19 @@ export type ViewOf = typeof testingViewOf;
 
 export function replayOne(raw: unknown, viewOf: ViewOf = testingViewOf): ReplayRow {
   const snapshot = ReplaySnapshotSchema.safeParse(raw);
-  if (!snapshot.success) return { taskId: typeof (raw as { taskId?: unknown } | null)?.taskId === "string" ? (raw as { taskId: string }).taskId : "(unknown)", verdict: "unreadable", codeSignal: false };
+  if (!snapshot.success) return { taskId: typeof (raw as { taskId?: unknown } | null)?.taskId === "string" ? (raw as { taskId: string }).taskId : "(unknown)", verdict: "unreadable", codeSignal: false, suspect: false };
   const { taskId } = snapshot.data;
   const workflow = WorkflowSnapshotSchema.safeParse(snapshot.data.workflow);
   const evidence = snapshot.data.evidence === undefined ? undefined : EvidencePackSchema.safeParse(snapshot.data.evidence);
-  if (!workflow.success || (evidence !== undefined && !evidence.success)) return { taskId, verdict: "unreadable", codeSignal: false };
+  if (!workflow.success || (evidence !== undefined && !evidence.success)) return { taskId, verdict: "unreadable", codeSignal: false, suspect: false };
   const flow = workflow.data;
   const facts = (snapshot.data.facts ?? {}) as AutoFixFacts;
   const pack = evidence?.data;
-  const codeSignal = hasCodeSignal(flow, facts, pack);
-  const outcome = viewOf({ workflow: flow, facts, budget: BUDGET, evidence: pack, alreadyFailing: snapshot.data.alreadyFailing ?? [], planned: snapshot.data.planned });
-  return { taskId, verdict: outcome.view === undefined ? (outcome.waiting === "unreadable" ? "unreadable" : "undecided") : outcome.view.result, codeSignal };
+  const known = snapshot.data.alreadyFailing ?? [];
+  const codeSignal = hasCodeSignal(flow, facts, pack, known);
+  const suspect = hasSuspectCheck(flow, pack, known);
+  const outcome = viewOf({ workflow: flow, facts, budget: BUDGET, evidence: pack, alreadyFailing: known, planned: snapshot.data.planned });
+  return { taskId, verdict: outcome.view === undefined ? (outcome.waiting === "unreadable" ? "unreadable" : "undecided") : outcome.view.result, codeSignal, suspect };
 }
 
 export function replayResults(rawSnapshots: readonly unknown[], viewOf: ViewOf = testingViewOf): ReplayReport {
@@ -77,16 +89,18 @@ export function replayResults(rawSnapshots: readonly unknown[], viewOf: ViewOf =
   const byVerdict: Record<ReplayVerdict, number> = { verified: 0, code_failed: 0, partially_verified: 0, blocked_by_environment: 0, undecided: 0, unreadable: 0 };
   for (const row of rows) byVerdict[row.verdict] += 1;
   const ids = (keep: (row: ReplayRow) => boolean) => rows.filter(keep).map((row) => row.taskId);
+  const suspect = ids((row) => row.suspect);
   const codeLabelledEnvironment = ids((row) => row.codeSignal && row.verdict === "blocked_by_environment");
   const codeShownAsPassing = ids((row) => row.codeSignal && (row.verdict === "verified" || row.verdict === "partially_verified"));
   const unreadable = ids((row) => row.verdict === "unreadable");
-  return { total: rows.length, byVerdict, codeLabelledEnvironment, codeShownAsPassing, unreadable, ok: rows.length > 0 && codeLabelledEnvironment.length === 0 && codeShownAsPassing.length === 0 && unreadable.length === 0 };
+  return { total: rows.length, byVerdict, suspect, codeLabelledEnvironment, codeShownAsPassing, unreadable, ok: rows.length > 0 && codeLabelledEnvironment.length === 0 && codeShownAsPassing.length === 0 && unreadable.length === 0 };
 }
 
 /** The report as text: counts and task ids, never a test name, command or path. */
 export function replayText(report: ReplayReport): string {
   const lines = [
     `Replayed ${String(report.total)} task${report.total === 1 ? "" : "s"}: ${Object.entries(report.byVerdict).map(([verdict, count]) => `${verdict} ${String(count)}`).join(", ")}.`,
+    ...(report.suspect.length === 0 ? [] : [`SUSPECT a check that failed before has a failing test the already-failing list does not show, or one the change added (must be Code failed): ${report.suspect.join(", ")}`]),
     ...(report.codeLabelledEnvironment.length === 0 ? [] : [`FAIL code failure labelled as environment: ${report.codeLabelledEnvironment.join(", ")}`]),
     ...(report.codeShownAsPassing.length === 0 ? [] : [`FAIL code failure shown as passing: ${report.codeShownAsPassing.join(", ")}`]),
     ...(report.unreadable.length === 0 ? [] : [`FAIL snapshots that could not be read: ${report.unreadable.join(", ")}`]),

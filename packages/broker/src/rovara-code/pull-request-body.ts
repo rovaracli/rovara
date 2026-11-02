@@ -282,7 +282,8 @@ export function rovaraPullRequestBody(input: {
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
   const fixed = byteLength(assemble(head, []));
   const block = rovaraStatusLines(input.workflow, input.context, input.reviewLines, PULL_REQUEST_BODY_MAX_BYTES - fixed);
-  // The block's budget leaves room for the summary at its largest, and the block at its shortest (no list entries) is a few kilobytes, so this always fits.
+  // The block's budget leaves room for the summary at its largest. The block at its shortest has no list entries, its Testing section is down to counts per fixed reason (`testingSectionLines` level 5, bounded by the
+  // fixed lists whatever the rows hold), and every other part is bounded, so this always fits.
   return assemble(head, block);
 }
 

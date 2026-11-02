@@ -19,7 +19,7 @@ export const KNOWN_FAILING_CARD_TTL_MS = 86_400_000;
 export const KNOWN_FAILING_CARD_ATTEMPTS_MAX = 6;
 
 export const KNOWN_FAILING_CARD_WORDS = {
-  changes: (project: string, count: number) => `Confirm marking ${String(count)} test${count === 1 ? "" : "s"} as already failing for ${project}. Confirming it records your OK; the maintainer who asked then finishes the mark from the Fix setup card.`,
+  changes: (project: string, count: number) => `Confirm marking ${String(count)} test${count === 1 ? "" : "s"} as already failing for ${project}. Confirming it records your OK; the maintainer who asked then finishes the mark from the Fix setup card. These are the tests; open this page and read them first.`,
   tooMany: "This Fix setup card has had too many confirmation cards. Open the card again.",
   notDecided: "this has not been decided by anyone, so it can't be taken as confirmed",
 } as const;
@@ -87,7 +87,7 @@ export async function liveKnownFailingCard(deps: ApprovalDependencies, scope: Kn
 }
 
 /** Makes the confirmation card for the asker's press (or finds the live one). Only a second person who is eligible NOW can confirm it. */
-export async function requestKnownFailingCard(deps: ApprovalDependencies, caller: ApprovalCaller, input: Omit<KnownFailingScope, "askedBy" | "orgId"> & { testCount: number }): Promise<{ record: ApprovalRecord; state: "pending" | "approved" }> {
+export async function requestKnownFailingCard(deps: ApprovalDependencies, caller: ApprovalCaller, input: Omit<KnownFailingScope, "askedBy" | "orgId"> & { tests: ReadonlyArray<{ name: string; checkId: string }> }): Promise<{ record: ApprovalRecord; state: "pending" | "approved" }> {
   const scope: KnownFailingScope = { orgId: caller.orgId, project: input.project, cause: input.cause, epoch: input.epoch, recordVersion: input.recordVersion, testSetSha256: input.testSetSha256, askedBy: caller.developerId };
   const { card, attempt } = await liveKnownFailingCard(deps, scope);
   if ((card.state === "pending" || card.state === "approved") && card.record !== undefined) return { record: card.record, state: card.state };
@@ -95,7 +95,8 @@ export async function requestKnownFailingCard(deps: ApprovalDependencies, caller
   const record = await createPendingChange(deps, {
     orgId: caller.orgId, requestId: knownFailingCardRequestId(scope, attempt), requestedBy: caller.developerId,
     subject: { kind: "known_failing", project: scope.project, cause: scope.cause, epoch: scope.epoch, recordVersion: scope.recordVersion, testSetSha256: scope.testSetSha256 },
-    changes: [KNOWN_FAILING_CARD_WORDS.changes(scope.project, input.testCount)],
+    // The page lists every test the mark covers, in full (the card holds at most 20, each name at most 200 characters), one line each with its check: what the second person reads is what the mark does.
+    changes: [KNOWN_FAILING_CARD_WORDS.changes(scope.project, input.tests.length), ...input.tests.map((test) => `${test.name} (check ${test.checkId})`)],
     approvers: { kind: "rule", rule: KNOWN_FAILING_RULE, candidates: [] },
     expiresAt: new Date(deps.now() + KNOWN_FAILING_CARD_TTL_MS).toISOString(),
   });

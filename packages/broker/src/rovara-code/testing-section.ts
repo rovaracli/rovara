@@ -13,7 +13,7 @@ import {
   workflowCheckResultBroken, workflowSelectedChecks,
   type AutoFixBudget, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingReason, type TestingRow, type TestingView, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { classifyTestingResult, type FullSuiteState, type KnownFailingEntry, type ResultWaiting } from "../verification/result.js";
+import { classifyTestingResult, hasUnconfirmedFailingTest, type FullSuiteState, type KnownFailingEntry, type ResultWaiting } from "../verification/result.js";
 import { inertLine } from "./inert-text.js";
 
 export interface TestingViewInput {
@@ -59,6 +59,9 @@ function rowsOf(input: TestingViewInput, outcome: { result: TestingView["result"
       rows.push({ label, command, status: "blocked", reason: result.neverStarted === true ? "check_could_not_start" : "check_command_broken" });
     } else if (proof?.after === "timed_out") {
       rows.push({ label, command, status: "blocked", reason: "timed_out" });
+    } else if (proof?.after === "failed" && proof.class === "already_failing" && hasUnconfirmedFailingTest(proof, input.alreadyFailing)) {
+      // Failed before, but with a failing test that was not failing before (or one the change added): the code's fault, however the old failure looks.
+      rows.push({ label, command, status: "failed", reason: "new_failing_test" });
     } else if (proof?.after === "failed" && proof.class === "already_failing") {
       rows.push(outcome.result === "partially_verified" ? { label, command, status: "known_failing", reason: "known_failing_only" } : { label, command, status: "blocked", reason: "fails_on_original_code" });
     } else if (outcome.result === "blocked_by_environment") {
@@ -102,22 +105,45 @@ function rowResult(row: TestingRow): string {
 export const testingHeading = (view: Pick<TestingView, "result">): string => `## Testing — ${TESTING_RESULT_LABELS[view.result]}`;
 
 /**
- * The section's lines (heading, summary, the reasons that matter, the table), at a shrink level 0..4. `extra` are the lines that stay from the old Tests section (the tested commit, tests added, test proof);
- * they are already inert. The result line and every row that is not a plain pass are listed at every level.
+ * The section's lines (heading, summary, the reasons that matter, the table), at a shrink level 0..5. `extra` are the lines that stay from the old Tests section (the tested commit, tests added, test proof);
+ * they are already inert. The result line is at every level. Levels 0 to 4 list every row that is not a plain pass (labels are cut to 40 characters and commands to 30 at level 4). Level 5, the last resort
+ * that always fits (a view has at most 100 rows, so its size is bounded by the fixed reasons, not by the rows), lists the rows as counts per status and fixed reason and points to the task page, where each
+ * check is listed in full.
  */
 export function testingSectionLines(view: TestingView, level: number, extra: readonly string[] = []): string[] {
+  if (level >= 5) return testingMinimalLines(view, extra);
   const foldPassed = level >= 2;
   const passed = view.rows.filter((row) => row.status === "passed");
   const shown = foldPassed ? view.rows.filter((row) => row.status !== "passed") : view.rows;
-  const commandMax = level >= 3 ? 40 : level === 1 || level === 2 ? 60 : TESTING_COMMAND_MAX;
+  const commandMax = level >= 4 ? 30 : level === 3 ? 40 : level === 1 || level === 2 ? 60 : TESTING_COMMAND_MAX;
+  const labelMax = level >= 4 ? 40 : level === 3 ? 60 : 80;
   const lines = [testingHeading(view), testingSummary(view)];
   if (shown.length > 0) {
     lines.push("", "| Check | Command | Result |", "| --- | --- | --- |",
-      ...shown.map((row) => `| ${cell(inertLine(row.label, 80))} | \`${cell(inertLine(row.command, commandMax))}\` | ${rowResult(row)} |`));
+      ...shown.map((row) => `| ${cell(inertLine(row.label, labelMax))} | \`${cell(inertLine(row.command, commandMax))}\` | ${rowResult(row)} |`));
   }
   if (foldPassed && passed.length > 0) {
     const tests = passed.reduce((sum, row) => sum + (row.passedTests ?? 0), 0);
     lines.push("", `${String(passed.length)} more check${passed.length === 1 ? "" : "s"} passed${tests > 0 ? ` (${String(tests)} tests)` : ""}; their rows are left out to keep this description short.`);
+  }
+  if (extra.length > 0) lines.push("", ...extra);
+  return lines;
+}
+
+/** The last resort: the heading, the result line, one line per (status, fixed reason) with how many checks, and where the rest is. Bounded by the fixed lists, whatever the rows hold. */
+function testingMinimalLines(view: TestingView, extra: readonly string[]): string[] {
+  const groups = new Map<string, number>();
+  for (const row of view.rows) {
+    if (row.status === "passed") continue;
+    const key = `${TESTING_ROW_STATUS_LABELS[row.status]}${row.reason === undefined ? "" : `: ${TESTING_REASON_TEXT[row.reason]}`}`;
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+  const passed = view.rows.filter((row) => row.status === "passed").length;
+  const lines = [testingHeading(view), testingSummary(view)];
+  if (groups.size > 0 || passed > 0) {
+    lines.push("", ...[...groups].map(([what, count]) => `- ${String(count)} check${count === 1 ? "" : "s"} ${what}`));
+    if (passed > 0) lines.push(`- ${String(passed)} check${passed === 1 ? "" : "s"} passed`);
+    lines.push("", "Every check, with its command, is listed on the task page.");
   }
   if (extra.length > 0) lines.push("", ...extra);
   return lines;
