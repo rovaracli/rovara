@@ -59,14 +59,28 @@ describe("review M9: prewarming the package-run servers of a stage", () => {
     expect(await prewarmStageServers(w.deps, ORG, "proj", "PLAN")).toBe(16);
     expect(w.asked[0]!.serverIds).toHaveLength(16);
   });
-  it("is called where an operation is built for a stage that has sources, and only then (the one line of wiring in the broker's task operations)", async () => {
+  it("review N3: waits for the host to accept the requests, for a short bound at most, so a function frozen when it returns has sent them", async () => {
+    const w = await project([{ id: "wiki", server: registered("mcpwiki000001"), stages: ["PLAN"] }]);
+    const finished: string[] = [];
+    const slowButSent = { ...w.deps, boundMs: 1_000, prewarm: (async (_org: string, ids: readonly string[]) => { await new Promise((resolve) => setTimeout(resolve, 30)); finished.push(...ids); return ids.length; }) as never };
+    expect(await prewarmStageServers(slowButSent, ORG, "proj", "PLAN")).toBe(1);
+    expect(finished).toEqual(["mcpwiki000001"]);
+    const began = Date.now();
+    const never = { ...w.deps, boundMs: 60, prewarm: (() => new Promise<number>(() => undefined)) as never };
+    expect(await prewarmStageServers(never, ORG, "proj", "PLAN")).toBe(0);
+    const took = Date.now() - began;
+    expect(took).toBeGreaterThanOrEqual(50);
+    expect(took).toBeLessThan(1_000);
+  });
+  it("is called, and awaited, where an operation is built for a stage that has sources, and only then (the one line of wiring in the broker's task operations)", async () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile("packages/broker/src/aws/broker/task-operations.ts", "utf8");
     const line = source.split("\n").find((text) => text.includes("prewarmStageServers("));
     expect(line).toBeDefined();
     expect(line).toContain("contextToolsOn");
     expect(line).toContain("dependencies.contextSources?.prewarm");
-    expect(line!.trimStart().startsWith("void ") || line!.includes("void prewarmStageServers(")).toBe(true);
+    expect(line).toContain("await prewarmStageServers(");
+    expect(line).not.toContain("void ");
     expect(source.indexOf("prewarmStageServers(")).toBeGreaterThan(source.indexOf("const contextToolsOn = await stageHasContextSources("));
   });
 });

@@ -495,8 +495,9 @@ export async function taskOperationParts(
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
   // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
   const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
-  // Review M9: the stage is about to start, so the package-run servers it reads are started now (fire and forget; nothing is waited for and a failure changes nothing).
-  if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) void prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
+  // Review M9, N3: the stage is about to start, so the package-run servers it reads are started now. The requests are awaited for a few seconds at most (this runs in a Lambda that is frozen when it
+  // returns); a failure or a slow host changes nothing.
+  if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
     ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;

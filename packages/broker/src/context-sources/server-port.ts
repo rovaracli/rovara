@@ -290,19 +290,24 @@ export function hostControlClient(host: McpHostEndpoint, fetchImplementation: ty
 
 /**
  * Starts the tasks of the package-run servers a stage is about to use, so the first tool call does not wait for a cold start (design section 6, "Prewarm"). Called when a stage that has
- * package-run sources starts. Fire and forget: it never throws, never waits for a task to come up, and does at most 16 calls. Returns how many it asked for.
+ * package-run sources starts. It never throws, never waits for a task to come up, and does at most 16 calls. Review N3: the requests are SENT in parallel and then awaited for a short bound
+ * (2 seconds; the host answers 202 at once), because a Lambda invocation that returns is frozen and a request still in flight may never be sent. Returns how many it asked for.
  */
-export async function prewarmStdioServers(deps: { host: Pick<McpHostControl, "warm"> | undefined; servers: Pick<McpServerStore, "get">; edition: Edition; stdioEnabled: boolean | undefined }, orgId: OrgId, serverIds: readonly string[]): Promise<number> {
+export async function prewarmStdioServers(deps: { host: Pick<McpHostControl, "warm"> | undefined; servers: Pick<McpServerStore, "get">; edition: Edition; stdioEnabled: boolean | undefined; waitMs?: number | undefined }, orgId: OrgId, serverIds: readonly string[]): Promise<number> {
   if (deps.host === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) return 0;
-  let asked = 0;
+  const sent: Array<Promise<unknown>> = [];
   for (const serverId of [...new Set(serverIds)].slice(0, 16)) {
     try {
       const entry = await deps.servers.get(orgId, serverId);
       // Only an approved package-run server is warmed; the host checks this again from the registry.
       if (entry?.status !== "approved" || entry.transport.kind !== "stdio") continue;
-      asked += 1;
-      void deps.host.warm(serverId).catch(() => undefined);
+      sent.push(deps.host.warm(serverId).catch(() => undefined));
     } catch { /* a stage never fails because a server could not be warmed */ }
   }
-  return asked;
+  if (sent.length > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.all(sent), new Promise<void>((resolve) => { timer = setTimeout(resolve, deps.waitMs ?? 2_000); })]);
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  return sent.length;
 }
