@@ -1,7 +1,7 @@
 // Trust fix A2: the model that reviews a version 2 task's code. A review that nobody set a model for does not run on the model that wrote the code: Rovara picks a different one the way it picks
 // the plan check's (the critic's pieces, so there is one capability order and one rule for models an account cannot use), and records when only the builder's own model was usable. This is the one
 // place the choice is made, with the allowed and callable models as its input, so a model resolver can later call it for the Review step's default.
-import { canonicalModelName, type AgentGuardrails, type ModelIdentifier, type ModelSelection } from "@agentx/contracts";
+import { canonicalModelName, sameModelOrUnrecognised, type AgentGuardrails, type ModelIdentifier, type ModelSelection } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { candidatesOf, type CriticModelLimits } from "./critic.js";
 
@@ -45,7 +45,7 @@ export function reviewerModelFor(input: ReviewerModelInput): ReviewerModel {
   if (input.lastAttempt === true && builder !== undefined && another.length === 0 && candidates.some((model) => sameModel(model, builder))) {
     return { chosenBy: "rovara", model: selectionOf(builder), sameModelAsBuilder: true };
   }
-  const different = builder === undefined ? candidates[0] : candidates.find((model) => !sameModel(model, builder));
+  const different = builder === undefined ? candidates[0] : candidates.find((model) => !sameModelOrUnrecognised(model, builder));
   if (different !== undefined) return { chosenBy: "rovara", model: selectionOf(different), sameModelAsBuilder: false };
   // Only the builder's model is usable (and no other company is needed): it reviews, and the review says so.
   const only = candidates[0];

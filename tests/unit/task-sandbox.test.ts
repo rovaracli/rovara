@@ -13,6 +13,7 @@ import {
   sandboxMemoryLimit,
   taskSandboxRunArgs,
   taskShellFromEnvironment,
+  taskSandboxFor,
   taskShellSelection,
   workspaceKey,
 } from "../../packages/worker/src/task-sandbox.js";
@@ -123,6 +124,50 @@ describe("the task sandbox's docker run arguments (R56)", () => {
       "/mnt/workspace/.docker:ro,noexec,nosuid,size=4k",
       "/mnt/workspace/.agentx-runtime:ro,noexec,nosuid,size=4k",
     ]);
+  });
+});
+
+describe("the sandbox's DNS servers (setup agent, SH9)", () => {
+  const base = { name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [] as string[] };
+
+  it("has no --dns flag unless a DNS server is asked for, so every other sandbox resolves as before", () => {
+    expect(taskSandboxRunArgs(base)).not.toContain("--dns");
+    expect(taskSandboxRunArgs({ ...base, dns: [] })).not.toContain("--dns");
+  });
+
+  it("gives the sandbox the DNS servers it is asked for, in order, as --dns pairs on the task network", () => {
+    const args = taskSandboxRunArgs({ ...base, dns: ["172.18.0.1", "fd00::1"] });
+    const pairs = args.flatMap((arg, index) => (arg === "--dns" ? [args[index + 1]] : []));
+    expect(pairs).toEqual(["172.18.0.1", "fd00::1"]);
+    expect(args[args.indexOf("--network") + 1]).toBe(TASK_SANDBOX_NETWORK);
+    expect(args.slice(args.indexOf(IMAGE) - 2)).toEqual(["--entrypoint", "/usr/bin/tini", IMAGE, "--", "sleep", "infinity"]);
+  });
+
+  it("refuses a server that is not an IP address, or more than three, instead of passing a repository-shaped string to docker", () => {
+    for (const bad of ["dns.example.com", "--privileged", "1.2.3.4 --network host", "", "999.1.1.1"]) {
+      expect(() => taskSandboxRunArgs({ ...base, dns: [bad] }), bad).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+    }
+    expect(() => taskSandboxRunArgs({ ...base, dns: ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"] })).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+  });
+
+  it("starts the container with the DNS option it was constructed with, and without one by default", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agentx-sandbox-dns-")));
+    try {
+      const withDns = fakeDocker();
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: withDns.docker, image: IMAGE, dns: ["172.18.0.1"] }).start();
+      const run = withDns.verbs("run")[0]!;
+      expect(run[run.indexOf("--dns") + 1]).toBe("172.18.0.1");
+      const without = fakeDocker();
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: without.docker, image: IMAGE }).start();
+      expect(without.verbs("run")[0]).not.toContain("--dns");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is passed on by a sandbox selection", () => {
+    const sandbox = taskSandboxFor({ kind: "sandbox", docker: fakeDocker().docker, image: IMAGE, dns: ["172.18.0.1"] }, { rootPath: "/mnt/workspace", taskId: TASK });
+    expect(sandbox).toBeInstanceOf(TaskSandbox);
   });
 });
 

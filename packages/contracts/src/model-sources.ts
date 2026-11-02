@@ -6,7 +6,7 @@ import { ModelSourceIdSchema } from "./agent.js";
 import { type ModelSourceId } from "./agent-node.js";
 import { ChatGptModelIdSchema } from "./chatgpt.js";
 import { ModelIdentifierSchema } from "./models.js";
-import { canonicalModelName, type ModelIdentifier } from "./models-node.js";
+import { legacyAliasModelName, type ModelIdentifier } from "./models-node.js";
 import type { OrgId } from "./org.js";
 
 export const ModelSourceKindSchema = z.enum(["rovara", "personal-chatgpt", "anthropic", "openai", "openrouter", "bedrock", "endpoint"]);
@@ -106,14 +106,14 @@ function catalogSchema(provider: string | undefined, options: ModelSourceOptions
     .refine((model) => options.isKnownCatalog?.(model) ?? true, { message: "must be a model in the catalog" });
 }
 
-/** `identities` are the models an entry claims; each position is unique across entries by canonical name. */
+/** `identities` are the models an entry claims; each position is unique across entries by `legacyAliasModelName` (stored sources must keep reading). */
 function modelsSchema<T extends z.ZodType>(model: T, identities: (entry: z.infer<T>) => ModelIdentifier[]) {
   return z.array(model).min(1).max(MAX_MODELS_PER_SOURCE).superRefine((models, context) => {
     const seen: Array<Set<string>> = [];
     for (const [index, entry] of models.entries()) {
       for (const [position, identity] of identities(entry).entries()) {
         const names = (seen[position] ??= new Set<string>());
-        const name = canonicalModelName(identity);
+        const name = legacyAliasModelName(identity);
         if (names.has(name)) context.addIssue({ code: "custom", path: [index], message: "models must be unique" });
         names.add(name);
       }
@@ -206,7 +206,7 @@ export function defaultModelSourceOrder(chatgptSwitchOn: boolean): ModelSourceId
 
 /** The name the proxy serves a source's model under: unique across orgs and sources, and the same for the same model on any route. */
 export function sourceAlias(orgId: OrgId, sourceId: string, model: ModelIdentifier): string {
-  return `${orgId}.${sourceId}.${canonicalModelName(model)}`;
+  return `${orgId}.${sourceId}.${legacyAliasModelName(model)}`;
 }
 
 // ---- the texts the admin routes show (Task 24b)

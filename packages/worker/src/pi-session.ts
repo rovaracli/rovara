@@ -135,6 +135,10 @@ export interface PiSessionInput {
    * only. They run in the worker and call the broker; a session in Build (IMPLEMENT) or an agent run is refused them (assertContextToolsAllowed).
    */
   contextTools?: readonly ToolDefinition[];
+  /** Tool calls of one assistant message run one after another, never side by side (the setup agent's limits are counted per command). Default: pi's own (parallel). */
+  sequentialTools?: boolean;
+  /** The most output tokens one model turn may produce: the model's own limit is lowered to this when it is higher. Default: the model's. */
+  maxOutputTokens?: number;
 }
 
 /** What makes a session an agent step's (see PiSessionInput.agentRun). */
@@ -472,6 +476,8 @@ async function createDefaultSession(
         `configured model ${input.model.provider}/${input.model.modelId} is unavailable`,
       );
     }
+    // A lowered output limit bounds what one turn can cost (the setup agent's budget); a model with a lower limit keeps it.
+    const sessionModel = input.maxOutputTokens === undefined ? model : { ...model, maxTokens: Math.max(1, Math.min(model.maxTokens, Math.floor(input.maxOutputTokens))) };
     const requestedLevel = input.model.thinkingLevel;
     if (!model.reasoning && requestedLevel !== undefined && requestedLevel !== "off") {
       throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
@@ -508,13 +514,13 @@ async function createDefaultSession(
       cwd: input.cwd,
       agentDir: input.agentDirectory,
       modelRuntime,
-      model,
+      model: sessionModel,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
       // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
       tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...knowledgeTool.map(({ name }) => name), ...runTools.map(({ name }) => name)],
       // A custom tool with a built-in's name replaces it.
       customTools: [
-        ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
+        ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations, input.sequentialTools === true)] : []),
         // Every file tool the session exposes runs in the task's container when there is one; a tool with a built-in's name replaces it.
         ...(input.fileTools !== undefined
           ? sandboxFileTools({ target: input.fileTools, cwd: input.cwd, names: stepTools.tools })
@@ -528,6 +534,8 @@ async function createDefaultSession(
       settingsManager,
       sessionManager: manager,
     });
+    // Both the shell tool (executionMode) and the agent's own setting: a message with several tool calls runs them one at a time.
+    if (input.sequentialTools === true) session.agent.toolExecution = "sequential";
     const reportedModel = (): { provider: string; modelId: string } => {
       const provider = session.model?.provider ?? resolved.model.provider;
       if (resolved.route !== undefined && provider === ROUTE_PROVIDER) {
@@ -700,13 +708,14 @@ export function applyWorkerRetryBudget(settingsManager: SettingsManager): void {
   settingsManager.applyOverrides({ retry: { ...WORKER_MODEL_RETRY } });
 }
 
-export function agentShellTool(cwd: string, operations?: BashOperations): ToolDefinition {
+export function agentShellTool(cwd: string, operations?: BashOperations, sequential = false): ToolDefinition {
   // The typed definition's render callbacks are narrower than customTools' generic slot. Without operations the shell is
   // the local one, which a worker on EC2 refuses (R56): its callers pass the sandbox's or the devcontainer's.
-  return createBashToolDefinition(cwd, {
+  const tool = createBashToolDefinition(cwd, {
     operations: operations ?? localBashOperations(),
     spawnHook: agentShellSpawn,
   }) as unknown as ToolDefinition;
+  return sequential ? { ...tool, executionMode: "sequential" } as ToolDefinition : tool;
 }
 
 /**

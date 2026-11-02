@@ -15,14 +15,12 @@ import { scanRepositories, type SetupScan } from "./setup-scan.js";
 
 export interface SetupDraftRepository { name: string; path: string; resolvedCommit?: string | undefined }
 
-/** What the proposal is asked, after the broker's own rules. The files are data; the answer is one JSON block. */
-export function setupProposalInstructions(repositories: ReadonlyArray<SetupDraftRepository>, options: { metaRepo?: string | undefined } = {}): string {
-  const meta = options.metaRepo;
+/**
+ * The rules for the proposal itself: where each item must say it came from, one program per command, what each category holds, and the one fenced block the answer ends with.
+ * Shared by the read-only draft (below) and the setup agent that runs commands (setup-agent-prompt.ts), so both are read by the same reader.
+ */
+export function setupProposalFormatLines(meta: string | undefined): string[] {
   return [
-    "Read the repositories (listed below) with your read-only tools and work out how a developer sets the project up and checks it works, and what the team's own knowledge says about it. Look at the package manifests and lock files, the Makefile, `.devcontainer/` and `.devcontainer.json`, the CI workflow files, `.env.example`, the README, and any rules, specs or runbooks the team keeps.",
-    "Repositories (name: path in the workspace):",
-    ...repositories.map((repository) => `- ${repository.name}: ${repository.path}${repository.name === meta ? "  (the meta repository: the team's config, rules, specs and runbooks)" : ""}`),
-    "",
     "EVERY item you propose must say where it came from, in `from`: a list of places you read. A place is { \"kind\": \"file\" | \"ci\" | \"readme\" | \"manifest\" | \"inferred\", \"repo\": <a repository name above>, \"path\": <path inside that repository>, \"line\": <line number>, \"quote\": <the few words on that line> }. Rovara re-reads each place from GitHub and checks the quote is there; an item whose place does not check out is shown to the person as unverified. Use \"inferred\" only when no file says it, and then give a \"note\" saying what you concluded it from. An item with no `from` is thrown away. Write `line` and `quote` exactly as the file has them. The quote is required: an item with no quote is never shown as checked. It must contain the proposed command, repository URL or domain in full (at least 8 characters), copied from that line, and an item with several commands needs a place and quote for each. Do not name a commit.",
     "",
     "Rules:",
@@ -52,6 +50,18 @@ export function setupProposalInstructions(repositories: ReadonlyArray<SetupDraft
       notes: "Node 22 is needed.",
     }, null, 2),
     "```",
+  ];
+}
+
+/** What the proposal is asked, after the broker's own rules. The files are data; the answer is one JSON block. */
+export function setupProposalInstructions(repositories: ReadonlyArray<SetupDraftRepository>, options: { metaRepo?: string | undefined } = {}): string {
+  const meta = options.metaRepo;
+  return [
+    "Read the repositories (listed below) with your read-only tools and work out how a developer sets the project up and checks it works, and what the team's own knowledge says about it. Look at the package manifests and lock files, the Makefile, `.devcontainer/` and `.devcontainer.json`, the CI workflow files, `.env.example`, the README, and any rules, specs or runbooks the team keeps.",
+    "Repositories (name: path in the workspace):",
+    ...repositories.map((repository) => `- ${repository.name}: ${repository.path}${repository.name === meta ? "  (the meta repository: the team's config, rules, specs and runbooks)" : ""}`),
+    "",
+    ...setupProposalFormatLines(meta),
   ].join("\n");
 }
 

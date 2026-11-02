@@ -39,6 +39,8 @@ import {
   type RunCheckout,
   type SetupDraft,
   type SetupProposal,
+  type SetupRunEndWord,
+  type SetupRunSummary,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -211,7 +213,7 @@ export interface DeveloperTaskRecord {
    * Plan 6, Task 10: the task is Rovara drafting a project's dev setup (read-only look at the repositories; its result is a proposal in the project's `SETUP_DRAFT` item). It is
    * no workflow and no agent-step run: its result sets `agentRunEnd`, which is how it gives back its workspace, and it never feeds the run-cost estimates.
    */
-  purpose?: "setup_draft" | "diagnosis";
+  purpose?: "setup_draft" | "diagnosis" | "setup_agent";
   /**
    * Live interaction F3 (Fix with agent, deep tier): a `purpose: "diagnosis"` task reads the repositories read-only to diagnose the error `errorRef` names (codes and ids only). It is no workflow and no agent-step
    * run: like a setup draft its end sets `agentRunEnd` and it never feeds the run-cost estimates, and its answer is written to `DIAGNOSIS#<diagnosisId>` in the same transaction (diagnosis/deep.ts).
@@ -220,6 +222,13 @@ export interface DeveloperTaskRecord {
   /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
   /** The setup agent's result (meta repo lane B). `draft` is a version 1 draft stored by the earlier code: it reads as outdated and is never applied. */
   setupDraftResult?: { status: "ready"; proposal: SetupProposal } | { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
+  /**
+   * Setup agent (SH11): what a `purpose: "setup_agent"` task ended with, written in the same transaction as `agentRunEnd` (rovara-code/setup-agent.ts). `stop` is the word the run ended with: the broker's own
+   * (a person's stop, the budget, a fault) or, for a run that finished, one of the worker's that the broker accepts. `proposal` is the broker's reading of the worker's answer, never the worker's copy.
+   */
+  /** Setup agent: who pressed Stop, written before the cancel (rovara-code/setup-agent.ts). A cancelled run is a person's stop only when this is here; a system cancel has none. */
+  setupAgentStop?: { by: string; at: string };
+  setupAgentResult?: { status: "ready"; proposal: SetupProposal; summary: SetupRunSummary; stop: SetupRunEndWord } | { status: "failed"; stop: SetupRunEndWord; failure: string; proposal?: SetupProposal; summary?: SetupRunSummary };
   /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.

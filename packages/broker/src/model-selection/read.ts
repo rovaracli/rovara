@@ -3,7 +3,7 @@ import {createHash} from "node:crypto";
 import {classifyStageChoiceChange} from "./classify.js";
 // Shared broker facade for stage-model reads and project draft/publish validation. No provider calls or writes.
 import { z } from "zod";
-import { AgentXError, agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@agentx/contracts";
+import { AgentXError, agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, forbiddenModelMatcher, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@agentx/contracts";
 import { resolveStageModel, stageCandidateVerified, type StageModelInput, type StageModelResult } from "./resolver.js";
 export interface StageModelCaller { orgId: string; developerId: string }
 export interface StageModelSnapshot {
@@ -101,7 +101,7 @@ export async function validateProjectModelSelection(deps:StageModelsReadDependen
  if(!editable.canEdit)throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
  const model=ModelIdentifierSchema.parse(rawModel),{snapshot}=await load({...deps,projectFor:async()=>editable},caller,editable.name,{});
  const selected={...snapshot,stages:snapshot.stages.map(row=>({...row,projectSelection:model}))};
- const verified=selected.stages.every(row=>row.candidates.some(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId&&stageCandidateVerified(row,candidate))&&(row.approved===undefined||row.approved.some(allowed=>canonicalModelName(allowed)===canonicalModelName(model)))&&!row.forbidden.some(blocked=>canonicalModelName(blocked)===canonicalModelName(model)));
+ const verified=selected.stages.every(row=>row.candidates.some(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId&&stageCandidateVerified(row,candidate))&&(row.approved===undefined||row.approved.some(allowed=>canonicalModelName(allowed)===canonicalModelName(model)))&&!forbiddenModelMatcher(row.forbidden)(model));
  const {stages}=decide(selected,{});
  const effective=(rows:Decision[])=>Object.fromEntries(rows.flatMap(row=>row.kind==="resolved"?[[row.stage,row.model]]:[])) as Partial<Record<StageId,ModelIdentifier>>;
  const lessSafeReasons=classifyStageChoiceChange({kind:"selection",before:effective(decide(snapshot,{}).stages),after:effective(stages)});

@@ -1,5 +1,5 @@
 // G3: one choice function. Callers supply server-read policy and source evidence, never browser attestations.
-import { StageModelChoiceSchema, canonicalModelName, modelCompany, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
+import { StageModelChoiceSchema, canonicalModelName, forbiddenModelMatcher, modelCompany, sameModelOrUnrecognised, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
 
 export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@agentx/contracts";
@@ -71,7 +71,7 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   const locked = input.companyLock !== undefined;
   const candidates = input.candidates.filter((candidate) => stageCandidateVerified(input, candidate));
   const permitted = (model: ModelIdentifier): StageModelRefusalCode | undefined => {
-    if (input.forbidden.some((forbidden) => same(model, forbidden))) return "MODEL_FORBIDDEN";
+    if (forbiddenModelMatcher(input.forbidden)(model)) return "MODEL_FORBIDDEN";
     if (input.approved !== undefined && !input.approved.some((allowed) => same(model, allowed))) return "MODEL_NOT_ALLOWED_IN_PROJECT";
     return undefined;
   };
@@ -84,7 +84,7 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
       const own = modelCompany(model), prior = modelCompany(reference);
       return own !== "other" && prior !== "other" && own !== prior;
     }
-    if (!same(model, reference)) return true;
+    if (!sameModelOrUnrecognised(model, reference)) return true;
     const approval = input.sameModelApproval;
     return approval !== undefined && same(approval.model, model) && same(approval.referenceModel, reference);
   };

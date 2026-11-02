@@ -7,7 +7,7 @@ import {
   AGENT_STEP_INSTRUCTIONS_MAX_BYTES,
   STEP_TOOLS,
   agentXError,
-  canonicalModelName,
+  forbiddenModelMatcher,
   modelCompany,
   modelKey,
   type AgentGuardrails,
@@ -189,12 +189,12 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
 
   // The company's forbidden models and cross-company rule apply to every agent with a snapshot, Rovara Code's own model included (ruled intended).
   // Work with no agent (a Slack thread operation, an install without `agents`) has no snapshot and is not checked here.
-  const forbidden = new Set(input.guardrails.forbiddenModels.map(canonicalModelName));
-  const usable = (model: ModelIdentifier): boolean => !forbidden.has(canonicalModelName(model))
+  const forbidden = forbiddenModelMatcher(input.guardrails.forbiddenModels);
+  const usable = (model: ModelIdentifier): boolean => !forbidden(model)
     && (input.projectApproved === undefined || input.projectApproved.some((approved) => sameModel(approved, model)));
   const notAllowed = (model: ModelIdentifier) => agentXError("MODEL_NOT_ALLOWED", `${ref.name}'s ${stepName} step uses ${label(model)}, which isn't allowed on ${input.project}. Ask the agent's owner to pick another model.`);
   // The person's plan model is a model like any other: one the company forbids is not used, and the operation runs on the proxy instead.
-  const planModel = input.chatgptModel !== undefined && !forbidden.has(canonicalModelName(input.chatgptModel)) ? input.chatgptModel : undefined;
+  const planModel = input.chatgptModel !== undefined && !forbidden(input.chatgptModel) ? input.chatgptModel : undefined;
   const servedByPlan = (model: ModelIdentifier): boolean => planModel !== undefined && model.provider.toLowerCase() !== "amazon-bedrock" && modelCompany(model) === "openai" && model.modelId === planModel.modelId;
   /** The model the operation would really run on if `chosen` were picked: the person's plan unless the step picked a model of its own that the plan does not serve. */
   const ranOn = (chosen: ModelSelection | undefined, own: boolean): ModelSelection | undefined =>
