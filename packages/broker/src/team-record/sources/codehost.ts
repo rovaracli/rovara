@@ -167,7 +167,11 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       return result;
     }
     const config = await gate(deps, { workspaceId: event.repo.workspaceId, ...(event.repo.project === undefined ? {} : { project: event.repo.project }), source: sourceOf(event.repo), scope: repoScope(event.repo) });
-    if (config === undefined) return result;
+    if (config === undefined) {
+      // S2: an edit of a comment while capture is off (or the repository has no source row) is not kept, but its words may be in the comment's text: the item is marked.
+      if (event.type === "comment" && event.action === "edited") await deps.priorEdits?.noteUnstored?.({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: commentId(event) }).catch(() => undefined);
+      return result;
+    }
     try {
       const drafts: RecordDraft[] = [];
       const project = event.repo.project ?? config.project;

@@ -130,8 +130,14 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
     async record(context, item, preloaded) {
       try {
         const config = preloaded ?? await gate(deps, { workspaceId: context.workspaceId, ...(context.project === undefined ? {} : { project: context.project }), source: item.source, scope: item.scope });
-        if (config === undefined) return "skipped";
-        if (item.source === "mcp" && deps.pollerChangesAttributed !== true) { log("record.mcp_change_unattributed", { source: item.source }); return "skipped"; }
+        // S2: a comment edit that is skipped before anyone is looked at (no source row or capture off, the poller's refusal, an unproven parent) is not kept, but its words may be in the comment's text: the item is marked,
+        // so the author's later whole-comment credit stays withheld.
+        const skippedEdit = async (): Promise<"skipped"> => {
+          if (item.edit === true && item.kind === "ticket.comment") await deps.priorEdits?.noteUnstored?.({ workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id }).catch(() => undefined);
+          return "skipped";
+        };
+        if (config === undefined) return skippedEdit();
+        if (item.source === "mcp" && deps.pollerChangesAttributed !== true) { log("record.mcp_change_unattributed", { source: item.source }); return skippedEdit(); }
         // Per-editor rows (owner, 2026-11-02): ONE row per change, under the person who made it. A creation is its author's; an edit (a description, a title, a status, a label, a comment) is its editor's,
         // and holds only that person's own words, so a person's erase takes exactly their rows and nothing else of the item. Nothing is frozen and nothing is replaced.
         const isEdit = item.edit === true;
@@ -145,7 +151,7 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         if (item.needsParentProof === true) {
           const proven = item.parentId !== undefined && deps.parents !== undefined
             && await deps.parents.isRecorded({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
-          if (!proven) return "skipped";
+          if (!proven) return skippedEdit();
         }
         let restricted = item.restricted === true;
         if (item.inheritsRestriction === true && !restricted) {

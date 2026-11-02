@@ -144,6 +144,25 @@ describe("per-editor rows: every change is its own row under the person who made
     expect(w.sink.puts.map((draft) => [draft.actor?.sourceId, draft.text])).toStrictEqual([["acc-1", "my comment, fixed"], ["acc-2", undefined], ["acc-2", "Sam added this"], ["acc-1", undefined], ["acc-1", undefined], ["acc-1", undefined]]);
   });
 
+  it("S2: a comment edit skipped before anyone is looked at (no source row or capture off, an unproven parent, the poller's refusal) still marks the item, so the author's whole-comment credit stays withheld", async () => {
+    const { w } = twoMembers();
+    const marked: string[] = [];
+    const priorEdits = { editedByOthers: async () => false, noteUnstored: async (input: { id: string }) => { marked.push(input.id); } };
+    const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, priorEdits, parents: { isRecorded: async () => false } });
+    const comment: TicketItem = { ...base, id: "comment:7", kind: "ticket.comment", edit: true, parentId: "issue:10001", body: "x", version: "comment_updated:1", updaterId: "acc-2" };
+    // No source row for the scope (or capture off): the gate says no.
+    expect(await recorder.record({ workspaceId: WS }, { ...comment, id: "comment:gate", scope: "jira:project/OTHER" })).toBe("skipped");
+    // An unproven parent.
+    expect(await recorder.record({ workspaceId: WS }, { ...comment, id: "comment:parent", needsParentProof: true })).toBe("skipped");
+    // The poller's refusal.
+    w.config.set("mcp", "mcp:sim/abc", { retention: "C" });
+    expect(await recorder.record({ workspaceId: WS }, { ...comment, id: "comment:poller", source: "mcp", system: "sim", scope: "mcp:sim/abc" })).toBe("skipped");
+    // A creation skipped for the same reasons marks nothing (there is no earlier edit to hide).
+    expect(await recorder.record({ workspaceId: WS }, { ...comment, id: "comment:created", scope: "jira:project/OTHER", edit: false })).toBe("skipped");
+    expect(marked).toStrictEqual(["comment:gate", "comment:parent", "comment:poller"]);
+    expect(w.sink.puts).toStrictEqual([]);
+  });
+
   it("the MCP poller's items are not stored until it can say who changed what", async () => {
     const { w } = twoMembers();
     w.config.set("mcp", "mcp:sim/abc", { retention: "C" });

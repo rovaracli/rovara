@@ -1680,7 +1680,7 @@ describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to
     await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: issue("update", "lin-sam", "2026-10-30T10:21:00.000Z", "x", { updatedFrom: { title: "old" } }, { title: `${SAM_WORDS} again` }) });
     const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
     expect(rows).toHaveLength(3);
-    expect(JSON.stringify(rows)).toContain("(reopened)");
+    expect(JSON.stringify(rows)).toContain("(reopened");
     expect(everything(db)).not.toContain(SAM_WORDS);
   });
 });

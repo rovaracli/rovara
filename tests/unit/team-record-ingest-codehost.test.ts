@@ -204,6 +204,20 @@ describe("per-editor rows: every change to a pull request, review or comment is 
   });
 });
 
+describe("S2: a comment edit skipped before anyone is looked at still marks the item", () => {
+  it("with no source row (or capture off) for the repository, an edited comment marks it; a created one does not", async () => {
+    const marked: string[] = [];
+    const { w, tap } = setup({ priorEdits: { editedByOthers: async () => false, noteUnstored: async (input) => { marked.push(input.id); } } });
+    w.config.set("github", repoScope(repo()), { enabled: false });
+    const comment = (action: "created" | "edited"): CodeHostEvent => ({ type: "comment", repo: repo(), prNumber: 5, id: "77", url: "https://github.com/acme/shop/pull/5#c77", action, surface: "discussion", body: "x", author: alice, at: AT, version: `${action}:1` });
+    await tap.handle(comment("created"));
+    expect(marked).toStrictEqual([]);
+    await tap.handle(comment("edited"));
+    expect(marked).toHaveLength(1);
+    expect(w.sink.puts).toStrictEqual([]);
+  });
+});
+
 describe("S1: a delivery GitHub sends again is the same change", () => {
   const review = (action: string) => ({ action, sender: { id: 1002, login: "bob", type: "User" }, pull_request: { number: 8 }, review: { id: 31, html_url: "https://github.com/acme/shop/pull/8#r31", state: "approved", body: "alice reviews\nbob adds", user: { id: 1001, login: "alice", type: "User" }, submitted_at: "2026-10-30T10:00:00Z" }, changes: { body: { from: "alice reviews" } } });
   it("an edit or dismissal is versioned by the delivery id and keyed by the review's own time; the same delivery at another moment is the same version and time, another delivery is another version", () => {

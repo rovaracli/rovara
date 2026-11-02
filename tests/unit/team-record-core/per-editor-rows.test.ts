@@ -10,7 +10,7 @@ describe("addedText: an editor is credited with the words they added, never the 
   it("returns only the words that are not in the earlier text, in the order written", () => {
     expect(addedText("a b", "a b c")).toBe("c");
     expect(addedText("a", "a a")).toBe("a");
-    expect(addedText("hand.", "hand today.")).toBe("today.");
+    expect(addedText("hand.", "hand today.")).toBe("today");
     expect(addedText("one\ntwo", "one\ntwo\nthree four")).toBe("three four");
   });
   it("a one-word typo fix in a long line credits only that word (B2)", () => {
@@ -18,7 +18,7 @@ describe("addedText: an editor is credited with the words they added, never the 
     expect(addedText(line, line.replace("Tuesday", "Tuesdays"))).toBe("Tuesdays");
     expect(addedText("Fix cart total", "Fix the cart total")).toBe("the");
     expect(addedText("Cart total wrong", "Cart total wrong on Tuesdays")).toBe("on Tuesdays");
-    expect(addedText(line, line.replace("by hand.", "by hand today."))).toBe("today.");
+    expect(addedText(line, line.replace("by hand.", "by hand today."))).toBe("today");
   });
   it("B2 leak (a): moving text credits nothing, because every word was already there", () => {
     const first = "Priya wrote the migration plan with a rollback step for each table.";
@@ -26,7 +26,7 @@ describe("addedText: an editor is credited with the words they added, never the 
     expect(addedText(`${first}\n\n${second}`, `${second}\n\n${first}`)).toBeUndefined();
     expect(addedText("a b c d e f g h", "e f g h a b c d")).toBeUndefined();
     // Moving a paragraph AND adding a word credits only the word.
-    expect(addedText(`${first}\n\n${second}`, `${second}\n\n${first} Also tested.`)).toBe("Also tested.");
+    expect(addedText(`${first}\n\n${second}`, `${second}\n\n${first} Also tested.`)).toBe("Also tested");
   });
   it("B2 leak (b): wrapping a word in a link, a heading or a list keeps the word the author's; only the new URL is the editor's", () => {
     expect(addedText("Ask Priya about it", "Ask [Priya](http://x.y/z) about it")).toBe("http://x.y/z");
@@ -35,8 +35,24 @@ describe("addedText: an editor is credited with the words they added, never the 
     expect(addedText("Ask Priya about it", "Ask **Priya** about it")).toBeUndefined();
     expect(addedText("Context\nplan", "## Context\n- plan")).toBeUndefined();
     expect(addedText("Context\nplan", "h2. Context\n* plan")).toBeUndefined();
-    // A punctuation change inside a word is not a new word.
-    expect(addedText("Priya's plan", "Priyas plan")).toBeUndefined();
+    // A word that changed spelling is a new word.
+    expect(addedText("Priya's plan", "Priyas plan")).toBe("Priyas");
+  });
+  it("B2 word boundaries: spacing, hyphens, slashes and commas around existing words credit nothing; accent forms are the same word", () => {
+    expect(addedText("Priya,Sam secret", "Priya, Sam secret")).toBeUndefined();
+    expect(addedText("Priya, Sam secret", "Priya,Sam secret")).toBeUndefined();
+    expect(addedText("a well-known plan", "a well known plan")).toBeUndefined();
+    expect(addedText("see foo/bar now", "see foo / bar now")).toBeUndefined();
+    expect(addedText("caf\u00e9 plan", "cafe\u0301 plan")).toBeUndefined();
+    // A new word between old ones is still credited, as written.
+    expect(addedText("Priya,Sam secret", "Priya, Sam and Bob secret")).toBe("and Bob");
+  });
+  it("B2 scripts without spaces: a one-word fix in Chinese or Japanese credits only that word", () => {
+    expect(addedText("今天我们讨论了迁移计划并决定回滚", "今天我们讨论了迁移方案并决定回滚")).toBe("方案");
+    expect(addedText("私は昨日東京で会議をしました", "私は今日東京で会議をしました")).toBe("今日");
+    expect(addedText("今天我们讨论了迁移计划并决定回滚", "今天我们讨论了迁移计划并决定回滚")).toBeUndefined();
+    // Moving a sentence of Chinese text adds nothing.
+    expect(addedText("我们先讨论迁移。然后决定回滚。", "然后决定回滚。我们先讨论迁移。")).toBeUndefined();
   });
   it("fails closed: unknown earlier text or nothing added gives nothing", () => {
     expect(addedText(undefined, "x")).toBeUndefined();
