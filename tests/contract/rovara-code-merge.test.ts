@@ -136,6 +136,14 @@ describe("mergeReadiness", () => {
     expect(readiness()).toEqual({ ready: true });
   });
 
+  it("is refused with the second review's words while an `on` second review that did not run is not acknowledged (SR-1)", () => {
+    const words = "Second review did not run: no allowed model from a different AI company could be used. The task owner has to acknowledge it on the task page before this can be merged.";
+    expect(readiness({ secondReviewWait: words })).toEqual(notReady(words));
+    expect(readiness({ secondReviewWait: undefined })).toEqual({ ready: true });
+    // The merge's own refusals still come first: a closed task is not told to acknowledge anything.
+    expect(readiness({ workflow: { stage: "MERGED", state: "WAITING" }, secondReviewWait: words })).toEqual(notReady(M.taskClosed));
+  });
+
   it("says why a pull request is not ready, in the exact words", () => {
     expect(readiness({ pullRequests: [facts({ baseBranch: "release" })] })).toEqual(notReady(M.baseChanged("release")));
     expect(readiness({ pullRequests: [facts({ state: "closed" })] })).toEqual(notReady(M.notOpen));

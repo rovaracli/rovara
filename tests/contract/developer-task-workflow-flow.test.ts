@@ -17,6 +17,7 @@ import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, liveSteerOperationId } from "..
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
+import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
@@ -6001,5 +6002,106 @@ describe("the autonomous publication and the evidence's risk rule", () => {
     const { body, harness, taskId } = await autoPublished(false);
     expect(body).not.toContain("security scan found");
     expect(taskWorkflow(harness, taskId).risk?.level).not.toBe("high");
+  });
+});
+
+// SR-1 (switch `cr`): a real review through the whole broker with a second reviewer, and what its end does.
+describe("a review with a second reviewer from another AI company (SR-1)", () => {
+  const settingsKey = () => ({ pk: orgMetaKey(TEST_ORG).pk, sk: "SECONDREVIEW#SETTINGS" });
+  afterEach(() => { delete process.env.SECOND_REVIEW_ENABLED; });
+  const reviewOperation = (harness: Harness, workspaceId: string) => operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
+  const payloadOf = (harness: Harness, operationId: string) => (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { payload: Record<string, unknown> }).payload;
+  async function reviewStarted(options: { on?: boolean; settings?: Record<string, unknown> } = {}) {
+    if (options.on === true) process.env.SECOND_REVIEW_ENABLED = "1";
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    if (options.settings !== undefined) harness.db.set({ ...settingsKey(), entityType: "SECOND_REVIEW_SETTINGS", ...options.settings });
+    const setup = await workflowAtVerification(harness);
+    await setup.finishImplementation();
+    const review = reviewOperation(harness, setup.workspaceId);
+    return { harness, ...setup, review, payload: payloadOf(harness, String(review.id)) };
+  }
+  const reviewResult = (operationId: string, candidate: ReturnType<typeof createCandidateManifest>, extra: Record<string, unknown> = {}) => {
+    const now = new Date().toISOString();
+    const report = (role: string) => ({ operationId, candidateDigest: candidate.digest, role, provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now });
+    return { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: [report("CRITIC"), report("SECURITY")], ...extra } };
+  };
+
+  it("with cr off the review's payload and record carry nothing of a second review", async () => {
+    const t = await reviewStarted({ settings: { default: "on" } });
+    expect(t.payload).not.toHaveProperty("workflowSecondReviewer");
+    expect(t.review).not.toHaveProperty("secondReviewPlan");
+    await t.harness.finish(t.workspaceId, String(t.review.id), "SUCCEEDED", reviewResult(String(t.review.id), t.candidate));
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+    expect(JSON.stringify(t.harness.db.get(`DEVTASK#${t.taskId}`, "META"))).not.toContain("secondOpinion");
+  });
+
+  it("with cr on but no mode set, nothing is planned either", async () => {
+    const t = await reviewStarted({ on: true });
+    expect(t.payload).not.toHaveProperty("workflowSecondReviewer");
+    expect(t.review).not.toHaveProperty("secondReviewPlan");
+  });
+
+  it("in shadow a review that has no allowed model from another company records why and stays silent; the review passes as before", async () => {
+    const t = await reviewStarted({ on: true, settings: { default: "shadow" } });
+    // The harness has no company model source, so there is no candidate: the record says so, and the worker is handed no second reviewer.
+    expect((t.review as { secondReviewPlan?: unknown }).secondReviewPlan).toEqual({ candidateDigest: t.candidate.digest, notRun: { mode: "shadow", reason: "no-candidate" } });
+    expect(t.payload).not.toHaveProperty("workflowSecondReviewer");
+    await t.harness.finish(t.workspaceId, String(t.review.id), "SUCCEEDED", reviewResult(String(t.review.id), t.candidate));
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+    const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { secondOpinion?: { opinion: { unavailable: boolean; mode: string } } };
+    expect(task.secondOpinion?.opinion).toMatchObject({ mode: "shadow", unavailable: true });
+  });
+
+  /** A request the way the web app sends it: the session cookie, the origin and the CSRF header. */
+  const web = async (harness: Harness, who: Developer, method: string, path: string, body?: unknown) => {
+    const id = randomUUID();
+    harness.db.set({ ...(harness.db.get(`SESSION#${who.sessionId}`, "META") as Record<string, unknown>), pk: `SESSION#${id}`, sessionId: id, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600, authTime: new Date().toISOString() });
+    const response = await harness.handler({
+      rawPath: path.replace("/v1/app/", "/v1/web/"), rawQueryString: "", routeKey: "ANY /v1/web/{proxy+}",
+      headers: { cookie: `__Host-agentx_review_session=${id}`, "sec-fetch-site": "same-origin", origin: new URL(DEV_ISSUER).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(id) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), requestContext: { requestId: "r", http: { method } },
+    });
+    return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+  };
+
+  it("an `on` second review that did not run is flagged, never blocks, and the owner acknowledges it from a browser session, audited; only then may the merge go on (H2)", async () => {
+    const audit = capturingAuditDeps();
+    process.env.SECOND_REVIEW_ENABLED = "1";
+    const harness = await createSingleAnswerPlanBroker({ audit, brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    harness.db.set({ ...settingsKey(), entityType: "SECOND_REVIEW_SETTINGS", default: "on" });
+    const setup = await workflowAtVerification(harness);
+    await setup.finishImplementation();
+    const review = reviewOperation(harness, setup.workspaceId);
+    await harness.finish(setup.workspaceId, String(review.id), "SUCCEEDED", reviewResult(String(review.id), setup.candidate));
+    const row = () => harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { secondOpinion?: { opinion: { unavailable: boolean; unavailableReason?: string; mode: string } }; secondReviewAcknowledged?: string[]; workflow: WorkflowSnapshot };
+    // It did not run (no allowed model from another company here), it is flagged, and the review passed anyway.
+    expect(row().secondOpinion?.opinion).toMatchObject({ mode: "on", unavailable: true, unavailableReason: "no-candidate" });
+    expect(row().workflow).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+    const route = `/v1/app/tasks/${setup.taskId}/second-review-acknowledge`;
+    const body = { candidateDigest: setup.candidate.digest };
+    // A version 1 task shows the flag on its page too, asking for the acknowledgement.
+    const viewOf = async () => ((await harness.dev(MAYA, "GET", `/v1/dev/tasks/${setup.taskId}?details=true`)).body as { task?: { secondReview?: { lines: string[]; needsAcknowledgement: boolean; acknowledged: boolean } } }).task?.secondReview;
+    expect(row().workflow.definitionVersion).toBe("1.0.0");
+    expect(await viewOf()).toEqual({ lines: ["Second review did not run: no allowed model from a different AI company could be used"], needsAcknowledgement: true, acknowledged: false });
+    // A token, and anyone who is not the owner, cannot acknowledge; a wrong candidate is out of date. Nothing is stored.
+    expect((await harness.dev(MAYA, "POST", route.replace("/v1/app/", "/v1/dev/"), body)).status).toBeGreaterThanOrEqual(400);
+    expect((await web(harness, OMAR, "POST", route, body)).status).toBeGreaterThanOrEqual(400);
+    expect((await web(harness, MAYA, "POST", route, { candidateDigest: "f".repeat(64) })).status).toBeGreaterThanOrEqual(400);
+    expect(row().secondReviewAcknowledged).toBeUndefined();
+    // The owner, in a browser session, acknowledges: stored once, audited, and a repeat changes nothing. The acknowledgement and its audit record are ONE transaction.
+    const sent: Array<{ input?: { TransactItems?: Array<{ Update?: { Key?: { pk: string } }; Put?: { Item?: { pk?: string } } }> } }> = [];
+    const original = harness.db.send.bind(harness.db);
+    harness.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
+    expect((await web(harness, MAYA, "POST", route, body)).status).toBe(200);
+    harness.db.send = original;
+    const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update?.Key?.pk === `DEVTASK#${setup.taskId}` && JSON.stringify(item).includes("secondReviewAcknowledged")));
+    expect(write?.input?.TransactItems?.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
+    expect(row().secondReviewAcknowledged).toHaveLength(1);
+    expect((await web(harness, MAYA, "POST", route, body)).status).toBe(200);
+    expect(row().secondReviewAcknowledged).toHaveLength(1);
+    expect(await viewOf()).toMatchObject({ needsAcknowledgement: true, acknowledged: true });
+    const events = audit.recorded().filter((event) => event.action === "task.second_review_acknowledged");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ actor: { id: MAYA.developerId }, target: { kind: "task", id: setup.taskId }, facts: { cause: "no-candidate" } });
   });
 });

@@ -201,6 +201,21 @@ describe("the eight-step program", () => {
     expect(instructions).toEqual(["write the tests first", "make the tests pass", "write the docs"]);
   });
 
+  it("a blocking second review (SR-1) decides a passing review step as findings: back to the step the review names, the round counted, never on to docs", () => {
+    const candidate = candidateOf("1");
+    const bothPass = [report("CRITIC", "PASS", candidate.digest), report("SECURITY", "PASS", candidate.digest)];
+    const atReview = verified(completeWorkflowBuild(approved(program), now), candidate);
+    expect(atReview).toMatchObject({ stage: "REVIEW", state: "WAITING", programStepId: "review" });
+    const held = bothPass.reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now, { secondReviewBlocks: true }), atReview);
+    expect(held).toMatchObject({ stage: "IMPLEMENT", state: "READY", programStepId: "code", programRounds: { review: 1 } });
+    // Without the block the same reviews go on to docs, as before.
+    expect(reviewedBy(atReview, bothPass)).toMatchObject({ stage: "IMPLEMENT", programStepId: "docs" });
+    // The rounds are spent: the step blocks with the second review's reason.
+    const spent = { ...atReview, programRounds: { review: 3 } } as WorkflowSnapshot;
+    const blocked = bothPass.reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now, { secondReviewBlocks: true }), spent);
+    expect(blocked).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: "the second review did not pass" });
+  });
+
   it("keeps a failed check on the same step, and passes the same step on once the checks pass", () => {
     const candidate = candidateOf("1");
     const afterCode = completeWorkflowBuild(approved(program), now);
