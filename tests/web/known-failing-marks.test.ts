@@ -58,6 +58,7 @@ it("lists each mark with its test, check, who and when, and an Undo for each", a
  expect(section.getByText("Check unit · Marked by Maya on 2026-11-01")).toBeTruthy();
  expect(section.getByText("Check lint · Marked by you on 2026-11-01")).toBeTruthy();
  expect(section.getAllByRole("button", { name: /^Undo / })).toHaveLength(2);
+ expect(section.getByText("Once nightly runs are on, a mark also goes away by itself after a nightly run shows the test passing.")).toBeTruthy();
 });
 
 it("undoes one mark per press, naming it by everything stored, and shows the answer as the list", async () => {

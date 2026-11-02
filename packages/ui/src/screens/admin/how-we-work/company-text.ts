@@ -49,7 +49,7 @@ export const SUGGESTIONS = {
 export const KF_POLICY = {
  HEADING: "Marking tests as already failing",
  HELP: "When a test already failed before a change, a project maintainer can mark it as already failing, so it is not held against later changes. By default one maintainer may do that.",
- STATE_OFF: "One maintainer may mark (a second person is asked only when the maintainer owns an affected task, an owner is unknown, or the list is long).",
+ STATE_OFF: "One maintainer may mark (a second person is asked only when the maintainer owns an affected task, an owner is unknown, or more than 25 tasks are affected).",
  STATE_ON: "Always two people: every mark needs a second, different maintainer or admin.",
  LABEL_OFF: "One maintainer may mark",
  LABEL_ON: "Always two people",

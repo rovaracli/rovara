@@ -8,7 +8,7 @@ export const KF = {
  CHANGED: "That mark was already removed or changed. The list was read again.",
  FAILED: "Couldn't remove the mark. Try again.",
  FULL: "This list is full. Undo marks that are no longer needed before marking more.",
- NIGHTLY: "A mark also goes away by itself when a recent nightly run shows the test passing.",
+ NIGHTLY: "Once nightly runs are on, a mark also goes away by itself after a nightly run shows the test passing.",
  SHOW_ALL: "Show all", SHOW_FEWER: "Show fewer",
 } as const;
 export const SHOWN_AT_FIRST = 20;

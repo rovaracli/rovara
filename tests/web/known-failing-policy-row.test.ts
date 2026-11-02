@@ -75,6 +75,7 @@ describe("the row", () => {
   mount();
   const section = await row();
   expect(section.getByText("One maintainer may mark", { selector: "strong" })).toBeTruthy();
+  expect(section.getByText("One maintainer may mark (a second person is asked only when the maintainer owns an affected task, an owner is unknown, or more than 25 tasks are affected).")).toBeTruthy();
   expect(section.getByRole("button", { name: "Require two people" })).toBeTruthy();
   expect(section.queryByRole("button", { name: "Ask to turn off" })).toBeNull();
  });
