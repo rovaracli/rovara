@@ -6,7 +6,8 @@
 //
 // Removals. A deleted message or channel, a channel that became shared or changed id, an uninstall and a revoked token only remove or hide. They need no Slack lookup, carry no message text and
 // must never be lost, so they are cut down to ids (`removalPayload`) and put on the DURABLE queue (`sendRemoval`); the broker drains it, retrying until it is applied, then dead-lettering it
-// for a person. They are sent before anything slow, so Slack's 500 ms budget at the ingress cannot cut them off.
+// for a person. They are sent before anything slow. If the queue does not accept one in time, it goes by an Event invoke of the broker instead (Lambda retries that twice); only when both fail does the forwarder
+// throw, and the ingress then answers Slack 500 so Slack sends the event again (`slack-ingress.ts`, `RECORD_REMOVAL_BUDGET_MS`).
 //
 // How text travels. Public edition: Slack's terms forbid keeping copies of message text, so a text-carrying event (`message`, `message_changed`) is sent as a REQUEST/RESPONSE invoke, answered while the
 // broker processes it in memory: the text is never parked in Lambda's asynchronous queue, where a retry would keep it for hours. An invoke that does not finish in time is dropped, not retried.
@@ -96,10 +97,25 @@ export interface SlackForwarderDependencies {
   invoke(event: SlackForwardEvent, wait: boolean): Promise<void>;
   /** Puts a removal on the durable queue. Throws when it was not accepted. Absent: a removal goes by an asynchronous invoke like any other event. */
   sendRemoval?(payload: Record<string, unknown>): Promise<void>;
+  /** How long the queue gets before the Event invoke is tried instead. Default `REMOVAL_QUEUE_MS`. */
+  removalQueueMs?: number;
+  /** How long the fallback Event invoke gets. Default `REMOVAL_INVOKE_MS`. */
+  removalInvokeMs?: number;
   token(): Promise<string>;
   fetch: Fetch;
   edition: "enterprise" | "public";
   now?: () => number;
+}
+
+/** The queue's share of a removal's time, then the fallback invoke's: together under the ingress's `RECORD_REMOVAL_BUDGET_MS` (1500). */
+export const REMOVAL_QUEUE_MS = 400;
+export const REMOVAL_INVOKE_MS = 700;
+
+/** `work` settled within `ms`, or a throw. The work itself is not cancelled (an SQS or Lambda call cannot be); a late success is harmless because every removal is idempotent. */
+function within<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("removal step timed out")), ms); });
+  return Promise.race([work, limit]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
 }
 
 /** The ingress's `recordTap`. It never throws a retry at Slack: the ingress wraps it in its own budget and catch. */
@@ -111,7 +127,14 @@ export function createSlackForwarder(deps: SlackForwarderDependencies): (payload
     if (payload.type !== "event_callback") return;
     // A removal first: ids only, no lookup, durable.
     const removal = removalPayload(raw);
-    if (removal !== undefined && deps.sendRemoval !== undefined) { await deps.sendRemoval(removal); return; }
+    if (removal !== undefined) {
+      // The queue first. If it fails or is slow, the same ids-only payload goes as an Event invoke (no Slack lookup, retried by Lambda). Both failing is thrown: the ingress answers Slack 500 and Slack sends it again.
+      if (deps.sendRemoval !== undefined) {
+        try { await within(deps.sendRemoval(removal), deps.removalQueueMs ?? REMOVAL_QUEUE_MS); return; } catch { /* fall back below */ }
+      }
+      await within(deps.invoke({ source: TEAM_RECORD_SLACK_SOURCE, payload: removal }, false), deps.removalInvokeMs ?? REMOVAL_INVOKE_MS);
+      return;
+    }
     const event = record(payload.event);
     const teamId = payload.team_id;
     if (typeof teamId !== "string" || !TEAM.test(teamId) || typeof event.type !== "string") return;

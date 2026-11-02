@@ -3,7 +3,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubWebhookRefusal, RECORD_TAP_BUDGET_MS as GITHUB_BUDGET, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
-import { createSlackIngressHandler, RECORD_TAP_BUDGET_MS } from "../../packages/broker/src/aws/slack-ingress.js";
+import { createSlackIngressHandler, RECORD_REMOVAL_BUDGET_MS, RECORD_TAP_BUDGET_MS } from "../../packages/broker/src/aws/slack-ingress.js";
 import { HOOK_RECORD_TAP_BUDGET_MS } from "../../packages/broker/src/triggers/ingress.js";
 import { createHookRecordTap } from "../../packages/broker/src/team-record/sources/ticket-webhooks.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -132,6 +132,41 @@ describe("Slack ingress: record tap", () => {
     expect(Date.now() - started).toBeLessThan(RECORD_TAP_BUDGET_MS + 1_500);
     expect(slow.logs).toContain("record.tap_slow");
   });
+});
+
+describe("Slack ingress: a removal is never lost to the tap's budget or failure", () => {
+  const signingSecret = "8f742231b10e8888abcd99yyyzzz85a5";
+  const nowSeconds = 1_758_657_600;
+  const deleted = { type: "event_callback", team_id: "T0TEAM00001", event_id: "Ev2", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1758657600.000200", ts: "1758657700.000200" } };
+  const plain = { type: "event_callback", team_id: "T0TEAM00001", event_id: "Ev1", event: { type: "message", channel: "C0123456789", user: "U0ALICE0001", text: "hello", ts: "1758657600.000200" } };
+  function send(recordTap: (payload: unknown) => Promise<unknown>, payload: unknown) {
+    const logs: string[] = [];
+    const handle = createSlackIngressHandler({
+      secrets: async () => ({ signingSecret, botToken: "xoxb-test" }), resolveOrg: async () => TEST_ORG, getBinding: async () => undefined,
+      claimEvent: async () => true, releaseEvent: async () => undefined, changePending: async () => 1, enqueue: async () => undefined, postMessage: async () => undefined,
+      now: () => nowSeconds * 1000, log: (event) => logs.push(event), recordTap,
+    });
+    const body = JSON.stringify(payload);
+    const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${String(nowSeconds)}:${body}`).digest("hex")}`;
+    return handle({ body, headers: { "x-slack-request-timestamp": String(nowSeconds), "x-slack-signature": signature }, isBase64Encoded: false }).then((response) => ({ response, logs }));
+  }
+
+  it("a removal whose tap fails is answered 500 so Slack sends it again; the same failure on any other event stays a 200", async () => {
+    const lost = await send(async () => { throw new Error("queue and invoke down"); }, deleted);
+    expect(lost.response.statusCode).toBe(500);
+    expect(lost.logs).toContain("record.removal_failed");
+    expect((await send(async () => { throw new Error("record down"); }, plain)).response.statusCode).toBe(200);
+  });
+
+  it("a removal gets the longer budget (a fallback may need it); one that is still not done by then is answered 500, and the event is not logged as slow", async () => {
+    expect(RECORD_REMOVAL_BUDGET_MS).toBeGreaterThan(RECORD_TAP_BUDGET_MS);
+    const patient = await send(() => new Promise<void>((resolve) => setTimeout(resolve, RECORD_TAP_BUDGET_MS + 200)), deleted);
+    expect(patient.response.statusCode).toBe(200);
+    expect(patient.logs).not.toContain("record.tap_slow");
+    const stuck = await send(() => new Promise(() => undefined), deleted);
+    expect(stuck.response.statusCode).toBe(500);
+    expect(stuck.logs).toContain("record.removal_failed");
+  }, 10_000);
 });
 
 describe("hook ingress: record tap", () => {
