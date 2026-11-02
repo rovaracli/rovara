@@ -19,16 +19,20 @@ import {
   NightlyBaselineSchema,
   NightlyFireSchema,
   NightlyResultSchema,
+  StoredNightlyHealthSchema,
   agentXError,
   canonicalJson,
   projectPk,
   type CoverageMapData,
   type NightlyBaseline,
+  type NightlyResult,
   type NightlySkipReason,
   type OrgId,
+  type StoredNightlyHealth,
 } from "@agentx/contracts";
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import type { ScheduleSettings, SchedulerPort } from "../triggers/schedules.js";
+import { classifyNightlyHealth } from "./nightly-health.js";
 
 const HOUR_MS = 3_600_000;
 /** A fire older than this is not run: the scheduler retries for an hour at most. */
@@ -259,6 +263,21 @@ export interface MapStore {
 
 export const coverageMapDigest = (map: CoverageMapData): string => sha(CoverageMapSchema.parse(map));
 
+/** What `recordNightlyResult` tells its optional listener once the baseline is stored (SH28 binds it to the project's health, only while the `nh` switch is on). */
+export interface NightlyRecorded { orgId: OrgId; project: string; slotId: string; baseline: NightlyBaseline; health: StoredNightlyHealth | undefined }
+
+/**
+ * What the night's step words say (SH27), classified by the broker's own rules (SH6): nothing the worker says in words is read. Undefined for a result that carries no step words (an older worker), which then
+ * stores nothing new. A report whose counts are not the result's own counts disagrees with itself and reads as unclear, never as passed.
+ */
+export function nightlyHealthOf(result: NightlyResult): StoredNightlyHealth | undefined {
+  if (result.health === undefined) return undefined;
+  const { ranFrom, ...report } = result.health;
+  const agrees = report.tests.total === result.tests.total && report.tests.passed === result.tests.passed && report.tests.skipped === result.tests.skipped && report.tests.failures + report.tests.errors === result.tests.failed;
+  const verdict = agrees ? classifyNightlyHealth(report) : ({ class: "unclear", cause: "steps_disagree" } as const);
+  return { class: verdict.class, ...("cause" in verdict ? { cause: verdict.cause } : {}), ranFrom: ranFrom ?? "fresh" };
+}
+
 /**
  * Records a finished run. Accepted only for the slot the project's active run holds (so a stale or invented result changes nothing), for the environment's revision and branch, and only once. The failing set is capped;
  * when it does not fit it is kept empty-and-truncated, which excuses nothing. A coverage map is accepted only if the digest the result names is the map's own.
@@ -267,6 +286,7 @@ export async function recordNightlyResult(
   deps: TestEnvDeps,
   maps: MapStore,
   input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown },
+  onRecorded?: (recorded: NightlyRecorded) => Promise<void>,
 ): Promise<{ recorded: true; flakyCount: number; failingCount: number }> {
   const parsed = NightlyResultSchema.safeParse(input.result);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", "the nightly result could not be read");
@@ -295,14 +315,30 @@ export async function recordNightlyResult(
     // Keep the last good map when this run recorded none: selection reads its own age, so an old map falls back to the full suite by itself.
     ...(result.coverageMapRef !== undefined && coverageMapBuiltAt !== undefined ? { coverageMapRef: result.coverageMapRef, coverageMapBuiltAt } : previous?.coverageMapRef === undefined || previous.coverageMapBuiltAt === undefined ? {} : { coverageMapRef: previous.coverageMapRef, coverageMapBuiltAt: previous.coverageMapBuiltAt }),
   });
-  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
+  // The health sits BESIDE the baseline, not inside it: an older broker still reads the baseline. A result without step words stores exactly what it always did.
+  const health = nightlyHealthOf(result);
+  const healthField = health === undefined ? {} : { health };
+  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: history }));
-  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...keyOf(input.orgId, input.project, "TESTENV#BASELINE#LATEST"), entityType: "TEST_ENV_BASELINE_LATEST", orgId: input.orgId, project: input.project, baseline } }));
+  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...keyOf(input.orgId, input.project, "TESTENV#BASELINE#LATEST"), entityType: "TEST_ENV_BASELINE_LATEST", orgId: input.orgId, project: input.project, baseline, ...healthField } }));
+  // Before the run is released: a listener that fails leaves the run claimed, so the worker's retry records the same result again (every write above and in the listener is repeatable).
+  if (onRecorded !== undefined) await onRecorded({ orgId: input.orgId, project: input.project, slotId: result.slotId, baseline, health });
   await releaseNightly(deps, input.orgId, input.project, result.slotId, false);
   return { recorded: true, flakyCount: result.flaky.length, failingCount: result.tests.failed };
 }
 
 // ---- what the baseline feeds
+
+/** The last night's classification (SH27) with the baseline it belongs to. `health` is undefined when that night carried no step words; a stored classification that does not read back is "unclear", never absent and never passed. */
+export async function readLatestNightlyHealth(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<{ baseline: NightlyBaseline; health: StoredNightlyHealth | undefined } | undefined> {
+  const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, "TESTENV#BASELINE#LATEST"), ConsistentRead: true })) as { Item?: Item }).Item;
+  if (item === undefined) return undefined;
+  const baseline = NightlyBaselineSchema.safeParse(item.baseline);
+  if (!baseline.success) throw agentXError("RUNTIME_UNAVAILABLE", "the nightly baseline could not be read");
+  if (item.health === undefined) return { baseline: baseline.data, health: undefined };
+  const health = StoredNightlyHealthSchema.safeParse(item.health);
+  return { baseline: baseline.data, health: health.success ? health.data : { class: "unclear", cause: "unreadable", ranFrom: "fresh" } };
+}
 
 /**
  * The tests that already fail on the default branch, for the check classifier ("not a regression of this task"). Fail closed: an unreadable baseline, or one whose failing set did not fit (more failures than

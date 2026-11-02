@@ -1,10 +1,11 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
 import { describe, expect, it } from "vitest";
-import { agentXError, CoverageMapSchema, NightlyBaselineSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { NIGHTLY_ENVIRONMENT_CAUSES, NIGHTLY_HEALTH_STEPS, NIGHTLY_UNCLEAR_CAUSES } from "../../packages/broker/src/test-env/nightly-health.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import {
   NIGHTLY_FIRE_MAX_AGE_MS, alreadyFailingTests, coverageMapDigest, deleteNightlySchedule, handleNightlyFire, lastNightlyFailures, mapAgeDays, nightlyExpression, nightlyScheduleName, nightlySlotId,
-  putNightlySchedule, readCoverageMap, readNightlyBaseline, recordNightlyResult, splitFailures, syncNightlySchedule, type MapStore, type NightlyDeps,
+  putNightlySchedule, readCoverageMap, readLatestNightlyHealth, readNightlyBaseline, nightlyHealthOf, recordNightlyResult, splitFailures, syncNightlySchedule, type MapStore, type NightlyDeps,
 } from "../../packages/broker/src/test-env/nightly.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -317,5 +318,99 @@ describe("recording a result, and what it feeds", () => {
       expect(bad({ flaky: ["tests/test_x.py::bad1"] })).rejects.toThrow(/could not be read/),
       expect(bad({ finishedAt: new Date(T0 - 1_000).toISOString() })).rejects.toThrow(/could not be read/),
     ]).then(() => undefined);
+  });
+});
+
+// ---- SH27: the nightly result reports its step words, and the broker keeps the classification beside the baseline
+
+describe("SH27: step words on the nightly result", () => {
+  const okCheck = { runsTests: true, started: true, timedOut: false, reportApproved: true, reportWritten: true, testsCollected: 10 };
+  const steps = (over: Record<string, string> = {}) => NIGHTLY_STEP_WORDS.map((step) => ({ step, status: over[step] ?? "passed" }));
+  // The result fixture is 10 tests: 7 passed, 2 failed, 1 skipped.
+  const health = (over: Record<string, unknown> = {}) => ({ steps: steps(), checks: [okCheck], tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 }, ...over });
+  const latest = (h: Awaited<ReturnType<typeof harness>>) => h.db.find((item) => item.sk === "TESTENV#BASELINE#LATEST")[0] as Record<string, unknown>;
+  async function recorded(over: Record<string, unknown>, listener?: Parameters<typeof recordNightlyResult>[3]) {
+    const h = await harness();
+    const started = await handleNightlyFire(h.deps, h.fire());
+    if (started.outcome !== "started") throw new Error("not started");
+    const data = result(started.slotId, over);
+    const call = () => recordNightlyResult(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap }, listener);
+    return { h, data, call };
+  }
+
+  it("an older result, with no step words, parses and is stored exactly as before (no health anywhere)", async () => {
+    const { h, data, call } = await recorded({});
+    expect(NightlyResultSchema.parse(data.result)).not.toHaveProperty("health");
+    await call();
+    expect(latest(h)).not.toHaveProperty("health");
+    expect(h.db.find((item) => String(item.sk).startsWith("TESTENV#BASELINE#2"))[0]).not.toHaveProperty("health");
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: undefined, baseline: { headSha: HEAD1 } });
+    expect(nightlyHealthOf(NightlyResultSchema.parse(data.result))).toBeUndefined();
+  });
+
+  it("keeps the broker's classification of the steps beside the baseline, and the baseline itself is unchanged", async () => {
+    const { h, call } = await recorded({ health: health({ steps: steps({ setup: "failed", full_suite: "skipped" }), tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 } }) });
+    await call();
+    expect(latest(h).health).toEqual({ class: "environment", cause: "setup_failed", ranFrom: "fresh" });
+    expect(h.db.find((item) => String(item.sk).startsWith("TESTENV#BASELINE#2"))[0]?.health).toEqual({ class: "environment", cause: "setup_failed", ranFrom: "fresh" });
+    expect(NightlyBaselineSchema.safeParse(latest(h).baseline).success).toBe(true);
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "environment", cause: "setup_failed" }, baseline: { tests: { failed: 2 } } });
+  });
+
+  it("assertion failures next to passes are tests; the saved image is recorded when the run says it ran from one", async () => {
+    const { h, call } = await recorded({ health: health({ ranFrom: "saved_image" }) });
+    await call();
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "tests", ranFrom: "saved_image" } });
+  });
+
+  it("a report whose counts are not the result's own counts reads as unclear, never as passed", async () => {
+    const { h, call } = await recorded({ health: health({ tests: { total: 10, passed: 10, failures: 0, errors: 0, skipped: 0 } }) });
+    await call();
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "unclear", cause: "steps_disagree" } });
+  });
+
+  it("keeps the step words bounded: a word, a status, a key or a count outside the lists is refused with the whole result", async () => {
+    const parse = (over: Record<string, unknown>) => NightlyResultSchema.safeParse(result("a".repeat(64), { health: health(over) }).result).success;
+    expect(parse({})).toBe(true);
+    expect(parse({ steps: [{ step: "deploy", status: "passed" }] })).toBe(false);
+    expect(parse({ steps: [{ step: "setup", status: "exploded: see log" }] })).toBe(false);
+    expect(parse({ steps: [...steps(), { step: "smoke", status: "passed" }] })).toBe(false);
+    expect(parse({ steps: [{ step: "setup", status: "failed", message: "text" }] })).toBe(false);
+    expect(parse({ checks: Array.from({ length: 65 }, () => okCheck) })).toBe(false);
+    expect(parse({ ranFrom: "somewhere" })).toBe(false);
+    expect(parse({ tests: { total: -1, passed: 0, failures: 0, errors: 0, skipped: 0 } })).toBe(false);
+    expect(parse({ extra: true })).toBe(false);
+  });
+
+  it("a step that appears twice cannot be read: unclear, not passed", async () => {
+    const { h, call } = await recorded({ health: health({ steps: [{ step: "setup", status: "passed" }, { step: "setup", status: "failed" }] }) });
+    await call();
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "unclear", cause: "unreadable" } });
+  });
+
+  it("tells a listener after the baseline is stored; a listener that fails leaves the run claimed so the retry records it again", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    let fail = true;
+    const { h, call } = await recorded({ health: health() }, (event) => { events.push(event as unknown as Record<string, unknown>); return fail ? Promise.reject(new Error("health store down")) : Promise.resolve(); });
+    await expect(call()).rejects.toThrow(/health store down/);
+    expect(events[0]).toMatchObject({ orgId: ORG, project: PROJECT, health: { class: "tests" }, baseline: { headSha: HEAD1 } });
+    expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(1);
+    fail = false;
+    expect(await call()).toMatchObject({ recorded: true });
+    expect(events).toHaveLength(2);
+    expect(h.db.find((item) => item.sk === "TESTENV#NIGHTLY#ACTIVE")).toHaveLength(0);
+  });
+
+  it("a stored classification that does not read back is unclear, never absent and never passed", async () => {
+    const { h, call } = await recorded({ health: health() });
+    await call();
+    const item = latest(h);
+    h.db.set({ ...item, health: { class: "passed", cause: "Bad Cause!", ranFrom: "fresh" } });
+    expect(await readLatestNightlyHealth(h.deps, ORG, PROJECT)).toMatchObject({ health: { class: "unclear", cause: "unreadable" } });
+  });
+
+  it("the contract's step words are the classifier's, and every cause the classifier can give is storable", () => {
+    expect([...NIGHTLY_STEP_WORDS]).toEqual([...NIGHTLY_HEALTH_STEPS]);
+    for (const cause of [...NIGHTLY_ENVIRONMENT_CAUSES, ...NIGHTLY_UNCLEAR_CAUSES]) expect(StoredNightlyHealthSchema.safeParse({ class: "unclear", cause, ranFrom: "fresh" }).success, cause).toBe(true);
   });
 });
