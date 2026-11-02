@@ -1,29 +1,30 @@
-// Setup and test health SH29 wiring (switch `sp`): company setup recipes and company locks, as routes. Behind `sp`: with it off every path here is not found, as any unknown path. `org` and `projects` are browser
-// route families, so the app reaches them as `/v1/web/...`; a token is refused here and before this in the entry file, for reads and writes alike.
-//   GET   /v1/app/org/setup-recipes                    a live company owner or admin: every live recipe (what it runs, where it is offered, its digest), the company locks and a waiting loosening, and the lists the screen offers.
-//   POST  /v1/app/org/setup-recipes                    a live company owner or admin, from a live browser session, and for every change but a stricter lock a sign-in within the last 10 minutes:
+// Setup and test health SH29 wiring (switch `sp`): company setup recipes, as routes. Behind `sp`: with it off every path here is not found, as any unknown path. `org` and `projects` are browser route families, so the app
+// reaches them as `/v1/web/...`; a token is refused here and before this in the entry file, for reads and writes alike. The company's setup LOCKS are not here: lane su-musts owns them (one row, one store, one admin route).
+//   GET   /v1/app/org/setup-recipes                    a live company owner or admin: every live recipe (the whole body an approval pins: commands, paths, select arguments, hosts, fingerprint, who proposed it and from
+//                                                      which project), what an approval would replace, and the lists the screen offers.
+//   POST  /v1/app/org/setup-recipes                    a live company owner or admin, from a live browser session, with a sign-in within the last 10 minutes:
 //           { action: "create", body, scope? }                     the admin writes a recipe: approved by the same act;
 //           { action: "approve", recipeId, expectedRevision, expectedDigest }   a waiting proposal, pinned to the revision and digest the admin saw;
 //           { action: "revoke", recipeId, expectedRevision }
-//           { action: "scope", recipeId, expectedRevision, scope } "offer only to these projects" (or back to the whole company);
-//           { action: "locks_set", locks, expectedRevision }       stricter applies at once; a loosening waits for a DIFFERENT admin (or the sole-owner exception: one admin, after the cool-off);
-//           { action: "locks_approve", expectedRevision, expectedDigest }
+//           { action: "scope", recipeId, expectedRevision, scope } "offer only to these projects" (or back to the whole company).
+//   GET   /v1/app/projects/{name}/setup-recipe         a maintainer of the project: what the share form needs (its repositories, the marker files, whether an approved test environment exists).
 //   POST  /v1/app/projects/{name}/setup-recipe         "share as company recipe": a maintainer of the project, from a browser. The recipe is built by the broker from the project's APPROVED test environment (a
 //           request supplies only the repository, a label, the fingerprint and which of the project's own allowed websites to share), is stored as `proposed` and offered to nobody until an admin approves it.
 // The authority is `org/setup-recipes.ts` (stale-pinned, fresh sign-in read from the stored session, repository names refused, secrets refused, audited in the write's own transaction); this file builds its dependencies.
-// Answers are fixed words, booleans, ids and the recipe text an admin must read to approve it (commands, hosts, fingerprint); never a person's name, a repository name or a secret.
+// Answers are fixed words, booleans, ids and the recipe text an admin must read to approve it; never a person's name, a repository name or a secret.
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
-  SETUP_MARKER_FILES, agentXError, formatCommandLine, markerFilesOf, orgProjectCatalogPk, projectAllows, type OrgId, type SetupFingerprintInput,
+  SETUP_MARKER_FILES, AgentXError, agentXError, formatCommandLine, markerFilesOf, orgProjectCatalogPk, projectAllows, type OrgId, type SetupFingerprintInput,
 } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { readSecondPersonApprovalEvidence } from "../../org/second-person-evidence.js";
+import { companyLocksReaderFor } from "../../org/setup-recipe-locks.js";
 import { dynamoSetupRecipeStore } from "../../org/setup-recipe-store.js";
 import {
-  SETUP_RECIPES_MAX_PER_ORG, approveLocksChange, approveRecipe, createRecipeAsAdmin, proposeRecipe, readCompanyLocks, recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, setRecipeScope,
+  SETUP_RECIPES_MAX_PER_ORG, approveRecipe, createRecipeAsAdmin, projectHash, proposeRecipe, recipeBodyFromProjectSetup, revokeDamagedRecipe, revokeRecipe, setRecipeScope,
   type RecipeCaller, type SetupRecipeDeps, type StoredRecipe,
 } from "../../org/setup-recipes.js";
 import { refuseSetupHost } from "../../rovara-code/setup-host-ask.js";
@@ -31,7 +32,7 @@ import { setupRecipesEnabled } from "../../rovara-code/setup-recipes-switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { getSignIn } from "./authentication.js";
-import { bodyError } from "./common.js";
+import { bodyError, signInStoreOf } from "./common.js";
 import { jsonBody } from "./organization.js";
 import { REVISION_READS_AT_ONCE, latestProjectRecord, mapLimit, queryAll, repositoryFullName, visibleProjectRoles } from "./project-list.js";
 import { testEnvStoreOf } from "./test-environment.js";
@@ -51,8 +52,6 @@ const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("approve"), recipeId: RecipeId, expectedRevision: Revision, expectedDigest: Digest }).strict(),
   z.object({ action: z.literal("revoke"), recipeId: RecipeId, expectedRevision: Revision }).strict(),
   z.object({ action: z.literal("scope"), recipeId: RecipeId, expectedRevision: Revision, scope: z.unknown() }).strict(),
-  z.object({ action: z.literal("locks_set"), locks: z.unknown(), expectedRevision: Revision.nullable() }).strict(),
-  z.object({ action: z.literal("locks_approve"), expectedRevision: Revision, expectedDigest: Digest }).strict(),
 ]);
 const ShareSchema = z.object({
   repositoryId: z.string().min(1).max(200), label: z.string().min(1).max(80),
@@ -110,31 +109,55 @@ export function recipeDepsOf(deps: DeveloperRouteDependencies, request: Develope
 
 const callerOf = (caller: DeveloperCaller): RecipeCaller => ({ orgId: caller.orgId, developerId: caller.developerId, sessionId: caller.sessionId });
 
-/** A recipe as the admin's screen shows it: what it runs and where it is offered. The commands are shown whole because the admin approves what RUNS, not only the hosts. */
-function recipeView(recipe: StoredRecipe, caller: DeveloperCaller) {
-  const lines = (commands: ReadonlyArray<{ cwd: string; executable: string; args: string[]; timeoutSeconds: number }>) => commands.map((command) => `${command.cwd}: ${formatCommandLine(command)}`);
+interface RecipeCommandLike { cwd: string; executable: string; args: string[]; timeoutSeconds: number }
+const commandView = (command: RecipeCommandLike) => ({ line: `${command.cwd}: ${formatCommandLine(command)}`, timeoutSeconds: command.timeoutSeconds });
+
+/**
+ * A recipe as the admin's screen shows it: the WHOLE body an approval pins (every command with its directory and time limit, every check's select arguments and report, coverage and SARIF paths, the update commands,
+ * hosts, image and fingerprint), who proposed it and from which project, and which approved recipes an approval would replace. The admin approves what RUNS, not only the hosts.
+ */
+function recipeView(recipe: StoredRecipe, context: { caller: DeveloperCaller; people: ReadonlyMap<string, string>; projects: readonly string[]; approved: readonly StoredRecipe[] }) {
+  const { caller } = context;
+  const body = recipe.body;
+  const source = recipe.proposedFromProjectHash === undefined ? undefined : context.projects.find((name) => projectHash(caller.orgId, name) === recipe.proposedFromProjectHash);
+  // Only an approved recipe with the same fingerprint is replaced: offers keep the newest approved recipe per fingerprint.
+  const replaces = recipe.status !== "proposed" ? [] : context.approved.filter((other) => other.recipeId !== recipe.recipeId && other.fingerprint === recipe.fingerprint).map((other) => ({ recipeId: other.recipeId, label: other.body.label }));
   return {
-    recipeId: recipe.recipeId, revision: recipe.revision, status: recipe.status, digest: recipe.bodyDigest, label: recipe.body.label, buildSystems: recipe.body.buildSystems,
-    toolchains: recipe.body.toolchains, setup: lines(recipe.body.setupCommands), update: lines(recipe.body.updateCommands),
-    checks: recipe.body.checks.map((check) => ({ id: check.id, label: check.label, kind: check.kind, command: `${check.command.cwd}: ${formatCommandLine(check.command)}` })),
-    approvedHosts: recipe.body.approvedHosts, ...(recipe.body.devcontainerBaseImage === undefined ? {} : { devcontainerBaseImage: recipe.body.devcontainerBaseImage }),
-    match: { markerFiles: recipe.body.match.markerFiles, registryHosts: recipe.body.match.registryHosts },
+    recipeId: recipe.recipeId, revision: recipe.revision, status: recipe.status, digest: recipe.bodyDigest, label: body.label, buildSystems: body.buildSystems,
+    toolchains: body.toolchains, setup: body.setupCommands.map(commandView), update: body.updateCommands.map(commandView),
+    checks: body.checks.map((check) => ({
+      id: check.id, label: check.label, kind: check.kind, command: commandView(check.command),
+      ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }), ...(check.reportPath === undefined ? {} : { reportPath: check.reportPath }),
+      ...(check.coveragePath === undefined ? {} : { coveragePath: check.coveragePath }), ...(check.sarifPath === undefined ? {} : { sarifPath: check.sarifPath }),
+    })),
+    approvedHosts: body.approvedHosts, ...(body.devcontainerBaseImage === undefined ? {} : { devcontainerBaseImage: body.devcontainerBaseImage }),
+    match: { markerFiles: body.match.markerFiles, registryHosts: body.match.registryHosts },
     scope: recipe.scope.kind === "company" ? { kind: "company" as const } : { kind: "projects" as const, projects: recipe.scope.projects },
-    fromProject: recipe.proposedFromProjectHash !== undefined, createdByYou: recipe.createdBy === caller.developerId, createdAt: recipe.createdAt, updatedAt: recipe.updatedAt,
+    fromProject: recipe.proposedFromProjectHash !== undefined, ...(source === undefined ? {} : { sourceProject: source }),
+    proposedBy: context.people.get(recipe.createdBy) ?? "Unknown", createdByYou: recipe.createdBy === caller.developerId, replaces, createdAt: recipe.createdAt, updatedAt: recipe.updatedAt,
   };
 }
 
 async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, recipeDeps: SetupRecipeDeps) {
-  const [recipes, locks, catalog] = await Promise.all([
-    recipeDeps.store.listRecipes(caller.orgId, SETUP_RECIPES_MAX_PER_ORG + 50),
-    readCompanyLocks(recipeDeps, caller.orgId),
+  // Live recipes only: revoked and rejected rows are history in their own partition and are never paged for this list.
+  const [recipes, catalog, unreadable, locks] = await Promise.all([
+    recipeDeps.store.listRecipes(caller.orgId, SETUP_RECIPES_MAX_PER_ORG + 50, ["proposed", "approved"]),
     queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#"),
+    recipeDeps.store.unreadableIds?.(caller.orgId) ?? Promise.resolve([] as string[]),
+    companyLocksReaderFor({ documentClient: deps.documentClient, tableName: deps.tableName })?.getCompanySetupLocks(caller.orgId),
   ]);
+  const projects = catalog.flatMap((row) => (typeof row.name === "string" ? [row.name] : [])).sort();
+  const ids = [...new Set(recipes.map((recipe) => recipe.createdBy))].slice(0, 100);
+  // A person's name is best effort: an unknown or unreadable one is shown as "Unknown", never as an error.
+  const found = ids.length === 0 ? new Map<string, unknown>() : await signInStoreOf(deps).getDevelopers(ids).catch(() => new Map<string, unknown>());
+  const people = new Map(ids.map((id) => [id, (found.get(id) as { displayName?: string } | undefined)?.displayName ?? "Unknown"] as const));
+  const approved = recipes.filter((recipe) => recipe.status === "approved");
   const order = { proposed: 0, approved: 1, revoked: 2 } as const;
   return {
-    recipes: recipes.sort((a, b) => order[a.status] - order[b.status] || (a.updatedAt < b.updatedAt ? 1 : -1)).map((recipe) => recipeView(recipe, caller)),
-    locks: { revision: locks?.revision ?? null, locks: locks?.locks ?? {}, ...(locks?.pending === undefined ? {} : { pending: { digest: locks.pending.digest, locks: locks.pending.locks, proposedByYou: locks.pending.proposedBy === caller.developerId, proposedAt: locks.pending.proposedAt } }) },
-    projects: catalog.flatMap((row) => (typeof row.name === "string" ? [row.name] : [])).sort(),
+    recipes: recipes.sort((a, b) => order[a.status] - order[b.status] || (a.updatedAt < b.updatedAt ? 1 : -1)).map((recipe) => recipeView(recipe, { caller, people, projects, approved })),
+    unreadable,
+    ...(locks === undefined ? {} : { companyLocks: { devcontainerImages: locks.devcontainerImages === undefined ? null : [...locks.devcontainerImages] } }),
+    projects,
     markerFiles: [...SETUP_MARKER_FILES],
   };
 }
@@ -150,7 +173,7 @@ export async function routeSetupRecipes(deps: DeveloperRouteDependencies, caller
   const recipeDeps = recipeDepsOf(deps, caller);
   const orgId: OrgId = caller.orgId;
   if (share !== null) {
-    if (request.method !== "POST") return undefined;
+    if (request.method === "GET") return shareInfo(deps, caller, recipeDeps, share[1]!);
     return shareFromProject(deps, caller, recipeDeps, share[1]!, jsonBody(request));
   }
   if (request.method === "GET") {
@@ -164,19 +187,29 @@ export async function routeSetupRecipes(deps: DeveloperRouteDependencies, caller
   switch (input.action) {
     case "create": await createRecipeAsAdmin(recipeDeps, who, { body: input.body, ...(input.scope === undefined ? {} : { scope: input.scope as never }) }); break;
     case "approve": await approveRecipe(recipeDeps, who, input); break;
-    case "revoke": await revokeRecipe(recipeDeps, who, input); break;
+    case "revoke":
+      // A row that exists but cannot be read back is removed the same way, so it stops holding a place in the caps.
+      try { await revokeRecipe(recipeDeps, who, input); } catch (error) { if (error instanceof AgentXError && error.code === "NOT_FOUND") await revokeDamagedRecipe(recipeDeps, who, { recipeId: input.recipeId }); else throw error; }
+      break;
     case "scope": await setRecipeScope(recipeDeps, who, { recipeId: input.recipeId, expectedRevision: input.expectedRevision, scope: input.scope as never }); break;
-    case "locks_set": {
-      const result = await setCompanyLocks(recipeDeps, who, { locks: input.locks, expectedRevision: input.expectedRevision });
-      logDeveloperEvent({ event: "developer.setup_locks_set", orgId, status: result.status });
-      return new StatusReply(result.status === "applied" ? 200 : 202, { status: result.status, ...(await stateOf(deps, caller, recipeDeps)) });
-    }
-    case "locks_approve": await approveLocksChange(recipeDeps, who, input); break;
   }
   logDeveloperEvent({ event: "developer.setup_recipes_changed", orgId, action: input.action });
   return new StatusReply(200, { status: "done", ...(await stateOf(deps, caller, recipeDeps)) });
 }
 
+/** What a maintainer's share form needs: the project's repositories, the closed list of marker files, and whether the project has an approved test environment to share. Maintainer only. */
+async function shareInfo(deps: DeveloperRouteDependencies, caller: DeveloperCaller, recipeDeps: SetupRecipeDeps, rawName: string): Promise<StatusReply> {
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw agentXError("PROJECT_NOT_FOUND", "project not found"); }
+  await recipeDeps.requireProjectMaintainer({ orgId: caller.orgId, developerId: caller.developerId }, name);
+  const record = await latestProjectRecord(deps, caller.orgId, name);
+  if (record === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
+  const approved = await readApprovedTestEnvironment(testEnvStoreOf(deps), caller.orgId, name);
+  return new StatusReply(200, { repositories: record.definition.repositories.map((repository) => repository.name), markerFiles: [...SETUP_MARKER_FILES], hasApprovedEnvironment: approved !== undefined });
+}
+
+// FOLLOW-UP (RW-2, register): the fingerprint below (marker files, registry hosts, build systems, tool versions) is what the maintainer types. It should come from the detectors' run on the default branch, so a recipe can
+// only describe what the detectors saw; until then an admin reads the fingerprint on the approval screen before the recipe is offered to anyone.
 /** "Share as company recipe": the broker builds the recipe from the project's approved test environment; the request supplies only the generic descriptors. */
 async function shareFromProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, recipeDeps: SetupRecipeDeps, rawName: string, raw: unknown): Promise<StatusReply> {
   let name: string;

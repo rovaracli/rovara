@@ -8,6 +8,7 @@ import { isConfirmUrl } from "../../../text/links.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { ShareRecipePanel } from "../../admin/how-we-work/ShareRecipePanel.js";
 
 type Proposal = NonNullable<TestEnvironmentState["proposal"]>;
 type Source = Proposal["valueSources"][number]["source"];
@@ -82,6 +83,7 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
     <h3>Test environment</h3>
     <p>How tests run for this project. Rovara proposes it from your default branch; nothing is used until a maintainer proves and approves it.</p>
     {shown.approved && <p role="status">Approved: revision {shown.approved.revision}, {shown.approved.summary.repositories.reduce((sum, repository) => sum + repository.checks.length, 0)} checks, tier {shown.approved.summary.tier}.</p>}
+    {shown.approved && shown.approved.commandsNotInSettings === 0 && <ShareRecipePanel project={project} />}
     {shown.approved && shown.approved.commandsNotInSettings > 0 && <ApprovedGap
       approved={shown.approved} busy={busy}
       onCheck={() => { void act("check", () => api.startCheck(project, shown.approved!.digest, crypto.randomUUID()), take); }}

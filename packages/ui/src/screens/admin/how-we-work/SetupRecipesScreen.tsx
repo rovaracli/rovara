@@ -3,50 +3,21 @@ import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
-import { createSetupRecipesApi, type SetupRecipe, type SetupRecipesState } from "../../../api/setup-recipes.js";
+import { createSetupRecipesApi, type SetupRecipe } from "../../../api/setup-recipes.js";
 import { Button } from "../../../design/Button.js";
 import { Checkbox } from "../../../design/Checkbox.js";
 import { PageHeader } from "../../../design/PageHeader.js";
-import { Select } from "../../../design/Select.js";
 import { Skeleton } from "../../../design/Skeleton.js";
-import { TextField } from "../../../design/TextField.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { VisibleText, visibleText } from "../../../design/VisibleText.js";
+import { ShareRecipeForm } from "./ShareRecipeForm.js";
 import { useAdminContext } from "../AdminLayout.js";
 import "./how-we-work.css";
 
-export const RECIPES_TEXT = {
- TITLE: "Setup recipes",
- NOTE: "A recipe is the generic part of a setup that worked, kept for your company. Rovara offers it to a new project whose files look the same, as a starting point only: the project still proves it and a maintainer still confirms it. A recipe never holds a repository name, a secret or an account.",
- NOT_ADMIN: "Only a company owner or admin can see or change setup recipes.",
- NOT_ON: "Setup recipes are not turned on for this company.",
- LOAD_FAILED: "Couldn't load the setup recipes.",
- WAITING: "Waiting for approval",
- NONE_WAITING: "Nothing is waiting for approval.",
- APPROVED: "Offered to projects",
- NONE_APPROVED: "No recipe is offered yet.",
- APPROVE: "Approve this recipe",
- APPROVE_HELP: "You approve exactly what is shown here, the commands included. You need to have signed in within the last 10 minutes.",
- REJECT: "Reject",
- STOP: "Stop offering",
- CHANGE_WHO: "Change who it is offered to",
- EVERY_PROJECT: "Every project of the company",
- ONLY_THESE: "Only these projects: ",
- SAVE_WHO: "Save",
- CANCEL: "Cancel",
- ALL_BLANK: "Leave every box empty to offer it to every project.",
- SHARE_HEADING: "Share a project's setup",
- SHARE_NOTE: "Builds a recipe from the project's approved test environment. It is offered to nobody until an admin approves it. Only websites the project already allows can be shared.",
- SHARE_BUTTON: "Share as company recipe",
- SHARED: "Shared. It is waiting for approval above.",
- STALE: "That recipe changed. The list was read again; check it and try again.",
- FAILED: "Rovara couldn't complete this request. Try again.",
- SIGN_IN_AGAIN: "Sign in again",
- BACK: "Back to How we work",
-} as const;
+import { RECIPES_TEXT } from "./recipes-text.js";
+export { RECIPES_TEXT };
 
 const problem = (error: unknown): { message: string; reauth: boolean; stale: boolean } => error instanceof ApiError
  ? { message: error.message, reauth: error.code === "REAUTH_REQUIRED", stale: error.code === "CHANGE_STALE" } : { message: RECIPES_TEXT.FAILED, reauth: false, stale: false };
-const split = (text: string): string[] => text.split(",").map(part => part.trim()).filter(part => part !== "");
 const scopeText = (recipe: SetupRecipe): string => recipe.scope.kind === "company" ? RECIPES_TEXT.EVERY_PROJECT : RECIPES_TEXT.ONLY_THESE + recipe.scope.projects.join(", ");
 
 /** The reads the screen and the How we work link share (a refusal as "not found" means the switch is off). */
@@ -61,45 +32,41 @@ export function SetupRecipesScreen() {
  return <Recipes />;
 }
 
+type Command = SetupRecipe["setup"][number];
+const Commands = ({ title, commands }: { title: string; commands: readonly Command[] }) => commands.length === 0 ? null : <><p>{title}</p><ul>{commands.map((command, index) => <li key={index}><code><VisibleText text={command.line} /></code> <span className="rv-muted">(up to {String(Math.round(command.timeoutSeconds / 60))} min)</span></li>)}</ul></>;
+
+/** The WHOLE body an approval pins: every command with its directory and time limit, every check's select arguments and report, coverage and SARIF paths, the hosts, the image and the fingerprint. */
 function RecipeBody({ recipe }: { recipe: SetupRecipe }) {
  return <>
   <p className="rv-muted">Fits projects with <VisibleText text={recipe.match.markerFiles.join(", ")} />{recipe.match.registryHosts.length > 0 && <> using <VisibleText text={recipe.match.registryHosts.join(", ")} /></>}. Build systems: <VisibleText text={recipe.buildSystems.join(", ")} />{recipe.toolchains.length > 0 && <>; <VisibleText text={recipe.toolchains.map(item => item.tool + " " + item.version).join(", ")} /></>}.</p>
-  {recipe.setup.length > 0 && <><p>Setup commands</p><ul>{recipe.setup.map((text, index) => <li key={index}><code><VisibleText text={text} /></code></li>)}</ul></>}
-  {recipe.checks.length > 0 && <><p>Checks</p><ul>{recipe.checks.map(check => <li key={check.id}><VisibleText text={check.label} />: <code><VisibleText text={check.command} /></code></li>)}</ul></>}
+  <Commands title="Setup commands" commands={recipe.setup} />
+  <Commands title="Update commands" commands={recipe.update} />
+  {recipe.checks.length > 0 && <><p>Checks</p><ul>{recipe.checks.map(check => <li key={check.id}><VisibleText text={check.label} /> (<VisibleText text={check.kind} />): <code><VisibleText text={check.command.line} /></code> <span className="rv-muted">(up to {String(Math.round(check.command.timeoutSeconds / 60))} min)</span>
+   {check.selectArgs !== undefined && <div>Runs only the selected tests by adding: <code><VisibleText text={check.selectArgs.join(" ")} /></code></div>}
+   {check.reportPath !== undefined && <div>Test report: <code><VisibleText text={check.reportPath} /></code></div>}
+   {check.coveragePath !== undefined && <div>Coverage report: <code><VisibleText text={check.coveragePath} /></code></div>}
+   {check.sarifPath !== undefined && <div>Scan report (SARIF): <code><VisibleText text={check.sarifPath} /></code></div>}
+  </li>)}</ul></>}
   {recipe.approvedHosts.length > 0 && <p>Websites it asks for: <VisibleText text={recipe.approvedHosts.join(", ")} /></p>}
   {recipe.devcontainerBaseImage !== undefined && <p>Dev container image: <code><VisibleText text={recipe.devcontainerBaseImage} /></code></p>}
+ </>;
+}
+
+/** Who proposed a waiting recipe and from which project, and which approved recipe an approval would replace for matching projects. */
+function Provenance({ recipe }: { recipe: SetupRecipe }) {
+ return <>
+  <p className="rv-muted">Proposed by <VisibleText text={recipe.proposedBy} />{recipe.sourceProject !== undefined && <> from the project <VisibleText text={recipe.sourceProject} /></>}{recipe.fromProject && recipe.sourceProject === undefined && " from a project"}.</p>
+  {recipe.replaces.length > 0 && <p role="status"><strong>Approving replaces</strong> {recipe.replaces.map((other, index) => <span key={other.recipeId}>{index > 0 && ", "}<VisibleText text={other.label} /></span>)} for matching projects: a project is offered one recipe for its fingerprint.</p>}
  </>;
 }
 
 function ScopeEditor({ recipe, projects, busy, onSave, onCancel }: { recipe: SetupRecipe; projects: readonly string[]; busy: boolean; onSave: (projects: string[]) => void; onCancel: () => void }) {
  const [chosen, setChosen] = useState<string[]>(recipe.scope.kind === "projects" ? recipe.scope.projects : []);
  return <fieldset><legend>{RECIPES_TEXT.CHANGE_WHO}</legend>
-  {projects.map(name => <Checkbox key={name} label={name} checked={chosen.includes(name)} onCheckedChange={checked => { setChosen(checked === true ? [...chosen, name] : chosen.filter(item => item !== name)); }} />)}
+  {projects.map(name => <Checkbox key={name} label={visibleText(name)} checked={chosen.includes(name)} onCheckedChange={checked => { setChosen(checked === true ? [...chosen, name] : chosen.filter(item => item !== name)); }} />)}
   <p className="rv-muted">{RECIPES_TEXT.ALL_BLANK}</p>
   <div className="rv-hww-company-actions"><Button variant="primary" busy={busy} onClick={() => { onSave(chosen); }}>{RECIPES_TEXT.SAVE_WHO}</Button><Button disabled={busy} onClick={onCancel}>{RECIPES_TEXT.CANCEL}</Button></div>
  </fieldset>;
-}
-
-function ShareForm({ state, busy, onShare }: { state: SetupRecipesState; busy: boolean; onShare: (input: Parameters<ReturnType<typeof createSetupRecipesApi>["share"]>[0]) => Promise<boolean> }) {
- const [project, setProject] = useState(""), [repositoryId, setRepositoryId] = useState(""), [label, setLabel] = useState(""), [systems, setSystems] = useState(""), [tools, setTools] = useState(""), [markers, setMarkers] = useState<string[]>([]), [registries, setRegistries] = useState(""), [hosts, setHosts] = useState("");
- const ready = project !== "" && repositoryId.trim() !== "" && label.trim() !== "" && split(systems).length > 0 && markers.length > 0;
- async function submit() {
-  const toolchains = split(tools).map(item => { const [tool = "", version = ""] = item.split(/[\s=]+/u); return { tool, version }; });
-  const shared = await onShare({ project, repositoryId: repositoryId.trim(), label: label.trim(), buildSystems: split(systems), toolchains, markerFiles: markers, registryHosts: split(registries), approvedHosts: split(hosts) });
-  if (shared) { setLabel("");setSystems("");setTools("");setMarkers([]);setRegistries("");setHosts(""); }
- }
- return <form aria-label={RECIPES_TEXT.SHARE_HEADING} className="rv-hww-company-card" onSubmit={event => { event.preventDefault();if (ready) void submit(); }}>
-  <h2>{RECIPES_TEXT.SHARE_HEADING}</h2><p className="rv-muted">{RECIPES_TEXT.SHARE_NOTE}</p>
-  <Select label="Project" value={project} options={state.projects.map(name => ({ value: name, label: name }))} onValueChange={setProject} />
-  <TextField label="Repository" hint="The repository's name in that project." value={repositoryId} onChange={event => { setRepositoryId(event.target.value); }} autoComplete="off" maxLength={200} />
-  <TextField label="Recipe name" hint="Do not use a repository's name." value={label} onChange={event => { setLabel(event.target.value); }} autoComplete="off" maxLength={80} />
-  <TextField label="Build systems" hint="Comma separated, for example python." value={systems} onChange={event => { setSystems(event.target.value); }} autoComplete="off" />
-  <TextField label="Tool versions" hint="Comma separated, for example python 3.12." value={tools} onChange={event => { setTools(event.target.value); }} autoComplete="off" />
-  <fieldset><legend>Files that mark a matching project</legend>{state.markerFiles.map(name => <Checkbox key={name} label={name} checked={markers.includes(name)} onCheckedChange={checked => { setMarkers(checked === true ? [...markers, name] : markers.filter(item => item !== name)); }} />)}</fieldset>
-  <TextField label="Package registries" hint="Comma separated hosts the project installs from." value={registries} onChange={event => { setRegistries(event.target.value); }} autoComplete="off" />
-  <TextField label="Websites to share" hint="Comma separated. Only websites the project already allows are kept." value={hosts} onChange={event => { setHosts(event.target.value); }} autoComplete="off" />
-  <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy} disabled={!ready}>{RECIPES_TEXT.SHARE_BUTTON}</Button></div>
- </form>;
 }
 
 function Recipes() {
@@ -121,24 +88,26 @@ function Recipes() {
   {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{RECIPES_TEXT.SIGN_IN_AGAIN}</Button></>}</p>}
   <p role="status">{note ?? ""}</p>
   {read.isPending ? <Skeleton label="Loading setup recipes" /> : notOn ? <p role="status">{RECIPES_TEXT.NOT_ON}</p> : state === undefined ? <div><p role="alert">{RECIPES_TEXT.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
+   {state.unreadable.length > 0 && <section aria-label={RECIPES_TEXT.UNREADABLE} className="rv-hww-company-card"><h2>{RECIPES_TEXT.UNREADABLE}</h2><p>{RECIPES_TEXT.UNREADABLE_HELP}</p>
+    {state.unreadable.map(id => <div key={id} className="rv-hww-company-actions"><code><VisibleText text={id} /></code><Button variant="danger" busy={busy === "remove:" + id} disabled={busy !== undefined} onClick={() => { void run("remove:" + id, () => api.removeUnreadable(id), "Removed.") }}>Remove</Button></div>)}</section>}
    <h2>{RECIPES_TEXT.WAITING}</h2>
    {state.recipes.filter(recipe => recipe.status === "proposed").length === 0 ? <p className="rv-muted">{RECIPES_TEXT.NONE_WAITING}</p> : <div className="rv-hww-company-cards">
-    {state.recipes.filter(recipe => recipe.status === "proposed").map(recipe => <section key={recipe.recipeId} aria-label={recipe.label} className="rv-hww-company-card">
-     <h2><VisibleText text={recipe.label} /></h2><RecipeBody recipe={recipe} />
+    {state.recipes.filter(recipe => recipe.status === "proposed").map(recipe => <section key={recipe.recipeId} aria-label={visibleText(recipe.label)} className="rv-hww-company-card">
+     <h2><VisibleText text={recipe.label} /></h2><Provenance recipe={recipe} /><RecipeBody recipe={recipe} />
      <p className="rv-muted">{RECIPES_TEXT.APPROVE_HELP}</p>
      <div className="rv-hww-company-actions"><Button variant="primary" busy={busy === "approve:" + recipe.recipeId} disabled={busy !== undefined} onClick={() => { void run("approve:" + recipe.recipeId, () => api.approve(recipe), "Approved.") }}>{RECIPES_TEXT.APPROVE}</Button><Button variant="danger" busy={busy === "revoke:" + recipe.recipeId} disabled={busy !== undefined} onClick={() => { void run("revoke:" + recipe.recipeId, () => api.revoke(recipe), "Rejected.") }}>{RECIPES_TEXT.REJECT}</Button></div>
     </section>)}
    </div>}
    <h2>{RECIPES_TEXT.APPROVED}</h2>
    {state.recipes.filter(recipe => recipe.status === "approved").length === 0 ? <p className="rv-muted">{RECIPES_TEXT.NONE_APPROVED}</p> : <div className="rv-hww-company-cards">
-    {state.recipes.filter(recipe => recipe.status === "approved").map(recipe => <section key={recipe.recipeId} aria-label={recipe.label} className="rv-hww-company-card">
+    {state.recipes.filter(recipe => recipe.status === "approved").map(recipe => <section key={recipe.recipeId} aria-label={visibleText(recipe.label)} className="rv-hww-company-card">
      <h2><VisibleText text={recipe.label} /></h2><p><VisibleText text={scopeText(recipe)} /></p><RecipeBody recipe={recipe} />
      {editing === recipe.recipeId
       ? <ScopeEditor recipe={recipe} projects={state.projects} busy={busy === "scope:" + recipe.recipeId} onCancel={() => { setEditing(undefined); }} onSave={projects => { void run("scope:" + recipe.recipeId, () => api.setScope(recipe, projects), "Saved.") }} />
       : <div className="rv-hww-company-actions"><Button disabled={busy !== undefined} onClick={() => { setEditing(recipe.recipeId); }}>{RECIPES_TEXT.CHANGE_WHO}</Button><Button variant="danger" busy={busy === "revoke:" + recipe.recipeId} disabled={busy !== undefined} onClick={() => { void run("revoke:" + recipe.recipeId, () => api.revoke(recipe), "Stopped.") }}>{RECIPES_TEXT.STOP}</Button></div>}
     </section>)}
    </div>}
-   <ShareForm state={state} busy={busy === "share"} onShare={input => run("share", async () => { await api.share(input); }, RECIPES_TEXT.SHARED)} />
+   <ShareRecipeForm projects={state.projects} markerFiles={state.markerFiles} busy={busy === "share"} onShare={input => run("share", async () => { await api.share(input); }, RECIPES_TEXT.SHARED)} />
   </>}
  </section>;
 }

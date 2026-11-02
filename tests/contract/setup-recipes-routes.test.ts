@@ -1,5 +1,4 @@
-// Company setup recipes and locks (SH29 wiring, switch `sp`), through the whole broker with live browser sessions: share from a project's approved setup, list, create, approve, revoke, scope, and the company locks
-// with the second-admin rule. Everything is browser-only and audited; with `sp` off none of it exists.
+// Company setup recipes (SH29 wiring, switch `sp`), through the whole broker with live browser sessions: share from a project's approved setup, list, create, approve, revoke, scope. (The company locks are su-musts'.) Everything is browser-only and audited; with `sp` off none of it exists.
 import { afterEach, describe, expect, it } from "vitest";
 import { recipeOffersForProject } from "../../packages/broker/src/org/setup-recipe-offers.js";
 import { recipeDepsOf, routeSetupRecipes } from "../../packages/broker/src/aws/developer-routes/setup-recipes.js";
@@ -29,8 +28,7 @@ const events = (audit: ReturnType<typeof capturingAuditDeps>, prefix: string) =>
 const get = (t: Bench, who: Developer = OMAR) => t.web(who, "GET", PATH);
 const post = (t: Bench, body: unknown, who: Developer = OMAR) => t.web(who, "POST", PATH, body);
 interface RecipeRow { recipeId: string; revision: number; digest: string; status: string; label: string }
-interface PendingRow { digest: string; proposedByYou: boolean; locks: Record<string, unknown> }
-const list = async (t: Bench, who: Developer = OMAR) => (await get(t, who)).body as unknown as { recipes: RecipeRow[]; locks: { revision: number | null; locks: Record<string, unknown>; pending?: PendingRow }; projects: string[] };
+const list = async (t: Bench, who: Developer = OMAR) => (await get(t, who)).body as unknown as { recipes: RecipeRow[]; projects: string[] };
 const offers = (t: Bench) => recipeOffersForProject({ store: dynamoSetupRecipeStore({ documentClient: t.db, tableName: "state", now: Date.now }) }, { orgId: TEST_ORG, project: NAME });
 
 describe("behind sp", () => {
@@ -79,7 +77,7 @@ describe("an admin writes, scopes and revokes a recipe", () => {
     const made = await post(t, { action: "create", body: recipeBody() });
     expect(made, JSON.stringify(made.body)).toMatchObject({ status: 200, body: { status: "done" } });
     const [recipe] = (await list(t)).recipes;
-    expect(recipe).toMatchObject({ status: "approved", revision: 1, label: "Python services", setup: ["{repo}: uv sync --frozen"], approvedHosts: ["pypi.internal.example.com"], scope: { kind: "company" }, createdByYou: true });
+    expect(recipe).toMatchObject({ status: "approved", revision: 1, label: "Python services", setup: [{ line: "{repo}: uv sync --frozen", timeoutSeconds: 600 }], approvedHosts: ["pypi.internal.example.com"], scope: { kind: "company" }, createdByYou: true });
     expect((await offers(t)).map((offer) => offer.recipeId)).toEqual([recipe!.recipeId]);
     const [event] = events(audit, "setup_recipe.created");
     expect(event).toMatchObject({ actor: { id: OMAR.developerId }, facts: { recipeId: recipe!.recipeId, revision: 1, authority: "fresh_sign_in" } });
@@ -126,7 +124,9 @@ describe("an admin writes, scopes and revokes a recipe", () => {
     expect((await offers(t)).map((offer) => offer.recipeId)).toEqual([created!.recipeId]);
     expect((await post(t, { action: "revoke", recipeId: created!.recipeId, expectedRevision: 3 })).status).toBe(200);
     expect(await offers(t)).toEqual([]);
-    expect((await list(t)).recipes[0]).toMatchObject({ status: "revoked", revision: 4 });
+    // Revoked is history: out of the live list, kept by id in its own partition.
+    expect((await list(t)).recipes).toEqual([]);
+    expect(await dynamoSetupRecipeStore({ documentClient: t.db, tableName: "state", now: Date.now }).getRecipe(TEST_ORG, created!.recipeId)).toMatchObject({ status: "revoked", revision: 4 });
     expect(events(audit, "setup_recipe.").map((event) => `${event.action}@${String(event.facts?.revision)}`)).toEqual(["setup_recipe.created@1", "setup_recipe.scope_changed@2", "setup_recipe.scope_changed@3", "setup_recipe.revoked@4"]);
   });
 });
@@ -153,7 +153,7 @@ describe("share as company recipe", () => {
     expect(shared, JSON.stringify(shared.body)).toMatchObject({ status: 200, body: { status: "proposed", revision: 1 } });
     expect(await offers(t)).toEqual([]);
     const [recipe] = (await list(t)).recipes;
-    expect(recipe).toMatchObject({ status: "proposed", fromProject: true, approvedHosts: ["pypi.internal.example.com"], setup: ["{repo}: uv sync"], createdByYou: false });
+    expect(recipe).toMatchObject({ status: "proposed", fromProject: true, approvedHosts: ["pypi.internal.example.com"], setup: [{ line: "{repo}: uv sync", timeoutSeconds: 900 }], createdByYou: false });
     expect(JSON.stringify(recipe)).not.toContain("repo/web");
     expect(events(audit, "setup_recipe.proposed")[0]).toMatchObject({ actor: { id: MAYA.developerId }, facts: { authority: "project_maintainer" } });
     // The same share twice answers the first one.
@@ -186,42 +186,75 @@ describe("share as company recipe", () => {
   });
 });
 
-describe("company locks", () => {
-  it("a stricter change applies at once; a loosening waits for a different admin, who needs a fresh sign-in; each step is audited", async () => {
-    const { t, audit } = await bench({ maya: "admin" });
+describe("company locks are not this lane's (F1)", () => {
+  it("has no lock actions and writes or reads no locks row of its own", async () => {
+    const { t } = await bench({ maya: "admin" });
     on();
-    const first = await post(t, { action: "locks_set", locks: { setupAgentOff: true, limits: { spendUsd: 5 } }, expectedRevision: null });
-    expect(first, JSON.stringify(first.body)).toMatchObject({ status: 200, body: { status: "applied" } });
-    expect((await list(t)).locks).toMatchObject({ revision: 1, locks: { setupAgentOff: true, limits: { spendUsd: 5 } } });
-    // A stale revision is stale.
-    expect((await post(t, { action: "locks_set", locks: { setupAgentOff: true }, expectedRevision: 7 })).status).toBe(409);
-    // Raising the limit loosens: it waits.
-    const loosen = await post(t, { action: "locks_set", locks: { setupAgentOff: true, limits: { spendUsd: 10 } }, expectedRevision: 1 });
-    expect(loosen, JSON.stringify(loosen.body)).toMatchObject({ status: 202, body: { status: "needs_second_admin" } });
-    const waiting = (await list(t)).locks;
-    expect(waiting).toMatchObject({ locks: { limits: { spendUsd: 5 } }, pending: { proposedByYou: true, locks: { limits: { spendUsd: 10 } } } });
-    // The proposer cannot approve alone while another eligible admin exists.
-    const self = await post(t, { action: "locks_approve", expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest });
-    expect(self.status, JSON.stringify(self.body)).toBe(403);
-    t.ageSignIn(MAYA, 11);
-    const old = await post(t, { action: "locks_approve", expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest }, MAYA);
-    expect(JSON.stringify(old.body)).toContain("REAUTH_REQUIRED");
-    t.ageSignIn(MAYA, 9);
-    expect((await post(t, { action: "locks_approve", expectedRevision: waiting.revision, expectedDigest: "1".repeat(64) }, MAYA)).status).toBe(409);
-    const approved = await post(t, { action: "locks_approve", expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest }, MAYA);
-    expect(approved, JSON.stringify(approved.body)).toMatchObject({ status: 200, body: { status: "done" } });
-    expect((await list(t)).locks).toMatchObject({ locks: { limits: { spendUsd: 10 } } });
-    expect(events(audit, "setup_locks.").map((event) => `${event.action}:${String(event.facts?.loosened)}:${String(event.facts?.approvalMode)}`)).toEqual([
-      "setup_locks.changed:false:undefined", "setup_locks.proposed:true:undefined", "setup_locks.approved:true:second_person",
+    for (const body of [{ action: "locks_set", locks: { setupAgentOff: true }, expectedRevision: null }, { action: "locks_approve", expectedRevision: 1, expectedDigest: "1".repeat(64) }]) expect((await post(t, body)).status).toBe(400);
+    const state = await get(t);
+    expect(state.status).toBe(200);
+    expect(state.body).not.toHaveProperty("locks");
+    expect(t.db.find((item) => String(item.sk) === "SETUP_LOCKS" || String(item.sk).includes("LOCKS"))).toEqual([]);
+  });
+});
+
+describe("what the admin sees before approving (F2, F4)", () => {
+  const full = recipeBody({
+    updateCommands: [cmd("uv", ["lock", "--check"])],
+    checks: [
+      { id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test", selectArgs: ["-k", "{tests}"], reportPath: "{repo}/reports/junit.xml", coveragePath: "{repo}/reports/coverage.xml" },
+      { id: "scan", label: "Security scan", command: cmd("semgrep", ["scan", "--sarif"], "{repo}/tools"), kind: "security", sarifPath: "{repo}/reports/scan.sarif" },
+    ],
+  });
+  type Full = { setup: Array<{ line: string }>; update: Array<{ line: string; timeoutSeconds: number }>; checks: Array<Record<string, unknown>>; replaces: Array<{ recipeId: string; label: string }>; proposedBy: string; sourceProject?: string };
+  const only = async (t: Bench, label: string) => (await list(t)).recipes.find((entry) => entry.label === label) as unknown as Full;
+
+  it("shows every executable and path field of the body the approval pins: the update commands, each check's select arguments, report, coverage and SARIF paths", async () => {
+    const { t } = await bench();
+    on();
+    expect((await post(t, { action: "create", body: { ...full, label: "Full" } })).status).toBe(200);
+    const view = await only(t, "Full");
+    expect(view.update).toEqual([{ line: "{repo}: uv lock --check", timeoutSeconds: 600 }]);
+    expect(view.checks).toEqual([
+      { id: "unit", label: "Unit tests", kind: "test", command: { line: "{repo}: pytest -q", timeoutSeconds: 600 }, selectArgs: ["-k", "{tests}"], reportPath: "{repo}/reports/junit.xml", coveragePath: "{repo}/reports/coverage.xml" },
+      { id: "scan", label: "Security scan", kind: "security", command: { line: "{repo}/tools: semgrep scan --sarif", timeoutSeconds: 600 }, sarifPath: "{repo}/reports/scan.sarif" },
     ]);
   });
 
-  it("an invalid lock is refused, and a company with no locks reads as none", async () => {
-    const { t } = await bench();
+  it("names who proposed a shared recipe and from which project, and warns which approved recipe an approval would replace", async () => {
+    const { t } = await bench({ maya: "member", grant: "maintainer" });
+    await withSwitch("1", async () => { await t.approveFirst(draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("uv", ["sync"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("pytest", ["-q"], 1800), kind: "test" }] }] }))); });
     on();
-    expect((await list(t)).locks).toMatchObject({ revision: null, locks: {} });
-    expect((await post(t, { action: "locks_set", locks: { setupAgentOff: false }, expectedRevision: null })).status).toBe(400);
-    expect((await post(t, { action: "locks_set", locks: { limits: { spendUsd: 500 } }, expectedRevision: null })).status).toBe(400);
+    expect((await post(t, { action: "create", body: { ...recipeBody(), label: "Existing" } })).status).toBe(200);
+    const shared = await t.web(MAYA, "POST", SHARE, { repositoryId: "web", label: "Newer", buildSystems: ["python"], toolchains: [], markerFiles: ["pyproject.toml"], registryHosts: ["pypi.internal.example.com"] });
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+    const proposed = await only(t, "Newer");
+    expect(proposed.sourceProject).toBe(NAME);
+    expect(proposed.proposedBy).toBe("Maya Chen");
+    expect(proposed.replaces).toEqual([{ recipeId: (await list(t)).recipes.find((entry) => entry.label === "Existing")!.recipeId, label: "Existing" }]);
+    // A recipe with another fingerprint replaces nothing, and an approved one shows no warning.
+    expect((await only(t, "Existing")).replaces).toEqual([]);
+  });
+});
+
+describe("a damaged recipe row (F9)", () => {
+  it("is listed by id and can be removed with revoke, which frees its place", async () => {
+    const { t, audit } = await bench();
+    on();
+    await post(t, { action: "create", body: recipeBody() });
+    const [made] = (await list(t)).recipes;
+    const key = { pk: `ORG#${TEST_ORG}`, sk: `SETUP_RECIPE#${made!.recipeId}` };
+    const row = t.db.find((item) => String(item.sk) === key.sk)[0]!;
+    t.db.set({ ...row, body: 12 });
+    const damaged = (await get(t)).body as unknown as { recipes: RecipeRow[]; unreadable: string[] };
+    expect(damaged.recipes).toEqual([]);
+    expect(damaged.unreadable).toEqual([made!.recipeId]);
+    expect((await post(t, { action: "revoke", recipeId: made!.recipeId, expectedRevision: 1 })).status).toBe(200);
+    expect(((await get(t)).body as unknown as { unreadable: string[] }).unreadable).toEqual([]);
+    expect(events(audit, "setup_recipe.revoked")).toHaveLength(1);
+    // Removing it again, or a recipe that never existed, is not found.
+    expect((await post(t, { action: "revoke", recipeId: made!.recipeId, expectedRevision: 1 })).status).toBe(404);
+    expect((await post(t, { action: "revoke", recipeId: "rcp_" + "7".repeat(20), expectedRevision: 1 })).status).toBe(404);
   });
 });
 
