@@ -3581,6 +3581,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "DeveloperSignInSlack",
                   },
+                  ",su=",
+                  {
+                    "Ref": "SetupAgentEnabled",
+                  },
                   ",tm=",
                   {
                     "Ref": "SlackTeamId",

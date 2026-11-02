@@ -107,6 +107,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Company setup recipes (SH30): one switch, a parameter and a packed setting.
   delete remainder.Parameters?.SetupRecipesEnabled;
   delete remainder.Parameters?.NightlyHealthEnabled;
+  // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
+  delete remainder.Parameters?.SetupAgentEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -139,7 +141,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "setupAgent", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
