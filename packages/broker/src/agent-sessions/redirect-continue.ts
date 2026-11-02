@@ -165,6 +165,18 @@ async function restart(deps: RedirectContinueDependencies, record: RedirectRecor
   }
 }
 
+/**
+ * Whether the workflow is where a restart of this redirect leaves it, so a restart that committed and died before it ended the record is told apart from a task that moved on (LR-3 N1). Checks and review
+ * restart as a send-back, which moves the revision twice (`returnWorkflowToImplementation`, then the run), so the revision is not compared exactly: the step is (coding for a send-back, planning for a
+ * changed plan, the same step otherwise) and that it runs or is ready.
+ */
+function restartCommitted(record: RedirectRecord, workflow: NonNullable<DeveloperTaskRecord["workflow"]>): boolean {
+  if (workflow.state !== "RUNNING" && workflow.state !== "READY") return false;
+  const step = record.step;
+  const stage = step === "VERIFY" || step === "REVIEW" ? "IMPLEMENT" : step === "IMPLEMENT" && record.mode === "change_plan" ? "PLAN" : step;
+  return workflow.stage === stage && workflow.revision <= record.blockedRevision + 2;
+}
+
 /** How many open redirects one sweep looks at. */
 const SWEEP_PAGE = 50;
 
@@ -172,10 +184,14 @@ const SWEEP_PAGE = 50;
  * Carries on the redirects whose stop landed where no hook ran (see `carryOn`), then closes the ones nobody finished: one still `stopping` or `restarting` after `REDIRECT_STOPPING_SWEEP_MINUTES` ends `left_blocked` (the step stays as the stop left it, the instruction stays a note
  * for the owner's Retry), and a marker without a live record is taken away. Never restarts a step: a redirect that old is the owner's to repeat. Answers how many it closed. Bounded to one page.
  */
-export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carryOn?: (taskId: string) => Promise<unknown>): Promise<number> {
+export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carryOn?: (taskId: string) => Promise<unknown>, options: { budgetMs?: number } = {}): Promise<number> {
   let closed = 0;
-  const cutoff = deps.now() - REDIRECT_STOPPING_SWEEP_MINUTES * 60_000;
+  const startedAt = deps.now();
+  const cutoff = startedAt - REDIRECT_STOPPING_SWEEP_MINUTES * 60_000;
   for (const open of await listOpenRedirects(deps, SWEEP_PAGE)) {
+    // The sweep runs inside the broker's 30 seconds, after the session sweep and the drain, and one redirect can take seconds (a worker probe, a restart): no new one is started once the budget is used. A redirect
+    // left for the next tick loses nothing (its claim and its clock are in the table).
+    if (options.budgetMs !== undefined && deps.now() - startedAt >= options.budgetMs) break;
     try {
       // The stop may have landed where no hook runs (the Reconciler Lambda blocks a step whose cancel got stuck, and registers no continuation): the sweep, which runs in the broker, carries the redirect on.
       if (carryOn !== undefined) await carryOn(open.taskId);
@@ -193,7 +209,7 @@ export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carr
         // A restart that committed and died before it ended the record left the workflow past the stop: that run is going, so it is not "left blocked".
         const task = (await getItem(deps, taskKey(open.taskId))) as DeveloperTaskRecord | undefined;
         const workflow = task?.workflow;
-        if (workflow !== undefined && workflow.revision > record.blockedRevision) to = workflow.state === "RUNNING" && workflow.revision === record.blockedRevision + 1 ? "restarted" : "failed";
+        if (workflow !== undefined && workflow.revision > record.blockedRevision) to = restartCommitted(record, workflow) ? (record.step === "IMPLEMENT" && record.mode === "change_plan" ? "revise_started" : "restarted") : "failed";
       }
       // Conditional on the phase that was read: a redirect whose restart started or ended meanwhile is left alone.
       if (await finish(deps, record, [record.state], to)) closed += 1;

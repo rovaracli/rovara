@@ -21,7 +21,7 @@ import { readOpenRedirect, readRedirect, redirectKey } from "../../packages/brok
 import { registerRedirectContinuation, continueRedirectAfterStop } from "../../packages/broker/src/agent-sessions/redirect-hook.js";
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
-import { redirectRestartHost } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
+import { redirectRestartHost, redirectSweepBudgetMs, redirectSweepReserveMs } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
 import { redirectRestartRequestId } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
@@ -646,6 +646,132 @@ describe("the sweep does not close a restart that is starting or has started (fi
   });
 });
 
+describe("the sweep tells a restart that committed from one that did not (LR-3 N1) and keeps to a time budget (LR-3 N2)", () => {
+  /** A redirect of a step, claimed 20 minutes ago and still `restarting`; the workflow is set by each test to where the restart left it. */
+  async function claimedLongAgo(step: string, mode: "keep_plan" | "change_plan" = "keep_plan") {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    const base = t.task(taskId);
+    const record = { requestId, kind: "stop" as const, orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode, blockedRevision: base.workflow.revision, step,
+      state: "restarting" as const, createdAt: new Date(Date.now() - 20 * 60_000).toISOString(), claimedAt: new Date(Date.now() - 20 * 60_000).toISOString(), ttl: 1_900_000_000 };
+    t.db.set({ ...redirectKey(taskId, requestId), entityType: "REDIRECT", ...record });
+    t.db.set({ pk: "REDIRECT_OPEN", sk: taskId, entityType: "REDIRECT_OPEN", orgId: TEST_ORG, taskId, requestId, sessionId, createdAt: record.createdAt });
+    const moveTo = (workflow: Record<string, unknown>) => t.db.set({ ...base, workflow: { ...base.workflow, ...workflow } });
+    return { t, taskId, sessionId, requestId, record, moveTo, base, deps: { documentClient: t.db, tableName: "state", now: Date.now } };
+  }
+
+  it("a send-back restart that committed (coding, two revisions on) and died before it ended the record ends `restarted`, not `failed`", async () => {
+    const { t, taskId, sessionId, requestId, record, moveTo, deps } = await claimedLongAgo("REVIEW");
+    moveTo({ stage: "IMPLEMENT", state: "RUNNING", revision: record.blockedRevision + 2 });
+    expect(await sweepStoppingRedirects(deps)).toBe(1);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "restarted" });
+    expect(t.sessionEvents(sessionId)).not.toContain(REDIRECT_NOT_CARRIED_OUT_MESSAGE);
+  });
+
+  it("a revised plan that committed ends `revise_started`; a restart of Plan itself ends `restarted`", async () => {
+    const revised = await claimedLongAgo("IMPLEMENT", "change_plan");
+    revised.moveTo({ stage: "PLAN", state: "RUNNING", revision: revised.record.blockedRevision + 1 });
+    expect(await sweepStoppingRedirects(revised.deps)).toBe(1);
+    expect(revised.t.record(revised.taskId, revised.requestId)).toMatchObject({ state: "revise_started" });
+    const planning = await claimedLongAgo("PLAN");
+    planning.moveTo({ stage: "PLAN", state: "RUNNING", revision: planning.record.blockedRevision + 1 });
+    expect(await sweepStoppingRedirects(planning.deps)).toBe(1);
+    expect(planning.t.record(planning.taskId, planning.requestId)).toMatchObject({ state: "restarted" });
+  });
+
+  it("a task that moved on to something else (another step, or far past the restart, or stopped again) is `failed`", async () => {
+    for (const [name, workflow] of [
+      ["another stage", { stage: "VERIFY", state: "RUNNING" }], ["far past the restart", { stage: "IMPLEMENT", state: "RUNNING", revision: 40 }], ["blocked again", { stage: "IMPLEMENT", state: "BLOCKED" }],
+    ] as const) {
+      const { t, taskId, requestId, record, moveTo, deps } = await claimedLongAgo("IMPLEMENT");
+      moveTo({ revision: record.blockedRevision + 1, ...workflow });
+      expect(await sweepStoppingRedirects(deps), name).toBe(1);
+      expect(t.record(taskId, requestId), name).toMatchObject({ state: "failed" });
+    }
+  });
+
+  it("stops starting redirects once its budget is used (the rest wait for the next tick), and does all of them without a budget", async () => {
+    const t = await setup();
+    const { sessionId } = await t.runningCoding();
+    const taskIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const taskId of taskIds) {
+      const requestId = randomUUID();
+      t.db.set({ ...redirectKey(taskId, requestId), entityType: "REDIRECT", requestId, kind: "stop", orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan", blockedRevision: 5, step: "IMPLEMENT", state: "stopping", createdAt: new Date().toISOString(), ttl: 1_900_000_000 });
+      t.db.set({ pk: "REDIRECT_OPEN", sk: taskId, entityType: "REDIRECT_OPEN", orgId: TEST_ORG, taskId, requestId, sessionId, createdAt: new Date().toISOString() });
+    }
+    let clock = Date.now();
+    const asked: string[] = [];
+    // Each redirect carried on takes 20 seconds of the clock.
+    const carryOn = async (taskId: string) => { asked.push(taskId); clock += 20_000; };
+    const deps = { documentClient: t.db, tableName: "state", now: () => clock };
+    await sweepStoppingRedirects(deps, carryOn, { budgetMs: 30_000 });
+    expect(asked).toHaveLength(2);
+    asked.length = 0;
+    await sweepStoppingRedirects(deps, carryOn, { budgetMs: 0 });
+    expect(asked).toEqual([]);
+    await sweepStoppingRedirects(deps, carryOn);
+    expect(asked).toHaveLength(3);
+  });
+});
+
+describe("the redirect sweep's share of the broker's 30 seconds (LR-3 N2)", () => {
+  it("gets what the session sweep and the drain left, less a margin, and never less than a second; the drain holds back a reserve only while `rd` is on", () => {
+    expect(redirectSweepBudgetMs(0)).toBe(24_000);
+    expect(redirectSweepBudgetMs(20_000)).toBe(4_000);
+    expect(redirectSweepBudgetMs(29_000)).toBe(1_000);
+    expect(redirectSweepReserveMs({ LIVE_REDIRECT_ENABLED: "1" })).toBe(5_000);
+    expect(redirectSweepReserveMs({})).toBe(0);
+    expect(redirectSweepReserveMs({ LIVE_REDIRECT_ENABLED: "true" })).toBe(0);
+  });
+});
+
+describe("a Stop between the claim and the restart's commit stops the restart (LR-3, B1 residual)", () => {
+  it("a Stop pressed while the redirect is `restarting` ends it `failed`, and the restart that was about to commit starts nothing", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    // The stop lands, but no hook runs: this test is the hook, with a host that presses Stop at the one moment the claim has been made and the restart has not committed.
+    registerRedirectContinuation(t.db, undefined);
+    await t.stopLands(workspaceId);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+    const real = redirectRestartHost(t.brokerInput as never);
+    let stopped: { status: number } | undefined;
+    const host = { ...real, coding: async (...args: Parameters<typeof real.coding>) => {
+      expect(t.record(taskId, requestId)).toMatchObject({ state: "restarting" });
+      stopped = await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() });
+      await real.coding(...args);
+    } };
+    const outcome = await continueRedirect({ documentClient: t.db, tableName: "state", now: Date.now, config: { workerFeatures: async () => [OWNER_REDIRECT_FEATURE] }, host }, taskId);
+    expect(stopped?.status).toBe(200);
+    // The redirect is ended by the Stop; the restart did not run, the workflow is as the stop left it, and the marker is gone.
+    expect(outcome).toBe("none");
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
+    expect(t.open(taskId)).toBeUndefined();
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+  });
+
+  it("every restart is conditional on the redirect still restarting: a record that is not `restarting` starts nothing", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    registerRedirectContinuation(t.db, undefined);
+    await t.stopLands(workspaceId);
+    const record = t.record(taskId, requestId) as never as Parameters<ReturnType<typeof redirectRestartHost>["coding"]>[1];
+    const host = redirectRestartHost(t.brokerInput as never);
+    const before = t.everything();
+    // `stopping` is not `restarting`: the claim has not been made, so none of the restarts may start a run.
+    await expect(host.coding(t.task(taskId) as never, record, { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" })).rejects.toThrow();
+    await expect(host.planning(t.task(taskId) as never, record, "x")).rejects.toThrow();
+    await expect(host.revise(t.task(taskId) as never, record, "x")).rejects.toThrow();
+    expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    expect(t.everything()).toBe(before);
+  });
+});
+
 describe("this changes the plan, at coding", () => {
   it("goes to planning with the owner's request for changes recorded, and coding does not restart until the revised plan is approved", async () => {
     const t = await setup();
@@ -739,6 +865,8 @@ describe("the checks and the review restart coding, as a send-back does", () => 
     t.db.set({ pk: `DEVTASK#${started.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [{ developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: OMAR.name, role: "owner" }] });
     const record = { requestId: randomUUID(), kind: "stop" as const, orgId: TEST_ORG, sessionId: started.sessionId, taskId: started.taskId, actorId: OMAR.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const,
       blockedRevision: t.task(started.taskId).workflow.revision, step: "REVIEW", state: "stopping" as const, createdAt: new Date().toISOString(), ttl: 1_900_000_000 };
+    // The redirect is being restarted: its record stands in the table, as it does when the host is called, because every restart's transaction is conditional on it (LR-3, B1 residual).
+    t.db.set({ ...redirectKey(started.taskId, record.requestId), entityType: "REDIRECT", ...record, state: "restarting" });
     return { ...started, record, ownerRedirect: { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" } };
   };
   const sendBackAsOmar = async (t: Awaited<ReturnType<typeof setup>>, prepared: Awaited<ReturnType<typeof stoppedReview>>) =>

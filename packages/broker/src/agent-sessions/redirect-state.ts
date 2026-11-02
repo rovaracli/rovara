@@ -120,6 +120,19 @@ export function redirectEndItems(deps: Pick<RedirectStateDependencies, "tableNam
   ];
 }
 
+/**
+ * A condition on the redirect's record for each restart's transaction (LR-3, the B1 residual): the step starts only while the redirect is still `restarting`. A Stop that ended the redirect between the
+ * claim and the commit makes this fail, so the restart starts nothing and the Stop stands.
+ */
+export function redirectRestartingCheck(deps: Pick<RedirectStateDependencies, "tableName">, record: Pick<RedirectRecord, "taskId" | "requestId">): TransactItem {
+  return {
+    ConditionCheck: {
+      TableName: deps.tableName, Key: redirectKey(record.taskId, record.requestId), ConditionExpression: "attribute_exists(pk) AND #state = :restarting",
+      ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":restarting": "restarting" },
+    },
+  };
+}
+
 /** Ends a redirect on its own (with `extra` items in the same transaction, such as its audit item): `true` when this call ended it, `false` when another call had (the state was not one of `from`). */
 export async function endRedirect(deps: RedirectStateDependencies, record: Pick<RedirectRecord, "taskId" | "requestId">, from: readonly RedirectState[], to: RedirectState, extra: readonly TransactItem[] = []): Promise<boolean> {
   try {
@@ -134,14 +147,14 @@ export async function endRedirect(deps: RedirectStateDependencies, record: Pick<
 /**
  * A Stop wins over a redirect that is still `stopping` (fix round 1, B1): the person pressed Stop after redirecting, so the step must stay stopped. Called by the task's cancel (the one Stop,
  * the session's Stop and the task route all run) before it asks for the stop, with the request id of that cancel: the redirect's own cancel has the redirect's request id and does not end itself.
- * Ends the open redirect `failed` and removes its marker, conditional on it still being `stopping`; a redirect already being restarted (`restarting`) is left to its restart, whose run the Stop then
- * cancels like any running step. Never throws. Answers whether it ended one.
+ * Ends the open redirect `failed` and removes its marker, conditional on it still being `stopping` or `restarting`. A restart that has claimed the redirect but not yet committed then finds the redirect ended
+ * (`redirectRestartingCheck` rides in its transaction) and starts nothing; one that committed already has a running step, which the Stop then cancels like any other. Never throws. Answers whether it ended one.
  */
 export async function endRedirectForStop(deps: RedirectStateDependencies, taskId: string, cancelRequestId: string): Promise<boolean> {
   try {
     const open = await readOpenRedirect(deps, taskId);
     if (open === undefined || open.requestId === cancelRequestId) return false;
-    return await endRedirect(deps, { taskId, requestId: open.requestId }, ["stopping"], "failed");
+    return await endRedirect(deps, { taskId, requestId: open.requestId }, ["stopping", "restarting"], "failed");
   } catch {
     // A redirect that could not be ended here is ended by the sweep; the Stop is not failed for it.
     return false;

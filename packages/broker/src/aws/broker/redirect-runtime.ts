@@ -8,6 +8,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { WORKER_PING_FEATURES_FIELD, agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
 import { continueRedirect, sweepStoppingRedirects, type RedirectContinueDependencies, type RedirectRestartHost } from "../../agent-sessions/redirect-continue.js";
 import { registerRedirectContinuation } from "../../agent-sessions/redirect-hook.js";
+import { redirectRestartingCheck } from "../../agent-sessions/redirect-state.js";
 import type { RedirectConfig } from "../../agent-sessions/redirect.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
 import { safeDisplayName } from "../../developer/person-name.js";
@@ -57,12 +58,24 @@ async function redirectCaller(dependencies: AwsBrokerDependencies, record: Pick<
   };
 }
 
-/** The task module's dependencies for the person's restart: the broker's own, with the person as the session actor (see `isSessionActor`: the redirect checked that they own the task). */
-async function restartDependencies(dependencies: AwsBrokerDependencies, record: Pick<RedirectRecord, "orgId" | "actorId">): Promise<{ deps: DeveloperTaskRouteDependencies; caller: DeveloperCaller }> {
+/**
+ * The task module's dependencies for the person's restart: the broker's own, with the person as the session actor (see `isSessionActor`: the redirect checked that they own the task). Given the redirect, every
+ * transaction that starts a run carries a condition that the redirect is still `restarting`, so a Stop that ended it between the claim and the commit stops the restart (LR-3, B1 residual).
+ */
+async function restartDependencies(dependencies: AwsBrokerDependencies, record: Pick<RedirectRecord, "orgId" | "actorId"> & Partial<Pick<RedirectRecord, "taskId" | "requestId">>): Promise<{ deps: DeveloperTaskRouteDependencies; caller: DeveloperCaller }> {
   if (dependencies.developer === undefined) throw new Error("developer sign-in is not set up in this deployment");
   const caller = await redirectCaller(dependencies, record);
+  const tasks = developerTaskActions(dependencies);
+  const guard = record.taskId === undefined || record.requestId === undefined ? undefined : redirectRestartingCheck(dependencies, { taskId: record.taskId, requestId: record.requestId });
+  const guarded = guard === undefined ? tasks : {
+    ...tasks,
+    acceptTask: (...args: Parameters<typeof tasks.acceptTask>): ReturnType<typeof tasks.acceptTask> => {
+      const [identity, workspaceId, request, extra, options] = args;
+      return tasks.acceptTask(identity, workspaceId, request, (operation) => [...(extra?.(operation) ?? []), guard], options);
+    },
+  };
   const deps = developerTaskRouteDependencies({
-    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies),
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks: guarded,
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
   }, caller, undefined, null);
   return { deps: { ...deps, sessionActor: { developerId: record.actorId, requireOwner: true } }, caller };
@@ -119,12 +132,22 @@ export function redirectFromEnvironment(dependencies: AwsBrokerDependencies, env
   return { ...probe, continueRedirect: continuation };
 }
 
-/** The session sweep's share: closes the redirects nobody finished. Does nothing (reads nothing) while the switch is off. Answers how many it closed. */
-export async function sweepRedirects(dependencies: AwsBrokerDependencies, env: Record<string, string | undefined> = process.env): Promise<number> {
+/**
+ * The session sweep's share: closes the redirects nobody finished. Does nothing (reads nothing) while the switch is off. Answers how many it closed. `budgetMs` is what is left of the broker's 30 seconds for it
+ * (LR-3 N2): no redirect is started once it is used, and one that has started may run over by a probe and a restart.
+ */
+export async function sweepRedirects(dependencies: AwsBrokerDependencies, env: Record<string, string | undefined> = process.env, budgetMs?: number): Promise<number> {
   if (!liveInteractionFlagOn(env[LIVE_INTERACTION_FLAGS.redirect.variable])) return 0;
   const probe = redirectProbe(dependencies);
   // The Reconciler Lambda blocks a step whose cancel got stuck and runs no continuation of its own (it has no task wiring): this sweep, in the broker, picks the redirect up.
   return sweepStoppingRedirects({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
-    (taskId) => continueRedirect(continueDependencies(dependencies, probe), taskId));
+    (taskId) => continueRedirect(continueDependencies(dependencies, probe), taskId), budgetMs === undefined ? {} : { budgetMs });
 }
+
+/** What the session sweep leaves for the redirect sweep while `rd` is on: the broker's timeout is 30 s, the sweep and drain use up to 25, and one redirect (a 3 s probe and a restart) needs a few seconds. */
+export const REDIRECT_SWEEP_RESERVE_MS = 5_000;
+/** The redirect sweep's budget once the session sweep and drain are done: the broker's 30 seconds, less a safety margin for the redirect in flight, less what was used. At least a second, so every tick looks at one. */
+export const redirectSweepBudgetMs = (usedMs: number): number => Math.max(1_000, 30_000 - 6_000 - usedMs);
+/** What to hold back from the drain for the redirect sweep: nothing while the switch is off. */
+export const redirectSweepReserveMs = (env: Record<string, string | undefined> = process.env): number => (liveInteractionFlagOn(env[LIVE_INTERACTION_FLAGS.redirect.variable]) ? REDIRECT_SWEEP_RESERVE_MS : 0);
 

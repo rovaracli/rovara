@@ -39,7 +39,7 @@ export function liveInteractionFlagOn(value: string | undefined): boolean {
   return value === "1";
 }
 
-/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker; an older one gets an ordinary owner note and the outcome says so. */
+/** A worker that lists this accepts `ownerRedirect` in a coding invocation. The broker sends it only to such a worker: for an older one a coding redirect is refused before anything is stopped (it is never degraded to a note). */
 export const OWNER_REDIRECT_FEATURE = "task.ownerRedirect.v1" as const;
 /** A worker that lists this answers the read-only `peek` call (diff stat and patch of the working tree). Optional for the pilot (A2). */
 export const PEEK_FEATURE = "task.peek.v1" as const;
