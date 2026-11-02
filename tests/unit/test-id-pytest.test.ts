@@ -71,6 +71,19 @@ describe("pytest's own output", () => {
     expect(names.filter((name) => name.endsWith("test_discount_fails"))).toEqual(["tests/test_cart_rules.py::TestRules::test_discount_fails"]);
   });
 
+  it("a test whose id is not valid is shown as a plain line, marked unlisted, and never confirmed as already failing even when its plain line equals another test's valid id", async () => {
+    // "a\nb" is shown as "a b", which IS the valid id of a different test; the mark says it is not a real id.
+    const report = counted("junit", [{ file: "tests/a.py", name: "a\nb", status: "failed" }, { file: "tests/a.py", name: "a\u3164", status: "passed" }]);
+    const view = evidenceTests(report);
+    expect(view.names[0]).toMatchObject({ name: "tests/a.py::a b", unlisted: true, status: "failed" });
+    expect(view.names[1]).toMatchObject({ unlisted: true });
+    const check = { checkId: "unit", kind: "test", after: "failed", class: "already_failing", tests: view } as never;
+    expect(hasUnconfirmedFailingTest(check, ["tests/a.py::a b"])).toBe(true);
+    // The valid id of the other test, with no flag, is confirmed by the same set.
+    const plain = { checkId: "unit", kind: "test", after: "failed", class: "already_failing", tests: evidenceTests(counted("junit", [{ file: "tests/a.py", name: "a b", status: "failed" }])) } as never;
+    expect(hasUnconfirmedFailingTest(plain, ["tests/a.py::a b"])).toBe(false);
+  });
+
   it("the nightly's own report reader (the production port) gives the same ids from the same file", async () => {
     const posted: unknown[] = [];
     const environment = { ...env, selection: { method: "full" as const, alwaysRun: [], fullSuiteOn: [] } };
