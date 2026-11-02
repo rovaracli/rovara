@@ -167,6 +167,22 @@ describe("share as company recipe", () => {
     expect(events(audit, "setup_recipe.approved")[0]).toMatchObject({ actor: { id: OMAR.developerId }, facts: { revision: 2, authority: "fresh_sign_in" } });
   });
 
+  it("tells a maintainer what the share form needs (F8): the repositories, the closed list of marker files, and whether an approved environment exists; nobody else", async () => {
+    const { t } = await withApprovedSetup();
+    const info = await t.web(MAYA, "GET", SHARE);
+    expect(info, JSON.stringify(info.body)).toMatchObject({ status: 200, body: { repositories: ["web"], hasApprovedEnvironment: true } });
+    expect((info.body.markerFiles as string[]).includes("pyproject.toml")).toBe(true);
+    const none = await bench({ maya: "member", grant: "maintainer" });
+    on();
+    expect((await none.t.web(MAYA, "GET", SHARE)).body).toMatchObject({ hasApprovedEnvironment: false });
+    const viewer = await bench({ maya: "member", grant: "viewer" });
+    on();
+    expect((await viewer.t.web(MAYA, "GET", SHARE)).status).toBe(403);
+    expect((await t.dev(MAYA, "GET", SHARE)).status).toBe(403);
+    delete process.env.SETUP_RECIPES_ENABLED;
+    expect((await t.web(MAYA, "GET", SHARE)).status).toBe(404);
+  });
+
   it("is refused for a viewer and a contributor, and for a project with no approved environment; nothing is stored", async () => {
     const viewer = await bench({ maya: "member", grant: "viewer" });
     on();

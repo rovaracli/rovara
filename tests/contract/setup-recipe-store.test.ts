@@ -145,7 +145,7 @@ describe("history (F3)", () => {
     const { db, store } = bench();
     const keep = recipe({ status: "approved" });
     await store.commitRecipe(keep, null, entry(keep, "recipe_created"));
-    for (let index = 0; index < 450; index += 1) {
+    for (let index = 0; index < 1200; index += 1) {
       const old = recipe({ status: "revoked", revision: 2 });
       db.set({ ...old, pk: orgPk(ORG), sk: `SETUP_RECIPE_REVOKED#${old.recipeId}`, entityType: "SETUP_RECIPE" });
     }
