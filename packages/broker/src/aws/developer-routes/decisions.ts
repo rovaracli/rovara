@@ -38,6 +38,8 @@ import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { specChoiceItemsFor } from "../developer-tasks/spec-wiring.js";
+import { secondReviewNoticeItemsFor } from "../../rovara-code/second-review-notice.js";
+import { secondReviewEnabled } from "../../rovara-code/second-review-switch.js";
 import { developerTaskRouteDependencies, sessionDependenciesOf, sessionReadDependencies } from "./dependencies.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -88,7 +90,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   return {
     sources: {
       async list(who) {
-        const [merges, specs, testEnv, envChanges, fixSetup, hosts] = await Promise.all([
+        const [merges, specs, testEnv, envChanges, fixSetup, hosts, secondReviewNotices] = await Promise.all([
           mergeItemsFor({
             ...table, now: deps.now,
             sessionIdOf: async (task) => (await new AgentSessionStore(sessions).getForTask(who.orgId, task))?.sessionId,
@@ -100,8 +102,10 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           envChangeItemsFor({ store, task: loadTask }, who),
           fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
           hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true }, who) : Promise.resolve([]),
+          // Second review (`cr`): the model that gives the second opinion stopped qualifying, told to the company's owners and admins. Empty while `cr` is off.
+          secondReviewEnabled(env) ? secondReviewNoticeItemsFor({ table, isAdmin: (person) => (person as DeveloperCaller).orgRole === "owner" || (person as DeveloperCaller).orgRole === "admin" }, who) : Promise.resolve([]),
         ]);
-        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts];
+        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts, ...secondReviewNotices];
       },
       // Company locks that raise a card's tier are not stored anywhere yet: none apply, so the tiers are the projector's own.
       async locks() { return {}; },

@@ -12,6 +12,7 @@
 //                                                           LOWERING either (on to shadow or off, shadow to off) is a proposal (202 needs_approval) that a DIFFERENT eligible person approves (the one-admin rule: no sole-owner exception).
 //           { action: "approve-mode", changeId }            a different eligible person approves a lowering, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise).
 //           { action: "cancel-mode", changeId }             an eligible person withdraws a waiting proposal.
+//           { action: "notice-seen", key }                  an owner or admin: "I've seen it" for the notice that the reviewer model stopped qualifying (the decision card goes away; the problem stays on the page until it is fixed).
 //           { action: "withdraw", model }                   an owner or admin withdraws the verdict (the evidence) for a model: it stops blocking at once. Admins can only withdraw; staff write evidence (aws/broker/second-review-evidence-routes.ts).
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -28,6 +29,7 @@ import { companyChoiceUpdate, companyContextUpdate, projectNarrowingUpdate, read
 import { approveSecondReviewModeChange, cancelSecondReviewModeChange, effectiveMode, getModeChange, openModeChanges, requestSecondReviewMode, type ModeAudit, type ModeDeps, type ModeFailure } from "../../org/second-review-mode.js";
 import { evidenceViewOf, verdictHoldsFor, withdrawVerdict } from "../../org/second-review-evidence.js";
 import { readTrackRecord } from "../../rovara-code/second-review-track.js";
+import { markNoticeSeen, noticeLines, readNotice } from "../../rovara-code/second-review-notice.js";
 import { requireFreshSignIn } from "./test-environment-wizard.js";
 import { defaultModelLine, secondReviewPicker, SECOND_REVIEW_TYPICAL_REVIEW_TOKENS } from "../../rovara-code/second-review-picker.js";
 import { planSecondReview } from "../../rovara-code/second-review.js";
@@ -55,6 +57,7 @@ const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("approve-mode"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),
   z.object({ action: z.literal("cancel-mode"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),
   z.object({ action: z.literal("withdraw"), model: Ref }).strict(),
+  z.object({ action: z.literal("notice-seen"), key: z.string().regex(/^[a-f0-9]{32}$/u) }).strict(),
 ]);
 
 /** What each refusal of the mode writer says, in fixed words (the code decides the error, never a message from below). */
@@ -81,14 +84,14 @@ const builderOf = (url: URL): ModelIdentifier[] => url.searchParams.getAll("buil
   return at > 0 && at < value.length - 1 ? [{ provider: value.slice(0, at), modelId: value.slice(at + 1) }] : [];
 });
 
-async function listOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, project: string | undefined, against: readonly ModelIdentifier[]) {
+async function listOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, project: string | undefined, against: readonly ModelIdentifier[], fitUnknown = false) {
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
   const routing = deps.agents?.modelRouting ?? {};
   const sources = await servableModels(routing, caller.orgId, project);
   const forbidden = (await readGuardrails({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.orgId)).forbiddenModels ?? [];
   const settings = await readSecondReviewSettings(table, caller.orgId, project ?? "");
   const price = (model: ModelIdentifier) => { const found = listPricesPerMillion(model); return found === undefined ? undefined : { inputUsdPerMTok: found.input, outputUsdPerMTok: found.output }; };
-  const picker = secondReviewPicker({ sources, project: {}, forbidden, against, price, verdicts: settings.verdicts, replayRuns: settings.replayRuns });
+  const picker = secondReviewPicker({ sources, project: {}, forbidden, against, fitUnknown, price, verdicts: settings.verdicts, replayRuns: settings.replayRuns });
   return { picker, settings, sources, forbidden, price };
 }
 
@@ -101,17 +104,20 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
     // A project is named only by someone who is in it (and only a project the company has): anyone else is told it is not there, as the models list does.
     if (project !== undefined && await deps.agents?.projectMembers.roleOf(caller.orgId, project, { developerId: caller.developerId, orgRole: caller.orgRole }) === undefined) throw agentXError("NOT_FOUND", "Not found.");
     const against = builderOf(url);
-    if (against.length === 0) throw agentXError("CONFIG_INVALID", "Name the model that writes the code (builder=provider:model) so each model's fit can be shown.");
-    const { picker, settings, sources, forbidden, price } = await listOf(deps, caller, project, against);
+    // Without the model that writes the code (the company's settings page: it differs per task) fit is only "its maker is known", and `fitKnown` says so; a task checks the real fit when it starts.
+    const fitKnown = against.length > 0;
+    const { picker, settings, sources, forbidden, price } = await listOf(deps, caller, project, against, !fitKnown);
     const mode = configuredSecondReviewMode({ project: settings.projectMode, companyDefault: settings.companyDefault, companyLock: settings.companyLock });
-    const plan = planSecondReview({ switchOn: true, mode: mode === "off" ? "shadow" : mode, against, project: {}, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
+    const plan = !fitKnown ? undefined : planSecondReview({ switchOn: true, mode: mode === "off" ? "shadow" : mode, against, project: {}, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
       companyModels: settings.companyModels, projectModels: settings.projectModels, price });
     const chosen = narrowedSecondReviewModels({ company: settings.companyModels, project: settings.projectModels });
     // The model the admin's "turn on" decision is about: the company's (or the project's narrowed) primary, else the one that would review now. Its evidence and its track record on this company.
-    const primary = chosen.models?.[0] ?? (plan.run ? plan.model : undefined);
+    const topSuggestion = picker.suggested[0]?.model;
+    const primary = chosen.models?.[0] ?? (plan?.run === true ? plan.model : plan === undefined ? topSuggestion : undefined);
     const evidence = primary === undefined ? null : evidenceViewOf(settings, primary);
     const trackRecord = primary === undefined ? null : await readTrackRecord(table, caller.orgId, secondReviewModelKey(primary)).catch(() => null);
     const pending = await openModeChanges(table, caller.orgId, deps.now()).catch(() => []);
+    const notice = await readNotice(table, caller.orgId).catch(() => undefined);
     return new StatusReply(200, {
       mode,
       modes: { company: effectiveMode(settings, { kind: "company" }), project: project === undefined ? null : settings.projectMode ?? null, effective: mode },
@@ -120,6 +126,8 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
       ...(isAdmin(caller) ? { pending: pending.map((change) => ({ changeId: change.id, scope: change.scope.kind, ...(change.scope.kind === "project" ? { project: change.scope.project } : {}), from: change.from, to: change.to, proposedByYou: change.proposedBy === caller.developerId, expiresAt: new Date(change.expiresAt).toISOString() })) } : {}),
       evidence,
       trackRecord,
+      // The notice that the model stopped qualifying, while the mode is not off. Anyone who reads the page sees that there is one; the words are the same fixed sentences.
+      notice: notice === undefined || mode === "off" ? null : { key: notice.key, code: notice.code, seen: notice.status === "seen", lines: noticeLines(notice), createdAt: notice.createdAt },
       context: settings.context,
       alsoSees: settings.context === "same_as_first" ? "Second reviewer also sees what the first reviewer sees: the connected sources, lessons and step instructions." : null,
       models: picker.entries,
@@ -127,7 +135,12 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
       typicalReview: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS,
       choice: settings.companyModels === undefined ? null : { models: settings.companyModels },
       projectNarrowing: settings.projectModels === undefined ? null : { models: settings.projectModels },
-      current: plan.run
+      fitKnown,
+      current: plan === undefined
+        ? (chosen.choice === "company" && chosen.models !== undefined && chosen.models.length > 0
+          ? { source: "company", models: chosen.models, line: `Reviewed by ${chosen.models[0]!.modelId} (company choice)` }
+          : topSuggestion !== undefined ? { source: "default", models: [topSuggestion], line: defaultModelLine(topSuggestion, false) } : { source: "none", models: [], reason: "no-candidate" })
+        : plan.run
         ? { source: plan.choice, models: plan.candidates, line: plan.choice === "default" ? defaultModelLine(plan.model, false) : `Reviewed by ${plan.model.modelId} (company choice)`, ...(plan.skipped.length === 0 ? {} : { skipped: plan.skipped }) }
         : { source: chosen.choice === "company" ? "choice" : "none", models: [], reason: plan.reason, ...(plan.skipped === undefined ? {} : { skipped: plan.skipped }) },
     });
@@ -181,6 +194,11 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
     return new StatusReply(200, { status: "applied", context: body.context });
   }
   if (body.action === "mode" || body.action === "approve-mode" || body.action === "cancel-mode") return modeAction(deps, caller, body, at, mayAsMaintainer, modeAuditOf(deps, caller, auditDeps));
+  if (body.action === "notice-seen") {
+    const seen = await markNoticeSeen(table, caller.orgId, body.key, at);
+    if (!seen) throw agentXError("CHANGE_STALE", "That notice changed or was seen already. Reload.");
+    return new StatusReply(200, { status: "applied" });
+  }
   if (body.action === "withdraw") {
     const result = await withdrawVerdict({ table, audit: modeAuditOf(deps, caller, auditDeps), now: () => at }, { orgId: caller.orgId, model: body.model, by: caller.developerId });
     if (!result.ok) throw result.code === "not_found" ? agentXError("NOT_FOUND", "No such verdict.") : result.code === "audit_unavailable" ? agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.") : agentXError("CHANGE_STALE", "That verdict was withdrawn already.");

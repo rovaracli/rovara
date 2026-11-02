@@ -38,6 +38,8 @@ export const DECISION_KINDS = [
   "fix_setup",
   // A website the setup run needs (SH12): one card per host per project. Approving goes through the project's own website change, which has its own second-person rule and, on Cloud, the staff step.
   "setup_host",
+  // Second review (lane cr-settings, `cr`): the model that gives the second opinion stopped qualifying. An information card for the company's owners and admins; it opens the settings page, where "I've seen it" puts it away.
+  "second_review_notice",
 ] as const;
 export const DecisionKindSchema = z.enum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindSchema>;
@@ -71,6 +73,7 @@ export const DECISION_KIND_FLOOR_RISK: Record<DecisionKind, DecisionRisk> = {
   spec_choice: "low",
   fix_setup: "medium",
   setup_host: "medium",
+  second_review_notice: "low",
 };
 
 export const DecisionFrictionSchema = z.object({ expandEvidenceFirst: z.boolean(), freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict();
