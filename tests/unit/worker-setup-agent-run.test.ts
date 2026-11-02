@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_HOST_WAIT_MAX_HOURS } from "../../packages/contracts/src/index.js";
-import { hostAnswerNote, runSetupAgent, serialize, setupRepositoriesOf, type SetupRunInput, type SetupRunPorts } from "../../packages/worker/src/setup-agent-run.js";
+import { assertCommitsMatch, hostAnswerNote, runSetupAgent, serialize, setupRepositoriesOf, type SetupRunInput, type SetupRunPorts } from "../../packages/worker/src/setup-agent-run.js";
 import { createSetupSandbox, type TrackedFilesVerdict } from "../../packages/worker/src/setup-agent.js";
 import { helperRunArgs, networkCreateArgs, setupWorkspaceKey, setupNetworkAddresses, setupNetworkName, setupNetworkSlot, startRunNetwork } from "../../packages/worker/src/setup-network.js";
 import type { PiSessionHandle } from "../../packages/worker/src/pi-session.js";
@@ -88,13 +88,13 @@ async function world(options: {
 
 describe("what the run reads (ED-1)", () => {
   it("takes the repositories from the manifest, at the commit the broker resolved", () => {
-    expect(setupRepositoriesOf("/work", [repo], COMMITS)).toEqual([{ ...repo, directory: "/work/repo/web" }]);
+    expect(setupRepositoriesOf("/work", [repo])).toEqual([{ ...repo, directory: "/work/repo/web" }]);
   });
   it("refuses a workspace with a pull request head checked out, a commit that is not a full hash, and no repository", () => {
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, checkedOut: { pullRequest: 3, headSha: "b".repeat(40) } }], COMMITS)).toThrow();
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "main" }], [{ repository: "web", commit: "main" }] as never)).toThrow();
-    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "abc123" }], [{ repository: "web", commit: "abc123" }] as never)).toThrow();
-    expect(() => setupRepositoriesOf("/work", [], COMMITS)).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, checkedOut: { pullRequest: 3, headSha: "b".repeat(40) } }])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "main" }])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [{ ...repo, resolvedCommit: "abc123" }])).toThrow();
+    expect(() => setupRepositoriesOf("/work", [])).toThrow();
   });
   it("hands the tracked-files check the manifest's directory, never a path from anywhere else", async () => {
     const t = await world();
@@ -107,15 +107,15 @@ describe("what the run reads (ED-1)", () => {
 
 describe("P1: the manifest is held to the commits the broker recorded", () => {
   it("accepts the manifest when every repository's commit equals the recorded one", () => {
-    expect(() => setupRepositoriesOf("/work", [repo], COMMITS)).not.toThrow();
+    expect(() => assertCommitsMatch([repo], COMMITS)).not.toThrow();
   });
   it("refuses a different commit, a missing list, a repository the broker did not record, a repository missing from the manifest and a repeated entry", () => {
-    expect(() => setupRepositoriesOf("/work", [repo], [{ repository: "web", commit: "b".repeat(40) }])).toThrow(/another commit/u);
-    expect(() => setupRepositoriesOf("/work", [repo], undefined)).toThrow(/commits the broker recorded/u);
-    expect(() => setupRepositoriesOf("/work", [repo], [{ repository: "api", commit: COMMIT }])).toThrow();
-    expect(() => setupRepositoriesOf("/work", [repo], [...COMMITS, { repository: "api", commit: COMMIT }])).toThrow();
-    expect(() => setupRepositoriesOf("/work", [repo, { ...repo, name: "api", path: "repo/api" }], COMMITS)).toThrow();
-    expect(() => setupRepositoriesOf("/work", [repo], [...COMMITS, ...COMMITS])).toThrow();
+    expect(() => assertCommitsMatch([repo], [{ repository: "web", commit: "b".repeat(40) }])).toThrow(/another commit/u);
+    expect(() => assertCommitsMatch([repo], undefined)).toThrow(/commits the broker recorded/u);
+    expect(() => assertCommitsMatch([repo], [{ repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => assertCommitsMatch([repo], [...COMMITS, { repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => assertCommitsMatch([repo, { ...repo, name: "api", path: "repo/api" }], COMMITS)).toThrow();
+    expect(() => assertCommitsMatch([repo], [...COMMITS, ...COMMITS])).toThrow();
   });
   it("starts nothing (no network, no sandbox) when the commits differ", async () => {
     const t = await world();

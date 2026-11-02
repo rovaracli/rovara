@@ -145,9 +145,8 @@ export function assertCommitsMatch(manifest: readonly SetupManifestRepository[],
 }
 
 /** The repositories of the run, from the manifest only. A workspace with a pull request head checked out, or a commit that is not a full hash, is refused: the run reads the default branch's head and nothing else (ED-1). */
-export function setupRepositoriesOf(rootPath: string, manifest: readonly SetupManifestRepository[], commits: SetupCommits | undefined): SetupAgentRepository[] {
+export function setupRepositoriesOf(rootPath: string, manifest: readonly SetupManifestRepository[]): SetupAgentRepository[] {
   if (manifest.length === 0) throw agentXError("CONFIG_INVALID", "a setup run needs a prepared repository");
-  assertCommitsMatch(manifest, commits);
   return manifest.map((repository) => {
     if (repository.checkedOut !== undefined) throw agentXError("CONFIG_INVALID", "a setup run reads the default branch only, never a pull request head");
     if (!COMMIT.test(repository.resolvedCommit)) throw agentXError("CONFIG_INVALID", "a setup run needs the commit the broker resolved");
@@ -159,7 +158,9 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
   const { ports } = input;
   const now = ports.now ?? Date.now;
   const limits = effectiveSetupAgentLimits(input.limits);
-  const repositories = setupRepositoriesOf(input.rootPath, input.repositories, input.commits);
+  // P1: the manifest is held to the commits the broker recorded (from the heads it pinned) before anything starts.
+  assertCommitsMatch(input.repositories, input.commits);
+  const repositories = setupRepositoriesOf(input.rootPath, input.repositories);
   if (input.price === undefined || !Number.isFinite(input.price.inputPerMTok) || !Number.isFinite(input.price.outputPerMTok)) throw agentXError("RUNTIME_UNAVAILABLE", "AgentX does not know this model's price, so it did not start the setup run");
   const price = input.price;
   const checkFiles = ports.checkFiles ?? ((list) => checkTrackedFiles(list));
