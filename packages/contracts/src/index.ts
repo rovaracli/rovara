@@ -272,6 +272,7 @@ export * from "./spec-target.js";
 // Setup and test health: saved environments (SH3).
 export * from "./saved-env.js";
 export * from "./saved-env-image.js";
+export * from "./saved-env-build.js";
 export * from "./app-saved-env.js";
 
 // Setup and test health: setup recipes and their fingerprint (SH4).

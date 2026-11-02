@@ -65,6 +65,8 @@ export interface OperationRecord extends Operation {
   knowledgeCommit?: string;
   /** Saved environments (SH25): the image digest this prepare invocation was told to pull. The pull login is given for this digest only. */
   savedEnvDigest?: string;
+  /** Saved project images: the rebuild job this preparation was made FOR. The push login and the result are answered to this operation only, and only with this job's lease. */
+  savedEnvJobId?: string;
   /** How many pull logins this preparation was given (at most 3). */
   savedEnvLoginCount?: number;
   /** P1: the default-branch head the BROKER read for each repository when it built a setup run's prepare invocation (sent as `pins`). The task keeps the worker's report only when it equals these. */

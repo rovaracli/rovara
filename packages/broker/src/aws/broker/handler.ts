@@ -78,6 +78,8 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { exchangeSavedEnvLogin } from "./saved-env-login.js";
+import { handleSavedEnvLease } from "./saved-env-lease.js";
+import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
@@ -153,6 +155,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          // Saved project images: the project's Environment panel routes (only where the `sv` switch is on and the registry is installed).
+          ...(dependencies.savedEnvDeps === undefined || !savedEnvEnabled() ? {} : { savedEnv: dependencies.savedEnvDeps }),
           // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
           ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
@@ -750,6 +754,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const savedEnvLoginExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-login$/.exec(url.pathname);
       if (request.method === "POST" && savedEnvLoginExchange?.[1] && savedEnvLoginExchange[2]) {
         return json(await exchangeSavedEnvLogin(dependencies, request, savedEnvLoginExchange[1], savedEnvLoginExchange[2]), request.requestId);
+      }
+      // Saved project images: the rebuild job's push login and result (answered to the job's lease), and a preparation's fallback report (test-env/saved-env-lease.ts).
+      const savedEnvLease = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/saved-env-(push-login|result|fallback)$/.exec(url.pathname);
+      if (request.method === "POST" && savedEnvLease?.[1] && savedEnvLease[2] && savedEnvLease[3]) {
+        return json(await handleSavedEnvLease(dependencies, request, savedEnvLease[1], savedEnvLease[2], savedEnvLease[3] as "push-login" | "result" | "fallback"), request.requestId);
       }
       const credentialExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/repository-credentials$/.exec(
         url.pathname,

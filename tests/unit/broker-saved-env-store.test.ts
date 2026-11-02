@@ -84,6 +84,13 @@ describe("the row", () => {
     expect(db.get(orgPk(ORG), "SAVED_ENV#web")).toBeUndefined();
   });
 
+  it("audits a setting change with the person and the new value only", async () => {
+    const { capture, store } = bench();
+    await store.commit(state({ enabled: false }), null, entry("setting_changed", { enabled: false, actor: "dev_1" }));
+    expect(capture.recordedBy("saved_env.setting_changed")[0]).toMatchObject({ target: { kind: "project", name: "web" }, actor: { kind: "member", id: "dev_1" }, facts: { enabled: false } });
+    expect(capture.recordedBy("saved_env.changed")).toEqual([]);
+  });
+
   it("writes activity as the row alone, with no ledger event", async () => {
     const { capture, store } = bench();
     expect(await store.commit(state({ lastTaskAt: AT }), null, entry("activity", { reason: "task" }))).toBe(true);

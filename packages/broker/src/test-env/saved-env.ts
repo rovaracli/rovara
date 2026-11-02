@@ -120,13 +120,15 @@ export interface SavedEnvState {
 
 /** What the audit ledger gets: ids, digests and fixed words only. */
 export interface SavedEnvAuditEntry {
-  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "project_registered" | "ceiling_walk";
+  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "project_registered" | "ceiling_walk" | "setting_changed";
   orgId: string;
   projectId: string;
   at: string;
   reason?: string;
   digest?: string;
   count?: number;
+  /** The project's `savedEnv.enabled` after a `setting_changed`. */
+  enabled?: boolean;
   /** Who asked (a person's id for a Reset). */
   actor?: string;
 }
@@ -292,6 +294,20 @@ export async function requestReset(deps: SavedEnvDeps, ids: { orgId: string; pro
   const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), resetRequested: true, lastResetAt: iso(now), ...(requestId === undefined ? {} : { lastResetRequestId: requestId }) }, audit(deps, ids, "reset_requested", { actor: actor.slice(0, 200) }));
   if (written === undefined) return { ok: false, reason: "stale_write" };
   return checkRebuild(deps, ids, "poll");
+}
+
+/**
+ * A maintainer turned the project's saved images on or off (the project's `savedEnv.enabled`; the install's `sv` switch is above it and off by default). The caller has checked the maintainer's right and names who
+ * asked. Turning it off ends any lease (`authorizeLease` refuses an inactive project) and queues nothing; turning it on queues nothing by itself (the next push, task or poll does). A change to the value it
+ * already has writes nothing. Nothing is written when the install's switch is off.
+ */
+export async function setProjectEnabled(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, enabled: boolean, actor: string): Promise<{ ok: true; changed: boolean } | { ok: false; reason: "disabled" | "stale_write" }> {
+  const off = disabled(deps);
+  if (off !== undefined) return off;
+  const prior = await deps.store.get(ids.orgId, ids.projectId);
+  if ((prior?.enabled ?? true) === enabled) return { ok: true, changed: false };
+  const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), enabled }, audit(deps, ids, "setting_changed", { enabled, actor }));
+  return written === undefined ? { ok: false, reason: "stale_write" } : { ok: true, changed: true };
 }
 
 // ---- the job's lease

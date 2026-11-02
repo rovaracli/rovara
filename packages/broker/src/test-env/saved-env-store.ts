@@ -9,7 +9,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { ImageDigestSchema, OrgIdSchema, SavedEnvManifestSchema, WORKFLOW_DISPATCH_DUE_INDEX, agentXError, orgPk, type AuditEventInput } from "@agentx/contracts";
 import { z } from "zod";
-import { auditOccurrence, auditSavedEnvChanged } from "../audit/events.js";
+import { auditOccurrence, auditSavedEnvChanged, auditSavedEnvSettingChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { SAVED_ENV_JOB_LEASE_MS, type SavedEnvAuditEntry, type SavedEnvState, type SavedEnvStore } from "./saved-env.js";
@@ -80,9 +80,11 @@ function dueAttributes(state: SavedEnvState): Row {
 /** The ledger event of one entry, or undefined for `activity` (the row's times only). The actor is the person for a Reset, the system otherwise; the facts are fixed words, a digest and a count. */
 export function savedEnvAuditEvent(entry: SavedEnvAuditEntry, version: number | undefined): AuditEventInput | undefined {
   if (entry.action === "activity") return undefined;
+  const occurrence = version === undefined ? auditOccurrence(entry.projectId, entry.at, entry.action, entry.digest ?? entry.reason ?? "") : auditOccurrence(entry.projectId, String(version), entry.action);
+  const actor = entry.actor === undefined ? { kind: "system" as const, id: "rovara" as const } : { kind: "member" as const, id: entry.actor };
+  if (entry.action === "setting_changed") return auditSavedEnvSettingChanged({ orgId: entry.orgId, actor, occurredAt: entry.at, occurrence, projectName: entry.projectId, enabled: entry.enabled === true });
   return auditSavedEnvChanged({
-    orgId: entry.orgId, actor: entry.actor === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: entry.actor }, occurredAt: entry.at,
-    occurrence: version === undefined ? auditOccurrence(entry.projectId, entry.at, entry.action, entry.digest ?? entry.reason ?? "") : auditOccurrence(entry.projectId, String(version), entry.action),
+    orgId: entry.orgId, actor, occurredAt: entry.at, occurrence,
     projectName: entry.projectId, change: entry.action, ...(entry.reason === undefined ? {} : { cause: entry.reason.slice(0, 60) }), ...(entry.digest === undefined ? {} : { digest: entry.digest }), ...(entry.count === undefined ? {} : { count: entry.count }),
   });
 }
