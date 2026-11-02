@@ -3,7 +3,7 @@
 // the proxy side in model-proxy-sources.test.ts.
 import { describe, expect, it } from "vitest";
 import {
-  MODEL_ENDPOINT_SECRET_PREFIX, ModelSourceSchema, editionPolicy, endpointForbiddenModelProblem, isModelEndpointSecretRef, modelSourceInputSchema, modelSourceSchema,
+  MODEL_ENDPOINT_SECRET_PREFIX, ModelSourceSchema, editionPolicy, endpointForbiddenModelProblem, endpointSecretRefProblem, isModelEndpointSecretRef, modelSourceInputSchema, modelSourceSchema,
   type ModelIdentifier,
 } from "@agentx/contracts";
 import { endpointQualificationDigest, endpointQualified } from "../../packages/broker/src/model-sources/endpoint-digest.js";
@@ -12,7 +12,8 @@ import {
 } from "../../packages/broker/src/model-sources/endpoint-qualification.js";
 
 const sonnet: ModelIdentifier = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
-const REF = "rovara/model-endpoints/gateway-key";
+const ORG = "org_abcdefghij0123456789";
+const REF = `rovara/model-endpoints/${ORG}/llm.corp.example.com/gateway-key`;
 const input = (extra: Record<string, unknown> = {}) => ({ kind: "endpoint", label: "Gateway", baseUrl: "https://llm.corp.example.com/v1", api: "openai-completions", models: [{ name: "our-model", catalog: sonnet }], ...extra });
 
 describe("the schema: Public refuses the endpoint kind and its secret reference", () => {
@@ -28,11 +29,14 @@ describe("the schema: Public refuses the endpoint kind and its secret reference"
   });
 
   it("accepts a secret reference only as a name under the model-endpoint prefix", () => {
-    for (const good of [REF, "rovara/model-endpoints/team-a/gateway_key.v2", "rovara/model-endpoints/k+=@-1"]) expect(isModelEndpointSecretRef(good), good).toBe(true);
+    for (const good of [REF, `rovara/model-endpoints/${ORG}/llm.corp.example.com/team-a/gateway_key.v2`, `rovara/model-endpoints/${ORG}/gw.example.com/k+=@-1`]) expect(isModelEndpointSecretRef(good), good).toBe(true);
     const bad = [
       "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "agentx/staging/master-key", "rovara/model-endpoints", "rovara/model-endpoints/",
       "rovara/model-endpoints//x", "rovara/model-endpoints/x/", "rovara/model-endpoints/..", "rovara/model-endpoints/a/../b", "rovara/model-endpoints/./x", "/rovara/model-endpoints/x",
       "rovara/model-endpoints/with space", "rovara/model-endpoints/x?versionId=1", "rovara/model-endpoints/x#frag", "rovara/model-endpoints/ünï", `${MODEL_ENDPOINT_SECRET_PREFIX}${"a".repeat(200)}`, "sk-planted-value-0123456789abcdef", "",
+      // The old shape, with no organization or host in the name, and shapes with a bad organization, host or name segment.
+      "rovara/model-endpoints/gateway-key", `rovara/model-endpoints/${ORG}/gateway-key`, "rovara/model-endpoints/org_short/llm.example.com/k", `rovara/model-endpoints/${ORG}/LLM.example.com/k`,
+      `rovara/model-endpoints/${ORG}/localhost/k`, `rovara/model-endpoints/${ORG}/llm.example.com/..`, `rovara/model-endpoints/${ORG}/llm.example.com/a/../b`, `rovara/model-endpoints/${ORG}/llm.example.com/`,
     ];
     for (const value of bad) {
       expect(isModelEndpointSecretRef(value), value).toBe(false);
@@ -61,7 +65,7 @@ describe("what qualified means", () => {
     const qualified = stored({ keyRef: REF, qualifiedDigest: digest });
     expect(endpointQualified(qualified)).toBe(true);
     for (const change of [
-      { baseUrl: "https://llm2.corp.example.com/v1" }, { api: "anthropic-messages" }, { keyRef: "rovara/model-endpoints/other" }, { keyRef: undefined },
+      { baseUrl: "https://llm2.corp.example.com/v1" }, { api: "anthropic-messages" }, { keyRef: `rovara/model-endpoints/${ORG}/llm.corp.example.com/other` }, { keyRef: undefined },
       { models: [{ name: "renamed", catalog: sonnet }] }, { models: [{ name: "our-model", catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } }] },
       { models: [{ name: "our-model", catalog: sonnet }, { name: "second", catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } }] },
     ]) {
@@ -197,7 +201,7 @@ describe("the install's wiring (N8)", () => {
 
   it("adds the kind to the launch list, the edition and a checker only for an Enterprise install whose operator switched endpoints on", async () => {
     const { modelEndpointRouteOptions, customModelEndpointsOn } = await import("../../packages/broker/src/aws/broker/scope-helpers.js");
-    const enterprise = { editionPolicy: editionPolicy("enterprise") } as never;
+    const enterprise = { editionPolicy: editionPolicy("enterprise"), modelAccess: { access: { checkEndpoint: async () => undefined } } } as never;
     const publicInstall = { editionPolicy: editionPolicy("public") } as never;
     const legacy = {} as never;
     await withEnv({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1" }, () => {
@@ -248,5 +252,102 @@ describe("the install's wiring (N8)", () => {
       // No edition on the install: nothing is passed, so routing cannot treat an endpoint as usable.
       expect(routingOf({ agents: {}, modelAccess: {}, documentClient: db, tableName: "state" } as never)?.edition).toBeUndefined();
     });
+  });
+});
+
+describe("a secret reference belongs to its org and its host (S1, S3)", () => {
+  const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz";
+  const url = "https://llm.corp.example.com/v1";
+
+  it("accepts this org's secret for this address's host", () => {
+    expect(endpointSecretRefProblem(ORG as never, url, REF)).toBeUndefined();
+    expect(endpointSecretRefProblem(ORG as never, "https://LLM.corp.example.com:443/v1", REF)).toBeUndefined();
+  });
+
+  it("refuses another org's secret, another host's secret and a malformed reference, without repeating the reference", () => {
+    expect(endpointSecretRefProblem(OTHER_ORG as never, url, REF)).toBe("names a secret of another organization");
+    expect(endpointSecretRefProblem(ORG as never, "https://other.corp.example.com/v1", REF)).toBe("names a secret for another host; a secret is named for the one host it is sent to");
+    expect(endpointSecretRefProblem(ORG as never, "https://llm.corp.example.com.evil.example.net/v1", REF)).toContain("another host");
+    expect(endpointSecretRefProblem(ORG as never, "not a url", REF)).toBe("needs a valid address to check the secret against");
+    for (const bad of ["rovara/model-endpoints/gateway-key", `arn:aws:secretsmanager:us-east-1:123456789012:secret:${REF}`, "sk-planted-value-0123456789abcdef"]) {
+      const problem = endpointSecretRefProblem(ORG, url, bad)!;
+      expect(problem, bad).toMatch(/^must be a secret name of the form/u);
+      expect(problem).not.toContain(bad);
+    }
+  });
+});
+
+describe("a forbidden model cannot hide behind another spelling (S2)", () => {
+  const opus: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-1-20250805-v1:0" };
+
+  it("reads a served name under every provider's rules, whatever the catalog entry's provider", () => {
+    for (const catalog of [sonnet, { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }, { provider: "openrouter", modelId: "anthropic/claude-sonnet-4.5" }, { provider: "openai", modelId: "gpt-5" }]) {
+      for (const name of [
+        "us.anthropic.claude-opus-4-1-20250805-v1:0", "eu.anthropic.claude-opus-4-1-20250805-v1:0", "anthropic.claude-opus-4-1-20250805-v1:0", "anthropic/claude-opus-4-1", "anthropic/claude-opus-4.1",
+        "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0", "openrouter/anthropic/claude-opus-4.1", "claude-opus-4-1", "Claude-Opus-4.1", "claude-opus-4-1-20250805",
+      ]) {
+        expect(endpointForbiddenModelProblem([{ name, catalog }], [opus]), `${catalog.provider} ${name}`).toBe("models.0: this model is forbidden in your company");
+      }
+    }
+  });
+
+  it("does not refuse other models that merely look alike", () => {
+    for (const name of ["us.anthropic.claude-sonnet-4-6", "anthropic/claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4", "my-claude-opus-4-1-proxy", "opus"]) {
+      expect(endpointForbiddenModelProblem([{ name, catalog: sonnet }], [opus]), name).toBeUndefined();
+    }
+  });
+});
+
+describe("one answer for the whole feature when the ranges are wrong (S6)", () => {
+  const withEnv = async (env: Record<string, string>, run: () => Promise<void> | void) => {
+    const { vi } = await import("vitest");
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    try { await run(); } finally { vi.unstubAllEnvs(); }
+  };
+
+  it("turns the launch list, the routes and routing all off when the ranges do not parse", async () => {
+    const { customModelEndpointsOn, modelEndpointRouteOptions, routingOf } = await import("../../packages/broker/src/aws/broker/scope-helpers.js");
+    const install = { editionPolicy: editionPolicy("enterprise"), agents: {}, modelAccess: { access: { checkEndpoint: async () => undefined } }, documentClient: {}, tableName: "state" } as never;
+    await withEnv({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" }, () => {
+      expect(customModelEndpointsOn(install)).toBe(true);
+      expect(modelEndpointRouteOptions(install).launch?.kinds).toEqual(["endpoint"]);
+      expect(routingOf(install)?.launch?.kinds).toEqual(["endpoint"]);
+    });
+    for (const bad of [{ ROVARA_MODEL_ENDPOINT_CIDRS: "8.8.8.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" }, { ROVARA_MODEL_ENDPOINT_CIDRS: "nonsense", ROVARA_VPC_CIDRS: "10.42.0.0/16" }, { ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16" }]) {
+      await withEnv({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ...bad }, () => {
+        expect(customModelEndpointsOn(install), JSON.stringify(bad)).toBe(false);
+        const options = modelEndpointRouteOptions(install);
+        expect(options.launch).toBeUndefined();
+        expect(options.checkEndpoint).toBeUndefined();
+        expect(routingOf(install)?.launch).toBeUndefined();
+      });
+    }
+  });
+});
+
+describe("the broker judges no address itself (S4)", () => {
+  it("hands the route's address check to the access function, inside the VPC, and has none when that function has none", async () => {
+    const { vi } = await import("vitest");
+    const { modelEndpointRouteOptions } = await import("../../packages/broker/src/aws/broker/scope-helpers.js");
+    const checked: string[] = [];
+    const access = { checkEndpoint: async (url: string) => { checked.push(url); } };
+    vi.stubEnv("ROVARA_CUSTOM_MODEL_ENDPOINTS", "1");
+    try {
+      const options = modelEndpointRouteOptions({ editionPolicy: editionPolicy("enterprise"), modelAccess: { access } } as never);
+      await options.checkEndpoint!("https://llm.corp.example.com/v1");
+      expect(checked).toEqual(["https://llm.corp.example.com/v1"]);
+      expect(modelEndpointRouteOptions({ editionPolicy: editionPolicy("enterprise"), modelAccess: { access: {} } } as never).checkEndpoint).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+describe("a redirect from an approved endpoint host is never followed (N6)", () => {
+  it("is refused by the proxy's own guard for every company model, so a redirect cannot carry a prompt to another host", async () => {
+    const { ROVARA_GUARD_PY } = await import("../../packages/model-proxy/src/rovara-guard.js");
+    // Every httpx client send is forced to follow_redirects=False, and the proxy refuses to start if a redirect would still be followed.
+    expect(ROVARA_GUARD_PY).toContain('kwargs["follow_redirects"] = False');
+    expect(ROVARA_GUARD_PY).toContain("httpx.AsyncClient.send = _no_redirect_async_send");
+    expect(ROVARA_GUARD_PY).toContain("httpx.Client.send = _no_redirect_send");
+    expect(ROVARA_GUARD_PY).toContain("_self_test()");
   });
 });

@@ -452,7 +452,7 @@ describe("routeModel: a company's own model endpoint (N8)", () => {
     const qualified = endpoint();
     if (qualified.kind !== "endpoint") throw new Error("expected an endpoint");
     const changes: Array<Record<string, unknown>> = [
-      { baseUrl: "https://other.example.com/v1" }, { api: "anthropic-messages" }, { keyRef: "rovara/model-endpoints/other" },
+      { baseUrl: "https://other.example.com/v1" }, { api: "anthropic-messages" }, { keyRef: `rovara/model-endpoints/${TEST_ORG}/llm.example.com/other` },
       { models: [{ name: "other-model", catalog: SONNET }] }, { models: [{ name: "our-model", catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } }] },
     ];
     for (const change of changes) {

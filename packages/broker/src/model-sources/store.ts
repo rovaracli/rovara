@@ -14,6 +14,7 @@ import {
   agentRequestKey,
   canonicalJson,
   customSourceLimitProblem,
+  endpointSecretRefProblem,
   defaultModelSourceOrder,
   modelSourceOrgProblem,
   modelSourcesKey,
@@ -204,6 +205,10 @@ export class ModelSourceStore {
     const source = parsed.data;
     const problem = modelSourceOrgProblem(orgId, source);
     if (problem !== undefined) throw coded("CONFIG_INVALID", `source: ${problem}`);
+    if (source.kind === "endpoint" && source.keyRef !== undefined) {
+      const refProblem = endpointSecretRefProblem(orgId, source.baseUrl, source.keyRef);
+      if (refProblem !== undefined) throw coded("CONFIG_INVALID", `source.keyRef: ${refProblem}`);
+    }
     const { result } = await this.mutate(orgId, input.by, input.request, (current): Plan<{ sourceId: string }> => {
       const existing = current.sources.find((candidate) => candidate.sourceId === source.sourceId);
       if (input.mode === "update" && existing === undefined) throw coded("NOT_FOUND", MISSING);

@@ -34,7 +34,7 @@ const anthropicSource = (models = [sonnet, haiku], sourceId = SRC): ModelSource 
 const bedrockSource = (tested = false, sourceId = SRC): ModelSource => ModelSourceSchema.parse({
   kind: "bedrock", sourceId, label: "Our AWS", roleArn: ROLE, region: "us-east-1", externalId: `rovara-${ORG}`, models: [{ catalog: bedrockModel }], tested,
 });
-const REF = "rovara/model-endpoints/gateway-key";
+const REF = `rovara/model-endpoints/${ORG}/llm.example.com/gateway-key`;
 /** An endpoint source as stored: with the secret reference N8 requires for a key, and (when `qualified`) the digest a passing check wrote. */
 const endpointSource = (api = "openai-completions", options: { qualified?: boolean; keyRef?: string | null } = {}): ModelSource => {
   const base = { kind: "endpoint", sourceId: SRC, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: sonnet }], ...(options.keyRef === null ? {} : { keyRef: options.keyRef ?? REF }) };
@@ -60,7 +60,7 @@ interface StoredModel { id: string; model_name: string; litellm_params: Record<s
 interface StoredCredential { credential_name: string; credential_values: Record<string, unknown>; credential_info: unknown }
 
 /** A stateful fake of the LiteLLM routes the registry uses. */
-function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined } = {}) {
+function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined; /** The usage a test completion reports; absent means a usual one. */ usage?: (seen: Seen) => Record<string, unknown> | undefined | null; completion?: (seen: Seen) => Response | undefined } = {}) {
   const models: StoredModel[] = [];
   const credentials = new Map<string, StoredCredential>();
   const teams = new Map<string, string[] | undefined>();
@@ -137,6 +137,12 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     if (method === "GET" && path === "/key/info") {
       const found = keys.find((candidate) => candidate.token === new URLSearchParams(url.search).get("key"));
       return found === undefined ? json({ error: { message: "key not found" } }, 404) : json({ info: found });
+    }
+    if (method === "POST" && (path === "/chat/completions" || path === "/v1/messages" || path === "/v1/responses")) {
+      const answered = options.completion?.(entry);
+      if (answered !== undefined) return answered;
+      const reported = options.usage === undefined ? (path === "/v1/messages" ? { input_tokens: 5, output_tokens: 2 } : { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }) : options.usage(entry);
+      return json({ id: "reply", ...(reported === null || reported === undefined ? {} : { usage: reported }) });
     }
     if (method === "GET" && path === "/health") {
       const id = new URLSearchParams(url.search).get("model_id") ?? "";
@@ -879,7 +885,7 @@ describe("an endpoint's models are served only once a check qualified exactly th
     expect(proxy.models[0]!.model_info).toMatchObject({ rovara_kind: "endpoint", rovara_tested: true });
     expect(proxy.teams.get(ORG)).toEqual([aliasOf(qualified, 0), ...CATALOG]);
     // The same digest on a source whose address changed is stale: unqualified again.
-    const moved = ModelSourceSchema.parse({ ...qualified, baseUrl: "https://elsewhere.example.com/v1" });
+    const moved = ModelSourceSchema.parse({ ...qualified, baseUrl: "https://elsewhere.example.com/v1", keyRef: undefined });
     await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: moved });
     expect(proxy.models[0]!.model_info.rovara_tested).toBe(false);
     expect(proxy.teams.get(ORG)).toEqual(CATALOG);
@@ -930,7 +936,7 @@ describe("endpointSecretReader (N8)", () => {
   it("asks only for a name under rovara/model-endpoints/, refusing every other secret before it calls AWS", async () => {
     const { asked, secrets } = secretsOf(() => ({ SecretString: VENDOR_KEY }));
     const read = endpointSecretReader(secrets as never);
-    for (const bad of ["agentx/staging/model-proxy-master-key", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara/model-endpoints/", "rovara/model-endpoints/../master", "rovara/model-endpoints//x", "rovara/other/x", "", `${VENDOR_KEY}`]) {
+    for (const bad of ["agentx/staging/model-proxy-master-key", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara/model-endpoints/", "rovara/model-endpoints/../master", "rovara/model-endpoints//x", "rovara/other/x", "rovara/model-endpoints/gateway-key", "", `${VENDOR_KEY}`]) {
       expect((await failure(read(bad))).code, bad).toBe("CONFIG_INVALID");
     }
     expect(asked).toEqual([]);
@@ -973,5 +979,143 @@ describe("the handler and the invoker carry an endpoint's secret reference (N8)"
       expect(JSON.stringify(answer)).not.toContain(value);
     }
     expect(upsertSource).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8 fix round 1 (Opus review): S1 org-bound secrets, S5 order of a host change, N1 health text, N2 usage, N5 old deployments, S4 the in-VPC address check.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("an endpoint's secret belongs to its org and its host (S1, S3)", () => {
+  it("refuses another org's secret, and a secret named for another host, before the reader is asked", async () => {
+    const proxy = litellm();
+    for (const keyRef of [`rovara/model-endpoints/${OTHER_ORG}/llm.example.com/gateway-key`, `rovara/model-endpoints/${ORG}/other.example.org/gateway-key`]) {
+      const read = resolver();
+      const error = await failure(client(proxy, { resolveSecret: read }).upsertSource({ orgId: ORG, source: endpointSource("openai-completions", { keyRef }) }));
+      expect(error.code, keyRef).toBe("CONFIG_INVALID");
+      expect(error.message).not.toContain(keyRef);
+      expect(read).not.toHaveBeenCalled();
+    }
+    expect(proxy.seen.filter((entry) => entry.method !== "GET")).toEqual([]);
+  });
+});
+
+describe("a host change takes the alias out of the team before any deployment changes (S5)", () => {
+  it("removes the alias first when the new settings are not served, so the alias never reaches an unapproved host", async () => {
+    const proxy = litellm();
+    const qualified = endpointSource("openai-completions", { qualified: true });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(qualified, 0), ...CATALOG]);
+    proxy.seen.length = 0;
+    const otherRef = `rovara/model-endpoints/${ORG}/other.example.org/other-key`;
+    const moved = ModelSourceSchema.parse({ ...qualified, baseUrl: "https://other.example.org/v1", keyRef: otherRef });
+    await client(proxy, { resolveSecret: resolver({ [otherRef]: "second-secret-0123456789" }) }).upsertSource({ orgId: ORG, source: moved });
+    const writes = proxy.seen.filter((entry) => entry.method !== "GET").map((entry) => `${entry.method} ${entry.path}`);
+    expect(writes.indexOf("POST /team/update"), writes.join(", ")).toBeGreaterThanOrEqual(0);
+    expect(writes.indexOf("POST /team/update")).toBeLessThan(writes.indexOf("POST /model/new"));
+    // The team update that came first no longer holds the alias.
+    const first = proxy.seen.find((entry) => entry.path === "/team/update")!;
+    expect(first.body!.models).toEqual(CATALOG);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+  });
+
+  it("keeps a served source's alias in the team throughout when its settings do not change what is served", async () => {
+    const proxy = litellm();
+    const qualified = endpointSource("openai-completions", { qualified: true });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    proxy.seen.length = 0;
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    expect(proxy.seen.filter((entry) => entry.path === "/team/update").every((entry) => (entry.body!.models as string[]).includes(aliasOf(qualified, 0)))).toBe(true);
+  });
+});
+
+describe("an old deployment is never read as served (N5)", () => {
+  it("leaves out an endpoint deployment that has an address and no flags, when the org changes another source", async () => {
+    const proxy = litellm();
+    const old = endpointSource("openai-completions", { qualified: true });
+    proxy.models.push({ id: "old-1", model_name: aliasOf(old, 0), litellm_params: { api_base: "https://llm.example.com/v1" }, model_info: { rovara_org: ORG } });
+    const other = anthropicSource([haiku], SRC_TWO);
+    await client(proxy).upsertSource({ orgId: ORG, source: other, apiKey: VENDOR_KEY });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(other, 0), ...CATALOG]);
+  });
+});
+
+describe("checkSource for an endpoint (N1, N2)", () => {
+  const checked = async (options: Parameters<typeof litellm>[0], api = "openai-completions") => {
+    const proxy = litellm(options);
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource(api) });
+    return { proxy, answer: await client(proxy).checkSource(ORG, SRC) };
+  };
+
+  it("asks each model for one small reply in the endpoint's own wire format and passes a reply that reports usage", async () => {
+    for (const [api, path] of [["openai-completions", "/chat/completions"], ["openai-responses", "/v1/responses"], ["anthropic-messages", "/v1/messages"]] as const) {
+      const { proxy, answer } = await checked({}, api);
+      expect(answer, api).toEqual({ ok: true, health: "healthy" });
+      const probe = proxy.seen.find((entry) => entry.method === "POST" && entry.path === path)!;
+      expect(probe.body!.model).toBe(aliasOf(endpointSource(api), 0));
+    }
+  });
+
+  it("refuses a reply with no usage, or usage of zero, so spend is never counted as nothing", async () => {
+    const message = "this endpoint's replies carry no token usage, so its spend could not be counted";
+    for (const usage of [() => undefined, () => ({}), () => ({ total_tokens: 0 }), () => ({ prompt_tokens: 0, completion_tokens: 0 }), () => ({ total_tokens: "7" })]) {
+      expect((await checked({ usage })).answer).toEqual({ ok: false, message });
+    }
+    expect((await checked({ usage: () => ({ input_tokens: 3, output_tokens: 1 }) }, "anthropic-messages")).answer).toEqual({ ok: true, health: "healthy" });
+    expect((await checked({ usage: () => undefined }, "anthropic-messages")).answer).toEqual({ ok: false, message });
+  });
+
+  it("says the source did not answer when the test reply fails, and does not ask a source that is not an endpoint", async () => {
+    expect((await checked({ completion: () => json({ error: { message: "boom" } }, 400) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    expect((await checked({ completion: () => json({ error: { message: "down" } }, 503) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource(), apiKey: VENDOR_KEY });
+    await client(proxy).checkSource(ORG, SRC);
+    expect(proxy.seen.some((entry) => entry.path === "/chat/completions" || entry.path === "/v1/messages")).toBe(false);
+  });
+
+  it("does not repeat the proxy's words when the health call is refused", async () => {
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/health" ? json({ error: { message: `request failed with key ${VENDOR_KEY} for the endpoint` } }, 400) : undefined) });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    const error = await failure(client(proxy).checkSource(ORG, SRC));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(error.message).toBe("CONFIG_INVALID: model proxy refused the health check (400)");
+    expect(error.message).not.toContain(VENDOR_KEY);
+  });
+});
+
+describe("the endpoint address is judged inside the VPC (S4)", () => {
+  it("is judged by the function's own checker, and an access function with none refuses every address", async () => {
+    const seenUrls: string[] = [];
+    const proxy = litellm();
+    await client(proxy, { checkEndpointHost: async (url) => { seenUrls.push(url); } }).checkEndpoint("https://llm.example.com/v1");
+    expect(seenUrls).toEqual(["https://llm.example.com/v1"]);
+    const refused = await failure(client(proxy).checkEndpoint("https://llm.example.com/v1"));
+    expect([refused.code, refused.message]).toEqual(["CONFIG_INVALID", "CONFIG_INVALID: custom model endpoints are not set up on this install"]);
+  });
+
+  it("is a request of its own for the handler and the invoker, and the handler refuses when its access has no checker", async () => {
+    const check = vi.fn(async () => undefined);
+    const handler = createModelAccessHandler({ access: { checkEndpoint: check } as unknown as ModelAccess, log: () => undefined });
+    expect(await handler({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } })).toEqual({ ok: true, result: null });
+    expect(check).toHaveBeenCalledWith("https://llm.example.com/v1");
+    expect(await handler({ op: "checkEndpoint", args: { url: "" } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    expect(await handler({ op: "checkEndpoint", args: { url: "https://x.example.com", extra: 1 } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    const bare = createModelAccessHandler({ access: {} as unknown as ModelAccess, log: () => undefined });
+    expect(await bare({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } })).toEqual({ ok: false, code: "CONFIG_INVALID", message: "custom model endpoints are not set up on this install" });
+
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: false, code: "CONFIG_INVALID", message: "the endpoint host resolves to an address Rovara never calls" })) })) };
+    const invoker = new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never });
+    const refused = await failure(invoker.checkEndpoint("https://llm.example.com/v1"));
+    expect([refused.code, refused.message]).toEqual(["CONFIG_INVALID", "CONFIG_INVALID: the endpoint host resolves to an address Rovara never calls"]);
+    expect(JSON.parse(Buffer.from((lambda.send.mock.calls[0] as unknown as [{ input: { Payload: Buffer } }])[0].input.Payload).toString())).toEqual({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } });
+  });
+
+  it("builds its checker only when the switch is on and the ranges parse, and a bad range leaves none", async () => {
+    const { endpointAddressChecker } = await import("../../packages/broker/src/model-proxy/handler.js");
+    expect(endpointAddressChecker({})).toEqual({});
+    expect(endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "0" })).toEqual({});
+    expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1" }).checkEndpointHost).toBe("function");
+    expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" }).checkEndpointHost).toBe("function");
+    expect(endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "8.8.8.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({});
   });
 });

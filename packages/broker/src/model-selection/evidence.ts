@@ -52,7 +52,7 @@ export async function readStageModelEvidence(deps:StageEvidenceDependencies&Part
    // approved in its own egress item). It proves source-level access like the other kinds; it is never a funding exemption (task-stop-funding.ts).
    if(source.kind==="endpoint") {
     if(!(await endpointUsable(deps.routing,input.orgId,source))) continue;
-    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:"qualified_endpoint"}});break;
+    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,sourceKind:"endpoint",evidence:{orgId:input.orgId,sourcesRevision,kind:"qualified_endpoint"}});break;
    }
    if(source.kind==="bedrock" ? !source.tested : !sources?.stored.credentials.includes(sourceId)) continue;
    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:source.kind==="bedrock"?"tested_bedrock_role":"stored_key"}});break;

@@ -7,6 +7,7 @@ import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@agentx/contracts";
 import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import type { ModelAccess } from "./access.js";
+import { endpointRangesFromEnvironment, modelEndpointChecker, CUSTOM_MODEL_ENDPOINTS_ENV } from "../model-sources/endpoint-qualification.js";
 import { ModelProxyClient, type RoleAssumer } from "./client.js";
 import { ModelAccessRequestSchema, type ModelAccessRequest, type ModelAccessResponse } from "./protocol.js";
 
@@ -74,6 +75,10 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "upsertSource": return access.upsertSource(request.args).then(() => null);
     case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);
     case "listSources": return access.listSources();
+    case "checkEndpoint":
+      // No checker, no pass: an endpoint address is never judged anywhere else.
+      if (access.checkEndpoint === undefined) throw agentXError("CONFIG_INVALID", "custom model endpoints are not set up on this install");
+      return access.checkEndpoint(request.args.url).then(() => null);
     case "checkSource": return access.checkSource(request.args.orgId, request.args.sourceId);
     case "auditKeys": return access.auditKeys(request.args.budgetMs === undefined ? undefined : { budgetMs: request.args.budgetMs });
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
@@ -108,6 +113,16 @@ export function createModelAccessHandler(input: { access: ModelAccess; log?: (en
   };
 }
 
+/** The in-VPC address checker for company model endpoints: present only when the switch is "1" and the ranges parse. */
+export function endpointAddressChecker(env: Record<string, string | undefined>): { checkEndpointHost?: (url: string) => Promise<void> } {
+  if (env[CUSTOM_MODEL_ENDPOINTS_ENV] !== "1") return {};
+  try {
+    return { checkEndpointHost: modelEndpointChecker(endpointRangesFromEnvironment(env)) };
+  } catch {
+    return {};
+  }
+}
+
 function requiredEnvironment(name: string): string {
   const value = process.env[name];
   if (value === undefined || value === "") throw agentXError("CONFIG_INVALID", `${name} is not set`);
@@ -137,6 +152,9 @@ function wire() {
       catalog: bedrockClaudeModelIds(proxyGeographyForRegion(requiredEnvironment("AWS_REGION"))),
       roles: stsRoleAssumer(new STSClient({})),
       resolveSecret: endpointSecretReader(secrets),
+      // N8: the address of a company endpoint is judged here, inside the VPC, with the resolver the proxy connects with. Only when the install turned endpoints on; a bad range
+      // setting leaves no checker (every address is then refused).
+      ...endpointAddressChecker(process.env),
     }),
   });
 }

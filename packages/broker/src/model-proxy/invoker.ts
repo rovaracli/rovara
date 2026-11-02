@@ -72,6 +72,10 @@ export class ModelAccessInvoker implements ModelAccess {
     return this.parseResult(await this.invoke({ op: "listSources", args: {} }), RegisteredSourcesResultSchema);
   }
 
+  async checkEndpoint(url: string): Promise<void> {
+    await this.invoke({ op: "checkEndpoint", args: { url } });
+  }
+
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
     return this.parseResult(await this.invoke({ op: "checkSource", args: { orgId, sourceId } }), SourceCheckResultSchema);
   }

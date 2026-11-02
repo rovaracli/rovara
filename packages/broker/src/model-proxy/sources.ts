@@ -90,6 +90,7 @@ export function proxyModelsOf(orgId: OrgId, source: ModelSource, credentialName:
       // N8: like a Bedrock role until its probe passes, an endpoint's models exist for the probe but no team may call them until a check passed for exactly these
       // settings. The registry reads both back from the proxy: a missing flag is "not served".
       info.rovara_kind = "endpoint";
+      info.rovara_api = source.api;
       info.rovara_tested = endpointQualified(source);
     }
     return { model_name: sourceAlias(orgId, source.sourceId, catalog), litellm_params: params, model_info: info };

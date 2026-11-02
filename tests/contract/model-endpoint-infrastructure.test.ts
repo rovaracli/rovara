@@ -66,7 +66,9 @@ function controlPlane(values: Record<string, unknown>) {
     .filter((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") && (resource.Properties.Roles ?? []).some((role) => role.Ref === roleId))
     .flatMap((resource) => resource.Properties.PolicyDocument!.Statement);
   const broker = functions.find(([, fn]) => fn.Properties.Environment?.Variables?.CALLBACK_SIGNING_KEY !== undefined)!;
-  return { statements, brokerEnvironment: broker[1].Properties.Environment?.Variables ?? {} };
+  const groups = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::EC2::SecurityGroup") as Array<[string, { Properties: { SecurityGroupEgress?: Array<{ CidrIp?: string; FromPort?: number }> } }]>;
+  const groupsReaching = (cidr: string) => groups.filter(([, group]) => (group.Properties.SecurityGroupEgress ?? []).some((rule) => rule.CidrIp === cidr && rule.FromPort === 443)).map(([id]) => id);
+  return { statements, brokerEnvironment: broker[1].Properties.Environment?.Variables ?? {}, accessEnvironment: access[1].Properties.Environment?.Variables ?? {}, groupsReaching };
 }
 
 describe("the app, built as `rovara deploy` builds it", () => {
@@ -86,6 +88,21 @@ describe("the app, built as `rovara deploy` builds it", () => {
     expect(writes).toEqual([]);
     expect(on.brokerEnvironment).toMatchObject({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
     // Two whole-app synths with real Lambda bundling skipped, but the app is large: the timeout of the other synth tests.
+  }, 240_000);
+
+  it("lets the model proxy (and only it) reach the endpoint ranges over HTTPS, and gives the access function the settings it judges addresses with (S4)", () => {
+    const off = controlPlane(ENTERPRISE);
+    expect(off.groupsReaching("10.1.0.0/16")).toEqual([]);
+    expect(off.accessEnvironment).not.toHaveProperty("ROVARA_CUSTOM_MODEL_ENDPOINTS");
+    const on = controlPlane({ ...ENTERPRISE, [KEYS.enable]: "true", [KEYS.cidrs]: "10.1.0.0/16" });
+    const reaching = on.groupsReaching("10.1.0.0/16");
+    expect(reaching, "one security group reaches the range").toHaveLength(1);
+    expect(reaching[0]).toMatch(/^ModelProxy/u);
+    expect(on.accessEnvironment).toMatchObject({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
+    // The switch alone adds no range anywhere.
+    const switchOnly = controlPlane({ ...ENTERPRISE, [KEYS.enable]: "true" });
+    expect(switchOnly.groupsReaching("10.1.0.0/16")).toEqual([]);
+    expect(switchOnly.accessEnvironment).toMatchObject({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1" });
   }, 240_000);
 
   it("stops synth for a wrong setting and for any setting outside Enterprise", () => {

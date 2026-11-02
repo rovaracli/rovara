@@ -55,6 +55,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   }).strict(),
   z.object({ op: z.literal("removeSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("listSources"), args: z.object({}).strict() }).strict(),
+  z.object({ op: z.literal("checkEndpoint"), args: z.object({ url: z.string().min(1).max(2048) }).strict() }).strict(),
   z.object({ op: z.literal("checkSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("auditKeys"), args: z.object({ budgetMs: z.number().int().min(1).max(60_000).optional() }).strict() }).strict(),
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),

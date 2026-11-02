@@ -49,8 +49,10 @@ const PRINCIPALS = ["arn:aws:iam::210987654321:role/agentx/staging/agentx-stagin
 const ALL_KINDS: SourceLaunch = { kinds: ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] };
 const HOST = "llm.example.com";
 /** N8: an endpoint's secret is a reference under this prefix, never a value. */
-const REF = "rovara/model-endpoints/gateway-key";
-const OTHER_REF = "rovara/model-endpoints/other-gateway-key";
+const REF = `rovara/model-endpoints/${TEST_ORG}/llm.example.com/gateway-key`;
+/** A second secret for the same host, and one for another host: a secret is named for the one host it is sent to. */
+const REF_B = `rovara/model-endpoints/${TEST_ORG}/llm.example.com/second-key`;
+const OTHER_REF = `rovara/model-endpoints/${TEST_ORG}/other.example.org/other-gateway-key`;
 
 const sonnet = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
 const haiku = { provider: "anthropic", modelId: "claude-haiku-4-5" };
@@ -849,7 +851,7 @@ describe("an endpoint source", () => {
     const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint({ keyRef: REF }) })).body.sourceId as string;
     const moved = endpoint({ baseUrl: "https://other.example.org/v1", keyRef: REF });
     const refused = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: moved });
-    expect([refused.status, errorOf(refused).message]).toEqual([400, "source.baseUrl: the secret would be sent to a different host; name another secret for the new host"]);
+    expect([refused.status, errorOf(refused).message]).toEqual([400, "source.keyRef: names a secret for another host; a secret is named for the one host it is sent to"]);
     expect(await approvedUnion(s.egressDeps())).toEqual([HOST]);
     const ok = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: { ...moved, keyRef: OTHER_REF } });
     expect([ok.status, ok.body]).toEqual([200, { sourceId: id, hostStatus: "approved" }]);
@@ -1852,10 +1854,10 @@ describe("a company's own model endpoint (N8)", () => {
     it("refuses a second source that names a secret another source already uses", async () => {
       const s = await setup();
       await s.write(DANA, "POST", SIGNED, { source: withRef() });
-      const second = await s.write(DANA, "POST", SIGNED, { source: withRef({ baseUrl: "https://other.example.org/v1" }) });
+      const second = await s.write(DANA, "POST", SIGNED, { source: withRef({ baseUrl: "https://llm.example.com/v2" }) });
       expect([second.status, errorOf(second).message]).toEqual([400, "source.keyRef: another source already uses this secret; each source names its own"]);
       expect(s.doc()!.sources).toHaveLength(1);
-      const other = await s.write(DANA, "POST", SIGNED, { source: withRef({ baseUrl: "https://other.example.org/v1", keyRef: OTHER_REF }) });
+      const other = await s.write(DANA, "POST", SIGNED, { source: withRef({ baseUrl: "https://llm.example.com/v2", keyRef: REF_B }) });
       expect(other.status).toBe(201);
     });
 
@@ -1955,7 +1957,7 @@ describe("a company's own model endpoint (N8)", () => {
       expect((await s.write(DANA, "PUT", `${SIGNED}/${id}`, { source: withRef({ label: "Renamed" }) })).status).toBe(200);
       expect((await s.list()).sources[0]!).toMatchObject({ qualified: true, label: "Renamed" });
       const changes: Array<Record<string, unknown>> = [
-        { api: "anthropic-messages" }, { keyRef: OTHER_REF }, { models: [{ name: "other-model", catalog: sonnet }] }, { models: [{ name: "our-model", catalog: haiku }] }, { baseUrl: "https://llm.example.com/v2" },
+        { api: "anthropic-messages" }, { keyRef: REF_B }, { models: [{ name: "other-model", catalog: sonnet }] }, { models: [{ name: "our-model", catalog: haiku }] }, { baseUrl: "https://llm.example.com/v2" },
       ];
       for (const change of changes) {
         const requalify = await checkOf(s, id);
@@ -2013,5 +2015,204 @@ describe("a company's own model endpoint (N8)", () => {
       expect([forged.status, errorOf(forged).code]).toEqual([400, "CONFIG_INVALID"]);
       expect(qualified(s)).toBeUndefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8 fix round 1 (Opus review): B1 a failed check takes the qualification away, S1/S3 secrets bound to org and host, S2 served names, S5 the check's last registration.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("a failed check takes an endpoint's qualification away (B1)", () => {
+  const SIGNED = "/v1/app/org/model-sources";
+  const withRef = (extra: Record<string, unknown> = {}) => endpoint({ keyRef: REF, ...extra });
+  const NEVER_CALLED = "the endpoint host resolves to an address Rovara never calls";
+
+  async function qualifiedSource(options: Options = {}) {
+    const state = { addressFails: false, lookupDown: false };
+    const s = await setup({
+      ...options,
+      checkEndpoint: async () => {
+        if (state.lookupDown) throw agentXError("RUNTIME_UNAVAILABLE", "the endpoint host could not be looked up; try again");
+        if (state.addressFails) throw agentXError("CONFIG_INVALID", NEVER_CALLED);
+      },
+    });
+    const id = (await s.write(DANA, "POST", SIGNED, { source: withRef() })).body.sourceId as string;
+    expect((await s.call(DANA, "POST", `${SIGNED}/${id}/check`)).body).toEqual({ ok: true });
+    expect((await s.list()).sources[0]).toMatchObject({ qualified: true });
+    return { s, id, state };
+  }
+  const digestOf = (s: Awaited<ReturnType<typeof setup>>) => (s.doc()!.sources[0] as { qualifiedDigest?: string }).qualifiedDigest;
+  /** After a refusal the record has no qualification, the proxy was told the source without it, and the list says so. */
+  async function expectUnqualified(s: Awaited<ReturnType<typeof setup>>, id: string, label: string) {
+    expect(digestOf(s), label).toBeUndefined();
+    expect((await s.list()).sources[0], label).toMatchObject({ sourceId: id, qualified: false });
+    expect(s.access.upsertSource.mock.calls.at(-1)![0].source, label).not.toHaveProperty("qualifiedDigest");
+  }
+
+  it("clears the qualification when the address now resolves where it must not, and a good check qualifies it again", async () => {
+    const { s, id, state } = await qualifiedSource();
+    state.addressFails = true;
+    const refused = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    expect(refused.body).toEqual({ ok: false, message: NEVER_CALLED });
+    await expectUnqualified(s, id, "address");
+    state.addressFails = false;
+    expect((await s.call(DANA, "POST", `${SIGNED}/${id}/check`)).body).toEqual({ ok: true });
+    expect(digestOf(s)).toBeDefined();
+  });
+
+  it("clears it when a listed model is now forbidden, when the probe fails and when it does not confirm every model", async () => {
+    const forbid = await qualifiedSource();
+    forbid.s.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [sonnet] } });
+    expect((await forbid.s.call(DANA, "POST", `${SIGNED}/${forbid.id}/check`)).body).toEqual({ ok: false, message: "models.0: this model is forbidden in your company" });
+    await expectUnqualified(forbid.s, forbid.id, "forbidden");
+
+    const probe = await qualifiedSource();
+    probe.s.access.checkSource.mockResolvedValueOnce({ ok: false, message: "this source did not answer a test call" });
+    expect((await probe.s.call(DANA, "POST", `${SIGNED}/${probe.id}/check`)).body).toEqual({ ok: false, message: "this source did not answer a test call" });
+    await expectUnqualified(probe.s, probe.id, "probe");
+
+    const unknown = await qualifiedSource();
+    unknown.s.access.checkSource.mockResolvedValueOnce({ ok: true, health: "unknown" });
+    expect((await unknown.s.call(DANA, "POST", `${SIGNED}/${unknown.id}/check`)).body).toMatchObject({ ok: false });
+    await expectUnqualified(unknown.s, unknown.id, "unknown health");
+  });
+
+  it("clears it when the host's approval has been rejected since", async () => {
+    const { s, id } = await qualifiedSourceOnCloud();
+    // The admin of the install's firewall withdraws the approval after the endpoint was qualified.
+    const item = s.db.get(egressDomainsKey(TEST_ORG, { kind: "model-source", sourceId: id })) as { domains: Array<Record<string, unknown>> };
+    s.db.set({ ...egressDomainsKey(TEST_ORG, { kind: "model-source", sourceId: id }), ...item, domains: item.domains.map((entry) => ({ ...entry, status: "rejected", reason: "withdrawn" })) });
+    expect((await s.call(DANA, "POST", `${SIGNED}/${id}/check`)).body).toMatchObject({ ok: false });
+    await expectUnqualified(s, id, "rejected");
+  });
+
+  async function qualifiedSourceOnCloud() {
+    const s = await setup({ cloud: true });
+    const id = (await s.write(DANA, "POST", SIGNED, { source: withRef() })).body.sourceId as string;
+    await s.decide(id, "approved");
+    expect((await s.call(DANA, "POST", `${SIGNED}/${id}/check`)).body).toEqual({ ok: true });
+    return { s, id };
+  }
+
+  it("does not clear it for a lookup that failed to answer: that is a retry, not a verdict", async () => {
+    const { s, id, state } = await qualifiedSource();
+    state.lookupDown = true;
+    const down = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    expect(down.status).toBeGreaterThanOrEqual(500);
+    expect(digestOf(s)).toBeDefined();
+  });
+
+  it("clears the qualification of the record as it is when the clear happens, after a change that kept the digest landed during the check", async () => {
+    const state = { hook: undefined as undefined | (() => Promise<void>), addressFails: false };
+    const s = await setup({
+      checkEndpoint: async () => {
+        const hook = state.hook;
+        state.hook = undefined;
+        await hook?.();
+        if (state.addressFails) throw agentXError("CONFIG_INVALID", NEVER_CALLED);
+      },
+    });
+    const id = (await s.write(DANA, "POST", SIGNED, { source: withRef() })).body.sourceId as string;
+    await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    expect(digestOf(s)).toBeDefined();
+    // A rename keeps the digest (the checked settings did not change); it lands while the check is resolving the address.
+    state.hook = async () => { expect((await s.write(OWEN, "PUT", `${SIGNED}/${id}`, { source: withRef({ label: "Renamed" }) })).status).toBe(200); state.addressFails = true; };
+    expect((await s.call(DANA, "POST", `${SIGNED}/${id}/check`)).body).toEqual({ ok: false, message: NEVER_CALLED });
+    expect(digestOf(s)).toBeUndefined();
+    expect(s.doc()!.sources[0]).toMatchObject({ label: "Renamed" });
+  });
+});
+
+describe("a secret belongs to its org and its host, in every save (S1, S3)", () => {
+  const SIGNED = "/v1/app/org/model-sources";
+  const ORG_B_REF = `rovara/model-endpoints/${ORG_B}/llm.example.com/gateway-key`;
+
+  it("refuses org A naming org B's secret, and org B naming org A's, on add and on change", async () => {
+    const s = await setup();
+    const inOrgA = await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: ORG_B_REF }) });
+    expect([inOrgA.status, errorOf(inOrgA).message]).toEqual([400, "source.keyRef: names a secret of another organization"]);
+    const inOrgB = await s.write(BEA, "POST", SIGNED, { source: endpoint({ keyRef: REF }) });
+    expect([inOrgB.status, errorOf(inOrgB).message]).toEqual([400, "source.keyRef: names a secret of another organization"]);
+    expect(s.doc()).toBeUndefined();
+    expect(s.doc(ORG_B)).toBeUndefined();
+    expect(s.access.upsertSource).not.toHaveBeenCalled();
+    // Each org's own secret is accepted, so the refusal is about the org and nothing else.
+    expect((await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: REF }) })).status).toBe(201);
+    expect((await s.write(BEA, "POST", SIGNED, { source: endpoint({ keyRef: ORG_B_REF }) })).status).toBe(201);
+    const id = s.doc()!.sources[0]!.sourceId as string;
+    const change = await s.write(DANA, "PUT", `${SIGNED}/${id}`, { source: endpoint({ keyRef: ORG_B_REF }) });
+    expect([change.status, errorOf(change).message]).toEqual([400, "source.keyRef: names a secret of another organization"]);
+  });
+
+  it("refuses a secret that is named for another host than the address, so it cannot be moved to a new host in two saves", async () => {
+    const s = await setup();
+    const id = (await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: REF }) })).body.sourceId as string;
+    // Save one: the same host, another secret (accepted). Save two: the old secret with a new host (refused: it is named for llm.example.com).
+    expect((await s.write(DANA, "PUT", `${SIGNED}/${id}`, { source: endpoint({ keyRef: REF_B }) })).status).toBe(200);
+    const second = await s.write(DANA, "PUT", `${SIGNED}/${id}`, { source: endpoint({ baseUrl: "https://other.example.org/v1", keyRef: REF }) });
+    expect([second.status, errorOf(second).message]).toEqual([400, "source.keyRef: names a secret for another host; a secret is named for the one host it is sent to"]);
+    // Removing the source and adding another on the new host with the old secret is refused the same way.
+    expect((await s.write(DANA, "DELETE", `${SIGNED}/${id}`)).status).toBe(200);
+    const added = await s.write(DANA, "POST", SIGNED, { source: endpoint({ baseUrl: "https://other.example.org/v1", keyRef: REF }) });
+    expect([added.status, errorOf(added).message]).toEqual([400, "source.keyRef: names a secret for another host; a secret is named for the one host it is sent to"]);
+    expect(await approvedUnion(s.egressDeps())).not.toContain("other.example.org");
+    expect(s.doc()!.sources).toEqual([]);
+  });
+
+  it("refuses at the store too, for a record that did not come through the routes", async () => {
+    const s = await setup();
+    await expect(s.store().save({ orgId: TEST_ORG, source: { sourceId: "src_qqqqqqqqqqqqqqqqqqqq", ...endpoint({ keyRef: ORG_B_REF }) } as never, mode: "create", by: DANA.developerId })).rejects.toThrow("another organization");
+    await expect(s.store().save({ orgId: TEST_ORG, source: { sourceId: "src_qqqqqqqqqqqqqqqqqqqq", ...endpoint({ baseUrl: "https://other.example.org/v1", keyRef: REF }) } as never, mode: "create", by: DANA.developerId })).rejects.toThrow("another host");
+  });
+});
+
+describe("a forbidden model cannot hide behind another spelling (S2)", () => {
+  const SIGNED = "/v1/app/org/model-sources";
+  const opus = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-1-20250805-v1:0" };
+
+  it("refuses served names that are the forbidden model under another provider's rules, whatever the catalog entry says", async () => {
+    const s = await setup();
+    s.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [opus] } });
+    for (const name of ["us.anthropic.claude-opus-4-1-20250805-v1:0", "eu.anthropic.claude-opus-4-1-20250805-v1:0", "anthropic/claude-opus-4-1", "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0", "claude-opus-4.1", "CLAUDE-OPUS-4-1", "openrouter/anthropic/claude-opus-4.1"]) {
+      const reply = await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: REF, models: [{ name, catalog: sonnet }] }) });
+      expect([reply.status, errorOf(reply).message], name).toEqual([400, "source.models.0: this model is forbidden in your company"]);
+    }
+    expect(s.doc()).toBeUndefined();
+    // Positive control: a served name that is another model is accepted.
+    expect((await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: REF, models: [{ name: "anthropic/claude-sonnet-4-5", catalog: sonnet }] }) })).status).toBe(201);
+  });
+});
+
+describe("the check's last registration is conditional on what it checked (S5)", () => {
+  const SIGNED = "/v1/app/org/model-sources";
+
+  it("registers the record as it now is, and says so, when a change landed while the check was registering", async () => {
+    const s = await setup();
+    const id = (await s.write(DANA, "POST", SIGNED, { source: endpoint({ keyRef: REF }) })).body.sourceId as string;
+    s.access.upsertSource.mockClear();
+    // The check registers twice: before the probe (let it pass), then qualified (a change lands during it).
+    s.access.upsertSource.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => {
+      expect((await s.write(OWEN, "PUT", `${SIGNED}/${id}`, { source: endpoint({ keyRef: REF, api: "anthropic-messages" }) })).status).toBe(200);
+    });
+    const check = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    expect([check.status, check.body]).toEqual([200, { ok: false, message: "this source changed while it was being tested; run the check again" }]);
+    // The record has the change, without the qualification; the proxy was told the record last, never the old settings qualified.
+    expect(s.doc()!.sources[0]).toMatchObject({ api: "anthropic-messages" });
+    expect(s.doc()!.sources[0]).not.toHaveProperty("qualifiedDigest");
+    const last = s.access.upsertSource.mock.calls.at(-1)![0].source;
+    expect(last).toMatchObject({ api: "anthropic-messages" });
+    expect(last).not.toHaveProperty("qualifiedDigest");
+  });
+
+  it("does the same for a Bedrock source: the old role is not left tested at the proxy over a newer record", async () => {
+    const s = await setup();
+    const id = await s.add(DANA, bedrock());
+    const OTHER_ROLE = "arn:aws:iam::123456789012:role/rovara/other-access";
+    s.access.upsertSource.mockClear();
+    s.access.upsertSource.mockImplementationOnce(async () => {
+      expect((await s.write(OWEN, "PUT", `${SIGNED}/${id}`, { source: bedrock({ roleArn: OTHER_ROLE }) })).status).toBe(200);
+    });
+    const check = await s.call(DANA, "POST", `${SIGNED}/${id}/check`);
+    expect(check.body).toEqual({ ok: false, message: "this source changed while it was being tested; run the check again" });
+    expect(s.access.upsertSource.mock.calls.at(-1)![0].source).toMatchObject({ roleArn: OTHER_ROLE, tested: false });
   });
 });

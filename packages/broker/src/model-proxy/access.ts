@@ -92,6 +92,13 @@ export interface ModelAccess {
    * for. Hostnames only: never a key, and never a path or query.
    */
   listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>>;
+  /**
+   * N8: judges a company model endpoint's address where the proxy runs, inside the VPC, with the same resolver the proxy connects with: https, no user info, a DNS name, and every
+   * address public or inside the install's model-endpoint ranges (never a never-called address or Rovara's own network). Throws CONFIG_INVALID (text safe to show) when it may not be
+   * used, and RUNTIME_UNAVAILABLE when the name cannot be looked up. A function that has no checker refuses every address: nothing is judged elsewhere. The proxy connects by name
+   * and cannot be pinned to the addresses judged here, so the check is repeated at every save and every check, and a failed check takes the qualification away.
+   */
+  checkEndpoint?(url: string): Promise<void>;
   /** Tests a source: for Bedrock the trust-policy probe first, then a health call per alias. A source the proxy does not know is NOT_FOUND. */
   checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
   /**

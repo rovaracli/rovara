@@ -35,6 +35,7 @@ import {
   egressPendingWarning,
   egressRejectedWarning,
   endpointForbiddenModelProblem,
+  endpointSecretRefProblem,
   featureEnabled,
   isAllowedDomain,
   modelSourceInputSchema,
@@ -111,7 +112,6 @@ const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sourc
 const CHECK_RACED = "this source changed while it was being tested; run the check again";
 const ENDPOINT_NOT_CONFIRMED = "this endpoint did not confirm every model it lists; check the model names and the secret, then check again";
 const SECRET_SHARED = "source.keyRef: another source already uses this secret; each source names its own";
-const SECRET_MOVES_HOST = "source.baseUrl: the secret would be sent to a different host; name another secret for the new host";
 
 // ---- bodies
 
@@ -314,6 +314,11 @@ async function checkEndpointInput(deps: Deps, caller: AgentCaller, input: ModelS
   if (input.kind !== "endpoint") return undefined;
   const found = endpointHost(input.baseUrl);
   if ("problem" in found) throw agentXError("CONFIG_INVALID", found.problem);
+  // The secret belongs to this org and is named for this address's host: it cannot be another org's, and it cannot follow the source to another host by any number of saves.
+  if (input.keyRef !== undefined) {
+    const refProblem = endpointSecretRefProblem(caller.orgId, input.baseUrl, input.keyRef);
+    if (refProblem !== undefined) throw agentXError("CONFIG_INVALID", `source.keyRef: ${refProblem}`);
+  }
   // A secret goes to one source and so to one host: another source that names it would send it to a host this source's approval never covered.
   if (input.keyRef !== undefined && others.some((other) => other.kind === "endpoint" && other.keyRef === input.keyRef)) throw agentXError("CONFIG_INVALID", SECRET_SHARED);
   // The shared matcher judges both the catalog model and the name the endpoint serves it under.
@@ -411,9 +416,7 @@ async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body
   if (input.kind !== previous.kind) throw agentXError("CONFIG_INVALID", "source.kind: a source's kind can't change; remove it and add a new one");
   const host = await checkEndpointInput(deps, caller, input, before.sources.filter((candidate) => candidate.sourceId !== previous.sourceId));
   const hostChanged = host !== undefined && hostOf(previous) !== host;
-  // A saved secret goes only to the host it was saved for. This is checked on `before`, and the save below holds only while the record is still at `before`.
-  // N8: a referenced secret stays with the host it was named for; a new host needs a different secret.
-  if (input.kind === "endpoint" && previous.kind === "endpoint" && hostChanged && input.keyRef !== undefined && input.keyRef === previous.keyRef) throw agentXError("CONFIG_INVALID", SECRET_MOVES_HOST);
+  // N8: a referenced secret stays with the host it is named for (checked above in `endpointSecretRefProblem`), so a new host needs a secret named for it.
   // A key pasted before secret references existed has no reference to rename: it cannot follow the source to a new host.
   if (previous.kind === "endpoint" && hostChanged && previous.keyRef === undefined && before.credentials.includes(previous.sourceId)) throw agentXError("CONFIG_INVALID", "source.baseUrl: this source holds a key saved for its old host; remove it and add a new source");
   const source = stored(caller, input, previous.sourceId, previous);
@@ -467,19 +470,58 @@ async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise
 
 // ---- check
 
+/**
+ * S5: after a check registered a source at the proxy, whether the record has moved on from what was registered. If so the proxy is told the record as it is now (a change that
+ * lost a race to this registration must not be left with the old settings, qualified, at the proxy).
+ */
+async function registrationRaced(deps: Deps, caller: AgentCaller, sourceId: string, registered: Source): Promise<boolean> {
+  const now = (await deps.modelSources.store.read(caller.orgId)).sources.find((candidate) => candidate.sourceId === sourceId);
+  if (now !== undefined && canonicalJson(now) === canonicalJson(registered)) return false;
+  if (now === undefined) await viaProxy(() => deps.modelSources.access.removeSource(caller.orgId, sourceId));
+  else await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: now }));
+  return true;
+}
+
+/**
+ * B1: a check of an endpoint that finds it no longer fit for use takes its qualification away. The record loses the digest (so routing refuses it at once) and the proxy is told the
+ * source without it (so its models leave the org's team). A concurrent change is read again and judged on its own; one that leaves the checked settings alone (a rename) keeps the
+ * digest, so the clear is repeated against the record as it is now.
+ */
+async function unqualify(deps: Deps, caller: AgentCaller, sourceId: string): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = (await deps.modelSources.store.read(caller.orgId)).sources.find((candidate) => candidate.sourceId === sourceId);
+    if (current === undefined || current.kind !== "endpoint" || current.qualifiedDigest === undefined) return;
+    const { qualifiedDigest: _dropped, ...cleared } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- the digest is what is dropped
+    try {
+      await deps.modelSources.store.save({ orgId: caller.orgId, source: cleared, mode: "update", by: caller.developerId, expect: { source: current } });
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "IDEMPOTENCY_CONFLICT") continue;
+      throw error;
+    }
+    await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: cleared }));
+    return;
+  }
+  throw agentXError("IDEMPOTENCY_CONFLICT", CHECK_RACED);
+}
+
 async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Promise<Record<string, unknown>> {
   requireAdmin(caller);
   const current = await deps.modelSources.store.read(caller.orgId);
   const source = ModelSourceIdSchema.safeParse(rawId).success ? current.sources.find((candidate) => candidate.sourceId === rawId) : undefined;
   if (source === undefined) throw agentXError("NOT_FOUND", MISSING);
   requireAvailable(deps, source.kind, source.kind === "endpoint" ? source.api : undefined);
+  /** B1: a refusal of an endpoint that was qualified takes the qualification away before it answers. */
+  const refuseEndpoint = async (message: string): Promise<Record<string, unknown>> => {
+    await unqualify(deps, caller, source.sourceId);
+    return { ok: false, message };
+  };
   if (source.kind === "endpoint") {
     const host = hostOf(source)!;
     // The name is resolved again now: an address that was public when the source was saved can have moved.
     try {
       await deps.modelSources.checkEndpoint!(source.baseUrl);
     } catch (error) {
-      if (error instanceof AgentXError && error.code === "CONFIG_INVALID") return { ok: false, message: error.message.replace(/^CONFIG_INVALID: /, "") };
+      if (error instanceof AgentXError && error.code === "CONFIG_INVALID") return refuseEndpoint(error.message.replace(/^CONFIG_INVALID: /, ""));
       throw error;
     }
     // A host that was never asked for (the request after the save did not happen) is asked for now.
@@ -488,20 +530,20 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
     if (status === "pending") return { ok: false, message: egressPendingWarning(host) };
     if (status === "rejected") {
       const entry = (await readEgressDomains(deps.modelSources.egress, caller.orgId, { kind: "model-source", sourceId: source.sourceId }))?.domains.find((candidate) => candidate.domain === host);
-      return { ok: false, message: egressRejectedWarning(host, entry?.reason) };
+      return source.kind === "endpoint" ? refuseEndpoint(egressRejectedWarning(host, entry?.reason)) : { ok: false, message: egressRejectedWarning(host, entry?.reason) };
     }
     if (await firewallApplying(deps)) return { ok: false, message: MODEL_SOURCE_STILL_APPLYING };
     // N8: the forbidden models may have changed since the source was saved; a source that lists one is not tested, let alone qualified.
     const forbidden = endpointForbiddenModelProblem(source.models, (await readGuardrails(deps, caller.orgId)).forbiddenModels);
-    if (forbidden !== undefined) return { ok: false, message: forbidden };
+    if (forbidden !== undefined) return refuseEndpoint(forbidden);
     // N8: the proxy is told the record's settings again before the probe, so what is probed is exactly what the digest covers, and a rotated secret is read afresh.
     await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source }));
   }
   const answer = await viaProxy(() => deps.modelSources.access.checkSource(caller.orgId, source.sourceId));
-  if (!answer.ok) return { ok: false, message: answer.message };
+  if (!answer.ok) return source.kind === "endpoint" ? refuseEndpoint(answer.message) : { ok: false, message: answer.message };
   if (source.kind === "endpoint") {
     // Qualified only when every model it lists answered a probe call; "unknown" (some model neither passed nor failed) is not a pass.
-    if (answer.health !== "healthy") return { ok: false, message: ENDPOINT_NOT_CONFIRMED };
+    if (answer.health !== "healthy") return refuseEndpoint(ENDPOINT_NOT_CONFIRMED);
     // It is the settings that were probed that are marked, and registered: if the source is no longer the one that was read, nothing is saved or registered.
     const qualified = { ...source, qualifiedDigest: endpointQualificationDigest(source) };
     try {
@@ -516,6 +558,9 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
     }
     // The proxy serves the models to the org's team from now on. Repeating the check finishes this step if it failed.
     await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: qualified }));
+    // S5: that registration is conditional on the settings it checked. A change that landed while it ran is registered again as the record now has it, and this check says so.
+    const raced = await registrationRaced(deps, caller, source.sourceId, endpointQualified(source) ? source : qualified);
+    if (raced) return { ok: false, message: CHECK_RACED };
   }
   if (source.kind === "bedrock") {
     // The probe passed: the role is tested, and the proxy serves its models from now on. Both steps can be repeated, so a check also finishes a failed earlier one.
@@ -532,6 +577,7 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
       throw error;
     }
     await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: tested }));
+    if (await registrationRaced(deps, caller, source.sourceId, source.tested ? source : tested)) return { ok: false, message: CHECK_RACED };
   }
   return { ok: true };
 }

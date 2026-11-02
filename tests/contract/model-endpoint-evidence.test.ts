@@ -60,6 +60,22 @@ describe("a company endpoint as stage-selection evidence (N8)", () => {
     expect(await candidatesOf(fixture(options))).toEqual([]);
   });
 
+  it("counts as endpoint evidence only for an endpoint source (N3)", async () => {
+    const [candidate] = await candidatesOf(fixture());
+    expect(candidate!.sourceKind).toBe("endpoint");
+    const input = { orgId: org, stage: "build" as const, sourcesRevision: 2, candidates: [], forbidden: [] };
+    for (const sourceKind of [undefined, "anthropic", "bedrock", "openai"]) {
+      expect(stageCandidateVerified(input, { ...candidate!, sourceKind }), String(sourceKind)).toBe(false);
+    }
+    // And an endpoint source's candidate is never verified by another kind's proof.
+    for (const kind of ["stored_key", "tested_bedrock_role"] as const) {
+      expect(stageCandidateVerified(input, { ...candidate!, evidence: { ...candidate!.evidence!, kind } })).toBe(false);
+    }
+    // A stored-key candidate that carries no source kind still verifies, as before.
+    expect(stageCandidateVerified(input, { ...candidate!, sourceKind: undefined, evidence: { ...candidate!.evidence!, kind: "stored_key" } })).toBe(true);
+    expect(stageCandidateVerified(input, { ...candidate!, sourceKind: "anthropic", evidence: { ...candidate!.evidence!, kind: "stored_key" } })).toBe(true);
+  });
+
   it("is no candidate when the kind is not at launch", async () => {
     const f = fixture();
     f.deps.routing.launch = { kinds: ["anthropic"] };

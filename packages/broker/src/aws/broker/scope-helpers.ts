@@ -18,7 +18,7 @@ import type { CreatorCheckDependencies } from "../../developer/creator-member.js
 import { readChatGptSettings } from "../../chatgpt/settings.js";
 import { ModelSourceStore } from "../../model-sources/store.js";
 import type { ModelSourceRouteDependencies } from "../../model-sources/routes.js";
-import { CUSTOM_MODEL_ENDPOINTS_ENV, customEndpointsAllowed, modelEndpointInstall } from "../../model-sources/endpoint-qualification.js";
+import { CUSTOM_MODEL_ENDPOINTS_ENV, customEndpointsAllowed, endpointRangesFromEnvironment } from "../../model-sources/endpoint-qualification.js";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { cloudwatchConnectionCheck } from "../cloudwatch-connector-type.js";
 import { dnsResolveHost, checkEndpointUrl } from "../../connections/endpoint-check.js";
@@ -173,11 +173,19 @@ export async function putInstallBudget(dependencies: AwsBrokerDependencies, iden
 export type ModelSourceBrokerOptions = Pick<ModelSourceRouteDependencies, "launch" | "checkEndpoint" | "bedrockTrustPrincipals" | "isKnownCatalog">;
 
 /**
- * N8: custom model endpoints (a company's own gateway or private Bedrock-compatible endpoint) are on for an install only when its edition has the feature AND the
- * operator set `ROVARA_CUSTOM_MODEL_ENDPOINTS=1`. Off otherwise, and always off on Public. Replaces: the empty launch list as the only switch for the endpoint kind.
+ * N8: custom model endpoints (a company's own gateway or private Bedrock-compatible endpoint) are on for an install only when its edition has the feature, the operator set
+ * `ROVARA_CUSTOM_MODEL_ENDPOINTS=1`, AND the operator's address ranges parse. One answer for everything: the launch list, the routes and routing all read it, so a range that
+ * does not parse turns the whole feature off (no half-on state where qualified endpoints are still routed to but cannot be checked). Off otherwise, and always off on Public.
  */
 export function customModelEndpointsOn(dependencies: Pick<AwsBrokerDependencies, "editionPolicy">): boolean {
-  return customEndpointsAllowed(dependencies.editionPolicy) && process.env[CUSTOM_MODEL_ENDPOINTS_ENV] === "1";
+  if (!customEndpointsAllowed(dependencies.editionPolicy) || process.env[CUSTOM_MODEL_ENDPOINTS_ENV] !== "1") return false;
+  try {
+    endpointRangesFromEnvironment(process.env);
+    return true;
+  } catch {
+    console.log(JSON.stringify({ component: "broker", event: "model_endpoints.misconfigured" }));
+    return false;
+  }
 }
 
 /** The launch lists with the endpoint kind added when the install has custom endpoints on. A launch an install or test supplied is kept as it is. */
@@ -189,19 +197,14 @@ function launchWithEndpoint(dependencies: AwsBrokerDependencies): ModelSourceBro
 
 /**
  * N8: what an install adds to the company AI source routes for custom endpoints: the edition (the routes refuse the kind without the feature), the launch switch, and the
- * address checker built from the operator's ranges. A misconfigured range turns the feature OFF for the process (a fixed log line), never the whole route set.
+ * address checker. The checker runs inside the VPC, in the model access function, with the resolver the proxy connects with; the broker (outside the VPC) judges no address itself.
  */
 export function modelEndpointRouteOptions(dependencies: AwsBrokerDependencies): Pick<ModelSourceBrokerOptions, "launch" | "checkEndpoint"> & { edition?: NonNullable<ModelSourceRouteDependencies["edition"]> } {
   const launch = launchWithEndpoint(dependencies);
-  let checkEndpoint: ModelSourceBrokerOptions["checkEndpoint"];
-  if (customModelEndpointsOn(dependencies)) {
-    try {
-      const install = modelEndpointInstall(process.env, dependencies.editionPolicy);
-      if (install.enabled) checkEndpoint = install.checkEndpoint;
-    } catch {
-      console.log(JSON.stringify({ component: "broker", event: "model_endpoints.misconfigured" }));
-    }
-  }
+  const access = dependencies.modelAccess?.access;
+  const checkEndpoint: ModelSourceBrokerOptions["checkEndpoint"] = customModelEndpointsOn(dependencies) && access?.checkEndpoint !== undefined
+    ? async (url) => { await access.checkEndpoint!(url); }
+    : undefined;
   return {
     ...(dependencies.editionPolicy === undefined ? {} : { edition: dependencies.editionPolicy }),
     ...(launch === undefined ? {} : { launch }),

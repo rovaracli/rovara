@@ -171,7 +171,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     naming,
     ...(teamRecord === undefined ? {} : { teamRecord }),
     ...(Object.keys(brokerEnvironment).length === 0 ? {} : { brokerEnvironment }),
-    ...(modelEndpoints.enabled ? { customModelEndpoints: true } : {}),
+    ...(modelEndpoints.enabled ? { customModelEndpoints: true, customModelEndpointEnvironment: modelEndpointBrokerEnvironment(modelEndpoints), modelEndpointCidrs: modelEndpoints.privateCidrs } : {}),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
     ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs], bundledImages: true } : {}),
