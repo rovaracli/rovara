@@ -14,7 +14,7 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
-import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, type aws_iam as iam } from "aws-cdk-lib";
+import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, aws_iam as iam, type Stack } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
@@ -113,6 +113,11 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
   ops.grantSendMessages(broker);
   BrokerNames.of(broker).add("teamRecordDeadLetters", deadLetters.queueName);
+  // The hourly job deletes PUT messages out of the dead-letter queue (they hold a draft's text, TRW-5 S1): receive and delete on that one queue.
+  deadLetters.grantConsumeMessages(broker);
+  // A delete that neither the table nor the queue took is sent to the broker itself as an asynchronous Event (TRW-5 S2). A policy of its own, so the function does not wait on its own role (no cycle).
+  // A removal Lambda could not run lands in the stack's failure queue, which alarms (the broker's `configureAsyncInvoke`, control-plane.ts).
+  new iam.Policy(stack, "TeamRecordBrokerSelfInvoke", { roles: [broker.role!], statements: [new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] })] });
 
   // The Slack ingress hands a verified event to the broker (direct invoke, which it is already allowed to do) and sends removals (ids only) to the durable queue: this tells it to, and where.
   props.slackIngress.addEnvironment("TEAM_RECORD_ENABLED", "1");

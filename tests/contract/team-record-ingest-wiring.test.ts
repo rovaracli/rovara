@@ -207,6 +207,24 @@ describe("hook ingress: record tap", () => {
     expect(world.logs.map((entry) => entry.event)).toContain("hook.record_tap_failed");
   });
 
+  it("TRW-5 S2: a delete the record could not take at all is answered 503 with nothing sent on, so Linear or Jira sends it again; any other tap failure still leaves the answer alone", async () => {
+    const world = setupHookWorld();
+    world.deps.recordTap = async () => { throw Object.assign(new Error("not accepted"), { name: "RecordRemovalNotAccepted" }); };
+    const hook = await world.hook({ source: "linear" });
+    const answer = await world.receive(world.delivery(hook, body(LINEAR_TENANT)));
+    expect(answer.status).toBe(503);
+    expect(world.dispatched).toHaveLength(0);
+  });
+
+  it("TRW-5 S2: the adapter throws RecordRemovalNotAccepted when the recorder cannot take a delete, and swallows a failed record", async () => {
+    const removalDown = createHookRecordTap({ recorder: { record: async () => "stored", remove: async () => { throw new Error("table, queue and invoke down"); } } });
+    const linearRemove = { type: "Issue", action: "remove", organizationId: LINEAR_TENANT.organizationId, data: { id: "i1", teamId: LINEAR_TENANT.teamId } };
+    await expect(removalDown({ orgId: "org-1", hook: { source: "linear", project: "web", tenant: LINEAR_TENANT }, body: linearRemove })).rejects.toMatchObject({ name: "RecordRemovalNotAccepted" });
+    const recordDown = createHookRecordTap({ recorder: { record: async () => { throw new Error("down"); }, remove: async () => undefined } });
+    const linearCreate = { type: "Issue", action: "create", organizationId: LINEAR_TENANT.organizationId, data: { id: "i1", teamId: LINEAR_TENANT.teamId, title: "t" } };
+    await expect(recordDown({ orgId: "org-1", hook: { source: "linear", project: "web", tenant: LINEAR_TENANT }, body: linearCreate })).resolves.toBeUndefined();
+  });
+
   it("the adapter passes only Linear and Jira hooks on, with their own tenant", async () => {
     const calls: unknown[] = [];
     const adapter = createHookRecordTap({ recorder: { record: async (context, item) => { calls.push({ context, id: item.id }); return "stored"; }, remove: async () => undefined } });

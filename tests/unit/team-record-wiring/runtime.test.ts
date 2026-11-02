@@ -4,10 +4,11 @@
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, developerOrgKey, githubInstallationKey, githubMemberKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
+import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -76,9 +77,19 @@ function fakeAws() {
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const everything = (db: FakeDynamoDb): string => JSON.stringify(db.find(() => true));
 
+/** TRW-4: a row is stored only for a linked author. By default the GitHub account 123 and the Slack user U0123456789 are the member dev-1 of both orgs. */
+const SLACK_LINKED = "U0123456789";
+function linkDefaults(db: FakeDynamoDb): void {
+  for (const orgId of [ORG_A, ORG_B]) {
+    db.set({ ...githubMemberKey(orgId, "123"), entityType: "GITHUB_MEMBER", developerId: "dev-1", orgId });
+  }
+  db.set({ ...developerOrgKey("dev-1"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
+}
+
 function build(db: FakeDynamoDb, env: Record<string, string | undefined>, extra: Partial<Parameters<typeof createTeamRecordRuntime>[0]> = {}): TeamRecordRuntime {
   const aws = fakeAws();
-  const runtime = createTeamRecordRuntime({ env: { ...VECTORS_ENV, ...env }, documentClient: db, stateTableName: "State", now: () => T0, sdk: aws.sdk, sts: aws.sts, ...extra });
+  linkDefaults(db);
+  const runtime = createTeamRecordRuntime({ env: { ...VECTORS_ENV, ...env }, documentClient: db, stateTableName: "State", now: () => T0, sdk: aws.sdk, sts: aws.sts, developerOfSlackUser: async (id) => (id === SLACK_LINKED ? "dev-1" : undefined), ...extra });
   if (runtime === undefined) throw new Error("the runtime was not built");
   return runtime;
 }
@@ -520,7 +531,7 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     expect(everything(db)).toContain(MARKER);
   });
 
-  it("a queued put that still cannot be applied at its LAST delivery is dropped (acknowledged), never dead-lettered with its text; a removal is still retried to the dead-letter queue", async () => {
+  it("a queued put that still cannot be applied two deliveries before the LAST is dropped (acknowledged), never dead-lettered with its text; a removal is still retried to the dead-letter queue", async () => {
     const db = dbOf();
     const down = { on: false };
     // Every storage call fails while it is down (the flaky client above fails only the deletes and updates).
@@ -534,8 +545,9 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     await runtime.sink.tombstone({ workspaceId: ORG_A, system: "github.com", scope: "github:repo/9", cause: "source_deleted" });
     expect(sent.map((op) => op.op)).toStrictEqual(["put", "tombstone"]);
     const at = (receiveCount: number) => asRecords(sent).map((record) => ({ ...record, receiveCount }));
-    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES - 1))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m0" }, { itemIdentifier: "m1" }] });
-    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    // TRW-5 S1: dropped two deliveries before the queue would dead-letter it (a timed-out or throttled invocation raises the count with no code run).
+    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES - 3))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m0" }, { itemIdentifier: "m1" }] });
+    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES - 2))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
     expect(JSON.stringify(logs)).not.toContain(MARKER);
     expect(logs.map((entry) => entry.event)).toContain("record.put_dropped");
   });
@@ -775,14 +787,16 @@ describe("fix round 1, S4: a person's erase also reaches the Slack rows they wro
     const db = dbOf();
     db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
     db.set({ ...orgSlackTeamKey(ORG_A, "T0123456789"), teamId: "T0123456789" });
-    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { ...(slackUserIdsOf === undefined ? {} : { slackUserIdsOf }) });
+    db.set({ ...developerOrgKey("dev-2"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
+    // The colleague is a linked member too (dev-2), so their message is stored and a person erase of dev-1 must leave it.
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { developerOfSlackUser: async (id) => (id === "U0123456789" ? "dev-1" : id === "U0123456780" ? "dev-2" : undefined), ...(slackUserIdsOf === undefined ? {} : { slackUserIdsOf }) });
     await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
     await runtime.taps.slack({ payload: says("U0123456789", "1761818400.000100", `leaver ${MARKER}`), channel });
     await runtime.taps.slack({ payload: says("U0123456780", "1761818401.000100", "colleague stays"), channel });
     return { db, runtime };
   }
 
-  it("with the person's Slack id known, their Slack messages go and a colleague's stay", async () => {
+  it("their Slack messages go and a colleague's stay", async () => {
     const { db, runtime } = await world(async (developerId) => (developerId === "dev-1" ? ["U0123456789"] : []));
     expect(everything(db)).toContain(MARKER);
     await runtime.erase.person(ORG_A, "dev-1");
@@ -790,9 +804,352 @@ describe("fix round 1, S4: a person's erase also reaches the Slack rows they wro
     expect(everything(db)).toContain("colleague stays");
   });
 
-  it("without a Slack link their Slack rows cannot be found by developer id (the stated limit)", async () => {
+  it("the rows are found by the developer id on them, so even with no Slack ids at hand nothing of the person is left (TRW-4: a row is only ever stored for a linked author)", async () => {
     const { db, runtime } = await world();
     await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).not.toContain(MARKER);
+    expect(everything(db)).toContain("colleague stays");
+  });
+});
+
+// ---- TRW-4 (owner, 2026-11-02): the Team record keeps only what it can erase
+describe("TRW-4: a row is stored only when its author is linked to a Rovara person", () => {
+  const SLACK_SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const says = (user: string, ts: string, text: string) => ({ type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user, text, ts, channel_type: "channel" } });
+  const hook = (source: "linear" | "jira") => (source === "linear"
+    ? { source, project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }
+    : { source, project: "web", tenant: { siteHost: "acme.atlassian.net", projectKey: "WEB" } });
+  const linearIssue = (id: string, author: string, text: string, extra: Record<string, unknown> = {}) => ({
+    type: "Issue", action: "create", organizationId: "lin-org", createdAt: "2026-10-30T10:00:00.000Z", actor: { id: author }, data: { id, teamId: "t1", title: text, creatorId: author, updatedAt: "2026-10-30T10:00:00.000Z", ...extra },
+  });
+  const jiraIssue = (id: string, author: string, text: string) => ({
+    webhookEvent: "jira:issue_created", timestamp: 1_761_818_400_000, user: { accountId: author },
+    issue: { id, key: `WEB-${id}`, self: `https://acme.atlassian.net/rest/api/2/issue/${id}`, fields: { summary: text, project: { key: "WEB" }, creator: { accountId: author }, status: { name: "Open" } } },
+  });
+  const maintainer = { orgId: ORG_A, developerId: "dev-1", projectRole: "maintainer" as const };
+
+  async function world() {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    db.set({ ...orgSlackTeamKey(ORG_A, "T0123456789"), teamId: "T0123456789" });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SLACK_SCOPE, retention: "C" });
+    for (const [source, scope] of [["linear", "linear:team/t1"], ["jira", "jira:project/WEB"]] as const) {
+      const saved = await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source, scope, enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+      expect(saved, JSON.stringify(saved)).toMatchObject({ status: "saved" });
+    }
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    return { db, runtime };
+  }
+  const skippedFor = async (runtime: TeamRecordRuntime, role: "maintainer" | "contributor") => {
+    const reply = await runtime.routes({ method: "GET", path: "/v1/app/projects/web/record/sources", query: {}, caller: { ...maintainer, projectRole: role } });
+    return (reply?.body as { skippedUnlinked?: Record<string, number> }).skippedUnlinked;
+  };
+
+  it("Slack: an unlinked author's message is not stored and is counted; a linked author's is stored", async () => {
+    const { db, runtime } = await world();
+    await runtime.taps.slack({ payload: says("U0999999999", "1761818400.000100", `stranger ${MARKER}`), channel });
+    expect(everything(db)).not.toContain(MARKER);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    expect(await skippedFor(runtime, "maintainer")).toStrictEqual({ slack: 1 });
+    await runtime.taps.slack({ payload: says(SLACK_LINKED, "1761818401.000100", `member ${MARKER}`), channel });
     expect(everything(db)).toContain(MARKER);
+    expect(JSON.stringify(db.find((item) => item.entityType === "TEAM_RECORD_EVENT"))).toContain("dev-1");
+  });
+
+  it("the counts are for maintainers: a contributor's read of the sources carries none; and they hold no words and no ids", async () => {
+    const { db, runtime } = await world();
+    await runtime.taps.slack({ payload: says("U0999999999", "1761818400.000100", `stranger ${MARKER}`), channel });
+    expect(await skippedFor(runtime, "contributor")).toBeUndefined();
+    const counters = JSON.stringify(db.find((item) => item.entityType === "TEAM_RECORD_SKIPPED"));
+    expect(counters).not.toContain(MARKER);
+    expect(counters).not.toContain("U0999999999");
+  });
+
+  it("GitHub: an account nobody linked is not stored and is counted", async () => {
+    const { db, runtime } = await world();
+    seedRepository(db, ORG_A, { installationId: 55, repositoryId: 101, project: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/101", retention: "C" });
+    const stranger = delivery(55, 101, `stranger ${MARKER}`);
+    (stranger.payload.comment.user as { id: number }).id = 999;
+    await runtime.taps.github(stranger);
+    expect(everything(db)).not.toContain(MARKER);
+    expect(await skippedFor(runtime, "maintainer")).toStrictEqual({ github: 1 });
+    expect(await runtime.taps.github(delivery(55, 101, `member ${MARKER}`))).toMatchObject({ written: 1 });
+  });
+
+  it("Linear and Jira: nothing is stored until the author id is linked; then it is, with the person on the row", async () => {
+    const { db, runtime } = await world();
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: linearIssue("i1", "lin-ann", `linear ${MARKER}`) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("jira"), body: jiraIssue("1", "acc-ann", `jira ${MARKER}`) });
+    expect(everything(db)).not.toContain(MARKER);
+    expect(await skippedFor(runtime, "maintainer")).toStrictEqual({ jira: 1, linear: 1 });
+    expect(await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-ann", developerId: "dev-1", via: "connect" })).toBe(true);
+    expect(await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-ann", developerId: "dev-1", via: "signin" })).toBe(true);
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: linearIssue("i1", "lin-ann", `linear ${MARKER}`) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("jira"), body: jiraIssue("1", "acc-ann", `jira ${MARKER}`) });
+    const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).toContain("dev-1");
+  });
+
+  it("a ticket a linked person wrote but an unlinked person edited is not stored (their words could not be erased)", async () => {
+    const { db, runtime } = await world();
+    await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-ann", developerId: "dev-1", via: "connect" });
+    await runtime.taps.hook({ orgId: ORG_A, hook: hook("linear"), body: { ...linearIssue("i2", "lin-ann", `edited ${MARKER}`), actor: { id: "lin-stranger" } } });
+    expect(everything(db)).not.toContain(MARKER);
+    expect(await skippedFor(runtime, "maintainer")).toStrictEqual({ linear: 1 });
+  });
+
+  it("a tracker link by an email links only when the tracker said the email is verified, and only to a member of this org", async () => {
+    const { runtime } = await world();
+    const input = { system: "linear", sourceId: "lin-bob", email: "bob@acme.test" };
+    expect(await runtime.links.linkByVerifiedEmail(ORG_A, { ...input, emailVerified: false })).toBe(false);
+    expect(await runtime.links.linkByVerifiedEmail(ORG_A, { ...input, emailVerified: undefined })).toBe(false);
+  });
+
+  it("bots (trust system) and Rovara's own rows need no linked person", async () => {
+    const { db, runtime } = await world();
+    const bot = await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: { sourceId: "bot-1", trust: "system" }, text: `bot ${MARKER}` }));
+    expect(bot).toMatchObject({ status: "stored" });
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+});
+
+describe("TRW-4: a person's erase takes their rows from all four sources, queues, lake and vectors, and their links", () => {
+  const SLACK_SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+
+  it("Slack, GitHub, Linear and Jira rows of one person, an unfinished queued put of theirs, and a put of theirs in the dead-letter queue: nothing of them is left anywhere", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    db.set({ ...orgSlackTeamKey(ORG_A, "T0123456789"), teamId: "T0123456789" });
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    seedRepository(db, ORG_A, { installationId: 55, repositoryId: 101, project: "web" });
+    const queued: Array<Record<string, unknown>> = [];
+    const deadLetters: Array<{ handle: string; body: string }> = [];
+    const down = { on: false };
+    const client = { send: async (command: unknown) => { if (down.on && /^(Put|Update|Delete|TransactWrite)/.test((command as { constructor: { name: string } }).constructor.name)) throw new Error("table down"); return db.send(command as never); } };
+    const clock = { at: T0 };
+    const runtime = build(db, { ...ON, ...LAKE, ROVARA_EDITION: "enterprise" }, {
+      now: () => clock.at, sdk: aws.sdk, sts: aws.sts, documentClient: client, opsQueue: { send: async (op) => { queued.push(op); } },
+      deadLetters: { receive: async () => deadLetters.splice(0, 10), remove: async () => undefined },
+    });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SLACK_SCOPE, retention: "C" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/101", retention: "C" });
+    for (const [source, scope] of [["linear", "linear:team/t1"], ["jira", "jira:project/WEB"]] as const) {
+      await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source, scope, enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+    }
+    await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-ann", developerId: "dev-1", via: "connect" });
+    await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-ann", developerId: "dev-1", via: "verified_email" as never });
+    // The four sources.
+    await runtime.taps.slack({ payload: { type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user: SLACK_LINKED, text: `slack ${MARKER}`, ts: "1761818400.000100", channel_type: "channel" } }, channel });
+    await runtime.taps.github(delivery(55, 101, `github ${MARKER}`));
+    await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "create", organizationId: "lin-org", actor: { id: "lin-ann" }, data: { id: "i1", teamId: "t1", title: `linear ${MARKER}`, creatorId: "lin-ann", updatedAt: "2026-10-30T10:00:00.000Z" } } });
+    await runtime.taps.hook({ orgId: ORG_A, hook: { source: "jira", project: "web", tenant: { siteHost: "acme.atlassian.net", projectKey: "WEB" } }, body: { webhookEvent: "jira:issue_created", timestamp: 1_761_818_400_000, user: { accountId: "acc-ann" }, issue: { id: "1", key: "WEB-1", self: "https://acme.atlassian.net/rest/api/2/issue/1", fields: { summary: `jira ${MARKER}`, project: { key: "WEB" }, creator: { accountId: "acc-ann" } } } } });
+    const rowsBefore = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rowsBefore).toHaveLength(4);
+    expect(new Set(rowsBefore.map((row) => row.source as string))).toStrictEqual(new Set(["slack", "github", "linear", "jira"]));
+    expect(aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand").length).toBeGreaterThan(0);
+    // A put of theirs that was queued while the table was down, and one that reached the dead-letter queue.
+    down.on = true;
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/101", sourceRef: { system: "github.com", id: "late", version: "1" }, text: `queued ${MARKER}` }));
+    down.on = false;
+    expect(queued.map((op) => op.op)).toStrictEqual(["put"]);
+    deadLetters.push({ handle: "h1", body: JSON.stringify(queued[0]) }, { handle: "h2", body: JSON.stringify({ v: 1, op: "tombstone", workspaceId: ORG_A, system: "github.com", cause: "source_deleted" }) });
+
+    await runtime.erase.person(ORG_A, "dev-1");
+    await runtime.jobs.run("hourly");
+    // The erase's own delayed second pass (it keeps the ids for fifteen minutes to catch a late write) has run and removed its item.
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+
+    // The table: no row, fact, link, derivation, queue entry or counter with their words or their ids.
+    const left = everything(db);
+    expect(left).not.toContain(MARKER);
+    for (const id of ["lin-ann", "acc-ann"]) expect(db.find((item) => JSON.stringify(item).includes(id)).map((item) => `${item.pk as string} ${item.sk as string} ${item.entityType as string}`), id).toStrictEqual([]);
+    for (const type of ["TEAM_RECORD_EVENT", "TEAM_RECORD_FACT", "TEAM_RECORD_DERIVATION", "TEAM_RECORD_TRACKER_LINK", "TEAM_RECORD_TRACKER_LINK_BY_PERSON"]) expect(db.find((item) => item.entityType === type), type).toStrictEqual([]);
+    // The lake: the person's rows were told to be forgotten (by developer and by source identity) and the statements ran.
+    const deletes = aws.athenaCalls.filter((call) => call.command === "StartQueryExecutionCommand" && /DELETE FROM/i.test(call.sql));
+    expect(deletes.length).toBeGreaterThan(0);
+    // The vector index: every vector put was deleted.
+    const putKeys = aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand").flatMap((call) => ((call.input.vectors as Array<{ key: string }> | undefined) ?? []).map((vector) => vector.key));
+    const deletedKeys = new Set(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand").flatMap((call) => (call.input.keys as string[] | undefined) ?? []));
+    expect(putKeys.length).toBeGreaterThan(0);
+    for (const key of putKeys) expect(deletedKeys.has(key), key).toBe(true);
+    // The queue: the put that waited is refused when it is replayed (the person is erased), and stores nothing.
+    expect(await runtime.drain(queued.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 })))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    // The dead-letter queue: the sweep took the put (its text) out; what is left holds ids only.
+    expect(deadLetters).toStrictEqual([]);
+  });
+});
+
+// ---- TRW-5 (Opus review of team-record-fixes)
+describe("TRW-5 S1: a queued put never reaches the dead-letter queue, whatever the invocation does", () => {
+  const LINKED_DRAFT = () => githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `queued ${MARKER}` });
+
+  it("a drain that is out of time answers every message it has not touched as 'retry' and touches nothing more", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    const put = (id: string) => ({ messageId: id, body: JSON.stringify({ v: 1, op: "put", draft: { ...LINKED_DRAFT(), sourceRef: { system: "github.com", id, version: "1" } }, queuedAt: new Date(T0).toISOString() }), receiveCount: 1 });
+    const left = [4_000, 4_000, 4_000];
+    expect(await runtime.drain([put("a"), put("b"), put("c")], { remainingMs: () => left.shift() ?? 0 })).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "a" }, { itemIdentifier: "b" }, { itemIdentifier: "c" }] });
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    const some = [60_000, 3_000];
+    expect(await runtime.drain([put("a"), put("b")], { remainingMs: () => some.shift() ?? 0 })).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "b" }] });
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+
+  it("the hourly job deletes put and distill messages from the dead-letter queue, leaves the ones that hold ids only, and does not fail when the queue cannot be read", async () => {
+    const db = dbOf();
+    const held = [
+      { handle: "put", body: JSON.stringify({ v: 1, op: "put", draft: { text: MARKER } }) },
+      { handle: "distill", body: JSON.stringify({ v: 1, op: "distill", draft: { text: MARKER } }) },
+      { handle: "tombstone", body: JSON.stringify({ v: 1, op: "tombstone", workspaceId: ORG_A, system: "x", cause: "source_deleted" }) },
+      { handle: "junk", body: "not json" },
+    ];
+    const removed: string[] = [];
+    let pending = [...held];
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { deadLetters: { receive: async () => pending.splice(0, 10), remove: async (handle) => { removed.push(handle); } } });
+    const summary = await runtime.jobs.run("hourly");
+    expect(removed.sort()).toStrictEqual(["distill", "put"]);
+    expect(summary.details.deadLetterTextDeleted).toBe(2);
+    pending = [];
+    const broken = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { deadLetters: { receive: async () => { throw new Error("sqs down"); }, remove: async () => undefined } });
+    await expect(broken.jobs.run("hourly")).resolves.toBeDefined();
+  });
+});
+
+describe("TRW-5 S2: a delete is never lost when the table and the queue are both down", () => {
+  const tombstone = { workspaceId: ORG_A, system: "linear", sourceIds: ["issue:i1"], cause: "source_deleted" as const };
+  const allDown = (db: FakeDynamoDb) => ({ send: async (command: unknown) => { if (/^(Put|Update|Delete|TransactWrite)/.test((command as { constructor: { name: string } }).constructor.name)) throw new Error("table down"); return db.send(command as never); } });
+
+  it("goes by an ids-only Event invoke of the broker, which applies it directly and throws when it cannot (so Lambda retries and the failure destination keeps it)", async () => {
+    const db = dbOf();
+    const sent: unknown[] = [];
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: allDown(db), opsQueue: { send: async () => { throw new Error("sqs down"); } }, removalFallback: async (event) => { sent.push(event); } });
+    await expect(runtime.sink.tombstone(tombstone)).resolves.toBeDefined();
+    expect(sent).toStrictEqual([{ source: "agentx.team-record-removal", workspaceId: ORG_A, system: "linear", sourceIds: ["issue:i1"], cause: "source_deleted" }]);
+    // The broker applying it to a table that is down throws.
+    await expect(runtime.removal(sent[0] as never)).rejects.toThrow();
+    // And to a table that is back, it lands.
+    const healthy = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await expect(healthy.removal(sent[0] as never)).resolves.toBeUndefined();
+  });
+
+  it("is thrown (not swallowed) only when the table, the queue AND the invoke all failed; with no fallback configured it is thrown as before", async () => {
+    const db = dbOf();
+    const bothDown = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: allDown(db), opsQueue: { send: async () => { throw new Error("sqs down"); } }, removalFallback: async () => { throw new Error("lambda down"); } });
+    await expect(bothDown.sink.tombstone(tombstone)).rejects.toThrow();
+    const none = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: allDown(db) });
+    await expect(none.sink.tombstone(tombstone)).rejects.toThrow();
+  });
+
+  it("the queue still comes first: a delete the queue takes sends no Event invoke", async () => {
+    const db = dbOf();
+    const sent: unknown[] = [];
+    const queued: unknown[] = [];
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: allDown(db), opsQueue: { send: async (op) => { queued.push(op); } }, removalFallback: async (event) => { sent.push(event); } });
+    await runtime.sink.tombstone(tombstone);
+    expect(queued).toHaveLength(1);
+    expect(sent).toStrictEqual([]);
+  });
+});
+
+describe("TRW-5 S3: an archived project whose erase was never recorded is found and erased by the hourly job", () => {
+  async function archivedWorld() {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
+    return { db, runtime };
+  }
+  const archive = (db: FakeDynamoDb, archivedAt: string) => db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt });
+
+  it("erases it, once: a stamp names the archive it answered, so the next hour does nothing; an archive again after a restore is erased again", async () => {
+    const { db, runtime } = await archivedWorld();
+    archive(db, "2026-10-30T11:00:00.000Z");
+    expect((await runtime.jobs.run("hourly")).details.projectsSwept).toBe(1);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    expect((await runtime.jobs.run("hourly")).details.projectsSwept).toBe(0);
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", sourceRef: { system: "github.com", id: "again", version: "1" }, text: "after restore" }));
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "x", createdBy: "y" });
+    expect((await runtime.jobs.run("hourly")).details.projectsSwept).toBe(0);
+    archive(db, "2026-10-31T11:00:00.000Z");
+    expect((await runtime.jobs.run("hourly")).details.projectsSwept).toBe(1);
+  });
+
+  it("leaves an active project alone, and the company's finish takes the stamps away", async () => {
+    const { db, runtime } = await archivedWorld();
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "x", createdBy: "y" });
+    expect((await runtime.jobs.run("hourly")).details.projectsSwept).toBe(0);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+    archive(db, "z");
+    await runtime.jobs.run("hourly");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_ERASE_DONE")).toHaveLength(1);
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, closingAt: "2026-10-30T11:00:00.000Z" });
+    await runtime.erase.workspace(ORG_A);
+    await runtime.jobs.run("hourly");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_ERASE_DONE")).toStrictEqual([]);
+  });
+});
+
+describe("TRW-5 S4: nothing is written for a closed company or into an archived project, a queued put replayed later included", () => {
+  it("a put for a company that is closing, or a project that is archived, is refused; a put replayed from the queue after the close reads the state fresh and is refused", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    const draft = githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `late ${MARKER}` });
+    expect(await runtime.sink.put(draft)).toMatchObject({ status: "stored" });
+    // Replayed: the company closed a minute after the put was queued (a live write can sit on a minute-old answer; a replay may not).
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, closingAt: "2026-10-30T11:00:00.000Z" });
+    const replay = { messageId: "m1", body: JSON.stringify({ v: 1, op: "put", draft: { ...draft, sourceRef: { system: "github.com", id: "queued", version: "1" } }, queuedAt: new Date(T0).toISOString() }), receiveCount: 1 };
+    expect(await runtime.drain([replay])).toStrictEqual({ batchItemFailures: [] });
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+    // Fresh runtime (no cache): the live path refuses too.
+    const fresh = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    expect(await fresh.sink.put({ ...draft, sourceRef: { system: "github.com", id: "live", version: "1" } })).toMatchObject({ status: "refused", reason: "company_closed" });
+  });
+
+  it("an archived project refuses new rows", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z" });
+    expect(await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `late ${MARKER}` }))).toMatchObject({ status: "refused", reason: "project_archived" });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+});
+
+describe("TRW-4: the erase knows the person's tracker author ids and removes their links only when it has finished", () => {
+  it("the erase marker names their Linear and Jira ids (so rows made before the developer id was on them are found), and the links stay until the erase is complete", async () => {
+    const db = dbOf();
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A });
+    const down = { on: false };
+    const client = { send: async (command: unknown) => { if (down.on && /^(Delete|Update|TransactWrite)/.test((command as { constructor: { name: string } }).constructor.name)) throw new Error("down"); return db.send(command as never); } };
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client });
+    await runtime.links.link(ORG_A, { system: "linear", sourceId: "lin-ann", developerId: "dev-1", via: "connect" });
+    await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-ann", developerId: "dev-1", via: "connect" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `mine ${MARKER}` }));
+    down.on = true;
+    await expect(runtime.erase.person(ORG_A, "dev-1")).rejects.toThrow();
+    const marker = JSON.stringify(db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB"));
+    expect(marker).toContain("lin-ann");
+    expect(marker).toContain("acc-ann");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_LINK").length).toBe(2);
+    down.on = false;
+    await runtime.jobs.run("hourly");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB")).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_LINK")).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_LINK_BY_PERSON")).toStrictEqual([]);
   });
 });

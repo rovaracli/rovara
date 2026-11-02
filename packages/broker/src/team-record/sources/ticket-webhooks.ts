@@ -171,10 +171,15 @@ export function createTicketWebhookTap(deps: TicketWebhookTapDependencies): (inp
       const result = ticketsOfWebhook(input);
       if ("ignored" in result) return;
       const context: TicketContext = { workspaceId: deps.workspaceOf?.(input.orgId) ?? input.orgId, project: input.project };
-      if (result.removed.length > 0) await deps.recorder.remove(context, { source: input.source, system: result.system, ids: result.removed });
+      if (result.removed.length > 0) {
+        // A delete is the one thing that must not be lost (TRW-5 S2): the sink has already tried the table, the queue and an Event invoke of the broker. If it still failed, this is thrown so the hook
+        // ingress answers 503 and the provider (Linear, Jira) sends the delivery again.
+        try { await deps.recorder.remove(context, { source: input.source, system: result.system, ids: result.removed }); } catch { throw Object.assign(new Error("the record could not take the delete"), { name: "RecordRemovalNotAccepted" }); }
+      }
       for (const item of result.changes) await deps.recorder.record(context, item);
-    } catch {
-      // Recording is never allowed to fail a delivery.
+    } catch (error) {
+      if ((error as { name?: unknown } | null)?.name === "RecordRemovalNotAccepted") throw error;
+      // Recording anything else is never allowed to fail a delivery.
     }
   };
 }

@@ -569,8 +569,10 @@ async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, o
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([tap(input), new Promise<void>((resolve) => { timer = setTimeout(() => { onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
-  } catch {
+  } catch (error) {
     onFailure();
+    // A delete the record could not take at all (TRW-5 S2): not swallowed. `receiveHook` answers 503 with nothing in it, so that Linear or Jira sends the delivery again.
+    if ((error as { name?: unknown } | null)?.name === "RecordRemovalNotAccepted") throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
