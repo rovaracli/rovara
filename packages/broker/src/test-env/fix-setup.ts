@@ -45,7 +45,7 @@ export type FixSetupCause = (typeof FIX_SETUP_CAUSES)[number];
 export const FIX_SETUP_MARKABLE_CAUSE: FixSetupCause = "fails-on-original-code";
 
 export const FIX_SETUP_TASKS_MAX = 25;
-/** The most tests one card can offer to mark. Every one is shown in full on the card (names are at most 200 characters), so nothing is marked that was not read. */
+/** The most tests one card can offer to mark. Every one is shown in full on the card (an id is at most 500 characters), so nothing is marked that was not read. */
 export const FIX_SETUP_TESTS_MAX = 20;
 /** The most projects and card records one listing reads, so a listing is bounded. */
 export const FIX_SETUP_PROJECTS_MAX = 25;
@@ -245,7 +245,7 @@ function itemOf(project: string, orgId: string, record: FixSetupRecord, titles: 
   const details: Array<{ title: string; lines: string[] }> = [
     { title: "What failed", lines: [sentenceOf(record.cause)] },
     ...(titles.length === 0 ? [] : [{ title: "Tasks waiting on this", lines: [...titles, ...(record.taskCount > titles.length ? [`and ${String(record.taskCount - titles.length)} more`] : [])] }]),
-    // Every name that would be marked is listed in full (the record holds at most FIX_SETUP_TESTS_MAX names of at most 200 characters); a longer list could not be offered at all.
+    // Every name that would be marked is listed in full (the record holds at most FIX_SETUP_TESTS_MAX names of at most 500 characters); a longer list could not be offered at all.
     ...(marks === 0 ? [] : [{ title: "Tests that would be marked as already failing", lines: [...record.tests.slice(0, FIX_SETUP_TESTS_MAX).map((test) => test.name), ...(record.tests.length > FIX_SETUP_TESTS_MAX ? [`and ${String(record.tests.length - FIX_SETUP_TESTS_MAX)} more`] : [])] }]),
   ];
   return {

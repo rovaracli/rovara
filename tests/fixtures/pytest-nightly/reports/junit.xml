@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="1" tests="11" time="0.034" timestamp="2026-11-02T15:04:22.478454-05:00" hostname="worker"><testcase classname="tests.pkg.test_deep" name="test_in_package" time="0.000" /><testcase classname="tests.test_cart" name="test_add" time="0.000" /><testcase classname="tests.test_cart" name="test_total_fails" time="0.001"><failure message="assert (2 + 2) == 5">def test_total_fails():
+&gt;       assert 2 + 2 == 5
+E       assert (2 + 2) == 5
+
+tests/test_cart.py:9: AssertionError</failure></testcase><testcase classname="tests.test_cart" name="test_skipped" time="0.000"><skipped type="pytest.skip" message="not yet">/work/repo/tests/test_cart.py:12: not yet</skipped></testcase><testcase classname="tests.test_cart" name="test_price[1-2]" time="0.000" /><testcase classname="tests.test_cart" name="test_price[3-4]" time="0.000" /><testcase classname="tests.test_cart" name="test_label_with_space[a b]" time="0.000" /><testcase classname="tests.test_cart" name="test_label_with_space_fails[x y]" time="0.000"><failure message="AssertionError: assert 'x y' == 'other'&#10;  &#10;  - other&#10;  + x y">label = 'x y'
+
+    @pytest.mark.parametrize("label", ["x y"])
+    def test_label_with_space_fails(label):
+&gt;       assert label == "other"
+E       AssertionError: assert 'x y' == 'other'
+E         
+E         - other
+E         + x y
+
+tests/test_cart.py:29: AssertionError</failure></testcase><testcase classname="tests.test_cart_rules.TestRules" name="test_discount" time="0.000" /><testcase classname="tests.test_cart_rules.TestRules" name="test_discount_fails" time="0.000"><failure message="AssertionError: discount wrong&#10;assert False">self = &lt;test_cart_rules.TestRules object at 0x109150910&gt;
+
+    def test_discount_fails(self):
+&gt;       assert False, "discount wrong"
+E       AssertionError: discount wrong
+E       assert False
+
+tests/test_cart_rules.py:6: AssertionError</failure></testcase><testcase classname="tests.test_cart_rules.TestOther.TestNested" name="test_deep" time="0.000" /></testsuite></testsuites>

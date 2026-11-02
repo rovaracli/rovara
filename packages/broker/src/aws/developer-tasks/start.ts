@@ -349,7 +349,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const paused = prepared?.paused === true;
   // Plan 6 Task 10: Rovara drafting the project's dev setup. A read-only look at the repositories with no workflow; paid, admitted and limited like a Quick plan.
   // Live interaction F3: a deep diagnosis is the same read-only look (the boundary, the start rules and the planning limit are a setup draft's); only its purpose, its result and its pointer differ.
-  const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined || run?.setupAgent !== undefined;
+  const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined || run?.setupAgent !== undefined || run?.nightlyRun !== undefined;
   if (settingUpDraft && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "a setup draft is a coding run of Rovara Code"));
   // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
@@ -508,7 +508,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
     ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
     ...(run?.codeIntent?.retryOf === undefined ? {} : { retryOfTaskId: run.codeIntent.retryOf }),
-    ...(settingUpDraft ? run?.diagnosis !== undefined ? { purpose: "diagnosis" as const, diagnosis: run.diagnosis } : run?.setupAgent !== undefined ? { purpose: "setup_agent" as const, setupAgentLimits: run.setupAgent.limits } : { purpose: "setup_draft" as const } : {}),
+    // NH-1: a nightly test run is a task of its own purpose, with what it was started to run.
+    ...(run?.nightlyRun === undefined ? {} : { purpose: "nightly_run" as const, nightlyRun: run.nightlyRun }),
+    ...(settingUpDraft && run?.nightlyRun === undefined ? run?.diagnosis !== undefined ? { purpose: "diagnosis" as const, diagnosis: run.diagnosis } : run?.setupAgent !== undefined ? { purpose: "setup_agent" as const, setupAgentLimits: run.setupAgent.limits } : { purpose: "setup_draft" as const } : {}),
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
@@ -539,7 +541,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
     // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
     conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
-    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: run?.setupAgent !== undefined ? "SETUP_AGENT" as const : "SETUP_DRAFT" as const } : {}),
+    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: run?.nightlyRun !== undefined ? "CHECKS" as const : run?.setupAgent !== undefined ? "SETUP_AGENT" as const : "SETUP_DRAFT" as const } : {}),
   };
   const turn = aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",

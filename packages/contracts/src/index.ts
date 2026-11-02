@@ -258,6 +258,8 @@ export * from "./test-environment-prod-deny.js";
 export * from "./test-environment-wire.js";
 export * from "./service-mock-additions.js";
 export * from "./test-env-nightly.js";
+export * from "./nightly-run.js";
+export * from "./test-id.js";
 export * from "./verification-result.js";
 export * from "./e2e-model-spend.js";
 

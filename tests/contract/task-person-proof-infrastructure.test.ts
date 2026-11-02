@@ -328,18 +328,23 @@ describe("the named TEST proof-only installation gate", () => {
     // the repository creation template, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the fixed-name role ECR assumes to create a repository) and their
     // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. SH25 added the SavedEnvEnabled parameter and its packed `sv` setting (the parameter is taken out of the remainder like the other switches). The lifecycle count backstop is keep + 3. Nothing else in the control plane moved.
     // 2026-11-02, merge of cloud/next abde6ff3b into feat/saved-env-build: the four named and foreign digests were retaken again for the two sets of additions together (cloud/next's own and the saved environment images); legacy did not move.
+    // 2026-11-02, NH-1 (nightly run): the named and foreign digests were retaken after ONE intended addition to the artifact bucket (checked by synthesizing with and without it: nothing else moved): the lifecycle
+    // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
+    // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
+    // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
+    // 2026-11-02, merge of cloud/next 3488a7a48 into feat/saved-env-build: the four named and foreign digests were retaken for the nightly run's artifact bucket rule and the saved environment images together. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "39b9f7ea4968bf1a88b77ba93d7d24cf3af316cea3536ece73c16b1e63dd83e5",
-        withoutRoute: "6d59fb48906d9c15a0c339b0de977f051a2e4673a081a4c33fd0f4ae9f5d57c7",
+        withRoute: "182406bd94745e79ca5179741dcf42c7ed4dd521dd38f0f2c4709938a83a98af",
+        withoutRoute: "5bed94a0a753a950ee0959e52f9322308ece5b91c0a613188e09a82362db9e70",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7e9b0407974814ae3540837d8e09b36c1a77c6ecd45f98395c37107c7c37390d",
-        withoutRoute: "b876b02092d5e9412cc1acecb0c30cae3341dd0ca250ceb9da87087f408e8956",
+        withRoute: "4b7255c587bde5f287808b5da631bf25bcf8c5a60f0ee16563c8539369b298a6",
+        withoutRoute: "7f0800c8e8ccfc5bc68261d59431f6d77f88edf60ea40e09d414fe303c906aa7",
       },
       {
         label: "legacy",

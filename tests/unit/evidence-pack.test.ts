@@ -84,6 +84,22 @@ describe("a raw file that cannot be used", () => {
 
 describe("test details are checked against the broker's own outcome", () => {
   const withTests = (over: Record<string, unknown>, checks: CheckEntry[] = [entry("readiness:0", "pytest")]) => buildEvidencePack(input({ checks, rawText: raw({ checks: [{ checkId: "readiness:0", tests: tests(over) }] }) }));
+  it("keeps a valid test id exactly as it is (NH-1 re-check F2/F5): spaces inside it, double spaces, and up to 500 characters; nothing is cut or collapsed", () => {
+    const long = `tests/${"d".repeat(480)}.py::t`;
+    const names = ["src/cart.test.ts::cart adds  two items", long, "tests/test_cart.py::test_label[a b]"];
+    const built = withTests({ total: 4, passed: 1, failed: 3, skipped: 0, names: names.map((name) => ({ name, status: "failed" })), newTests: names }, [entry("readiness:0", "pytest", { after: "failed", class: "regression", exitCode: 1 })]);
+    expect(built.pack?.checks[0]?.tests?.names.map((name) => name.name)).toEqual(names);
+    expect(built.pack?.checks[0]?.tests?.names.some((name) => name.unlisted === true)).toBe(false);
+    expect(built.pack?.checks[0]?.tests?.newTests).toEqual(names);
+  });
+  it("shows a name that is not a valid id as one plain line and marks it unlisted, never as the id of another test: a look-alike character, a space at an end, or the worker's own mark", () => {
+    const odd = ["tests/a.py::t\u3164x", "tests/a.py::trailing ", "tests/a.py::fine"];
+    const built = withTests({ total: 4, passed: 1, failed: 3, skipped: 0, names: odd.map((name) => ({ name, status: "failed", ...(name.endsWith("fine") ? { unlisted: true } : {}) })), newTests: [] }, [entry("readiness:0", "pytest", { after: "failed", class: "regression", exitCode: 1 })]);
+    const names = built.pack?.checks[0]?.tests?.names ?? [];
+    expect(names.every((name) => name.unlisted === true)).toBe(true);
+    expect(names.map((name) => name.name)).toEqual(["tests/a.py::t\u3164x", "tests/a.py::trailing", "tests/a.py::fine"]);
+    expect(EvidencePackSchema.safeParse(built.pack).success).toBe(true);
+  });
   it("drops tests that show a failure under a check that passed", () => {
     const built = withTests({ total: 4, passed: 2, failed: 1, skipped: 1 });
     expect(built.problems).toEqual(["tests_disagree_with_check"]);

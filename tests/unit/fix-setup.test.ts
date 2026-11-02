@@ -160,10 +160,14 @@ describe("the tests a card could mark", () => {
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toEqual({ tests: [], unconfirmed: 2, codeFault: true });
   });
 
-  it("never offers a name that is not shown in full (over 200 characters or with whitespace; it is unconfirmed), and not more than one card shows", () => {
-    const long = "t".repeat(201);
+  it("never offers a name that is not shown in full (over 500 characters, the one test id's limit, or not a valid id; it is unconfirmed), and not more than one card shows", () => {
+    const long = "t".repeat(501);
+    expect(failingOnOriginalTests(pack([check([["t".repeat(300), "failed"]])]), ["t".repeat(300)])?.tests).toHaveLength(1);
     expect(failingOnOriginalTests(pack([check([[long, "failed"]])]), [long])).toMatchObject({ tests: [], codeFault: true });
-    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])).toMatchObject({ tests: [], codeFault: true });
+    // A space inside a name is fine (a test is often named in words); a look-alike character or a space at an end makes the id not valid, so it is unconfirmed.
+    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])?.tests).toEqual([{ name: "has space", checkId: "unit" }]);
+    expect(failingOnOriginalTests(pack([check([["has\u3164look", "failed"]])]), ["has\u3164look"])).toMatchObject({ tests: [], codeFault: true });
+    expect(failingOnOriginalTests(pack([check([["trailing ", "failed"]])]), ["trailing "])).toMatchObject({ tests: [], codeFault: true });
     const many = Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => `t${String(n)}`);
     expect(failingOnOriginalTests(pack([check(many.map((name) => [name, "failed"] as [string, string]))]), many)).toBeUndefined();
     const fits = many.slice(0, FIX_SETUP_TESTS_MAX);
