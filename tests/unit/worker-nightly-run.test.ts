@@ -1,6 +1,6 @@
 // NH-1: the nightly run on the worker. The Prove sequence over the approved environment, one rerun of failures, the coverage map, and ONE tally for the counts and the step words.
 import { describe, expect, it } from "vitest";
-import { CoverageMapSchema, isSafeTestId, testIdOf, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
+import { CoverageMapSchema, isRerunnableTestId, isValidTestId, testIdOf, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
 import { coverageMapDigest, nightlyHealthOf, splitFailures as brokerSplitFailures } from "../../packages/broker/src/test-env/nightly.js";
 import { coverageMapDigestOf, coverageMapFromContexts, runNightly, splitFailures, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
 import { counted, type ParsedTestReport, type ReportedTest } from "../../packages/worker/src/verification/test-report.js";
@@ -208,9 +208,11 @@ describe("the coverage map", () => {
       "src/huge.py": { contexts: { "1": Array.from({ length: 5_001 }, (_, i) => `tests/test_h.py::t${String(i)}|run`) } },
       "src/none.py": { contexts: { "1": [""] } },
       "src/spaced.py": { contexts: { "1": ["tests/test_a.py::t[a b]|run"] } },
+      "src/lookalike.py": { contexts: { "1": ["tests/test_a.py::t\u3164x|run"] } },
     } });
     const built = coverageMapFromContexts(text, "2026-11-05T06:00:00.000Z", { sourceRoot: "service" });
-    expect(built).toEqual({ builtAt: "2026-11-05T06:00:00.000Z", files: { "service/src/match.py": ["tests/test_a.py::t1", "tests/test_b.py::t2"] } });
+    // A context with a space inside is a valid id and is kept; one with a look-alike character is left out, never rewritten.
+    expect(built).toEqual({ builtAt: "2026-11-05T06:00:00.000Z", files: { "service/src/match.py": ["tests/test_a.py::t1", "tests/test_b.py::t2"], "service/src/spaced.py": ["tests/test_a.py::t[a b]"] } });
     expect(CoverageMapSchema.safeParse(built).success).toBe(true);
     expect(coverageMapFromContexts("not json", "2026-11-05T06:00:00.000Z")).toBeUndefined();
     expect(coverageMapFromContexts(JSON.stringify({ files: { "a.py": { contexts: { "1": [""] } } } }), "2026-11-05T06:00:00.000Z")).toBeUndefined();
@@ -233,21 +235,64 @@ describe("bounds and shapes", () => {
     expect(result.tests.failed).toBe(600);
     expect(result.failed).toHaveLength(500);
   });
-  it("an id is file::name, never rewritten; one with whitespace is not safe: it is counted, never listed, never rerun and never in the map", async () => {
+  it("an id is file::name, never rewritten; spaces inside a name are fine: listed, compared and rerun (pytest takes the id as one argument)", async () => {
     expect(testIdOf({ file: "tests/a.py", name: "TestC::t[1-2]" })).toBe("tests/a.py::TestC::t[1-2]");
     expect(testIdOf({ name: "bare" })).toBe("bare");
-    expect(isSafeTestId("tests/a.py::t[a b]")).toBe(false);
-    expect(isSafeTestId("tests/a.py::t[a-b]")).toBe(true);
-    expect(isSafeTestId("-x")).toBe(false);
-    expect(isSafeTestId("x".repeat(501))).toBe(false);
-    const f = fakes({ reports: { "pytest -q": report(t("t[a b]", "failed", "tests/a.py", 500), t("t2", "failed", "tests/a.py", 100), t("t3", "passed")) } });
+    expect(isValidTestId("tests/a.py::t[a b]")).toBe(true);
+    expect(isValidTestId("src/cart.test.ts::cart adds an item")).toBe(true);
+    expect(isRerunnableTestId("-x")).toBe(false);
+    expect(isRerunnableTestId("@file")).toBe(false);
+    expect(isValidTestId("x".repeat(501))).toBe(false);
+    const f = fakes({ reports: { "pytest -q": report(t("t[a b]", "failed", "tests/a.py", 500), t("t2", "failed", "tests/a.py", 100), t("t3", "passed")) }, ...{} });
     const { result } = await night(f.ports);
-    // Counted as failing, not listed (so the broker will excuse nothing), not rerun (only the safe id is on the command line), not among the slowest.
-    expect(result.tests).toEqual({ total: 3, passed: 1, failed: 2, skipped: 0 });
+    expect(result.failed).toEqual(["tests/a.py::t2", "tests/a.py::t[a b]"].sort());
+    expect(result.failedUnlisted).toBeUndefined();
+    expect(f.ran.at(-1)).toBe("pytest -q tests/a.py::t2 tests/a.py::t[a b]");
+    expect(result.slowest.map((entry) => entry.id)).toEqual(["tests/a.py::t[a b]", "tests/a.py::t2"]);
+  });
+
+  it("a test whose id is NOT valid (hidden, look-alike or control character; too long) is counted and left out of every list, and says so in failedUnlisted; the rest of the night is untouched", async () => {
+    const f = fakes({ reports: { "pytest -q": report(t("t\u3164x", "failed", "tests/a.py", 500), t("t\u0007bell", "errored", "tests/a.py"), t("x".repeat(600), "failed", "tests/a.py"), t("t2", "failed", "tests/a.py", 100), t("t3", "passed")) } });
+    const { result } = await night(f.ports);
+    expect(result.tests).toEqual({ total: 5, passed: 1, failed: 4, skipped: 0 });
     expect(result.failed).toEqual(["tests/a.py::t2"]);
+    expect(result.failedUnlisted).toBe(3);
     expect(f.ran.at(-1)).toBe("pytest -q tests/a.py::t2");
     expect(result.slowest.map((entry) => entry.id)).toEqual(["tests/a.py::t2"]);
+    expect(NightlyResultSchema.safeParse(result).success).toBe(true);
+    expect(nightlyHealthOf(result)).toMatchObject({ class: "tests" });
   });
+
+  it("vitest and jest: a full name with spaces is listed, and the rerun is the file and -t with the names escaped, one command per file", async () => {
+    const check = { id: "unit", label: "Unit", command: { cwd: "service", executable: "npx", args: ["vitest", "run", "--reporter=json", "--outputFile=out.json"], timeoutSeconds: 600 }, kind: "test", reportPath: "out.json", selectArgs: ["{tests}"] };
+    const first = report(t("cart adds (2) items", "failed", "src/cart.test.ts"), t("cart totals", "failed", "src/cart.test.ts"), t("price rounds", "failed", "src/price.test.ts"), t("ok", "passed", "src/cart.test.ts"));
+    const ranCommands: string[] = [];
+    const f = fakes({ reports: {
+      "npx vitest run --reporter=json --outputFile=out.json": first,
+      "npx vitest run --reporter=json --outputFile=out.json src/cart.test.ts -t ^(?:cart adds \\(2\\) items|cart totals)$": report(t("cart adds (2) items", "passed", "src/cart.test.ts"), t("cart totals", "failed", "src/cart.test.ts")),
+      "npx vitest run --reporter=json --outputFile=out.json src/price.test.ts -t ^(?:price rounds)$": report(t("price rounds", "failed", "src/price.test.ts")),
+    } });
+    const base = f.ports.runCommand;
+    f.ports.runCommand = (command, signal) => { ranCommands.push(`${command.executable} ${command.args.join(" ")}`); return base(command, signal); };
+    const { result } = await night(f.ports, env({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } }, [check]));
+    expect(ranCommands.slice(-2)).toEqual([
+      "npx vitest run --reporter=json --outputFile=out.json src/cart.test.ts -t ^(?:cart adds \\(2\\) items|cart totals)$",
+      "npx vitest run --reporter=json --outputFile=out.json src/price.test.ts -t ^(?:price rounds)$",
+    ]);
+    expect(result.failed).toEqual(["src/cart.test.ts::cart totals", "src/price.test.ts::price rounds"]);
+    expect(result.flaky).toEqual(["src/cart.test.ts::cart adds (2) items"]);
+    expect(result.tests).toEqual({ total: 4, passed: 2, failed: 2, skipped: 0 });
+  });
+
+  it("a runner whose syntax is not known (mocha, make test) is not rerun: its failures stand, are listed, and nothing is called flaky", async () => {
+    const check = { id: "unit", label: "Unit", command: cmd("mocha", ["--reporter", "xunit"]), kind: "test", reportPath: "reports/junit.xml", selectArgs: ["{tests}"] };
+    const f = fakes({ reports: { "mocha --reporter xunit": report(t("a b", "failed", "test/a.js"), t("c", "passed", "test/a.js")) } });
+    const { result } = await night(f.ports, env({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } }, [check]));
+    expect(f.ran.filter((line) => line.startsWith("mocha"))).toEqual(["mocha --reporter xunit"]);
+    expect(result.failed).toEqual(["test/a.js::a b"]);
+    expect(result.flaky).toEqual([]);
+  });
+
   it("the smoke step is reported as it was: skipped when the environment has no smoke check, as it ran when it has one; the broker alone decides what a skipped smoke means", async () => {
     const withSmoke = [
       { id: "smoke", label: "Smoke", command: cmd("pytest", ["smoke"]), kind: "smoke" },

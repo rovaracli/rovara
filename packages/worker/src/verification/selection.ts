@@ -14,7 +14,7 @@
 import { posix } from "node:path";
 import type { z } from "zod";
 import {
-  isSafeTestId,
+  isRerunnableTestId,
   type EvidenceSelectionSchema,
   TEST_ENV_SELECT_PLACEHOLDER,
   TEST_ENV_ROUND_BUDGET_MIN,
@@ -197,15 +197,18 @@ function graphMentions(graph: ImportGraph, path: string): boolean {
   return false;
 }
 
-/** A test id passed on a command line: the one shared rule (contracts `test-id.ts`). */
-const safeTestId = isSafeTestId;
+/**
+ * A test id passed in the `{tests}` place of a selected run: rerunnable (the shared rule, contracts `test-id.ts`) AND with no space. The `{tests}` slot cannot say how a runner wants a name with spaces (vitest and jest take
+ * files, not full names), so a selection that would need one falls back to the full suite, as it always has; the nightly's rerun builds those commands itself (`rerunCommandsOf`).
+ */
+const safeTestId = (id: string): boolean => isRerunnableTestId(id) && !id.includes(" ");
 
 /**
  * The check's command with the selected tests in the approved `{tests}` place, as separate arguments: no shell, so no quoting to get wrong. Without the placeholder exactly once the command is returned
  * unchanged (the contract refuses such a template, so this is only a guard). The customer's own executable and arguments are not touched.
  */
-export function commandWithSelection(command: ProjectCommand, selectArgs: readonly string[], tests: readonly string[]): ProjectCommand {
-  if (selectArgs.filter((arg) => arg === TEST_ENV_SELECT_PLACEHOLDER).length !== 1 || !tests.every(safeTestId)) return command;
+export function commandWithSelection(command: ProjectCommand, selectArgs: readonly string[], tests: readonly string[], acceptable: (id: string) => boolean = safeTestId): ProjectCommand {
+  if (selectArgs.filter((arg) => arg === TEST_ENV_SELECT_PLACEHOLDER).length !== 1 || !tests.every(acceptable)) return command;
   return { ...command, args: [...command.args, ...selectArgs.flatMap((arg) => (arg === TEST_ENV_SELECT_PLACEHOLDER ? [...tests] : [arg]))] };
 }
 

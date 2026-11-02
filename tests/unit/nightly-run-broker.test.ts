@@ -11,6 +11,7 @@ import { handleNightlyResultCallback, nightlyRunOfOperation, type NightlyOperati
 import { isNightlyOperation, nightlyEndItems, nightlyRequestId, nightlyRunPayloadOf, nightlyRunPort, skipReasonOf } from "../../packages/broker/src/test-env/nightly-run.js";
 import { NIGHT_WORDS, readLatestNight, readNightRows } from "../../packages/broker/src/test-env/night-status.js";
 import { fireTestEnvNightly } from "../../packages/broker/src/test-env/nightly-wiring.js";
+import { alreadyFailingTests, failingSetIsWhole } from "../../packages/broker/src/test-env/nightly.js";
 import { nightlyRunsOf, s3CoverageMapStore } from "../../packages/broker/src/aws/broker/nightly-run-wiring.js";
 import { readProjectHealth } from "../../packages/broker/src/test-env/health.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../support/audit-capture.js";
@@ -332,6 +333,66 @@ describe("the result route", () => {
     await record(h2, result({}, { tests: { total: 10, passed: 9, failures: 0, errors: 0, skipped: 1 } }));
     const stored2 = h2.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#BASELINE#LATEST" }) as { health?: { class: string; cause?: string } } | undefined;
     expect(stored2?.health).toMatchObject({ class: "unclear", cause: "steps_disagree" });
+  });
+});
+
+describe("the last night that left no result clears once a night is recorded (F3)", () => {
+  const monday = (h: Harness) => h.fireNow();
+  /** A recorded night for the fire that was scheduled at `scheduled`, finished at the harness's clock, on the harness's head. */
+  const goodNight = (h: Harness, scheduled: string) => result({ slotId: nightlySlotId(ORG, PROJECT, scheduled), headSha: h.head.value, finishedAt: new Date(h.clock.now).toISOString(), startedAt: new Date(h.clock.now - 40 * 60_000).toISOString(), coverageMapRef: undefined });
+  it("an infrastructure failure on Monday followed by good nights reads nothing; a failure after the good night shows again", async () => {
+    const h = await harness();
+    await monday(h);
+    await record(h, { failed: { reason: "infra" } } as never);
+    expect(await readLatestNight(h.deps, ORG, PROJECT)).toMatchObject({ status: "failed", reason: "infra" });
+    // Tuesday: a retry is not needed; a normal fire starts and its night is recorded.
+    for (const day of [1, 2]) {
+      h.clock.now = T0 + day * 24 * 3_600_000;
+      h.head.value = String(day).repeat(40);
+      const scheduled = new Date(h.clock.now - 5_000).toISOString();
+      expect(await h.fireNow(scheduled)).toMatchObject({ outcome: "started" });
+      await record(h, { result: goodNight(h, scheduled).result });
+      expect(await readLatestNight(h.deps, ORG, PROJECT), `day ${String(day)}`).toBeUndefined();
+    }
+    // Wednesday: the night fails again, and that one is the latest.
+    h.clock.now = T0 + 3 * 24 * 3_600_000;
+    h.head.value = "3".repeat(40);
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "started" });
+    await handleNightlyResultCallback({ ...h.deps, maps: h.store }, OPERATION, { failed: { reason: "wall_clock" } }, ON);
+    expect(await readLatestNight(h.deps, ORG, PROJECT)).toMatchObject({ status: "failed", reason: "wall_clock" });
+  });
+  it("the same-day retry rule does not see an infra failure that a recorded night has answered", async () => {
+    const h = await harness();
+    await monday(h);
+    await record(h, { failed: { reason: "infra" } } as never);
+    h.clock.now = T0 + 3_600_000;
+    const scheduled = new Date(h.clock.now - 5_000).toISOString();
+    expect(await h.fireNow(scheduled)).toMatchObject({ outcome: "started" });
+    await record(h, { result: goodNight(h, scheduled).result });
+    expect(await readLatestNight(h.deps, ORG, PROJECT)).toBeUndefined();
+  });
+});
+
+describe("failing tests whose ids are not valid (F5)", () => {
+  const oneOdd = () => result({ tests: { total: 10, passed: 7, failed: 2, skipped: 1 }, failed: ["tests/test_x.py::bad1"], failedUnlisted: 1, coverageMapRef: undefined }, { tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 } });
+  it("one odd id does not disable the baseline: the listed failing tests are still excused, and the count says one was left out", async () => {
+    const h = await harness();
+    await h.fireNow();
+    await record(h, { result: oneOdd().result });
+    const baseline = (await baselineOf(h))!;
+    expect(baseline).toMatchObject({ failed: ["tests/test_x.py::bad1"], failedUnlisted: 1, tests: { failed: 2 } });
+    expect(failingSetIsWhole(baseline)).toBe(true);
+    expect(await alreadyFailingTests(h.deps, ORG, PROJECT)).toEqual(["tests/test_x.py::bad1"]);
+  });
+  it("a set that does not add up (the cap cut it) is still refused whole", () => {
+    const whole = { failed: ["a", "b"], failedUnlisted: 1, tests: { total: 10, passed: 7, failed: 3, skipped: 0 } };
+    expect(failingSetIsWhole(whole)).toBe(true);
+    expect(failingSetIsWhole({ ...whole, tests: { ...whole.tests, failed: 4 } })).toBe(false);
+    expect(failingSetIsWhole({ failed: ["a"], tests: { total: 3, passed: 1, failed: 2, skipped: 0 } })).toBe(false);
+  });
+  it("a result that claims more left-out tests than there are failing tests is refused", () => {
+    const bad = oneOdd().result;
+    expect(NightlyResultSchema.safeParse({ ...bad, failedUnlisted: 5 }).success).toBe(false);
   });
 });
 

@@ -97,7 +97,7 @@ export async function runNightlyInvocation(
   const unregister = deps.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
   // The check whose coverage data the map is built from: the first test check that approves a coverage report.
   const coverageCheck = run.environment.repos.flatMap((repo) => repo.checks).find((check) => check.kind === "test" && check.coveragePath !== undefined);
-  let posting = false;
+  let posting = false; // true from the moment the result is sent: a night that was recorded is never also reported as failed
   try {
     // The broker reads the operation as RUNNING from this event, and its nightly action (a result, or the word for why there is none) is accepted only then.
     await events.append("lifecycle", { status: "RUNNING", conversationId });
@@ -127,7 +127,7 @@ export async function runNightlyInvocation(
     } else {
       await deps.nightlyResult(whole);
     }
-    posting = false;
+    // From here on the result is the broker's: nothing that fails afterwards (the terminal event) is reported as a failed night, so `posting` stays true to the end.
     await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "CHECKS" });
     await events.flush();
     return { conversationId, reopened: false, workflowMode: "CHECKS" };

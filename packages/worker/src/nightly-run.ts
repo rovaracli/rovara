@@ -14,12 +14,13 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import {
-  CoverageMapSchema, NightlyResultSchema, agentXError, canonicalJson, isSafeTestId, testEnvDigest, testIdOf,
+  CoverageMapSchema, NightlyResultSchema, agentXError, canonicalJson, isRerunnableTestId, isValidTestId, testEnvDigest, testIdOf,
   type CoverageMapData, type NightlyResult, type NightlyRunWire, type NightlyStepWord, type TestEnvCheck, type TestEnvironmentBody, type TEST_ENV_PROVE_STEPS,
 } from "@agentx/contracts";
 import { nightlyCountsAndHealth, type NightlyRunFacts, type NightlyStepStatus } from "./nightly-health-report.js";
 import { proveEnvironment, type ProveCommandResult, type ProvePorts } from "./prove.js";
 import { commandWithSelection } from "./verification/selection.js";
+import { rerunCommandsOf } from "./verification/test-ids.js";
 import type { ParsedTestReport } from "./verification/test-report.js";
 
 /** The most failing and flaky ids a result lists (the contract's own bounds). More failing than this: the count stands, the list is cut, and the broker then excuses no failure. */
@@ -143,30 +144,34 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
     if (suiteRan && environment.selection.method === "coverage_map") await buildMapOnce(controller.signal);
     if (controller.signal.aborted) abortedRun();
 
-    // The one rerun: per test check, only the tests that failed, only where the approved template can name them.
-    const firstFailures = new Map<string, string[]>();
-    const rerunFailures = new Map<string, string[]>();
-    const reran = new Set<string>();
+    // The one rerun: per test check, only the failing tests whose id is VALID and RERUNNABLE, only where the check has an approved `{tests}` template and the runner is one whose syntax is known (pytest takes node ids; vitest and
+    // jest take a file and `-t`; see `rerunCommandsOf`). Any other failing test is counted and listed and simply not rerun: it is never called flaky. A test whose id is not valid is counted, never listed, never rerun.
+    const flakyOf = new Map<string, Set<string>>();
     for (const run of runs.values()) {
       if (run.check.kind !== "test") continue;
-      // Only SAFE ids are listed and rerun: an id with whitespace or hidden characters is counted in the totals, stays failing, and is never put on a command line or in the failing set (contracts `test-id.ts`).
-      const ids = [...run.states].filter(([id, state]) => failing(state) && isSafeTestId(id)).map(([id]) => id).sort();
-      firstFailures.set(run.check.id, ids);
-      if (ids.length === 0 || run.check.selectArgs === undefined || run.check.reportPath === undefined) continue;
-      const command = commandWithSelection(run.check.command, run.check.selectArgs, ids);
-      if (command === run.check.command) continue;
-      const result = await ports.runCommand(command, controller.signal);
-      if (controller.signal.aborted) abortedRun();
-      // A rerun that timed out, or wrote nothing readable, shows nothing as fixed: the failures stand.
-      const second = result.timedOut ? undefined : await ports.readReport(run.check, command).catch(() => undefined);
-      if (second === undefined) continue;
-      const again = statesOf(second).states;
-      rerunFailures.set(run.check.id, ids.filter((id) => failing(again.get(id)) || !again.has(id)));
-      reran.add(run.check.id);
+      const flakyHere = new Set<string>();
+      flakyOf.set(run.check.id, flakyHere);
+      const attempt = [...run.states].filter(([id, state]) => failing(state) && isRerunnableTestId(id)).map(([id]) => id).sort();
+      if (attempt.length === 0 || run.check.selectArgs === undefined || run.check.reportPath === undefined) continue;
+      // A rerun passes names as separate arguments with no shell, so a space in a name is only text: the rerun accepts every rerunnable id (a selection for a task keeps refusing spaces).
+      const commands = rerunCommandsOf(run.check, attempt, (command, selectArgs, ids) => commandWithSelection(command, selectArgs, ids, isRerunnableTestId));
+      if (commands === undefined) continue;
+      const again = new Map<string, TestState>();
+      for (const command of commands) {
+        const result = await ports.runCommand(command, controller.signal);
+        if (controller.signal.aborted) abortedRun();
+        // A rerun that timed out, or wrote nothing readable, shows nothing as fixed: its tests stay failing.
+        const second = result.timedOut ? undefined : await ports.readReport(run.check, command).catch(() => undefined);
+        if (second === undefined) continue;
+        for (const [id, state] of statesOf(second).states) again.set(id, state);
+      }
+      // A test the rerun does not report is still failing; one that passed (or was skipped) on the rerun is flaky.
+      const stillFailing = attempt.filter((id) => failing(again.get(id)) || !again.has(id));
+      for (const id of splitFailures(attempt, stillFailing).flaky) flakyHere.add(id);
     }
 
     // One tally: unique tests by id across the test checks (a test check with no report is one unit, its own verdict).
-    let passed = 0, failures = 0, errors = 0, skipped = 0;
+    let passed = 0, failures = 0, errors = 0, skipped = 0, failedUnlisted = 0;
     const failedIds: string[] = [];
     const flakyIds: string[] = [];
     const slowest: Array<{ id: string; durationMs: number }> = [];
@@ -180,18 +185,19 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
         }
         continue;
       }
-      const split = reran.has(run.check.id) ? splitFailures(firstFailures.get(run.check.id) ?? [], rerunFailures.get(run.check.id) ?? []) : { failed: firstFailures.get(run.check.id) ?? [], flaky: [] };
-      const flaky = new Set(split.flaky);
+      const flaky = flakyOf.get(run.check.id) ?? new Set<string>();
       for (const [id, state] of run.states) {
         if (flaky.has(id) || state === "passed") passed += 1;
         else if (state === "skipped") skipped += 1;
-        else if (state === "failed") failures += 1;
-        else errors += 1;
+        else {
+          if (state === "failed") failures += 1; else errors += 1;
+          // Failing, and either listed or, when its id is not valid, counted as left out of the list.
+          if (isValidTestId(id)) failedIds.push(id); else failedUnlisted += 1;
+        }
         const duration = run.durations.get(id);
-        if (duration !== undefined && isSafeTestId(id)) slowest.push({ id, durationMs: duration });
+        if (duration !== undefined && isValidTestId(id)) slowest.push({ id, durationMs: duration });
       }
-      failedIds.push(...split.failed);
-      flakyIds.push(...split.flaky);
+      flakyIds.push(...flaky);
     }
 
     const stepStatus = (step: NightlyStepWord): NightlyStepStatus => (step === "pull" ? "passed" : step === "update" ? "skipped" : statusOf(step));
@@ -218,7 +224,7 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
     const result = NightlyResultSchema.parse({
       schemaVersion: 1, slotId: input.run.slotId, envRevision: input.run.envRevision, branch: input.run.branch, headSha: input.run.headSha,
       startedAt: new Date(startedAt).toISOString(), finishedAt: new Date(finishedAtMs).toISOString(), durationMs: Math.max(0, Math.round(finishedAtMs - startedAt)),
-      tests: counted.tests, failed: sortedFailed.slice(0, LISTED_MAX), flaky: sortedFlaky.slice(0, LISTED_MAX),
+      tests: counted.tests, failed: sortedFailed.slice(0, LISTED_MAX), ...(failedUnlisted === 0 ? {} : { failedUnlisted }), flaky: sortedFlaky.slice(0, LISTED_MAX),
       ...(coverageMap === undefined || !suiteRan ? {} : { coverageMapRef: coverageMapDigestOf(coverageMap) }),
       slowest: slowest.sort((a, b) => b.durationMs - a.durationMs || a.id.localeCompare(b.id)).slice(0, SLOWEST_MAX),
       health: counted.health,
@@ -258,7 +264,7 @@ export function coverageMapFromContexts(text: string, builtAt: string, options: 
         sawContext = true;
         const id = name.replace(/\|(?:run|setup|teardown)$/u, "");
         // A context that is not a safe id (whitespace, hidden characters) is left out, never rewritten into another test's id.
-        if (isSafeTestId(id)) tests.add(id);
+        if (isValidTestId(id)) tests.add(id);
       }
     }
     if (tests.size === 0 || tests.size > 5_000) continue;

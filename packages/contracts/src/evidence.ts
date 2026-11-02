@@ -188,6 +188,8 @@ export const EvidenceTestSchema = z
   .object({
     // The test's id (`testIdOf`: file::name), the same string the nightly run and the known-failing marks use.
     name: line(TEST_ID_MAX),
+    /** The name is NOT a valid test id (hidden characters, too long, a space at an end): it is shown as a plain line and is never matched against the nightly's failing set or the marks. */
+    unlisted: z.literal(true).optional(),
     status: z.enum(EVIDENCE_TEST_STATUSES),
     /** TESTPROOF's verdict for this test, when the check wrote a per-test report and the test is new or changed. */
     proof: TestProofVerdictSchema.optional(),

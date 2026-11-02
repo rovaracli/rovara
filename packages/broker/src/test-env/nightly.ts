@@ -364,6 +364,7 @@ export async function recordNightlyResult(
   const baseline = NightlyBaselineSchema.parse({
     recordedAt: new Date(now).toISOString(), envRevision: result.envRevision, branch: result.branch, headSha: result.headSha, finishedAt: result.finishedAt, tests: result.tests,
     failed: result.failed.slice(0, NIGHTLY_FAILED_MAX), flaky: result.flaky.slice(0, NIGHTLY_FLAKY_MAX),
+    ...(result.failedUnlisted === undefined || result.failedUnlisted === 0 ? {} : { failedUnlisted: result.failedUnlisted }),
     // Keep the last good map when this run recorded none: selection reads its own age, so an old map falls back to the full suite by itself.
     ...(result.coverageMapRef !== undefined && coverageMapBuiltAt !== undefined ? { coverageMapRef: result.coverageMapRef, coverageMapBuiltAt } : previous?.coverageMapRef === undefined || previous.coverageMapBuiltAt === undefined ? {} : { coverageMapRef: previous.coverageMapRef, coverageMapBuiltAt: previous.coverageMapBuiltAt }),
   });
@@ -388,6 +389,12 @@ export async function recordNightlyResult(
   return { recorded: true, flakyCount: result.flaky.length, failingCount: result.tests.failed };
 }
 
+/**
+ * Whether a baseline's failing set is whole: every failing test is either listed in `failed` or counted in `failedUnlisted` (its id is not valid, so it can be neither excused nor marked, and no other test is it).
+ * A set the cap cut, or that no longer adds up, is not whole and excuses nothing. One odd id does NOT make the baseline unusable: only that test loses its excuse.
+ */
+export const failingSetIsWhole = (baseline: Pick<NightlyBaseline, "failed" | "failedUnlisted" | "tests">): boolean => baseline.failed.length + (baseline.failedUnlisted ?? 0) === baseline.tests.failed;
+
 // ---- what the baseline feeds
 
 /** The last night's classification (SH27) with the baseline it belongs to. `health` is undefined when that night carried no step words; a stored classification that does not read back is "unclear", never absent and never passed. */
@@ -407,7 +414,7 @@ export async function readLatestNightlyHealth(deps: TestEnvDeps, orgId: OrgId, p
  */
 export async function alreadyFailingTests(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<string[]> {
   const baseline = await readNightlyBaseline(deps, orgId, project).catch(() => undefined);
-  if (baseline === undefined || baseline.tests.failed > NIGHTLY_FAILED_MAX || baseline.failed.length !== baseline.tests.failed) return [];
+  if (baseline === undefined || !failingSetIsWhole(baseline)) return [];
   return [...baseline.failed];
 }
 

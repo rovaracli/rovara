@@ -1,5 +1,6 @@
 // Proof and evidence P2: reading a check's own JUnit or vitest/jest JSON report into totals, names, new tests and skip counts. Fail closed: a file that is not a report, is empty, too big or holds no test is "not measured".
 import { describe, expect, it } from "vitest";
+import { isValidTestId } from "@agentx/contracts";
 import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
 import { evidenceTests, parseGoTestJson, parseJsonReport, parseJunit, parseTestReport, plainName, skipRise, skippedOutsideChanged, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
 
@@ -38,7 +39,10 @@ describe("JUnit", () => {
   });
   it("reads a bare testsuite and numeric entities", () => {
     expect(parseJunit('<testsuite><testcase name="caf&#233; &#x1F600;"/></testsuite>')?.tests[0]?.name).toBe("café \u{1F600}");
-    expect(parseJunit('<testsuite><testcase name="bad &#0; &#xD800;"/></testsuite>')?.tests[0]?.name).toBe("bad");
+    // A name is kept as the report wrote it (NH-1: the test's id is built from it); a control character or a lone surrogate in it makes the ID not valid, which is how it is kept out of every list that is matched.
+    const odd = parseJunit('<testsuite><testcase name="bad &#0; &#xD800;"/></testsuite>')?.tests[0]?.name ?? "";
+    expect(odd.startsWith("bad")).toBe(true);
+    expect(isValidTestId(odd)).toBe(false);
   });
   it("is not measured when it is not a report, holds no test, or has too many tests", () => {
     expect(parseJunit("<html><body>not junit</body></html>")).toBeUndefined();
@@ -282,7 +286,9 @@ describe("go test -json", () => {
   });
   it("redacts and cuts a test name, and bounds the number of tests", () => {
     const name = `Test${"x".repeat(500)}`;
-    expect(parseGoTestJson([ev({ Action: "run", Package: "p", Test: name }), ev({ Action: "pass", Package: "p", Test: name })].join("\n"))?.tests[0]?.name.length).toBeLessThanOrEqual(300);
+    expect(parseGoTestJson([ev({ Action: "run", Package: "p", Test: name }), ev({ Action: "pass", Package: "p", Test: name })].join("\n"))?.tests[0]?.name).toBe(name);
+    // Never cut silently: a name over the id limit is kept whole, and is simply not a valid id.
+    expect(isValidTestId(`p::${name}`)).toBe(false);
     const many = Array.from({ length: TEST_REPORT_MAX_TESTS + 1 }, (_, n) => ev({ Action: "pass", Package: "p", Test: `T${String(n)}` })).join("\n");
     expect(parseGoTestJson(many)).toBeUndefined();
   });

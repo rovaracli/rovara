@@ -93,6 +93,16 @@ describe("the nightly invocation", () => {
     expect(d.posted).toEqual([]);
   });
 
+  it("once the result has been posted, nothing that fails afterwards is reported as a failed night: the broker already has the night (F4)", async () => {
+    const d = deps();
+    // The terminal event cannot be sent: the invocation fails, but exactly one thing was posted, the result.
+    d.all.eventSink = async (batch) => { for (const event of batch) { if (event.type === "result") throw new Error("event sink down"); d.events.push({ type: event.type, payload: event.payload as Record<string, unknown> }); } };
+    await expect(runNightlyInvocation(invocation(), d.all, manifest())).rejects.toThrow(/event sink down/);
+    expect(d.posted).toHaveLength(1);
+    expect(d.posted[0]).toHaveProperty("result");
+    expect(d.posted[0]).not.toHaveProperty("failed");
+  });
+
   it("a night stopped before it finished posts nothing", async () => {
     const stopAll = new AbortController();
     const d = deps();

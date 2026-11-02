@@ -11,7 +11,7 @@
 //   - a suite that failed to run (jest and vitest list it with no test results and a message) counts as one errored test, so a load failure never reads as zero failures;
 //   - every name is redacted, one plain line, and cut; at most 500 names go to the evidence, the failing ones first.
 // Pure: no file is read here. The caller reads the bytes (inside the workspace, never through a link) and passes the text.
-import { EVIDENCE_NEW_TESTS_MAX, EVIDENCE_TEST_NAMES_MAX, redactText, testIdOf, type EvidenceTest, type TestProofVerdict } from "@agentx/contracts";
+import { EVIDENCE_NEW_TESTS_MAX, EVIDENCE_TEST_NAMES_MAX, TEST_ID_MAX, isValidTestId, redactText, testIdOf, type EvidenceTest, type TestProofVerdict } from "@agentx/contracts";
 
 /** A report file larger than this is not read (the TESTPROOF reader's own limit). */
 export const TEST_REPORT_MAX_BYTES = 8 * 1024 * 1024;
@@ -43,6 +43,24 @@ export interface ParsedTestReport {
 }
 
 const DURATION_MAX_MS = 86_400_000;
+
+/** An id that cannot be matched, shown as one plain line of at most 500 characters (an ellipsis marks a cut). */
+export function displayLine(text: string): string {
+  const line = text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const points = Array.from(line === "" ? "test" : line);
+  return points.length <= TEST_ID_MAX ? points.join("") : `${points.slice(0, TEST_ID_MAX - 1).join("")}…`;
+}
+
+/** Longest text kept for a test's file or name while a report is read (a bound on memory, far above the 500 characters a valid id may have). */
+const TEST_TEXT_MAX = 2_000;
+/**
+ * A test's file or name as the report wrote it (NH-1 re-check F2/F5): redacted for secrets, and nothing else. It is NOT turned into one plain line and NOT cut at 300 characters, because the test's id is built from it and
+ * an id must be the real one: an id with a newline, a hidden character or more than 500 characters is simply not valid (`isValidTestId`), and is shown as a plain line and never matched. Empty is "test".
+ */
+export function testText(text: string): string {
+  const kept = Array.from(redactText(text)).slice(0, TEST_TEXT_MAX).join("");
+  return kept === "" ? "test" : kept;
+}
 
 /** One plain line: control and format characters become spaces, runs of spaces collapse, secrets are redacted, and it is cut. Empty becomes "test". */
 export function plainName(text: string): string {
@@ -177,10 +195,10 @@ export function parseJunit(text: string): ParsedTestReport | undefined {
     const classname = attributes.get("classname");
     const rawFile = attributes.get("file") ?? (classname === undefined || classname === "" ? undefined : /[/\\]/.test(classname) ? classname : classname.replaceAll(".", "/"));
     // The file is text from a file the agent can write, kept and shown like the name: one plain line, secrets redacted, cut.
-    const file = rawFile === undefined || rawFile === "" ? undefined : plainName(rawFile);
+    const file = rawFile === undefined || rawFile === "" ? undefined : testText(rawFile);
     const time = attributes.get("time") === undefined ? undefined : Number(attributes.get("time"));
     const ms = duration(time, "s");
-    tests.push({ ...(file === undefined ? {} : { file }), name: plainName(attributes.get("name") ?? ""), status, ...(classname === undefined || classname === "" ? {} : { classname: plainName(classname) }), ...(attributes.get("file") === undefined ? {} : { fileGiven: true }), ...(ms === undefined ? {} : { durationMs: ms }) });
+    tests.push({ ...(file === undefined ? {} : { file }), name: testText(attributes.get("name") ?? ""), status, ...(classname === undefined || classname === "" ? {} : { classname: testText(classname) }), ...(attributes.get("file") === undefined ? {} : { fileGiven: true }), ...(ms === undefined ? {} : { durationMs: ms }) });
   }
   return tests.length === 0 ? undefined : counted("junit", tests);
 }
@@ -216,12 +234,12 @@ export function parseJsonReport(text: string): ParsedTestReport | undefined {
       const status: ReportedTestStatus = result.status === "passed" ? "passed" : result.status === "failed" ? "failed" : typeof result.status === "string" && SKIPPED_STATUSES.has(result.status) ? "skipped" : "errored";
       const name = typeof result.fullName === "string" ? result.fullName : typeof result.title === "string" ? result.title : "";
       const ms = duration(typeof result.duration === "number" ? result.duration : undefined, "ms");
-      tests.push({ ...(file === undefined ? {} : { file }), name: plainName(name), status, ...(ms === undefined ? {} : { durationMs: ms }) });
+      tests.push({ ...(file === undefined ? {} : { file }), name: testText(name), status, ...(ms === undefined ? {} : { durationMs: ms }) });
     }
     // A suite that failed with no failing test of its own (it failed to load, or a hook such as afterAll failed) keeps its failure as one errored entry named for the file.
     if (suite.status === "failed" && !objects.some((result) => result.status === "failed")) {
       if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
-      tests.push({ ...(file === undefined ? {} : { file }), name: plainName(file ?? "test suite"), status: "errored" });
+      tests.push({ ...(file === undefined ? {} : { file }), name: testText(file ?? "test suite"), status: "errored" });
     }
   }
   return tests.length === 0 ? undefined : counted("json", tests);
@@ -280,19 +298,19 @@ export function parseGoTestJson(text: string): ParsedTestReport | undefined {
     if (pending > 0) running.set(key(event.pkg, event.test), pending - 1);
     if (status === "failed") failedTestsIn.add(event.pkg);
     const ms = duration(event.elapsed, "s");
-    tests.push({ file: event.pkg, name: plainName(event.test), status, ...(ms === undefined ? {} : { durationMs: ms }) });
+    tests.push({ file: event.pkg, name: testText(event.test), status, ...(ms === undefined ? {} : { durationMs: ms }) });
   }
   for (const [entry, pending] of running) {
     for (let count = 0; count < pending; count += 1) {
       if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
       const [pkg, test] = entry.split("\u0000") as [string, string];
-      tests.push({ file: pkg, name: plainName(test), status: "errored" });
+      tests.push({ file: pkg, name: testText(test), status: "errored" });
     }
   }
   for (const pkg of failedPackages) {
     if (failedTestsIn.has(pkg)) continue;
     if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
-    tests.push({ file: pkg, name: plainName(pkg), status: "errored" });
+    tests.push({ file: pkg, name: testText(pkg), status: "errored" });
   }
   return tests.length === 0 ? undefined : counted("gotest", tests);
 }
@@ -377,9 +395,10 @@ export function evidenceTests(report: ParsedTestReport, options: EvidenceTestsOp
     if (seen.has(id)) continue;
     seen.add(id);
     const proof = touched(test) ? (options.proofByTest?.get(id) ?? options.proofByTest?.get(test.name)) : undefined;
-    names.push({ name: id, status: test.status, ...(proof === undefined ? {} : { proof }), ...(test.durationMs === undefined ? {} : { durationMs: test.durationMs }) });
+    // An id that is not valid (hidden characters, too long, a space at an end) is shown as a plain line, cut with an ellipsis, and marked `unlisted`: it is counted, never matched against the nightly's failing set or the marks.
+    names.push({ name: isValidTestId(id) ? id : displayLine(id), ...(isValidTestId(id) ? {} : { unlisted: true as const }), status: test.status, ...(proof === undefined ? {} : { proof }), ...(test.durationMs === undefined ? {} : { durationMs: test.durationMs }) });
   }
-  const newTests = [...new Set(report.tests.filter((test) => test.status !== "skipped" && touched(test)).map((test) => testIdOf(test)))].slice(0, EVIDENCE_NEW_TESTS_MAX);
+  const newTests = [...new Set(report.tests.filter((test) => test.status !== "skipped" && touched(test)).map((test) => { const id = testIdOf(test); return isValidTestId(id) ? id : displayLine(id); }))].slice(0, EVIDENCE_NEW_TESTS_MAX);
   return {
     total: report.total, passed: report.passed, failed: report.failed, skipped: report.skipped, errored: report.errored,
     ...(options.skippedOutside === undefined ? {} : { skippedBefore: options.skippedOutside.before, skippedAfter: options.skippedOutside.after }),

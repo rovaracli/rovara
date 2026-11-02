@@ -151,10 +151,11 @@ describe("expiry by a nightly", () => {
     expect(KnownFailingMarkViewSchema.safeParse({ ...view, name: "x".repeat(501) }).success).toBe(false);
   });
 
-  it("a mark is named by a SAFE test id only: one token, no whitespace, not an option, at most 500 characters", () => {
-    expect(KnownFailingTestId.safeParse("tests/test_cart.py::TestRules::test_a[1-2]").success).toBe(true);
-    for (const bad of ["has space", "tests/t.py::t[a b]", "-x", "@file", "x".repeat(501), "tab\there", ""]) expect(KnownFailingTestId.safeParse(bad).success, bad).toBe(false);
-    expect(KnownFailingMarkSchema.safeParse({ name: "t/a.py::one y", checkId: "unit", markedBy: "dev_b", markedAt, epoch: 3 }).success).toBe(false);
+  it("a mark is named by a VALID test id: spaces inside a name are fine; control, hidden and look-alike characters, a space at an end, and more than 500 characters are not", () => {
+    for (const good of ["tests/test_cart.py::TestRules::test_a[1-2]", "tests/t.py::t[a b]", "src/cart.test.ts::cart adds an item", "-x"]) expect(KnownFailingTestId.safeParse(good).success, good).toBe(true);
+    for (const bad of ["x".repeat(501), "tab\there", "new\nline", "", " lead", "trail ", "a\u3164b", "a\u2800b", "a\uFE0Fb", "a\u00A0b", "a\u200Bb", "lone\uD800surrogate"]) expect(KnownFailingTestId.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    expect(KnownFailingMarkSchema.safeParse({ name: "t/a.py::one y", checkId: "unit", markedBy: "dev_b", markedAt, epoch: 3 }).success).toBe(true);
+    expect(KnownFailingMarkSchema.safeParse({ name: "t/a.py::one\u3164y", checkId: "unit", markedBy: "dev_b", markedAt, epoch: 3 }).success).toBe(false);
   });
 
   it("a flaky list that hit its cap may be missing tests, so no mark is shown passing by that night", () => {
@@ -229,6 +230,18 @@ describe("expiry by a nightly", () => {
     const truncated = { ...night, baseline: { ...night.baseline, tests: { ...night.baseline.tests, failed: 9 } } };
     expect(await expireKnownFailing(h.store, truncated, {}, ON)).toBe(0);
     expect(await h.names()).toEqual(["t/a.py::one", "t/a.py::two"]);
+  });
+
+  it("one odd id in the night does not stop the expiry: a baseline that says one failing test was left out (failedUnlisted) is whole, so the marks it shows passing still go; a marked name that the night lists as failing stays", async () => {
+    const h = harness([mark("t/a.py::one"), mark("t/x.py::bad")]);
+    const night = h.night({ failed: ["t/x.py::bad"] });
+    const withOdd = { ...night, baseline: { ...night.baseline, tests: { ...night.baseline.tests, failed: night.baseline.tests.failed + 1, total: night.baseline.tests.total + 1 }, failedUnlisted: 1 } };
+    expect(await expireKnownFailing(h.store, withOdd, {}, ON)).toBe(1);
+    expect(await h.names()).toEqual(["t/x.py::bad"]);
+    // The same numbers without the left-out count do not add up: nothing is excused and nothing expires.
+    const g = harness([mark("t/a.py::one")]);
+    const n = g.night({ failed: [] });
+    expect(await expireKnownFailing(g.store, { ...n, baseline: { ...n.baseline, tests: { ...n.baseline.tests, failed: 1, total: n.baseline.tests.total + 1 } } }, {}, ON)).toBe(0);
   });
 
   it("leaves an unreadable list alone, and a list with nothing passing writes nothing", async () => {

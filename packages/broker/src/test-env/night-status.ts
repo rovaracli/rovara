@@ -3,7 +3,7 @@
 //                operation when it ends with no report (infra), whichever comes first: the first word stands. None of them is the project's fault, so none moves the project's health state.
 //   unavailable  the night cannot run at all today: services_unsupported, registries_unsupported, branch_not_default. Written by the fire. Never "needs repair".
 // A row is one item per night slot, kept 7 days. At most ONE retry the same UTC day, only after an `infra` failure (`sameDayRetryOf`).
-import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, NIGHT_FAILED_REASONS, NIGHT_UNAVAILABLE_REASONS, projectPk, type NightFailedReason, type NightUnavailableReason, type OrgId } from "@agentx/contracts";
 import type { TestEnvDeps } from "../org/test-environment.js";
 
@@ -52,8 +52,15 @@ export async function recordNightUnavailable(deps: TestEnvDeps, input: { orgId: 
   }));
 }
 
-/** The project's nights that left a row (newest last). A row that does not read back is left out, never read as a different word. */
+/** The project's nights that left a row (newest last), without those a newer recorded baseline has answered: once a night is recorded, an earlier night that failed or could not run says nothing more. A row that does not read back is left out, never read as a different word. */
 export async function readNightRows(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<Array<NightRow & { day: string }>> {
+  const rows = await readAllNightRows(deps, orgId, project);
+  const latest = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: projectPk(orgId, project), sk: "TESTENV#BASELINE#LATEST" }, ConsistentRead: true })) as { Item?: { baseline?: { recordedAt?: unknown } } }).Item;
+  const recordedAt = typeof latest?.baseline?.recordedAt === "string" ? Date.parse(latest.baseline.recordedAt) : Number.NaN;
+  return Number.isFinite(recordedAt) ? rows.filter((row) => Date.parse(row.at) > recordedAt) : rows;
+}
+
+async function readAllNightRows(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<Array<NightRow & { day: string }>> {
   const response = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PREFIX }, ConsistentRead: true,
   })) as { Items?: Array<Record<string, unknown>> };
