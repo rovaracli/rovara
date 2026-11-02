@@ -20,6 +20,7 @@ import {
   type ProjectCommand,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
+import { defaultVenvLinkPolicy, isVenvInterpreterLink, type VenvLinkPolicy } from "./workspace-links.js";
 import { materializeMetaKnowledge } from "./meta-checkout.js";
 import {
   createDevcontainerCli,
@@ -140,6 +141,8 @@ export interface PrepareWorkspaceOptions {
   onDiagnostic?: (message: string) => void;
   /** Internal worker-only trust anchor for the fixed top-level verifier backing directory. */
   trustedRuntimeBackingOwner?: Readonly<{ uid: number; gid: number }>;
+  /** Where a virtual environment's interpreter links may point (see workspace-links.ts). Default: /usr/bin, /usr/local/bin and uv's managed Pythons, from the environment. */
+  venvLinkPolicy?: VenvLinkPolicy;
   /**
    * Pull request heads an agent-step run looks at (Plan 3, Task 22): after a repository is cloned, each of its heads is fetched with the repository's read
    * credential and the first is checked out detached at exactly `headSha` (a head that has moved since the run started fails the preparation: a review
@@ -284,7 +287,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
   }
   if (manifest.complete) {
-    await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+    await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
     return manifest;
   }
 
@@ -328,7 +331,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
           `unrecorded checkout at ${repository.path} has HEAD ${head}; refusing to reset it`,
         );
       }
-      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
       const now = new Date().toISOString();
       manifest.repositories.push({
         name: repository.name,
@@ -386,7 +389,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       if (result.exitCode !== 0 || result.timedOut === true) {
         throw new Error(describeCommandFailure("setup step", index, command, result));
       }
-      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+      await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
       manifest.completedSetupSteps.push(index);
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
     }
@@ -466,7 +469,7 @@ async function prepareMetaRepository(
   const onBranch = present && (commit === head || await runIsolatedGit(destination, ["merge-base", "--is-ancestor", commit, head], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false));
   if (!onBranch) throw new Error("the meta repository does not hold the commit asked for on its default branch");
   const done = await materializeMetaKnowledge(destination, commit, meta);
-  await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+  await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
   return { name: entry.name, path: entry.path, defaultBranch: entry.defaultBranch, resolvedCommit: commit, files: done.files, bytes: done.bytes, skipped: done.skipped, completedAt: new Date().toISOString() };
 }
 
@@ -749,6 +752,7 @@ async function assertContainedSymlinks(
   rootPath: string,
   directory = rootPath,
   runtimeBackingOwner?: Readonly<{ uid: number; gid: number }>,
+  venvLinkPolicy?: VenvLinkPolicy,
 ): Promise<void> {
   let entries;
   try {
@@ -777,11 +781,15 @@ async function assertContainedSymlinks(
       try {
         target = await realpath(entryPath);
       } catch {
+        // A virtual environment's interpreter link may point at an interpreter this process cannot see (the task sandbox's filesystem differs): judged by its text alone.
+        if (await isVenvInterpreterLink(entryPath, venvLinkPolicy ?? defaultVenvLinkPolicy())) continue;
         throw new Error(`broken symlink is not allowed in workspace: ${relative(rootPath, entryPath)}`);
       }
+      // Likewise one that resolves outside the workspace, to /usr/bin/python3 for example. Nothing else may leave it.
+      if (!pathContains(rootPath, target) && await isVenvInterpreterLink(entryPath, venvLinkPolicy ?? defaultVenvLinkPolicy())) continue;
       containedPath(rootPath, relative(rootPath, target));
     } else if (metadata.isDirectory() && entry.name !== ".git") {
-      await assertContainedSymlinks(rootPath, entryPath, runtimeBackingOwner);
+      await assertContainedSymlinks(rootPath, entryPath, runtimeBackingOwner, venvLinkPolicy);
     }
   }
 }
