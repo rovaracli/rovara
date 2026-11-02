@@ -11,7 +11,7 @@
 //
 // NOT here (deferred to the staging real-run checks, listed in the lane report): starting service mocks and probing pre-prod from a worker (they need the verifier's mock host, which needs Docker), the saved image
 // (`update`, `ranFrom: saved_image`), and a coverage map for anything but coverage.py contexts.
-import { NIGHTLY_RUN_WALL_CLOCK_MS, agentXError, type NightlyResultCallbackBody, type NightlyRunPayload, type WorkerInvocation, type TestEnvCheck } from "@agentx/contracts";
+import { NIGHTLY_CALLBACK_BODY_MAX_BYTES, NIGHTLY_RUN_WALL_CLOCK_MS, NightlyResultSchema, agentXError, type NightlyResultCallbackBody, type NightlyRunPayload, type WorkerInvocation, type TestEnvCheck } from "@agentx/contracts";
 import { EventBatcher, type EventBatchSink } from "./events.js";
 import type { WorkerCancellationController } from "./cancel.js";
 import type { PreparationManifest } from "./prepare.js";
@@ -104,7 +104,16 @@ export async function runNightlyInvocation(
       environment: run.environment, run: { slotId: run.slotId, envRevision: run.envRevision, branch: run.branch, headSha: run.headSha },
       ports: deps.ports ?? productionPorts(deps, startedAt, now, coverageCheck), signal: stop.signal, deadlineMs: NIGHTLY_RUN_WALL_CLOCK_MS, startedAtMs: startedAt,
     });
-    await deps.nightlyResult({ result, ...(coverageMap === undefined ? {} : { coverageMap }) });
+    // The body must fit the control plane's request limit. A map that would not fit is not sent, and the result says so (it names no map then): the night is recorded, the selection falls back to the full suite
+    // until a map arrives. The follow-up is to upload the map to a presigned address instead of in the body.
+    const whole: NightlyResultCallbackBody = { result, ...(coverageMap === undefined ? {} : { coverageMap }) };
+    if (coverageMap !== undefined && Buffer.byteLength(JSON.stringify(whole), "utf8") > NIGHTLY_CALLBACK_BODY_MAX_BYTES) {
+      const { coverageMapRef: _named, ...rest } = result; // eslint-disable-line @typescript-eslint/no-unused-vars -- the reference goes with the map
+      await events.append("progress", { message: "Rovara built a coverage map for this night but it is too large to send, so this night is recorded without it." });
+      await deps.nightlyResult({ result: NightlyResultSchema.parse({ ...rest, coverageMapSkipped: "too_large" }) });
+    } else {
+      await deps.nightlyResult(whole);
+    }
     await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "CHECKS" });
     await events.flush();
     return { conversationId, reopened: false, workflowMode: "CHECKS" };

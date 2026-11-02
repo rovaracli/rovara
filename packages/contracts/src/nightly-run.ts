@@ -29,6 +29,9 @@ export type NightlyRunWire = z.infer<typeof NightlyRunWireSchema>;
 export const NightlyRunPayloadSchema = NightlyRunWireSchema.extend({ environment: TestEnvironmentBodySchema }).strict();
 export type NightlyRunPayload = z.infer<typeof NightlyRunPayloadSchema>;
 
+/** The most the callback body (the result and its coverage map) may be: the control plane's request limit is 6 MB, and the body is JSON. Above this the map is not sent (`coverageMapSkipped`). */
+export const NIGHTLY_CALLBACK_BODY_MAX_BYTES = 5 * 1_048_576;
+
 /** The body of the one worker-to-broker action: the result and, when the run recorded one, its coverage map. Both are read again by the broker's own contracts. */
 export const NightlyResultCallbackBodySchema = z.object({ result: z.unknown(), coverageMap: z.unknown().optional() }).strict();
 export type NightlyResultCallbackBody = z.infer<typeof NightlyResultCallbackBodySchema>;

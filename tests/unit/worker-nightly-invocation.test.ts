@@ -90,3 +90,29 @@ describe("the nightly invocation", () => {
     expect(d.posted).toEqual([]);
   });
 });
+
+describe("the callback body", () => {
+  const bigMap = (): CoverageMapData => ({ builtAt: new Date(Date.UTC(2026, 10, 5, 6, 0, 0)).toISOString(), files: Object.fromEntries(Array.from({ length: 3 }, (_, f) => [`src/f${String(f)}.py`, Array.from({ length: 5_000 }, (__, i) => `tests/test_${String(f)}.py::${"t".repeat(470)}${String(i).padStart(5, "0")}`)])) });
+  it("a map that would not fit the control plane's request limit is not sent: the result is, without the map or its reference and with the word 'too_large', and a note says so", async () => {
+    const d = deps();
+    d.all.ports!.buildCoverageMap = () => Promise.resolve(bigMap());
+    await runNightlyInvocation(invocation(payload({ environment: body({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } }) })), d.all, manifest());
+    expect(d.posted).toHaveLength(1);
+    const sent = d.posted[0] as { result: Record<string, unknown>; coverageMap?: unknown };
+    expect(sent.coverageMap).toBeUndefined();
+    expect(sent.result["coverageMapRef"]).toBeUndefined();
+    expect(sent.result["coverageMapSkipped"]).toBe("too_large");
+    expect(Buffer.byteLength(JSON.stringify(sent))).toBeLessThan(5 * 1_048_576);
+    expect(d.events.some((event) => event.type === "progress" && String(event.payload["message"]).includes("too large"))).toBe(true);
+  });
+  it("a map that fits is sent with its reference", async () => {
+    const d = deps();
+    const small = { builtAt: new Date(Date.UTC(2026, 10, 5, 6, 0, 0)).toISOString(), files: { "src/a.py": ["tests/a.py::t"] } };
+    d.all.ports!.buildCoverageMap = () => Promise.resolve(small);
+    await runNightlyInvocation(invocation(payload({ environment: body({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } }) })), d.all, manifest());
+    const sent = d.posted[0] as { result: Record<string, unknown>; coverageMap?: unknown };
+    expect(sent.coverageMap).toEqual(small);
+    expect(sent.result["coverageMapRef"]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(sent.result["coverageMapSkipped"]).toBeUndefined();
+  });
+});

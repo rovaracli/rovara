@@ -337,7 +337,7 @@ export async function recordNightlyResult(
   // The health sits BESIDE the baseline, not inside it: an older broker still reads the baseline. A result without step words stores exactly what it always did.
   const health = nightlyHealthOf(result);
   const healthField = health === undefined ? {} : { health };
-  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
+  const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, ...(result.coverageMapSkipped === undefined ? {} : { coverageMapSkipped: result.coverageMapSkipped }), slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: history }));
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...keyOf(input.orgId, input.project, "TESTENV#BASELINE#LATEST"), entityType: "TEST_ENV_BASELINE_LATEST", orgId: input.orgId, project: input.project, baseline, ...healthField } }));
   // Before the run is released: a listener that fails leaves the run claimed, so the worker's retry records the same result again (every write above and in the listener is repeatable).
