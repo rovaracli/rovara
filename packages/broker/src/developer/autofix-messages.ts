@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { AUTO_FIX_ASK_REASONS, AUTO_FIX_CODES, workflowAutoFixCounts, type AutoFixAskReason, type AutoFixCode, type WorkflowSnapshot } from "@agentx/contracts";
+import { AUTO_FIX_ASK_REASONS, AUTO_FIX_CODES, autoFixAskCard, workflowAutoFixCounts, type AutoFixAskReason, type AutoFixCode, type WorkflowSnapshot } from "@agentx/contracts";
+import { verifyResultsEnabled } from "../verification/switch.js";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 
 /**
@@ -144,7 +145,7 @@ export function autoFixTriedSentence(workflow: Pick<WorkflowSnapshot, "decisions
  * The lines the blocked card adds when Rovara handled this task by itself or asks because of a limit: what it already tried, why it is asking, and every UNKNOWN group with its own result
  * on the original code. Empty when there is nothing to add (so the card reads as it did before). The options are the card's own buttons.
  */
-export function autoFixCardLines(workflow: Pick<WorkflowSnapshot, "decisions" | "revision">, ask: AutoFixAsk | undefined, options: { plain?: boolean } = {}): string[] {
+export function autoFixCardLines(workflow: Pick<WorkflowSnapshot, "decisions" | "revision">, ask: AutoFixAsk | undefined, options: { plain?: boolean; fixSetup?: { stage: "VERIFY" | "REVIEW" } } = {}): string[] {
   const bold = (text: string): string => (options.plain === true ? text : `*${text}*`);
   const current = ask !== undefined && ask.workflowRevision === workflow.revision ? ask : undefined;
   const tried = autoFixTriedSentence(workflow);
@@ -157,7 +158,11 @@ export function autoFixCardLines(workflow: Pick<WorkflowSnapshot, "decisions" | 
     const failed = current.codes.filter((code) => code === "dispatch-exhausted" || code === "run-lost").map((code) => autoFixCodeSentence(code));
     if (failed.length > 0) lines.push(`${bold("What failed:")} ${failed.join(" ")}`);
     // "Also fails on the original code" is said only when a scenario really failed there; a round that could not run says so instead.
-    lines.push(`${bold("Why I'm asking you:")} ${autoFixAskReasonSentence(current.reason, current.capUsd, groups.length === 0 || groups.some((group) => group.original === "failed"))}`);
+    // Setup and test health SH19 (only while `vx` is on: the caller passes `fixSetup`): an ask about the test environment is the Fix setup case, said in its own fixed words. The label stays, so a post that already has it is not repeated.
+    if (options.fixSetup !== undefined && autoFixAskCard(current, options.fixSetup.stage) === "fix_setup") {
+      lines.push(`${bold("Why I'm asking you:")} The test setup, not the code, kept the checks from giving a result (Blocked by environment).`);
+      lines.push(`${bold("What to do:")} Open the Fix setup card for this project: run the setup agent, fix it with an agent, mark tests that already fail, or retry the checks.`);
+    } else lines.push(`${bold("Why I'm asking you:")} ${autoFixAskReasonSentence(current.reason, current.capUsd, groups.length === 0 || groups.some((group) => group.original === "failed"))}`);
     if (groups.length > 0) {
       lines.push(bold("Not decided yet:"));
       for (const group of groups) lines.push(`• ${group.id} ${ORIGINAL_SENTENCES[group.original]}`);
@@ -181,4 +186,9 @@ export function autoFixRetryReason(stage: "VERIFY" | "REVIEW", codes: readonly A
   const shown = codes.slice(0, 3).map((code) => CODE_SENTENCES[code]).join(" ");
   const text = `Rovara retried the ${stage === "REVIEW" ? "reviews" : "checks"} by itself. ${shown}`;
   return text.length <= 500 ? text : `${text.slice(0, 499)}…`;
+}
+
+/** The `fixSetup` option for `autoFixCardLines` (setup and test health SH19): present only while `vx` is on and the workflow is at a step the auto-fix policy handles. Spread it into the options at each call site. */
+export function fixSetupWording(workflow: Pick<WorkflowSnapshot, "stage">, env: NodeJS.ProcessEnv = process.env): { fixSetup?: { stage: "VERIFY" | "REVIEW" } } {
+  return verifyResultsEnabled(env) && (workflow.stage === "VERIFY" || workflow.stage === "REVIEW") ? { fixSetup: { stage: workflow.stage } } : {};
 }

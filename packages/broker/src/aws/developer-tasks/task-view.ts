@@ -1,5 +1,6 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { mayReadEvidence } from "./evidence-port.js";
+import { loadTestingView } from "./testing-view.js";
 import {
   ModelFallbacksSchema,
   scopeKey,
@@ -326,6 +327,9 @@ export async function taskView(
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Proof and evidence (wire-proof): the evidence kept for the task's current code (full reads only, like the proof table), with each stored artifact as a link. Present only while the proof switch is on (`deps.evidence`); a fault leaves it out.
   const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
+  // Setup and test health SH19: the four test results (only while `vx` is on; full reads only, like the proof table). The evidence pack feeds it only for a person who may read the task's evidence.
+  const testing = rovaraCodeV2 && options.details && task.workflow !== undefined
+    ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   // SH34: the second review by another AI company (switch `cr`), from the task record beside the workflow; full reads only. Silent for shadow that did not run.
@@ -346,6 +350,7 @@ export async function taskView(
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(proofTable === undefined ? {} : { proofTable }),
     ...(evidence === undefined ? {} : { evidence }),
+    ...(testing === undefined ? {} : { testing }),
     ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
     ...(secondReview === undefined ? {} : { secondReview }),
     ...(reviewRound === undefined ? {} : { reviewRound }),

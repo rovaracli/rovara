@@ -53,7 +53,7 @@ import { can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTas
 import { getTaskPeoplePresentation } from "../../developer/task-people.js";
 import { getTaskPeopleCapabilities as readTaskPeopleCapabilities } from "../../developer/task-people.js";
 import { isRuntimeRenewedBlock } from "../../e2e/requalify-hold.js";
-import { AutoFixAskSchema, autoFixCardLines } from "../../developer/autofix-messages.js";
+import { AutoFixAskSchema, autoFixCardLines, fixSetupWording } from "../../developer/autofix-messages.js";
 import {
   commentCounterKey,
   createTaskComment,
@@ -747,7 +747,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   const autofixAsk = AutoFixAskSchema.safeParse(task.autofixAsk);
   // Wire lane D (MD-1): a spec on hold, for the owner's choices; read-only here, and a failure to read it only hides the card (the gates still hold the code).
   const specHold = await specHoldOf(deps, task, can(access.role, "publish") && await projectWorkAllowed(deps, task, caller)).catch(() => undefined);
-  const autofixLines = workflow === undefined ? [] : autoFixCardLines(workflow, workflow.state === "BLOCKED" && autofixAsk.success ? autofixAsk.data : undefined, { plain: true });
+  const autofixLines = workflow === undefined ? [] : autoFixCardLines(workflow, workflow.state === "BLOCKED" && autofixAsk.success ? autofixAsk.data : undefined, { plain: true, ...fixSetupWording(workflow) });
   // A coding run that needed no code change: the page says so and shows what the agent found (rebuilt, redacted and bounded again). Only while the step is blocked with that stop.
   const noChangeFound = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason) ? noChangeFindingsFrom(workflow.noChangeFindings) : undefined;
   const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
