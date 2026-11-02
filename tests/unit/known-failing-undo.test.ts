@@ -1,7 +1,7 @@
 // Setup and test health KF-1: taking marks OFF the known-failing list. Undo (one maintainer, a live browser session, audited, no second person) and expiry (a usable, healthy nightly shows the test passing; audited as the system).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@agentx/contracts";
+import { KnownFailingMarkViewSchema, NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@agentx/contracts";
 import { KNOWN_FAILING_MAX, KNOWN_FAILING_FULL_MESSAGE, knownFailingKey, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "../../packages/broker/src/test-env/known-failing.js";
 import { expireKnownFailing, knownFailingExpiryListener, nightShowsPassing, passingMarks, undoKnownFailing, type MarkRef } from "../../packages/broker/src/test-env/known-failing-undo.js";
 import { NIGHTLY_BASELINE_MAX_AGE_MS } from "../../packages/broker/src/test-env/nightly-usable.js";
@@ -131,6 +131,30 @@ describe("expiry by a nightly", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ actor: { kind: "system", id: "rovara" }, facts: { removal: "nightly_passing", testCount: 2, markEpoch: 0, rowVersionAfter: 6, totalAfter: 2, testSetSha256: sha(["lint\tt/a.py::two", "unit\tt/a.py::one"]) } });
     expect(JSON.stringify(events[0])).not.toContain("t/a.py");
+  });
+
+  it("one test id everywhere (NH-1): marks named by pytest's own node ids, as the nightly lists them, are matched and expired by those ids", async () => {
+    const total = "tests/test_cart.py::test_total_fails", rules = "tests/test_cart_rules.py::TestRules::test_discount_fails";
+    const h = harness([mark(total), mark(rules)]);
+    // The night still fails the rules test (listed by its node id) and no longer fails the cart test.
+    expect(await expireKnownFailing(h.store, h.night({ failed: [rules] }), {}, ON)).toBe(1);
+    expect(await h.names()).toEqual([rules]);
+    // A bare name in the night is NOT the same test as the node id: it holds nothing, so the mark is shown passing (one id everywhere, no tolerance for bare names).
+    const g = harness([mark(total)]);
+    expect(await expireKnownFailing(g.store, g.night({ failed: ["test_total_fails"] }), {}, ON)).toBe(1);
+  });
+
+  it("a mark named by a long id (up to the one test id's limit) is shown by the app's own schema", () => {
+    const view = { name: `tests/${"d".repeat(400)}.py::t`, checkId: "unit", markedBy: "dev_a", markedByName: "Dev A", markedAt, epoch: 3, markedByYou: false };
+    expect(KnownFailingMarkViewSchema.safeParse(view).success).toBe(true);
+    expect(KnownFailingMarkViewSchema.safeParse({ ...view, name: "x".repeat(501) }).success).toBe(false);
+  });
+
+  it("a flaky list that hit its cap may be missing tests, so no mark is shown passing by that night", () => {
+    const h = harness();
+    const night = h.night({ flaky: Array.from({ length: 500 }, (_, index) => `t/f.py::f${String(index)}`) });
+    expect(nightShowsPassing(night)).toBe(false);
+    expect(nightShowsPassing(h.night({ flaky: Array.from({ length: 499 }, (_, index) => `t/f.py::f${String(index)}`) }))).toBe(true);
   });
 
   it("names the card when every removed mark came from one card", async () => {

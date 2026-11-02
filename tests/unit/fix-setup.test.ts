@@ -160,8 +160,9 @@ describe("the tests a card could mark", () => {
     expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toEqual({ tests: [], unconfirmed: 2, codeFault: true });
   });
 
-  it("never offers a name that is not shown in full (over 200 characters or with whitespace; it is unconfirmed), and not more than one card shows", () => {
-    const long = "t".repeat(201);
+  it("never offers a name that is not shown in full (over 500 characters, the one test id's limit, or with whitespace; it is unconfirmed), and not more than one card shows", () => {
+    const long = "t".repeat(501);
+    expect(failingOnOriginalTests(pack([check([["t".repeat(300), "failed"]])]), ["t".repeat(300)])?.tests).toHaveLength(1);
     expect(failingOnOriginalTests(pack([check([[long, "failed"]])]), [long])).toMatchObject({ tests: [], codeFault: true });
     expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])).toMatchObject({ tests: [], codeFault: true });
     const many = Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => `t${String(n)}`);
