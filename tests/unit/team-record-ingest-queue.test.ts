@@ -16,14 +16,16 @@ class FakeQueue implements RecordOpQueue {
 }
 
 const draft: RecordDraft = { workspaceId: WS, source: "github", kind: "github.pr", occurredAt: "2026-10-30T10:00:00.000Z", sourceRef: { system: "github", id: "a/b#pr1", version: "v1" }, trust: "member", audience: { kind: "project" }, links: [], retention: "D", text: "hello" };
+const NOW = Date.parse("2026-10-30T12:00:00.000Z");
+const QUEUED_AT = new Date(NOW).toISOString();
 const record = (op: unknown, receiveCount = 1, messageId = "m1") => ({ messageId, body: typeof op === "string" ? op : JSON.stringify(op), receiveCount });
 
 describe("queued sink", () => {
   it("puts always go to the queue and answer 'queued'", async () => {
     const queue = new FakeQueue();
-    const sink = createQueuedSink(queue);
+    const sink = createQueuedSink(queue, undefined, () => NOW);
     expect(await sink.put(draft)).toEqual({ status: "queued" });
-    expect(queue.sent).toEqual([{ v: 1, op: "put", draft }]);
+    expect(queue.sent).toEqual([{ v: 1, op: "put", draft, queuedAt: QUEUED_AT }]);
   });
 
   it("a delete hides at once when it can, and is queued for retry when the direct write fails: it is never dropped", async () => {
@@ -90,14 +92,14 @@ describe("consumer", () => {
     const w = world();
     const handled: unknown[] = [];
     const logs: string[] = [];
-    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, humanEdit: async (job) => { handled.push(job); }, log: (event) => logs.push(event) });
+    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, humanEdit: async (job) => { handled.push(job); }, log: (event) => logs.push(event), now: () => NOW });
     return { w, consumer, handled, logs };
   }
 
   it("applies each kind of op to the real ports", async () => {
     const { w, consumer, handled } = consumerWorld();
     const ops: RecordOp[] = [
-      { v: 1, op: "put", draft },
+      { v: 1, op: "put", draft, queuedAt: QUEUED_AT },
       { v: 1, op: "tombstone", workspaceId: WS, system: "slack", sourceIds: ["C1/1.1"], cause: "source_deleted" },
       { v: 1, op: "principals", workspaceId: WS, scope: "slack:T/G", add: ["U1"], at: "t" },
       { v: 1, op: "audience", workspaceId: WS, scope: "slack:T/G", audience: { kind: "project" }, at: "t" },
@@ -121,11 +123,11 @@ describe("consumer", () => {
     let failures = 1;
     const put = w.sink.put.bind(w.sink);
     w.sink.put = async (d) => { if (failures > 0) { failures -= 1; throw new Error("table down"); } return put(d); };
-    const first = await consumer.processBatch([record({ v: 1, op: "put", draft }, 1, "a"), record({ v: 1, op: "tombstone", workspaceId: WS, system: "x", scope: "x:1", cause: "source_deleted" }, 1, "b")]);
+    const first = await consumer.processBatch([record({ v: 1, op: "put", draft, queuedAt: QUEUED_AT }, 1, "a"), record({ v: 1, op: "tombstone", workspaceId: WS, system: "x", scope: "x:1", cause: "source_deleted" }, 1, "b")]);
     expect(first.batchItemFailures).toEqual([{ itemIdentifier: "a" }]);
     expect(w.sink.tombstones).toHaveLength(1);
     expect(logs).toContain("record.op_failed");
-    const retry = await consumer.processBatch([record({ v: 1, op: "put", draft }, 2, "a")]);
+    const retry = await consumer.processBatch([record({ v: 1, op: "put", draft, queuedAt: QUEUED_AT }, 2, "a")]);
     expect(retry.batchItemFailures).toEqual([]);
     expect(w.sink.puts).toHaveLength(1);
   });
@@ -160,7 +162,7 @@ describe("sink contract under a queue: arrival order never brings text back (R4)
     const sink = createQueuedSink(queue, w.sink);
     await sink.put(slackDraft("m:1.1", "oops a secret", "2026-10-30T10:00:00.000Z"));
     await sink.tombstone({ workspaceId: WS, system: "T1", sourceIds: ["C1/1.1"], cause: "source_deleted" });
-    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller });
+    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, now: () => NOW });
     await consumer.processBatch(queue.sent.map((op) => ({ messageId: "m", body: JSON.stringify(op), receiveCount: 1 })));
     // A redrive of the same put later changes nothing.
     await consumer.processBatch(queue.sent.map((op) => ({ messageId: "m", body: JSON.stringify(op), receiveCount: 6 })));

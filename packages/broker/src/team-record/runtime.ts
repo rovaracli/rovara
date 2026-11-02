@@ -262,7 +262,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       OrgIdSchema.parse(draft.workspaceId);
       try { return await directSink.put(draft); } catch (error) {
         if (queue === undefined || !keepsText(draft)) throw error;
-        await queue.send({ v: 1, op: "put", draft } as never);
+        await queue.send({ v: 1, op: "put", draft, queuedAt: new Date(now()).toISOString() } as never);
         log("record.put_queued", {});
         return { status: "queued" } as never;
       }
@@ -487,6 +487,10 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return identities.slice(0, 50);
   }
   const INLINE_ERASE: EraseBudget = { maxItems: 500, maxMs: 8_000 };
+  /** The queue consumer's own start of a project erase: the same marker and bounded pass, but a marker that cannot be written THROWS (the message is retried), it is never handed back to the queue. */
+  async function eraseProjectNow(orgId: OrgId, project: string, cause: "project_archived" | "org_closed"): Promise<void> {
+    await advance(orgId, await putJob(orgId, { kind: "project", project, cause }), INLINE_ERASE, 2_000);
+  }
   const erase: TeamRecordRuntime["erase"] = {
     async person(orgId, developerId) {
       const parsed = OrgIdSchema.parse(orgId);
@@ -497,7 +501,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     async project(orgId, project, cause) {
       const parsed = OrgIdSchema.parse(orgId);
-      const job = await putJob(parsed, { kind: "project", project, cause });
+      let job: StoredJob;
+      try { job = await putJob(parsed, { kind: "project", project, cause }); } catch (error) {
+        // The marker is what the hourly job resumes, and it could not be written. Hand the erase to the durable queue (ids only): its consumer repeats this until the marker is written, then dead-letters
+        // it for a person. With no queue the failure is thrown to the archive, which logs it.
+        if (queue === undefined) throw error;
+        await queue.send({ v: 1, op: "erase_project", workspaceId: parsed, project, cause });
+        log("record.erase_queued", { kind: "project" });
+        return;
+      }
       await advance(parsed, job, INLINE_ERASE, 2_000);
     },
     async workspace(orgId) {
@@ -598,7 +610,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
 
   // ---- the durable queue's consumer. A message the queue's own consumer cannot apply throws and is retried by SQS (then dead-lettered); a Slack removal goes through the strict tap.
-  const consumer = createOpConsumer({ sink: directSink, distiller, log: tapLog });
+  const consumer = createOpConsumer({ sink: directSink, distiller, log: tapLog, now });
   const drain: TeamRecordRuntime["drain"] = async (records) => {
     const failures: Array<{ itemIdentifier: string }> = [];
     const rest: QueueRecord[] = [];
@@ -607,6 +619,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       try { parsed = JSON.parse(record.body) as typeof parsed; } catch { parsed = undefined; }
       if (parsed?.v === 1 && parsed.op === "slack_removal") {
         try { await slackStrict({ payload: parsed.payload }); } catch { log("record.op_failed", { op: "slack_removal", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
+      } else if (parsed?.v === 1 && parsed.op === "erase_project") {
+        // The org comes from the broker's own message and is parsed; a project that is not archived any more (restored, or never archived) is stale and dropped, like a stale marker.
+        const message = parsed as { workspaceId?: unknown; project?: unknown; cause?: unknown };
+        const orgId = OrgIdSchema.safeParse(message.workspaceId);
+        if (!orgId.success || typeof message.project !== "string" || (message.cause !== "project_archived" && message.cause !== "org_closed")) { log("record.op_invalid", {}); continue; }
+        try {
+          if ((await readProjectMeta(state, orgId.data, message.project))?.status === "archived") await eraseProjectNow(orgId.data, message.project, message.cause);
+        } catch { log("record.op_failed", { op: "erase_project", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
       } else rest.push(record);
     }
     failures.push(...(await consumer.processBatch(rest)).batchItemFailures);

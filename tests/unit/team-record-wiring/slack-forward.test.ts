@@ -124,7 +124,36 @@ describe("removals go to the durable queue as ids only, before any Slack lookup"
     }
   });
 
-  it("lets a queue failure reach the ingress's own guard instead of dropping the removal silently", async () => {
-    await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "public", async invoke() {}, async sendRemoval() { throw new Error("queue down"); } })(deleted)).rejects.toThrow();
+  it("a queue that fails falls back to an Event invoke of the broker (retried by Lambda) with the same ids-only payload, in Public and Enterprise", async () => {
+    for (const edition of ["public", "enterprise"] as const) {
+      const invoked: Array<{ event: SlackForwardEvent; wait: boolean }> = [];
+      const api = slack({ "conversations.info": info({ is_channel: true }) });
+      await createSlackForwarder({ token: async () => { throw new Error("no token needed"); }, fetch: api.fetch, edition, async invoke(event, wait) { invoked.push({ event, wait }); }, async sendRemoval() { throw new Error("queue down"); } })(deleted);
+      expect(api.urls, edition).toStrictEqual([]);
+      expect(invoked, edition).toHaveLength(1);
+      expect(invoked[0]!.wait, edition).toBe(false);
+      expect(invoked[0]!.event.source).toBe(TEAM_RECORD_SLACK_SOURCE);
+      expect(invoked[0]!.event.channel, edition).toBeUndefined();
+      expect(invoked[0]!.event.payload, edition).toStrictEqual(removalPayload(deleted));
+      expect(JSON.stringify(invoked)).not.toContain("SECRET");
+    }
+  });
+
+  it("a queue that does not answer in time falls back to the Event invoke as well", async () => {
+    const invoked: unknown[] = [];
+    await createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "public", removalQueueMs: 20, async invoke(event) { invoked.push(event); }, sendRemoval: () => new Promise(() => undefined) })(tombstone);
+    expect(invoked).toHaveLength(1);
+    expect(JSON.stringify(invoked)).not.toContain("SECRET");
+  });
+
+  it("a removal that neither the queue nor the invoke accepts reaches the ingress's own guard instead of being dropped silently", async () => {
+    await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "public", async invoke() { throw new Error("invoke down"); }, async sendRemoval() { throw new Error("queue down"); } })(deleted)).rejects.toThrow();
+    await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "public", removalInvokeMs: 20, invoke: () => new Promise(() => undefined), async sendRemoval() { throw new Error("queue down"); } })(deleted)).rejects.toThrow();
+  });
+
+  it("with no queue configured a removal goes by the Event invoke", async () => {
+    const invoked: Array<{ wait: boolean }> = [];
+    await createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({}).fetch, edition: "enterprise", async invoke(_event, wait) { invoked.push({ wait }); } })(deleted);
+    expect(invoked).toStrictEqual([{ wait: false }]);
   });
 });

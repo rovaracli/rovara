@@ -16,7 +16,7 @@
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
 import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, type aws_iam as iam } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
-import { teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
@@ -108,7 +108,7 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   const deadLetters = new sqs.Queue(stack, "TeamRecordOpsDeadLetters", { queueName: teamRecordOpsDeadLetterName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
   const ops = new sqs.Queue(stack, "TeamRecordOps", {
     queueName: teamRecordOpsQueueName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(4), visibilityTimeout: Duration.seconds(180),
-    deadLetterQueue: { queue: deadLetters, maxReceiveCount: 5 },
+    deadLetterQueue: { queue: deadLetters, maxReceiveCount: TEAM_RECORD_OPS_MAX_RECEIVES },
   });
   broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
   ops.grantSendMessages(broker);
