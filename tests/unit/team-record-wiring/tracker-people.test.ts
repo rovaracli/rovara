@@ -460,7 +460,7 @@ describe("the real readers", () => {
     expect(page.next).toBe("c1");
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(LINEAR_GRAPHQL);
-    expect(String(calls[0]!.init.body)).toContain("samlEnabled");
+    expect(typeof calls[0]!.init.body === "string" ? calls[0]!.init.body : "").toContain("samlEnabled");
     expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe("lin_api_test");
     expect(calls[0]!.init.redirect).toBe("error");
     // A workspace that does not enforce SAML, or whose settings are not exactly "SAML only, no bypass", is not company-controlled.
@@ -470,7 +470,7 @@ describe("the real readers", () => {
       expect(other.users[0]!.control, JSON.stringify(organization)).toBe("no");
     }
     expect(linearEnforcesSaml({ samlEnabled: true, authSettings: { allowedAuthServices: ["saml"], bypassRules: {} } })).toBe(true);
-    await expect(linearUsersReader({ fetch: (async () => json({}, 401)) as unknown as typeof fetch, graphqlUrl: LINEAR_GRAPHQL, apiKey: "k" })({ limit: 10 })).rejects.toThrow();
+    await expect(linearUsersReader({ fetch: async () => json({}, 401), graphqlUrl: LINEAR_GRAPHQL, apiKey: "k" })({ limit: 10 })).rejects.toThrow();
   });
 
   it("Jira: GET on the connection's own site with basic auth, real people only, a hidden email is none, company control is unavailable for every one, and it pages by position", async () => {

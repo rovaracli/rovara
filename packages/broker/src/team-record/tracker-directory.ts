@@ -48,7 +48,7 @@ export function linearEnforcesSaml(organization: { samlEnabled?: unknown; authSe
   const record = settings as Record<string, unknown>;
   const services = record.allowedAuthServices;
   if (!Array.isArray(services) || services.length !== 1 || services[0] !== "saml") return false;
-  return !Object.entries(record).some(([name, value]) => /bypass/iu.test(name) && value !== false && value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0) && !(typeof value === "object" && Object.keys(value as object).length === 0));
+  return !Object.entries(record).some(([name, value]) => /bypass/iu.test(name) && value !== false && value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0) && !(typeof value === "object" && Object.keys(value).length === 0));
 }
 
 const PageBody = z.object({ data: z.object({ users: z.object({
