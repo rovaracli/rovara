@@ -159,12 +159,23 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
     return names;
   }
 
+  /** A read that is tried once more when it fails (a transient fault), then fails for good. */
+  const twice = async <T>(read: () => Promise<T>): Promise<T> => { try { return await read(); } catch { return read(); } };
+  /** The pending record, written only if there is none (a cursor an earlier pass saved is never overwritten). Best effort: it runs on a path that is already failing. */
+  const ensureRecord = async (p: PendingErase): Promise<void> => {
+    try { await ports.documentClient.send(new PutCommand({ TableName: ports.tableName, Item: { ...pendingKey(p), entityType: "EVIDENCE_ERASE_PENDING", orgId: p.orgId, kind: p.kind, scopeKey: p.scopeKey }, ConditionExpression: "attribute_not_exists(pk)" })); } catch { /* the first fault is the one that is reported */ }
+  };
+
   /** One erase, continued from its saved cursor. True when finished (its record is gone). */
   async function run(p: PendingErase, budgetMs: number): Promise<boolean> {
-    // An org that never kept evidence has nothing to erase: one read, no lists.
-    if (!(await evidenceStoredIn(ports, p.orgId))) { await clear(p); return true; }
+    // An org that never kept evidence has nothing to erase: one read, no lists. The two reads before the record exists are tried twice, and when one still fails the record is written first (a close or an archive
+    // swallows the error, so without a record nothing would resume the erase); with no marker the resume finds nothing to do and clears it.
+    let stored: boolean;
+    try { stored = await twice(() => evidenceStoredIn(ports, p.orgId)); } catch (error) { await ensureRecord(p); throw error; }
+    if (!stored) { await clear(p); return true; }
     const stop = now() + budgetMs;
-    const progress = await load(p);
+    let progress: Awaited<ReturnType<typeof load>>;
+    try { progress = await twice(() => load(p)); } catch (error) { await ensureRecord(p); throw error; }
     // The pending record is written BEFORE any work, so a pass that dies anywhere (not only one that runs out of time) is found and finished by the scheduled run.
     if (!progress.exists) await save(p, {});
     let done: boolean;

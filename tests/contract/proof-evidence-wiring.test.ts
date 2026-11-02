@@ -9,6 +9,7 @@ const BROKER = read("packages/broker/src/aws/broker.ts");
 const HANDLER = read("packages/broker/src/aws/broker/handler.ts");
 const ORGANIZATION = read("packages/broker/src/aws/developer-routes/organization.ts");
 const ARCHIVE = read("packages/broker/src/aws/developer-routes/project-archive-setup.ts");
+const ROUTES = read("packages/broker/src/aws/developer-routes.ts");
 const code = (text: string): string => text.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
 
 describe("the evidence erase is reached from every erase path", () => {
@@ -35,5 +36,18 @@ describe("the evidence erase is reached from every erase path", () => {
     const source = code(HANDLER);
     const job = source.slice(source.indexOf('name: "resume-learning-walks"'), source.indexOf("if (jobs.length === 0)"));
     expect(job).toContain("await resumeEvidence(dependencies,");
+  });
+
+  // PRF-3: the hook that holds the evidence erase has to reach the places that call it; a const that nothing passes on is silent.
+  it("the close passes clearLearning to closeOrg, and both archive paths call the project clean-up that runs the evidence erase", () => {
+    const organization = code(ORGANIZATION);
+    const close = organization.slice(organization.indexOf("await deps.orgs.closeOrg(caller.orgId, {"));
+    expect(close.slice(0, close.indexOf("});"))).toMatch(/^\s*clearLearning,$/mu);
+    // The ordinary archive route.
+    expect(code(ARCHIVE)).toMatch(/await clearArchivedProjectLearning\(deps, caller\.orgId, name, /u);
+    // The reviewed archive (the app's archive with effects) passes the same clean-up as its clearLearning.
+    expect(code(ROUTES)).toMatch(/clearLearning: \(orgId, project\) => clearArchivedProjectLearning\(deps, orgId, project\)/u);
+    // The clean-up runs the evidence erase for the project.
+    expect(code(ARCHIVE)).toContain("await deps.evidenceErase?.project(orgId, project);");
   });
 });

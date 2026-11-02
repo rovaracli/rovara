@@ -38,7 +38,8 @@ function bucket(initial: string[] = []) {
  * A table with a person's task rows (`extraTasks` more, each with a task record and no evidence), task records, workspaces of two projects and the project catalog, an item store for the marker and the
  * pending records, and the pagination (`Limit`, `ExclusiveStartKey`) the walk uses. `marked: false` is an install that never kept evidence.
  */
-function table(options: { marked?: boolean; extraTasks?: number } = {}) {
+function table(options: { marked?: boolean; extraTasks?: number; failGets?: { markerTimes: number; pendingTimes: number } } = {}) {
+  const fails = { marker: options.failGets?.markerTimes ?? 0, pending: options.failGets?.pendingTimes ?? 0 };
   const items = new Map<string, Record<string, unknown>>();
   if (options.marked !== false) items.set(`EVIDENCE_STORED#${ORG}|META`, { pk: `EVIDENCE_STORED#${ORG}`, sk: "META" });
   const extra = Array.from({ length: options.extraTasks ?? 0 }, (_, index) => ({ taskId: `x${String(index)}`, orgId: ORG }));
@@ -50,7 +51,12 @@ function table(options: { marked?: boolean; extraTasks?: number } = {}) {
     return { Items: rows.slice(from, to), ...(to < rows.length ? { LastEvaluatedKey: { i: to } } : {}) };
   };
   const send = vi.fn(async (command: unknown) => {
-    if (command instanceof PutCommand) { items.set(`${String(command.input.Item!.pk)}|${String(command.input.Item!.sk)}`, command.input.Item!); return {}; }
+    if (command instanceof PutCommand) {
+      const at = `${String(command.input.Item!.pk)}|${String(command.input.Item!.sk)}`;
+      if (String(command.input.ConditionExpression ?? "").includes("attribute_not_exists") && items.has(at)) throw Object.assign(new Error("exists"), { name: "ConditionalCheckFailedException" });
+      items.set(at, command.input.Item!);
+      return {};
+    }
     if (command instanceof DeleteCommand) { items.delete(`${String(command.input.Key!.pk)}|${String(command.input.Key!.sk)}`); return {}; }
     if (command instanceof QueryCommand) {
       calls.queries.push(command.input);
@@ -71,6 +77,8 @@ function table(options: { marked?: boolean; extraTasks?: number } = {}) {
     }
     if (command instanceof GetCommand) {
       const key = command.input.Key as { pk: string; sk: string };
+      if (key.pk.startsWith("EVIDENCE_STORED") && fails.marker > 0) { fails.marker -= 1; throw new Error("table unavailable"); }
+      if (key.pk === "EVIDENCE_ERASE_PENDING" && fails.pending > 0) { fails.pending -= 1; throw new Error("table unavailable"); }
       if (key.pk.startsWith("EVIDENCE_")) return { Item: items.get(`${key.pk}|${key.sk}`) };
       calls.taskGets += 1;
       const tasks: Record<string, Record<string, unknown>> = { "DEVTASK#t1": { ownerKey: "own1", workspaceId: "ws1", orgId: ORG }, "DEVTASK#t9": { ownerKey: "ownx", workspaceId: "wsx", orgId: OTHER_ORG } };
@@ -156,6 +164,21 @@ describe("a company's close", () => {
     await clearOrgData(deps)(ORG);
     expect(order).toEqual(["evidence"]);
     await expect(clearOrgData({ ...deps, evidenceErase: { workspace: async () => { throw new Error("unfinished"); }, project: async () => undefined } })(ORG)).rejects.toThrow("unfinished");
+  });
+});
+
+describe("the company close's evidence step does not depend on the learning step", () => {
+  // PRF-3 (recheck2 gap 1): the close swallows what this step throws; when the learning walk threw, the evidence step never ran and no pending record existed.
+  it("runs the evidence erase when the learning walk throws, and still reports the learning failure afterwards", async () => {
+    const order: string[] = [];
+    const deps = { documentClient: { send: vi.fn(async () => { throw new Error("learning table down"); }) }, tableName: "State", now: () => 0, evidenceErase: { workspace: async () => { order.push("evidence"); }, project: async () => undefined } };
+    await expect(clearOrgData(deps)(ORG)).rejects.toThrow("learning table down");
+    expect(order).toEqual(["evidence"]);
+  });
+
+  it("an evidence failure after a clean learning walk still throws (the close logs it; the pending record is the evidence erase's own)", async () => {
+    const deps = { documentClient: { send: vi.fn(async () => ({ Items: [] })) }, tableName: "State", now: () => 0, evidenceErase: { workspace: async () => { throw new Error("unfinished"); }, project: async () => undefined } };
+    await expect(clearOrgData(deps)(ORG)).rejects.toThrow("unfinished");
   });
 });
 
@@ -300,6 +323,37 @@ describe("a close or an archive that does not finish is not left behind", () => 
     expect(pendingOf(t)).toHaveLength(1);
     await resumeEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }, createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }), { millis: 60_000 });
     expect(pendingOf(t)).toEqual([]);
+  });
+
+  // PRF-3 (recheck2 gap 2): the pending record used to be written after two reads (the marker and the cursor); a transient error on either, during a close or an archive that swallows it, left nothing to resume.
+  describe("a transient read error before the pending record exists", () => {
+    it("is retried once: a marker or cursor read that fails once does not stop the erase or leave a record behind", async () => {
+      const b = populate();
+      const t = table({ failGets: { markerTimes: 1, pendingTimes: 1 } });
+      await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).project(ORG, "web");
+      expect(b.objects.has(key("own1", "ws1", "evidence-pack", "t1", `${DIGEST}.json`))).toBe(false);
+      expect(pendingOf(t)).toEqual([]);
+    });
+
+    it("a marker read that keeps failing still leaves the pending record, so the scheduled run finishes the erase", async () => {
+      const b = populate();
+      const t = table({ failGets: { markerTimes: 2, pendingTimes: 0 } });
+      await expect(createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).project(ORG, "web")).rejects.toThrow("table unavailable");
+      expect(pendingOf(t)).toHaveLength(1);
+      expect(pendingOf(t)[0]).toMatchObject({ orgId: ORG, kind: "project", scopeKey: "web" });
+      expect(await resumeEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }, createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }), { millis: 60_000 })).toEqual({ pending: 1, finished: 1 });
+      expect(b.objects.has(key("own1", "ws1", "evidence-pack", "t1", `${DIGEST}.json`))).toBe(false);
+      expect(b.objects.has(key("own2", "ws2", "evidence-pack", "t5", `${DIGEST}.json`))).toBe(false);
+      expect(pendingOf(t)).toEqual([]);
+    });
+
+    it("a cursor read that keeps failing leaves the record and keeps the cursor an earlier pass saved", async () => {
+      const b = populate();
+      const failing = table({ failGets: { markerTimes: 0, pendingTimes: 2 } });
+      failing.items.set("EVIDENCE_ERASE_PENDING|org-a|project|web", { pk: "EVIDENCE_ERASE_PENDING", sk: "org-a|project|web", orgId: ORG, kind: "project", scopeKey: "web", cursor: { i: 1 } });
+      await expect(createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...failing }).project(ORG, "web")).rejects.toThrow("table unavailable");
+      expect(pendingOf(failing)).toEqual([expect.objectContaining({ cursor: { i: 1 } })]);
+    });
   });
 
   it("the scheduled run continues a company close from the project it stopped in, finishes a person's abandoned erase, and a store that keeps failing leaves the record for the next run", async () => {
