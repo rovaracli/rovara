@@ -275,6 +275,8 @@ async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId:
   const found: Array<{ stepId: string; model?: ModelSelection }> = [];
   for (const item of await queryAllItems(dependencies, `WORKSPACE#${workspaceId}`, "OPERATION#")) {
     if (item.entityType !== "OPERATION" || item.kind !== "task") continue;
+    // A second review (SH34) is not a step of the recipe: it must never stand for the review step in an independence comparison.
+    if (item.secondReview === true) continue;
     // An agent-step run's operation names its recipe step itself (it has no coding mode); a coding operation is the step its mode and program step say.
     if (item.workflowMode === undefined && typeof item.programStepId !== "string") continue;
     const model = ModelSelectionSchema.safeParse(item.model);

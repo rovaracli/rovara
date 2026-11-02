@@ -13,6 +13,7 @@ import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-
 import { documentSummaryLines } from "../../developer/workflow-messages.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
+import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
 import { rovaraPullRequestBody, rovaraStatusLines, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -31,9 +32,11 @@ const WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED = 20;
 export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
   // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.
   if (workflow.definitionVersion === "1.1.0") {
+    // SH34: the second review of this code (switch `cr`; none for a shadow opinion), kept beside the workflow and never part of the first review's lines.
+    const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest, workflow.acceptedFindings);
     return rovaraPullRequestBody({
       summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
-      fallbackTitle: task.title, workflow, context: { ...(context ?? {}), ...(proofLines.length === 0 ? {} : { proofLines }), ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}) }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
+      fallbackTitle: task.title, workflow, context: { ...(context ?? {}), ...(proofLines.length === 0 ? {} : { proofLines }), ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }) }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
     });
   }
   // A structured plan's summary is its top claims; a legacy one's is its first lines (task 18: the same as the plan's

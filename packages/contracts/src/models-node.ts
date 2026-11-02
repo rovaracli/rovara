@@ -93,7 +93,7 @@ export const BEDROCK_VENDOR_PREFIXES = [
 ] as const;
 
 const BEDROCK_REGION_PREFIX = new RegExp(`^(?:${BEDROCK_REGION_PREFIXES.join("|")})\\.`);
-const bedrockWithoutRegion = (modelId: string): string => modelId.toLowerCase().replace(BEDROCK_REGION_PREFIX, "");
+export const bedrockWithoutRegion = (modelId: string): string => modelId.toLowerCase().replace(BEDROCK_REGION_PREFIX, "");
 const isBedrock = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "amazon-bedrock";
 
 /** What follows a Bedrock id's vendor: letters, digits, `.`, `_`, `-`, then at most one `:<revision>` (`-v1:0`). Nothing else is a Bedrock model id. */
@@ -176,7 +176,7 @@ export function modelCompany(model: ModelIdentifier): ModelCompany {
 export function canonicalModelName(model: ModelIdentifier): string {
   let id = model.modelId;
   if (isBedrock(model)) id = bedrockModelName(id);
-  if (model.provider === "openrouter") {
+  if (model.provider.toLowerCase() === "openrouter") {
     // Amazon's own ids end in the same bare `-v1` on OpenRouter (`amazon/nova-lite-v1`) as on Bedrock; no other maker's `-vN` is a revision (`deepseek/deepseek-v3`).
     if (/^amazon\//i.test(id)) id = id.replace(/-v\d+$/i, "");
     id = id.replace(/^[^/]+\//, "").replace(/:[a-z][a-z0-9_-]*$/i, "");

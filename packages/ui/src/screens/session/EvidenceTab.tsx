@@ -110,5 +110,6 @@ export function EvidenceTab({ task }: { task: ReadTask }) {
  {task.evidence && <EvidenceSections evidence={task.evidence} />}
  {verification && <><h2>{current ? "Recorded checks" : "Earlier check results"}</h2>{!current && <p className="rv-muted">These checks have not been matched to the current code.</p>}<ul className="rv-check-results">{verification.results.map((result, index) => <li key={result.checkId + ":" + String(index)}><VisibleText text={labels.get(result.checkId) ?? result.checkId} /><span>{result.broken || result.neverStarted || result.programNotFound ? "Couldn't run" : resultWords[result.status] ?? "Status unavailable"}</span></li>)}</ul></>}
  {task.reviewModelLines && <><h2>Reviews</h2><ul className="rv-review-models">{task.reviewModelLines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></>}
- {!shared && !verification && !task.proofTable && !task.evidence && !task.reviewModelLines && <p>No test results are available yet.</p>}</section>;
+ {task.secondReview && <><h2>Second review</h2><ul className="rv-second-review">{task.secondReview.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>{task.secondReview.needsAcknowledgement && !task.secondReview.acknowledged && <p className="rv-muted">The task owner is asked to acknowledge this before the pull request is merged.</p>}</>}
+ {!shared && !verification && !task.proofTable && !task.evidence && !task.reviewModelLines && !task.secondReview && <p>No test results are available yet.</p>}</section>;
 }

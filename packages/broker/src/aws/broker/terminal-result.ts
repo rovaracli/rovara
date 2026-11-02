@@ -403,7 +403,7 @@ export async function recordTerminalResult(
       // An agent-step run goes on from this result (or ends because of it): the engine's dispatch row is due in this same transaction (Plan 3, Task 22).
       const agentRun = pointer === undefined ? [] : await agentRunWakeItems(dependencies.documentClient, dependencies.tableName, operation, pointer.taskId, now);
       // Meta repo lane D (D3): a code review's walk of the spec is recorded with the review's result (the requirement rows W4 reads).
-      const specReview = pointer === undefined || operation.workflowMode !== "REVIEW" ? [] : await specReviewRecordItems({ tableName: dependencies.tableName, store: dynamoSpecStore(dependencies), now: () => now }, pointer.taskId, operation, { status: terminalStatus, result });
+      const specReview = pointer === undefined || operation.workflowMode !== "REVIEW" || operation.secondReview === true ? [] : await specReviewRecordItems({ tableName: dependencies.tableName, store: dynamoSpecStore(dependencies), now: () => now }, pointer.taskId, operation, { status: terminalStatus, result });
       const cancelledStep = !cancelStepAllowed || graphCancelBoundTarget !== undefined || e2eCancelBoundTarget !== undefined ? []
         : await cancelledWorkflowStepItems(dependencies, pointer, cancelTargetOperation, now);
       cancelStepAttached = cancelledStep.length > 0;

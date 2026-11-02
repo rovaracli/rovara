@@ -3,7 +3,7 @@
 import type { CheckKind, ProjectCommand } from "@agentx/contracts";
 
 /** Where a detected value came from: a file and line, or a detector's name. */
-export type DetectedSource = { path: string; line: number } | `detector:${string}`;
+export type DetectedSource = { path: string; line: number } | `detector:${string}` | `recipe:${string}@${string}`;
 
 export interface Located<T> { value: T; source: DetectedSource }
 
@@ -19,6 +19,8 @@ export interface DetectedCheck {
   /** Where the report path and the coverage path came from (a file and line, or the detector's own default); the proposal cites them beside the check. */
   reportSource?: DetectedSource;
   coverageSource?: DetectedSource;
+  /** Set only on a check a company recipe made (a path no detector cites): the proposal then cites it beside the check, so no value of a recipe reads as the model's. */
+  sarifSource?: DetectedSource;
   selectArgs?: string[];
 }
 

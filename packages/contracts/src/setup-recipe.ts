@@ -195,3 +195,20 @@ export function recipeNamesRepository(body: SetupRecipeBody, repositoryNames: re
 export function setupRecipeDigest(body: SetupRecipeBody): string {
   return sha256Hex(canonicalJson(SetupRecipeBodySchema.parse(body)));
 }
+
+// ---- offers (SH30)
+
+/** The most recipes one setup run is offered, and the most bytes of their bodies: the broker offers one recipe per fingerprint, newest first, and stops at either bound. */
+export const SETUP_RECIPE_OFFERS_MAX = 30;
+export const SETUP_RECIPE_OFFERS_MAX_BYTES = 262_144;
+
+/**
+ * One approved recipe the broker offers a project's setup run (the run reads the repository's default branch, finds which offer FITS by fingerprint, and proposes from that one). The id and revision are the value
+ * source `recipe:<id>@<revision>` of everything the recipe adds. It carries the body only: no company id, no approver, no scope.
+ */
+export const SetupRecipeOfferSchema = z.object({
+  recipeId: SetupRecipeIdSchema,
+  revision: z.number().int().min(1).max(999_999_999),
+  body: SetupRecipeBodySchema,
+}).strict();
+export type SetupRecipeOffer = z.infer<typeof SetupRecipeOfferSchema>;
