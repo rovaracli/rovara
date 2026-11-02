@@ -111,6 +111,9 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
       tally.raise(inputs.testEnv.risk, inputs.testEnv.risk === "high" ? "Adds pre-production access, a shared or preview environment, video or traces." : "Sets how tests run for this project.");
       for (const reason of inputs.testEnv.reasons.slice(0, 3)) tally.raise(inputs.testEnv.risk, reason);
       break;
+    case "setup_host":
+      tally.raise("medium", "Lets this project's machines reach a new website.");
+      break;
     default:
       break;
   }

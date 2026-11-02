@@ -67,7 +67,12 @@ export type DecisionItem =
   | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string; /** The revision of the approved environment the person looked at (0: none yet): the approval is bound to it. */ expectedRevision: number })
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
-  | (ItemBase & { kind: "spec_choice"; message: string });
+  | (ItemBase & { kind: "spec_choice"; message: string })
+  /**
+   * SH12: a website the setup run needs, one card per host per project. `host` is a plain DNS name the broker checked; `from` is the repository file and line that led to it and `journalN` the setup command
+   * that hit it: both are shown quoted and marked "from the repository", never read as instructions. `staffStep` is true where Rovara staff also approve the website (Cloud).
+   */
+  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -104,7 +109,7 @@ export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BA
 
 const APPROVABLE: ReadonlySet<DecisionKind> = new Set<DecisionKind>([
   "approve_plan", "approve_requirements", "approve_design", "merge", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask",
-  "approve_spend", "approve_test_env", "confirm_env_change",
+  "approve_spend", "approve_test_env", "confirm_env_change", "setup_host",
 ]);
 
 const usd = (value: number): string => `$${value.toFixed(2)}`;
@@ -179,6 +184,17 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
     case "spec_choice":
       return { question: plainLine(item.message, 160), next: "You choose on the task page; the code pull requests wait until you do.", evidence: [], why: "Only the task owner can choose." };
+    case "setup_host":
+      return {
+        question: plainLine(`Let the setup of this project reach ${item.host}?`, 160),
+        next: item.staffStep ? "The website is added to this project's list; Rovara staff then approve it before it works." : "The website is added to this project's list, and setup tries again.",
+        evidence: [
+          chip("environment", "Website", item.host, "warning"),
+          ...(item.from === undefined ? [] : [chip("other", "From the repository", `${item.from.path}:${String(item.from.line)}`, "unknown")]),
+          ...(item.journalN === undefined ? [] : [chip("checks", "Setup command", `#${String(item.journalN)} was blocked`, "unknown")]),
+        ],
+        why: "A setup command could not reach this website. Allow it only if you know what it is.",
+      };
     case "confirm_env_change":
       return { question: "Accept this change to the test setup?", next: "The running task continues on the new setup.", evidence: [chip("environment", "Changed", item.what, "warning")], why: "The setup changed while the task was running." };
   }
