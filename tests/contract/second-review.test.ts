@@ -1,24 +1,31 @@
-// SH34: the second review by a different AI company. The setting (off, shadow, on; a company lock is a floor), which model may be the second reviewer (another known company than the build and the
-// first review, allowed, not forbidden, past the driving test; Amazon Nova Premier or Pro first), when `on` is allowed (a passing verdict, else shadow), and what a finished second review means
-// (shadow never blocks; on blocks; no answer blocks nothing). Also the replay check's fields and bar, which the quality suite fills.
+// SH34: the second review by a different AI company. The setting (off, shadow, on; a company lock is a floor; lowering needs a second person), which model may be the second reviewer (Amazon Bedrock only; another
+// known company than every recorded model; allowed, not forbidden, past the driving test for its exact revision; Amazon Nova Premier or Pro first), when `on` is allowed (evidence recomputed from the stored replay
+// run, else shadow), and what a finished second review means (accepted only for the planned model, the code review and the current candidate; shadow never blocks; on blocks; no answer blocks nothing).
+// Also the replay check's fields and bar, which the quality suite fills.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  HowWeWorkStageSchema, SECOND_REVIEW_BAR, canonicalModelName, forbiddenModelMatcher, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, configuredSecondReviewMode, modelCompany, secondReviewModelKey, secondReviewShadowPassed, stricterSecondReviewMode,
-  summarizeSecondReviewReplay, workflowFindingFingerprint, type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewVerdict, type WorkflowReviewReport,
+  HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, canonicalModelName, configuredSecondReviewMode,
+  forbiddenModelMatcher, isSecondReviewOperation, lockSecondReviewLoweringNeedsSecondPerson, modelCompany, projectSecondReviewLoweringNeedsSecondPerson, secondReviewModelKey, secondReviewShadowPassed,
+  secondReviewVerdictHolds, stricterSecondReviewMode, summarizeSecondReviewReplay, workflowFindingFingerprint,
+  type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
 import {
-  drivingTestGate, planSecondReview, secondOpinionOf, secondOpinionShownOn, secondReviewModelUnusable, type DrivingTestRecord, type SecondReviewPlan, type SecondReviewPlanInput,
+  SECOND_REVIEW_OPERATION, acceptSecondReport, admitSecondReview, againstModels, drivingTestGate, estimateSecondReviewUsd, planSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn,
+  secondOpinionUnavailable, secondReviewAlreadyRan, secondReviewBlocksWhenUnavailable, secondReviewModelUnusable, type DrivingTestRecord, type SecondReviewPlan, type SecondReviewPlanInput,
 } from "../../packages/broker/src/rovara-code/second-review.js";
+import { reviewFailures } from "../../packages/broker/src/model-selection/task-failures.js";
 
 const SONNET: ModelIdentifier = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
 const OPUS: ModelIdentifier = { provider: "anthropic", modelId: "claude-opus-4-6" };
 const GPT: ModelIdentifier = { provider: "openai", modelId: "gpt-5.5" };
 const NOVA_PRO: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };
+const NOVA_PRO_V2: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v2:0" };
 const NOVA_PREMIER: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-premier-v1:0" };
 const NOVA_LITE: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-lite-v1:0" };
 const BEDROCK_GPT_OSS: ModelIdentifier = { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b-1:0" };
 const BEDROCK_GEMMA: ModelIdentifier = { provider: "amazon-bedrock", modelId: "google.gemma-3-27b-it" };
+const BEDROCK_CLAUDE: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
 const GEMINI: ModelIdentifier = { provider: "openrouter", modelId: "google/gemini-3-pro" };
 const UNKNOWN_MAKER: ModelIdentifier = { provider: "openrouter", modelId: "x-ai/grok-9" };
 
@@ -26,11 +33,28 @@ const passed = (...models: ModelIdentifier[]): ((model: ModelIdentifier) => bool
   drivingTestGate(models.map((model) => ({ provider: model.provider, modelId: model.modelId, outcome: "passed" as const, testedAt: "2026-11-01T00:00:00.000Z" })));
 
 const plan = (overrides: Partial<SecondReviewPlanInput> = {}): SecondReviewPlan => planSecondReview({
-  switchOn: true, mode: "shadow", against: [SONNET], project: {}, forbidden: [], sources: [SONNET, OPUS, GPT, NOVA_PRO, NOVA_PREMIER], drivingTestPassed: passed(GPT, NOVA_PRO, NOVA_PREMIER), verdicts: [], ...overrides,
+  switchOn: true, mode: "shadow", against: [SONNET], project: {}, forbidden: [], sources: [SONNET, OPUS, GPT, NOVA_PRO, NOVA_PREMIER, BEDROCK_GPT_OSS], drivingTestPassed: passed(GPT, NOVA_PRO, NOVA_PREMIER, BEDROCK_GPT_OSS),
+  verdicts: [], replayRuns: [], ...overrides,
 });
 const ran = (result: SecondReviewPlan) => (result.run ? { mode: result.mode, model: `${result.model.provider}/${result.model.modelId}`, company: result.company, downgraded: result.downgraded } : { skipped: result.reason });
 
-const VERDICT = (model: ModelIdentifier, overrides: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({ model: secondReviewModelKey(model), replayPassed: true, shadowPassed: true, decidedAt: "2026-11-20T00:00:00.000Z", ...overrides });
+// ---- replay runs and verdicts (built from the real bar)
+const replayCases = (spec: { known: number; planted: number; both: number; baselineOnly: number; extra: number; neither?: number }): SecondReviewReplayCase[] => {
+  const shapes: Array<[boolean, boolean, number]> = [[true, true, spec.both], [true, false, spec.baselineOnly], [false, true, spec.extra], [false, false, spec.neither ?? 0]];
+  const out: SecondReviewReplayCase[] = [];
+  for (const [baselineCaught, candidateCaught, count] of shapes) {
+    for (let i = 0; i < count; i += 1) out.push({ caseId: `c${String(out.length + 1)}`, kind: "known_defect", baselineCaught, candidateCaught, candidateBlockingFindings: 0, candidateDismissedBlocking: 0 });
+  }
+  return out.map((entry, index) => ({ ...entry, kind: index < spec.known ? "known_defect" as const : "planted_bug" as const }));
+};
+const PASSING_CASES = replayCases({ known: 30, planted: 20, both: 32, baselineOnly: 8, extra: 5, neither: 5 });
+const runFor = (model: ModelIdentifier, over: Partial<SecondReviewReplayRun> = {}): SecondReviewReplayRun => ({ runId: "run-1", ranAt: "2026-11-01T00:00:00.000Z", candidate: model, baseline: OPUS, cases: PASSING_CASES, ...over });
+const verdictFor = (model: ModelIdentifier, over: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({
+  model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4 },
+  createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice", ...over,
+});
+/** Evidence that holds for a model: a passing replay run and a verdict on it. */
+const proof = (model: ModelIdentifier) => ({ verdicts: [verdictFor(model)], replayRuns: [runFor(model)] });
 
 describe("the setting review.otherCompany", () => {
   it("is off unless somebody chose; the project's choice beats the company's default", () => {
@@ -48,6 +72,21 @@ describe("the setting review.otherCompany", () => {
     expect(stricterSecondReviewMode("shadow", "off")).toBe("shadow");
     expect(stricterSecondReviewMode("off", "on")).toBe("on");
   });
+
+  it("lowering needs a second person (W8): on to shadow or off for a project, any lower lock; raising and observing do not", () => {
+    expect(projectSecondReviewLoweringNeedsSecondPerson("on", "shadow")).toBe(true);
+    expect(projectSecondReviewLoweringNeedsSecondPerson("on", "off")).toBe(true);
+    expect(projectSecondReviewLoweringNeedsSecondPerson("shadow", "off")).toBe(false);
+    expect(projectSecondReviewLoweringNeedsSecondPerson("off", "on")).toBe(false);
+    expect(projectSecondReviewLoweringNeedsSecondPerson("on", "on")).toBe(false);
+    expect(lockSecondReviewLoweringNeedsSecondPerson("on", "shadow")).toBe(true);
+    expect(lockSecondReviewLoweringNeedsSecondPerson("shadow", undefined)).toBe(true);
+    expect(lockSecondReviewLoweringNeedsSecondPerson("on", "off")).toBe(true);
+    expect(lockSecondReviewLoweringNeedsSecondPerson(undefined, "shadow")).toBe(false);
+    expect(lockSecondReviewLoweringNeedsSecondPerson("shadow", "on")).toBe(false);
+    expect(lockSecondReviewLoweringNeedsSecondPerson(undefined, undefined)).toBe(false);
+    expect(lockSecondReviewLoweringNeedsSecondPerson("shadow", "shadow")).toBe(false);
+  });
 });
 
 describe("planSecondReview: whether it runs", () => {
@@ -62,14 +101,34 @@ describe("planSecondReview: whether it runs", () => {
   it("runs nothing when no recorded model says what to differ from", () => {
     expect(ran(plan({ against: [] }))).toEqual({ skipped: "no-reference-model" });
   });
+
+  it("starts its operation tagged, with the proxy's model fallback off", () => {
+    const planned = plan();
+    if (!planned.run) throw new Error("expected a plan");
+    expect(planned.operation).toEqual({ tag: SECOND_REVIEW_OPERATION_TAG, modelFallback: "off" });
+    expect(planned.operation).toBe(SECOND_REVIEW_OPERATION);
+    expect(planned.against).toEqual([SONNET]);
+  });
+});
+
+describe("planSecondReview: Amazon Bedrock only (W5)", () => {
+  it("refuses a direct OpenAI model, or any non-Bedrock route, even for another company", () => {
+    expect(ran(plan({ sources: [SONNET, GPT], drivingTestPassed: passed(GPT) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ sources: [SONNET, GEMINI], drivingTestPassed: passed(GEMINI) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ sources: [SONNET, { provider: "Amazon-Bedrock", modelId: "us.amazon.nova-pro-v1:0" }], drivingTestPassed: passed({ provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" }) }))).toMatchObject({ company: "amazon" });
+  });
+
+  it("an install with only direct keys gets no second review, not a quiet fallback to them", () => {
+    expect(ran(plan({ sources: [SONNET, OPUS, GPT], drivingTestPassed: passed(GPT), mode: "on", ...proof(GPT) }))).toEqual({ skipped: "no-candidate" });
+  });
 });
 
 describe("planSecondReview: which model", () => {
-  it("puts Amazon Nova Premier first, then Nova Pro, ahead of a stronger-ranked model of another company", () => {
+  it("puts Amazon Nova Premier first, then Nova Pro, ahead of another Bedrock company's model", () => {
     expect(ran(plan())).toEqual({ mode: "shadow", model: "amazon-bedrock/us.amazon.nova-premier-v1:0", company: "amazon", downgraded: undefined });
-    expect(ran(plan({ sources: [SONNET, GPT, NOVA_PRO], drivingTestPassed: passed(GPT, NOVA_PRO) }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
-    // Without a Nova model that passed, another company's model is next.
-    expect(ran(plan({ drivingTestPassed: passed(GPT) }))).toMatchObject({ model: "openai/gpt-5.5", company: "openai" });
+    expect(ran(plan({ sources: [SONNET, BEDROCK_GPT_OSS, NOVA_PRO], drivingTestPassed: passed(BEDROCK_GPT_OSS, NOVA_PRO) }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
+    // Without a Nova model that passed, another Bedrock company's model is next.
+    expect(ran(plan({ drivingTestPassed: passed(BEDROCK_GPT_OSS) }))).toMatchObject({ model: "amazon-bedrock/openai.gpt-oss-120b-1:0", company: "openai" });
   });
 
   it("refuses a model that has not passed the driving test, or whose last driving test failed", () => {
@@ -81,7 +140,7 @@ describe("planSecondReview: which model", () => {
     expect(ran(plan({ sources: [SONNET, NOVA_PRO], drivingTestPassed: drivingTestGate(records) }))).toEqual({ skipped: "untested" });
   });
 
-  it("the driving test gate reads the latest test per provider and canonical model name", () => {
+  it("the driving test gate reads the latest test per provider and exact revision", () => {
     const gate = drivingTestGate([
       { provider: "amazon-bedrock", modelId: "eu.amazon.nova-pro-v1:0", outcome: "passed", testedAt: "2026-11-01T00:00:00.000Z" },
       { provider: "openrouter", modelId: "amazon/nova-lite-v1", outcome: "failed", testedAt: "2026-11-01T00:00:00.000Z" },
@@ -95,36 +154,35 @@ describe("planSecondReview: which model", () => {
   });
 
   it("another company only: the build's own company, and models of no known company, are never chosen", () => {
-    expect(ran(plan({ sources: [SONNET, OPUS], drivingTestPassed: passed(SONNET, OPUS) }))).toEqual({ skipped: "no-candidate" });
-    expect(ran(plan({ sources: [SONNET, UNKNOWN_MAKER], drivingTestPassed: passed(UNKNOWN_MAKER) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ against: [BEDROCK_CLAUDE], sources: [SONNET, BEDROCK_CLAUDE], drivingTestPassed: passed(BEDROCK_CLAUDE) }))).toEqual({ skipped: "no-candidate" });
+    const unknown: ModelIdentifier = { provider: "amazon-bedrock", modelId: "xai.grok-4-v1:0" };
+    expect(modelCompany(unknown)).toBe("other");
+    expect(ran(plan({ sources: [SONNET, unknown], drivingTestPassed: passed(unknown) }))).toEqual({ skipped: "no-candidate" });
     expect(modelCompany(UNKNOWN_MAKER)).toBe("other");
   });
 
   it("a model must differ from the first review's company too", () => {
-    // Build on Claude, first review on OpenAI: Nova is a third company, GPT is not.
-    expect(ran(plan({ against: [SONNET, GPT] }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-premier-v1:0" });
-    expect(ran(plan({ against: [SONNET, GPT], sources: [SONNET, GPT], drivingTestPassed: passed(GPT) }))).toEqual({ skipped: "no-candidate" });
+    // Build on Claude, first review on OpenAI (on Bedrock): Nova is a third company, Bedrock's OpenAI model is not.
+    expect(ran(plan({ against: [SONNET, BEDROCK_GPT_OSS] }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-premier-v1:0" });
+    expect(ran(plan({ against: [SONNET, BEDROCK_GPT_OSS], sources: [SONNET, BEDROCK_GPT_OSS], drivingTestPassed: passed(BEDROCK_GPT_OSS) }))).toEqual({ skipped: "no-candidate" });
   });
 
   it("Bedrock's OpenAI and Google models are the same company as OpenAI and Google, not a different one", () => {
     expect(modelCompany(BEDROCK_GPT_OSS)).toBe("openai");
-    // Built by OpenAI directly: the Bedrock OpenAI model is not another company.
     expect(ran(plan({ against: [GPT], sources: [GPT, BEDROCK_GPT_OSS], drivingTestPassed: passed(BEDROCK_GPT_OSS) }))).toEqual({ skipped: "no-candidate" });
-    // Built on Bedrock's OpenAI model: OpenAI itself is not another company either.
-    expect(ran(plan({ against: [BEDROCK_GPT_OSS], sources: [GPT, BEDROCK_GPT_OSS], drivingTestPassed: passed(GPT) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ against: [BEDROCK_GPT_OSS], sources: [GPT, BEDROCK_GPT_OSS], drivingTestPassed: passed(BEDROCK_GPT_OSS) }))).toEqual({ skipped: "no-candidate" });
     // Google: Bedrock's Gemma is never read as different from Gemini (it is not placed at all, and a model that is not placed never counts as different).
     expect(ran(plan({ against: [GEMINI], sources: [GEMINI, BEDROCK_GEMMA], drivingTestPassed: passed(BEDROCK_GEMMA) }))).toEqual({ skipped: "no-candidate" });
-    expect(ran(plan({ against: [BEDROCK_GEMMA], sources: [BEDROCK_GEMMA, GEMINI], drivingTestPassed: passed(GEMINI) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ against: [BEDROCK_GEMMA], sources: [BEDROCK_GEMMA, NOVA_PRO], drivingTestPassed: passed(BEDROCK_GEMMA) }))).toEqual({ skipped: "no-candidate" });
     // Another company's model on the same route still counts as different.
-    expect(ran(plan({ against: [BEDROCK_GPT_OSS], sources: [SONNET, BEDROCK_GPT_OSS], drivingTestPassed: passed(SONNET) }))).toMatchObject({ company: "anthropic" });
+    expect(ran(plan({ against: [BEDROCK_GPT_OSS], sources: [BEDROCK_CLAUDE, BEDROCK_GPT_OSS], drivingTestPassed: passed(BEDROCK_CLAUDE) }))).toMatchObject({ company: "anthropic" });
   });
 
   it("never takes a forbidden model, by canonical name, whichever geography or route reaches it", () => {
     const forbidden: ModelIdentifier[] = [{ provider: "amazon-bedrock", modelId: "amazon.nova-premier-v1:0" }];
     expect(ran(plan({ forbidden, sources: [SONNET, NOVA_PREMIER, NOVA_PRO], drivingTestPassed: passed(NOVA_PREMIER, NOVA_PRO) }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
     const jp: ModelIdentifier = { provider: "amazon-bedrock", modelId: "jp.amazon.nova-premier-v1:0" };
-    const viaRouter: ModelIdentifier = { provider: "openrouter", modelId: "amazon/nova-premier-v1" };
-    expect(ran(plan({ forbidden, sources: [SONNET, jp, viaRouter], drivingTestPassed: passed(jp, viaRouter) }))).toEqual({ skipped: "no-candidate" });
+    expect(ran(plan({ forbidden, sources: [SONNET, jp], drivingTestPassed: passed(jp) }))).toEqual({ skipped: "no-candidate" });
   });
 
   it("refuses an unrecognised Bedrock id whenever anything is forbidden", () => {
@@ -133,14 +191,13 @@ describe("planSecondReview: which model", () => {
   });
 
   it("only takes a model the project approves, and leaves out one the account could not use", () => {
-    expect(ran(plan({ project: { approved: [SONNET, GPT] } }))).toMatchObject({ model: "openai/gpt-5.5" });
-    expect(ran(plan({ unusable: [NOVA_PREMIER, NOVA_PRO] }))).toMatchObject({ model: "openai/gpt-5.5" });
+    expect(ran(plan({ project: { approved: [SONNET, NOVA_PRO] } }))).toMatchObject({ model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
+    expect(ran(plan({ unusable: [NOVA_PREMIER, NOVA_PRO] }))).toMatchObject({ model: "amazon-bedrock/openai.gpt-oss-120b-1:0" });
     expect(ran(plan({ project: { approved: [SONNET] } }))).toEqual({ skipped: "no-candidate" });
   });
 });
 
 describe("a test or a verdict is about one revision (F1)", () => {
-  const NOVA_PRO_V2: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v2:0" };
   it("the key drops a geography and nothing else", () => {
     expect(secondReviewModelKey({ provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" })).toBe(secondReviewModelKey({ provider: "Amazon-Bedrock", modelId: "EU.amazon.nova-pro-v1:0" }));
     expect(secondReviewModelKey(NOVA_PRO)).not.toBe(secondReviewModelKey(NOVA_PRO_V2));
@@ -155,9 +212,9 @@ describe("a test or a verdict is about one revision (F1)", () => {
   });
 
   it("a verdict on v1 does not give v2 on", () => {
-    const both = plan({ mode: "on", sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: passed(NOVA_PRO_V2), verdicts: [VERDICT(NOVA_PRO)] });
-    expect(ran(both)).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", model: "amazon-bedrock/us.amazon.nova-pro-v2:0" });
-    expect(ran(plan({ mode: "on", sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: passed(NOVA_PRO_V2), verdicts: [VERDICT(NOVA_PRO_V2)] }))).toMatchObject({ mode: "on" });
+    const base = { mode: "on" as const, sources: [SONNET, NOVA_PRO_V2], drivingTestPassed: passed(NOVA_PRO_V2) };
+    expect(ran(plan({ ...base, verdicts: [verdictFor(NOVA_PRO)], replayRuns: [runFor(NOVA_PRO)] }))).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", model: "amazon-bedrock/us.amazon.nova-pro-v2:0" });
+    expect(ran(plan({ ...base, ...proof(NOVA_PRO_V2) }))).toMatchObject({ mode: "on" });
   });
 });
 
@@ -186,36 +243,88 @@ describe("a forbidden model is forbidden whatever the case of its provider (F2)"
     expect(forbiddenModelMatcher(forbiddenGpt)({ provider: "OPENROUTER", modelId: "OpenAI/GPT-5" })).toBe(true);
     expect(forbiddenModelMatcher([{ provider: "OpenRouter", modelId: "openai/gpt-5" }])({ provider: "openrouter", modelId: "openai/gpt-5" })).toBe(true);
   });
-
-  it("the second reviewer is not chosen from a forbidden model spelled in another case", () => {
-    const gpt: ModelIdentifier = { provider: "OpenRouter", modelId: "openai/gpt-5" };
-    expect(ran(plan({ forbidden: forbiddenGpt, sources: [SONNET, gpt], drivingTestPassed: passed(gpt) }))).toEqual({ skipped: "no-candidate" });
-  });
 });
 
-describe("planSecondReview: when on is allowed", () => {
-  it("configured on without a passing verdict runs in shadow and says why", () => {
-    expect(ran(plan({ mode: "on" }))).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
-    expect(ran(plan({ mode: "on", verdicts: [VERDICT(NOVA_PREMIER, { shadowPassed: false })] }))).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
-    expect(ran(plan({ mode: "on", verdicts: [VERDICT(NOVA_PREMIER, { replayPassed: false })] }))).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
+describe("planSecondReview: when on is allowed (W3: evidence is recomputed, never read as a pass)", () => {
+  const onPlan = (over: Partial<SecondReviewPlanInput>) => ran(plan({ mode: "on", ...over }));
+
+  it("configured on without evidence runs in shadow and says why", () => {
+    expect(onPlan({})).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
+  });
+
+  it("runs in on on the model whose evidence holds, found by exact revision across geographies", () => {
+    const geography: ModelIdentifier = { provider: "amazon-bedrock", modelId: "eu.amazon.nova-premier-v1:0" };
+    expect(onPlan(proof(geography))).toEqual({ mode: "on", model: "amazon-bedrock/us.amazon.nova-premier-v1:0", company: "amazon", downgraded: undefined });
   });
 
   it("a verdict for another model proves nothing for this one", () => {
-    expect(ran(plan({ mode: "on", verdicts: [VERDICT(GPT)] }))).toMatchObject({ mode: "on", model: "openai/gpt-5.5" });
-    expect(ran(plan({ mode: "on", drivingTestPassed: passed(NOVA_PRO), verdicts: [VERDICT(GPT)] }))).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
+    expect(onPlan(proof(BEDROCK_GPT_OSS))).toMatchObject({ mode: "on", model: "amazon-bedrock/openai.gpt-oss-120b-1:0" });
+    expect(onPlan({ drivingTestPassed: passed(NOVA_PRO), ...proof(BEDROCK_GPT_OSS) })).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", model: "amazon-bedrock/us.amazon.nova-pro-v1:0" });
   });
 
-  it("runs in on on the verified model, found by canonical name across geographies", () => {
-    const verdicts = [VERDICT({ provider: "amazon-bedrock", modelId: "eu.amazon.nova-premier-v1:0" })];
-    expect(ran(plan({ mode: "on", verdicts }))).toEqual({ mode: "on", model: "amazon-bedrock/us.amazon.nova-premier-v1:0", company: "amazon", downgraded: undefined });
+  it("a verdict whose replay run fails the bar when scored again does not hold", () => {
+    const weak = runFor(NOVA_PREMIER, { cases: replayCases({ known: 30, planted: 20, both: 31, baselineOnly: 9, extra: 5, neither: 5 }) });
+    expect(onPlan({ verdicts: [verdictFor(NOVA_PREMIER)], replayRuns: [weak] })).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
+  });
+
+  it("a verdict with no stored run, or another run's id, or another model's run, does not hold", () => {
+    expect(onPlan({ verdicts: [verdictFor(NOVA_PREMIER)], replayRuns: [] })).toMatchObject({ mode: "shadow" });
+    expect(onPlan({ verdicts: [verdictFor(NOVA_PREMIER, { replayRunId: "run-2" })], replayRuns: [runFor(NOVA_PREMIER)] })).toMatchObject({ mode: "shadow" });
+    expect(onPlan({ verdicts: [verdictFor(NOVA_PREMIER)], replayRuns: [runFor(NOVA_PRO)] })).toMatchObject({ mode: "shadow" });
+    expect(onPlan({ verdicts: [verdictFor(NOVA_PREMIER, { baseline: SONNET })], replayRuns: [runFor(NOVA_PREMIER)] })).toMatchObject({ mode: "shadow" });
+  });
+
+  it("the shadow window is judged from its timestamps and counts, after the replay", () => {
+    const hold = (shadow: Partial<SecondReviewVerdict["shadow"]>, run: Partial<SecondReviewReplayRun> = {}) =>
+      secondReviewVerdictHolds(verdictFor(NOVA_PREMIER, { shadow: { ...verdictFor(NOVA_PREMIER).shadow, ...shadow } }), runFor(NOVA_PREMIER, run));
+    expect(hold({})).toBe(true);
+    expect(hold({ endedAt: "2026-11-15T23:59:59.000Z" })).toBe(false); // one second short of 14 days
+    expect(hold({ startedAt: "2026-10-31T00:00:00.000Z", endedAt: "2026-11-20T00:00:00.000Z" })).toBe(false); // started before the replay ran
+    expect(hold({ startedAt: "2026-11-01T00:00:00.000Z", endedAt: "2026-11-20T00:00:00.000Z" })).toBe(false); // started AT the replay: not after it
+    expect(hold({ agreed: 3 })).toBe(false); // exactly 30% is not above 30%
+    expect(hold({ findings: 0, agreed: 0 })).toBe(false);
+    expect(hold({ endedAt: "2026-11-01T00:00:00.000Z" })).toBe(false); // ends before it starts
+    expect(hold({ startedAt: "garbage" })).toBe(false);
+  });
+
+  it("an admin withdraws a verdict; it then holds for nothing", () => {
+    const withdrawn = verdictFor(NOVA_PREMIER, { withdrawnAt: "2026-11-25T00:00:00.000Z", withdrawnBy: "admin:bob" });
+    expect(secondReviewVerdictHolds(withdrawn, runFor(NOVA_PREMIER))).toBe(false);
+    expect(onPlan({ verdicts: [withdrawn], replayRuns: [runFor(NOVA_PREMIER)] })).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed" });
+  });
+
+  it("the record has no pass flag to set: a stored pass is not a field", () => {
+    const good = verdictFor(NOVA_PREMIER);
+    expect(SecondReviewVerdictSchema.safeParse(good).success).toBe(true);
+    expect(SecondReviewVerdictSchema.safeParse({ ...good, replayPassed: true }).success).toBe(false);
+    expect(SecondReviewVerdictSchema.safeParse({ ...good, shadowPassed: true }).success).toBe(false);
+    expect(SecondReviewVerdictSchema.safeParse({ ...good, withdrawnAt: "2026-11-25T00:00:00.000Z" }).success).toBe(false); // withdrawn without saying by whom
   });
 
   it("a verified model that is untested is still refused", () => {
-    expect(ran(plan({ mode: "on", sources: [SONNET, NOVA_PREMIER], drivingTestPassed: passed(), verdicts: [VERDICT(NOVA_PREMIER)] }))).toEqual({ skipped: "untested" });
+    expect(onPlan({ sources: [SONNET, NOVA_PREMIER], drivingTestPassed: passed(), ...proof(NOVA_PREMIER) })).toEqual({ skipped: "untested" });
   });
 
   it("shadow stays shadow even for a verified model", () => {
-    expect(ran(plan({ mode: "shadow", verdicts: [VERDICT(NOVA_PREMIER)] }))).toMatchObject({ mode: "shadow", downgraded: undefined });
+    expect(ran(plan({ mode: "shadow", ...proof(NOVA_PREMIER) }))).toMatchObject({ mode: "shadow", downgraded: undefined });
+  });
+});
+
+describe("againstModels (W6)", () => {
+  it("is every build operation's ran model, in every round, and the first reviewer's", () => {
+    expect(againstModels({ buildRanModels: [SONNET, OPUS, SONNET], firstReviewerRan: BEDROCK_GPT_OSS })).toEqual([SONNET, OPUS, BEDROCK_GPT_OSS]);
+  });
+
+  it("is undefined when any model is unknown, because an unknown model cannot be shown to differ", () => {
+    expect(againstModels({ buildRanModels: [SONNET, undefined], firstReviewerRan: OPUS })).toBeUndefined();
+    expect(againstModels({ buildRanModels: [SONNET], firstReviewerRan: undefined })).toBeUndefined();
+    expect(againstModels({ buildRanModels: [], firstReviewerRan: OPUS })).toBeUndefined();
+  });
+
+  it("a second round's build model counts: a reviewer that matches round 2's company is refused", () => {
+    const against = againstModels({ buildRanModels: [SONNET, BEDROCK_GPT_OSS], firstReviewerRan: OPUS })!;
+    expect(ran(plan({ against, sources: [BEDROCK_GPT_OSS, NOVA_PRO], drivingTestPassed: passed(BEDROCK_GPT_OSS, NOVA_PRO) }))).toMatchObject({ company: "amazon" });
+    expect(ran(plan({ against, sources: [BEDROCK_GPT_OSS], drivingTestPassed: passed(BEDROCK_GPT_OSS) }))).toEqual({ skipped: "no-candidate" });
   });
 });
 
@@ -224,51 +333,53 @@ const report = (status: WorkflowReviewReport["status"], findings: WorkflowReview
   operationId: randomUUID(), candidateDigest: digest, role: "CRITIC", provider: "amazon-bedrock", version: "us.amazon.nova-premier-v1:0", status, findings, readOnly: true, recordedAt: "2026-11-02T12:00:00.000Z", ...extra,
 });
 const BLOCKING = { text: "off by one in the loop bound", origin: "INTRODUCED" as const };
-const runPlan = (mode: "shadow" | "on", downgraded?: "replay-not-passed") => {
-  const planned = plan({ mode: mode === "on" ? "on" : "shadow", verdicts: mode === "on" && downgraded === undefined ? [VERDICT(NOVA_PREMIER)] : [] });
+const runPlan = (mode: "shadow" | "on") => {
+  const planned = plan({ mode, ...(mode === "on" ? proof(NOVA_PREMIER) : {}) });
   if (!planned.run) throw new Error("expected a plan");
   return planned;
 };
+const opinion = (mode: "shadow" | "on", r: WorkflowReviewReport, over: Partial<Parameters<typeof secondOpinionOf>[0]> = {}) =>
+  secondOpinionOf({ plan: runPlan(mode), report: r, currentCandidateDigest: digest, ranModel: NOVA_PREMIER, ...over });
 
 describe("secondOpinionOf: what a finished second review means", () => {
   it("shadow never blocks, and records what on would have done", () => {
-    const opinion = secondOpinionOf({ plan: runPlan("shadow"), report: report("FINDINGS", [BLOCKING]) });
-    expect(opinion).toMatchObject({ mode: "shadow", blocked: false, wouldHaveBlocked: true, blockingCount: 1, unavailable: false, company: "amazon" });
+    expect(opinion("shadow", report("FINDINGS", [BLOCKING]))).toMatchObject({ mode: "shadow", blocked: false, wouldHaveBlocked: true, blockingCount: 1, unavailable: false, company: "amazon" });
   });
 
   it("on blocks on a finding the change introduced", () => {
-    expect(secondOpinionOf({ plan: runPlan("on"), report: report("FINDINGS", [BLOCKING]) })).toMatchObject({ mode: "on", blocked: true, wouldHaveBlocked: true, blockingCount: 1 });
+    expect(opinion("on", report("FINDINGS", [BLOCKING]))).toMatchObject({ mode: "on", blocked: true, wouldHaveBlocked: true, blockingCount: 1 });
   });
 
-  it("on does not block on a pass, an advisory or pre-existing finding, or one the owner accepted", () => {
-    expect(secondOpinionOf({ plan: runPlan("on"), report: report("PASS") })).toMatchObject({ blocked: false, wouldHaveBlocked: false, blockingCount: 0 });
-    const quiet = report("PASS", [{ text: "style nit", origin: "INTRODUCED", advisory: true }, { text: "old problem", origin: "PRE_EXISTING" }]);
-    expect(secondOpinionOf({ plan: runPlan("on"), report: quiet })).toMatchObject({ blocked: false });
+  it("on does not block on a pass, an advisory or pre-existing finding, or one the owner accepted as a risk", () => {
+    expect(opinion("on", report("PASS"))).toMatchObject({ blocked: false, wouldHaveBlocked: false, blockingCount: 0 });
+    expect(opinion("on", report("PASS", [{ text: "style nit", origin: "INTRODUCED", advisory: true }, { text: "old problem", origin: "PRE_EXISTING" }]))).toMatchObject({ blocked: false });
     const found = report("FINDINGS", [BLOCKING]);
     const accepted = [{ candidateDigest: digest, role: "CRITIC", fingerprint: workflowFindingFingerprint("CRITIC", { text: BLOCKING.text }) }];
-    expect(secondOpinionOf({ plan: runPlan("on"), report: found, accepted })).toMatchObject({ blocked: false, wouldHaveBlocked: false });
-    // An accepted finding is matched by its fingerprint: a made-up one does not match, so the finding still blocks.
-    expect(secondOpinionOf({ plan: runPlan("on"), report: found, accepted: [{ ...accepted[0]!, fingerprint: "b".repeat(64) }] })).toMatchObject({ blocked: true });
+    expect(opinion("on", found, { accepted })).toMatchObject({ blocked: false, wouldHaveBlocked: false });
+    expect(opinion("on", found, { accepted: [{ ...accepted[0]!, fingerprint: "b".repeat(64) }] })).toMatchObject({ blocked: true });
   });
 
   it("a second review that gave no answer blocks nothing, in either mode, and says it did not run", () => {
     for (const status of ["FAILED", "INTERRUPTED", "UNKNOWN"] as const) {
-      expect(secondOpinionOf({ plan: runPlan("on"), report: report(status) }), status).toMatchObject({ blocked: false, wouldHaveBlocked: false, unavailable: true });
-      expect(secondOpinionOf({ plan: runPlan("shadow"), report: report(status) }), status).toMatchObject({ blocked: false, unavailable: true });
+      expect(opinion("on", report(status)), status).toMatchObject({ blocked: false, wouldHaveBlocked: false, unavailable: true, unavailableReason: "no-answer" });
+      expect(opinion("shadow", report(status)), status).toMatchObject({ blocked: false, unavailable: true });
     }
   });
 
   it("keeps the downgrade on the record", () => {
     const downgraded = plan({ mode: "on" });
     if (!downgraded.run) throw new Error("expected a plan");
-    expect(secondOpinionOf({ plan: downgraded, report: report("FINDINGS", [BLOCKING]) })).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", blocked: false });
+    expect(secondOpinionOf({ plan: downgraded, report: report("FINDINGS", [BLOCKING]), currentCandidateDigest: digest, ranModel: NOVA_PREMIER })).toMatchObject({ mode: "shadow", downgraded: "replay-not-passed", blocked: false });
   });
 
-  it("the record cannot say a shadow opinion blocked", () => {
-    const good = secondOpinionOf({ plan: runPlan("shadow"), report: report("FINDINGS", [BLOCKING]) });
+  it("the record cannot say a shadow opinion blocked, an unknown company, or an unavailable one with findings", () => {
+    const good = opinion("shadow", report("FINDINGS", [BLOCKING]));
     expect(SecondOpinionSchema.safeParse({ ...good, blocked: true }).success).toBe(false);
     expect(SecondOpinionSchema.safeParse({ ...good, company: "other" }).success).toBe(false);
     expect(SecondOpinionSchema.safeParse({ ...good, extra: 1 }).success).toBe(false);
+    expect(SecondOpinionSchema.safeParse({ ...good, unavailable: true }).success).toBe(false);
+    const gone = secondOpinionUnavailable(runPlan("on"), "not-run");
+    expect(SecondOpinionSchema.safeParse({ ...gone, wouldHaveBlocked: true }).success).toBe(false);
   });
 
   it("shows a shadow opinion on the task page and never on the pull request; an on opinion that blocked on both", () => {
@@ -276,11 +387,136 @@ describe("secondOpinionOf: what a finished second review means", () => {
     expect(secondOpinionShownOn({ mode: "on", blocked: false })).toEqual({ taskPage: true, pullRequest: false });
     expect(secondOpinionShownOn({ mode: "on", blocked: true })).toEqual({ taskPage: true, pullRequest: true });
   });
+});
 
+describe("acceptSecondReport (W2)", () => {
+  const check = (over: Partial<Parameters<typeof acceptSecondReport>[0]> = {}) => acceptSecondReport({ plan: runPlan("on"), report: report("FINDINGS", [BLOCKING]), currentCandidateDigest: digest, ranModel: NOVA_PREMIER, ...over });
+
+  it("accepts the code review of the current candidate from the planned model", () => {
+    expect(check()).toEqual({ accepted: true });
+    // The planned model reached through another geography is the same revision.
+    expect(check({ ranModel: { provider: "amazon-bedrock", modelId: "eu.amazon.nova-premier-v1:0" } })).toEqual({ accepted: true });
+  });
+
+  it("refuses a security review, another candidate, and a missing current candidate", () => {
+    expect(check({ report: report("PASS", [], { role: "SECURITY" }) })).toEqual({ accepted: false, reason: "wrong-role" });
+    expect(check({ report: report("PASS", [], { candidateDigest: "c".repeat(64) }) })).toEqual({ accepted: false, reason: "wrong-candidate" });
+    expect(check({ currentCandidateDigest: undefined })).toEqual({ accepted: false, reason: "wrong-candidate" });
+  });
+
+  it("refuses when the model that actually ran is not the planned one, or is unknown, or a revision away", () => {
+    expect(check({ ranModel: NOVA_PRO })).toEqual({ accepted: false, reason: "wrong-model" });
+    expect(check({ ranModel: undefined })).toEqual({ accepted: false, reason: "wrong-model" });
+    expect(check({ ranModel: { provider: "amazon-bedrock", modelId: "us.amazon.nova-premier-v2:0" } })).toEqual({ accepted: false, reason: "wrong-model" });
+  });
+
+  it("refuses when the ran model is, after all, the same company as something in against", () => {
+    const planned = runPlan("shadow");
+    // The recorded history turned out to include an Amazon model (a build round recorded later): the planned model is no longer a different company.
+    const tainted = { ...planned, against: [...planned.against, NOVA_LITE] };
+    expect(acceptSecondReport({ plan: tainted, report: report("PASS"), currentCandidateDigest: digest, ranModel: NOVA_PREMIER })).toEqual({ accepted: false, reason: "same-company" });
+  });
+
+  it("a report that is not accepted leaves an unavailable opinion with no findings, in on too", () => {
+    for (const bad of [{ ranModel: NOVA_PRO }, { currentCandidateDigest: "d".repeat(64) }, { report: report("FINDINGS", [BLOCKING], { role: "SECURITY" }) }]) {
+      const result = opinion("on", report("FINDINGS", [BLOCKING]), bad);
+      expect(result).toMatchObject({ unavailable: true, blocked: false, wouldHaveBlocked: false, blockingCount: 0 });
+      expect(result.report).toBeUndefined();
+    }
+  });
+});
+
+describe("unavailable means not blocking, in one place (owner decision pending)", () => {
+  it("today nothing blocks when the second review cannot run", () => {
+    for (const reason of ["no-answer", "wrong-model", "budget", "not-run", "no-candidate", "untested", "no-reference-model", "mode-off"] as const) {
+      expect(secondReviewBlocksWhenUnavailable({ mode: "on", reason }), reason).toBe(false);
+    }
+  });
+});
+
+describe("the pull request lines (W7)", () => {
+  const hostile = "See [the fix](https://evil.example/x) @octocat #123 ![img](https://evil.example/i.png) <!-- hide --> GH-45 Fixes ENG-9 https://evil.example/path www.evil.example";
+
+  it("are empty for a shadow opinion, a non-blocking one and an unavailable one", () => {
+    expect(secondOpinionPrLines(opinion("shadow", report("FINDINGS", [{ text: hostile, origin: "INTRODUCED" }])))).toEqual([]);
+    expect(secondOpinionPrLines(opinion("on", report("PASS")))).toEqual([]);
+    expect(secondOpinionPrLines(secondOpinionUnavailable(runPlan("on"), "no-answer"))).toEqual([]);
+  });
+
+  it("make model text inert: no link, mention, image, comment, issue reference or closing word survives", () => {
+    const lines = secondOpinionPrLines(opinion("on", report("FINDINGS", [{ text: hostile, origin: "INTRODUCED", file: "src/@evil/[x](y).ts", line: 9 }], { version: "@octocat <b>model</b>" })));
+    const text = lines.join("\n");
+    expect(lines[0]).toContain("Second review");
+    expect(text).not.toMatch(/\]\(/u);
+    expect(text).not.toMatch(/<!--|<b>|<\/b>/u);
+    expect(text).not.toMatch(/(?<!‍)@octocat|(?<!‍)@evil/u);
+    expect(text).not.toMatch(/!\[/u);
+    expect(text).not.toMatch(/https?:\/\/(?!‍)/u);
+    expect(text).not.toMatch(/#(?=\d)/u);
+    expect(text).not.toMatch(/Fixes ENG-9/u);
+  });
+
+  it("are bounded: at most five findings, each cut", () => {
+    const many = Array.from({ length: 12 }, (_, n) => ({ text: `finding ${String(n)} ${"x".repeat(1000)}`.slice(0, 600), origin: "INTRODUCED" as const }));
+    const lines = secondOpinionPrLines(opinion("on", report("FINDINGS", many)));
+    expect(lines).toHaveLength(6);
+    expect(lines[0]).toContain("12 blocking findings");
+    for (const line of lines.slice(1)) expect(Array.from(line).length).toBeLessThanOrEqual(480);
+  });
+});
+
+describe("the context-length rule (unusable models)", () => {
   it("reads a model the account cannot use from the report, so the next try leaves it out", () => {
     expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: model-not-found" }))).toBe(true);
+    expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: key-rejected ValidationException HTTP 403" }))).toBe(true);
+    expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: provider-quota HTTP 402" }))).toBe(true);
+  });
+
+  it("a rejected request (which is how a prompt over the context length arrives) and an unknown failure do not retire the model", () => {
+    expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: request-rejected ValidationException HTTP 400" }))).toBe(false);
+    expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: unknown" }))).toBe(false);
     expect(secondReviewModelUnusable(report("FAILED", [], { modelFailure: "the model call failed: rate-limited" }))).toBe(false);
     expect(secondReviewModelUnusable(report("PASS"))).toBe(false);
+  });
+});
+
+describe("cost and admission", () => {
+  it("estimates from the catalog price with no caching", () => {
+    expect(estimateSecondReviewUsd({ inputUsdPerMTok: 0.8, outputUsdPerMTok: 3.2 }, { input: 100_000, maxOutput: 4_000 })).toBeCloseTo(0.0928, 6);
+  });
+
+  it("admits when the estimate fits the payer's room, once per candidate per round", () => {
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: 0.09, roomUsd: 0.1, alreadyRan: false })).toEqual({ admit: true });
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: 0.09, roomUsd: 0.09, alreadyRan: false })).toEqual({ admit: true });
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: 0.1, roomUsd: 0.09, alreadyRan: false })).toEqual({ admit: false, reason: "budget" });
+    expect(admitSecondReview({ mode: "on", estimateUsd: 0.1, roomUsd: 0.09, alreadyRan: false })).toEqual({ admit: false, reason: "budget" });
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: 0.01, roomUsd: 5, alreadyRan: true })).toEqual({ admit: false, reason: "not-run" });
+  });
+
+  it("fails closed on a number it cannot read", () => {
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: Number.NaN, roomUsd: 5, alreadyRan: false })).toEqual({ admit: false, reason: "budget" });
+    expect(admitSecondReview({ mode: "shadow", estimateUsd: 0.01, roomUsd: Number.NaN, alreadyRan: false })).toEqual({ admit: false, reason: "budget" });
+  });
+
+  it("knows a second review already ran for a candidate in a round, by its tag", () => {
+    const ops = [{ secondReview: true, candidateDigest: digest, round: 1 }, { candidateDigest: digest, round: 2 }];
+    expect(secondReviewAlreadyRan(ops, digest, 1)).toBe(true);
+    expect(secondReviewAlreadyRan(ops, digest, 2)).toBe(false); // an untagged operation is the first review's
+    expect(secondReviewAlreadyRan(ops, "e".repeat(64), 1)).toBe(false);
+  });
+});
+
+describe("a second review is its own operation (W1)", () => {
+  it("is recognised by its tag", () => {
+    expect(isSecondReviewOperation({ secondReview: true })).toBe(true);
+    expect(isSecondReviewOperation({})).toBe(false);
+    expect(isSecondReviewOperation({ secondReview: "true" })).toBe(false);
+  });
+
+  it("a second review's failure never retires a model for the first review's retries", () => {
+    const failed = { workflowMode: "REVIEW", status: "FAILED", error: "MODEL_NOT_ALLOWED: nope", createdAt: "2026-11-02T12:00:00.000Z", model: { provider: "amazon-bedrock", modelId: "us.amazon.nova-premier-v1:0" } };
+    expect(reviewFailures([failed], undefined).models).toHaveLength(1);
+    expect(reviewFailures([{ ...failed, secondReview: true }], undefined)).toEqual({ models: [], sinceLatestBuild: 0 });
   });
 });
 
@@ -334,11 +570,11 @@ describe("the replay check (section 9.2)", () => {
     expect(SecondReviewReplayRunSchema.safeParse({ ...run, cases: [{ ...entry, text: "model output" }] }).success).toBe(false);
   });
 
-  it("the shadow phase needs two weeks and more than 30% of findings accepted", () => {
-    expect(secondReviewShadowPassed({ days: 14, findings: 10, accepted: 4 })).toBe(true);
-    expect(secondReviewShadowPassed({ days: 14, findings: 10, accepted: 3 })).toBe(false); // exactly 30% is not above 30%
-    expect(secondReviewShadowPassed({ days: 13, findings: 10, accepted: 10 })).toBe(false);
-    expect(secondReviewShadowPassed({ days: 30, findings: 0, accepted: 0 })).toBe(false);
+  it("the shadow phase needs two weeks and more than 30% of findings agreed with or fixed", () => {
+    expect(secondReviewShadowPassed({ days: 14, findings: 10, agreed: 4 })).toBe(true);
+    expect(secondReviewShadowPassed({ days: 14, findings: 10, agreed: 3 })).toBe(false); // exactly 30% is not above 30%
+    expect(secondReviewShadowPassed({ days: 13, findings: 10, agreed: 10 })).toBe(false);
+    expect(secondReviewShadowPassed({ days: 30, findings: 0, agreed: 0 })).toBe(false);
     expect(SECOND_REVIEW_BAR.shadowDays).toBe(14);
   });
 });

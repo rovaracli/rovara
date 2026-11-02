@@ -13,6 +13,18 @@ import { WorkflowReviewReportSchema } from "./task-workflow.js";
 // The setting: `review.otherCompany`
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+/**
+ * The only providers a second review runs on (design 9.1 item 4): Amazon Bedrock, so the model call is on the customer's own Bedrock in Enterprise and on Rovara's in Public. A direct OpenAI, Google or other key is
+ * not used for a second review, whatever the company's other model sources allow.
+ */
+export const SECOND_REVIEW_PROVIDERS: readonly string[] = ["amazon-bedrock"];
+export const secondReviewProviderAllowed = (model: { provider: string }): boolean => SECOND_REVIEW_PROVIDERS.includes(model.provider.toLowerCase());
+
+/** The tag a second review's operation record carries (`secondReview: true`) and its receipts' purpose. Every lookup that reads reviews of a task must leave such an operation out. */
+export const SECOND_REVIEW_OPERATION_TAG = "second-review";
+/** Whether an operation item is a second review's. */
+export const isSecondReviewOperation = (item: { secondReview?: unknown }): boolean => item.secondReview === true;
+
 /** Ordered from the least careful to the most careful: the order a company lock compares in. */
 export const SECOND_REVIEW_MODES = ["off", "shadow", "on"] as const;
 export const SecondReviewModeSchema = z.enum(SECOND_REVIEW_MODES);
@@ -41,6 +53,14 @@ const modeRank = (mode: SecondReviewMode): number => SECOND_REVIEW_MODES.indexOf
 export const stricterSecondReviewMode = (left: SecondReviewMode, right: SecondReviewMode): SecondReviewMode => (modeRank(left) >= modeRank(right) ? left : right);
 
 /**
+ * Lowering needs a second person, like loosening a company lock (SH29): a project's `review.otherCompany` going from `on` to `shadow` or `off`, and a company lock going to any lower mode (or being removed).
+ * Raising, and a project going from `off` to `shadow`, from `shadow` to `off`, or between the same modes, applies at once (it only observes, or only makes work more careful). The route that applies a change
+ * asks this and, when true, takes it through `decideSecondPersonApproval` (and its sole-owner exception) before it writes.
+ */
+export const projectSecondReviewLoweringNeedsSecondPerson = (from: SecondReviewMode, to: SecondReviewMode): boolean => from === "on" && to !== "on";
+export const lockSecondReviewLoweringNeedsSecondPerson = (from: SecondReviewMode | undefined, to: SecondReviewMode | undefined): boolean => modeRank(to ?? "off") < modeRank(from ?? "off");
+
+/**
  * The mode a project is configured for: its own choice, else the company's default, else `off`; never below the company's lock. A lock never loosens a project, and a project's own choice never
  * goes under the lock. This is the CONFIGURED mode: `on` still needs a model that earned it (`SecondReviewVerdict`), and the install switch `cr` still has to be on.
  */
@@ -62,18 +82,26 @@ export type SecondReviewSkipReason = (typeof SECOND_REVIEW_SKIP_REASONS)[number]
  * a configured `on` that had no verified model ran in `shadow`, and says `downgraded`). `blocked` is whether it blocked; in `shadow` it is always false, and `wouldHaveBlocked` says what `on` would have done.
  * `unavailable` is set when the reviewer gave no answer (the report is FAILED, INTERRUPTED or UNKNOWN): the first review stands alone, and the task page says the second opinion did not run.
  */
+/** Why a second opinion is unavailable (fixed words): the reviewer gave no answer, or its answer was not accepted. */
+export const SECOND_OPINION_UNAVAILABLE_REASONS = ["no-answer", "wrong-role", "wrong-candidate", "wrong-model", "same-company", "budget", "not-run"] as const;
+export type SecondOpinionUnavailableReason = (typeof SECOND_OPINION_UNAVAILABLE_REASONS)[number];
+
 export const SecondOpinionSchema = z.object({
   mode: z.enum(["shadow", "on"]),
   downgraded: z.literal("replay-not-passed").optional(),
   /** The company of the second reviewer's model, never `other`. */
   company: z.enum(MODEL_COMPANIES.filter((company) => company !== "other") as [string, ...string[]]),
-  report: WorkflowReviewReportSchema,
+  /** The accepted report; absent when the second review did not run or its answer was not accepted (then `unavailableReason` says why). */
+  report: WorkflowReviewReportSchema.optional(),
+  unavailableReason: z.enum(SECOND_OPINION_UNAVAILABLE_REASONS).optional(),
   blockingCount: z.number().int().min(0).max(20),
   blocked: z.boolean(),
   wouldHaveBlocked: z.boolean(),
   unavailable: z.boolean(),
 }).strict().superRefine((opinion, context) => {
   if (opinion.mode === "shadow" && opinion.blocked) context.addIssue({ code: "custom", path: ["blocked"], message: "a shadow second opinion never blocks" });
+  if (opinion.unavailable !== (opinion.report === undefined || opinion.unavailableReason !== undefined)) context.addIssue({ code: "custom", path: ["unavailable"], message: "unavailable exactly when there is no accepted answer" });
+  if (opinion.unavailable && (opinion.blocked || opinion.wouldHaveBlocked || opinion.blockingCount > 0)) context.addIssue({ code: "custom", path: ["blocked"], message: "an unavailable second opinion has no findings and blocks nothing" });
   if (opinion.blocked && !opinion.wouldHaveBlocked) context.addIssue({ code: "custom", path: ["blocked"], message: "a second opinion that blocked would have blocked" });
 });
 export type SecondOpinion = z.infer<typeof SecondOpinionSchema>;
@@ -97,8 +125,8 @@ export const SECOND_REVIEW_BAR = {
   /** Dismissed blocking findings must stay UNDER one per this many tasks. */
   dismissedUnderOnePerTasks: 5,
   shadowDays: 14,
-  /** Accepted findings must be MORE than this many in 10 (3 is 30%). */
-  shadowAcceptedOverTenths: 3,
+  /** Agreed findings must be MORE than this many in 10 (3 is 30%). */
+  shadowAgreedOverTenths: 3,
 } as const;
 
 export const SECOND_REVIEW_REPLAY_CASES_MAX = 400;
@@ -161,27 +189,57 @@ export function summarizeSecondReviewReplay(cases: readonly SecondReviewReplayCa
   return { tasks, knownDefects, plantedBugs, baselineCaught, bothCaught, extraCatches, dismissedBlocking, passed: failures.length === 0, failures };
 }
 
-/** The shadow phase: at least 2 weeks of live tasks, with more than 30% of the second opinion's findings accepted by people. */
+/**
+ * The shadow phase: at least 2 weeks of live tasks, with more than 30% of the second opinion's findings AGREED WITH or FIXED by people. `agreed` is its own count (a person marked the finding right, or the next
+ * round fixed what it named); it is NOT the owner's accepted-risk list (`AcceptedFindingRef`), which means "ship it anyway" and is the opposite signal.
+ */
 export const SecondReviewShadowResultSchema = z.object({
   days: z.number().int().min(0).max(3650),
   findings: z.number().int().min(0).max(1_000_000),
-  accepted: z.number().int().min(0).max(1_000_000),
-}).strict().refine((result) => result.accepted <= result.findings, { message: "accepted findings are a part of the findings", path: ["accepted"] });
+  agreed: z.number().int().min(0).max(1_000_000),
+}).strict().refine((result) => result.agreed <= result.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] });
 export type SecondReviewShadowResult = z.infer<typeof SecondReviewShadowResultSchema>;
 
 export function secondReviewShadowPassed(result: SecondReviewShadowResult): boolean {
-  return result.days >= SECOND_REVIEW_BAR.shadowDays && result.findings > 0 && result.accepted * 10 > result.findings * SECOND_REVIEW_BAR.shadowAcceptedOverTenths;
+  return result.days >= SECOND_REVIEW_BAR.shadowDays && result.findings > 0 && result.agreed * 10 > result.findings * SECOND_REVIEW_BAR.shadowAgreedOverTenths;
 }
 
 /**
- * What the broker reads to allow `on` for one model: the canonical name of the candidate (`canonicalModelName`) and the two results. `on` needs both; the quality suite and the shadow count write it,
- * a person (an admin) can withdraw it. A verdict for one model says nothing about another.
+ * The evidence that lets a model run in `on`. It holds NO verdict flag: whether the replay check passed and whether the shadow phase passed are recomputed by the broker every time, from the stored replay run
+ * (`summarizeSecondReviewReplay`) and the shadow window's timestamps and counts (`secondReviewVerdictHolds`). No route writes a pass; a record is created only by Rovara staff in Public or by the install in
+ * Enterprise (never by a project), and an admin can only WITHDRAW it (`withdrawnAt`).
  */
 export const SecondReviewVerdictSchema = z.object({
   /** `secondReviewModelKey` of the candidate: the exact revision, so a verdict on v1 never covers v2. */
   model: z.string().min(1).max(256),
-  replayPassed: z.boolean(),
-  shadowPassed: z.boolean(),
-  decidedAt: z.string().datetime(),
-}).strict();
+  /** The stored replay run this verdict rests on, and the baseline reviewer it was compared with. */
+  replayRunId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
+  baseline: z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict(),
+  /** The shadow window (it must start after the replay run) and what it counted. */
+  shadow: z.object({ startedAt: z.string().datetime(), endedAt: z.string().datetime(), findings: z.number().int().min(0).max(1_000_000), agreed: z.number().int().min(0).max(1_000_000) }).strict()
+    .refine((window) => window.agreed <= window.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] }),
+  createdAt: z.string().datetime(),
+  /** Who recorded it: a Rovara staff member (Public) or the install (Enterprise); never a project member. */
+  createdBy: z.string().min(1).max(128),
+  withdrawnAt: z.string().datetime().optional(),
+  withdrawnBy: z.string().min(1).max(128).optional(),
+}).strict().refine((verdict) => (verdict.withdrawnAt === undefined) === (verdict.withdrawnBy === undefined), { message: "withdrawnAt and withdrawnBy go together", path: ["withdrawnBy"] });
 export type SecondReviewVerdict = z.infer<typeof SecondReviewVerdictSchema>;
+
+const DAY_MS = 86_400_000;
+const sameModelRef = (left: { provider: string; modelId: string }, right: { provider: string; modelId: string }): boolean => left.provider.toLowerCase() === right.provider.toLowerCase() && left.modelId.toLowerCase() === right.modelId.toLowerCase();
+
+/**
+ * Whether a verdict lets its model run in `on` NOW: not withdrawn; the replay run it names is the one given, ran this model against this baseline, and PASSES the bar when scored afresh; the shadow window
+ * starts after that run, lasts the bar's days, and its counts clear the bar's share. Anything unreadable or missing is false.
+ */
+export function secondReviewVerdictHolds(verdict: SecondReviewVerdict, run: SecondReviewReplayRun | undefined): boolean {
+  if (verdict.withdrawnAt !== undefined || run === undefined || run.runId !== verdict.replayRunId) return false;
+  if (secondReviewModelKey(run.candidate) !== verdict.model || !sameModelRef(run.baseline, verdict.baseline)) return false;
+  if (!summarizeSecondReviewReplay(run.cases).passed) return false;
+  const started = Date.parse(verdict.shadow.startedAt);
+  const ended = Date.parse(verdict.shadow.endedAt);
+  const replayed = Date.parse(run.ranAt);
+  if ([started, ended, replayed].some(Number.isNaN) || started <= replayed || ended < started) return false;
+  return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed });
+}
