@@ -41,6 +41,9 @@ describe("pytest's own output", () => {
     const exists = (path: string) => Promise.resolve(present.has(path));
     expect(await pytestFileOf("tests.test_cart_rules.TestOther.TestNested", exists)).toEqual({ file: "tests/test_cart_rules.py", classes: ["TestOther", "TestNested"] });
     expect(await pytestFileOf("tests.test_cart", exists)).toEqual({ file: "tests/test_cart.py", classes: [] });
+    // When a shorter prefix is a file too, the longest wins (`a/b.py` holds class C, not `a.py` holding classes b and C).
+    const both = (path: string) => Promise.resolve(path === "a.py" || path === "a/b.py");
+    expect(await pytestFileOf("a.b.C", both)).toEqual({ file: "a/b.py", classes: ["C"] });
     expect(await pytestFileOf("tests.missing.TestX", exists)).toBeUndefined();
     expect(await pytestFileOf("../etc/passwd", exists)).toBeUndefined();
     expect(await pytestFileOf("a b.c", exists)).toBeUndefined();
@@ -107,7 +110,7 @@ describe("pytest's own output", () => {
     expect(hasUnconfirmedFailingTest(check(evidenceTests(withoutUnsafe)), [FAILING[0]!])).toBe(true);
     expect(hasUnconfirmedFailingTest(check(evidenceTests(withoutUnsafe)), ["test_total_fails", "TestRules::test_discount_fails"])).toBe(true);
     // The unsafe failure is never confirmed as already failing, whatever the sets hold.
-    expect(hasUnconfirmedFailingTest(check(view), [...result.failed, "tests/test_cart.py::test_label_with_space_fails[x"])).toBe(true);
+    expect(hasUnconfirmedFailingTest(check(view), [...result.failed, "tests/test_cart.py::test_label_with_space_fails[x y]"])).toBe(true);
 
     // The selection always re-runs last night's failures, matched by id against the inventory.
     const inventory = (await collected()).filter(isSafeTestId);

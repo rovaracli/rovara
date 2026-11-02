@@ -207,6 +207,7 @@ describe("the coverage map", () => {
       "src/match.py": { contexts: { "1": ["", "tests/test_a.py::t1|run"], "2": ["tests/test_a.py::t1|run", "tests/test_b.py::t2|setup"] } },
       "src/huge.py": { contexts: { "1": Array.from({ length: 5_001 }, (_, i) => `tests/test_h.py::t${String(i)}|run`) } },
       "src/none.py": { contexts: { "1": [""] } },
+      "src/spaced.py": { contexts: { "1": ["tests/test_a.py::t[a b]|run"] } },
     } });
     const built = coverageMapFromContexts(text, "2026-11-05T06:00:00.000Z", { sourceRoot: "service" });
     expect(built).toEqual({ builtAt: "2026-11-05T06:00:00.000Z", files: { "service/src/match.py": ["tests/test_a.py::t1", "tests/test_b.py::t2"] } });
