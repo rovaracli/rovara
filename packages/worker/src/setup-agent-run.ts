@@ -82,6 +82,9 @@ export interface SetupRunResult {
   setupRunSummary: SetupRunSummary;
 }
 
+/** How many polls of the broker in a row may fail before the run ends: with none answered, no stop and no answer can reach it. */
+export const SETUP_POLL_FAILURES_MAX = 5;
+
 /** F5: how long a run that a person stopped may take to finish and report what it had (killing the sandbox, the last look at the tracked files, reading the proposal). Past it the stop is reported with no proposal. */
 export const SETUP_STOP_FINISH_MS = 15_000;
 
@@ -256,9 +259,11 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     /** Set while the run waits for an administrator (hosts_waiting): no model call is made, nothing is streaming. */
     let parked = false;
     let talking = false;
+    let pollFailures = 0;
     const talk = async (): Promise<void> => {
       if (talking) return;
       talking = true;
+      // The journal and the website asks first. If they fail the run still looks at the broker below: a stop (a person's, the company's) must reach it.
       try {
         while (pendingEntries.length > 0) {
           const batch = pendingEntries.slice(0, 20);
@@ -276,6 +281,10 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
             }
           }
         }
+      } catch {
+        // The entries stay in the queue and go at the next tick.
+      }
+      try {
         const polled = await ports.callback({ kind: "poll" }) as { command?: { seq: number; command: string }; hosts?: Array<{ host: string; state: string }>; companyOff?: boolean };
         // L12: a company admin turned setup runs off: the run ends at once, runs nothing more and asks for nothing more, and reports what it had.
         if (polled.companyOff === true) { governor.stop("infrastructure"); return; }
@@ -288,8 +297,11 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
           }
         }
         if (polled.command !== undefined) { personSeq = polled.command.seq; void runner.run(polled.command); }
+        pollFailures = 0;
       } catch {
-        // A broker that cannot be reached for one tick is tried again at the next; the run goes on.
+        // A broker that cannot be reached for one tick is tried again at the next; the run goes on. After 5 polls in a row that failed, nothing can reach it (not a stop, not an answer): it ends.
+        pollFailures += 1;
+        if (pollFailures >= SETUP_POLL_FAILURES_MAX) governor.stop("infrastructure");
       } finally {
         talking = false;
       }

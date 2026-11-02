@@ -619,6 +619,43 @@ describe("L12: setup runs turned off for the company end a run that is going", (
     expect(result.setupRunSummary).toMatchObject({ stop: "infrastructure", partial: true });
     expect(result.setupProposal).toBeDefined();
   });
+  it("the run still looks at the broker when its journal callback fails: a stop reaches it", async () => {
+    let polls = 0;
+    const t = await world({
+      script: async ({ bash }) => {
+        await bash.exec("npm ci", "/work", { onData: () => undefined });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await bash.exec("npm test", "/work", { onData: () => undefined });
+      },
+    });
+    t.input.ports.callback = async (body) => {
+      const kind = (body as { kind: string }).kind;
+      if (kind === "journal") throw new Error("the journal is refused");
+      polls += 1;
+      return polls >= 2 ? { hosts: [], companyOff: true } : { hosts: [] };
+    };
+    const result = await runSetupAgent(t.input);
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci"]);
+    expect(result.setupRunSummary.stop).toBe("infrastructure");
+  });
+  it("ends after 5 polls in a row that failed (nothing can reach the run), and not after fewer, and a good poll in between starts the count again", async () => {
+    const outcome = async (failures: (n: number) => boolean) => {
+      let polls = 0;
+      const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); await new Promise((resolve) => setTimeout(resolve, 200)); await bash.exec("npm test", "/work", { onData: () => undefined }); } });
+      t.input.ports.callback = async (body) => {
+        if ((body as { kind: string }).kind !== "poll") return { ok: true };
+        polls += 1;
+        if (failures(polls)) throw new Error("the broker is unreachable");
+        return { hosts: [] };
+      };
+      const result = await runSetupAgent(t.input);
+      return { ran: t.w.ran.map((entry) => entry.command), stop: result.setupRunSummary.stop };
+    };
+    expect(await outcome(() => true)).toEqual({ ran: ["npm ci"], stop: "infrastructure" });
+    expect(await outcome((n) => n >= 1 && n <= 4)).toEqual({ ran: ["npm ci", "npm test"], stop: "proposed" });
+    expect(await outcome((n) => n % 3 !== 0)).toEqual({ ran: ["npm ci", "npm test"], stop: "proposed" });
+  });
   it("without it nothing changes", async () => {
     const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); await bash.exec("npm test", "/work", { onData: () => undefined }); } });
     const result = await runSetupAgent(t.input);

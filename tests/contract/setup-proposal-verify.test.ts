@@ -197,12 +197,15 @@ describe("verifying a proposal", () => {
     expect(detailed.final).toBe(true);
   });
 
-  it("does not try to read a commit the reader cannot fetch (a 64-character hash) and keeps that item unchecked and final", async () => {
+  it("reads a 64-character hash too, and leaves a commit in no hash form unchecked and final without reading it", async () => {
     const proposal = proposalOf({ setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", commit: "b".repeat(64), line: 3, quote: "\"ci\": \"npm ci\"" }] }] });
     const read = vi.fn<CitationFileReader>(async () => PACKAGE);
-    const detailed = await verifyProposalDetailed(read, proposal);
-    expect(read).not.toHaveBeenCalled();
-    expect(detailed).toEqual({ items: { "setup-web": "unchecked" }, final: true });
+    expect(await verifyProposalDetailed(read, proposal)).toEqual({ items: { "setup-web": "verified" }, final: true });
+    expect(read).toHaveBeenCalledTimes(1);
+    const odd = vi.fn<CitationFileReader>(async () => PACKAGE);
+    const wrongForm = { ...proposal, setup: proposal.setup.map((item) => ({ ...item, from: item.from.map((citation) => ({ ...citation, commit: "b".repeat(50) })) })) } as SetupProposal;
+    expect(await verifyProposalDetailed(odd, wrongForm)).toEqual({ items: { "setup-web": "unchecked" }, final: true });
+    expect(odd).not.toHaveBeenCalled();
   });
 
   it("stops reading when the deadline passes and leaves what it did not read unchecked and not final", async () => {

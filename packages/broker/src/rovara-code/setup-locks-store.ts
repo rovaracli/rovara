@@ -6,7 +6,7 @@
 //   - the audit event is built from the entry the decider made: who, when, the digests and whether it loosened; nothing else is stored.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import { agentXError, canonicalJson, setupLocksKey, type OrgId } from "@agentx/contracts";
+import { SETUP_AGENT_LIMITS_DEFAULT, agentXError, canonicalJson, setupLocksKey, type OrgId } from "@agentx/contracts";
 import { auditSetupLocksChange, auditOccurrence } from "../audit/events.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -40,27 +40,88 @@ export async function getCompanySetupLocks(deps: Pick<SetupLocksStoreDeps, "docu
   return (await dynamoSetupLocksStore({ ...deps, now: Date.now }).getLocks(orgId))?.locks;
 }
 
+const STRICT_LIMITS = { commands: SETUP_AGENT_LIMITS_DEFAULT.commands, sameStepTries: SETUP_AGENT_LIMITS_DEFAULT.sameStepTries, wallClockMinutes: SETUP_AGENT_LIMITS_DEFAULT.wallClockMin, spendUsd: SETUP_AGENT_LIMITS_DEFAULT.budgetCents / 100, hostAsks: SETUP_AGENT_LIMITS_DEFAULT.hostAsks } as const;
+
 /**
- * M3: the locks row as it is stored, read without judging it: its revision when that is a whole number, and whether the row reads as locks. A row that does not read must not break the setup page: the page says
- * "company locks unreadable, runs held", every start stays refused, and an admin repairs it (`repairUnreadableLocks`) against exactly the revision stored.
+ * L12: whether a run that is going must stop because the company turned setup runs off. Only a readable "off" or a row that is POSITIVELY damaged says yes. A read that fails for another reason (a throttle, a timeout) is
+ * tried once more, and if it still fails the answer is no: the run goes on to its next poll and asks again, so a blip never stops a run.
  */
-export async function inspectCompanyLocks(deps: Pick<SetupLocksStoreDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<{ present: boolean; readable: boolean; revision: number | null; digest: string }> {
+export async function companySetupOff(deps: Pick<SetupLocksStoreDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return (await getCompanySetupLocks(deps, orgId))?.setupAgentOff === true;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes(SETUP_LOCKS_UNREADABLE)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * M3: what a locks row that does not read is repaired to, and it NEVER loosens anything. The row's `locks` is read field by field: every lock that reads is kept as it was; a lock that is there but cannot be
+ * read gets its strictest value (the setup-run limit at its default, a dev container list that allows nothing, `setupAgentOff`, the other two locks at their strict values); `noSoleOwnerException` is always set (a damaged
+ * row cannot show that the exception was left on, and turning it on only makes loosening need a second admin); a key the schema does not know, and a waiting change, are dropped (stricter). `defaulted` names what was not
+ * read, for the audit. A `locks` value that is not an object at all leaves every enforced lock at its strictest.
+ */
+export function repairedLocksOf(item: Record<string, unknown>): { locks: CompanySetupLocks; defaulted: string[] } {
+  const raw = item["locks"];
+  const row: Record<string, unknown> = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const whole = row === raw;
+  const defaulted: string[] = [];
+  const out: Record<string, unknown> = {};
+  const single = (name: string, strictest: unknown, valid: (value: unknown) => boolean): void => {
+    const value = row[name];
+    if (whole && value === undefined) return;
+    if (whole && valid(value)) { out[name] = value; return; }
+    out[name] = strictest;
+    defaulted.push(name);
+  };
+  single("setupAgentOff", true, (value) => value === true);
+  single("hostsOnlyFromCompanyList", true, (value) => value === true);
+  single("nightlyHealthOn", true, (value) => value === true);
+  single("hostApprover", "admin", (value) => value === "admin");
+  // The images: a list that reads is kept; one that does not allows nothing.
+  single("devcontainerImages", [], (value) => CompanySetupLocksSchema.safeParse({ devcontainerImages: value }).success);
+  // The limits, one by one: a limit that reads is kept, one that does not goes to its default, and a `limits` that is not an object sets every limit to its default.
+  const limits: Record<string, unknown> = {};
+  const rawLimits = row["limits"];
+  const limitsRead = typeof rawLimits === "object" && rawLimits !== null && !Array.isArray(rawLimits);
+  if (!whole || rawLimits !== undefined) {
+    for (const key of Object.keys(STRICT_LIMITS) as Array<keyof typeof STRICT_LIMITS>) {
+      const value = limitsRead ? (rawLimits as Record<string, unknown>)[key] : undefined;
+      if (limitsRead && value === undefined) continue;
+      if (limitsRead && CompanySetupLocksSchema.safeParse({ limits: { [key]: value } }).success) limits[key] = value;
+      else { limits[key] = STRICT_LIMITS[key]; defaulted.push(`limits.${key}`); }
+    }
+    for (const key of limitsRead ? Object.keys(rawLimits) : []) if (!(key in STRICT_LIMITS)) defaulted.push(`limits.${key}`);
+  }
+  if (Object.keys(limits).length > 0) out["limits"] = limits;
+  if (out["noSoleOwnerException"] !== true) { out["noSoleOwnerException"] = true; if (row["noSoleOwnerException"] !== true) defaulted.push("noSoleOwnerException"); }
+  for (const key of Object.keys(row)) if (!["setupAgentOff", "hostsOnlyFromCompanyList", "nightlyHealthOn", "hostApprover", "devcontainerImages", "limits", "noSoleOwnerException"].includes(key)) defaulted.push(key);
+  return { locks: CompanySetupLocksSchema.parse(out), defaulted };
+}
+
+/**
+ * M3: the locks row as it is stored, read without judging it: its revision when that is a whole number, whether the row reads as locks, and what a repair would write (`repairedLocksOf`). A row that does not read must
+ * not break the setup page: the page says "company locks unreadable, runs held", every start stays refused, and an admin repairs it against exactly the revision stored.
+ */
+export async function inspectCompanyLocks(deps: Pick<SetupLocksStoreDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<{ present: boolean; readable: boolean; revision: number | null; digest: string; repaired?: { locks: CompanySetupLocks; defaulted: string[] } }> {
   const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: setupLocksKey(orgId), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
   if (item === undefined) return { present: false, readable: true, revision: null, digest: "" };
   let readable = true;
   try { storedFrom(orgId, item); } catch { readable = false; }
-  return { present: true, readable, revision: Number.isSafeInteger(item["revision"]) ? item["revision"] as number : null, digest: createHash("sha256").update(canonicalJson(item["locks"] ?? null), "utf8").digest("hex") };
+  return { present: true, readable, revision: Number.isSafeInteger(item["revision"]) ? item["revision"] as number : null, digest: createHash("sha256").update(canonicalJson(item["locks"] ?? null), "utf8").digest("hex"), ...(readable ? {} : { repaired: repairedLocksOf(item) }) };
 }
 
 /**
- * M3: replaces a locks row that does not read with strict default values (the setup-run limits at their defaults and nothing else; every other lock the row may have held is gone, which is the stricter reading of "damaged").
- * Conditional on the revision the admin saw stored (`expectedRevision`: null when the stored revision is not a number), audited like every lock write. The caller has checked the admin and the fresh sign-in.
+ * M3: replaces a locks row that does not read with its repaired locks (`repairedLocksOf`: nothing readable is dropped, nothing unreadable is left open). Conditional on the revision the admin saw stored
+ * (`expectedRevision`: null when the stored revision is not a number), audited like every lock write (never `loosened`; `defaulted` names what could not be read). The caller has checked the admin and the fresh sign-in.
  */
-export async function writeRepairedLocks(deps: SetupLocksStoreDeps, input: { orgId: OrgId; actor: string; expectedRevision: number | null; previousDigest: string; locks: CompanySetupLocks }): Promise<boolean> {
+export async function writeRepairedLocks(deps: SetupLocksStoreDeps, input: { orgId: OrgId; actor: string; expectedRevision: number | null; previousDigest: string; locks: CompanySetupLocks; defaulted: readonly string[] }): Promise<boolean> {
   const revision = (input.expectedRevision ?? 0) + 1;
   const at = new Date(deps.now()).toISOString();
   const nextDigest = createHash("sha256").update(canonicalJson(input.locks), "utf8").digest("hex");
-  const event = auditSetupLocksChange({ orgId: input.orgId, actor: { kind: "member", id: input.actor }, occurredAt: at, occurrence: auditOccurrence("locks", String(revision), "repair"), action: "setup.locks_changed", revision, previousDigest: input.previousDigest || "0".repeat(64), nextDigest, loosened: false });
+  const event = auditSetupLocksChange({ orgId: input.orgId, actor: { kind: "member", id: input.actor }, occurredAt: at, occurrence: auditOccurrence("locks", String(revision), "repair"), action: "setup.locks_changed", revision, previousDigest: input.previousDigest || "0".repeat(64), nextDigest, loosened: false, defaulted: input.defaulted.join(",").slice(0, 120) || "none" });
   const auditItems = auditPending(deps, event);
   if (auditItems.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Changing company locks needs the audit ledger.");
   const row: StoredLocks = { orgId: input.orgId, revision, locks: input.locks, updatedBy: input.actor, updatedAt: at };

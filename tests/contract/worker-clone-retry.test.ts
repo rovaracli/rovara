@@ -161,6 +161,20 @@ describe("P1: a setup run's preparation is held to the heads the broker pinned",
       await expect(prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []), pins }), JSON.stringify(pins)).rejects.toThrow(/not at the commit the control plane pinned/u);
     }
   });
+  it("a finished workspace is reused only when it holds each repository at its pin", async () => {
+    const f = await fixture();
+    const pin = await headOf(f.source);
+    const root = await f.workspace();
+    const options = { rootPath: root, project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []) };
+    await prepareWorkspace({ ...options, pins: [{ repository: "demo", commit: pin }] });
+    // Prepared again (the workspace is complete): the same pin is reused as it is, another pin, or none for a repository, is refused.
+    await expect(prepareWorkspace({ ...options, pins: [{ repository: "demo", commit: pin }] })).resolves.toMatchObject({ complete: true });
+    for (const pins of [[{ repository: "demo", commit: "b".repeat(40) }], [], [{ repository: "other", commit: pin }]]) {
+      await expect(prepareWorkspace({ ...options, pins }), JSON.stringify(pins)).rejects.toThrow(/another commit than the control plane pinned/u);
+    }
+    // And a preparation without pins reuses it as before.
+    await expect(prepareWorkspace(options)).resolves.toMatchObject({ complete: true });
+  });
   it("without pins (every other preparation) nothing changes", async () => {
     const f = await fixture();
     const manifest = await prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []) });

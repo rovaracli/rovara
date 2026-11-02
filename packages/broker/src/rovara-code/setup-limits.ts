@@ -329,9 +329,6 @@ export const CompanyLocksRepairBodySchema = z.object({
   expectedRevision: z.number().int().min(0).nullable(),
 }).strict();
 
-/** The strict default values a damaged row is replaced with: the setup-run limits at their defaults, and nothing else. */
-export const REPAIRED_LOCKS: CompanySetupLocks = { limits: runSettingToLockLimits(SETUP_AGENT_LIMITS_DEFAULT)! };
-
 const storeDepsOf = (deps: SetupLimitsDeps) => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now().getTime(), ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
 
 /**
@@ -345,6 +342,6 @@ export async function repairUnreadableLocks(deps: SetupLimitsDeps, caller: Devel
   await requireFreshAdmin(deps, recipeCaller(caller));
   const raw = await inspectCompanyLocks(storeDepsOf(deps), caller.orgId);
   if (!raw.present || raw.readable || raw.revision !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
-  if (!await writeRepairedLocks(storeDepsOf(deps), { orgId: caller.orgId, actor: caller.developerId, expectedRevision: raw.revision, previousDigest: raw.digest, locks: REPAIRED_LOCKS })) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
+  if (!await writeRepairedLocks(storeDepsOf(deps), { orgId: caller.orgId, actor: caller.developerId, expectedRevision: raw.revision, previousDigest: raw.digest, locks: raw.repaired!.locks, defaulted: raw.repaired!.defaulted })) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
   return new StatusReply(200, { status: "repaired", ...companyView(await readCompanyLocks(deps, caller.orgId), caller.developerId, deps.now().getTime()) });
 }

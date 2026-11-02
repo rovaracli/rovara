@@ -289,6 +289,13 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     if (manifest.meta === undefined) throw new Error("the workspace was prepared without the meta repository");
     if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
   }
+  // P1: a finished workspace is reused as it is only if it holds each repository at the commit the broker pinned for this preparation (not only by relying on the broker having asked for a new one).
+  if (options.pins !== undefined && manifest.complete) {
+    for (const repository of project.repositories) {
+      const held = manifest.repositories.find((entry) => entry.name === repository.name);
+      if (held === undefined || options.pins.find((pin) => pin.repository === repository.name)?.commit !== held.resolvedCommit) throw new Error(`the workspace holds ${repository.name} at another commit than the control plane pinned; try again`);
+    }
+  }
   if (manifest.complete) {
     await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
     return manifest;

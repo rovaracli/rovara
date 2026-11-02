@@ -6,11 +6,11 @@ import {
   AgentXError, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, effectiveSetupAgentLimits, orgMemberKey, orgMetaKey, setupLimitsKey, setupLocksKey, type OrgId, type ProjectRole,
 } from "@agentx/contracts";
 import { secondPersonMembershipCondition } from "../../packages/broker/src/org/second-person-approval.js";
-import { SETUP_LIMIT_MAXIMA, readCompanyLocks } from "../../packages/broker/src/org/setup-recipes.js";
+import { SETUP_LIMIT_MAXIMA, isLoosening, readCompanyLocks } from "../../packages/broker/src/org/setup-recipes.js";
 import {
-  LOCK_MAXIMA_AS_RUN, REPAIRED_LOCKS, approveCompanyLockSettings, getCompanyLocksView, getProjectLimits, limitSettingsOf, lockToRunSetting, repairUnreadableLocks, runSettingToLockLimits, setCompanyLockSettings, splitLoosening, setProjectLimits, type SetupLimitsDeps,
+  LOCK_MAXIMA_AS_RUN, approveCompanyLockSettings, getCompanyLocksView, getProjectLimits, limitSettingsOf, lockToRunSetting, repairUnreadableLocks, runSettingToLockLimits, setCompanyLockSettings, splitLoosening, setProjectLimits, type SetupLimitsDeps,
 } from "../../packages/broker/src/rovara-code/setup-limits.js";
-import { dynamoSetupLocksStore, getCompanySetupLocks, writeRepairedLocks } from "../../packages/broker/src/rovara-code/setup-locks-store.js";
+import { companySetupOff, dynamoSetupLocksStore, getCompanySetupLocks, repairedLocksOf, writeRepairedLocks } from "../../packages/broker/src/rovara-code/setup-locks-store.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes/types.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -395,6 +395,30 @@ describe("the company's limits (a lock)", () => {
     expect(await code(getCompanySetupLocks(h.deps, ORG))).toBe("CONFIG_INVALID");
   });
 
+  it("L12: a run is stopped by a readable 'off' or a row that is positively damaged, never by a read that merely fails (it is tried twice, then the run goes on)", async () => {
+    const h = harness();
+    expect(await companySetupOff(h.deps, ORG)).toBe(false);
+    await setCompanyLockSettings(h.deps, who(ADMIN), { requestId: A, expectedRevision: null, setupAgentOff: true });
+    expect(await companySetupOff(h.deps, ORG)).toBe(true);
+    // A throttle once: the second try answers.
+    let reads = 0;
+    const flaky = (failures: number) => ({ tableName: "state", documentClient: { send: (command: unknown) => { reads += 1; return reads <= failures ? Promise.reject(Object.assign(new Error("ThrottlingException"), { name: "ThrottlingException" })) : h.db.send(command as never); } } });
+    reads = 0;
+    expect(await companySetupOff(flaky(1), ORG)).toBe(true);
+    expect(reads).toBe(2);
+    // Throttled both times: the run is not stopped (it asks again at its next poll), and a healthy company is not stopped either.
+    reads = 0;
+    expect(await companySetupOff(flaky(5), ORG)).toBe(false);
+    expect(reads).toBe(2);
+    const other = harness();
+    reads = 0;
+    expect(await companySetupOff({ tableName: "state", documentClient: { send: () => Promise.reject(new Error("timeout")) } }, ORG)).toBe(false);
+    expect(await companySetupOff(other.deps, ORG)).toBe(false);
+    // A row that is positively damaged stops it.
+    other.db.set({ ...setupLocksKey(ORG), entityType: "SETUP_LOCKS", orgId: ORG, revision: 1, locks: "broken", updatedBy: ADMIN, updatedAt: NOW.toISOString() });
+    expect(await companySetupOff(other.deps, ORG)).toBe(true);
+  });
+
   it("the setup start reads setupAgentOff with the limits", async () => {
     const h = harness();
     expect((await limitSettingsOf(h.deps)(ORG, "web")).setupOff).toBeUndefined();
@@ -413,7 +437,7 @@ describe("the company's limits (a lock)", () => {
     expect(await code(setCompanyLockSettings(h.deps, who(ADMIN), { requestId: A, expectedRevision: 4, setupAgentOff: true }))).toBe("CONFIG_INVALID");
   });
 
-  it("M3: an admin with a fresh sign-in repairs it with strict default values, against the stored revision, audited", async () => {
+  it("M3: an admin with a fresh sign-in repairs it, keeping every lock that reads and tightening the one that does not, against the stored revision, audited", async () => {
     const h = harness();
     h.db.set({ ...setupLocksKey(ORG), entityType: "SETUP_LOCKS", orgId: ORG, revision: 4, locks: { limits: { commands: "many" }, hostApprover: "admin" }, updatedBy: ADMIN, updatedAt: NOW.toISOString() });
     const body = { requestId: A, expectedRevision: 4 };
@@ -425,21 +449,62 @@ describe("the company's limits (a lock)", () => {
     expect(await code(repairUnreadableLocks(h.deps, who(ADMIN), body))).toBe("REAUTH_REQUIRED");
     h.sessions.set("s-a", { developerId: ADMIN, authTime: FRESH });
     const repaired = await repairUnreadableLocks(h.deps, who(ADMIN), body);
-    expect(repaired.body).toMatchObject({ status: "repaired", revision: 5, limits: SETUP_AGENT_LIMITS_DEFAULT, setupAgentOff: false, devcontainerImages: null });
-    expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual(REPAIRED_LOCKS);
-    expect(events(h, "setup.locks_changed")).toMatchObject([{ actor: { id: ADMIN }, facts: { revision: 5, loosened: false } }]);
+    expect(repaired.body).toMatchObject({ status: "repaired", revision: 5, limits: { commands: SETUP_AGENT_LIMITS_DEFAULT.commands }, setupAgentOff: false, noSoleOwnerException: true });
+    expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual({ limits: { commands: 40 }, hostApprover: "admin", noSoleOwnerException: true });
+    expect(events(h, "setup.locks_changed")).toMatchObject([{ actor: { id: ADMIN }, facts: { revision: 5, loosened: false, defaulted: "limits.commands,noSoleOwnerException" } }]);
     expect((await limitSettingsOf(h.deps)(ORG, "web")).locksUnreadable).toBeUndefined();
     // A row that reads is not repaired, and a repeat is stale.
     expect(await code(repairUnreadableLocks(h.deps, who(ADMIN), { requestId: B, expectedRevision: 5 }))).toBe("CHANGE_STALE");
+  });
+
+  it("M3: a repair never loosens: a row whose locks read but whose updatedBy is damaged keeps setupAgentOff and gets noSoleOwnerException", async () => {
+    const h = harness();
+    h.db.set({ ...setupLocksKey(ORG), entityType: "SETUP_LOCKS", orgId: ORG, revision: 2, locks: { setupAgentOff: true, limits: { commands: 10, spendUsd: 1 }, devcontainerImages: ["mcr.microsoft.com/devcontainers/go:1.23"] }, updatedBy: { not: "a string" }, updatedAt: NOW.toISOString() });
+    expect((await getCompanyLocksView(h.deps, who(ADMIN))).body).toMatchObject({ unreadable: true });
+    const repaired = await repairUnreadableLocks(h.deps, who(ADMIN), { requestId: A, expectedRevision: 2 });
+    expect(repaired.body).toMatchObject({ status: "repaired", setupAgentOff: true, noSoleOwnerException: true, limits: { commands: 10, budgetCents: 100 } });
+    expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual({ setupAgentOff: true, limits: { commands: 10, spendUsd: 1 }, devcontainerImages: ["mcr.microsoft.com/devcontainers/go:1.23"], noSoleOwnerException: true });
+    expect(events(h, "setup.locks_changed")).toMatchObject([{ facts: { loosened: false, defaulted: "noSoleOwnerException" } }]);
+  });
+
+  it("M3: what cannot be read gets its strictest value; what reads is never dropped; nothing is looser than the row's own readable locks", () => {
+    const readable = { setupAgentOff: true as const, hostsOnlyFromCompanyList: true as const, hostApprover: "admin" as const, devcontainerImages: ["a/b:1"], limits: { commands: 7, hostAsks: 2 } };
+    // Each case: the damaged row, and the locks of it that DO read. The repair is never looser than those.
+    const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+      ["setupAgentOff damaged", { ...readable, setupAgentOff: "yes" }, { ...readable, setupAgentOff: undefined }],
+      ["images damaged", { ...readable, devcontainerImages: "x" }, { ...readable, devcontainerImages: undefined }],
+      ["a limit damaged", { ...readable, limits: { commands: 7, hostAsks: -1 } }, { ...readable, limits: { commands: 7 } }],
+      ["limits damaged", { ...readable, limits: "none" }, { ...readable, limits: undefined }],
+      ["an unknown key", { ...readable, speed: 3 }, readable],
+      ["hostApprover damaged", { ...readable, hostApprover: "maintainer" }, { ...readable, hostApprover: undefined }],
+    ];
+    for (const [name, locks, known] of cases) {
+      const { locks: repaired } = repairedLocksOf({ locks, revision: 1 });
+      expect(isLoosening(known as never, repaired), name).toBe(false);
+      expect(repaired.noSoleOwnerException, name).toBe(true);
+      for (const key of ["hostsOnlyFromCompanyList"] as const) expect(repaired[key], name).toBe(true);
+    }
+    expect(repairedLocksOf({ locks: { ...readable, setupAgentOff: "yes" } }).locks.setupAgentOff).toBe(true);
+    expect(repairedLocksOf({ locks: { ...readable, devcontainerImages: "x" } }).locks.devcontainerImages).toEqual([]);
+    expect(repairedLocksOf({ locks: { ...readable, limits: { commands: 7, hostAsks: -1 } } }).locks.limits).toEqual({ commands: 7, hostAsks: SETUP_AGENT_LIMITS_DEFAULT.hostAsks });
+    expect(repairedLocksOf({ locks: { ...readable, limits: "none" } }).locks.limits).toEqual({ commands: 40, sameStepTries: 3, wallClockMinutes: 45, spendUsd: 4, hostAsks: 5 });
+    // Nothing readable is dropped.
+    expect(repairedLocksOf({ locks: { ...readable, speed: 3 } })).toEqual({ locks: { ...readable, noSoleOwnerException: true }, defaulted: ["noSoleOwnerException", "speed"] });
+    // Locks that are not an object at all: every enforced lock at its strictest.
+    for (const locks of ["broken", null, [], 5, undefined]) {
+      expect(repairedLocksOf({ locks }).locks, JSON.stringify(locks)).toEqual({
+        setupAgentOff: true, hostsOnlyFromCompanyList: true, nightlyHealthOn: true, hostApprover: "admin", devcontainerImages: [], noSoleOwnerException: true, limits: { commands: 40, sameStepTries: 3, wallClockMinutes: 45, spendUsd: 4, hostAsks: 5 },
+      });
+    }
   });
 
   it("M3: the repair write itself is conditional on the stored revision: a row rewritten between the read and the write is not overwritten", async () => {
     const h = harness();
     h.db.set({ ...setupLocksKey(ORG), entityType: "SETUP_LOCKS", orgId: ORG, revision: 4, locks: "broken", updatedBy: ADMIN, updatedAt: NOW.toISOString() });
     const deps = { documentClient: h.db, tableName: "state", now: () => NOW.getTime(), audit: h.capture.audit };
-    expect(await writeRepairedLocks(deps, { orgId: ORG, actor: ADMIN, expectedRevision: 3, previousDigest: "", locks: REPAIRED_LOCKS })).toBe(false);
+    expect(await writeRepairedLocks(deps, { orgId: ORG, actor: ADMIN, expectedRevision: 3, previousDigest: "", locks: { noSoleOwnerException: true }, defaulted: [] })).toBe(false);
     expect(h.db.get(setupLocksKey(ORG).pk, "META")).toMatchObject({ revision: 4, locks: "broken" });
-    expect(await writeRepairedLocks(deps, { orgId: ORG, actor: ADMIN, expectedRevision: 4, previousDigest: "", locks: REPAIRED_LOCKS })).toBe(true);
+    expect(await writeRepairedLocks(deps, { orgId: ORG, actor: ADMIN, expectedRevision: 4, previousDigest: "", locks: { noSoleOwnerException: true }, defaulted: [] })).toBe(true);
   });
 
   it("M3: the repair is refused without the audit ledger and writes nothing", async () => {

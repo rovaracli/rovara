@@ -900,10 +900,12 @@ export function auditSetupLimitsChanged(input: AuditBuilderBase & { projectName:
 }
 
 /** `occurrence`: the company locks' new revision (a locks row is never deleted and recreated, so the revision never repeats). The three events of a locks change: applied, proposed (a loosening waiting for a second admin) and approved. */
-export function auditSetupLocksChange(input: AuditBuilderBase & { action: "setup.locks_changed" | "setup.locks_change_proposed" | "setup.locks_change_approved"; revision: number; previousDigest: string; nextDigest: string; loosened: boolean; approvalMode?: string | undefined; membershipVersion?: number | undefined }): AuditEventInput {
+export function auditSetupLocksChange(input: AuditBuilderBase & { action: "setup.locks_changed" | "setup.locks_change_proposed" | "setup.locks_change_approved"; revision: number; previousDigest: string; nextDigest: string; loosened: boolean; approvalMode?: string | undefined; membershipVersion?: number | undefined; defaulted?: string | undefined }): AuditEventInput {
   return build(input.action, input, { kind: "org", id: input.orgId }, {
     revision: input.revision, previousDigest: input.previousDigest, nextDigest: input.nextDigest, loosened: input.loosened,
     ...(input.action === "setup.locks_change_approved" ? { approvalMode: input.approvalMode, membershipVersion: input.membershipVersion } : {}),
+    // A repair of a damaged row: the locks that could not be read and were set to their strictest value.
+    ...(input.defaulted === undefined ? {} : { defaulted: input.defaulted }),
   });
 }
 

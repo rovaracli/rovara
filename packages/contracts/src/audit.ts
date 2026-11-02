@@ -539,7 +539,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "setup.host_asked": ["askId", "taskId", "journalN"],
   "setup.host_refused": ["askId", "refusal"],
   "setup.limits_changed": ["revision", "previousDigest", "nextDigest", "commands", "sameStepTries", "wallClockMin", "budgetCents", "hostAsks"],
-  "setup.locks_changed": ["revision", "previousDigest", "nextDigest", "loosened"],
+  "setup.locks_changed": ["revision", "previousDigest", "nextDigest", "loosened", "defaulted"],
   "setup.locks_change_proposed": ["revision", "previousDigest", "nextDigest", "loosened"],
   "setup.locks_change_approved": ["revision", "previousDigest", "nextDigest", "loosened", "approvalMode", "membershipVersion"],
   // `source` is `mapping` or `break_glass`; `refusal` one of the fixed refusal words (GROUP_MAPPING_REFUSALS, or `break_glass_not_fresh`); `rules` and `owners` are counts.
