@@ -323,18 +323,20 @@ describe("the named TEST proof-only installation gate", () => {
     // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
     // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
+    // 2026-11-02, NH-1 (nightly run): the named and foreign digests were retaken after ONE intended addition to the artifact bucket (checked by synthesizing with and without it: nothing else moved): the lifecycle
+    // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4eb11f80907e9a77d8b9a5a0d24f760e2100e0725035b689f086dbf13512c3d4",
-        withoutRoute: "dafcc5a1bebbbc6c17cf99d28adb3281bb78b507a59e7025b7838141c793aa11",
+        withRoute: "4075110017d2e85414210bab2fd387b9d82ccfac34b1252efbff98fa495f0ab5",
+        withoutRoute: "c33ed814b277cd044388f0d0855a81ced2b2fb564ab4d1b7f92b10dc1227b457",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7831380a195694131dfe7ae5aae6d01718d3c4798b04d432b0549a1f313e95a7",
-        withoutRoute: "b2575d646bf959c749d4d27992e584df48e7a4e52c94d4483685007c8d6c18eb",
+        withRoute: "52f06b4987e7ce49ab3608e1217bfcf6724688bf42d1717641dc7a544904f184",
+        withoutRoute: "bf382644ba169dbcee6b2c7a4cd52eee7439fea4b733417a34e75c5f7ad49513",
       },
       {
         label: "legacy",
