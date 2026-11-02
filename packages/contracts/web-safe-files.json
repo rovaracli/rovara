@@ -19,6 +19,7 @@
   "packages/contracts/src/canonical-json.ts",
   "packages/contracts/src/chain-session.ts",
   "packages/contracts/src/chains.ts",
+  "packages/contracts/src/company-domains-web.ts",
   "packages/contracts/src/confirmation.ts",
   "packages/contracts/src/connectors.ts",
   "packages/contracts/src/decision-card-tabs.ts",

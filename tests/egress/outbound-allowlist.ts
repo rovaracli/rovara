@@ -229,8 +229,34 @@ export function checkAgainstRules(found: readonly Occurrence[], rules: readonly 
 
 const TERMS_NOTE = "A host built from parts at run time (for example a tenant's own subdomain) shows only its fixed tail, and a host read from a setting is not in this list at all. This list is the floor of what the code can reach, not the whole of it; the install's flow logs (task N10c) are the proof.";
 
+/**
+ * Names the code resolves through DNS that are not written in it: a name a customer gives (a connector's address, a domain a company claims). Hosts written in the code are
+ * `HOST_RULES`; these are the places that LOOK UP a name, so a new lookup from anywhere else fails the test and is looked at.
+ */
+export interface DnsLookupRule {
+  /** What is looked up and why. */
+  why: string;
+  /** The only files that may import Node's DNS. */
+  files: readonly string[];
+}
+
+export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
+  {
+    why: "Company domain verification: the CNAME and TXT records of `_rovara-verify.<domain>` for a domain a company owner claims on the Company domains page, and the daily re-check of it. The broker's own resolver (on AWS, the VPC resolver); nothing else is asked, a record behind an alias is not followed, and each lookup is cancelled after 6 seconds.",
+    files: ["packages/broker/src/org/company-domains/resolver.ts"],
+  },
+  {
+    why: "Connector endpoints: the check that a company's MCP connector address resolves to public addresses only, before the broker saves it or calls it.",
+    files: ["packages/broker/src/connections/endpoint-check.ts"],
+  },
+  {
+    why: "The gateway's endpoint check: the same public-address test for the address a connector call goes to.",
+    files: ["packages/gateway/src/endpoint.ts"],
+  },
+];
+
 /** The text of docs/enterprise/outbound.md, from the rules. The test compares the file to this, so the document cannot drift from the list. */
-export function renderOutboundDoc(rules: readonly HostRule[]): string {
+export function renderOutboundDoc(rules: readonly HostRule[], lookups: readonly DnsLookupRule[] = DNS_LOOKUP_RULES): string {
   const lines: string[] = [
     "# Outbound hosts of the Rovara code",
     "",
@@ -252,5 +278,13 @@ export function renderOutboundDoc(rules: readonly HostRule[]): string {
     }
     lines.push("");
   }
+  lines.push(
+    "## Names looked up in DNS",
+    "",
+    "Enterprise: Not hosts written in the code but names a customer gives it. Each lookup goes to the install's own DNS resolver, only when a person uses the feature (or, for a claimed domain, once a day), and nothing is sent to Rovara. If the install's network blocks the lookup, the feature reports it as unavailable and changes nothing.",
+    "",
+  );
+  for (const lookup of lookups) lines.push(`- ${lookup.why} (only in ${lookup.files.map((file) => `\`${file}\``).join(", ")})`);
+  lines.push("");
   return `${lines.join("\n").trimEnd()}\n`;
 }

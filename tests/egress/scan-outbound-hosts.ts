@@ -71,3 +71,14 @@ export function scanOutboundHosts(repoRoot: string): FoundHost[] {
   }
   return found.sort((a, b) => (a.host === b.host ? (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1) : a.host < b.host ? -1 : 1));
 }
+
+const DNS_IMPORT = /\bfrom\s+["'](?:node:)?dns(?:\/promises)?["']|\brequire\(\s*["'](?:node:)?dns(?:\/promises)?["']\s*\)/;
+
+/** The source files (relative to the repository root) that import Node's DNS: the places that look a name up. */
+export function scanDnsLookupFiles(repoRoot: string): string[] {
+  const files: string[] = [];
+  for (const root of sourceRoots(repoRoot)) {
+    for (const path of walk(root)) if (DNS_IMPORT.test(withoutComments(readFileSync(path, "utf8")))) files.push(relative(repoRoot, path));
+  }
+  return files.sort();
+}

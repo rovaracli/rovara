@@ -195,6 +195,8 @@ describe("the event catalog", () => {
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
       // the company's master suggestions switch
       "rule.suggestions_set",
+      // company domain verification
+      "company_domain.added", "company_domain.verified", "company_domain.lost", "company_domain.removed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -247,6 +249,10 @@ describe("the event catalog", () => {
     "project.test_health_setting_changed": { target: { kind: "project", name: "web" }, keys: ["setting", "enabled"], sample: { setting: "propose_fix_task", enabled: true } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
+    "company_domain.added": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["tookOver"], sample: { tookOver: false } },
+    "company_domain.verified": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState"], sample: { wasState: "pending" } },
+    "company_domain.lost": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["missingDays"], sample: { missingDays: 3 } },
+    "company_domain.removed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState"], sample: { wasState: "verified" } },
   } as const;
 
   // I10: the learning events hold no text.

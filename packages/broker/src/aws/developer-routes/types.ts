@@ -52,6 +52,7 @@ import type { ModelAccess } from "../../model-proxy/access.js";
 import type { OrgStore } from "../../org/store.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
 import type { AuditRuntime } from "../../audit/outbox.js";
+import type { TxtResolver } from "../../org/company-domains/resolver.js";
 import type { ProjectAccessSubject } from "../../developer/task-person-identity.js";
 import type { ChatGptConnections } from "../../chatgpt/connections.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -200,6 +201,8 @@ export interface DeveloperRouteDependencies {
   auditLedger?: AuditExportClientDeps;
   /** The Audit Ledger's outbox: what a route's audited action adds its pending item through. Absent on a legacy install, where nothing is recorded. */
   audit?: AuditRuntime;
+  /** Company domain verification: how the verification record is looked up. Absent: the broker's own DNS (`nodeTxtResolver`). A test gives a fake; no route has a network call of its own. */
+  domainResolver?: TxtResolver;
   /**
    * Plan 2, Task 17: what `PUT /v1/app/projects/{name}/settings` needs from the broker: registering a revision, and (for an added repository)
    * GitHub's view of it. Without it the route answers NOT_FOUND.
