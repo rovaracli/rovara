@@ -5,7 +5,8 @@
 //   - every AWS call goes through the staging guard (`staging-aws.sh aws ...`, always the one in ~/.local/share/rovara-tools: no setting replaces it), which pins the account and the region; it never calls `aws` directly, never passes
 //     a profile or a region, and never calls secretsmanager get-secret-value (the host's token arrives in the environment, resolved by `asm-exec`; see the checklist);
 //   - it refuses to run without `--run` and ROVARA_STAGING_SMOKE=1, and refuses an http:// host;
-//   - before any phase it asks (through the guard) which account is signed in and where the named cluster is, and stops unless both are the staging account and the cluster is in us-west-2 (review M5);
+//   - before any phase it asks (through the guard) which account is signed in and where the named cluster is, and stops unless both are the staging account and the cluster is in us-west-2 (review M5),
+//     and unless the host address the token goes to is the MCP host name staging recorded in its synth settings (review N2; SMOKE_ENV names the staging environment);
 //   - it prints names, counts, codes and times only: never the token, a secret value, or an environment value.
 //
 // The server under test is the test-only package `@rovara-test/selfcheck-mcp` (tests/staging/selfcheck-mcp), published to the install's own registry mirror and approved by an admin
@@ -22,6 +23,8 @@ import { join } from "node:path";
 
 export interface SmokeConfig {
   hostUrl: string;
+  /** The staging install's environment name (`/agentx/<environment>/synth-settings` holds the MCP host name its install recorded). */
+  environment: string;
   hostToken: string;
   /** The approved server's id (`mcp...`). */
   serverId: string;
@@ -78,6 +81,13 @@ export async function checkStagingTarget(config: SmokeConfig, deps: SmokeDeps): 
     const arn = (await deps.aws(["ecs", "describe-clusters", "--clusters", config.cluster, "--query", "clusters[0].clusterArn", "--output", "text"])).trim();
     checks.push(arn === `arn:aws:ecs:${STAGING_REGION}:${STAGING_ACCOUNT}:cluster/${config.cluster}` ? ok("the cluster is staging's", `the cluster is in ${STAGING_REGION} in the staging account`) : bad("the cluster is staging's", "the named cluster is not a cluster of the staging account in its region"));
   } catch { checks.push(bad("the cluster is staging's", "the cluster could not be read")); }
+  // Review N2: the address the host token is sent to must be the MCP host name staging recorded for itself, so the token and the start phase cannot be pointed at another install.
+  try {
+    const value = (await deps.aws(["ssm", "get-parameter", "--name", `/agentx/${config.environment}/synth-settings`, "--query", "Parameter.Value", "--output", "text"])).trim();
+    const recorded = (JSON.parse(value) as { context?: { rovaraMcpHostName?: unknown } }).context?.rovaraMcpHostName;
+    const wanted = new URL(config.hostUrl).hostname.toLowerCase();
+    checks.push(typeof recorded === "string" && recorded !== "" && recorded.toLowerCase() === wanted ? ok("the host is staging's", "the host name is the one staging recorded") : bad("the host is staging's", "the host name is not the one staging recorded for its MCP host"));
+  } catch { checks.push(bad("the host is staging's", "the host name staging recorded could not be read")); }
   return checks;
 }
 
@@ -86,6 +96,7 @@ export function checkConfig(config: SmokeConfig): void {
   try { url = new URL(config.hostUrl); } catch { throw new Error("the host address is not a web address"); }
   if (url.protocol !== "https:") throw new Error("the host must be reached over https");
   if (!/^mcp[a-z0-9]{6,24}$/u.test(config.serverId)) throw new Error("the server id is not valid");
+  if (!/^[a-z][a-z0-9-]{1,30}$/u.test(config.environment)) throw new Error("the staging environment name is not valid");
   if (config.hostToken.length < 43) throw new Error("the host token is missing or too short (resolve it with asm-exec; see the checklist)");
   if (config.runnerSubnets.length === 0 || !config.runnerSubnets.every((subnet) => /^subnet-[0-9a-f]{8,17}$/u.test(subnet))) throw new Error("the runner subnets are not valid");
   if (!/^sg-[0-9a-f]{8,17}$/u.test(config.installSecurityGroup)) throw new Error("the install security group is not valid");
@@ -254,7 +265,7 @@ function configFromEnv(env: Record<string, string | undefined>): SmokeConfig {
   const need = (name: string): string => { const value = env[name]; if (value === undefined || value === "") throw new Error(`${name} is not set`); return value; };
   const target = (name: string): { host: string; port: number } => { const [host, port] = need(name).split(":"); return { host: host ?? "", port: Number(port) }; };
   return {
-    hostUrl: need("MCP_HOST_URL"), hostToken: need("MCP_HOST_TOKEN"), serverId: need("SMOKE_SERVER_ID"), cluster: need("SMOKE_CLUSTER"), controllerService: need("SMOKE_CONTROLLER_SERVICE"),
+    hostUrl: need("MCP_HOST_URL"), environment: need("SMOKE_ENV"), hostToken: need("MCP_HOST_TOKEN"), serverId: need("SMOKE_SERVER_ID"), cluster: need("SMOKE_CLUSTER"), controllerService: need("SMOKE_CONTROLLER_SERVICE"),
     runnerSubnets: need("SMOKE_RUNNER_SUBNETS").split(","), installSecurityGroup: need("SMOKE_INSTALL_SECURITY_GROUP"), declaredEnv: (env.SMOKE_DECLARED_ENV ?? "").split(",").filter(Boolean),
     approved: target("SMOKE_APPROVED"), vpcProbe: target("SMOKE_VPC_PROBE"), internetProbe: target("SMOKE_INTERNET_PROBE"),
   };

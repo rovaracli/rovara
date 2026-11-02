@@ -10,7 +10,7 @@ import { LIMITS, STAGING_ACCOUNT, STAGING_GUARD_PATH, checkConfig, checkStagingT
 const TOKEN = "T".repeat(48);
 const SERVER = "mcpself000001";
 const config: SmokeConfig = {
-  hostUrl: "https://mcp-host.staging.example.net", hostToken: TOKEN, serverId: SERVER, cluster: "rovara-mcp-test", controllerService: "McpHostServiceX", runnerSubnets: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
+  hostUrl: "https://mcp-host.staging.example.net", environment: "staging", hostToken: TOKEN, serverId: SERVER, cluster: "rovara-mcp-test", controllerService: "McpHostServiceX", runnerSubnets: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
   installSecurityGroup: "sg-0123456789abcdef0", declaredEnv: ["SELF_TOKEN"], approved: { host: "fixture.staging.internal", port: 443 }, vpcProbe: { host: "10.42.9.9", port: 443 }, internetProbe: { host: "1.1.1.1", port: 443 },
 };
 
@@ -31,6 +31,9 @@ interface World {
   stopAfterMs: number | undefined;
   planted: { lastStatus: string; stoppedReason?: string; runningAfterMs: number; stopsAfterMs: number | undefined; plantedAt?: number; restartedAt?: number };
   failAws: (args: string[]) => boolean;
+  /** The host name staging recorded for its MCP host (`rovaraMcpHostName` in the synth settings), or the whole parameter value when set. */
+  recordedHost: string;
+  settingsValue: string | undefined;
   /** What the signed-in account is, and what the cluster's ARN says. */
   account: string;
   clusterArn: string;
@@ -47,7 +50,7 @@ function healthy(): World {
     ],
     groupsOfEni: ["sg-0serve000000000001"], egress: [{ IpRanges: [{ CidrIp: "10.42.9.1/32" }] }],
     hostStatus: { warm: 202, release: 200, call: 200 }, stopAfterMs: undefined, planted: { lastStatus: "PENDING", runningAfterMs: 20_000, stopsAfterMs: 90_000 },
-    failAws: () => false, account: "944937319445", clusterArn: "arn:aws:ecs:us-west-2:944937319445:cluster/rovara-mcp-test",
+    failAws: () => false, recordedHost: "mcp-host.staging.example.net", settingsValue: undefined, account: "944937319445", clusterArn: "arn:aws:ecs:us-west-2:944937319445:cluster/rovara-mcp-test",
   };
 }
 
@@ -67,6 +70,7 @@ function deps(world: World): SmokeDeps {
       world.calls.push(args);
       if (world.failAws(args)) throw new Error("aws exited 254");
       const [service, command] = args;
+      if (service === "ssm" && command === "get-parameter") return `${world.settingsValue ?? JSON.stringify({ context: { rovaraMcpHostName: world.recordedHost, rovaraStdioMcpServers: "true" } })}\n`;
       if (service === "sts" && command === "get-caller-identity") return `${world.account}\n`;
       if (service === "ecs" && command === "describe-clusters") return `${world.clusterArn}\n`;
       if (service === "ecs" && command === "list-tasks") {
@@ -232,7 +236,7 @@ describe("T12 smoke: safety", () => {
     const w = healthy();
     w.selfcheck = { ...(w.selfcheck as object), environment: ["SELF_TOKEN", "PATH"], leaked: "value-of-self-token-9f" };
     const out: string[] = [];
-    const code = await main(["--run", "start"], { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_DECLARED_ENV: "SELF_TOKEN", SMOKE_APPROVED: "fixture.staging.internal:443", SMOKE_VPC_PROBE: "10.42.9.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" }, { ...deps(w), log: (line) => { out.push(line); } });
+    const code = await main(["--run", "start"], { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_ENV: "staging", SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_DECLARED_ENV: "SELF_TOKEN", SMOKE_APPROVED: "fixture.staging.internal:443", SMOKE_VPC_PROBE: "10.42.9.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" }, { ...deps(w), log: (line) => { out.push(line); } });
     expect(code).toBe(0);
     const text = out.join("\n");
     expect(text).not.toContain(TOKEN);
@@ -250,7 +254,7 @@ describe("T12 smoke: safety", () => {
   it("exits 1 when a check fails", async () => {
     const w = healthy();
     w.selfcheck = { ...(w.selfcheck as object), internet: "connected" };
-    const env = { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_APPROVED: "a.b:443", SMOKE_VPC_PROBE: "10.0.0.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" };
+    const env = { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_ENV: "staging", SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_APPROVED: "a.b:443", SMOKE_VPC_PROBE: "10.0.0.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" };
     expect(await main(["--run", "start"], env, deps(w))).toBe(1);
   });
   it("sends every AWS call through the staging guard as `aws ...`, with no profile, region or direct aws", async () => {
@@ -268,12 +272,12 @@ describe("T12 smoke: safety", () => {
     expect(source).not.toMatch(/spawn\("aws"|AWS_PROFILE|--profile|--region|get-secret-value|batch-get-secret-value/u);
     expect(source).toContain("staging-aws.sh");
   });
-  const smokeEnv = { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_DECLARED_ENV: "SELF_TOKEN", SMOKE_APPROVED: "fixture.staging.internal:443", SMOKE_VPC_PROBE: "10.42.9.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" };
+  const smokeEnv = { ROVARA_STAGING_SMOKE: "1", MCP_HOST_URL: config.hostUrl, MCP_HOST_TOKEN: TOKEN, SMOKE_SERVER_ID: SERVER, SMOKE_ENV: "staging", SMOKE_CLUSTER: config.cluster, SMOKE_CONTROLLER_SERVICE: config.controllerService, SMOKE_RUNNER_SUBNETS: config.runnerSubnets.join(","), SMOKE_INSTALL_SECURITY_GROUP: config.installSecurityGroup, SMOKE_DECLARED_ENV: "SELF_TOKEN", SMOKE_APPROVED: "fixture.staging.internal:443", SMOKE_VPC_PROBE: "10.42.9.9:443", SMOKE_INTERNET_PROBE: "1.1.1.1:443" };
   it("review M5: its first step asks which account is signed in and where the cluster is, and passes only for the staging account and a cluster in staging's region", async () => {
     const w = healthy();
     const ok = await checkStagingTarget(config, deps(w));
     expect(ok.every((check) => check.ok)).toBe(true);
-    expect(w.calls.map((call) => call.slice(0, 2).join(" "))).toEqual(["sts get-caller-identity", "ecs describe-clusters"]);
+    expect(w.calls.map((call) => call.slice(0, 2).join(" "))).toEqual(["sts get-caller-identity", "ecs describe-clusters", "ssm get-parameter"]);
     expect(STAGING_ACCOUNT).toBe("944937319445");
   });
   it("review M5: refuses to run any phase, with no host call and no other AWS call, when the account is not staging or the cluster is in another account or region", async () => {
@@ -293,7 +297,7 @@ describe("T12 smoke: safety", () => {
       const out: string[] = [];
       expect(await main(["--run", "start"], smokeEnv, { ...deps(w), log: (line) => { out.push(line); } }), label).toBe(1);
       expect(w.fetches, label).toEqual([]);
-      expect(w.calls.every((call) => (call[0] === "sts" && call[1] === "get-caller-identity") || (call[0] === "ecs" && call[1] === "describe-clusters")), label).toBe(true);
+      expect(w.calls.every((call) => (call[0] === "sts" && call[1] === "get-caller-identity") || (call[0] === "ecs" && call[1] === "describe-clusters") || (call[0] === "ssm" && call[1] === "get-parameter")), label).toBe(true);
       expect(out.join("\n"), label).toContain("FAIL");
       expect(out.join("\n"), label).not.toContain(TOKEN);
     }
@@ -302,6 +306,43 @@ describe("T12 smoke: safety", () => {
       w.failAws = (args) => args.includes(failing) || args[0] === failing;
       expect(await main(["--run", "start"], smokeEnv, deps(w)), failing).toBe(1);
       expect(w.fetches, failing).toEqual([]);
+    }
+  });
+  it("review N2: the host the token is sent to must be the MCP host staging recorded for itself; any other address is refused before any phase, and the token is never sent", async () => {
+    const wrongHosts = ["https://mcp-host.prod.example.net", "https://evil.example.net", "https://mcp-host.staging.example.net.evil.example", "https://sub.mcp-host.staging.example.net"];
+    for (const hostUrl of wrongHosts) {
+      const w = healthy();
+      const out: string[] = [];
+      expect(await main(["--run", "start"], { ...smokeEnv, MCP_HOST_URL: hostUrl }, { ...deps(w), log: (line) => { out.push(line); } }), hostUrl).toBe(1);
+      expect(w.fetches, hostUrl).toEqual([]);
+      expect(out.join("\n"), hostUrl).toContain("host");
+      expect(out.join("\n")).not.toContain(TOKEN);
+    }
+    // the recorded name is read from the install's own settings through the guard, with the environment the operator names
+    const w = healthy();
+    expect(await main(["--run", "start"], smokeEnv, deps(w))).toBe(0);
+    expect(w.calls.find((call) => call[0] === "ssm")).toEqual(["ssm", "get-parameter", "--name", "/agentx/staging/synth-settings", "--query", "Parameter.Value", "--output", "text"]);
+  });
+  it("review N2: refuses when staging recorded no host, the settings cannot be read or do not parse, or the environment name is not a plain name", async () => {
+    for (const [label, change] of [
+      ["no host recorded", (w: World) => { w.settingsValue = JSON.stringify({ context: {} }); }],
+      ["not JSON", (w: World) => { w.settingsValue = "nonsense"; }],
+      ["a host that is not a string", (w: World) => { w.settingsValue = JSON.stringify({ context: { rovaraMcpHostName: 5 } }); }],
+      ["the read fails", (w: World) => { w.failAws = (args) => args[0] === "ssm"; }],
+      ["the same host in another case is fine but a prefix is not", (w: World) => { w.recordedHost = "mcp-host.staging.example.ne"; }],
+    ] as const) {
+      const w = healthy();
+      change(w);
+      expect(await main(["--run", "start"], smokeEnv, deps(w)), label).toBe(1);
+      expect(w.fetches, label).toEqual([]);
+    }
+    const upper = healthy();
+    upper.recordedHost = "MCP-Host.Staging.Example.Net";
+    expect(await main(["--run", "start"], smokeEnv, deps(upper))).toBe(0);
+    for (const environment of ["", "../x", "a b", "Staging", "x".repeat(40)]) {
+      const w = healthy();
+      await expect(main(["--run", "start"], { ...smokeEnv, SMOKE_ENV: environment }, deps(w)), environment).rejects.toThrow();
+      expect(w.calls).toEqual([]);
     }
   });
   it("review M5: a real run always uses the staging guard in the owner's tools folder: no environment variable replaces it", async () => {
