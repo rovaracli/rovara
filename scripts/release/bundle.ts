@@ -19,6 +19,7 @@ import {
   type SynthKitManifest,
   ImageDigest,
   ReleaseManifestSchema,
+  type ReleaseManifest,
   parseBundlePublicKey,
   sha256OfBytes,
   verifyBundleSignature,
@@ -59,6 +60,11 @@ export interface BuildBundleInput {
   synthKitDir?: string;
   /** Release notes written into the bundle as notes/RELEASE-NOTES.md and hashed with everything else. */
   notes?: string;
+  /**
+   * SK-4: runs on the kit AS COPIED into the output folder, before anything is signed: the checkout is the release's commit and clean, and the kit's self-checks run again in the sandbox. Defaults to
+   * `verifyKitForSigning` (release:bundle never passes one); a test double replaces it, as `exportImage` and `signer` are. A failure removes the output folder.
+   */
+  kitCheck?: (kit: { kitRoot: string; releaseDir: string; release: ReleaseManifest }) => Promise<void>;
 }
 
 async function sha256OfFile(path: string): Promise<{ sha256: string; bytes: number }> {
@@ -94,7 +100,10 @@ async function copyReleaseFile(releaseDir: string, out: string, file: string, ex
   return measured;
 }
 
-/** The kit's files, relative and "/"-separated: regular files only (a link is refused), kit.json present and valid, the entry it names present. */
+/**
+ * The kit's files, relative and "/"-separated: regular files only (a link is refused), kit.json present and valid, and exactly the files kit.json lists by hash (SK-4): the entry, the code map and
+ * the code packages. A file kit.json does not list, or a listed file that is missing, refuses the kit. The hashes are checked again against the copied bytes (`verifyKitCopy`).
+ */
 async function listKitFiles(root: string): Promise<{ files: string[]; kit: SynthKitManifest }> {
   const found: string[] = [];
   const walk = async (relative: string, depth: number): Promise<void> => {
@@ -111,7 +120,25 @@ async function listKitFiles(root: string): Promise<{ files: string[]; kit: Synth
   if (!found.includes("kit.json")) throw new Error("the synthesis kit has no kit.json");
   const kit = SynthKitManifestSchema.parse(JSON.parse(await readFile(join(root, "kit.json"), "utf8")));
   if (!found.includes(kit.entry.replace(/^synth-kit\//, ""))) throw new Error("the synthesis kit's entry is not in the kit");
+  const listed = Object.keys(kit.files).sort();
+  const others = found.filter((file) => file !== "kit.json").sort();
+  const extra = others.filter((file) => !listed.includes(file));
+  if (extra.length > 0) throw new Error(`the synthesis kit holds a file kit.json does not list (${extra[0] ?? ""}); only the files release:kit wrote are signed`);
+  const missing = listed.filter((file) => !others.includes(file));
+  if (missing.length > 0) throw new Error(`the synthesis kit is missing a file kit.json lists (${missing[0] ?? ""})`);
   return { files: found.sort(), kit };
+}
+
+/** The bytes just copied into the bundle are the bytes kit.json names (the kit was not changed after release:kit wrote it, nor while it was being copied). */
+function verifyKitCopy(kit: SynthKitManifest, file: string, copied: { sha256: string }): void {
+  if (file === "kit.json") return;
+  if (kit.files[file] !== copied.sha256) throw new Error(`the synthesis kit file ${file} is not what kit.json lists (it was changed after release:kit made it); make the kit again from this release`);
+}
+
+/** The signing step's own check of a kit: a clean checkout of the release's commit, and the kit's self-checks again in the sandbox. Loaded here, not at the top: it brings in the whole release build. */
+async function defaultKitCheck(kit: { kitRoot: string; releaseDir: string; release: ReleaseManifest }): Promise<void> {
+  const { verifyKitForSigning } = await import("./synth-kit.js");
+  await verifyKitForSigning({ kitRoot: kit.kitRoot, releaseDir: kit.releaseDir, release: kit.release });
 }
 
 /** Builds the bundle; on any failure the output directory it claimed is removed, so a half-written bundle is never left to be mistaken for one. */
@@ -174,8 +201,12 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
       const target = join(out, "synth-kit", ...file.split("/"));
       await mkdir(dirname(target), { recursive: true });
       await copyFile(join(resolve(input.synthKitDir), ...file.split("/")), target);
-      files.push({ file: `synth-kit/${file}`, kind: "synth-kit", ...(await sha256OfFile(target)) });
+      const copied = await sha256OfFile(target);
+      verifyKitCopy(kit, file, copied);
+      files.push({ file: `synth-kit/${file}`, kind: "synth-kit", ...copied });
     }
+    // SK-4: the self-checks run again on the copy that is about to be signed (not on the folder it came from, which could change while this runs).
+    await (input.kitCheck ?? defaultKitCheck)({ kitRoot: join(out, "synth-kit"), releaseDir, release });
   }
 
   if (input.notes !== undefined) {

@@ -150,6 +150,8 @@ export function synthContext(settings: SynthSettings): Record<string, string> {
 // ---- the kit -------------------------------------------------------------------------------------------------------------------
 
 export const SYNTH_KIT_MANIFEST_FILE = "synth-kit/kit.json";
+/** The only paths a synthesis kit holds besides kit.json: the entry module, the code map, and a code package named by its 64-hex asset id. */
+export const KIT_FILE_PATH = /^(?:[A-Za-z0-9_-]{1,64}\.mjs|code-map\.json|code\/[a-f0-9]{64}\.zip)$/;
 /**
  * synth-kit/kit.json: the release's own pinned CDK app. `entry` is a Node ES module in the kit, run as `node <entry> <context.json> <out dir>`; it reads the context file (the
  * whole of its input), builds the app with it and writes the output tree described by `SynthOutputSchema`. It carries everything it needs: it is run inside an operating system
@@ -166,10 +168,16 @@ export const SynthKitManifestSchema = z
     /** SHA-256 of the release.json this kit was made from, and that release's git commit: the kit is bound to ONE release (a bundle of another release refuses it, and so does approval). */
     releaseSha256: Sha256,
     gitCommit: z.string().regex(/^[a-f0-9]{40}$/),
+    /**
+     * SK-4: the SHA-256 of every other file in the kit, by path inside the kit (the entry, the code map, the code packages). The release step writes it once the kit is finished and the signing step
+     * refuses a kit whose files are not exactly these, so a kit edited after its self-checks ran (or one written by hand) is not signed. Nothing else may be in the kit.
+     */
+    files: z.record(z.string().regex(KIT_FILE_PATH), Sha256),
   })
   .strict()
   .superRefine((kit, context) => {
     if (!kit.entry.startsWith("synth-kit/") || !kit.entry.endsWith(".mjs")) context.addIssue({ code: "custom", message: "the kit's entry is a .mjs file under synth-kit/", path: ["entry"] });
+    else if (kit.files[kit.entry.slice("synth-kit/".length)] === undefined) context.addIssue({ code: "custom", message: "the kit's entry has no hash in files", path: ["files"] });
   });
 export type SynthKitManifest = z.infer<typeof SynthKitManifestSchema>;
 
