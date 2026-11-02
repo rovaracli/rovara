@@ -17,7 +17,8 @@ import { brokerDecideKinds, lambdaInspectInvoker } from "../developer/decide-ins
 import type { DecideKinds } from "../developer/decide-kinds.js";
 import { auditRuntimeFromEnvironment } from "../audit/runtime.js";
 import type { AuditRuntime } from "../audit/outbox.js";
-import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
+import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, samlSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
+import { samlServiceProviderAddresses } from "../developer/saml.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { DeveloperSignInStore, methodSince } from "../developer/store.js";
@@ -275,6 +276,10 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const editionPolicy = installEditionPolicy(env, config.cloud !== undefined);
   editionGuard = createEditionGuard({ stamp: editionPolicy?.edition, recordName: editionRecordName(config.env), backupName: editionBackupName(config.env), read: ssmEditionRecordReader(new SSMClient(region)), log });
   const ssoStores = ssoStoresFor({ documentClient, tableName: stateTableName, policy: editionPolicy });
+  // Enterprise foundations I4: SAML sign-in exists only where the edition has company sign-in; it stays off until an administrator saves and enables the identity provider's settings.
+  const saml = ssoStores === undefined ? undefined : samlSignInProvider({
+    sp: samlServiceProviderAddresses(config.issuer), orgId: singleOrg, load: (orgId) => ssoStores.saml.config.get(orgId), replay: ssoStores.saml.replay, stash: ssoStores.saml.stash, now,
+  });
   // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
   // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.
   const noticeFrom = env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
@@ -299,6 +304,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     ...(editionPolicy === undefined ? {} : { editionPolicy }),
     // Enterprise foundations I1: the group mapping and the break-glass list, built once for this process; and the ledger a break-glass sign-in is recorded in.
     ...(ssoStores === undefined ? {} : { sso: ssoStores }),
+    ...(saml === undefined ? {} : { saml }),
     ...(audit === undefined ? {} : { audit }),
     ...(decide === undefined ? {} : { decide }),
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
@@ -331,6 +337,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
       ...(oidc === undefined ? {} : { oidc }),
       ...(cloud === undefined ? {} : { cloud }),
       ...(github === undefined ? {} : { github }),
+      ...(saml === undefined ? {} : { saml }),
     },
     directory: slackDirectory({
       teamId: config.slack.teamId, botToken: async () => (await slackSecret()).botToken, fetch, now,

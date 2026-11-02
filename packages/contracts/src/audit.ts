@@ -253,6 +253,7 @@ export const AUDIT_ACTIONS = [
   "sso.break_glass_used",
   "sso.group_mapping_changed",
   "sso.break_glass_changed",
+  "sso.saml_changed",
   // v1.2 learning loop: suggested rules and their decisions. Ids, counts, flags and fixed words only; never a correction's or a rule's text.
   "rule.suggested",
   "rule.accepted",
@@ -484,6 +485,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "sso.break_glass_used": ["role", "sessionSeconds"],
   "sso.group_mapping_changed": ["fromVersion", "toVersion", "rules"],
   "sso.break_glass_changed": ["owners"],
+  // SAML sign-in settings (I4): the saved version, whether the identity provider's entity id, sign-in address or certificate changed; never their values.
+  "sso.saml_changed": ["fromVersion", "toVersion", "changed"],
   // v1.2 learning loop. `stage` is a stage id, `sourceKinds` a comma-joined list of fixed words (`comment`, `send_back`, `pr_comment`), `outcome` is `published` or `awaiting_approval`,
   // `approvalOutcome` is `declined`, `expired` or `failed`, `dismissKind` is a fixed word, `standing` is `member` or `outsider` and `op` is `remember` or `forget`.
   "rule.suggested": ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"],

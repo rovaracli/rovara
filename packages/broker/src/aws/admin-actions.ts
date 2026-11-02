@@ -45,7 +45,7 @@ async function signInItem(deps: AdminActionDependencies, key: { pk: string; sk: 
 }
 
 function profileFrom(item: Record<string, unknown> | undefined): ResolvedDeveloper["profile"] {
-  if (item === undefined || typeof item.displayName !== "string" || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud" && item.provider !== "github")) return undefined;
+  if (item === undefined || typeof item.displayName !== "string" || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud" && item.provider !== "github" && item.provider !== "saml")) return undefined;
   return {
     displayName: item.displayName, provider: item.provider,
     ...(typeof item.slackUserId === "string" ? { slackUserId: item.slackUserId } : {}),

@@ -792,6 +792,15 @@ export function auditSsoBreakGlassChanged(input: AuditBuilderBase & { toVersion:
   return build("sso.break_glass_changed", { ...input, details: [...(input.details ?? []), ...(input.ownerIds.length === 0 ? [] : [{ subject: "org", fields: { ownerIds: input.ownerIds.join(",").slice(0, 480) } }])] }, { kind: "org", id: input.orgId }, { owners: input.owners });
 }
 
+/**
+ * `occurrence`: `auditOccurrence(String(toVersion))`. SAML sign-in settings (I4). `changed` lists which settings changed, as fixed words (`entity_id`, `sign_in_address`, `certificate`, `enabled`);
+ * the settings' values are never recorded. The certificate is public, but a fingerprint of it is a fact an auditor can compare with the identity provider's own (details).
+ */
+export function auditSsoSamlChanged(input: AuditBuilderBase & { fromVersion: number; toVersion: number; changed: readonly string[]; certificateSha256?: string }): AuditEventInput {
+  return build("sso.saml_changed", { ...input, details: [...(input.details ?? []), ...(input.certificateSha256 === undefined ? [] : [{ subject: "org", fields: { certificateSha256: input.certificateSha256 } }])] },
+    { kind: "org", id: input.orgId }, { fromVersion: input.fromVersion, toVersion: input.toVersion, changed: input.changed.join(",") || "none" });
+}
+
 /** Exact original/proposed policy facts; estimate/inherit has no invented amount. */
 export function auditTaskStopPolicyChange(input: AuditBuilderBase & {
  action: "spending.policy_changed" | "spending.policy_change_requested" | "spending.policy_change_decided";

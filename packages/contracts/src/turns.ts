@@ -188,7 +188,7 @@ export const AiToolTurnRecordSchema = z.object({
   phase: z.enum(["accepted", "completed", "refused"]),
   developer: z.object({
     developerId: Hex64,
-    provider: z.enum(["slack", "oidc", "cloud", "github"]),
+    provider: z.enum(["slack", "oidc", "cloud", "github", "saml"]),
     displayName: z.string().min(1).max(200),
     slackUserId: SlackUserIdSchema.optional(),
   }).strict(),

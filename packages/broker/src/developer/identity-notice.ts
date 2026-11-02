@@ -12,7 +12,7 @@ export const NOTICE_SEND_TIMEOUT_MS = 2500;
 /** A login (only GitHub has one): letters, digits and hyphens, at most 39 characters. Anything else is left out of the email rather than quoted in it. */
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 
-const PROVIDER_LABEL: Record<DeveloperSignInMethod, string> = { github: "GitHub", cloud: "Email code", slack: "Slack", oidc: "Company sign-in" };
+const PROVIDER_LABEL: Record<DeveloperSignInMethod, string> = { github: "GitHub", cloud: "Email code", slack: "Slack", oidc: "Company sign-in", saml: "Company SAML sign-in" };
 
 export interface IdentityNoticeDependencies {
   /** Without it, or without `from`, nothing is sent. */

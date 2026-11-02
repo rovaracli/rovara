@@ -23,7 +23,7 @@ export interface TaskPersonIdentity {
   developerId: string;
   slackUserId: string;
   name: string;
-  method: "slack" | "oidc";
+  method: "slack" | "oidc" | "saml";
   issuer: string;
   subject: string;
 }
@@ -91,13 +91,13 @@ async function currentTask(deps: TaskPersonIdentityDependencies, taskId: string)
   if (!UUID.test(taskId)) return refuse();
   const item = await getItem(deps, taskPk(taskId), "META");
   if (item?.pk !== taskPk(taskId) || item.sk !== "META" || item.entityType !== "DEVELOPER_TASK" || item.taskId !== taskId
-    || typeof item.project !== "string" || !HEX64.test(String(item.developerId)) || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud" && item.provider !== "github")) return refuse();
+    || typeof item.project !== "string" || !HEX64.test(String(item.developerId)) || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud" && item.provider !== "github" && item.provider !== "saml")) return refuse();
   return item as unknown as DeveloperTaskRecord;
 }
 
 function parsedIdentity(item: Record<string, unknown>): TaskPersonIdentity | undefined {
   if (!HEX64.test(String(item.developerId)) || !SlackUserIdSchema.safeParse(item.slackUserId).success || typeof item.name !== "string"
-    || !wellFormedName(item.name, String(item.slackUserId)) || (item.method !== "slack" && item.method !== "oidc")
+    || !wellFormedName(item.name, String(item.slackUserId)) || (item.method !== "slack" && item.method !== "oidc" && item.method !== "saml")
     || typeof item.issuer !== "string" || item.issuer.length === 0 || item.issuer.length > 2048
     || typeof item.subject !== "string" || item.subject.length === 0 || item.subject.length > 512) return undefined;
   return {
@@ -313,7 +313,7 @@ async function storedIdentityStatus(deps: TaskPersonIdentityDependencies, identi
   } catch {
     return unavailable();
   }
-  if (record === undefined || typeof record.revoked !== "boolean" || record.provider !== "oidc" || record.developerId !== identity.developerId
+  if (record === undefined || typeof record.revoked !== "boolean" || (record.provider !== "oidc" && record.provider !== "saml") || record.developerId !== identity.developerId
     || record.issuer !== identity.issuer || record.subject !== identity.subject || record.slackUserId !== identity.slackUserId
     || ownerKeyForSubject(record.issuer, record.subject) !== record.developerId) return refuse();
   // A merged-away identity (its sign-in now belongs to the survivor) is no longer this task person, as a revoked one is not.
@@ -361,12 +361,12 @@ export async function checkTaskPersonIdentity(
       } catch {
         return unavailable();
       }
-      if (record === undefined || record.provider !== "oidc" || record.developerId !== developerId || typeof record.issuer !== "string"
+      if (record === undefined || (record.provider !== "oidc" && record.provider !== "saml") || record.developerId !== developerId || typeof record.issuer !== "string"
         || typeof record.subject !== "string" || !SlackUserIdSchema.safeParse(record.slackUserId).success
         || ownerKeyForSubject(record.issuer, record.subject) !== developerId) return refuse();
       identity = {
         developerId, slackUserId: record.slackUserId!, name: safeName(record.displayName, record.slackUserId!),
-        method: "oidc", issuer: record.issuer, subject: record.subject,
+        method: record.provider, issuer: record.issuer, subject: record.subject,
       };
     }
   }

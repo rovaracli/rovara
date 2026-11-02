@@ -144,3 +144,62 @@ export type SignInDecision =
     auditEvent: "sso.break_glass_used"; alert: true; sessionMaxSeconds: number; freshAuthWithinSeconds: number;
   }
   | { allow: false; reason: GroupMappingRefusal; message: string };
+
+// ---- SAML 2.0 sign-in (Enterprise foundations I4)
+//
+// A second way to sign in with the company's own identity provider, beside OpenID Connect. The admin saves the provider's metadata (its entity id, its sign-in address and the
+// certificate it signs with). The certificate is public, not a secret. The same group mapping, ban checks, invites and audit apply as for the OpenID Connect sign-in; only the
+// group attribute's name has the same limits as a group claim's. Enterprise edition only (the `sso` feature). Nothing is on until an admin saves a configuration with `enabled: true`.
+
+/** The most bytes of a SAML response the sign-in will read (the decoded XML). A response is a few KB; anything this large is refused before it is parsed. */
+export const SAML_RESPONSE_MAX_BYTES = 200_000;
+/** The clock difference tolerated between the identity provider and Rovara, in seconds. */
+export const SAML_CLOCK_SKEW_SECONDS = 60;
+export const SAML_IDP_ENTITY_ID_MAX_CHARS = 512;
+export const SAML_CERTIFICATE_MAX_CHARS = 8192;
+const PEM_CERTIFICATE = /^-----BEGIN CERTIFICATE-----\r?\n(?:[A-Za-z0-9+/=]{1,200}\r?\n){1,100}-----END CERTIFICATE-----\r?\n?$/;
+
+export const SamlIdpSettingsSchema = z.object({
+  /** The provider's entity id: what its assertions name as their issuer. Compared exactly. */
+  idpEntityId: z.string().min(1).max(SAML_IDP_ENTITY_ID_MAX_CHARS).regex(NO_CONTROL),
+  /** Where the browser is sent to sign in (SSO redirect binding). HTTPS only. */
+  ssoUrl: z.string().min(1).max(1024).refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && url.username === "" && url.password === "" && url.hash === "" && url.hostname !== "";
+    } catch {
+      return false;
+    }
+  }, "an https address with no credentials or fragment"),
+  /** The provider's signing certificate, PEM. Public; never a private key (the pattern admits only a certificate block). */
+  certificate: z.string().min(1).max(SAML_CERTIFICATE_MAX_CHARS).regex(PEM_CERTIFICATE, "a PEM certificate"),
+  enabled: z.boolean(),
+}).strict();
+export type SamlIdpSettings = z.infer<typeof SamlIdpSettingsSchema>;
+
+export const SamlIdpConfigSchema = SamlIdpSettingsSchema.extend({
+  version: z.number().int().min(1),
+  updatedAt: z.string().min(1).max(64),
+  updatedBy: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type SamlIdpConfig = z.infer<typeof SamlIdpConfigSchema>;
+
+export function samlIdpConfigKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "SSO_SAML_IDP" };
+}
+export function samlSeenKey(orgId: OrgId, digest: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `SSO_SAML_SEEN#${digest}` };
+}
+export function samlStashKey(orgId: OrgId, handle: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `SSO_SAML_RESP#${handle}` };
+}
+
+/** The fixed words a SAML sign-in is refused with (audit and logs); never the response's own words. */
+export const SAML_REFUSALS = [
+  "not_configured", "response_too_large", "response_unreadable", "forbidden_markup", "weak_algorithm", "not_signed", "bad_signature", "bad_status", "not_for_this_request",
+  "wrong_issuer", "wrong_audience", "wrong_recipient", "wrong_destination", "expired", "not_yet_valid", "unsolicited", "replayed", "no_subject", "transient_subject", "bad_assertion",
+] as const;
+export type SamlRefusal = (typeof SAML_REFUSALS)[number];
+/** What the person sees for any SAML refusal: one sentence, so the page tells an attacker nothing about which check failed. */
+export const SAML_SIGN_IN_REFUSED_MESSAGE = "Your company sign-in response could not be accepted. Start the sign-in again, and ask your administrator if it keeps failing.";
+export const SAML_NOT_CONFIGURED_MESSAGE = "Your administrator has not set up SAML sign-in. Use your company's other sign-in, or ask them.";

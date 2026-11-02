@@ -68,9 +68,9 @@ import type { SsoStores } from "../../developer/sso-sign-in.js";
 export const CLOSE_STOP_BUDGET_MS = 8_000;
 
 export interface DeveloperApiConfiguration {
-  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
+  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean; saml?: boolean }; slackTeamId?: string;
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
-  since?: { slack?: number; oidc?: number; cloud?: number; github?: number };
+  since?: { slack?: number; oidc?: number; cloud?: number; github?: number; saml?: number };
   signInTableName: string;
   /** The hosted Rovara web app's origin, which invite links point at (ROVARA_WEB_ORIGIN); https://rovara.dev when absent. */
   webOrigin?: string;

@@ -28,9 +28,9 @@ export function developerClaims(claims: Record<string, unknown> | undefined, con
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
   const amr = claims.amr;
-  if (amr !== "slack" && amr !== "oidc" && amr !== "cloud" && amr !== "github") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  if (amr !== "slack" && amr !== "oidc" && amr !== "cloud" && amr !== "github" && amr !== "saml") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (config.methods[amr] !== true) {
-    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
+    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : amr === "saml" ? "SAML" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
   }
   // A token with no org (one issued before orgs, or forged) is refused like a token with no session: sign in again.
   const orgId = OrgIdSchema.safeParse(claims.org);
@@ -113,7 +113,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
 export async function authenticateDeveloperSessionId(deps: DeveloperRouteDependencies, sessionId: string): Promise<DeveloperCaller> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "reviewExpiresAt">>(deps, `SESSION#${sessionId}`);
-  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc" && session.amr !== "cloud" && session.amr !== "github")
+  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc" && session.amr !== "cloud" && session.amr !== "github" && session.amr !== "saml")
     || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }

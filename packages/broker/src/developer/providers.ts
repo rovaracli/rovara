@@ -1,7 +1,9 @@
 // Spec 025 FR-002 to FR-004: the Slack and company OIDC providers, and the GitHub OAuth provider of cloud installs (Task 22). The code exchange runs here,
 // server side, with the client secret; the laptop never sees it.
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
-import { GroupClaimNameSchema, SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, type DeveloperSignInMethod } from "@agentx/contracts";
+import { GroupClaimNameSchema, SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, SAML_RESPONSE_MAX_BYTES, SAML_SIGN_IN_REFUSED_MESSAGE, type DeveloperSignInMethod, type OrgId, type SamlIdpConfig } from "@agentx/contracts";
+import { SAML_HANDLE, SAML_STASH_TTL_SECONDS, claimAssertion, samlAuthorizeUrl, samlServiceProviderMetadata, verifySamlResponse, type SamlReplayStore, type SamlResponseStash, type SamlServiceProvider } from "./saml.js";
+import { randomBytes } from "node:crypto";
 
 export interface ProviderIdentity {
   method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
@@ -32,7 +34,11 @@ export interface ProviderIdentity {
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
-export type ProviderResult = { ok: true; identity: ProviderIdentity } | { ok: false; reason: string; wrongAccount?: true };
+export type ProviderResult = { ok: true; identity: ProviderIdentity } | {
+  ok: false; reason: string; wrongAccount?: true;
+  /** A fixed word for the log and the audit record when `reason` is one sentence for every cause (the SAML sign-in); absent otherwise. */
+  code?: string;
+};
 /** The provider could not be reached; try again. */
 export class ProviderUnavailableError extends Error { override name = "ProviderUnavailableError"; }
 /** An admin must finish setting the provider up. */
@@ -329,6 +335,95 @@ export function githubSignInProvider(input: {
           ...(primary === undefined ? {} : { email: primary.email, emailVerified: true }),
           githubUserId,
           ...(typeof user.login === "string" && cleanDisplayName(user.login) !== undefined ? { login: user.login } : {}),
+        },
+      };
+    },
+  };
+}
+
+// ---- SAML 2.0 (Enterprise foundations I4)
+
+/** The SAML sign-in: a provider like the others, plus what only SAML needs (the identity provider POSTs to us, and we publish our metadata). */
+export interface SamlSignInProvider extends SignInProvider {
+  /** Whether an administrator has saved and enabled the identity provider's settings. */
+  configured(): Promise<boolean>;
+  /** Keeps a posted `SAMLResponse` for one redirect (see developer/saml.ts) and returns the single-use handle that `complete` takes as its `code`. Undefined when SAML is not set up. */
+  accept(samlResponse: string): Promise<string | undefined>;
+  /** Our service provider metadata, to give the identity provider. */
+  metadata(): string;
+}
+
+const SAML_EMAIL_ATTRIBUTES = ["email", "mail", "emailAddress", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress", "urn:oid:0.9.2342.19200300.100.1.3"] as const;
+const SAML_NAME_ATTRIBUTES = ["displayName", "name", "cn", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name", "urn:oid:2.16.840.1.113730.3.1.241"] as const;
+const NAME_ID_EMAIL_FORMAT = /^urn:oasis:names:tc:SAML:(?:1\.1|2\.0):nameid-format:emailAddress$/;
+
+export function samlSignInProvider(input: {
+  sp: SamlServiceProvider;
+  /** The install's single org: SAML settings, the replay record and the stash live in its partition. Absent (a wiring mistake): not configured. */
+  orgId: OrgId | undefined;
+  load: (orgId: OrgId) => Promise<SamlIdpConfig | undefined>;
+  replay: SamlReplayStore;
+  stash: SamlResponseStash;
+  now: () => number;
+}): SamlSignInProvider {
+  const settings = async (): Promise<{ orgId: OrgId; config: SamlIdpConfig }> => {
+    if (input.orgId === undefined) throw new ProviderNotConfiguredError("SAML sign-in is not set up in this environment");
+    const config = await input.load(input.orgId);
+    if (config === undefined || !config.enabled) throw new ProviderNotConfiguredError("SAML sign-in is not set up; ask an administrator");
+    return { orgId: input.orgId, config };
+  };
+  const idpOf = (config: SamlIdpConfig) => ({ entityId: config.idpEntityId, ssoUrl: config.ssoUrl, certificate: config.certificate });
+  return {
+    method: "saml",
+    async configured() {
+      try {
+        await settings();
+        return true;
+      } catch (error) {
+        if (error instanceof ProviderNotConfiguredError) return false;
+        throw error;
+      }
+    },
+    async authorizeUrl({ state, nonce, freshSignIn }) {
+      const { config } = await settings();
+      return samlAuthorizeUrl({ sp: input.sp, idp: idpOf(config), state, nonce, ...(freshSignIn === true ? { freshSignIn } : {}) });
+    },
+    async accept(samlResponse) {
+      const { orgId } = await settings();
+      // The size bound, before anything is stored (verifySamlResponse bounds it again before it is read).
+      if (samlResponse.length > Math.ceil((SAML_RESPONSE_MAX_BYTES * 4) / 3) + 64) return undefined;
+      const handle = randomBytes(32).toString("base64url");
+      await input.stash.put(orgId, handle, samlResponse, Math.floor(input.now() / 1000) + SAML_STASH_TTL_SECONDS);
+      return handle;
+    },
+    metadata: () => samlServiceProviderMetadata(input.sp),
+    async complete({ code, nonce }) {
+      const { orgId, config } = await settings();
+      if (!SAML_HANDLE.test(code)) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: "response_unreadable" };
+      const response = await input.stash.take(orgId, code, input.now());
+      if (response === undefined) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: "response_unreadable" };
+      const verified = await verifySamlResponse({ samlResponse: response, sp: input.sp, idp: idpOf(config), nonce, nowMs: input.now() });
+      if (!verified.ok) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: verified.reason };
+      // The assertion is accepted once: a copy of it, at any time, is a replay.
+      const claimed = await claimAssertion(input.replay, orgId, verified.assertion);
+      if (!claimed.ok) return { ok: false, reason: SAML_SIGN_IN_REFUSED_MESSAGE, code: claimed.reason };
+      const { assertion } = claimed;
+      const attributeOf = (names: readonly string[]) => names.flatMap((name) => assertion.attributes[name] ?? []).find((value) => value !== "" && !value.includes("\u0000"));
+      const emailOf = (candidate: string | undefined) => (candidate !== undefined && candidate.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(candidate) ? candidate : undefined);
+      // The email the identity provider vouches for: its email attribute, else a NameID in email format. The provider is the company's own and signs the assertion, so the address counts as verified.
+      const email = emailOf(attributeOf(SAML_EMAIL_ATTRIBUTES)) ?? (NAME_ID_EMAIL_FORMAT.test(assertion.nameIdFormat ?? "") ? emailOf(assertion.subject) : undefined);
+      const name = [attributeOf(SAML_NAME_ATTRIBUTES)].find((value): value is string => value !== undefined && !containsEmailAddress(value));
+      // Only the attributes that carry groups reach the group mapping; a person-editable one (email, name) never does. The value is the list as the assertion gave it.
+      const claims: Record<string, unknown> = {};
+      for (const [attribute, values] of Object.entries(assertion.attributes)) if (GroupClaimNameSchema.safeParse(attribute).success) claims[attribute] = [...values];
+      return {
+        ok: true,
+        identity: {
+          method: "saml", issuer: assertion.issuer, subject: assertion.subject,
+          displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? "",
+          ...(email === undefined ? {} : { email, emailVerified: true }),
+          ...(assertion.authTime === undefined ? {} : { authTime: assertion.authTime }),
+          claims,
         },
       };
     },
