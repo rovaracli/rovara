@@ -33,7 +33,7 @@ import type { AdaptedHttpRequest } from "../lambda.js";
 import { getSignIn } from "./authentication.js";
 import { bodyError } from "./common.js";
 import { jsonBody } from "./organization.js";
-import { latestProjectRecord, queryAll, repositoryFullName, visibleProjectRoles } from "./project-list.js";
+import { REVISION_READS_AT_ONCE, latestProjectRecord, mapLimit, queryAll, repositoryFullName, visibleProjectRoles } from "./project-list.js";
 import { testEnvStoreOf } from "./test-environment.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -89,13 +89,8 @@ export function recipeDepsOf(deps: DeveloperRouteDependencies, request: Develope
         return record === undefined ? [] : namesOfRepositories(record.definition.repositories);
       }
       const catalog = await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(orgId), "PROJECT#");
-      const names: string[] = [];
-      for (const row of catalog) {
-        if (typeof row.name !== "string") continue;
-        const record = await latestProjectRecord(deps, orgId, row.name);
-        if (record !== undefined) names.push(...namesOfRepositories(record.definition.repositories));
-      }
-      return names;
+      const records = await mapLimit(catalog.flatMap((row) => (typeof row.name === "string" ? [row.name] : [])), REVISION_READS_AT_ONCE, (name) => latestProjectRecord(deps, orgId, name));
+      return records.flatMap((record) => (record === undefined ? [] : namesOfRepositories(record.definition.repositories)));
     },
     approvalEvidence: (scope) => readSecondPersonApprovalEvidence(evidence, scope),
     async readSession(sessionId) {
