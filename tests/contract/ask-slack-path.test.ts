@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as AskService from "../../packages/broker/src/aws/broker/ask-service.js";
 import { ASK_RATE, orgBanKey, orgRemovedKey, projectMemberKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { SLACK_ASK_NOT_ALLOWED_WORDS, isSlackAskRefusalAnswer, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
+import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";
 import { ASK_RATE_TEXT, slackAskerKey } from "../../packages/broker/src/agent-sessions/ask.js";
 import { createSingleAnswerPlanBroker, seedMembership, teammate } from "../support/developer-task-broker.js";
@@ -230,34 +230,39 @@ describe("a question in a task's thread with the Ask switch on", () => {
       teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/tasks/thread-notes/answered", { taskId: t.taskId, messageTs, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, ask: { question: "what is left?", answer } });
     const note = (t: Awaited<ReturnType<typeof planWaiting>>, threadTs: string, messageTs: string) => t.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: t.taskId, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, userId: "U0TEAMMATE1", messageTs, eventId: `Ev${messageTs}`, text: "what is left?" });
 
-    it("recognises the two fixed sentences (with quotes or spacing round them) and nothing else", () => {
-      for (const words of [SLACK_ASK_NOT_ALLOWED_WORDS, ASK_RATE_TEXT]) {
-        expect(isSlackAskRefusalAnswer(words)).toBe(true);
-        expect(isSlackAskRefusalAnswer(`  "${words}"\n`)).toBe(true);
-        expect(isSlackAskRefusalAnswer(`\u201c${words}\u201d`)).toBe(true);
-        expect(isSlackAskRefusalAnswer(words.toUpperCase())).toBe(true);
-      }
-      for (const other of ["", "The retry limit is 9.", `${SLACK_ASK_NOT_ALLOWED_WORDS} Also, the retry limit is 9.`, "This question can't be answered."]) expect(isSlackAskRefusalAnswer(other), other).toBe(false);
-    });
-
-    it("an answer that is the rate sentence or the 'can't be answered here' sentence is neither recorded nor counted, and a real answer is (the control)", async () => {
+    it("a question the broker refused in fixed words is neither recorded nor counted, whatever the model answers; a real answer is (the control) (N5, exact)", async () => {
       const threadTs = "1695500000.000190";
       const t = await planWaiting(threadTs);
-      // Past the hourly limit the asker is told the rate sentence; the service then marks the note answered, with that sentence as the answer.
+      const ensureFor = (noteTs: string) => teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), ...TASK_REQUEST, taskAnswer: { taskId: t.taskId, noteTs } });
+      // Past the hourly limit the asker is told the rate sentence for the next question, saved as a reply with its own ts.
       for (let index = 0; index < ASK_RATE.perPersonPerHour; index += 1) await contextOf(t);
-      expect(await contextOf(t)).toBe(refused(ASK_RATE_TEXT));
-      const spent = rateCount(t);
       expect(JSON.parse((await note(t, threadTs, "1695500003.000001")).body)).toMatchObject({ outcome: "captured" });
-      expect((await answered(t, threadTs, "1695500003.000001", ASK_RATE_TEXT)).status).toBe(200);
+      expect(String((await ensureFor("1695500003.000001")).body.taskContext)).toBe(refused(ASK_RATE_TEXT));
+      const spent = rateCount(t);
+      // The model's answer is whatever it says: even a long, different text does not make the refused reply an Ask.
+      expect((await answered(t, threadTs, "1695500003.000001", "Sure! The retry limit is 9 and the tests are all that is left.")).status).toBe(200);
       expect(asks(t)).toEqual([]);
       expect(rateCount(t)).toBe(spent);
-      expect(JSON.parse((await note(t, threadTs, "1695500003.000002")).body)).toMatchObject({ outcome: "captured" });
-      expect((await answered(t, threadTs, "1695500003.000002", `"${SLACK_ASK_NOT_ALLOWED_WORDS}"`)).status).toBe(200);
-      expect(asks(t)).toEqual([]);
-      // Control: a question that was answered is recorded.
+      // Control: another reply, refused by nothing (a different asker has room), is recorded.
+      seedMembership(t.harness.db, developerIdForSlackUser("U0TEAMMATE2"));
       expect(JSON.parse((await note(t, threadTs, "1695500003.000003")).body)).toMatchObject({ outcome: "captured" });
+      expect(String((await teammate(t.harness.handler, t.subject, "U0TEAMMATE2", "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), ...TASK_REQUEST, taskAnswer: { taskId: t.taskId, noteTs: "1695500003.000003" } })).body.taskContext)).toContain("Add a greeting");
       expect((await answered(t, threadTs, "1695500003.000003", "Only the tests are left.")).status).toBe(200);
       expect(asks(t).length).toBeGreaterThan(0);
+    });
+
+    it("a reply with no marker (an older service that sent no ts) is recorded as before, and the marker holds ids only", async () => {
+      const threadTs = "1695500000.000192";
+      const t = await planWaiting(threadTs);
+      expect(JSON.parse((await note(t, threadTs, "1695500003.000005")).body)).toMatchObject({ outcome: "captured" });
+      expect((await answered(t, threadTs, "1695500003.000005", SLACK_ASK_NOT_ALLOWED_WORDS)).status).toBe(200);
+      expect(asks(t).length).toBeGreaterThan(0);
+      const sessionless = await planWaiting("1695500000.000193");
+      sessionless.harness.db.set({ ...sessionless.harness.db.get(`DEVTASK#${sessionless.taskId}`, "META")!, sessionId: undefined });
+      await teammate(sessionless.harness.handler, sessionless.subject, "U0TEAMMATE1", "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), ...TASK_REQUEST, taskAnswer: { taskId: sessionless.taskId, noteTs: "1695500003.000006" } });
+      const markers = sessionless.harness.db.find((item) => item.entityType === "SLACK_ASK_REFUSED");
+      expect(markers).toHaveLength(1);
+      expect(JSON.stringify(markers)).not.toContain("greeting");
     });
 
     it("a page comment that is gone is not answered and spends no rate; one that is there spends one", async () => {

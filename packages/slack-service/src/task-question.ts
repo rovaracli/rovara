@@ -151,7 +151,7 @@ export async function runTaskAnswer(
   const requestId = deterministicUuid(`${message.eventId}:task-answer`);
   const workspace = "commentId" in taskAnswer
     ? await deps.api.taskAnswerWorkspace(requestId, taskAnswer.taskId, taskAnswer.commentId)
-    : await deps.api.taskAnswerWorkspace(requestId, taskAnswer.taskId);
+    : await deps.api.taskAnswerWorkspace(requestId, taskAnswer.taskId, undefined, taskAnswer.noteTs);
   if (workspace.outcome !== "WORKSPACE" || workspace.mode !== "task-answer" || workspace.taskContext === undefined) {
     throw new Error("the task's thread cannot be answered in task mode");
   }
