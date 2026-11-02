@@ -143,3 +143,4 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 export * from "./app-lessons.js";
 
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
+export * from "./app-known-failing.js";

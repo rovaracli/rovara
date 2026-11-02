@@ -223,6 +223,16 @@ describe("Mark as known failing", () => {
     expect(h.db.transactions().at(-1)!.length).toBe(3);
   });
 
+  it("two marks that carry the same request id (on two cards) are two audit events", async () => {
+    const { h, item } = await opened();
+    expect(await markKnownFailing(h.ports, BROWSER, item, "request-same")).toBe("done");
+    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(2), cause: CAUSE, tests: [mark("t/b.py::three")] });
+    expect(await markKnownFailing(h.ports, BROWSER, await h.only(), "request-same")).toBe("done");
+    const events = h.audit.recordedBy("project.known_failing_marked");
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(2);
+  });
+
   it("is refused for anything but a live browser session, and writes nothing", async () => {
     const { h, item } = await opened();
     for (const caller of [WHO, { ...WHO, browserSession: undefined }]) await expect(markKnownFailing(h.ports, caller, item, "r"), "no session").rejects.toThrow("Use a live browser session to mark tests as known failing.");
@@ -281,7 +291,7 @@ describe("Mark as known failing", () => {
     const { h, item } = await opened([mark("new::one")]);
     const old = { checkId: "unit", markedBy: "dev_b", markedAt: "2026-11-01T00:00:00.000Z", epoch: 1 };
     h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", marks: Array.from({ length: KNOWN_FAILING_MAX }, (_, n) => ({ ...old, name: `old${String(n)}` })), version: 1, updatedAt: "2026-11-01T00:00:00.000Z" });
-    await expect(markKnownFailing(h.ports, BROWSER, item, "r")).rejects.toThrow("This project's known-failing list is full (500). Remove some before marking more.");
+    await expect(markKnownFailing(h.ports, BROWSER, item, "r")).rejects.toThrow("This project's known-failing list is full (500). Remove some with Undo on the project page (Environment) before marking more.");
     expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toHaveLength(KNOWN_FAILING_MAX);
     expect(await h.items()).toHaveLength(1);
   });

@@ -791,6 +791,7 @@ describe("I4: the builders", () => {
     // Nightly health (SH28): a project setting changed (fixed word and a flag). Missing at the base of this branch; added with the Fix setup rows.
     ["auditProjectTestHealthSettingChanged", (occurrence) => builders.auditProjectTestHealthSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", setting: "propose_fix_task", enabled: true })],
     ["auditProjectKnownFailingMarked", (occurrence) => builders.auditProjectKnownFailingMarked({ ...base, occurrence, details, projectName: "Secret Project", cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" })],
+    ["auditProjectKnownFailingRemoved", (occurrence) => builders.auditProjectKnownFailingRemoved({ ...base, occurrence, details, projectName: "Secret Project", removal: "nightly_passing", testCount: 2, markEpoch: 0, testSetSha256: "b".repeat(64), rowVersionAfter: 4, totalAfter: 1 })],
     // Company sign-in (Enterprise foundations I1): the rule ids a sign-in matched, and the owners on the emergency list, are details
     ["auditSsoSignIn", (occurrence) => builders.auditSsoSignIn({ ...base, occurrence, details, memberId: "dev_1", role: "member", matchedRuleIds: ["users"] })],
     ["auditSsoSignInRefused", (occurrence) => builders.auditSsoSignInRefused({ ...base, occurrence, details, memberId: "dev_1", reason: "no_group" })],

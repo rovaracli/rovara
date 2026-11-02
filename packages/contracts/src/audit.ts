@@ -202,6 +202,8 @@ export const AUDIT_ACTIONS = [
   "evidence.downloaded",
   // Setup and test health (SH17): a maintainer marked tests as already failing, so later results no longer count them against a change.
   "project.known_failing_marked",
+  // Setup and test health KF-1: a mark was taken off the list, by a maintainer (undo) or by the system (a usable nightly showed the test passing).
+  "project.known_failing_removed",
   // Setup and test health SH17 (F4): the company setting "always two people" for marking tests as already failing. Tightening applies at once; loosening is a proposal a different admin approves.
   "company.known_failing_policy_proposed",
   "company.known_failing_policy_changed",
@@ -450,6 +452,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.
   "project.known_failing_marked": ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"],
   // `fromAlwaysTwo` / `toAlwaysTwo` are booleans; `mode` is `direct`, `second_person`; `refusal` a fixed word.
+  // `removal` is `undo` or `nightly_passing`; `testCount` is how many marks left the list; `markEpoch` is the card the mark was made on (0: marks from several cards); `testSetSha256` is the sha256 of the sorted "check, test" lines removed; `rowVersionAfter` and `totalAfter` describe the list afterwards.
+  "project.known_failing_removed": ["removal", "testCount", "markEpoch", "testSetSha256", "rowVersionAfter", "totalAfter"],
   "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
   "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
   "company.known_failing_policy_refused": ["refusal"],
