@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type SetupRunSummary, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import { testEnvDraftResult } from "./test-env-detect.js";
 import { applyTestEnvironmentPlan } from "./verification/test-env-plan.js";
@@ -29,6 +29,7 @@ import { devcontainerMounts } from "./devcontainer-file-paths.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
 import { sweepFileOps } from "./sandbox-file-tools.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
+import { runSetupAgentInvocation } from "./setup-agent-invocation.js";
 import { EventBatcher, redactCredentials, type EventAppendOptions, type EventBatchSink, type WorkerEvent } from "./events.js";
 import {
   CANCEL_FLUSH_MAX_MS, ModelCallMonitor, PLANNING_ABORT_CONFIRM_MS, PLANNING_STALL_MS, expiryNote, logEventsRefused, logModelCallNote,
@@ -95,6 +96,8 @@ export interface TaskInvocationResult {
   workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
   setupProposal?: SetupProposal;
+  /** SH14: how a setup run that ran commands ended (the broker reads it again). */
+  setupRunSummary?: SetupRunSummary;
   /** Live interaction F3: a deep diagnosis's answer (the model's JSON text, cut). The broker reads it again; this copy is never trusted. */
   diagnosisAnswer?: string;
   /** Meta repo lane D: the spec draft a spec-write run read, bounded and cleaned (the broker reads it again). */
@@ -138,6 +141,8 @@ export interface TaskInvocationDependencies {
   authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
   piAdapter?: PiSessionAdapter;
   cancellationController?: WorkerCancellationController;
+  /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
+  setupAgent?: (body: unknown) => Promise<unknown>;
   devcontainerCli?: DevcontainerCli;
   /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
   checkRunners?: CheckRunners;
@@ -253,6 +258,10 @@ async function runTask(
   ) as PreparationManifest;
   if (!manifest.complete || manifest.projectRevision !== invocation.projectRevision) {
     throw agentXError("WORKSPACE_NOT_READY", "workspace manifest is incomplete or revision-mismatched");
+  }
+  // SH14 (the broker sends this mode only while `su` is on, and only to a worker that lists "task.setupAgent.v1"): the setup run that runs commands has its own module; nothing below applies to it.
+  if (invocation.payload.workflowMode === "SETUP_AGENT") {
+    return runSetupAgentInvocation(invocation, { rootPath: dependencies.rootPath, model: dependencies.model, piAdapter: dependencies.piAdapter, eventSink: dependencies.eventSink, cancellationController: dependencies.cancellationController, setupAgent: dependencies.setupAgent, docker: dependencies.docker, taskShell: dependencies.taskShell }, manifest, canonicalRoot);
   }
   // A run that looks at a pull request: the workspace must hold the head commit the step was told about, or the step does not run, and nothing is started
   // for it (Task 22 review, M5).
@@ -642,7 +651,7 @@ async function runTask(
   // A setup draft is a planning session too: read, grep, find and ls only, one deadline, a no-activity limit.
   const planning = invocation.payload.workflowMode === "PLAN" || critiquing || settingUpDraft || writingSpec;
   const payloadMode = invocation.payload.workflowMode;
-  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" || payloadMode === "SPEC_WRITE" ? "PLAN" : (payloadMode === "SETUP_AGENT" ? undefined : payloadMode) ?? "IMPLEMENT";
+  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" || payloadMode === "SPEC_WRITE" ? "PLAN" : payloadMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const planCritique = payloadMode === "PLAN_CRITIQUE";

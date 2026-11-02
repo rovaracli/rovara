@@ -1,4 +1,4 @@
-import type { WorkerInvocationFeature } from "@agentx/contracts";
+import { SETUP_AGENT_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
 
 /**
  * The optional invocation fields this worker implements, listed by hand and advertised on /ping. WORKER_INVOCATION_FEATURES
@@ -39,6 +39,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowE2EMidStepSync.v1",
   // Live steer: a person's message reaches the running Understand, Plan or Implement step's session (steer-invocation.ts).
   "task.liveSteer.v1",
+  // SH14: the setup run that runs commands (setup-agent-run.ts), on the run's own network with the DNS-watch helper. Listed only by a worker image that carries the helper script and the setup sandbox guard.
+  SETUP_AGENT_FEATURE,
   // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
   "prepare.metaRepo",
   // Lane E (MCP context sources): an Understand, Plan, Plan-check or Review stage asks the broker for the project's source tools (worker/src/context-sources).
