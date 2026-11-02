@@ -6079,6 +6079,10 @@ describe("a review with a second reviewer from another AI company (SR-1)", () =>
     expect(row().workflow).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
     const route = `/v1/app/tasks/${setup.taskId}/second-review-acknowledge`;
     const body = { candidateDigest: setup.candidate.digest };
+    // A version 1 task shows the flag on its page too, asking for the acknowledgement.
+    const viewOf = async () => ((await harness.dev(MAYA, "GET", `/v1/dev/tasks/${setup.taskId}?details=true`)).body as { task?: { secondReview?: { lines: string[]; needsAcknowledgement: boolean; acknowledged: boolean } } }).task?.secondReview;
+    expect(row().workflow.definitionVersion).toBe("1.0.0");
+    expect(await viewOf()).toEqual({ lines: ["Second review did not run: no allowed model from a different AI company could be used"], needsAcknowledgement: true, acknowledged: false });
     // A token, and anyone who is not the owner, cannot acknowledge; a wrong candidate is out of date. Nothing is stored.
     expect((await harness.dev(MAYA, "POST", route.replace("/v1/app/", "/v1/dev/"), body)).status).toBeGreaterThanOrEqual(400);
     expect((await web(harness, OMAR, "POST", route, body)).status).toBeGreaterThanOrEqual(400);
@@ -6095,6 +6099,7 @@ describe("a review with a second reviewer from another AI company (SR-1)", () =>
     expect(row().secondReviewAcknowledged).toHaveLength(1);
     expect((await web(harness, MAYA, "POST", route, body)).status).toBe(200);
     expect(row().secondReviewAcknowledged).toHaveLength(1);
+    expect(await viewOf()).toMatchObject({ needsAcknowledgement: true, acknowledged: true });
     const events = audit.recorded().filter((event) => event.action === "task.second_review_acknowledged");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ actor: { id: MAYA.developerId }, target: { kind: "task", id: setup.taskId }, facts: { cause: "no-candidate" } });

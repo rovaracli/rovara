@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createWorkflowSnapshot, createCandidateManifest, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
+import { WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, secondReviewBlockFinding, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
 import { secondOpinionOfTask, secondReviewPullRequestLines, secondReviewTaskView } from "../../packages/broker/src/rovara-code/second-review-store.js";
@@ -130,5 +130,40 @@ describe("the task page", () => {
     if (!ack.required) throw new Error("expected an ask");
     expect(secondReviewTaskView({ ...stored(opinion), secondReviewAcknowledged: [ack.key] }, code.digest, ENABLED)).toMatchObject({ needsAcknowledgement: true, acknowledged: true });
     expect(secondReviewTaskView({ ...stored(opinion), secondReviewAcknowledged: ["0".repeat(64)] }, code.digest, ENABLED)).toMatchObject({ acknowledged: false });
+  });
+});
+
+describe("a version 1 task shows the second review too (N5)", () => {
+  const v1 = () => WorkflowSnapshotSchema.parse({
+    ...createWorkflowSnapshot({ taskId, ownerId, now: NOW }),
+    stage: "PULL_REQUEST", state: "READY", candidate: code,
+    checkPolicy: { required: [{ id: "unit", label: "Unit", command: { cwd: "repo/payments", executable: "npm", args: ["test"], timeoutSeconds: 30 } }], optional: [], selectedOptionalIds: [], proposed: [] },
+    verification: { candidateDigest: code.digest, producer: "agentx-broker", environmentId: "ci", recordedAt: NOW, results: [{ checkId: "unit", status: "PASS" }] },
+    reviews: [review("CRITIC"), review("SECURITY")],
+  });
+  const withEnv = <T,>(run: () => T): T => { const before = process.env.SECOND_REVIEW_ENABLED; process.env.SECOND_REVIEW_ENABLED = "1"; try { return run(); } finally { if (before === undefined) delete process.env.SECOND_REVIEW_ENABLED; else process.env.SECOND_REVIEW_ENABLED = before; } };
+
+  it("the description says an `on` review did not run, and lists a blocking review's findings (inert); a shadow one adds nothing; cr off is today's", () => {
+    expect(v1().definitionVersion).toBe("1.0.0");
+    const flagged = stored(secondOpinionUnavailable({ mode: "on", company: "amazon" }, "no-answer"));
+    const blocked = stored(secondOpinionOf({ plan: { ...onPlan, against: [SONNET] }, report: secondReport(randomUUID(), "FINDINGS", [{ text: "ping @octocat #12", origin: "INTRODUCED" }]), currentCandidateDigest: code.digest }));
+    withEnv(() => {
+      expect(prBody(flagged, v1())).toContain("Second review did not run: the reviewer gave no usable answer after retrying");
+      const body = prBody(blocked, v1());
+      expect(body).toContain("Second review (");
+      expect(body).not.toMatch(/(?<!‍)@octocat/u);
+      expect(prBody(stored(secondOpinionUnavailable({ mode: "shadow", company: "amazon" }, "no-answer")), v1())).toBe(prBody({}, v1()));
+    });
+    expect(prBody(flagged, v1())).toBe(prBody({}, v1()));
+  });
+});
+
+describe("the block keeps within its own limits (N4)", () => {
+  it("drops a line number over the cap and cuts a long path and text, so a model's odd finding can never make the workflow unreadable", () => {
+    const odd = secondReviewBlockFinding({ text: "x".repeat(900), file: "p".repeat(900), line: WORKFLOW_SECOND_REVIEW_LINE_MAX + 1 });
+    expect(odd).toEqual({ text: "x".repeat(600), file: "p".repeat(500) });
+    expect(secondReviewBlockFinding({ text: "t", file: "a.ts", line: 7 })).toEqual({ text: "t", file: "a.ts", line: 7 });
+    expect(secondReviewBlockFinding({ text: "t", line: WORKFLOW_SECOND_REVIEW_LINE_MAX })).toEqual({ text: "t", line: WORKFLOW_SECOND_REVIEW_LINE_MAX });
+    expect(WorkflowSecondReviewBlockSchema.safeParse({ candidateDigest: code.digest, findings: [odd] }).success).toBe(true);
   });
 });

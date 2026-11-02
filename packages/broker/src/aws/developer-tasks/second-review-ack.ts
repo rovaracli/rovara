@@ -1,4 +1,4 @@
-// Second review (SR-1, switch `cr`): the task owner acknowledges that an `on` second review did not run, so the merge may go ahead. `POST /v1/dev/tasks/{id}/workflow/second-review-acknowledge { candidateDigest }`.
+// Second review (SR-1, switch `cr`): the task owner acknowledges that an `on` second review did not run, so the merge may go ahead. `POST /v1/app/tasks/{id}/second-review-acknowledge { candidateDigest }` (the web app reaches it as `/v1/web/tasks/{id}/second-review-acknowledge`).
 // Owner only (the task's effective owner, as every owner decision), from a live browser session only (the entry file refuses a token before this, and so does this), audited in the same transaction as the write.
 // The acknowledgement is one key per candidate and reason (`secondReviewAcknowledgement`): a new candidate asks again. Rovara opens pull requests as drafts and never marks them ready, so the gate is the merge
 // card (`secondReviewMergeWait` in rovara-code/merge.ts), which refuses a Merge until this is done.
