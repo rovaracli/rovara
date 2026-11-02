@@ -1,9 +1,11 @@
-// Proof and evidence (P3, P4): how the worker reads a report file a project's own check already wrote (a coverage file, a SARIF file). The path comes from the check's own command line or from a fixed list of
-// default names, so it is data the repository influences: it is read only through a path that stays inside the workspace, is a plain file (never a link, at any step of the path) and is within a size cap, and
+// Proof and evidence (P3, P4): how the worker reads a report file a project's own check already wrote (a coverage file, a SARIF file). The path comes from the check's own command line (no default names are guessed: EV-2), so it is data the repository influences: it is read only through a path that stays inside the workspace, is a plain file (never a link, at any step of the path) and is within a size cap, and
 // only when the check wrote it during this round (a file left by an earlier run, or put there by the agent before the checks ran, says nothing about this code: both its modification and its change time must lie in the round, and neither in the future). Nothing is written, moved or run.
 //
 // The file is opened with O_NOFOLLOW and measured through the open handle, so a link swapped in after the path was checked is refused by the system, and a file that grows while it is read is cut at the cap
 // and refused. A failure is a fixed code, never a message: callers say "not measured".
+//
+// The inherent limit (EV-2): a report proves what the project's tooling wrote, not that it measured the real code. The check's command runs the agent's own tests and configuration in the round, and code there can write
+// a report with every changed line hit (or a scan with no findings) with a fresh modification and change time; no freshness rule can see that. Naming the file in the check's own command line is the least a report must do.
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";

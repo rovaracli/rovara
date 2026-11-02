@@ -9,7 +9,7 @@
 // refused whole, and a file name inside it only ever selects among the paths the diff already names, so it can never make AgentX read any other file.
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
-import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, isTestCommandHead, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
+import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { CandidateChange } from "./diff.js";
 import { isTestPath } from "./test-paths.js";
 import { readContainedReport, type ReportFileFailure } from "./report-file.js";
@@ -152,10 +152,8 @@ export function parseLcov(text: string, limits: CoverageLimits = COVERAGE_LIMITS
 
 export interface CoverageSpec {
   format: CoverageFormat;
-  /** The file's path as the command (or the tool's default) names it, relative to the command's cwd. */
+  /** The file's path as the command line names it, relative to the command's cwd. */
   argument: string;
-  /** True when the command line does not name it and the path is one of the tool defaults. */
-  inferred: boolean;
 }
 
 /** Values given to an option, in the forms `--name=value` and `--name value` (and, for a list option, the plain words after it). */
@@ -181,32 +179,19 @@ function optionValues(args: readonly string[], names: readonly string[], list = 
 const join = (directory: string, name: string) => `${directory.replace(/\/+$/u, "")}/${name}`;
 const isReportPath = (value: string) => value.length <= NAME_MAX && !value.startsWith("-") && /\.(?:xml|info|lcov)$/iu.test(value);
 
-/** A fixed list of the names coverage tools write by default, tried (in this order) for a test command whose own line names none. */
-export const DEFAULT_COVERAGE_FILES: readonly CoverageSpec[] = [
-  { format: "cobertura", argument: "coverage.xml", inferred: true },
-  { format: "cobertura", argument: "coverage/cobertura-coverage.xml", inferred: true },
-  { format: "lcov", argument: "coverage/lcov.info", inferred: true },
-  { format: "lcov", argument: "coverage.lcov", inferred: true },
-  { format: "lcov", argument: "lcov.info", inferred: true },
-];
-
-function looksLikeTestCommand(command: ProjectCommand): boolean {
-  const words = [command.executable, ...command.args];
-  if (isTestCommandHead(words)) return true;
-  return /^(?:npm|pnpm|yarn|bun)$/u.test(command.executable) && /^test(?::[\w:.-]*)?$/u.test(words[1] === "run" ? words[2] ?? "" : words[1] ?? "");
-}
-
 /**
  * The coverage files a command's own line asks its tool to write (pytest-cov `--cov-report=xml[:path]` or `lcov[:path]`, `coverage xml|lcov [-o path]`, jest `--coverageReporters` and `--coverageDirectory`,
- * vitest `--coverage.reporter` and `--coverage.reportsDirectory`, nyc and c8 `--reporter` and `--report-dir`, and any option about coverage given a report file), Cobertura first. A test command that names none is
- * given the tool defaults to look for, marked `inferred`. The command is never altered.
+ * vitest `--coverage.reporter` and `--coverage.reportsDirectory`, nyc and c8 `--reporter` and `--report-dir`, and any option about coverage given a report file), Cobertura first. A command that names none has none: the tools' default
+ * file names are NOT guessed (EV-2), because a test the agent wrote can write a report at a default name with every line hit, and a report counts only when the check's own command line asks for it. What this
+ * leaves is inherent: a report the named command writes proves what the project's tooling wrote, not that it measured the real code, since code that runs in the round (a test, a conftest, a coverage config the
+ * agent changed) can forge that file too. The command is never altered.
  */
 export function coverageSpecsOf(command: ProjectCommand): CoverageSpec[] {
   const args = command.args;
   const words = [command.executable.split("/").at(-1) ?? command.executable, ...args];
   const specs: CoverageSpec[] = [];
   const add = (format: CoverageFormat, argument: string) => {
-    if (argument !== "" && argument.length <= NAME_MAX && !specs.some((spec) => spec.argument === argument)) specs.push({ format, argument, inferred: false });
+    if (argument !== "" && argument.length <= NAME_MAX && !specs.some((spec) => spec.argument === argument)) specs.push({ format, argument });
   };
   // pytest-cov
   for (const value of optionValues(args, ["--cov-report"])) {
@@ -240,7 +225,7 @@ export function coverageSpecsOf(command: ProjectCommand): CoverageSpec[] {
     if (value !== undefined && !value.includes(":") && isReportPath(value)) add(/\.xml$/iu.test(value) ? "cobertura" : "lcov", value);
   }
   specs.sort((left, right) => Number(right.format === "cobertura") - Number(left.format === "cobertura"));
-  return specs.length > 0 || !looksLikeTestCommand(command) ? specs : [...DEFAULT_COVERAGE_FILES];
+  return specs;
 }
 
 // ---- the intersection
@@ -332,7 +317,8 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
   }
   // The report's sources, sorted out once (not per file): the absolute ones (the first few only) and the relative ones.
   const absoluteSources = parsed.sources.filter((source) => isAbsolute(source)).slice(0, SUFFIX_SOURCES_MAX);
-  const relativeSources = parsed.sources.filter((source) => !isAbsolute(source));
+  // The relative ones are capped the same way (64 relative sources x 3 bases x 20,000 names was 2.4 s).
+  const relativeSources = parsed.sources.filter((source) => !isAbsolute(source)).slice(0, SUFFIX_SOURCES_MAX);
   const byTarget = new Map<Target, ReportLines>();
   const matchExact = (absolute: string): Target | undefined => {
     for (const root of roots) {
