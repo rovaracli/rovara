@@ -73,6 +73,8 @@ const ROWS: readonly Row[] = [
   ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
   // Proof and evidence (wire-proof): the task's principal (`ownerKey`) names the object prefixes the evidence is read and kept under (the worker's raw file under its operation, the pack and the stored output tails under the task); it decides nothing about who owns the task. Who may READ it is `resolveTaskAccess`, in the download route.
   ["aws/broker/evidence-wiring.ts", "keepEvidenceAfterChecks", "principal", ".ownerKey"],
+  // Setup and test health (SH17): the Fix setup port reads the task's principal only to name the evidence pack's object prefix (the broker's own pack of the task's current code); it decides nothing about who owns the task.
+  ["aws/broker/fix-setup-wiring.ts", "fixSetupDependencies>record", "principal", ".ownerKey"],
   ["aws/task-evidence-download.ts", "routeEvidenceDownload>authorize", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "evidencePackKey", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "keepEvidence", "principal", ".ownerKey"],

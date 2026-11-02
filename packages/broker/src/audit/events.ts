@@ -553,6 +553,11 @@ export function auditProjectTestHealthSettingChanged(input: AuditBuilderBase & {
   return build("project.test_health_setting_changed", input, { kind: "project", name: input.projectName }, { setting: input.setting, enabled: input.enabled });
 }
 
+/** `occurrence`: the request id of the card press. `cause` is the fixed auto-fix code word the Fix setup card was about; `testCount` is how many tests were added to the already-failing list (names are never recorded). */
+export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { projectName: string; cause: string; testCount: number }): AuditEventInput {
+  return build("project.known_failing_marked", input, { kind: "project", name: input.projectName }, { cause: input.cause, testCount: input.testCount });
+}
+
 /** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */
 export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: string; artifactKind: string; retentionClass: string }): AuditEventInput {
   return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });

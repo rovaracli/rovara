@@ -104,3 +104,29 @@ export function envChangeHandler<C extends DecisionCaller>(answer: (caller: C, t
   });
   return { approve: run("approve"), reject: run("decline") };
 }
+
+/** What the Fix setup card's two decisions answer: done, the card is out of date (the record changed or is gone), or it cannot be done now (nothing to mark, or the project's list is full). A caller who may not decide throws FORBIDDEN. */
+export type FixSetupAnswer = "done" | "stale" | "not_ready";
+
+/**
+ * Fix setup (SH17): "Mark as known failing" is the card's approve; "Not now" is its reject. Both go to the broker's own functions (`test-env/fix-setup.ts`), which check the caller's live authority over the
+ * project again, read the card's record again and refuse a card whose record has changed since it was shown. The tests marked are the record's own, never the request's.
+ */
+export function fixSetupHandler<C extends DecisionCaller>(ports: {
+  markKnownFailing(caller: C, item: Extract<DecisionItem, { kind: "fix_setup" }>, requestId: string): Promise<FixSetupAnswer>;
+  dismiss(caller: C, item: Extract<DecisionItem, { kind: "fix_setup" }>): Promise<FixSetupAnswer>;
+}): KindHandler<C> {
+  const outcomeOf = (answer: FixSetupAnswer): PerformOutcome => (answer === "done" ? { kind: "done" } : { kind: "refused", reason: answer === "stale" ? "stale" : "not_ready" });
+  return {
+    approve: (caller, input) => perform(async () => {
+      const item = input.item;
+      if (item.kind !== "fix_setup") return { kind: "refused", reason: "unsupported" };
+      return outcomeOf(await ports.markKnownFailing(caller, item, input.requestId));
+    }),
+    reject: (caller, input) => perform(async () => {
+      const item = input.item;
+      if (item.kind !== "fix_setup") return { kind: "refused", reason: "unsupported" };
+      return outcomeOf(await ports.dismiss(caller, item));
+    }),
+  };
+}

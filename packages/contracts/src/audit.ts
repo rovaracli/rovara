@@ -200,6 +200,8 @@ export const AUDIT_ACTIONS = [
   // Setup and test health (SH28): a maintainer turned "propose a fix task when tests fail" on or off for a project.
   "project.test_health_setting_changed",
   "evidence.downloaded",
+  // Setup and test health (SH17): a maintainer marked tests as already failing, so later results no longer count them against a change.
+  "project.known_failing_marked",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -433,6 +435,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
   "project.test_health_setting_changed": ["setting", "enabled"],
   "evidence.downloaded": ["artifactKind", "retentionClass"],
+  // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list. Never a test name.
+  "project.known_failing_marked": ["cause", "testCount"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],

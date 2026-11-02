@@ -787,6 +787,8 @@ describe("I4: the builders", () => {
     ["auditProjectTestEnvChanged", (occurrence) => builders.auditProjectTestEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, tier: "preview", lessSafeCount: 1 })],
     // Proof and evidence P6: one event per evidence download, the artifact named by its fixed kind and retention class
     ["auditEvidenceDownloaded", (occurrence) => builders.auditEvidenceDownloaded({ ...base, occurrence, details, taskId: "tsk_1", artifactKind: "screenshot", retentionClass: "evidence-short" })],
+    // Setup and test health SH17: a maintainer marked tests as already failing; the event carries the fixed cause word and a count, never a test name
+    ["auditProjectKnownFailingMarked", (occurrence) => builders.auditProjectKnownFailingMarked({ ...base, occurrence, details, projectName: "Secret Project", cause: "fails-on-original-code", testCount: 3 })],
     // Company sign-in (Enterprise foundations I1): the rule ids a sign-in matched, and the owners on the emergency list, are details
     ["auditSsoSignIn", (occurrence) => builders.auditSsoSignIn({ ...base, occurrence, details, memberId: "dev_1", role: "member", matchedRuleIds: ["users"] })],
     ["auditSsoSignInRefused", (occurrence) => builders.auditSsoSignInRefused({ ...base, occurrence, details, memberId: "dev_1", reason: "no_group" })],

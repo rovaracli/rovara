@@ -43,6 +43,7 @@ import { blockEndedOperationKeys, tellTaskStop } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { specSeamsOf } from "./spec-wiring.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
+import { fixSetupDependencies } from "./fix-setup-wiring.js";
 
 /**
  * Plan 3, Task 22: the agent-step engine's row. It runs the engine for the task (the result of a step that ended, the next step, an end whose follow-up is not
@@ -519,6 +520,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
       // Setup and test health (SH28): undefined while the `nh` switch is off.
       ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
+      ...fixSetupDependencies(dependencies),
       now: Date.now,
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     };
