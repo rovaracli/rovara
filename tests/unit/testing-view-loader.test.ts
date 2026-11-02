@@ -55,10 +55,30 @@ describe("a maintainer's mark counts as already failing", () => {
   it("is Blocked by environment before the mark and Partially verified (already failing) after it", async () => {
     const t = bench(evidence());
     expect((await loadTestingView(t.deps, task(), failing(), ON))?.result).toBe("blocked_by_environment");
-    t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", tests: ["t::a"], version: 1, updatedAt: NOW });
+    t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
     const after = await loadTestingView(t.deps, task(), failing(), ON);
     expect(after).toMatchObject({ result: "partially_verified", reasons: ["known_failing_only"] });
     expect(after?.rows[0]).toMatchObject({ status: "known_failing" });
+  });
+});
+
+describe("a mark is for one check", () => {
+  it("does not excuse the same test name failing in a different check", async () => {
+    const wf = workflow({ checkPolicy: { ...policy, required: [policy.required[0]!, { ...policy.required[0]!, id: "other", label: "Other" }] }, verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [check("unit", "PASS"), check("other", "FAILED")] } });
+    const evidence = pack([{}, { checkId: "other", after: "failed", class: "already_failing", tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: [], names: [{ name: "t::a", status: "failed" }] } }]);
+    const t = bench(evidence);
+    t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
+    expect((await loadTestingView(t.deps, task(), wf, ON))?.result).toBe("blocked_by_environment");
+    t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "other", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 2, updatedAt: NOW });
+    expect((await loadTestingView(t.deps, task(), wf, ON))?.result).toBe("partially_verified");
+  });
+
+  it("does not excuse a test the change added, even when its name is in the nightly set", async () => {
+    const failing = workflow({ verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [check("unit", "FAILED")] } });
+    const evidence = pack([{ after: "failed", class: "already_failing", tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: ["t::a"], names: [{ name: "t::a", status: "failed" }] } }]);
+    const t = bench(evidence);
+    t.db.set({ ...knownFailingKey(ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }], version: 1, updatedAt: NOW });
+    expect((await loadTestingView(t.deps, task(), failing, ON))?.result).toBe("blocked_by_environment");
   });
 });
 

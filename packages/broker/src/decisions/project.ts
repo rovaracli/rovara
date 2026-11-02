@@ -73,7 +73,7 @@ export type DecisionItem =
    * in the card's words, `blockedResult` the fixed result label. `knownFailingTests` is how many tests "Mark as known failing" would add (0: the card has no such action). All of it is the broker's own record,
    * never a worker's, a model's or a repository's words.
    */
-  | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number });
+  | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number; unconfirmedFailing: number });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -193,7 +193,9 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
           chip("environment", "Result", "Blocked by environment", "warning"),
           chip("environment", "Failing step", item.step, "bad"),
           chip("checks", "Tasks affected", String(item.taskCount), item.taskCount > 1 ? "warning" : "unknown"),
-          ...(item.knownFailingTests > 0 ? [chip("test_proof", "Failing before this change", plural(item.knownFailingTests, "test", "tests"), "warning")] : []),
+          // "Failing before this change" only for tests the nightly baseline confirms; the other failing tests of those checks are said apart, never as older.
+          ...(item.knownFailingTests > 0 ? [chip("test_proof", "Failing before this change", plural(item.knownFailingTests, "test", "tests") + ", confirmed by the nightly run", "warning")] : []),
+          ...(item.unconfirmedFailing > 0 ? [chip("test_proof", "Failing in checks that failed before", plural(item.unconfirmedFailing, "more test", "more tests") + ", not confirmed older", "bad")] : []),
         ],
         why: "The code did not fail: the test setup could not give a verdict.",
       };

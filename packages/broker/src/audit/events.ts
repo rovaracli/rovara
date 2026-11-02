@@ -553,9 +553,14 @@ export function auditProjectTestHealthSettingChanged(input: AuditBuilderBase & {
   return build("project.test_health_setting_changed", input, { kind: "project", name: input.projectName }, { setting: input.setting, enabled: input.enabled });
 }
 
-/** `occurrence`: the request id of the card press. `cause` is the fixed auto-fix code word the Fix setup card was about; `testCount` is how many tests were added to the already-failing list (names are never recorded). */
-export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { projectName: string; cause: string; testCount: number }): AuditEventInput {
-  return build("project.known_failing_marked", input, { kind: "project", name: input.projectName }, { cause: input.cause, testCount: input.testCount });
+/**
+ * `occurrence`: the request id of the card press. Facts are fixed words, counts and hashes, never a test name: `cause` (the auto-fix code word), `testCount` (marks added), `recordEpoch` (which card), `taskCount` and
+ * `taskIdsSha256` (the tasks that were waiting), `testSetSha256` (sha256 of the sorted "check, test" lines marked, so the exact set can be checked later), `rowVersionAfter` and `totalAfter` (the project's list afterwards).
+ */
+export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { projectName: string; cause: string; testCount: number; recordEpoch: number; taskCount: number; taskIdsSha256: string; testSetSha256: string; rowVersionAfter: number; totalAfter: number }): AuditEventInput {
+  return build("project.known_failing_marked", input, { kind: "project", name: input.projectName }, {
+    cause: input.cause, testCount: input.testCount, recordEpoch: input.recordEpoch, taskCount: input.taskCount, taskIdsSha256: input.taskIdsSha256, testSetSha256: input.testSetSha256, rowVersionAfter: input.rowVersionAfter, totalAfter: input.totalAfter,
+  });
 }
 
 /** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */

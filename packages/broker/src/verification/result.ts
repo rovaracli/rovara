@@ -21,6 +21,9 @@ import {
 export const RESULT_WAITING = ["not_checked_yet", "retry_pending", "original_code_pending", "cause_unknown", "needs_a_person"] as const;
 export type ResultWaiting = (typeof RESULT_WAITING)[number];
 
+/** A test the project knows is already failing: a bare name (the last nightly's failures; matches in any check) or a name marked for one check (matches only in that check). */
+export type KnownFailingEntry = string | { name: string; checkId: string };
+
 export type ResultOutcome =
   | { decided: true; result: TestingResult; reasons: TestingReason[] }
   | { decided: false; waiting: ResultWaiting };
@@ -37,8 +40,8 @@ export interface ResultInput {
   budget: AutoFixBudget;
   /** The pack the BROKER built from the worker's raw parts. Ignored unless it is for exactly the current candidate. */
   evidence?: EvidencePack | undefined;
-  /** The nightly already-failing set (`alreadyFailingTests`): empty when unknown or truncated, which excuses nothing. */
-  alreadyFailing: readonly string[];
+  /** The already-failing set (`alreadyFailingForResults`: the nightly baseline's failures and a maintainer's marks): empty when unknown or truncated, which excuses nothing. */
+  alreadyFailing: readonly KnownFailingEntry[];
   /** What the plan said, from stored fields. */
   planned?: {
     fullSuite?: FullSuiteState | undefined;
@@ -105,14 +108,18 @@ function unclearE2e(facts: AutoFixFacts): "code" | "original_fails" | "original_
 }
 
 /** Whether every failing check of the evidence failed on the original code too and every failing test of it is in the already-failing set. Anything short of that excuses nothing. */
-function knownFailingExcused(failing: readonly EvidencePack["checks"][number][], alreadyFailing: readonly string[]): boolean {
+function knownFailingExcused(failing: readonly EvidencePack["checks"][number][], alreadyFailing: readonly KnownFailingEntry[]): boolean {
   if (failing.length === 0 || alreadyFailing.length === 0) return false;
-  const known = new Set(alreadyFailing);
+  const anyCheck = new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string"));
+  const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
   return failing.every((check) => {
     if (check.after !== "failed" || check.class !== "already_failing" || check.tests === undefined) return false;
     const failedTests = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
-    // Every failure must be named (the names are capped) and known; a check that failed with no failing test named (it did not run its tests) is not excused.
-    return check.tests.failed + check.tests.errored > 0 && failedTests.length === check.tests.failed + check.tests.errored && failedTests.every((test) => known.has(test.name));
+    // A test the change itself added cannot have been failing before it: the worker's own list of new tests is never a reason to excuse one.
+    const added = new Set(check.tests.newTests);
+    // Every failure must be named (the names are capped) and known (a nightly failure in any check, a mark for this check); a check that failed with no failing test named (it did not run its tests) is not excused.
+    return check.tests.failed + check.tests.errored > 0 && failedTests.length === check.tests.failed + check.tests.errored
+      && failedTests.every((test) => !added.has(test.name) && (anyCheck.has(test.name) || perCheck.has(`${check.checkId}\u0000${test.name}`)));
   });
 }
 
@@ -222,6 +229,6 @@ function laterWaiting(current: ResultWaiting | undefined, next: ResultWaiting): 
  * Whether the "fails on the original code" fault is excused. It is only when the evidence pack names the failing checks, each failed on the original code too, and every failing test is known failing.
  * A signal without evidence behind it (`fails-on-original-code` from a check result alone) excuses nothing, and a failing check of another kind is never hidden behind a known failing one.
  */
-function knownFailingExcusedAll(failingChecks: readonly EvidencePack["checks"][number][], originalFailingChecks: readonly EvidencePack["checks"][number][], alreadyFailing: readonly string[]): boolean {
+function knownFailingExcusedAll(failingChecks: readonly EvidencePack["checks"][number][], originalFailingChecks: readonly EvidencePack["checks"][number][], alreadyFailing: readonly KnownFailingEntry[]): boolean {
   return failingChecks.length === originalFailingChecks.length && knownFailingExcused(originalFailingChecks, alreadyFailing);
 }

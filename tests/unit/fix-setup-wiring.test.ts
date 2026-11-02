@@ -25,7 +25,7 @@ describe("fixSetupDependencies", () => {
     expect(items).toMatchObject([{ kind: "fix_setup", cause: "check-runner-failed", step: "Check runner", taskCount: 1 }]);
   });
 
-  it("offers no tests to mark without the broker's evidence pack (the original-code cause, proof switch off)", async () => {
+  it("offers no tests to mark without the broker's evidence pack and nightly data (the original-code cause, proof switch off)", async () => {
     const db = new FakeDynamoDb();
     const port = fixSetupDependencies({ documentClient: db, tableName: "state" } as never, { VERIFY_RESULTS_ENABLED: "1" }).fixSetup!;
     await port.record(task, { reason: "original-code-also-fails", codes: ["fails-on-original-code"], stage: "VERIFY" });

@@ -13,7 +13,7 @@ import {
   workflowCheckResultBroken, workflowSelectedChecks,
   type AutoFixBudget, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingReason, type TestingRow, type TestingView, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { classifyTestingResult, type FullSuiteState, type ResultWaiting } from "../verification/result.js";
+import { classifyTestingResult, type FullSuiteState, type KnownFailingEntry, type ResultWaiting } from "../verification/result.js";
 import { inertLine } from "./inert-text.js";
 
 export interface TestingViewInput {
@@ -23,7 +23,7 @@ export interface TestingViewInput {
   /** The broker's pack for the task (ignored unless it is for exactly the current code). */
   evidence?: EvidencePack | undefined;
   /** `alreadyFailingForResults`: the nightly baseline's failures and a maintainer's marks. */
-  alreadyFailing: readonly string[];
+  alreadyFailing: readonly KnownFailingEntry[];
   planned?: { fullSuite?: FullSuiteState | undefined; claimsNeedingRealService?: readonly string[] | undefined } | undefined;
 }
 

@@ -1,10 +1,11 @@
 // Setup and test health SH17: the Fix setup record (one per project per cause, later tasks join), its card source, and its two decisions ("Mark as known failing" and "Not now").
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AUTO_FIX_ENVIRONMENT_CODES, type EvidencePack } from "@agentx/contracts";
 import { projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { fixSetupHandler } from "../../packages/broker/src/decisions/performer.js";
 import {
-  FIX_SETUP_TASKS_MAX, FIX_SETUP_TESTS_MAX, dismissFixSetup, failingOnOriginalTests, fixSetupCauseOf, fixSetupItemsFor, markKnownFailing, recordFixSetup, type FixSetupDecisionPorts,
+  FIX_SETUP_TASKS_MAX, FIX_SETUP_TESTS_MAX, dismissFixSetup, failingOnOriginalTests, fixSetupCauseOf, fixSetupItemsFor, fixSetupNeedsSecondPerson, markKnownFailing, recordFixSetup, type FixSetupDecisionPorts,
 } from "../../packages/broker/src/test-env/fix-setup.js";
 import { KNOWN_FAILING_MAX, alreadyFailingForResults, knownFailingKey, readKnownFailingRow } from "../../packages/broker/src/test-env/known-failing.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
@@ -15,6 +16,8 @@ const PROJECT = "web";
 const WHO = { orgId: ORG, developerId: "dev_a" };
 const task = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const CAUSE = "fails-on-original-code" as const;
+const BROWSER = { ...WHO, browserSession: true as const };
+const mark = (name: string, checkId = "unit") => ({ name, checkId });
 type FixItem = Extract<DecisionItem, { kind: "fix_setup" }>;
 
 function harness() {
@@ -100,119 +103,196 @@ describe("recordFixSetup: one open record per project and cause", () => {
   });
 });
 
+describe("the task titles on the card", () => {
+  it("say how many more tasks wait than are named", async () => {
+    const h = harness();
+    for (let n = 1; n <= 7; n += 1) {
+      h.tasks.set(task(n), { taskId: task(n), title: `Own task ${String(n)}`, orgId: ORG, project: PROJECT, developerId: "dev_a", developerName: "Ana", provider: "github" });
+      await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(n), cause: "login-failed" });
+    }
+    const [item] = await h.items() as FixItem[];
+    const lines = item!.details?.find((group) => group.title === "Tasks waiting on this")?.lines ?? [];
+    expect(lines).toHaveLength(6);
+    expect(lines.at(-1)).toBe("and 2 more");
+  });
+});
+
 describe("the tests a card could mark", () => {
   const pack = (checks: Array<Record<string, unknown>>): EvidencePack => ({ checks } as unknown as EvidencePack);
-  const check = (names: Array<[string, string]>, over: Record<string, unknown> = {}) => ({
+  const check = (names: Array<[string, string]>, over: Record<string, unknown> = {}, newTests: string[] = []) => ({
     checkId: "unit", after: "failed", class: "already_failing",
-    tests: { total: names.length + 1, passed: 1, failed: names.filter(([, status]) => status === "failed").length, skipped: 0, errored: names.filter(([, status]) => status === "errored").length, names: names.map(([name, status]) => ({ name, status })), newTests: [] },
+    tests: { total: names.length + 1, passed: 1, failed: names.filter(([, status]) => status === "failed").length, skipped: 0, errored: names.filter(([, status]) => status === "errored").length, names: names.map(([name, status]) => ({ name, status })), newTests },
     ...over,
   });
 
-  it("are every failing test of every check that failed on the original code, once each", () => {
-    expect(failingOnOriginalTests(pack([check([["t/a.py::one", "failed"], ["t/a.py::two", "errored"]]), check([["t/a.py::one", "failed"]])]))).toEqual(["t/a.py::one", "t/a.py::two"]);
+  it("are the failing tests of checks that failed on the original code AND that the nightly baseline lists, once each per check", () => {
+    const offer = failingOnOriginalTests(pack([check([["t/a.py::one", "failed"], ["t/a.py::two", "errored"]]), check([["t/a.py::one", "failed"]], { checkId: "lint" })]), ["t/a.py::one", "t/a.py::two", "t/other::x"]);
+    expect(offer).toEqual({ tests: [{ name: "t/a.py::one", checkId: "unit" }, { name: "t/a.py::two", checkId: "unit" }, { name: "t/a.py::one", checkId: "lint" }], unconfirmed: 0 });
   });
 
-  it("are not offered when the pack is missing, names fewer tests than failed, has a name with a space, or has too many", () => {
-    expect(failingOnOriginalTests(undefined)).toBeUndefined();
-    expect(failingOnOriginalTests(pack([]))).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]))).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]))).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check(Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => [`t${String(n)}`, "failed"] as [string, string]))]))).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { class: "regression" })]))).toBeUndefined();
-    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: undefined })]))).toBeUndefined();
+  it("never offers a test the change broke in a check that also failed before (B), or one the change added (C): they are counted apart, not marked", () => {
+    const evidence = pack([check([["t::A", "failed"], ["t::B", "failed"], ["t::C", "failed"]], {}, ["t::C"])]);
+    expect(failingOnOriginalTests(evidence, ["t::A", "t::C"])).toEqual({ tests: [{ name: "t::A", checkId: "unit" }], unconfirmed: 2 });
+    // C is nightly-listed here only to prove the new-test list alone keeps it out.
+    expect(failingOnOriginalTests(evidence, ["t::A"])).toEqual({ tests: [{ name: "t::A", checkId: "unit" }], unconfirmed: 2 });
+  });
+
+  it("offers no mark at all when there is no nightly data (unknown, truncated or never run), or nothing in it matches", () => {
+    const evidence = pack([check([["t::A", "failed"]])]);
+    expect(failingOnOriginalTests(evidence, [])).toBeUndefined();
+    expect(failingOnOriginalTests(evidence, ["t::other"])).toBeUndefined();
+  });
+
+  it("is not offered when the pack is missing, names fewer tests than failed, or the check is not a failure on the original code", () => {
+    expect(failingOnOriginalTests(undefined, ["a"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([]), ["a"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, names: [{ name: "a", status: "failed" }], newTests: [] } })]), ["a"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { class: "regression" })]), ["a"])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([["a", "failed"]], { tests: undefined })]), ["a"])).toBeUndefined();
+  });
+
+  it("never offers a name that is not shown in full (over 200 characters or with whitespace), and not more than one card shows", () => {
+    const long = "t".repeat(201);
+    expect(failingOnOriginalTests(pack([check([[long, "failed"]])]), [long])).toBeUndefined();
+    expect(failingOnOriginalTests(pack([check([["has space", "failed"]])]), ["has space"])).toBeUndefined();
+    const many = Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => `t${String(n)}`);
+    expect(failingOnOriginalTests(pack([check(many.map((name) => [name, "failed"] as [string, string]))]), many)).toBeUndefined();
+    const fits = many.slice(0, FIX_SETUP_TESTS_MAX);
+    expect(failingOnOriginalTests(pack([check(fits.map((name) => [name, "failed"] as [string, string]))]), fits)?.tests).toHaveLength(FIX_SETUP_TESTS_MAX);
   });
 
   it("make the card offer a mark; a later task whose list does not fit removes the offer for everyone, never a partial one", async () => {
     const h = harness();
-    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: CAUSE, tests: ["t::a", "t::b"] });
-    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(2), cause: CAUSE, tests: ["t::b", "t::c"] });
-    expect((await h.only()).knownFailingTests).toBe(3);
-    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(3), cause: CAUSE, tests: Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => `big${String(n)}`) });
+    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: CAUSE, tests: [mark("t::a"), mark("t::b")], unconfirmed: 1 });
+    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(2), cause: CAUSE, tests: [mark("t::b"), mark("t::c")], unconfirmed: 3 });
+    const item = await h.only();
+    expect(item.knownFailingTests).toBe(3);
+    expect(item.unconfirmedFailing).toBe(3);
+    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(3), cause: CAUSE, tests: Array.from({ length: FIX_SETUP_TESTS_MAX + 1 }, (_, n) => mark(`big${String(n)}`)) });
     expect((await h.only()).knownFailingTests).toBe(0);
     // Tests given for any other cause are ignored.
     const other = harness();
-    await recordFixSetup(other.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: "login-failed", tests: ["t::a"] });
+    await recordFixSetup(other.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: "login-failed", tests: [mark("t::a")] });
     expect((await other.only()).knownFailingTests).toBe(0);
+  });
+
+  it("a full record changes nothing for a later task: its tests are those of its first tasks", async () => {
+    const h = harness();
+    for (let n = 1; n <= FIX_SETUP_TASKS_MAX; n += 1) await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(n), cause: CAUSE, tests: [mark("t::a")] });
+    const before = await h.only();
+    expect(await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(99), cause: CAUSE, tests: [mark("t::z")], unconfirmed: 9 })).toBe("unchanged");
+    const after = await h.only();
+    expect(after).toEqual(before);
+    expect(after.contentVersion).toBe(before.contentVersion);
   });
 });
 
 describe("Mark as known failing", () => {
-  const opened = async (tests = ["t/a.py::one", "t/a.py::two"]) => {
+  const opened = async (tests = [mark("t/a.py::one"), mark("t/a.py::two", "lint")]) => {
     const h = harness();
     await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: CAUSE, tests });
     return { h, item: await h.only() };
   };
 
-  it("adds the record's own tests to the project's set, closes the card and audits it, all in one transaction", async () => {
+  it("adds the record's own tests to the project's set with who, when, which card and which check, closes the card and audits it, all in one transaction", async () => {
     const { h, item } = await opened();
-    expect(await markKnownFailing(h.ports, WHO, item, "request-1")).toBe("done");
-    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.tests).toEqual(["t/a.py::one", "t/a.py::two"]);
+    expect(await markKnownFailing(h.ports, BROWSER, item, "request-1")).toBe("done");
+    const row = (await readKnownFailingRow(h.store, ORG, PROJECT))!;
+    expect(row.marks).toEqual([
+      { name: "t/a.py::one", checkId: "unit", markedBy: "dev_a", markedAt: new Date(h.clock.now).toISOString(), epoch: 1 },
+      { name: "t/a.py::two", checkId: "lint", markedBy: "dev_a", markedAt: new Date(h.clock.now).toISOString(), epoch: 1 },
+    ]);
     expect(await h.items()).toEqual([]);
     const events = h.audit.recordedBy("project.known_failing_marked");
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ actor: { id: "dev_a" }, target: { kind: "project", name: PROJECT }, facts: { cause: CAUSE, testCount: 2 } });
+    expect(events[0]).toMatchObject({ actor: { id: "dev_a" }, target: { kind: "project", name: PROJECT }, facts: { cause: CAUSE, testCount: 2, recordEpoch: 1, taskCount: 1, rowVersionAfter: 1, totalAfter: 2 } });
+    const facts = events[0]!.facts as Record<string, unknown>;
+    expect(facts.testSetSha256).toBe(createHash("sha256").update(["lint\tt/a.py::two", "unit\tt/a.py::one"].join("\n")).digest("hex"));
+    expect(facts.taskIdsSha256).toBe(createHash("sha256").update(task(1)).digest("hex"));
     // The audit event names no test.
     expect(JSON.stringify(events[0])).not.toContain("t/a.py");
-    // One transaction held the three writes.
-    const last = h.db.transactions().at(-1)!;
-    expect(last.length).toBe(3);
+    expect(h.db.transactions().at(-1)!.length).toBe(3);
   });
 
-  it("feeds the result classifier's set (the nightly failures and the marks together)", async () => {
+  it("is refused for anything but a live browser session, and writes nothing", async () => {
     const { h, item } = await opened();
-    await markKnownFailing(h.ports, WHO, item, "request-1");
-    expect(await alreadyFailingForResults(h.store, ORG, PROJECT)).toEqual(["t/a.py::one", "t/a.py::two"]);
+    for (const caller of [WHO, { ...WHO, browserSession: undefined }]) await expect(markKnownFailing(h.ports, caller, item, "r"), "no session").rejects.toThrow("Use a live browser session to mark tests as known failing.");
+    expect(await readKnownFailingRow(h.store, ORG, PROJECT)).toEqual({ marks: [], version: 0 });
+    expect(await h.items()).toHaveLength(1);
+    // Not now stays open to any caller.
+    expect(await dismissFixSetup(h.ports, WHO, item)).toBe("done");
+  });
+
+  it("feeds the result classifier's set: the nightly failures by name, the marks by name and check", async () => {
+    const { h, item } = await opened();
+    await markKnownFailing(h.ports, BROWSER, item, "request-1");
+    expect(await alreadyFailingForResults(h.store, ORG, PROJECT)).toEqual([{ name: "t/a.py::one", checkId: "unit" }, { name: "t/a.py::two", checkId: "lint" }]);
   });
 
   it("is refused for a caller who may not edit the project's settings, and writes nothing", async () => {
     const { h, item } = await opened();
     h.can.value = false;
-    await expect(markKnownFailing(h.ports, WHO, item, "request-1")).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await readKnownFailingRow(h.store, ORG, PROJECT)).toEqual({ tests: [], version: 0 });
+    await expect(markKnownFailing(h.ports, BROWSER, item, "request-1")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await readKnownFailingRow(h.store, ORG, PROJECT)).toEqual({ marks: [], version: 0 });
     expect(await h.items()).toHaveLength(1);
   });
 
   it("is stale when another task joined after the card was shown (the person never marks tests they were not shown)", async () => {
     const { h, item } = await opened();
-    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(2), cause: CAUSE, tests: ["t/a.py::three"] });
-    expect(await markKnownFailing(h.ports, WHO, item, "request-1")).toBe("stale");
-    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.tests).toEqual([]);
-    // The new card carries all three.
+    await recordFixSetup(h.store, { orgId: ORG, project: PROJECT, taskId: task(2), cause: CAUSE, tests: [mark("t/a.py::three")] });
+    expect(await markKnownFailing(h.ports, BROWSER, item, "request-1")).toBe("stale");
+    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toEqual([]);
     expect((await h.only()).knownFailingTests).toBe(3);
   });
 
   it("takes nothing from the card: the tests marked are the stored record's, whatever the item says", async () => {
     const { h, item } = await opened();
     const forged = { ...item, knownFailingTests: 1, details: [{ title: "Tests that would be marked as already failing", lines: ["evil::test"] }] } as FixItem;
-    expect(await markKnownFailing(h.ports, WHO, forged, "request-1")).toBe("done");
-    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.tests).toEqual(["t/a.py::one", "t/a.py::two"]);
+    expect(await markKnownFailing(h.ports, BROWSER, forged, "request-1")).toBe("done");
+    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks.map((m) => m.name)).toEqual(["t/a.py::one", "t/a.py::two"]);
   });
 
   it("a second press of the same card is stale, not a second mark", async () => {
     const { h, item } = await opened();
-    await markKnownFailing(h.ports, WHO, item, "request-1");
-    expect(await markKnownFailing(h.ports, WHO, item, "request-2")).toBe("stale");
+    await markKnownFailing(h.ports, BROWSER, item, "request-1");
+    expect(await markKnownFailing(h.ports, BROWSER, item, "request-2")).toBe("stale");
     expect(h.audit.recordedBy("project.known_failing_marked")).toHaveLength(1);
   });
 
-  it("is not ready when the record has no tests, is not the original-code cause, or the project's list would overflow", async () => {
+  it("is not ready when the record has no tests or is not the original-code cause", async () => {
     const none = harness();
     await recordFixSetup(none.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: CAUSE });
-    expect(await markKnownFailing(none.ports, WHO, await none.only(), "r")).toBe("not_ready");
+    expect(await markKnownFailing(none.ports, BROWSER, await none.only(), "r")).toBe("not_ready");
     const wrong = harness();
     await recordFixSetup(wrong.store, { orgId: ORG, project: PROJECT, taskId: task(1), cause: "login-failed" });
-    expect(await markKnownFailing(wrong.ports, WHO, await wrong.only(), "r")).toBe("not_ready");
-    const { h, item } = await opened(["new::one"]);
-    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", tests: Array.from({ length: KNOWN_FAILING_MAX }, (_, n) => `old${String(n)}`), version: 1, updatedAt: "2026-11-01T00:00:00.000Z" });
-    expect(await markKnownFailing(h.ports, WHO, item, "r")).toBe("not_ready");
-    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.tests).toHaveLength(KNOWN_FAILING_MAX);
+    expect(await markKnownFailing(wrong.ports, BROWSER, await wrong.only(), "r")).toBe("not_ready");
+  });
+
+  it("refuses a list that would pass the limit with its own sentence, and marks nothing", async () => {
+    const { h, item } = await opened([mark("new::one")]);
+    const old = { checkId: "unit", markedBy: "dev_b", markedAt: "2026-11-01T00:00:00.000Z", epoch: 1 };
+    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", marks: Array.from({ length: KNOWN_FAILING_MAX }, (_, n) => ({ ...old, name: `old${String(n)}` })), version: 1, updatedAt: "2026-11-01T00:00:00.000Z" });
+    await expect(markKnownFailing(h.ports, BROWSER, item, "r")).rejects.toThrow("This project's known-failing list is full (500). Remove some before marking more.");
+    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toHaveLength(KNOWN_FAILING_MAX);
+    expect(await h.items()).toHaveLength(1);
   });
 
   it("refuses to write when the project's marks cannot be read (a damaged row excuses nothing and takes no more)", async () => {
     const { h, item } = await opened();
-    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", tests: "not a list", version: 1 });
-    expect(await markKnownFailing(h.ports, WHO, item, "r")).toBe("not_ready");
+    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", marks: "not a list", version: 1 });
+    expect(await markKnownFailing(h.ports, BROWSER, item, "r")).toBe("not_ready");
     expect(await alreadyFailingForResults(h.store, ORG, PROJECT)).toEqual([]);
+  });
+
+  it("asks the second-person seam before writing; it answers 'not needed' for now, and 'needed' stops the mark", async () => {
+    expect(await fixSetupNeedsSecondPerson({ caller: WHO, record: { taskIds: [task(1)], cause: CAUSE, epoch: 1 }, project: PROJECT })).toBe("not_needed");
+    const { h, item } = await opened();
+    const asked: string[] = [];
+    const stop = { ...h.ports, secondPersonNeed: async (input: { project: string }) => { asked.push(input.project); return "needed" as const; } };
+    expect(await markKnownFailing(stop, BROWSER, item, "r")).toBe("second_person");
+    expect(asked).toEqual([PROJECT]);
+    expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toEqual([]);
+    expect(await h.items()).toHaveLength(1);
   });
 });
 
@@ -244,18 +324,28 @@ describe("Not now", () => {
 describe("the card handler", () => {
   it("maps the answers to the card routes' outcomes and refuses another kind's item", async () => {
     const answers: string[] = [];
-    const handler = fixSetupHandler<typeof WHO>({
+    const handler = fixSetupHandler<typeof BROWSER>({
       markKnownFailing: async () => (answers.shift() ?? "done") as never,
       dismiss: async () => (answers.shift() ?? "done") as never,
     });
     const item = { kind: "fix_setup" } as DecisionItem;
     const input = { card: {} as never, item, requestId: "r" };
-    expect(await handler.approve(WHO, input)).toEqual({ kind: "done" });
+    expect(await handler.approve(BROWSER, input)).toEqual({ kind: "done" });
     answers.push("stale");
-    expect(await handler.approve(WHO, input)).toEqual({ kind: "refused", reason: "stale" });
+    expect(await handler.approve(BROWSER, input)).toEqual({ kind: "refused", reason: "stale" });
+    answers.push("second_person");
+    expect(await handler.approve(BROWSER, input)).toEqual({ kind: "refused", reason: "second_person_required" });
     answers.push("not_ready");
-    expect(await handler.reject!(WHO, { ...input, reason: "not_now" })).toEqual({ kind: "refused", reason: "not_ready" });
-    expect(await handler.approve(WHO, { ...input, item: { kind: "merge" } as DecisionItem })).toEqual({ kind: "refused", reason: "unsupported" });
+    expect(await handler.reject!(WHO as typeof BROWSER, { ...input, reason: "not_now" })).toEqual({ kind: "refused", reason: "not_ready" });
+    expect(await handler.approve(BROWSER, { ...input, item: { kind: "merge" } as DecisionItem })).toEqual({ kind: "refused", reason: "unsupported" });
+  });
+
+  it("an approve from anything but a live browser session is refused with the sentence before any port is asked, and a reject is not", async () => {
+    let asked = 0;
+    const handler = fixSetupHandler<typeof WHO>({ markKnownFailing: async () => { asked += 1; return "done"; }, dismiss: async () => { asked += 1; return "done"; } });
+    const input = { card: {} as never, item: { kind: "fix_setup" } as DecisionItem, requestId: "r" };
+    await expect(handler.approve(WHO, input)).rejects.toThrow("Use a live browser session to mark tests as known failing.");
+    expect(asked).toBe(0);
+    expect(await handler.reject!(WHO, { ...input, reason: "not_now" })).toEqual({ kind: "done" });
   });
 });
-

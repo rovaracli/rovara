@@ -222,6 +222,19 @@ describe("a test that fails on the original code too (4.2 fails-on-original-code
     expect(run(failing(), { facts, evidence: evidence(["t1", "t2"]), alreadyFailing: ["t1", "t2", "t9"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
   });
 
+  it("never excuses a test the change itself added, even when its name is in the already-failing set", () => {
+    const added = evidence(["t1", "t2"], { tests: tests(["t1", "t2"], { newTests: ["t2"] }) });
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: ["t1", "t2"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: [{ name: "t1", checkId: "unit" }, { name: "t2", checkId: "unit" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { newTests: ["other"] }) }), alreadyFailing: ["t1"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
+  });
+
+  it("matches a mark on the test AND its check: a nightly name matches in any check, a mark only in the check it was made for", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "unit" }] })).toEqual(decided("partially_verified", ["known_failing_only"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "lint" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "other", checkId: "unit" }] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  });
+
   it("is Blocked by environment when a failing test is not known, or nothing is known failing (an unreadable or truncated set excuses nothing)", () => {
     expect(run(failing(), { facts, evidence: evidence(["t1", "t2"]), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
     expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));

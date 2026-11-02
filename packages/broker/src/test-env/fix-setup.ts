@@ -22,12 +22,17 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { DecisionItem } from "../decisions/project.js";
-import type { FixSetupAnswer } from "../decisions/performer.js";
-import { KnownFailingTestId, knownFailingWrite, nextKnownFailing, readKnownFailingRow } from "./known-failing.js";
+import { FIX_SETUP_BROWSER_MESSAGE, type FixSetupAnswer } from "../decisions/performer.js";
+import { KnownFailingTestId, knownFailingWrite, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "./known-failing.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 
 type FixSetupItem = Extract<DecisionItem, { kind: "fix_setup" }>;
 interface Who { orgId: string; developerId: string }
+/** A press that came from a live browser session (the web boundary vouched for the cookie and the CSRF token); a token or an AI tool never has it. */
+interface Presser extends Who { browserSession?: true | undefined }
+
+/** A test a card could mark, with the check it failed in (a mark is for that test in that check). */
+export interface MarkableTest { name: string; checkId: string }
 
 /** The causes a Fix setup card can be about: the environment codes of the auto-fix policy, in the table's order (the first one an ask names is the cause). */
 export const FIX_SETUP_CAUSES = AUTO_FIX_ENVIRONMENT_CODES;
@@ -36,7 +41,8 @@ export type FixSetupCause = (typeof FIX_SETUP_CAUSES)[number];
 export const FIX_SETUP_MARKABLE_CAUSE: FixSetupCause = "fails-on-original-code";
 
 export const FIX_SETUP_TASKS_MAX = 25;
-export const FIX_SETUP_TESTS_MAX = 50;
+/** The most tests one card can offer to mark. Every one is shown in full on the card (names are at most 200 characters), so nothing is marked that was not read. */
+export const FIX_SETUP_TESTS_MAX = 20;
 /** The most projects and card records one listing reads, so a listing is bounded. */
 export const FIX_SETUP_PROJECTS_MAX = 25;
 export const FIX_SETUP_TASK_TITLES_MAX = 5;
@@ -57,23 +63,30 @@ export function fixSetupCauseOf(codes: readonly AutoFixCode[]): FixSetupCause | 
 }
 
 /**
- * The tests a "Mark as known failing" could add, from the broker's own evidence pack: every test of every check that failed on the original code too (class `already_failing`, outcome `failed`). Undefined (so
- * the card has no such action) unless the pack names EVERY failing test of those checks, each one a valid id, within the bound: a partial or doubtful list is never offered. The same rule the result classifier
- * uses to decide a failure is "already failing" (`verification/result.ts`), so a mark can make the next result Partially verified and nothing else.
+ * The tests a "Mark as known failing" could add. Two things must both hold for a test to be offered: it failed in a check that failed on the original code too (the broker's evidence pack: class
+ * `already_failing`, outcome `failed`), AND the project's last nightly baseline on the default branch (`nightlyFailing`, broker-stored, empty when unknown or truncated) lists it as failing. The worker's report of the
+ * change's own run decides neither alone: a test the change broke in a check that also failed on old code (B), or a test the change added (C, `newTests`), is never offered. `unconfirmed` counts the failing tests of
+ * those checks that were not offered, so the card can say so. Undefined (the card has no such action) when there is no nightly data, no check qualifies, the pack does not name every failing test of a qualifying check,
+ * nothing is confirmed, or more tests are confirmed than one card can show.
  */
-export function failingOnOriginalTests(pack: EvidencePack | undefined): string[] | undefined {
-  if (pack === undefined) return undefined;
+export function failingOnOriginalTests(pack: EvidencePack | undefined, nightlyFailing: readonly string[]): { tests: MarkableTest[]; unconfirmed: number } | undefined {
+  if (pack === undefined || nightlyFailing.length === 0) return undefined;
   const checks = pack.checks.filter((check) => check.after === "failed" && check.class === "already_failing");
   if (checks.length === 0) return undefined;
-  const names: string[] = [];
+  const nightly = new Set(nightlyFailing);
+  const confirmed = new Map<string, MarkableTest>();
+  let unconfirmed = 0;
   for (const check of checks) {
     if (check.tests === undefined) return undefined;
     const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
     if (check.tests.failed + check.tests.errored === 0 || failed.length !== check.tests.failed + check.tests.errored) return undefined;
-    for (const test of failed) names.push(test.name);
+    const added = new Set(check.tests.newTests);
+    for (const test of failed) {
+      if (!added.has(test.name) && nightly.has(test.name) && KnownFailingTestId.safeParse(test.name).success) confirmed.set(`${check.checkId}\u0000${test.name}`, { name: test.name, checkId: check.checkId });
+      else unconfirmed += 1;
+    }
   }
-  const unique = [...new Set(names)];
-  return unique.length <= FIX_SETUP_TESTS_MAX && unique.every((name) => KnownFailingTestId.safeParse(name).success) ? unique : undefined;
+  return confirmed.size > 0 && confirmed.size <= FIX_SETUP_TESTS_MAX ? { tests: [...confirmed.values()], unconfirmed } : undefined;
 }
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -89,8 +102,10 @@ const RecordSchema = z.object({
   lastAt: z.string().datetime(),
   taskIds: z.array(z.string().uuid()).max(FIX_SETUP_TASKS_MAX),
   taskCount: z.number().int().min(1).max(FIX_SETUP_TASKS_MAX),
-  tests: z.array(KnownFailingTestId).max(FIX_SETUP_TESTS_MAX),
+  tests: z.array(z.object({ name: KnownFailingTestId, checkId: z.string().min(1).max(64) }).strict()).max(FIX_SETUP_TESTS_MAX),
   testsTruncated: z.boolean(),
+  /** Failing tests of the qualifying checks that were not confirmed by the nightly baseline (so not offered). */
+  unconfirmed: z.number().int().min(0).max(100_000).default(0),
   closedAt: z.string().datetime().optional(),
   closedReason: z.enum(["dismissed", "known_failing"]).optional(),
   closedBy: z.string().max(200).optional(),
@@ -111,10 +126,11 @@ async function readRecord(store: FixSetupStore, orgId: OrgId, project: string, c
   return parsed.success ? parsed.data : "unreadable";
 }
 
-/** Tests the card would mark: valid, once each; a list over the bound is dropped whole (`truncated`), never cut. */
-function normalizedTests(tests: readonly string[] | undefined): { tests: string[]; truncated: boolean } {
-  const valid = [...new Set((tests ?? []).filter((test) => KnownFailingTestId.safeParse(test).success))];
-  return valid.length > FIX_SETUP_TESTS_MAX ? { tests: [], truncated: true } : { tests: valid, truncated: false };
+/** Tests the card would mark: valid, once each per check; a list over the bound is dropped whole (`truncated`), never cut. */
+function normalizedTests(tests: readonly MarkableTest[] | undefined): { tests: MarkableTest[]; truncated: boolean } {
+  const unique = new Map<string, MarkableTest>();
+  for (const test of tests ?? []) if (KnownFailingTestId.safeParse(test.name).success && test.checkId.length > 0 && test.checkId.length <= 64) unique.set(`${test.checkId}\u0000${test.name}`, { name: test.name, checkId: test.checkId });
+  return unique.size > FIX_SETUP_TESTS_MAX ? { tests: [], truncated: true } : { tests: [...unique.values()], truncated: false };
 }
 
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
@@ -125,8 +141,9 @@ export type FixSetupRecorded = "opened" | "joined" | "unchanged" | "unreadable";
  * A task blocked by `cause`: opens the project's card for that cause, or joins the open one. Idempotent for one task. Tests (for `fails-on-original-code` only) are the broker's own evidence of checks that
  * failed on the original code. Throws only for an infrastructure fault after a few attempts; the caller (the auto-fix runner) logs it and goes on, since the ask itself is already stored.
  */
-export async function recordFixSetup(store: FixSetupStore, input: { orgId: OrgId; project: string; taskId: string; cause: FixSetupCause; tests?: readonly string[] | undefined }): Promise<FixSetupRecorded> {
+export async function recordFixSetup(store: FixSetupStore, input: { orgId: OrgId; project: string; taskId: string; cause: FixSetupCause; tests?: readonly MarkableTest[] | undefined; unconfirmed?: number | undefined }): Promise<FixSetupRecorded> {
   const wanted = input.cause === FIX_SETUP_MARKABLE_CAUSE ? normalizedTests(input.tests) : { tests: [], truncated: false };
+  const unconfirmed = input.cause === FIX_SETUP_MARKABLE_CAUSE ? Math.max(0, Math.min(100_000, Math.trunc(input.unconfirmed ?? 0))) : 0;
   const nowIso = new Date(store.now()).toISOString();
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
     const found = await readRecord(store, input.orgId, input.project, input.cause);
@@ -134,7 +151,7 @@ export async function recordFixSetup(store: FixSetupStore, input: { orgId: OrgId
     const base = { entityType: "FIX_SETUP", orgId: input.orgId, project: input.project, ...keyOf(input.orgId, input.project, input.cause), cause: input.cause };
     try {
       if (found === undefined || found.status === "closed") {
-        const record: FixSetupRecord = { cause: input.cause, status: "open", version: (found?.version ?? 0) + 1, epoch: (found?.epoch ?? 0) + 1, openedAt: nowIso, lastAt: nowIso, taskIds: [input.taskId], taskCount: 1, tests: wanted.tests, testsTruncated: wanted.truncated };
+        const record: FixSetupRecord = { cause: input.cause, status: "open", version: (found?.version ?? 0) + 1, epoch: (found?.epoch ?? 0) + 1, openedAt: nowIso, lastAt: nowIso, taskIds: [input.taskId], taskCount: 1, tests: wanted.tests, testsTruncated: wanted.truncated, unconfirmed };
         await store.documentClient.send(new PutCommand({
           TableName: store.tableName, Item: { ...base, ...record },
           ...(found === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#version = :version AND #status = :closed", ExpressionAttributeNames: { "#version": "version", "#status": "status" }, ExpressionAttributeValues: { ":version": found.version, ":closed": "closed" } }),
@@ -142,20 +159,19 @@ export async function recordFixSetup(store: FixSetupStore, input: { orgId: OrgId
         return "opened";
       }
       if (found.taskIds.includes(input.taskId)) return "unchanged";
+      // A full record changes nothing: its tests are those of its first tasks, which are the ones the card has shown.
+      if (found.taskIds.length >= FIX_SETUP_TASKS_MAX) return "unchanged";
       const truncated = found.testsTruncated || wanted.truncated;
-      const union = truncated ? [] : [...new Set([...found.tests, ...wanted.tests])];
-      const tooMany = union.length > FIX_SETUP_TESTS_MAX;
-      const full = found.taskIds.length >= FIX_SETUP_TASKS_MAX;
+      const union = normalizedTests(truncated ? [] : [...found.tests, ...wanted.tests]);
       const record: FixSetupRecord = {
-        ...found, version: found.version + 1, lastAt: nowIso,
-        taskIds: full ? found.taskIds : [...found.taskIds, input.taskId], taskCount: full ? found.taskCount : found.taskCount + 1,
-        tests: tooMany ? [] : union, testsTruncated: truncated || tooMany,
+        ...found, version: found.version + 1, lastAt: nowIso, taskIds: [...found.taskIds, input.taskId], taskCount: found.taskCount + 1,
+        tests: truncated || union.truncated ? [] : union.tests, testsTruncated: truncated || union.truncated, unconfirmed: Math.max(found.unconfirmed, unconfirmed),
       };
       await store.documentClient.send(new PutCommand({
         TableName: store.tableName, Item: { ...base, ...record },
         ConditionExpression: "#version = :version AND #status = :open", ExpressionAttributeNames: { "#version": "version", "#status": "status" }, ExpressionAttributeValues: { ":version": found.version, ":open": "open" },
       }));
-      return full ? "unchanged" : "joined";
+      return "joined";
     } catch (error) {
       if (!conditionFailed(error)) throw error;
       // Someone else wrote first: read again and decide again.
@@ -181,12 +197,13 @@ function itemOf(project: string, orgId: string, record: FixSetupRecord, titles: 
   const details: Array<{ title: string; lines: string[] }> = [
     { title: "What failed", lines: [autoFixCodeSentence(record.cause)] },
     ...(titles.length === 0 ? [] : [{ title: "Tasks waiting on this", lines: [...titles, ...(record.taskCount > titles.length ? [`and ${String(record.taskCount - titles.length)} more`] : [])] }]),
-    ...(marks === 0 ? [] : [{ title: "Tests that would be marked as already failing", lines: record.tests.slice(0, 20) }]),
+    // Every name that would be marked is listed in full (the record holds at most FIX_SETUP_TESTS_MAX names of at most 200 characters); a longer list could not be offered at all.
+    ...(marks === 0 ? [] : [{ title: "Tests that would be marked as already failing", lines: [...record.tests.slice(0, FIX_SETUP_TESTS_MAX).map((test) => test.name), ...(record.tests.length > FIX_SETUP_TESTS_MAX ? [`and ${String(record.tests.length - FIX_SETUP_TESTS_MAX)} more`] : [])] }]),
   ];
   return {
     kind: "fix_setup", subjectId: `${sha(`${orgId}:${project}`).slice(0, 24)}-${record.cause}`, project, title: `Fix setup: ${stepOf(record.cause)}`, createdAt: record.openedAt,
     openPath: `/app/onboard?project=${encodeURIComponent(project)}&step=setup`, contentVersion: fixSetupContentVersion(record), details,
-    cause: record.cause, step: stepOf(record.cause), taskCount: record.taskCount, knownFailingTests: marks,
+    cause: record.cause, step: stepOf(record.cause), taskCount: record.taskCount, knownFailingTests: marks, unconfirmedFailing: record.unconfirmed,
   };
 }
 
@@ -226,6 +243,8 @@ export interface FixSetupDecisionPorts {
   store: TestEnvDeps;
   /** Whether the caller may edit the project's settings now (a live check of their role, never a claim). */
   mayEditSettings(caller: Who, project: string): Promise<boolean>;
+  /** Whether a second person must confirm a mark (default `fixSetupNeedsSecondPerson`: no one). */
+  secondPersonNeed?: typeof fixSetupNeedsSecondPerson;
 }
 
 /** The record a card was built from, still open and unchanged, or the answer to give instead. */
@@ -256,23 +275,38 @@ async function send(store: FixSetupStore, items: TransactItem[]): Promise<boolea
   }
 }
 
+/** Whether a second person must confirm a mark. The seam for the owner's decision on a presser who owns one of the affected tasks (a person could mark the tests their own change broke): for now no one is needed. */
+export type SecondPersonNeed = "needed" | "not_needed";
+export function fixSetupNeedsSecondPerson(input: { caller: Who; record: Pick<FixSetupRecord, "taskIds" | "cause" | "epoch">; project: string }): Promise<SecondPersonNeed> {
+  void input;
+  return Promise.resolve("not_needed");
+}
+
+const hashOf = (parts: readonly string[]): string => createHash("sha256").update(parts.join("\n")).digest("hex");
+
 /**
  * "Mark as known failing": adds the record's tests to the project's already-failing set, closes the card and records the audit event, in ONE transaction that holds only while the record and the set are as read.
- * A card with nothing to mark, or whose tests would not fit the project's list, is "not_ready" (no partial mark); a card whose record changed or closed since it was shown is "stale". The caller must still be a
- * maintainer of the project (else FORBIDDEN).
+ * Only a live browser session may press it (FORBIDDEN otherwise, so a stolen token or an AI tool cannot change how results are judged), and the caller must still be a maintainer of the project. A card with
+ * nothing to mark is "not_ready" (no partial mark); a card whose record changed or closed since it was shown is "stale"; a list that would pass its limit is refused with its own sentence. Each mark keeps who made
+ * it, when, on which card and for which check.
  */
-export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Who, item: FixSetupItem, requestId: string): Promise<FixSetupAnswer> {
+export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Presser, item: FixSetupItem, requestId: string): Promise<FixSetupAnswer> {
+  if (caller.browserSession !== true) throw agentXError("FORBIDDEN", FIX_SETUP_BROWSER_MESSAGE);
   const record = await currentRecord(ports, caller, item);
   if (record === "stale") return "stale";
   if (record.cause !== FIX_SETUP_MARKABLE_CAUSE || record.testsTruncated || record.tests.length === 0) return "not_ready";
+  if ((await (ports.secondPersonNeed ?? fixSetupNeedsSecondPerson)({ caller, record, project: item.project })) === "needed") return "second_person";
   const orgId = caller.orgId;
   const before = await readKnownFailingRow(ports.store, orgId, item.project);
   if (before === undefined) return "not_ready";
-  const next = nextKnownFailing(before, record.tests);
-  if (next === undefined) return "not_ready";
   const nowIso = new Date(ports.store.now()).toISOString();
+  const added: KnownFailingMark[] = record.tests.map((test) => ({ name: test.name, checkId: test.checkId, markedBy: caller.developerId, markedAt: nowIso, epoch: record.epoch }));
+  // Throws the limit's own refusal ("This project's known-failing list is full (500)...").
+  const next = nextKnownFailing(before, added);
   const event = await tryAuditEvent(ports.store, () => auditProjectKnownFailingMarked({
-    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: requestId, projectName: item.project, cause: record.cause, testCount: next.length - before.tests.length,
+    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: requestId, projectName: item.project, cause: record.cause, testCount: next.length - before.marks.length,
+    recordEpoch: record.epoch, taskCount: record.taskCount, taskIdsSha256: hashOf([...record.taskIds].sort()),
+    testSetSha256: hashOf(record.tests.map((test) => `${test.checkId}\t${test.name}`).sort()), rowVersionAfter: before.version + 1, totalAfter: next.length,
   }));
   const done = await send(ports.store, [
     knownFailingWrite(ports.store, orgId, item.project, before, next, nowIso),

@@ -25,7 +25,7 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   approve_test_env: { ...base("env1"), kind: "approve_test_env", risk: "medium", riskReasons: [], tier: "sandbox", expectedRevision: 1 },
   confirm_env_change: { ...base("chg1"), kind: "confirm_env_change", what: "accounts" },
   spec_choice: { ...base("spc1"), kind: "spec_choice", message: "The spec changed. Re-plan or keep?" },
-  fix_setup: { ...base("fix1"), kind: "fix_setup", cause: "setup-failed-in-task", step: "Setup", taskCount: 2, knownFailingTests: 0 },
+  fix_setup: { ...base("fix1"), kind: "fix_setup", cause: "setup-failed-in-task", step: "Setup", taskCount: 2, knownFailingTests: 0, unconfirmedFailing: 0 },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
@@ -342,9 +342,16 @@ describe("fix_setup (setup and test health SH17)", () => {
     const card = cardOf(fix({ knownFailingTests: 3 }));
     expect(card.actions.map((action) => [action.kind, action.label])).toEqual([["open", "Open the setup"], ["reject", "Not now"], ["approve", "Mark as known failing"]]);
     expect(card.actions.find((action) => action.kind === "approve")!.href).toBe("/v1/app/decisions/fix_setup/fix1/approve");
-    expect(card.evidence.some((chip) => chip.label === "Failing before this change" && chip.value === "3 tests")).toBe(true);
+    expect(card.evidence.some((chip) => chip.label === "Failing before this change" && chip.value === "3 tests, confirmed by the nightly run")).toBe(true);
     expect(card.friction.expandEvidenceFirst).toBe(true);
     expect(card.riskReasons).toContain("Marking tests as already failing changes how later results are judged.");
+  });
+
+  it("says apart, and never as older, the failing tests of those checks that the nightly run does not confirm", () => {
+    const card = cardOf(fix({ knownFailingTests: 1, unconfirmedFailing: 2 }));
+    expect(card.evidence.map((chip) => `${chip.label}: ${chip.value}`)).toContain("Failing in checks that failed before: 2 more tests, not confirmed older");
+    expect(cardOf(fix({ knownFailingTests: 0, unconfirmedFailing: 2 })).actions.map((action) => action.kind)).toEqual(["open", "reject"]);
+    expect(cardOf(fix()).evidence.some((chip) => chip.label === "Failing in checks that failed before")).toBe(false);
   });
 
   it("a company lock that raises it to high leaves only Open to decide, never an approve", () => {
