@@ -182,6 +182,8 @@ export const BROKER_SETTINGS = {
   learnedLessons: { code: "ll", variable: "LEARNED_LESSONS_ENABLED" },
   // Project registries (N9, INTG2): a project's private package registries reach the worker's setup. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains` (infra/lib/registry-access.ts), which also grants the broker the one named CodeArtifact domain; absent otherwise, and the broker reads absence as OFF. On only when exactly "1" (project-registries/switch.ts). Packed setting, not a Lambda variable (ENV-ROOM).
   projectRegistries: { code: "pr", variable: "PROJECT_REGISTRIES_ENABLED" },
+  // Nightly health (setup-test-health SH28, switch `nh`): the nightly run decides the project's health ("Setup needs repair" with a Fix setup card, a start banner, an optional proposed fix task). Stack parameter NightlyHealthEnabled, "0" by default: the broker reads it as NIGHTLY_HEALTH_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  nightlyHealth: { code: "nh", variable: "NIGHTLY_HEALTH_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

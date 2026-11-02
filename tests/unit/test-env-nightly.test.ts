@@ -1,6 +1,7 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
 import { describe, expect, it } from "vitest";
 import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { nightlyHealthListener, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
 import { NIGHTLY_ENVIRONMENT_CAUSES, NIGHTLY_HEALTH_STEPS, NIGHTLY_UNCLEAR_CAUSES } from "../../packages/broker/src/test-env/nightly-health.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import {
@@ -412,5 +413,37 @@ describe("SH27: step words on the nightly result", () => {
   it("the contract's step words are the classifier's, and every cause the classifier can give is storable", () => {
     expect([...NIGHTLY_STEP_WORDS]).toEqual([...NIGHTLY_HEALTH_STEPS]);
     for (const cause of [...NIGHTLY_ENVIRONMENT_CAUSES, ...NIGHTLY_UNCLEAR_CAUSES]) expect(StoredNightlyHealthSchema.safeParse({ class: "unclear", cause, ranFrom: "fresh" }).success, cause).toBe(true);
+  });
+});
+
+describe("SH28: recording a night drives the project health, only while nh is on", () => {
+  const steps = NIGHTLY_STEP_WORDS.map((step) => ({ step, status: step === "setup" ? "failed" : "passed" }));
+  const health = { steps, checks: [{ runsTests: true, started: true, timedOut: false, reportApproved: true, reportWritten: true, testsCollected: 10 }], tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 } };
+  const ports = () => {
+    const opened: Array<Record<string, unknown>> = [];
+    const value: HealthPorts = { cards: { openOrJoin: (input) => { opened.push({ ...input }); return Promise.resolve(); }, resolve: () => Promise.resolve() }, proposals: { propose: () => Promise.resolve() } };
+    return { opened, value };
+  };
+  async function record(env: NodeJS.ProcessEnv) {
+    const h = await harness();
+    const started = await handleNightlyFire(h.deps, h.fire());
+    if (started.outcome !== "started") throw new Error("not started");
+    const data = result(started.slotId, { health });
+    const p = ports();
+    await recordNightlyResult(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap }, nightlyHealthListener(h.deps, p.value, env));
+    return { h, p };
+  }
+
+  it("on: a night whose setup failed makes the project need repair and opens the Fix setup card", async () => {
+    const { h, p } = await record({ NIGHTLY_HEALTH_ENABLED: "1", TEST_ENVIRONMENT_ENABLED: "1" });
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "setup_failed" });
+    expect(p.opened).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [] }]);
+  });
+
+  it("off: the night is recorded exactly as before and no health item or card exists", async () => {
+    const { h, p } = await record({});
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
+    expect(p.opened).toHaveLength(0);
+    expect((await readNightlyBaseline(h.deps, ORG, PROJECT))?.headSha).toBe(HEAD1);
   });
 });

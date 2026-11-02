@@ -2947,6 +2947,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)",
       "Type": "String",
     },
+    "NightlyHealthEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: the nightly run sets the project's health (Setup needs repair, a Fix setup card, a start banner; needs the test environment); 0: no health is recorded or shown (agentx config set nightlyHealth.enabled 1)",
+      "Type": "String",
+    },
     "OidcAudience": {
       "Type": "String",
     },
@@ -3509,6 +3518,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",ml=",
                   {
                     "Ref": "SlackMemberWorkspaceLimit",
+                  },
+                  ",nh=",
+                  {
+                    "Ref": "NightlyHealthEnabled",
                   },
                   ",ol=",
                   {
