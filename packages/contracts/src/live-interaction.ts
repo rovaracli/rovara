@@ -14,8 +14,8 @@ type Edition = "enterprise" | "public";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Switches. Three packed settings in the design (`rd`, `ak`, and the fix switch), all OFF by default. The design named the third `fx`, but `fx` is already the autofix
-// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. `ak` is in BROKER_SETTINGS (as `liveAsk`, stack parameter LiveAskEnabled; A3, once both deploy gates below held). `rd` and `fd`
-// are NOT yet: adding one needs the stack parameter, the CLI key and the broker-settings test table in one change (wiring pending in the lane report).
+// switch (BROKER_SETTINGS.autofix), so the fix switch is `fd`. All three are in BROKER_SETTINGS (`liveRedirect`, `liveAsk`, `liveFix`), each with its stack parameter,
+// CLI key and a row in the broker-settings test table; `ak` and `fd` are held by the deploy gates below.
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export const LIVE_INTERACTION_FLAGS = {

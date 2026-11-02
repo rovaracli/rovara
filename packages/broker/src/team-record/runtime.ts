@@ -70,6 +70,14 @@ export interface TeamRecordRuntimeInput {
    * reachable only once such a link exists; the DPA wording says so.)
    */
   slackUserIdsOf?: (developerId: string) => Promise<string[]>;
+  /**
+   * The names a developer is known by (their sign-in name, or the one they chose). A person erase passes them as `ErasedPerson.names` so an Ask still being answered does not write them: they are kept for at
+   * most 30 days, and only as keyed hashes (LI-2). Read again on each pass of the erase and never stored in its job. Absent, or a read that fails: the erase goes on without them (the Ask scrub then
+   * keeps only the person's label tag).
+   */
+  namesOf?: (developerId: string) => Promise<string[]>;
+  /** The key the erased person's aliases are hashed with (`askAliasHashKey(callbackSigningKey)`, LA-5). Absent: only the person's label tag is kept for Ask scrubbing, never a raw alias. */
+  askAliasKey?: string;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
   audit?: RecordAuditSink;
   /** A model for the distiller (retention B / nightly). Absent: no distiller, B text is dropped. */
@@ -311,6 +319,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return {
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
+      ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
     };
   }
 
@@ -463,11 +472,22 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       }
       return true;
     }
+    const names = job.kind === "person" ? await personNames(job.developerId) : [];
     const complete = job.kind === "project"
       ? (await eraseProject(deps, orgId, job.project, job.cause, `${job.cause}:${job.project}`, budget)).complete
-      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }) }, `erase:${job.developerId}`, budget)).complete;
+      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }) }, `erase:${job.developerId}`, budget)).complete;
     if (complete) await dropJob(job.sk);
     return complete;
+  }
+  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none (the erase is never held up for it). */
+  async function personNames(developerId: string): Promise<string[]> {
+    if (input.namesOf === undefined) return [];
+    try {
+      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name.length <= 200))].slice(0, 10);
+    } catch {
+      log("record.erase_names_unreadable", {});
+      return [];
+    }
   }
   /** The source identities a person has: their linked GitHub account, and each Slack user id they signed in with in every Slack team bound to the org (a Slack row is indexed under `slack:<team>`). */
   async function personIdentities(orgId: OrgId, developerId: string): Promise<Array<{ system: string; sourceId: string }>> {

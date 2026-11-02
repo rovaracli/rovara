@@ -472,6 +472,12 @@ export class ControlPlaneStack extends Stack {
       Duration.seconds(60),
     );
     if (naming.env !== undefined) dispatcher.addEnvironment("AGENTX_ENV", naming.env);
+    if (naming.env !== undefined) {
+      // Live interaction A2 (peek, for Ask): the broker invokes the dispatcher to read a running task's working tree. It is told the function's name (the broker builds the ARN, DISPATCHER_FUNCTION_ARN) and may invoke
+      // this one function and no other. The dispatcher signs only a peek invocation it has parsed, and wakes no compute for one.
+      BrokerNames.of(broker).add("dispatcherFunction", dispatcher.functionName);
+      dispatcher.grantInvoke(broker);
+    }
     dispatchQueue.grantConsumeMessages(dispatcher);
     state.grantReadWriteData(dispatcher);
     // The dispatcher holds a CHECKS reference's kind to the admission it names; it reads only the immutable admission objects.

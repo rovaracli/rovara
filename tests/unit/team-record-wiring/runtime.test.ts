@@ -3,12 +3,14 @@
 //  2. ORG SCOPING of the newly connected paths: the sink refuses a workspace that is not an org before looking anything up; the query routes read only the caller's org; an erase in one org leaves
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
+import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
+import { askAliasHashKey, readErasedAliases, scrubWithAliasHashes } from "../../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A, ORG_B, T0, githubDraft } from "../../support/team-record-core.js";
@@ -686,5 +688,67 @@ describe("fix round 1, S4: a person's erase also reaches the Slack rows they wro
     const { db, runtime } = await world();
     await runtime.erase.person(ORG_A, "dev-1");
     expect(everything(db)).toContain(MARKER);
+  });
+});
+
+
+describe("a person's erase hands the Ask scrub the person's names, hashed with the install's key (LI-2, LA-5)", () => {
+  const KEY = askAliasHashKey("k".repeat(48));
+  const aliasesOf = async (db: FakeDynamoDb) => {
+    // The alias items are in the table the runtime's own erase wrote them to; both of the runtime's tables are this one fake.
+    for (const tableName of ["TeamRecord", "State"]) {
+      const entries = await readErasedAliases({ documentClient: db, tableName }, ORG_A, T0);
+      if (entries.length > 0) return entries;
+    }
+    return [];
+  };
+
+  it("with the names and the key wired: an answer that still names the erased person is scrubbed, and no raw name is kept", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON }, { askAliasKey: KEY, namesOf: async (developerId) => (developerId === "dev-1" ? ["Priya Raman"] : []) });
+    await runtime.erase.person(ORG_A, "dev-1");
+    const entries = await aliasesOf(db);
+    expect(entries).toHaveLength(1);
+    expect(scrubWithAliasHashes("Priya Raman asked for this, and priya raman too.", entries, KEY)).not.toMatch(/priya|raman/iu);
+    expect(everything(db)).not.toMatch(/Priya|Raman/u);
+  });
+
+  it("without the key only the person's tag is kept, so the name is not matched (the control: the wiring is what makes the scrub work)", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON }, { namesOf: async () => ["Priya Raman"] });
+    await runtime.erase.person(ORG_A, "dev-1");
+    const entries = await aliasesOf(db);
+    expect(scrubWithAliasHashes("Priya Raman asked for this.", entries, KEY)).toContain("Priya Raman");
+  });
+
+  it("without the names the erase still completes, and names that fail to read never hold it up", async () => {
+    const db = dbOf();
+    const lines: Array<Record<string, unknown>> = [];
+    const runtime = build(db, { ...ON }, { askAliasKey: KEY, namesOf: async () => { throw new Error("sign-in store down"); }, log: (entry) => lines.push(entry) });
+    await expect(runtime.erase.person(ORG_A, "dev-1")).resolves.toBeUndefined();
+    expect(lines.some((line) => line.event === "record.erase_names_unreadable")).toBe(true);
+    expect(JSON.stringify(lines)).not.toContain("sign-in store down");
+  });
+
+  it("does not keep the names in the erase job it records (they are read again on each pass)", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON }, { askAliasKey: KEY, namesOf: async () => ["Priya Raman"] });
+    await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).not.toContain("Priya Raman");
+  });
+});
+
+describe("the production wiring of the person erase (LA-5)", () => {
+  it("the broker gives the runtime the alias key derived from its signing key and the person's names, and builds the runtime in one place only", () => {
+    const source = readFileSync(new URL("../../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    const call = /createTeamRecordRuntime\(\{[^\n]*\}\);/u.exec(source)?.[0] ?? "";
+    expect(call).toContain('askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY"))');
+    expect(call).toContain("namesOf:");
+    // No other production file builds the runtime (a second construction would have to wire the key too).
+    const root = new URL("../../../packages/", import.meta.url);
+    const sites = readdirSync(root, { recursive: true, encoding: "utf8" })
+      .filter((file) => /^[a-z-]+\/src\/.*\.ts$/u.test(file.replaceAll("\\", "/")) && readFileSync(new URL(file, root), "utf8").includes("createTeamRecordRuntime("))
+      .map((file) => file.replaceAll("\\", "/")).sort();
+    expect(sites).toEqual(["broker/src/aws/broker.ts", "broker/src/team-record/runtime.ts"]);
   });
 });

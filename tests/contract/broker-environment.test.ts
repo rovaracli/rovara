@@ -36,6 +36,7 @@ const NAMES = {
   turnRecordsTable: "agentx-staging-control-plane-TurnRecords69ECFCD9-1A2B3C4D5E6F7",
   planEvidenceFunction: "agentx-staging-control-plane-PlanEvidence3615C4CB-1A2B3C4D5E6F7",
   modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
+  dispatcherFunction: "agentx-staging-control-plane-Dispatcher6C5A7D1F-1A2B3C4D5E6F7",
   slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
   slackOrchestratorRole: "agentx-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
   // wire-team-record: present only in an install synthesised with the Team record switched on.
@@ -121,6 +122,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       TURN_RECORDS_TABLE_NAME: NAMES.turnRecordsTable,
       PLAN_EVIDENCE_FUNCTION_NAME: NAMES.planEvidenceFunction,
       MODEL_ACCESS_FUNCTION_NAME: NAMES.modelAccessFunction,
+      // LA-1 (peek): the dispatcher's name becomes its function ARN.
+      DISPATCHER_FUNCTION_ARN: `arn:aws:lambda:us-west-2:123456789012:function:${NAMES.dispatcherFunction}`,
       SLACK_REQUEST_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestQueue}`,
       SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
       TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.teamRecordVectorsRole}`,
