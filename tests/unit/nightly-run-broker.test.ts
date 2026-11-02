@@ -418,15 +418,15 @@ describe("a skipped smoke step", () => {
 
 describe("the end of the task and the coverage map store", () => {
   it("a finished or cancelled nightly task gives back its workspace through agentRunEnd; a failed prepare too; nothing else", () => {
-    const task = { taskId: TASK, purpose: "nightly_run" as const };
+    const task = { taskId: TASK, purpose: "nightly_run" as const, project: PROJECT };
     const own = nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "2026-11-05T07:00:00.000Z");
     expect(own).toHaveLength(1);
     expect(own[0]!.Update.ExpressionAttributeValues[":end"]).toEqual({ state: "COMPLETE", at: "2026-11-05T07:00:00.000Z" });
     expect(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "CANCELLED" }, "x")[0]!.Update.ExpressionAttributeValues[":end"]).toMatchObject({ state: "CANCELLED" });
     expect(nightlyEndItems("T", task, { kind: "prepare" }, { status: "FAILED" }, "x")).toHaveLength(1);
     expect(nightlyEndItems("T", task, { kind: "prepare" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
-    expect(nightlyEndItems("T", { taskId: TASK, purpose: "setup_agent" as const }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
-    expect(nightlyEndItems("T", { taskId: TASK }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
+    expect(nightlyEndItems("T", { taskId: TASK, purpose: "setup_agent" as const, project: PROJECT }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
+    expect(nightlyEndItems("T", { taskId: TASK, project: PROJECT }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
   });
 
   it("the store keeps a map under its digest, per company and project, and reads it back", async () => {
@@ -550,7 +550,7 @@ describe("who is granted the nightly action", () => {
   it("only the verification operation of a nightly task: not another mode of it, not any operation of another task, not a task with no purpose", () => {
     expect(isNightlyOperation({ purpose: "nightly_run" }, "CHECKS")).toBe(true);
     for (const mode of ["PLAN", "IMPLEMENT", "REVIEW", "SETUP_AGENT", "SETUP_DRAFT", undefined]) expect(isNightlyOperation({ purpose: "nightly_run" }, mode), String(mode)).toBe(false);
-    for (const purpose of ["setup_agent", "setup_draft", "diagnosis", undefined] as const) expect(isNightlyOperation({ purpose }, "CHECKS"), String(purpose)).toBe(false);
+    for (const purpose of ["setup_agent", "setup_draft", "diagnosis", undefined] as const) expect(isNightlyOperation(purpose === undefined ? {} : { purpose }, "CHECKS"), String(purpose)).toBe(false);
     expect(isNightlyOperation(undefined, "CHECKS")).toBe(false);
   });
 });

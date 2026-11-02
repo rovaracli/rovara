@@ -53,7 +53,12 @@ function fakes(script: Script = {}) {
 const night = (ports: NightlyPorts, environment = env(), over: { signal?: AbortSignal; deadlineMs?: number } = {}) =>
   runNightly({ environment, run: WIRE, ports, signal: over.signal ?? new AbortController().signal, deadlineMs: over.deadlineMs ?? 5_400_000 });
 /** What the broker makes of the night: it strips the worker's own words and classifies with its rules (`nightlyHealthOf`). */
-const verdict = (result: NightlyResult, noSmokeCheck = true) => { const { ranFrom: _ranFrom, ...stored } = nightlyHealthOf(result, { noSmokeCheck }) ?? {}; return stored; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- ranFrom is not part of the verdict
+const verdict = (result: NightlyResult, noSmokeCheck = true) => {
+  const health = nightlyHealthOf(result, { noSmokeCheck });
+  if (health === undefined) throw new Error("the night has no health report to classify");
+  const { ranFrom: _ranFrom, ...stored } = health; // eslint-disable-line @typescript-eslint/no-unused-vars -- ranFrom is not part of the verdict
+  return stored;
+};
 const MAP: CoverageMapData = { builtAt: "2026-11-05T06:00:00.000Z", files: { "service/src/match.py": ["tests/test_a.py::t1"] } };
 
 describe("a passing night", () => {
