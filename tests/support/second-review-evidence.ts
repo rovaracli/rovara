@@ -24,3 +24,25 @@ export function seedHoldingEvidence(db: FakeDynamoDb, model: SecondReviewModelRe
   db.set({ ...secondReviewReplayKey(org, "run-1"), entityType: "SECOND_REVIEW_REPLAY", run: replayRun(model) });
   db.set({ ...secondReviewVerdictKey(org, secondReviewModelKey(model)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(model) });
 }
+
+import { createHash } from "node:crypto";
+import { trackRowKey } from "../../packages/broker/src/rovara-code/second-review-track.js";
+import type { SecondReviewTrackRow } from "../../packages/contracts/src/index.js";
+
+export const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+/** One track row (an answered second opinion) with `fixed` findings agreed, `wrong` wrong and `open` open, written straight into the State table. */
+export function seedTrackRow(db: FakeDynamoDb, model: SecondReviewModelRef, input: { at: string; task: string; fixed?: number; wrong?: number; open?: number; firstCleared?: boolean; mode?: "shadow" | "on" }, org: string = TEST_ORG): SecondReviewTrackRow {
+  const outcomes: Array<"fixed" | "wrong" | "open"> = [...Array<"fixed">(input.fixed ?? 0).fill("fixed"), ...Array<"wrong">(input.wrong ?? 0).fill("wrong"), ...Array<"open">(input.open ?? 0).fill("open")];
+  const row: SecondReviewTrackRow = {
+    model: secondReviewModelKey(model), mode: input.mode ?? "shadow", taskId: input.task, project: "web", candidateDigest: sha(`${input.task}${input.at}`), recordedAt: input.at,
+    firstCleared: input.firstCleared ?? false, findings: outcomes.map((outcome, index) => ({ fp: sha(`${input.task}-${String(index)}`), outcome })), rev: 0,
+  };
+  db.set({ ...trackRowKey(org, row), entityType: "SECOND_REVIEW_TRACK", orgId: org, ...row });
+  return row;
+}
+/** A shadow window the bar accepts: 15 days, 10 findings, 5 agreed. */
+export function seedPassingShadow(db: FakeDynamoDb, model: SecondReviewModelRef, org: string = TEST_ORG): void {
+  seedTrackRow(db, model, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 3, open: 1, firstCleared: true }, org);
+  seedTrackRow(db, model, { at: "2026-10-09T12:00:00.000Z", task: "t2", fixed: 2, wrong: 4 }, org);
+  seedTrackRow(db, model, { at: "2026-10-18T12:00:00.000Z", task: "t3" }, org);
+}
