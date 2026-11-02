@@ -16,6 +16,7 @@ import {
   type TestEnvironmentBody,
   type TestEnvironmentProposal,
 } from "@agentx/contracts";
+import { coverageSpecsOf } from "../verification/cobertura-lcov-coverage.js";
 import type { Detection, DetectedSource, Located } from "./types.js";
 
 export interface PendingService { kind: "sagemaker_runtime" | "http"; target: string; source: TestEnvValueSource }
@@ -68,9 +69,19 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
     valueSources,
     pendingServices: detection.services.map((item) => ({ kind: item.value.kind, target: item.value.target, source: sourceOf(item.source) })),
     iac: detection.iac,
-    notes: [...detection.notes],
+    notes: [...detection.notes, ...unnamedCoverageNotes(detection)],
     questions: [...detection.questions],
   };
+}
+
+/**
+ * A coverage report counts only when the check's command line names it or the approved setup gives its `coveragePath` (no default file name is guessed), so each test check with neither is named here: the maintainer
+ * can add the report to the command or set the path before approving. A detector that already said coverage will show as not measured is not repeated.
+ */
+function unnamedCoverageNotes(detection: Detection): string[] {
+  if (detection.notes.some((note) => note.includes("changed-line coverage will show as not measured"))) return [];
+  return detection.checks.filter((item) => item.value.kind === "test" && item.value.coveragePath === undefined && coverageSpecsOf(item.value.command).length === 0)
+    .map((item) => `The test check "${item.value.id}" names no coverage report (neither on its command line nor as a coverage path), so changed-line coverage will show as not measured for it.`);
 }
 
 function optionalPaths(check: Located<{ reportPath?: string; coveragePath?: string; sarifPath?: string; selectArgs?: string[] }>["value"]) {

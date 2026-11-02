@@ -98,7 +98,7 @@ describe("the coverage report formats", () => {
 });
 
 describe("which file a command's tool writes (the command is never altered)", () => {
-  const specs = (...args: string[]) => coverageSpecsOf(command(args)).map((spec) => `${spec.format}:${spec.argument}${spec.inferred ? "*" : ""}`);
+  const specs = (...args: string[]) => coverageSpecsOf(command(args)).map((spec) => `${spec.format}:${spec.argument}`);
 
   it("reads pytest-cov and coverage.py report options", () => {
     expect(specs("--cov=src", "--cov-report=xml")).toEqual(["cobertura:coverage.xml"]);
@@ -114,8 +114,8 @@ describe("which file a command's tool writes (the command is never altered)", ()
     expect(coverageSpecsOf(command(["run", "--coverage.reporter=lcov", "--coverage.reportsDirectory=out"], ".", "vitest")).map((spec) => spec.argument)).toEqual(["out/lcov.info"]);
     expect(coverageSpecsOf(command(["--reporter=lcov", "--report-dir=r", "mocha"], ".", "nyc")).map((spec) => spec.argument)).toEqual(["r/lcov.info"]);
     expect(coverageSpecsOf(command(["-r", "cobertura", "npm", "test"], ".", "c8")).map((spec) => spec.argument)).toEqual(["coverage/cobertura-coverage.xml"]);
-    // `vitest --reporter=json` is the test reporter: no coverage file is named, so a test command gets only the inferred defaults.
-    expect(coverageSpecsOf(command(["run", "--reporter=json"], ".", "vitest")).every((spec) => spec.inferred)).toBe(true);
+    // `vitest --reporter=json` is the test reporter: no coverage file is named, so there is none to read (EV-2: no default names are guessed).
+    expect(coverageSpecsOf(command(["run", "--reporter=json"], ".", "vitest"))).toEqual([]);
   });
 
   it("reads any option about coverage that is given a report file, but not pytest-cov's own report option", () => {
@@ -124,12 +124,16 @@ describe("which file a command's tool writes (the command is never altered)", ()
     expect(specs("--cov-report=xml:a.xml")).toEqual(["cobertura:a.xml"]);
   });
 
-  it("looks for the tools' default names only for a test command that names none; a lint command is never given any", () => {
-    expect(specs("-q")).toEqual(["cobertura:coverage.xml*", "cobertura:coverage/cobertura-coverage.xml*", "lcov:coverage/lcov.info*", "lcov:coverage.lcov*", "lcov:lcov.info*"]);
-    expect(coverageSpecsOf(command(["test"], ".", "npm")).length).toBeGreaterThan(0);
+  // EV-2: the report a project's tests write at a tool's default name could be written by the agent's own tests (a conftest or a jest config that writes coverage.xml with every line hit). A report counts only when the
+  // check's own command line names it, so forging one means changing the command a person approved. (The inherent limit stays: a report the named command writes proves what the project's tooling wrote.)
+  it("guesses no default file name: a test command that names no report has none, and neither has a lint command", () => {
+    expect(specs("-q")).toEqual([]);
+    expect(coverageSpecsOf(command(["test"], ".", "npm"))).toEqual([]);
+    expect(coverageSpecsOf(command(["--coverage"], ".", "jest"))).toEqual([]);
     expect(coverageSpecsOf(command(["."], ".", "eslint"))).toEqual([]);
     expect(coverageSpecsOf(command(["check"], ".", "ruff"))).toEqual([]);
   });
+
 });
 
 describe("the lines the change wrote", () => {
@@ -228,6 +232,19 @@ describe("the intersection of a report with the diff", () => {
     // Inside a repository, a name is exact: the same file in the second repository is found by its own directory.
     const exact = parseLcov(lcov([{ file: join(root, "web/src/a.py"), lines: [[1, 0]] }]))!;
     expect((await intersectCoverage(exact, { repositories: both, bases: [root] }))?.files).toEqual([{ repositoryId: "web", path: "src/a.py", changed: 1, covered: 0, uncovered: [1] }]);
+  });
+
+  // EV-2: relative `<source>` entries are capped like the absolute ones (64 of them x 3 bases x 20,000 names took 2.4 s).
+  it("tries at most 8 relative `<source>` directories of a report", async () => {
+    const box = await repository({ "d3/a.py": lines(3), "d15/b.py": lines(3) }, async (directory) => {
+      for (const path of ["d3/a.py", "d15/b.py"]) await writeFile(join(directory, path), "changed\nchanged\nchanged\n");
+    });
+    const repositories = await changesOf(box);
+    const sources = Array.from({ length: 20 }, (_, index) => `<source>d${String(index)}</source>`).join("");
+    const report = (filename: string) => parseCobertura(`<coverage><sources>${sources}</sources><packages><package><classes><class filename="${filename}"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>`)!;
+    expect(report("a.py").sources).toHaveLength(20);
+    expect((await intersectCoverage(report("a.py"), { repositories, bases: [box.directory] }))?.files).toEqual([expect.objectContaining({ path: "d3/a.py" })]);
+    expect((await intersectCoverage(report("b.py"), { repositories, bases: [box.directory] }))?.files).toEqual([]);
   });
 
   it("selects only among the paths the diff names: a report naming files outside the repository, or `..`, measures nothing", async () => {
@@ -436,15 +453,22 @@ describe("the evidence a CHECKS run saves", () => {
     expect(await collectEvidenceRaw({ ...base, repositories: [], commands: [command(args)], entries: [entry(0)], roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
   });
 
-  it("keeps a failed check's coverage next to its output tail, and finds the default file of a test command that names none", async () => {
-    const { repositories } = await scenario(REPORT);
-    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"])], entries: [entry(0, { after: "failed", exitCode: 1, output: "boom" })], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
+  it("keeps a failed check's coverage next to its output tail", async () => {
+    const { repositories, args } = await scenario(REPORT);
+    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(args)], entries: [entry(0, { after: "failed", exitCode: 1, output: "boom" })], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
     expect(raw?.checks[0]).toMatchObject({ outputTail: "boom", coverage: { linesChanged: 2, linesCovered: 1 } });
   });
 
-  it("gives the report to the first check that asks for it, not to the lint check after it", async () => {
+  // EV-2: a coverage.xml sitting at a default name is NOT read for a command that does not name it (the agent's own tests could have written it with every line hit).
+  it("does not read a report at a default name for a test command that names none", async () => {
     const { repositories } = await scenario(REPORT);
-    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"]), command(["-q"])], entries: [entry(0), entry(1)], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
+    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"])], entries: [entry(0, { after: "failed", exitCode: 1, output: "boom" })], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
+    expect(raw?.checks[0]?.coverage).toBeUndefined();
+  });
+
+  it("gives the report to the first check that names it, not to the lint check after it", async () => {
+    const { repositories, args } = await scenario(REPORT);
+    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(args), command(args)], entries: [entry(0), entry(1)], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
     expect(raw?.checks.map((check) => check.checkId)).toEqual(["readiness:0"]);
   });
 });

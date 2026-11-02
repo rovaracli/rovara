@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
-import { evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
+import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -229,11 +229,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
           onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
           run: async (budgetMs) => {
-            const started = Date.now();
             const learning = await resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })));
-            // Proof and evidence (wire-proof fix round 2): the evidence erases a company close, a project archive or a person erase left unfinished are finished here, from their cursors, with what is left of the slice. Not behind the proof switch.
-            const evidence = await resumeEvidence(dependencies, Math.max(0, budgetMs - (Date.now() - started)));
-            return { learning, evidence };
+            // The evidence erases are finished by the broker's every-minute recovery run (S-3), on a budget of their own: this slice is the learning walk's.
+            return { learning };
           },
         }),
       ];
@@ -327,6 +325,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (isWorkflowMergeRecoveryEvent(event)) {
       try {
         const sweepStartedAt = Date.now();
+        // Proof and evidence (S-3): the evidence erases a company close, a project archive or a person erase left unfinished are finished here, from their cursors, FIRST and on a budget of their own so nothing else can
+        // starve them; this run exists on every install (a private one has no settlement schedule). Not behind the proof switch; a fault only means the next minute tries again.
+        const evidence = await resumeEvidence(dependencies, EVIDENCE_RESUME_BUDGET_MS).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "evidence.erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { pending: 0, finished: 0 };
+        });
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
@@ -340,7 +344,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         });
         // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
         const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
-        return json({ ...result, tracking, woken }, "workflow-merge-recovery");
+        return json({ ...result, tracking, woken, evidence }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);

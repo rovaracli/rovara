@@ -9,10 +9,13 @@
 import { z } from "zod";
 import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
+import { RelativeWorkspacePathSchema } from "./project.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
 export const TEST_ENV_DETECT_FEATURE = "task.testEnvDetect.v1";
 export const TEST_ENV_PLAN_FEATURE = "task.testEnvironment.v1";
+/** A worker that lists this reads `checks[].coveragePath` of the plan (the approved report to read changed-line coverage from). A worker that does not is sent the plan without that field (informational only), because its strict parse would refuse it. */
+export const TEST_ENV_COVERAGE_PATH_FEATURE = "task.testEnvCoveragePath.v1";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -60,7 +63,7 @@ export const TestEnvTaskPlanSchema = z
       })
       .strict(),
     /** Readiness command `i` of the run is the environment's check `checks[i]`, for `i < checks.length`: the run's first commands are the environment's checks, in order. */
-    checks: z.array(z.object({ id: Id, kind: CheckKindSchema, selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict()
+    checks: z.array(z.object({ id: Id, kind: CheckKindSchema, coveragePath: RelativeWorkspacePathSchema.optional(), selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict()
       .superRefine((check, context) => {
         if (check.selectArgs !== undefined && check.selectArgs.filter((arg) => arg === TEST_ENV_SELECT_PLACEHOLDER).length !== 1) context.addIssue({ code: "custom", path: ["selectArgs"], message: "selectArgs holds {tests} exactly once" });
       })).min(1).max(32),

@@ -9,6 +9,9 @@ import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BY
 import type { ArtifactSink } from "../artifacts.js";
 import type { CheckPlan } from "./checks.js";
 import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./cobertura-lcov-coverage.js";
+import { lineCoverageAsParsed, repositoryOfCheck } from "./line-coverage-join.js";
+import { listRepositoryFiles, readRepositoryFile } from "../test-env-detect.js";
+import { readGoModuleRoots } from "../env-detect/go.js";
 import { candidateChanges } from "./diff.js";
 import { changedMigrationFiles, migrationDirectionOf, migrationEvidence } from "./migration-check.js";
 import { readContainedReport } from "./report-file.js";
@@ -41,6 +44,8 @@ export interface CollectEvidenceInput {
    * there is no baseline, and then no finding of that scan is reported (there is no "new" without one).
    */
   baselineScans?: ((scans: readonly BaselineScan[]) => Promise<ReadonlyMap<number, string>>) | undefined;
+  /** The `coveragePath` the maintainer approved for each command (by command index; the test environment's checks come first): read as a named report. */
+  coveragePaths?: ReadonlyArray<string | undefined> | undefined;
   /** What test selection decided (test environment, wire-testenv): used as it is when it ran fewer tests than the whole, otherwise only its fallback reason is kept and the counts are what the reports measured. */
   selection?: EvidenceSelection | undefined;
 }
@@ -113,7 +118,7 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
       if (entry.after === "failed") { const tail = outputTailOf(entry.output); if (tail !== undefined) partial.outputTail = tail; }
       // A timed-out, stopped or never-run check may have left an older report on disk: only a check that ended is read.
       if (ended(entry)) {
-        const covered = await readChangedCoverage({ rootPath: input.rootPath, command, repositories: diffs, notBeforeMs: input.roundStartedAtMs, used: usedReports });
+        const covered = await readChangedCoverage({ rootPath: input.rootPath, command, repositories: diffs, notBeforeMs: input.roundStartedAtMs, used: usedReports, approvedPath: input.coveragePaths?.[index], lineCoverage: (text, repositories) => placeLineCoverage(text, input.rootPath, command.cwd, repositories) });
         if ("coverage" in covered) partial.coverage = coveragePart(covered.coverage, input.repositories.length);
         const argument = sarifPathOf(command);
         if (argument !== undefined) {
@@ -211,10 +216,20 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
  * The CHECKS run's hook (run-task.ts, only when the invocation carries `evidenceCapture`): reads the reports of the round's project checks BEFORE the test proof runs the original code, and saves the result as
  * `evidence-raw.json`. Informational: a fault or a failed save is only a missing file, never a failed round. The candidate digest is the one the test proof is bound to (the code the checks ran on).
  */
+/** A Go cover profile or a JaCoCo report named by a check, placed in the repository the check runs in (its files are read through the setup detectors' bounded, link-refusing reader). */
+async function placeLineCoverage(text: string, rootPath: string, cwd: string, repositories: readonly RepositoryChanges[]) {
+  const repository = repositoryOfCheck(rootPath, cwd, repositories);
+  if (repository === undefined) return undefined;
+  const paths = await listRepositoryFiles(repository.directory);
+  return lineCoverageAsParsed(text, repository, { paths, goModules: () => readGoModuleRoots({ paths, read: (path) => readRepositoryFile(repository.directory, path) }) });
+}
+
 export async function saveEvidenceRaw(input: {
   sink: ArtifactSink; rootPath: string; plan: CheckPlan; entries: readonly CheckEntry[];
   repositories: ReadonlyArray<{ repositoryId: string; directory: string; baseCommitSha?: string | undefined }>; candidateBefore: ReadonlyArray<CandidateRepository>;
   selection?: EvidenceSelection | undefined;
+  /** The `coveragePath` approved for each command, by index (see `collectEvidenceRaw`). */
+  coveragePaths?: ReadonlyArray<string | undefined> | undefined;
   /** When the check round began: a report (coverage, SARIF) must have been written at or after it. */
   roundStartedAtMs?: number | undefined;
   /** P4: what the baseline run of the SARIF-writing checks on the original code needs. Absent: no baseline, so no finding is reported. */
@@ -232,7 +247,7 @@ export async function saveEvidenceRaw(input: {
     const raw = await collectEvidenceRaw({
       rootPath: input.rootPath, commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest, roundStartedAtMs: input.roundStartedAtMs,
       repositories: placed, repositoriesComplete: complete,
-      selection: input.selection,
+      selection: input.selection, coveragePaths: input.coveragePaths,
       ...(baseline === undefined || !complete ? {} : {
         baselineScans: (scans: readonly BaselineScan[]) => runBaselineScans(scans, { ...baseline, rootPath: input.rootPath, repositories: placed.map((repository) => ({ directory: repository.directory, commit: repository.startCommit })) }),
       }),

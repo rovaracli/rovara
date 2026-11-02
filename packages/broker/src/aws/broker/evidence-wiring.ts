@@ -66,6 +66,9 @@ export function personErasureStep(teamRecord: { erase: { person(orgId: OrgId, de
   };
 }
 
+/** The most time the every-minute recovery run gives the evidence erases it finds unfinished; its own share, taken first. */
+export const EVIDENCE_RESUME_BUDGET_MS = 3_000;
+
 /** The scheduled run's share for the evidence erases a caller left unfinished (a company close or a project archive cannot be repeated; a person's erase may also have been abandoned). */
 export function resumeEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "documentClient" | "tableName">, millis: number): Promise<{ pending: number; finished: number }> {
   const ports = { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName, documentClient: dependencies.documentClient, tableName: dependencies.tableName };

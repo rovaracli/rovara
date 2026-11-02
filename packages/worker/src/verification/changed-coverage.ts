@@ -329,6 +329,23 @@ function contains(ranges: Ranges, line: number): boolean {
   return false;
 }
 
+/** The most statement lines of one file, and of one report, that are expanded to a line-by-line map for the intersection; a file or report with more is not measured (ranges are merged, so a range this large is not real code). */
+export const LINE_COVERAGE_FILE_LINES_MAX = 200_000;
+export const LINE_COVERAGE_TOTAL_LINES_MAX = 2_000_000;
+
+/**
+ * One file's statements as the line map the changed-line intersection reads (a line is true when a test ran it), or undefined when it holds more than `LINE_COVERAGE_FILE_LINES_MAX` lines. Lets the Go and JaCoCo
+ * readers feed the same intersection as Cobertura and LCOV.
+ */
+export function lineCoverageReportLines(file: FileLines): Map<number, boolean> | undefined {
+  const lines = new Map<number, boolean>();
+  for (const [start, end] of file.statements) {
+    if (end - start + 1 + lines.size > LINE_COVERAGE_FILE_LINES_MAX) return undefined;
+    for (let line = start; line <= end; line += 1) lines.set(line, contains(file.covered, line));
+  }
+  return lines;
+}
+
 /** A changed file a coverage report would be expected to name: a Go file that is not a test, or a Java or Kotlin file under a `src/main/java` or `src/main/kotlin` directory. */
 const measurableSource = (path: string): boolean => (path.endsWith(".go") && !path.endsWith("_test.go")) || (/\.(?:java|kt)$/u.test(path) && /(?:^|\/)src\/main\/(?:java|kotlin)\//u.test(path));
 

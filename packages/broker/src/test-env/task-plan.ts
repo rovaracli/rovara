@@ -33,7 +33,7 @@ export async function testEnvPlanFor(
   return {
     revision: found.environment.revision, digest: pin.digest, roundBudgetMin: body.roundBudgetMin,
     selection: { method: body.selection.method, ...(body.selection.declared === undefined ? {} : { declared: body.selection.declared }), alwaysRun: body.selection.alwaysRun, fullSuiteOn: body.selection.fullSuiteOn },
-    checks: checks.map((check) => ({ id: check.id, kind: check.kind, ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }) })),
+    checks: checks.map((check) => ({ id: check.id, kind: check.kind, ...(check.coveragePath === undefined ? {} : { coveragePath: check.coveragePath }), ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }) })),
     ...(failures.length === 0 ? {} : { lastNightlyFailures: failures.slice(0, 500) }),
   };
 }
