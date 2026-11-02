@@ -3,25 +3,26 @@
 //   recordNightlyResultWithHealth  the nightly record, with the health listener (for the route that receives a nightly result)
 //   blockedByEnvironmentHook       a task whose auto-fix gave up on environment faults (the end of "Blocked by environment")
 //   setupProvedHook                an approved, proved environment revision
-//   healthPortsOf                  the card and proposed-task ports (the card is SH17's: until it is hooked up, no card is opened)
+//   healthPortsOf                  the card (SH17's records, versioned; none while `vx` is off) and proposed-task ports
 import type { AutoFixCode, OrgId, TestingBlockedReason } from "@agentx/contracts";
 import { RESULT_RULES } from "../verification/result.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
-import { FIX_SETUP_CARDS_PENDING_SH17, noteBlockedTask, noteSetupProved, nightlyHealthListener, type HealthPorts } from "./health.js";
+import { healthFixSetupCards } from "./fix-setup-health.js";
+import { noteBlockedTask, noteSetupProved, nightlyHealthListener, type HealthPorts } from "./health.js";
 import { nightlyHealthEnabled } from "./health-switch.js";
 import { recordNightlyResult, type MapStore } from "./nightly.js";
 import { proposedFixTaskStore } from "./proposed-tasks.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
-/** The ports the health logic calls: the Fix setup card (SH17's, not yet hooked up) and the real proposed-task store. */
-export const healthPortsOf = (deps: TestEnvDeps): HealthPorts => ({ cards: FIX_SETUP_CARDS_PENDING_SH17, proposals: proposedFixTaskStore(deps) });
+/** The ports the health logic calls: the Fix setup card (SH17's records, versioned; it does nothing while `vx` is off) and the real proposed-task store. */
+export const healthPortsOf = (deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): HealthPorts => ({ cards: healthFixSetupCards(deps, env), proposals: proposedFixTaskStore(deps) });
 
 /** Both switches: no nightly health without the test environment it reads. */
 export const healthWiringOn = (env: NodeJS.ProcessEnv = process.env): boolean => nightlyHealthEnabled(env) && testEnvironmentEnabled(env);
 
 /** Records a finished nightly run; while `nh` is on the project's health follows it. With `nh` off this is `recordNightlyResult` exactly. */
 export function recordNightlyResultWithHealth(deps: TestEnvDeps, maps: MapStore, input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown }, env: NodeJS.ProcessEnv = process.env): ReturnType<typeof recordNightlyResult> {
-  return recordNightlyResult(deps, maps, input, nightlyHealthListener(deps, healthPortsOf(deps), env));
+  return recordNightlyResult(deps, maps, input, nightlyHealthListener(deps, healthPortsOf(deps, env), env));
 }
 
 /**

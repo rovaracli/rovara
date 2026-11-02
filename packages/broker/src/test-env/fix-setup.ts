@@ -96,36 +96,39 @@ const sha = (text: string): string => createHash("sha256").update(text).digest("
 
 // ---- the record
 
-const RecordSchema = z.object({
-  cause: z.enum(FIX_SETUP_CAUSES),
+export const FixSetupRecordSchema = z.object({
+  // An auto-fix code (a task blocked by the environment) or one of the health lane's cause words (a nightly night, `snake_case`): codes use hyphens, so the two cannot meet.
+  cause: z.union([z.enum(FIX_SETUP_CAUSES), z.string().regex(/^[a-z][a-z_]{0,39}$/u)]),
   status: z.enum(["open", "closed"]),
+  /** The highest project-health version that touched this record (0: only tasks did). A health call older than this is refused (the L4 race). */
+  healthVersion: z.number().int().min(0).default(0),
   version: z.number().int().min(1),
   epoch: z.number().int().min(1),
   openedAt: z.string().datetime(),
   lastAt: z.string().datetime(),
   taskIds: z.array(z.string().uuid()).max(FIX_SETUP_TASKS_MAX),
-  taskCount: z.number().int().min(1).max(FIX_SETUP_TASKS_MAX),
+  taskCount: z.number().int().min(0).max(FIX_SETUP_TASKS_MAX),
   tests: z.array(z.object({ name: KnownFailingTestId, checkId: z.string().min(1).max(64) }).strict()).max(FIX_SETUP_TESTS_MAX),
   testsTruncated: z.boolean(),
   /** Failing tests of the qualifying checks that were not confirmed by the nightly baseline (so not offered). */
   unconfirmed: z.number().int().min(0).max(100_000).default(0),
   closedAt: z.string().datetime().optional(),
-  closedReason: z.enum(["dismissed", "known_failing"]).optional(),
+  closedReason: z.enum(["dismissed", "known_failing", "resolved"]).optional(),
   closedBy: z.string().max(200).optional(),
 }).passthrough();
-export type FixSetupRecord = z.infer<typeof RecordSchema>;
+export type FixSetupRecord = z.infer<typeof FixSetupRecordSchema>;
 
 const PREFIX = "FIXSETUP#";
-const keyOf = (orgId: OrgId, project: string, cause: FixSetupCause) => ({ pk: projectPk(orgId, project), sk: `${PREFIX}${cause}` });
+export const fixSetupKeyOf = (orgId: OrgId, project: string, cause: string) => ({ pk: projectPk(orgId, project), sk: `${PREFIX}${cause}` });
 /** What version of a card the person is shown: any join, close or reopen changes it, so an earlier "evidence opened" does not carry over. */
 export const fixSetupContentVersion = (record: Pick<FixSetupRecord, "epoch" | "version">): string => sha(`fixsetup:${String(record.epoch)}:${String(record.version)}`).slice(0, 32);
 
 export type FixSetupStore = Pick<TestEnvDeps, "documentClient" | "tableName" | "now">;
 
-async function readRecord(store: FixSetupStore, orgId: OrgId, project: string, cause: FixSetupCause): Promise<FixSetupRecord | undefined | "unreadable"> {
-  const found = await store.documentClient.send(new GetCommand({ TableName: store.tableName, Key: keyOf(orgId, project, cause), ConsistentRead: true })) as { Item?: unknown };
+export async function readFixSetupRecord(store: FixSetupStore, orgId: OrgId, project: string, cause: string): Promise<FixSetupRecord | undefined | "unreadable"> {
+  const found = await store.documentClient.send(new GetCommand({ TableName: store.tableName, Key: fixSetupKeyOf(orgId, project, cause), ConsistentRead: true })) as { Item?: unknown };
   if (found.Item === undefined) return undefined;
-  const parsed = RecordSchema.safeParse(found.Item);
+  const parsed = FixSetupRecordSchema.safeParse(found.Item);
   return parsed.success ? parsed.data : "unreadable";
 }
 
@@ -140,6 +143,44 @@ const conditionFailed = (error: unknown): boolean => error instanceof Error && (
 
 export type FixSetupRecorded = "opened" | "joined" | "unchanged" | "unreadable";
 
+/** What opening or joining a record needs, the same for a task that was blocked and for the health lane's call. */
+export interface JoinInput { cause: string; taskIds: readonly string[]; tests: { tests: MarkableTest[]; truncated: boolean }; unconfirmed: number; nowIso: string; healthVersion?: number | undefined }
+
+/**
+ * The record after `found` is opened or joined by `input`, or undefined when nothing would change. A closed (or absent) record opens a new epoch; an open one takes the new task ids that fit (a FULL record changes
+ * nothing: its tests are those of its first tasks, which are the ones the card has shown). Pure.
+ */
+export function planFixSetupJoin(found: FixSetupRecord | undefined, input: JoinInput): { record: FixSetupRecord; kind: "opened" | "joined" } | undefined {
+  const health = input.healthVersion ?? 0;
+  if (found === undefined || found.status === "closed") {
+    const taskIds = [...new Set(input.taskIds)].slice(0, FIX_SETUP_TASKS_MAX);
+    return { kind: "opened", record: {
+      cause: input.cause, status: "open", healthVersion: health, version: (found?.version ?? 0) + 1, epoch: (found?.epoch ?? 0) + 1, openedAt: input.nowIso, lastAt: input.nowIso,
+      taskIds, taskCount: taskIds.length, tests: input.tests.tests, testsTruncated: input.tests.truncated, unconfirmed: input.unconfirmed,
+    } };
+  }
+  const fresh = [...new Set(input.taskIds)].filter((id) => !found.taskIds.includes(id));
+  const room = FIX_SETUP_TASKS_MAX - found.taskIds.length;
+  const added = fresh.slice(0, Math.max(0, room));
+  const raisesHealth = health > found.healthVersion;
+  if (added.length === 0 && !raisesHealth) return undefined;
+  if (added.length === 0) return { kind: "joined", record: { ...found, healthVersion: health, version: found.version + 1, lastAt: input.nowIso } };
+  const truncated = found.testsTruncated || input.tests.truncated;
+  const union = normalizedTests(truncated ? [] : [...found.tests, ...input.tests.tests]);
+  return { kind: "joined", record: {
+    ...found, healthVersion: Math.max(found.healthVersion, health), version: found.version + 1, lastAt: input.nowIso, taskIds: [...found.taskIds, ...added], taskCount: found.taskCount + added.length,
+    tests: truncated || union.truncated ? [] : union.tests, testsTruncated: truncated || union.truncated, unconfirmed: Math.max(found.unconfirmed, input.unconfirmed),
+  } };
+}
+
+/** The Put that stores `planned` over `found` (conditional on `found` being exactly as read), as a plain command input so it can sit in a transaction. */
+export function fixSetupPut(store: FixSetupStore, orgId: OrgId, project: string, found: FixSetupRecord | undefined, record: FixSetupRecord) {
+  const item = { entityType: "FIX_SETUP", orgId, project, ...fixSetupKeyOf(orgId, project, record.cause), ...record };
+  return found === undefined
+    ? { TableName: store.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" }
+    : { TableName: store.tableName, Item: item, ConditionExpression: "#version = :version", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":version": found.version } };
+}
+
 /**
  * A task blocked by `cause`: opens the project's card for that cause, or joins the open one. Idempotent for one task. Tests (for `fails-on-original-code` only) are the broker's own evidence of checks that
  * failed on the original code. Throws only for an infrastructure fault after a few attempts; the caller (the auto-fix runner) logs it and goes on, since the ask itself is already stored.
@@ -149,32 +190,13 @@ export async function recordFixSetup(store: FixSetupStore, input: { orgId: OrgId
   const unconfirmed = input.cause === FIX_SETUP_MARKABLE_CAUSE ? Math.max(0, Math.min(100_000, Math.trunc(input.unconfirmed ?? 0))) : 0;
   const nowIso = new Date(store.now()).toISOString();
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
-    const found = await readRecord(store, input.orgId, input.project, input.cause);
+    const found = await readFixSetupRecord(store, input.orgId, input.project, input.cause);
     if (found === "unreadable") return "unreadable";
-    const base = { entityType: "FIX_SETUP", orgId: input.orgId, project: input.project, ...keyOf(input.orgId, input.project, input.cause), cause: input.cause };
+    const planned = planFixSetupJoin(found, { cause: input.cause, taskIds: [input.taskId], tests: wanted, unconfirmed, nowIso });
+    if (planned === undefined) return "unchanged";
     try {
-      if (found === undefined || found.status === "closed") {
-        const record: FixSetupRecord = { cause: input.cause, status: "open", version: (found?.version ?? 0) + 1, epoch: (found?.epoch ?? 0) + 1, openedAt: nowIso, lastAt: nowIso, taskIds: [input.taskId], taskCount: 1, tests: wanted.tests, testsTruncated: wanted.truncated, unconfirmed };
-        await store.documentClient.send(new PutCommand({
-          TableName: store.tableName, Item: { ...base, ...record },
-          ...(found === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#version = :version AND #status = :closed", ExpressionAttributeNames: { "#version": "version", "#status": "status" }, ExpressionAttributeValues: { ":version": found.version, ":closed": "closed" } }),
-        }));
-        return "opened";
-      }
-      if (found.taskIds.includes(input.taskId)) return "unchanged";
-      // A full record changes nothing: its tests are those of its first tasks, which are the ones the card has shown.
-      if (found.taskIds.length >= FIX_SETUP_TASKS_MAX) return "unchanged";
-      const truncated = found.testsTruncated || wanted.truncated;
-      const union = normalizedTests(truncated ? [] : [...found.tests, ...wanted.tests]);
-      const record: FixSetupRecord = {
-        ...found, version: found.version + 1, lastAt: nowIso, taskIds: [...found.taskIds, input.taskId], taskCount: found.taskCount + 1,
-        tests: truncated || union.truncated ? [] : union.tests, testsTruncated: truncated || union.truncated, unconfirmed: Math.max(found.unconfirmed, unconfirmed),
-      };
-      await store.documentClient.send(new PutCommand({
-        TableName: store.tableName, Item: { ...base, ...record },
-        ConditionExpression: "#version = :version AND #status = :open", ExpressionAttributeNames: { "#version": "version", "#status": "status" }, ExpressionAttributeValues: { ":version": found.version, ":open": "open" },
-      }));
-      return "joined";
+      await store.documentClient.send(new PutCommand(fixSetupPut(store, input.orgId, input.project, found, planned.record)));
+      return planned.kind;
     } catch (error) {
       if (!conditionFailed(error)) throw error;
       // Someone else wrote first: read again and decide again.
@@ -192,13 +214,29 @@ export interface FixSetupCardPorts {
   task(taskId: string): Promise<DeveloperTaskRecord | undefined>;
 }
 
-const stepOf = (cause: FixSetupCause): string => FIX_SETUP_STEP[cause];
+/** The failing step and the sentence for a cause the health lane's nightly run found (the night's own words, fixed here). */
+const NIGHTLY_CAUSE_WORDS: Readonly<Record<string, { step: string; sentence: string }>> = {
+  pull_failed: { step: "Getting the code", sentence: "The nightly run could not get the project's code." },
+  update_failed: { step: "Getting the code", sentence: "The nightly run could not bring the code up to date." },
+  setup_failed: { step: "Setup", sentence: "The nightly run could not set the project up." },
+  build_failed: { step: "Build", sentence: "The nightly run could not build the project." },
+  boot_failed: { step: "Starting the app", sentence: "The nightly run could not start the app." },
+  mocks_failed: { step: "Mocked service", sentence: "The nightly run could not start a stand-in for an outside service." },
+  preprod_unreachable: { step: "Pre-production access", sentence: "The nightly run could not reach the pre-production service." },
+  check_never_started: { step: "Starting a check", sentence: "The nightly run could not start a check." },
+  check_timed_out: { step: "Checks ran out of time", sentence: "A check in the nightly run ran out of time." },
+  no_tests_collected: { step: "Finding tests", sentence: "The nightly run found no tests to run." },
+  no_report_written: { step: "Test report", sentence: "A check in the nightly run wrote no test report." },
+  collection_errors: { step: "Finding tests", sentence: "The nightly run could not load many of the project's tests." },
+};
+const stepOf = (cause: string): string => (FIX_SETUP_CAUSES as readonly string[]).includes(cause) ? FIX_SETUP_STEP[cause as FixSetupCause] : NIGHTLY_CAUSE_WORDS[cause]?.step ?? "Setup";
+const sentenceOf = (cause: string): string => (FIX_SETUP_CAUSES as readonly string[]).includes(cause) ? autoFixCodeSentence(cause as AutoFixCode) : NIGHTLY_CAUSE_WORDS[cause]?.sentence ?? "The test setup could not give a verdict.";
 
 /** The card's item for one open record. The tests to mark are shown by count and by name in the details, and are the record's, never a request's. */
 function itemOf(project: string, orgId: string, record: FixSetupRecord, titles: readonly string[]): FixSetupItem {
   const marks = record.testsTruncated ? 0 : record.tests.length;
   const details: Array<{ title: string; lines: string[] }> = [
-    { title: "What failed", lines: [autoFixCodeSentence(record.cause)] },
+    { title: "What failed", lines: [sentenceOf(record.cause)] },
     ...(titles.length === 0 ? [] : [{ title: "Tasks waiting on this", lines: [...titles, ...(record.taskCount > titles.length ? [`and ${String(record.taskCount - titles.length)} more`] : [])] }]),
     // Every name that would be marked is listed in full (the record holds at most FIX_SETUP_TESTS_MAX names of at most 200 characters); a longer list could not be offered at all.
     ...(marks === 0 ? [] : [{ title: "Tests that would be marked as already failing", lines: [...record.tests.slice(0, FIX_SETUP_TESTS_MAX).map((test) => test.name), ...(record.tests.length > FIX_SETUP_TESTS_MAX ? [`and ${String(record.tests.length - FIX_SETUP_TESTS_MAX)} more`] : [])] }]),
@@ -224,7 +262,7 @@ export async function fixSetupItemsFor(ports: FixSetupCardPorts, caller: Who, en
         ConsistentRead: true, Limit: FIX_SETUP_CAUSES.length + 5,
       }))) as { Items?: unknown[] };
       for (const row of rows.Items ?? []) {
-        const record = RecordSchema.safeParse(row);
+        const record = FixSetupRecordSchema.safeParse(row);
         if (!record.success || record.data.status !== "open") continue;
         const titles: string[] = [];
         for (const taskId of record.data.taskIds.slice(0, FIX_SETUP_TASK_TITLES_MAX)) {
@@ -257,9 +295,8 @@ export interface FixSetupDecisionPorts {
 /** The record a card was built from, still open and unchanged, or the answer to give instead. */
 async function currentRecord(ports: FixSetupDecisionPorts, caller: Who, item: FixSetupItem): Promise<FixSetupRecord | "stale"> {
   if (!(await ports.mayEditSettings(caller, item.project))) throw agentXError("FORBIDDEN", "only a project maintainer can decide this");
-  const cause = FIX_SETUP_CAUSES.find((candidate) => candidate === item.cause);
-  if (cause === undefined) return "stale";
-  const record = await readRecord(ports.store, caller.orgId, item.project, cause);
+  if (!/^[a-z][a-z0-9_-]{0,63}$/u.test(item.cause)) return "stale";
+  const record = await readFixSetupRecord(ports.store, caller.orgId, item.project, item.cause);
   if (record === undefined || record === "unreadable" || record.status !== "open" || fixSetupContentVersion(record) !== item.contentVersion) return "stale";
   return record;
 }
@@ -267,7 +304,7 @@ async function currentRecord(ports: FixSetupDecisionPorts, caller: Who, item: Fi
 const closeItem = (store: FixSetupStore, orgId: OrgId, project: string, record: FixSetupRecord, reason: "dismissed" | "known_failing", by: string, nowIso: string): TransactItem => ({
   Put: {
     TableName: store.tableName,
-    Item: { entityType: "FIX_SETUP", orgId, project, ...keyOf(orgId, project, record.cause), ...record, status: "closed", version: record.version + 1, closedAt: nowIso, closedReason: reason, closedBy: by },
+    Item: { entityType: "FIX_SETUP", orgId, project, ...fixSetupKeyOf(orgId, project, record.cause), ...record, status: "closed", version: record.version + 1, closedAt: nowIso, closedReason: reason, closedBy: by },
     ConditionExpression: "#version = :version AND #status = :open", ExpressionAttributeNames: { "#version": "version", "#status": "status" }, ExpressionAttributeValues: { ":version": record.version, ":open": "open" },
   },
 });

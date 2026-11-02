@@ -188,11 +188,11 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
     case "fix_setup":
       return {
         question: "Fix the test setup?",
-        next: item.taskCount === 1 ? "One task waits on this. Open the setup to fix it; the task's checks run again after." : `${String(item.taskCount)} tasks wait on this. Open the setup to fix it; their checks run again after.`,
+        next: item.taskCount === 0 ? "The nightly run found this. Open the setup to fix it; the next night checks it again." : item.taskCount === 1 ? "One task waits on this. Open the setup to fix it; the task's checks run again after." : `${String(item.taskCount)} tasks wait on this. Open the setup to fix it; their checks run again after.`,
         evidence: [
           chip("environment", "Result", "Blocked by environment", "warning"),
           chip("environment", "Failing step", item.step, "bad"),
-          chip("checks", "Tasks affected", String(item.taskCount), item.taskCount > 1 ? "warning" : "unknown"),
+          ...(item.taskCount === 0 ? [] : [chip("checks", "Tasks affected", String(item.taskCount), item.taskCount > 1 ? "warning" : "unknown")]),
           // "Failing before this change" only for tests the nightly baseline confirms; the other failing tests of those checks are said apart, never as older.
           ...(item.knownFailingTests > 0 ? [chip("test_proof", "Failing before this change", plural(item.knownFailingTests, "test", "tests") + ", confirmed by the nightly run", "warning")] : []),
           ...(item.unconfirmedFailing > 0 ? [chip("test_proof", "Failing in checks that failed before", plural(item.unconfirmedFailing, "more test", "more tests") + ", not confirmed older", "bad")] : []),

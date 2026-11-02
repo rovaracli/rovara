@@ -86,14 +86,13 @@ export type ProjectHealth = z.infer<typeof ProjectHealthSchema>;
 
 export interface FixSetupCardPort {
   /** Opens the project's Fix setup card for this cause, or joins the open one (later tasks join it). Repeating the same call changes nothing. */
-  openOrJoin(input: { orgId: OrgId; project: string; cause: string; source: "nightly" | "tasks"; taskIds: readonly string[] }): Promise<void>;
+  openOrJoin(input: { orgId: OrgId; project: string; cause: string; source: "nightly" | "tasks"; taskIds: readonly string[]; /** The stored health version this call comes from. The card keeps the highest it has seen and refuses an older one (a late call can no longer undo a newer one). */ version: number }): Promise<void>;
   /** Closes the project's open Fix setup cards: the setup is working again. */
-  resolve(input: { orgId: OrgId; project: string; reason: "nightly_passed" | "nightly_setup_ok" | "setup_proved" }): Promise<void>;
+  resolve(input: { orgId: OrgId; project: string; reason: "nightly_passed" | "nightly_setup_ok" | "setup_proved"; /** As for `openOrJoin`. */ version: number }): Promise<void>;
 }
 
 /**
- * The Fix setup card is SH17's (lane sh-results-wire). Until it is merged and hooked up, this port does nothing: the health state and the start banner work, and no card appears. Replace it with the real
- * port at the one place the ports are built (`healthPortsOf` in health-wiring.ts).
+ * The port that does nothing. `healthPortsOf` (health-wiring.ts) now builds the real one, over SH17's records (`healthFixSetupCards`, test-env/fix-setup-health.ts); this stays for tests that want no card.
  */
 export const FIX_SETUP_CARDS_PENDING_SH17: FixSetupCardPort = { openOrJoin: () => Promise.resolve(), resolve: () => Promise.resolve() };
 
@@ -176,8 +175,8 @@ async function runEffects(deps: ReadDeps, ports: HealthPorts, orgId: OrgId, proj
       const repairing = current.health.state === "needs_repair";
       if (effect.kind === "open_card" ? !repairing : repairing) continue;
     }
-    if (effect.kind === "open_card") await ports.cards.openOrJoin({ orgId, project, cause: effect.cause, source: effect.source, taskIds: effect.taskIds });
-    else await ports.cards.resolve({ orgId, project, reason: effect.reason });
+    if (effect.kind === "open_card") await ports.cards.openOrJoin({ orgId, project, cause: effect.cause, source: effect.source, taskIds: effect.taskIds, version: next.version });
+    else await ports.cards.resolve({ orgId, project, reason: effect.reason, version: next.version });
   }
 }
 
