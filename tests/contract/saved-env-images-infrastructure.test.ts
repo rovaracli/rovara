@@ -15,6 +15,9 @@ import {
   savedEnvRepositoryName,
   savedEnvRepositoryPolicy,
   savedEnvManageRoleName,
+  savedEnvCreateRoleName,
+  savedEnvScanSessionPolicy,
+  SAVED_ENV_PUSH_SESSION_SECONDS,
 } from "@agentx/contracts";
 import { SavedEnvImages } from "../../infra/lib/saved-env-images.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -60,12 +63,13 @@ describe("the creation template", () => {
     expect(props()["CustomRoleArn"]).toBeDefined();
   });
 
-  it("keeps the newest 3 images, expires untagged ones after a day, and has a ceiling", () => {
+  it("keeps the newest 3 images and expires untagged ones after a day; there is NO age rule (a tagged-image age rule never matches behind a count rule: the broker's manage walk holds the 30 day ceiling)", () => {
     const rules = (JSON.parse(props()["LifecyclePolicy"] as string) as { rules: Array<{ rulePriority: number; selection: Record<string, unknown> }> }).rules;
-    expect(rules.map((rule) => rule.rulePriority)).toEqual([1, 2, 3]);
+    expect(rules.map((rule) => rule.rulePriority)).toEqual([1, 2]);
     expect(rules[0]!.selection).toMatchObject({ tagStatus: "untagged", countNumber: 1 });
     expect(rules[1]!.selection).toMatchObject({ tagStatus: "tagged", countType: "imageCountMoreThan", countNumber: 3 });
-    expect(rules[2]!.selection).toMatchObject({ tagStatus: "any", countType: "sinceImagePushed", countNumber: 30 });
+    expect(JSON.stringify(rules)).not.toContain("sinceImagePushed\",\"countUnit\":\"days\",\"countNumber\":30");
+    expect(rules.some((rule) => rule.selection["tagStatus"] === "any")).toBe(false);
   });
 
   it("the company's keep setting (1 to 10) changes the count, and 0 or 11 are refused", () => {
@@ -74,9 +78,10 @@ describe("the creation template", () => {
     expect(() => build({ keep: 11 })).toThrow();
   });
 
-  it("scans every push (basic) and the install can leave the registry's scan setting alone", () => {
-    template.hasResourceProperties("AWS::ECR::RegistryScanningConfiguration", { ScanType: "BASIC", Rules: [{ ScanFrequency: "SCAN_ON_PUSH" }] });
+  it("does not touch the registry-wide scan setting by default, and turns basic scan-on-push on only when asked", () => {
+    template.resourceCountIs("AWS::ECR::RegistryScanningConfiguration", 0);
     build({ registryScanning: "none" }).template.resourceCountIs("AWS::ECR::RegistryScanningConfiguration", 0);
+    build({ registryScanning: "basic" }).template.hasResourceProperties("AWS::ECR::RegistryScanningConfiguration", { ScanType: "BASIC", Rules: [{ ScanFrequency: "SCAN_ON_PUSH" }] });
   });
 
   it("carries no em dash in any name or description", () => {
@@ -151,6 +156,22 @@ describe("the key", () => {
     expect((propsOf(b.template, "AWS::ECR::RepositoryCreationTemplate")["EncryptionConfiguration"] as { KmsKey: string }).KmsKey).toBe(KMS);
     expect(Object.keys(b.template.findOutputs("*")).some((id) => id.includes("KmsKeyPolicyStatements"))).toBe(true);
     expect(() => build({ kmsKeyArn: "arn:aws:kms:us-west-2:111122223333:alias/x" })).toThrow(/not an alias/);
+    // in this account and region when those are concrete
+    expect(() => build({ kmsKeyArn: "arn:aws:kms:us-east-1:111122223333:key/11111111-2222-3333-4444-555555555555" })).toThrow(/own account and region/);
+    expect(() => build({ kmsKeyArn: "arn:aws:kms:us-west-2:999999999999:key/11111111-2222-3333-4444-555555555555" })).toThrow(/own account and region/);
+  });
+
+  it("Enterprise's own key: the printed statements work BEFORE the role exists (root principal plus an aws:PrincipalArn condition on the fixed-name role), say the key is dedicated, and the role carries the identity right", () => {
+    const b = build({ kmsKeyArn: KMS });
+    const output = Object.entries(b.template.findOutputs("*")).find(([id]) => id.includes("KmsKeyPolicyStatements"))!;
+    const text = flatten((output[1] as { Value: unknown }).Value);
+    const statements = JSON.parse(text.replace(/<AWS::(Partition|AccountId|Region)>/gu, (_m, name: string) => ({ Partition: "aws", AccountId: ACCOUNT, Region: REGION })[name]!)) as Statement[];
+    const allow = statements.find((statement) => statement.Sid === "CreationRoleGrantForEcr")!;
+    expect(JSON.stringify(allow.Principal)).toContain(":root");
+    expect(allow.Condition?.["ArnEquals"]?.["aws:PrincipalArn"]).toBe(`arn:aws:iam::${ACCOUNT}:role/agentx/test/agentx-test-img-create`);
+    expect((output[1] as { Description: string }).Description).toContain("DEDICATED");
+    const policies = Object.values(b.template.findResources("AWS::IAM::Policy")).map((policy) => JSON.stringify(policy.Properties));
+    expect(policies.some((policy) => policy.includes("CustomerKeyGrantForEcr") && policy.includes(KMS))).toBe(true);
   });
 });
 
@@ -166,6 +187,19 @@ describe("the roles", () => {
       expect(JSON.stringify(trust[0]!.Principal)).toContain("Fn::GetAtt");
       expect(JSON.stringify(trust[0]!.Principal)).toContain("Broker");
     }
+  });
+
+  it("push, pull and manage may be assumed for up to the push session length (3,600 seconds), no longer", () => {
+    for (const name of [savedEnvPushRoleName("test"), savedEnvPullRoleName("test"), savedEnvManageRoleName("test")]) {
+      const role = Object.values(template.findResources("AWS::IAM::Role")).find((candidate) => (candidate.Properties as { RoleName?: string }).RoleName === name)!;
+      expect((role.Properties as { MaxSessionDuration: number }).MaxSessionDuration).toBe(SAVED_ENV_PUSH_SESSION_SECONDS);
+    }
+    expect(SAVED_ENV_PUSH_SESSION_SECONDS).toBe(3_600);
+  });
+
+  it("ECR's creation role has a fixed name, so an Enterprise key policy can name it", () => {
+    expect(named(savedEnvCreateRoleName("test"))).toBeDefined();
+    expect(savedEnvCreateRoleName("test")).toBe("agentx-test-img-create");
   });
 
   it("ECR's creation role is assumable by ECR in this account only", () => {
@@ -237,7 +271,16 @@ describe("tenancy: a session reaches one project's repository", () => {
     for (const action of ["ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:BatchDeleteImage", "ecr:DeleteRepository", "ecr:SetRepositoryPolicy"]) expect(allows(policy, action, arn(a))).toBe(false);
   });
 
-  it("a manage session deletes its own repository's images only, and has no token, push or pull", () => {
+  it("a push session may also start a scan of its own repository (a basic scan after each push) and nothing else new", () => {
+    const policy = savedEnvPushSessionPolicy(SCOPE, a);
+    expect(allows(policy, "ecr:StartImageScan", arn(a))).toBe(true);
+    expect(allows(policy, "ecr:StartImageScan", arn(sameOrgOtherProject))).toBe(false);
+    const scan = savedEnvScanSessionPolicy(SCOPE, a);
+    for (const action of ["ecr:StartImageScan", "ecr:DescribeImageScanFindings"]) { expect(allows(scan, action, arn(a))).toBe(true); expect(allows(scan, action, arn(otherOrgSameProject))).toBe(false); }
+    for (const action of ["ecr:GetAuthorizationToken", "ecr:PutImage", "ecr:BatchGetImage", "ecr:BatchDeleteImage"]) expect(allows(scan, action, arn(a))).toBe(false);
+  });
+
+  it("a manage session can read the repository's policy and description (the broker's squatting check) and delete its own images only, and has no token, push or pull", () => {
     const policy = savedEnvManageSessionPolicy(SCOPE, a);
     expect(allows(policy, "ecr:BatchDeleteImage", arn(a))).toBe(true);
     expect(allows(policy, "ecr:BatchDeleteImage", arn(sameOrgOtherProject))).toBe(false);

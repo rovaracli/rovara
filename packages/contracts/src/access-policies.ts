@@ -1,7 +1,7 @@
 // The two access-stack policy documents as pure functions: no CDK imports, so they can be unit
 // tested with plain strings and printed as JSON (the access stack passes CDK tokens instead).
 import { STACK_PARTS, environmentStackName } from "./environments.js";
-import { savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
+import { savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
 import { REALTIME_NAMESPACE } from "./realtime.js";
 
 export interface PolicyScope {
@@ -348,7 +348,7 @@ export function taskPersonProofRoleName(env: string): string {
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
     connectorSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
-    savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env),
+    savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
   ];
 }

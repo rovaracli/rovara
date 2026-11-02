@@ -9,11 +9,17 @@
 //   3. CREDENTIAL-SHAPED TEXT: private key blocks, provider token formats, a URL with a password, an AWS secret key assignment. In dependency folders (node_modules, virtual environments, caches) only the provider
 //      token formats are looked for: a package's test fixtures hold private keys that are not anyone's secret, and failing every Node project on them would make saved images useless.
 //
-// What it does not do: read past `MAX_SCANNED_BYTES_PER_FILE` of one file (a larger file is almost always an archive or a binary), look inside archives, decode text, or read `.git/objects` (compressed). Those are
-// residual risks the report names; the exact-value check does not depend on them being absent.
+// The EXACT-VALUE check reads every file WHOLE, in overlapping chunks (a value split across two chunks is still found). The regular-expression checks read at most `MAX_SCANNED_BYTES_PER_FILE` of a file (a larger
+// file is almost always an archive or a binary).
+//
+// LINKS: a symbolic link is never followed, and one that is ABSOLUTE or that leaves the seed (more `..` than there are folders above it) ends the scan as `unsafe_link`: whatever it points at on the machine that
+// extracts the image is not the project's file. (A Python virtual environment's `bin/python -> /usr/bin/python3` is such a link: that project gets no saved image until its environment is made without them.)
+//
+// What it does not do: read past `MAX_SCANNED_BYTES_PER_FILE` for shapes, look inside archives, decode text, or read `.git/objects` (compressed). Those are residual risks the report names; the exact-value check does
+// not depend on them being absent (except inside archives and compressed objects).
 //
 // Findings carry the KIND and the PATH, never the matched text. Nothing here logs.
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, readdir, readlink } from "node:fs/promises";
 import path from "node:path";
 
 export const SECRET_FINDING_KINDS = ["forbidden_value", "credential_file", "private_key", "token", "url_password", "aws_secret", "git_config_credential"] as const;
@@ -24,7 +30,7 @@ export interface SecretFinding { kind: SecretFindingKind; /** A path inside the 
 export type SecretScanResult =
   | { ok: true; files: number; bytes: number }
   | { ok: false; reason: "found"; findings: SecretFinding[]; truncated: boolean }
-  | { ok: false; reason: "unscannable"; detail: "too_many_files" | "too_many_bytes" | "deadline" | "special_file" | "unreadable" };
+  | { ok: false; reason: "unscannable"; detail: "too_many_files" | "too_many_bytes" | "deadline" | "special_file" | "unreadable" | "unsafe_link" };
 
 export interface SecretScanOptions {
   /** Exact secret values to look for in every file (at least 8 characters each; shorter ones are ignored, since a short string matches by chance). */
@@ -39,6 +45,7 @@ export interface SecretScanOptions {
 }
 
 export const MAX_SCANNED_BYTES_PER_FILE = 4 * 1024 * 1024;
+const STREAM_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_MAX_FILES = 1_500_000;
 const DEFAULT_MAX_TOTAL_BYTES = 12 * 1024 * 1024 * 1024;
 const MIN_FORBIDDEN_LENGTH = 8;
@@ -117,6 +124,35 @@ function fileNameFinding(parts: readonly string[], dependency: boolean): SecretF
 /** Whether `.docker/config.json` has a login (an `auths` entry with credentials) rather than only settings. */
 const DOCKER_AUTH = /"auths"\s*:\s*\{\s*"[^"]+"\s*:\s*\{[^}]*"(?:auth|identitytoken|registrytoken)"\s*:\s*"[^"]{6,}"/u;
 
+/** Whether a link at `relative` (POSIX, inside the scanned tree) pointing at `target` stays inside the tree: not absolute, and never above the tree's root. */
+export function linkStaysInside(relative: string, target: string): boolean {
+  if (target === "" || path.isAbsolute(target) || target.includes("\\") || target.startsWith("/")) return false;
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(relative), target));
+  return resolved !== ".." && !resolved.startsWith("../");
+}
+
+/**
+ * Whether any of `values` is in the file from byte `from` on, reading in chunks that overlap by the longest value minus one byte, so a value cut by a chunk edge is still seen. (The part before `from` was
+ * searched by the caller; the overlap starts there too, so a value across `from` is found.)
+ */
+async function streamHasValue(file: string, from: number, values: readonly Buffer[]): Promise<boolean> {
+  const longest = values.reduce((most, value) => Math.max(most, value.length), 0);
+  const overlap = Math.max(0, longest - 1);
+  const handle = await open(file, "r");
+  try {
+    const buffer = Buffer.alloc(STREAM_CHUNK_BYTES + overlap);
+    let position = Math.max(0, from - overlap);
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) return false;
+      const window = buffer.subarray(0, bytesRead);
+      if (values.some((value) => window.includes(value))) return true;
+      if (bytesRead < buffer.length) return false;
+      position += bytesRead - overlap;
+    }
+  } finally { await handle.close(); }
+}
+
 /**
  * Scans `root` (a staged copy of the repositories). Never follows a symbolic link, never leaves `root`. A device file, or a tree over the limits, is `unscannable`: the caller treats that like a finding and
  * builds nothing (an unread file might hold anything).
@@ -148,7 +184,12 @@ export async function scanTreeForSecrets(root: string, options: SecretScanOption
       const absolute = path.join(root, relative);
       let info;
       try { info = await lstat(absolute); } catch { return { ok: false, reason: "unscannable", detail: "unreadable" }; }
-      if (info.isSymbolicLink()) continue;
+      if (info.isSymbolicLink()) {
+        let target: string;
+        try { target = await readlink(absolute); } catch { return { ok: false, reason: "unscannable", detail: "unreadable" }; }
+        if (!linkStaysInside(relative, target)) return { ok: false, reason: "unscannable", detail: "unsafe_link" };
+        continue;
+      }
       const parts = relative.split("/");
       if (info.isDirectory()) {
         // .git/objects is compressed: nothing in it can be read as text. Everything else of .git is scanned.
@@ -167,7 +208,8 @@ export async function scanTreeForSecrets(root: string, options: SecretScanOption
       if (byName !== undefined) { report(byName, relative); continue; }
 
       const want = Math.min(info.size, MAX_SCANNED_BYTES_PER_FILE);
-      bytes += want;
+      // With exact values to find, the whole file is read (in chunks), so the whole file counts.
+      bytes += forbidden.length > 0 ? info.size : want;
       if (bytes > maxBytes) return { ok: false, reason: "unscannable", detail: "too_many_bytes" };
       if (want === 0) continue;
       let content: Buffer;
@@ -180,7 +222,9 @@ export async function scanTreeForSecrets(root: string, options: SecretScanOption
         } finally { await handle.close(); }
       } catch { return { ok: false, reason: "unscannable", detail: "unreadable" }; }
 
-      if (forbidden.some((value) => content.includes(value))) { report("forbidden_value", relative); continue; }
+      const rest = info.size > want && forbidden.length > 0 && !forbidden.some((value) => content.includes(value)) ? await streamHasValue(absolute, want, forbidden).catch(() => "unreadable" as const) : false;
+      if (rest === "unreadable") return { ok: false, reason: "unscannable", detail: "unreadable" };
+      if (rest === true || forbidden.some((value) => content.includes(value))) { report("forbidden_value", relative); continue; }
       if (looksBinary(content)) continue;
       const text = content.toString("latin1");
       if (parts.at(-2) === ".docker" && parts.at(-1) === "config.json" && DOCKER_AUTH.test(text)) { report("credential_file", relative); continue; }

@@ -5,14 +5,27 @@
 // fixed word (contracts `SAVED_ENV_BUILD_FAILURES`) with no output and no value in it:
 //   1. the environment is the APPROVED one: its digest is the broker's approved digest (`not_approved`);
 //   2. the sandbox is new: it shares no id and no workspace with any workspace named in `notFrom` (`not_fresh`);
-//   3. the Prove run passed for that digest (`not_proved`; a Prove that could not run is `prove_failed`);
-//   4. every repository is exactly at the head of its default branch, with no tracked file changed (`not_default_branch`): ED-1, an image holds reviewed code only;
-//   5. the environment key is worked out from the files of that checkout (SH21), or the build stops (`unsafe_tree`);
-//   6. the staged tree holds no secret (`secrets_found`; see secret-scan.ts), and no device file or tree over the limits (`unsafe_tree`);
-//   7. only then is an image built, with no network and nothing run in it: `FROM scratch`, a `COPY` of the seed and the manifest, labels. No `RUN`, `ENV`, `ARG` or `ADD`;
-//   8. a push login for THAT repository is fetched from the broker (it is short-lived and scoped to one repository), written to a throwaway Docker config, and used for the push alone;
-//   9. the digest comes from the registry's own answer, and its repository must be the one the login was for (`digest_mismatch`).
-// The login, the config and the staged copy are removed whatever happens. The worker's instance role is not used for any of this and has no grant on these repositories.
+//   3. BEFORE the Prove run, each repository's `.git` is copied out of the sandbox's reach (the "trusted" copy, the worker's own clone). It must hold none of `REFUSED_GIT_ENTRIES` (alternates, grafts, replace
+//      refs, modules, worktrees), its HEAD and `refs/remotes/origin/<default branch>` must be the commit the broker named, no index entry may carry a flag (assume-unchanged, skip-worktree), and its origin URL
+//      must hold no credential (`not_default_branch`, `unsafe_tree`): ED-1, an image holds reviewed code only;
+//   4. the Prove run passed for that digest (`not_proved`; a Prove that could not run is `prove_failed`);
+//   5. every process of the sandbox is stopped, keeping only its workspace (`unsafe_tree`): what is checked next cannot change while it is checked;
+//   6. the work tree is STAGED without its live `.git`; the trusted `.git` is installed beside it with a generated config (the origin URL only) and no hooks; the index is rebuilt from HEAD;
+//   7. every tracked file of the trusted HEAD tree equals its staged file byte for byte, in the right kind and mode, with no symbolic link on the way (`not_default_branch`);
+//   8. the environment key is worked out from the STAGED copy (SH21), or the build stops (`unsafe_tree`);
+//   9. the staged tree holds no secret, no link that is absolute or leaves the seed, no device file, and is within the limits (`secrets_found`, `unsafe_tree`; see secret-scan.ts);
+//  10. only then is an image built, with no network and nothing run in it, in a THROWAWAY builder that is removed afterwards (its cache goes with it): `FROM scratch`, a `COPY` of the seed and the manifest,
+//      labels. No `RUN`, `ENV`, `ARG` or `ADD`;
+//  11. a push login for THAT repository is fetched from the broker (short-lived, one repository), written to a throwaway Docker config, and used for the push alone;
+//  12. the digest comes from the registry's own answer, and its repository must be the one the login was for (`digest_mismatch`).
+// The login, the config, the staged copy, the trusted copy, the builder and the local images are removed whatever happens. The worker's instance role is not used for any of this and has no grant on these
+// repositories.
+//
+// RULES FOR THE CALLER (SH24/SH25; the broker and the run wiring enforce them, this file cannot):
+//   - `notFrom` comes from the worker's own live lease and sandbox registry, never from the job payload;
+//   - `makeFresh` does the worker's OWN clone of the default branch (never a copy of an existing workspace);
+//   - when the result is recorded, the broker compares `manifest.commits` with the code host's default branch heads;
+//   - the push route belongs to the rebuild job's lease only.
 //
 // Nothing here runs the image, and nothing runs a command of the project outside the fresh sandbox's ports.
 import { createHash, randomBytes } from "node:crypto";
@@ -45,6 +58,7 @@ import { defaultRealPath, sharesWorkspace, type FreshSandbox } from "../setup-ag
 import { runIsolatedGit } from "../isolated-repository.js";
 import type { DockerCli } from "../swebench/containers.js";
 import { environmentKeyFromRepositories, hashWorkspaceFile, type KeyRepository } from "./key.js";
+import { compareTrackedFiles, minimalGitConfig, originUrlIsSafe, originUrlOf, parseLsTree, readGitConfig, unsafeGitEntries, type TreeEntry } from "./tree-check.js";
 import { scanTreeForSecrets, type SecretScanResult } from "./secret-scan.js";
 
 const BUILD_TIMEOUT_MS = 30 * 60_000;
@@ -69,19 +83,34 @@ export interface GitState {
   head: string;
   /** What `refs/remotes/origin/<default branch>` points at, or undefined when the ref is missing. */
   originHead: string | undefined;
-  /** Whether any tracked file differs from HEAD (untracked files are not counted: installed dependencies are untracked). */
-  trackedChanges: boolean;
-  /** Tracked files, POSIX, repository-relative. */
-  files: string[];
+  /** How many index entries carry a flag other than "H" in `git ls-files -v` (assume-unchanged, skip-worktree, ...): a flag can hide a changed file. */
+  nonStandardFlags: number;
 }
+
+/** A fresh sandbox that can also be stopped: every process in it ends and only its workspace stays. */
+export interface BuildSandbox extends FreshSandbox {
+  /** Stops every process of the sandbox (and any container it started), keeping only its workspace. Throws when it cannot be sure. */
+  stopProcesses(): Promise<void>;
+}
+
+export type { TreeEntry };
 
 export interface SavedEnvBuildPorts {
   docker: DockerCli;
-  /** A new sandbox on a new workspace (as `proveAfterAgent` makes one). Removed by this module. */
-  makeFresh(): Promise<FreshSandbox>;
+  /** A new sandbox on a new workspace holding the worker's OWN clone of each repository's default branch. Removed by this module. */
+  makeFresh(): Promise<BuildSandbox>;
+  /** Copies `<repositoryDirectory>/.git` to `<destination>/.git` (a real directory only: a link or a file is refused), links kept as links. */
+  snapshotGit(repositoryDirectory: string, destination: string): Promise<void>;
+  /** Reads HEAD, the origin ref and the index flags of the repository whose `.git` is in `repositoryDirectory`. */
   gitState(repositoryDirectory: string, defaultBranch: string): Promise<GitState>;
-  /** Copies `source` to `destination`, links as links (never followed), leaving out sockets and pipes and everything under `.git/hooks`. Throws on a device file. */
+  /** Rebuilds the index from HEAD (`read-tree HEAD`, then refresh). */
+  rebuildIndex(repositoryDirectory: string): Promise<void>;
+  /** The tracked files of HEAD (`ls-tree -r`). */
+  trackedTree(repositoryDirectory: string): Promise<TreeEntry[]>;
+  /** Copies the work tree `source` to `destination` WITHOUT its top-level `.git`: links as links (never followed), sockets and pipes left out, nothing under a nested `.git/hooks`. Throws on a device file. */
   stage(source: string, destination: string): Promise<void>;
+  /** Copies the trusted `.git` into `<destination>/.git` without hooks, index or config, and writes `config` as its config. */
+  installGit(trustedRepositoryDirectory: string, destination: string, config: string): Promise<void>;
   /** `budgetMs` is how long the scan may take (the scan reads its own clock). */
   scan(root: string, options: { forbiddenValues: readonly string[]; budgetMs: number }): Promise<SecretScanResult>;
   /** The broker's push login for this repository: short-lived, one repository. Undefined when the broker refused. */
@@ -89,7 +118,7 @@ export interface SavedEnvBuildPorts {
   /** A new private folder; `remove` deletes it with everything in it. */
   temporaryFolder(): Promise<{ path: string; remove(): Promise<void> }>;
   now(): number;
-  /** A fresh random suffix for the immutable tag. */
+  /** A fresh random suffix for the immutable tag and the builder's name. */
   random(): string;
 }
 
@@ -115,6 +144,8 @@ export interface SavedEnvBuildInput {
   proveDeadlineMs: number;
   /** The most the scan may take. */
   scanDeadlineMs?: number;
+  /** The BuildKit image of the throwaway builder, by digest (`repository@sha256:...`); the install's mirror of `moby/buildkit`. Absent: the builder driver's default. */
+  builderImage?: string;
 }
 
 const fail = (reason: SavedEnvBuildFailure, step?: string): SavedEnvBuildResult => ({ ok: false, reason, ...(step === undefined ? {} : { step }) });
@@ -144,6 +175,8 @@ function validRepositories(repositories: readonly BuildRepository[]): boolean {
     && repositories.every((repository) => SAFE_DIRECTORY.test(repository.directory) && BRANCH_NAME.test(repository.defaultBranch) && SHA.test(repository.commit) && repository.repositoryId.length > 0 && repository.repositoryId.length <= 200);
 }
 
+const BUILDER_IMAGE = /^[a-z0-9][a-z0-9._/:-]{0,200}@sha256:[a-f0-9]{64}$/u;
+
 /**
  * Proves the approved environment in a fresh sandbox and, if it passes and the checkout is the default branch head, builds and pushes the saved image from that sandbox. See the top of the file.
  * Resolves (never rejects) with the image digest and manifest, or one fixed failure word.
@@ -155,10 +188,14 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
   const digest = testEnvDigest(parsedEnvironment.data);
   if (digest !== input.approved.digest) return fail("not_approved");
   if (!ImageDigestSchema.safeParse(input.baseImageDigest).success) return fail("base_not_pinned");
+  if (input.builderImage !== undefined && !BUILDER_IMAGE.test(input.builderImage)) return fail("base_not_pinned", "builder");
 
-  let fresh: FreshSandbox | undefined;
-  let staged: Awaited<ReturnType<SavedEnvBuildPorts["temporaryFolder"]>> | undefined;
-  let docker: Awaited<ReturnType<SavedEnvBuildPorts["temporaryFolder"]>> | undefined;
+  type Folder = Awaited<ReturnType<SavedEnvBuildPorts["temporaryFolder"]>>;
+  let fresh: BuildSandbox | undefined;
+  let trusted: Folder | undefined;
+  let staged: Folder | undefined;
+  let docker: Folder | undefined;
+  let builder: string | undefined;
   const localTags: string[] = [];
   try {
     // 2. A fresh sandbox.
@@ -167,41 +204,68 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
       if (fresh.id === other.id || await sharesWorkspace(fresh.rootPath, other.rootPath, defaultRealPath)) return fail("not_fresh");
     }
 
-    // 3. The Prove run, in that sandbox, for that digest.
+    // 3. The clone's `.git`, out of the sandbox's reach, BEFORE anything of the project runs.
+    trusted = await ports.temporaryFolder();
+    const configs = new Map<string, string>();
+    for (const repository of input.repositories) {
+      const copy = path.join(trusted.path, repository.directory);
+      try {
+        await ports.snapshotGit(path.join(fresh.rootPath, repository.directory), copy);
+        if ((await unsafeGitEntries(path.join(copy, ".git"))).length > 0) return fail("unsafe_tree", "git");
+        const state = await ports.gitState(copy, repository.defaultBranch);
+        if (state.head !== repository.commit || state.originHead !== repository.commit || state.nonStandardFlags > 0) return fail("not_default_branch");
+        const origin = originUrlOf((await readGitConfig(copy)) ?? "");
+        if (origin === undefined || !originUrlIsSafe(origin)) return fail("unsafe_tree", "origin");
+        configs.set(repository.directory, minimalGitConfig(origin));
+      } catch { return fail("not_default_branch", "git"); }
+    }
+
+    // 4. The Prove run, in that sandbox, for that digest.
     let report;
     try { report = await proveEnvironment(fresh.ports, { proposalDigest: digest, environment: parsedEnvironment.data, signal: input.signal, deadlineMs: input.proveDeadlineMs }); } catch { return fail("prove_failed"); }
     if (!testEnvIsProved(report, digest)) return fail("not_proved");
     const proveReportDigest = createHash("sha256").update(canonicalJson(report)).digest("hex");
 
-    // 4. Every repository at the head of its default branch.
-    const keyRepositories: KeyRepository[] = [];
-    for (const repository of input.repositories) {
-      const directory = path.join(fresh.rootPath, repository.directory);
-      let state: GitState;
-      try { state = await ports.gitState(directory, repository.defaultBranch); } catch { return fail("not_default_branch", "git"); }
-      if (state.head !== repository.commit || state.originHead !== repository.commit || state.trackedChanges) return fail("not_default_branch");
-      keyRepositories.push({
-        repositoryId: repository.repositoryId,
-        paths: state.files,
-        readText: async (file) => {
-          // Only a regular file inside the checkout (the same test the key's hash uses), and a small one: a dev container file.
-          try { return (await hashWorkspaceFile(directory, file)) === undefined ? undefined : (await readFile(path.join(directory, file), "utf8")).slice(0, 1_048_576); } catch { return undefined; }
-        },
-        hashFile: (file) => hashWorkspaceFile(directory, file),
-      });
-    }
+    // 5. Nothing of the sandbox runs from here on: what is checked next cannot change while it is checked.
+    try { await fresh.stopProcesses(); } catch { return fail("unsafe_tree", "stop"); }
 
-    // 5. The environment key, from the same checkout.
-    const key = await environmentKeyFromRepositories({ repositories: keyRepositories, detectorGlobs: input.detectorGlobs, testEnvRevision: input.approved.revision, secretNames: input.secretNames, baseImageDigest: input.baseImageDigest });
-    if (!key.ok) return fail("unsafe_tree", "key");
-
-    // 6. Stage the seed and scan it.
+    // 6. Stage the work tree without its live `.git`, install the trusted one.
     staged = await ports.temporaryFolder();
     const seedRoot = path.join(staged.path, "seed");
     await mkdir(seedRoot, { recursive: true });
-    try {
-      for (const repository of input.repositories) await ports.stage(path.join(fresh.rootPath, repository.directory), path.join(seedRoot, repository.directory));
-    } catch { return fail("unsafe_tree", "stage"); }
+    const keyRepositories: KeyRepository[] = [];
+    for (const repository of input.repositories) {
+      const target = path.join(seedRoot, repository.directory);
+      try {
+        await ports.stage(path.join(fresh.rootPath, repository.directory), target);
+        await ports.installGit(path.join(trusted.path, repository.directory), target, configs.get(repository.directory)!);
+        await ports.rebuildIndex(target);
+      } catch { return fail("unsafe_tree", "stage"); }
+      // The staged `.git` is the trusted one: it must still be clean of the refused entries and say the same thing.
+      if ((await unsafeGitEntries(path.join(target, ".git"))).length > 0) return fail("unsafe_tree", "git");
+      let entries: TreeEntry[];
+      try {
+        const state = await ports.gitState(target, repository.defaultBranch);
+        if (state.head !== repository.commit || state.originHead !== repository.commit || state.nonStandardFlags > 0) return fail("not_default_branch");
+        entries = await ports.trackedTree(target);
+      } catch { return fail("not_default_branch", "git"); }
+      // 7. Every tracked file equals the committed one.
+      const compared = await compareTrackedFiles(entries, target);
+      if (!compared.ok) return fail("not_default_branch", `tracked:${compared.reason}`);
+      keyRepositories.push({
+        repositoryId: repository.repositoryId,
+        paths: entries.map((entry) => entry.path),
+        // Only a regular file inside the staged copy (the same test the key's hash uses), and a small one: a dev container file.
+        readText: async (file) => { try { return (await hashWorkspaceFile(target, file)) === undefined ? undefined : (await readFile(path.join(target, file), "utf8")).slice(0, 1_048_576); } catch { return undefined; } },
+        hashFile: (file) => hashWorkspaceFile(target, file),
+      });
+    }
+
+    // 8. The environment key, from the staged copy.
+    const key = await environmentKeyFromRepositories({ repositories: keyRepositories, detectorGlobs: input.detectorGlobs, testEnvRevision: input.approved.revision, secretNames: input.secretNames, baseImageDigest: input.baseImageDigest });
+    if (!key.ok) return fail("unsafe_tree", "key");
+
+    // 9. Scan the staged seed.
     const scanned = await ports.scan(seedRoot, { forbiddenValues: input.forbiddenValues, budgetMs: input.scanDeadlineMs ?? 20 * 60_000 });
     if (!scanned.ok) return scanned.reason === "found" ? fail("secrets_found") : fail("unsafe_tree", "scan");
 
@@ -215,16 +279,20 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
     await writeFile(path.join(staged.path, "manifest.json"), `${JSON.stringify(imageManifest)}\n`, { mode: 0o644 });
     await writeFile(path.join(staged.path, "Dockerfile"), savedEnvDockerfile({ key: key.key, revision: input.approved.revision, proveReportDigest }), { mode: 0o644 });
 
-    // 7. Build: no network, nothing run in it.
+    // 10. Build, in a throwaway builder: no network, nothing run in it, no cache kept (the builder and its state are removed in `finally`).
     const local = `rovara-saved-env-build:${randomBytes(8).toString("hex")}`;
     localTags.push(local);
-    const built = await ports.docker.run(["build", "--network", "none", "--pull=false", "--provenance=false", "--tag", local, "--file", path.join(staged.path, "Dockerfile"), staged.path], { timeoutMs: BUILD_TIMEOUT_MS, signal: input.signal });
+    const name = `rovara-build-${ports.random().replace(/[^a-f0-9]/gu, "").slice(0, 16).padEnd(16, "0")}`;
+    const created = await ports.docker.run(["buildx", "create", "--name", name, "--driver", "docker-container", ...(input.builderImage === undefined ? [] : ["--driver-opt", `image=${input.builderImage}`]), "--bootstrap"], { timeoutMs: DOCKER_QUICK_MS * 5, signal: input.signal });
+    builder = name;
+    if (created.exitCode !== 0) return fail("build_failed", "builder");
+    const built = await ports.docker.run(["buildx", "build", "--builder", name, "--network", "none", "--pull=false", "--provenance=false", "--no-cache", "--load", "--tag", local, "--file", path.join(staged.path, "Dockerfile"), staged.path], { timeoutMs: BUILD_TIMEOUT_MS, signal: input.signal });
     if (built.exitCode !== 0) return fail("build_failed");
 
     // The seed is in the image; the sandbox and the staged copy are no longer needed, and the scan's disk is returned before the push.
     await rm(staged.path, { recursive: true, force: true }).catch(() => undefined);
 
-    // 8. The push login, for this repository, used for the push alone.
+    // 11. The push login, for this repository, used for the push alone.
     const login = await ports.pushSession({ repository: input.repository }).catch(() => undefined);
     const auth = SavedEnvRegistryAuthSchema.safeParse(login);
     if (!auth.success || auth.data.repository !== input.repository || Date.parse(auth.data.expiresAt) <= ports.now() + 60_000) return fail("no_push_session");
@@ -238,7 +306,7 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
     const pushed = await ports.docker.run(["--config", docker.path, "push", remote], { timeoutMs: PUSH_TIMEOUT_MS, signal: input.signal });
     if (pushed.exitCode !== 0) return fail("push_failed");
 
-    // 9. The digest, from the registry's answer, and its repository must be the one the login was for.
+    // 12. The digest, from the registry's answer, and its repository must be the one the login was for.
     const inspected = await ports.docker.run(["image", "inspect", "--format", "{{json .RepoDigests}}", remote], { timeoutMs: DOCKER_QUICK_MS });
     if (inspected.exitCode !== 0) return fail("digest_mismatch", "inspect");
     const expectedPrefix = `${auth.data.registry}/${input.repository}@`;
@@ -253,9 +321,11 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
   } catch {
     return fail("build_failed", "unexpected");
   } finally {
-    // Whatever happened: the login, the staged copy, the local images and the sandbox go.
+    // Whatever happened: the login, the staged and trusted copies, the builder and its cache, the local images and the sandbox go.
     await docker?.remove().catch(() => undefined);
     await staged?.remove().catch(() => undefined);
+    await trusted?.remove().catch(() => undefined);
+    if (builder !== undefined) await ports.docker.run(["buildx", "rm", "--force", builder], { timeoutMs: DOCKER_QUICK_MS }).catch(() => undefined);
     for (const tag of localTags) await ports.docker.run(["rmi", "--force", tag], { timeoutMs: DOCKER_QUICK_MS }).catch(() => undefined);
     await fresh?.dispose().catch(() => undefined);
   }
@@ -263,21 +333,42 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
 
 // ---- the real ports
 
-/** `cp` with links kept as links, sockets and pipes left out, device files refused, and nothing under `.git/hooks`. */
+/** `cp` with links kept as links, sockets and pipes left out, device files refused, no top-level `.git` (the trusted one is installed instead), and nothing under a nested `.git/hooks`. */
 export async function stageTree(source: string, destination: string): Promise<void> {
   await cp(source, destination, {
     recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true, dereference: false, preserveTimestamps: false,
     filter: async (from) => {
       const relative = path.relative(source, from).split(path.sep).join("/");
-      if (relative === ".git/hooks" || relative.startsWith(".git/hooks/")) return false;
+      if (relative === ".git" || relative.startsWith(".git/")) return false;
+      if (/(?:^|\/)\.git\/hooks(?:\/|$)/u.test(relative)) return false;
       const info = await lstat(from);
       if (info.isSymbolicLink() || info.isFile() || info.isDirectory()) return true;
       if (info.isSocket() || info.isFIFO()) return false;
       throw new Error("a device file cannot be saved");
     },
   });
-  // The hooks folder itself stays, empty: a repository without one is still a repository.
-  await mkdir(path.join(destination, ".git", "hooks"), { recursive: true }).catch(() => undefined);
+}
+
+/** Copies `<repositoryDirectory>/.git` to `<destination>/.git`. A `.git` that is not a plain directory (a link, or a file pointing elsewhere) is refused. */
+export async function snapshotGitOf(repositoryDirectory: string, destination: string): Promise<void> {
+  const source = path.join(repositoryDirectory, ".git");
+  const info = await lstat(source);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(".git is not a plain directory");
+  await mkdir(destination, { recursive: true });
+  await cp(source, path.join(destination, ".git"), { recursive: true, verbatimSymlinks: true, dereference: false, force: false, errorOnExist: true });
+}
+
+/** Installs the trusted `.git` into the staged repository: no hooks, no index (rebuilt), no config but the generated one. */
+export async function installGitInto(trustedRepositoryDirectory: string, destination: string, config: string): Promise<void> {
+  const target = path.join(destination, ".git");
+  await cp(path.join(trustedRepositoryDirectory, ".git"), target, {
+    recursive: true, verbatimSymlinks: true, dereference: false, force: false, errorOnExist: true,
+    filter: (from) => {
+      const relative = path.relative(path.join(trustedRepositoryDirectory, ".git"), from).split(path.sep).join("/");
+      return relative !== "hooks" && !relative.startsWith("hooks/") && relative !== "index" && relative !== "config";
+    },
+  });
+  await writeFile(path.join(target, "config"), config, { mode: 0o644 });
 }
 
 export async function gitStateOf(repositoryDirectory: string, defaultBranch: string): Promise<GitState> {
@@ -285,9 +376,18 @@ export async function gitStateOf(repositoryDirectory: string, defaultBranch: str
   const one = async (args: string[]) => (await runIsolatedGit(repositoryDirectory, args, { timeout: 120_000 })).trim();
   const head = await one(["rev-parse", "HEAD"]);
   const originHead = await one(["rev-parse", "--verify", "-q", `refs/remotes/origin/${defaultBranch}`]).catch(() => undefined);
-  const dirty = await runIsolatedGit(repositoryDirectory, ["status", "--porcelain=v1", "--untracked-files=no"], { timeout: 300_000, maxBuffer: 16 * 1024 * 1024 });
-  const listed = await runIsolatedGit(repositoryDirectory, ["ls-files", "-z"], { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
-  return { head, originHead: originHead === undefined || originHead === "" ? undefined : originHead, trackedChanges: dirty.trim() !== "", files: listed.split("\u0000").filter((name) => name !== "") };
+  const flags = await runIsolatedGit(repositoryDirectory, ["ls-files", "-v", "-z"], { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+  const nonStandardFlags = flags.split("\u0000").filter((record) => record !== "" && !record.startsWith("H ")).length;
+  return { head, originHead: originHead === undefined || originHead === "" ? undefined : originHead, nonStandardFlags };
+}
+
+export async function rebuildIndexOf(repositoryDirectory: string): Promise<void> {
+  await runIsolatedGit(repositoryDirectory, ["read-tree", "HEAD"], { timeout: 300_000, index: "persist", mode: "write" });
+  await runIsolatedGit(repositoryDirectory, ["update-index", "-q", "--refresh"], { timeout: 600_000, index: "persist", mode: "write" }).catch(() => undefined);
+}
+
+export async function trackedTreeOf(repositoryDirectory: string): Promise<TreeEntry[]> {
+  return parseLsTree(await runIsolatedGit(repositoryDirectory, ["ls-tree", "-r", "-z", "HEAD"], { timeout: 300_000, maxBuffer: 256 * 1024 * 1024 }));
 }
 
 export async function temporaryFolderIn(parent: string = tmpdir()): Promise<{ path: string; remove(): Promise<void> }> {
@@ -301,8 +401,12 @@ export function realBuildPorts(rest: Pick<SavedEnvBuildPorts, "docker" | "makeFr
     docker: rest.docker,
     makeFresh: rest.makeFresh,
     pushSession: rest.pushSession,
+    snapshotGit: snapshotGitOf,
     gitState: gitStateOf,
+    rebuildIndex: rebuildIndexOf,
+    trackedTree: trackedTreeOf,
     stage: stageTree,
+    installGit: installGitInto,
     scan: (root, options) => scanTreeForSecrets(root, { forbiddenValues: options.forbiddenValues, deadlineAtMs: Date.now() + options.budgetMs }),
     temporaryFolder: () => temporaryFolderIn(rest.temporaryParent),
     now: () => Date.now(),

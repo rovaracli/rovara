@@ -8,7 +8,7 @@
 // agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
-import { brokerRoleName, chainScheduleRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName } from "@agentx/contracts";
+import { brokerRoleName, chainScheduleRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName } from "@agentx/contracts";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -119,7 +119,7 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
       [
         `agentx-${env}-connector-secrets`, brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
         // Setup and test health SH22: the roles the broker assumes for saved environment images.
-        savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env),
+        savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
         ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
       ].sort(),
     );

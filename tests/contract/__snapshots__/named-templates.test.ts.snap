@@ -657,6 +657,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         ],
                       ],
                     },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
                   ],
                   "Sid": "IamFixedNameRolesNotYetCreated",
                 },
@@ -1397,6 +1413,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-img-manage",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-create",
                     ],
                   ],
                 },
@@ -10111,6 +10143,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
           ],
         },
+        "RoleName": "agentx-staging-img-create",
         "Tags": [
           {
             "Key": "agentx:env",
@@ -10199,7 +10232,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           },
         },
         "ImageTagMutability": "IMMUTABLE",
-        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep the last 3 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}},{"rulePriority":3,"description":"Nothing stays past the ceiling","selection":{"tagStatus":"any","countType":"sinceImagePushed","countUnit":"days","countNumber":30},"action":{"type":"expire"}}]}",
+        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep the last 3 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}",
         "Prefix": "rovara-env/staging",
         "RepositoryPolicy": {
           "Fn::Join": [
@@ -10415,6 +10448,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Version": "2012-10-17",
         },
         "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images",
+        "MaxSessionDuration": 3600,
         "Path": "/agentx/staging/",
         "PermissionsBoundary": {
           "Fn::If": [
@@ -10457,6 +10491,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             {
               "Action": [
                 "ecr:DescribeRepositories",
+                "ecr:GetRepositoryPolicy",
                 "ecr:DescribeImages",
                 "ecr:ListImages",
                 "ecr:BatchDeleteImage",
@@ -10567,6 +10602,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Version": "2012-10-17",
         },
         "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to pull an image",
+        "MaxSessionDuration": 3600,
         "Path": "/agentx/staging/",
         "PermissionsBoundary": {
           "Fn::If": [
@@ -10622,6 +10658,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Version": "2012-10-17",
         },
         "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image",
+        "MaxSessionDuration": 3600,
         "Path": "/agentx/staging/",
         "PermissionsBoundary": {
           "Fn::If": [
@@ -10678,6 +10715,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "ecr:DescribeImages",
                 "ecr:CreateRepository",
                 "ecr:TagResource",
+                "ecr:StartImageScan",
+                "ecr:DescribeImageScanFindings",
               ],
               "Effect": "Allow",
               "Resource": {
@@ -10713,23 +10752,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         ],
       },
       "Type": "AWS::IAM::Policy",
-    },
-    "SavedEnvImagesScanOnPush38CA1C16": {
-      "Properties": {
-        "Rules": [
-          {
-            "RepositoryFilters": [
-              {
-                "Filter": "*",
-                "FilterType": "WILDCARD",
-              },
-            ],
-            "ScanFrequency": "SCAN_ON_PUSH",
-          },
-        ],
-        "ScanType": "BASIC",
-      },
-      "Type": "AWS::ECR::RegistryScanningConfiguration",
     },
     "SchedulerRoleForTarget490aa1BE062C91": {
       "Properties": {

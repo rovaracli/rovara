@@ -323,21 +323,21 @@ describe("the named TEST proof-only installation gate", () => {
     // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
     // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
-    // 2026-11-02, saved-env-build (SH22): the four named and foreign digests were retaken after the saved environment images were added to the named control plane (legacy did not move): the key, the repository creation
-    // template, the scan-on-push setting, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the role ECR assumes to create a repository) and their policies, and one broker
-    // statement (AssumeSavedEnvImageRoles). Nothing else in the control plane moved.
+    // 2026-11-02, saved-env-build (SH22 and its review fixes): the four named and foreign digests were retaken after the saved environment images were added to the named control plane (legacy did not move): the key,
+    // the repository creation template, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the fixed-name role ECR assumes to create a repository) and their
+    // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. Nothing else in the control plane moved.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "ed8895edcf93bd12c131b2b5cec7ea12491468b659460a051cde24247155bfc4",
-        withoutRoute: "9d8ffe42b084c510fe3ef550e2f5670756a945e6c83b7b4b0c05fc28082224f3",
+        withRoute: "1b440de1f9c48301bd547018efdeb98e9fbce0d968a9ae6a1fb3a0398dc571c2",
+        withoutRoute: "0b4a7a59e6a18f782b80a92db1ec172668c768111bbcb55b860d71dc218d0f9a",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "41829275d986619f1890b3d2efbbf3d9513fe43cd3882b9caa7630f7284fcee5",
-        withoutRoute: "2552727548817df1b92081cf56f9d91825d288bbe76dbc3215a62e26a74c0d00",
+        withRoute: "d86a692b774d674564c37ad55c422fa953a8b35c6c127622f04db4e2264862af",
+        withoutRoute: "5d73a939d02042f4d264d84aae9fcd582f6951c1049bce3d571a1ce1bf713f0f",
       },
       {
         label: "legacy",

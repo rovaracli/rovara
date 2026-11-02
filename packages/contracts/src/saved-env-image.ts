@@ -22,12 +22,20 @@ export const SAVED_ENV_IMAGE_MANIFEST_PATH = "/rovara/manifest.json";
 export const SAVED_ENV_LABEL_KEY = "io.rovara.saved-env.key";
 export const SAVED_ENV_LABEL_REVISION = "io.rovara.saved-env.revision";
 export const SAVED_ENV_LABEL_PROVE = "io.rovara.saved-env.prove";
-/** An ECR lifecycle ceiling: even the kept images are deleted this long after they were pushed (the 7 day rebuild rule makes an older image stale anyway). */
+/**
+ * The age ceiling: an image is deleted this long after it was pushed (the 7 day rebuild rule makes an older image stale anyway). ECR's lifecycle cannot express it next to "keep the newest N" (a rule on tagged images
+ * with an age never matches once a count rule has them), so it is ENFORCED BY THE BROKER'S MANAGE WALK (SH24), not by the lifecycle policy.
+ */
 export const SAVED_ENV_IMAGE_CEILING_DAYS = 30;
 /** Untagged images (a failed push) are deleted after this long. */
 export const SAVED_ENV_UNTAGGED_DAYS = 1;
-/** The sessions the broker mints live this long: STS's minimum, which is also enough for one push or one pull. */
-export const SAVED_ENV_SESSION_SECONDS = 900;
+/**
+ * How long each session lives. A push of a large seed can take most of an hour (the chained-role maximum is 3,600 seconds); a pull and the broker's own manage and scan calls are short. The worker also refuses a
+ * login with under a minute left, so a session near its end is never used to start a push.
+ */
+export const SAVED_ENV_PUSH_SESSION_SECONDS = 3_600;
+export const SAVED_ENV_PULL_SESSION_SECONDS = 1_800;
+export const SAVED_ENV_MANAGE_SESSION_SECONDS = 900;
 
 const EnvName = z.string().regex(/^[a-z][a-z0-9-]{0,19}$/u, "an environment name");
 const IdText = z.string().min(1).max(200).regex(/^[^\p{Cc}\p{Cf}]+$/u, "an id has no control characters");
@@ -62,6 +70,8 @@ export const savedEnvRolePrefix = (env: string): string => `agentx-${EnvName.par
 export const savedEnvPushRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-push`;
 export const savedEnvPullRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-pull`;
 export const savedEnvManageRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-manage`;
+/** The role ECR assumes to create a repository from the creation template. Fixed too, so Enterprise can name it in its own key policy BEFORE the install is deployed (the ARN is `arn:<partition>:iam::<account>:role/agentx/<env>/<this name>`). */
+export const savedEnvCreateRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-create`;
 
 export interface SavedEnvAccountScope { partition: string; region: string; account: string }
 
@@ -80,9 +90,12 @@ export const SAVED_ENV_PUSH_ACTIONS = [
   "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage", "ecr:BatchGetImage", "ecr:DescribeImages",
   // Create-on-push: the first push makes the repository from the registry's creation template (immutable tags, KMS, lifecycle, repository policy).
   "ecr:CreateRepository", "ecr:TagResource",
+  // A basic scan after each push (the registry-wide scan-on-push setting is off by default): the broker starts it in a push-role session of its own (SH24).
+  "ecr:StartImageScan", "ecr:DescribeImageScanFindings",
 ] as const;
 export const SAVED_ENV_PULL_ACTIONS = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"] as const;
-export const SAVED_ENV_MANAGE_ACTIONS = ["ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListImages", "ecr:BatchDeleteImage", "ecr:DeleteRepository"] as const;
+// GetRepositoryPolicy and DescribeRepositories are how the broker checks a repository is the one the creation template made (encryption, key, immutable tags, policy) before it mints a push or pull login.
+export const SAVED_ENV_MANAGE_ACTIONS = ["ecr:DescribeRepositories", "ecr:GetRepositoryPolicy", "ecr:DescribeImages", "ecr:ListImages", "ecr:BatchDeleteImage", "ecr:DeleteRepository"] as const;
 /** Registry-wide: ECR cannot scope the token call to a repository. What the token may DO is set by the session policy below. */
 const TOKEN_ACTION = "ecr:GetAuthorizationToken";
 
@@ -99,6 +112,8 @@ function sessionPolicy(scope: SavedEnvAccountScope, repositoryName: string, acti
 export const savedEnvPushSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, SAVED_ENV_PUSH_ACTIONS, "RegistryToken", "PushToThisRepository", true);
 /** What a pull session may do: get a registry token, and read ONE repository. IAM cannot pin a digest; the worker pulls `repository@digest` and checks it (worker/src/saved-env/use.ts). */
 export const savedEnvPullSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, SAVED_ENV_PULL_ACTIONS, "RegistryToken", "PullFromThisRepository", true);
+/** What a scan session may do: start a basic scan of ONE repository's images and read the findings. No token, no push, no pull. */
+export const savedEnvScanSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, ["ecr:StartImageScan", "ecr:DescribeImageScanFindings"], "", "ScanThisRepository", false);
 /** What a manage session may do: list, describe and delete the images of ONE repository, and delete the repository. No token, no push, no pull. */
 export const savedEnvManageSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, SAVED_ENV_MANAGE_ACTIONS, "", "ManageThisRepository", false);
 
@@ -131,14 +146,16 @@ export function savedEnvRepositoryPolicy(input: { pushRoleArn: string; pullRoleA
   };
 }
 
-/** The lifecycle policy: untagged images go after a day; the newest `keep` images stay; nothing stays longer than the ceiling. Immutable tags make a tag unmovable, so the newest `keep` are exactly the last builds. */
+/**
+ * The lifecycle policy: untagged images go after a day, and the newest `keep` images stay. Immutable tags make a tag unmovable, so the newest `keep` are exactly the last builds. There is NO age rule here:
+ * ECR evaluates rules in priority order and a later rule on tagged images never sees what a count rule keeps. The 30 day ceiling is the broker's manage walk (SH24), `SAVED_ENV_IMAGE_CEILING_DAYS`.
+ */
 export function savedEnvLifecyclePolicy(keep: number): { rules: Array<Record<string, unknown>> } {
   const count = z.number().int().min(SAVED_ENV_KEEP_MIN).max(SAVED_ENV_KEEP_MAX).parse(keep);
   return {
     rules: [
       { rulePriority: 1, description: "Untagged images expire", selection: { tagStatus: "untagged", countType: "sinceImagePushed", countUnit: "days", countNumber: SAVED_ENV_UNTAGGED_DAYS }, action: { type: "expire" } },
       { rulePriority: 2, description: `Keep the last ${String(count)} images`, selection: { tagStatus: "tagged", tagPatternList: ["*"], countType: "imageCountMoreThan", countNumber: count }, action: { type: "expire" } },
-      { rulePriority: 3, description: "Nothing stays past the ceiling", selection: { tagStatus: "any", countType: "sinceImagePushed", countUnit: "days", countNumber: SAVED_ENV_IMAGE_CEILING_DAYS }, action: { type: "expire" } },
     ],
   };
 }

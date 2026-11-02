@@ -107,7 +107,7 @@ export interface ControlPlaneStackProps extends StackProps {
    * the record is created and the templates are unchanged. Named environments only (checked by `parseTeamRecordSwitch`).
    */
   teamRecord?: TeamRecordContext;
-  /** Saved environment images (SH22): Enterprise may bring its own KMS key (`rovaraSavedEnvKmsKeyArn`); `false` leaves the registry-wide scan-on-push setting alone (`agentxSavedEnvRegistryScan=off`). */
+  /** Saved environment images (SH22): Enterprise may bring its own KMS key (`rovaraSavedEnvKmsKeyArn`); `registryScan: true` turns on the registry-wide basic scan-on-push setting (`agentxSavedEnvRegistryScan=on`; off by default: it replaces an existing registry setting). */
   savedEnv?: { kmsKeyArn?: string; registryScan?: boolean };
   /** N9 (INTG2): the CodeArtifact domains a project's registries may name. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains`; absent (the default), nothing is granted and the switch is off. */
   registryDomains?: readonly RegistryDomain[];
@@ -1112,7 +1112,7 @@ export class ControlPlaneStack extends Stack {
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole });
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
-    if (naming.env !== undefined) attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === false ? { registryScanning: "none" as const } : {}) });
+    if (naming.env !== undefined) attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
     if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets

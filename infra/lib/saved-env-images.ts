@@ -4,21 +4,33 @@
 //   - a KMS key for the images' repositories (or the customer's own key, Enterprise: `kmsKeyArn`), with a narrow key policy: administration without use; ECR's creation role may create the grant ECR
 //     needs, through ECR only; nobody else may create a grant; only the deploy role may schedule its deletion;
 //   - a REPOSITORY CREATION TEMPLATE for the prefix `rovara-env/<env>`: every repository the first push creates has immutable tags, KMS encryption, a lifecycle policy (untagged out after a day, the newest
-//     `keep` kept, nothing past 30 days) and a repository policy that denies the data actions to every principal but the push and pull roles (so the worker role's broad pull grant cannot read an image);
-//   - the registry's scan-on-push setting (basic scanning), unless the install turns it off: see `registryScanning`;
+//     `keep` kept; the 30 day age ceiling is the broker's manage walk, SH24: ECR cannot express it next to a count rule) and a repository policy that denies the data actions to every principal but the push and pull roles (so the worker role's broad pull grant cannot read an image);
+//   - OPTIONAL, OFF by default: the registry-wide scan-on-push setting (`registryScanning: "basic"`, context `agentxSavedEnvRegistryScan=on`). It is ONE setting for the whole registry and replaces an existing one
+//     (an account with Inspector enhanced scanning would lose it), so it is opt-in. Instead the push role may start a basic scan of its one repository (`ecr:StartImageScan`) and the broker does so after each push (SH24);
 //   - three roles the broker assumes, each with a SESSION POLICY naming one repository (contracts `savedEnvPushSessionPolicy` and its two siblings): push, pull, and manage (delete). The roles' own
 //     policies reach `rovara-env/<env>/*`, so a session that carried no policy would still reach only this environment's images; the session narrows it to ONE project of ONE org;
-//   - the role ECR assumes to create a repository from the template (it holds `ecr:CreateRepository` and the grant on the key, nothing else);
+//   - the role ECR assumes to create a repository from the template (it holds `ecr:CreateRepository` and the grant on the key, nothing else). It has a FIXED name, `agentx-<env>-img-create`, so an Enterprise install
+//     can name it in its own key policy;
 //   - the broker's right to assume the three roles, and nothing on the repositories itself.
 //
-// There is NO grant on the worker's instance role (ec2-workers.ts is untouched): a worker pulls and pushes with a token the broker minted from a session, for one repository, for 15 minutes.
+// There is NO grant on the worker's instance role (ec2-workers.ts is untouched): a worker pulls and pushes with a token the broker minted from a session, for one repository, for the session lengths in contracts (push 60 minutes, pull 30).
+//
+// ENTERPRISE NOTES
+//   - The key must be DEDICATED to these repositories: the statements this install prints for it let ECR's creation role create a grant, and the Deny on `kms:CreateGrant` for every other principal would break any
+//     other use of a shared key. The key must be in this account and region.
+//   - The repository policy denies image reads to every principal but the push and pull roles. That includes the Inspector (enhanced scanning) service-linked role, `AWSServiceRoleForAmazonInspector2`: an account that
+//     turns on enhanced scanning for these repositories must add an Allow for that role's ARN to the repository policy in `savedEnvRepositoryPolicy` (it is not added here, so Rovara's default stays "nobody else").
+//     Basic scanning, which this install uses, is not affected.
 //
 // Not decided by this file: whether the feature is on (the broker's `sv` setting and the project's `savedEnv.enabled`), who an image belongs to (the repository name is a hash of the org and the project),
 // or what is in an image (the worker's build). With the feature off nothing pushes, and the empty template and roles cost nothing.
-import { Aws, CfnOutput, Stack, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
+import { Aws, CfnOutput, Duration, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import {
+  environmentRolePath,
   SAVED_ENV_KEEP_DEFAULT,
+  SAVED_ENV_PUSH_SESSION_SECONDS,
+  savedEnvCreateRoleName,
   savedEnvLifecyclePolicy,
   savedEnvManageRoleName,
   savedEnvPullRoleName,
@@ -51,8 +63,9 @@ export interface SavedEnvImagesProps {
   readonly keep?: number;
   /**
    * Basic scan on push for the registry (`AWS::ECR::RegistryScanningConfiguration`). It is ONE setting for the whole registry, not for this prefix: it scans every repository on push and replaces
-   * an existing registry scanning setting, so an install that has enhanced scanning (Inspector) turns it off with `agentxSavedEnvRegistryScan=off` and scans the `rovara-env/` prefix itself.
-   * Default "basic".
+   * an existing registry scanning setting (an account with enhanced scanning would lose it). OFF by default; `agentxSavedEnvRegistryScan=on` turns it on. The broker starts a scan of the one repository after
+   * each push either way (SH24).
+   * Default "none".
    */
   readonly registryScanning?: "basic" | "none";
 }
@@ -65,11 +78,13 @@ export class SavedEnvImages extends Construct {
   readonly key: kms.Key | undefined;
   readonly kmsKeyArn: string;
   readonly template: ecr.CfnRepositoryCreationTemplate;
+  private readonly envName: string;
 
   constructor(scope: Construct, id: string, props: SavedEnvImagesProps) {
     super(scope, id);
     const stack = Stack.of(this);
     const { env } = props;
+    this.envName = env;
     const prefix = savedEnvRepositoryPrefix(env);
     const scopeOf = { partition: Aws.PARTITION, region: Aws.REGION, account: Aws.ACCOUNT_ID };
     const repositories = savedEnvRepositoriesArn(scopeOf, env);
@@ -80,6 +95,8 @@ export class SavedEnvImages extends Construct {
         roleName,
         description,
         assumedBy: brokerPrincipal,
+        // The longest session any of them is minted for is the push's 3,600 seconds (the chained-role maximum); the session policy and the duration the broker asks for narrow it.
+        maxSessionDuration: Duration.seconds(SAVED_ENV_PUSH_SESSION_SECONDS),
       });
       if (withToken) role.addToPolicy(new iam.PolicyStatement({ sid: "RegistryToken", actions: ["ecr:GetAuthorizationToken"], resources: ["*"] }));
       role.addToPolicy(new iam.PolicyStatement({ sid: "ThisEnvironmentsImages", actions: [...actions], resources: [repositories] }));
@@ -91,6 +108,7 @@ export class SavedEnvImages extends Construct {
 
     // The role ECR assumes to create a repository from the template. Only ECR may assume it; it may create repositories under the prefix and apply the policy, lifecycle and tags the template carries.
     this.createRole = new iam.Role(this, "CreateRole", {
+      roleName: savedEnvCreateRoleName(env),
       description: "Rovara saved environment images: ECR assumes this to create a repository from the creation template",
       assumedBy: new iam.ServicePrincipal("ecr.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } } }),
     });
@@ -102,12 +120,21 @@ export class SavedEnvImages extends Construct {
 
     // ---- the key
     if (props.kmsKeyArn !== undefined) {
-      if (!/^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/u.test(props.kmsKeyArn)) throw new Error("saved environment images: kmsKeyArn must be a KMS key ARN (not an alias)");
+      const parsed = /^arn:aws[a-z-]*:kms:([a-z0-9-]+):(\d{12}):key\/[0-9a-f-]{36}$/u.exec(props.kmsKeyArn);
+      if (parsed === null) throw new Error("saved environment images: kmsKeyArn must be a KMS key ARN (not an alias)");
+      // The key must be in this account and region (checked when they are concrete; the control plane's own stack may leave them to deploy time).
+      if ((!Token.isUnresolved(stack.region) && parsed[1] !== stack.region) || (!Token.isUnresolved(stack.account) && parsed[2] !== stack.account)) throw new Error("saved environment images: kmsKeyArn must be a key in this install's own account and region");
       this.key = undefined;
       this.kmsKeyArn = props.kmsKeyArn;
+      // The role may use the customer's key through ECR to create the grant. Its identity policy carries the right; the key policy (the statements printed below) opens the key to the account's IAM policies for
+      // this one role, and works before the role exists (a named principal that does not exist yet is refused by KMS; a condition on aws:PrincipalArn is not).
+      this.createRole.addToPolicy(new iam.PolicyStatement({
+        sid: "CustomerKeyGrantForEcr", actions: ["kms:CreateGrant", "kms:DescribeKey"], resources: [props.kmsKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
+      }));
       new CfnOutput(this, "KmsKeyPolicyStatements", {
-        description: "Add these statements to the saved environment images key policy: ECR's creation role may create the grant ECR uses, and only through ECR.",
-        value: stack.toJsonString(this.createRoleKeyStatements(this.createRole.roleArn)),
+        description: "Add these statements to the DEDICATED saved environment images key policy (the key must be used for nothing else): ECR's creation role may create the grant ECR uses, only through ECR, and no other principal may create a grant.",
+        value: stack.toJsonString(this.createRoleKeyStatements(this.createRoleArn, true)),
       });
     } else {
       const key = new kms.Key(this, "ImagesKey", {
@@ -131,7 +158,7 @@ export class SavedEnvImages extends Construct {
               // The deploy role lives at the root path (the access stack's roles do).
               conditions: { ArnNotEquals: { "aws:PrincipalArn": `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role/${props.cloudFormationRoleName}` } },
             }),
-            ...this.createRoleKeyStatements(this.createRole.roleArn).map((statement) => iam.PolicyStatement.fromJson(statement)),
+            ...this.createRoleKeyStatements(this.createRole.roleArn, false).map((statement) => iam.PolicyStatement.fromJson(statement)),
           ],
         }),
       });
@@ -158,7 +185,7 @@ export class SavedEnvImages extends Construct {
     // The repository policy names the roles by ARN, and the template must not be created before they exist.
     this.template.node.addDependency(this.pushRole, this.pullRole, this.manageRole, this.createRole);
 
-    if ((props.registryScanning ?? "basic") === "basic") {
+    if (props.registryScanning === "basic") {
       new ecr.CfnRegistryScanningConfiguration(this, "ScanOnPush", {
         scanType: "BASIC",
         rules: [{ scanFrequency: "SCAN_ON_PUSH", repositoryFilters: [{ filter: "*", filterType: "WILDCARD" }] }],
@@ -173,14 +200,21 @@ export class SavedEnvImages extends Construct {
     }));
   }
 
+  /** The creation role's ARN from its fixed name and the environment's path, known before the role exists. */
+  private get createRoleArn(): string {
+    return `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role${environmentRolePath(this.envName)}${savedEnvCreateRoleName(this.envName)}`;
+  }
+
   /** The key statements for ECR's creation role: it may create the one grant ECR uses, through ECR, and nobody else may create any grant. */
-  private createRoleKeyStatements(createRoleArn: string): Array<Record<string, unknown>> {
+  private createRoleKeyStatements(createRoleArn: string, beforeTheRoleExists: boolean): Array<Record<string, unknown>> {
+    const viaEcr = { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } };
     return [
-      {
-        Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: createRoleArn },
-        Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*",
-        Condition: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
-      },
+      beforeTheRoleExists
+        ? {
+          Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:root` },
+          Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: { ...viaEcr, ArnEquals: { "aws:PrincipalArn": createRoleArn } },
+        }
+        : { Sid: "CreationRoleGrantForEcr", Effect: "Allow", Principal: { AWS: createRoleArn }, Action: ["kms:CreateGrant", "kms:DescribeKey"], Resource: "*", Condition: viaEcr },
       {
         Sid: "DenyOtherGrants", Effect: "Deny", Principal: "*", Action: ["kms:CreateGrant"], Resource: "*",
         Condition: { ArnNotEquals: { "aws:PrincipalArn": createRoleArn } },

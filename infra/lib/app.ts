@@ -170,7 +170,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
   const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY), { edition: explicitEdition, cloud: agentxCloud, env: naming.env });
-  // Saved environment images (SH22): Enterprise may bring its own KMS key (a key ARN in this account and region); Public always uses the key the stack makes. `agentxSavedEnvRegistryScan=off` leaves the registry's scan setting alone.
+  // Saved environment images (SH22): Enterprise may bring its own KMS key (a key ARN in this account and region); Public always uses the key the stack makes. `agentxSavedEnvRegistryScan=on` turns on the registry-wide basic scan-on-push setting (off by default: it replaces an existing registry setting).
   const savedEnvKmsKey = app.node.tryGetContext("rovaraSavedEnvKmsKeyArn") as unknown;
   if (savedEnvKmsKey !== undefined && savedEnvKmsKey !== "" && (typeof savedEnvKmsKey !== "string" || explicitEdition !== "enterprise")) throw new Error("rovaraSavedEnvKmsKeyArn is a KMS key ARN and is for an Enterprise install only");
   const savedEnvScan = app.node.tryGetContext("agentxSavedEnvRegistryScan") as unknown;
@@ -179,7 +179,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
     ...(teamRecord === undefined ? {} : { teamRecord }),
-    ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" || savedEnvScan === "off" ? { savedEnv: { ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" ? { kmsKeyArn: savedEnvKmsKey } : {}), ...(savedEnvScan === "off" ? { registryScan: false } : {}) } } : {}),
+    ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" || savedEnvScan === "on" ? { savedEnv: { ...(typeof savedEnvKmsKey === "string" && savedEnvKmsKey !== "" ? { kmsKeyArn: savedEnvKmsKey } : {}), ...(savedEnvScan === "on" ? { registryScan: true } : {}) } } : {}),
     ...(registryDomains === undefined ? {} : { registryDomains }),
     ...(Object.keys(brokerEnvironment).length === 0 ? {} : { brokerEnvironment }),
     ...(modelEndpoints.enabled ? { customModelEndpoints: true, customModelEndpointEnvironment: modelEndpointBrokerEnvironment(modelEndpoints), modelEndpointCidrs: modelEndpoints.privateCidrs } : {}),

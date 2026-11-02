@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { scanTreeForSecrets, type SecretScanResult } from "../../packages/worker/src/saved-env/secret-scan.js";
+import { MAX_SCANNED_BYTES_PER_FILE, linkStaysInside, scanTreeForSecrets, type SecretScanResult } from "../../packages/worker/src/saved-env/secret-scan.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -92,12 +92,14 @@ describe("secret scan", () => {
     expect((await scanTreeForSecrets(plain)).ok).toBe(true);
   });
 
-  it("never follows a link: a link to a file with a secret, or to a folder outside the tree, is not read", async () => {
+  it("never follows a link: a link to a file with a secret, or to a folder outside the tree, is not read (and, being absolute, ends the scan)", async () => {
     const outside = await tree({ "secret.txt": githubToken() });
     const root = await tree({ "svc/ok.txt": "fine" });
     await symlink(join(outside, "secret.txt"), join(root, "svc", "link.txt"));
     await symlink(outside, join(root, "svc", "dir"));
-    expect((await scanTreeForSecrets(root)).ok).toBe(true);
+    const result = await scanTreeForSecrets(root);
+    expect(result).toEqual({ ok: false, reason: "unscannable", detail: "unsafe_link" });
+    expect(JSON.stringify(result)).not.toContain("a".repeat(36));
   });
 
   it("reports the kind and the path and never the matched text", async () => {
@@ -120,5 +122,58 @@ describe("secret scan", () => {
     const root = await tree({ "svc/blob.bin": Buffer.concat([Buffer.from([0, 0, 0]), Buffer.from(value), Buffer.from([0])]), "svc/other.bin": Buffer.concat([Buffer.from([0]), Buffer.from(githubToken())]) });
     const result = await scanTreeForSecrets(root, { forbiddenValues: [value], maxFindings: 5 });
     expect(found(result)).toEqual([{ kind: "forbidden_value", path: "svc/blob.bin" }]);
+  });
+
+  it("exact values are searched in the WHOLE file: past the 4 MiB the shape checks stop at, across a chunk edge, and across the 4 MiB mark", async () => {
+    const value = ["clone", "-", "v".repeat(30)].join("");
+    const filler = (n: number) => Buffer.alloc(n, 0x61);
+    const chunk = 1024 * 1024;
+    const late = await tree({ "svc/big.log": Buffer.concat([filler(MAX_SCANNED_BYTES_PER_FILE + 5 * chunk), Buffer.from(value), filler(10)]) });
+    expect(found(await scanTreeForSecrets(late, { forbiddenValues: [value] }))).toEqual([{ kind: "forbidden_value", path: "svc/big.log" }]);
+    // the value straddles the end of the first chunk read past 4 MiB (one chunk plus the overlap after the 4 MiB mark), and another chunk edge after it
+    for (const [name, offset] of [["edge", MAX_SCANNED_BYTES_PER_FILE + chunk - 15], ["edge2", MAX_SCANNED_BYTES_PER_FILE + 3 * chunk - 10]] as const) {
+      const edge = await tree({ [`svc/${name}.log`]: Buffer.concat([filler(offset), Buffer.from(value), filler(chunk)]) });
+      expect(found(await scanTreeForSecrets(edge, { forbiddenValues: [value] }))).toEqual([{ kind: "forbidden_value", path: `svc/${name}.log` }]);
+    }
+    // the value straddles the 4 MiB mark itself
+    const mark = await tree({ "svc/mark.log": Buffer.concat([filler(MAX_SCANNED_BYTES_PER_FILE - 12), Buffer.from(value), filler(chunk * 2)]) });
+    expect(found(await scanTreeForSecrets(mark, { forbiddenValues: [value] }))).toEqual([{ kind: "forbidden_value", path: "svc/mark.log" }]);
+    // a shape (not an exact value) past 4 MiB is not looked for
+    const shape = await tree({ "svc/shape.log": Buffer.concat([filler(MAX_SCANNED_BYTES_PER_FILE + chunk), Buffer.from(` ${githubToken()} `)]) });
+    expect((await scanTreeForSecrets(shape)).ok).toBe(true);
+    // a clean big file passes and counts its whole size when there is a value to find
+    const clean = await tree({ "svc/clean.log": filler(MAX_SCANNED_BYTES_PER_FILE + 2 * chunk) });
+    const result = await scanTreeForSecrets(clean, { forbiddenValues: [value] });
+    expect(result).toMatchObject({ ok: true, bytes: MAX_SCANNED_BYTES_PER_FILE + 2 * chunk });
+  });
+
+  it("a link that is absolute or leaves the tree ends the scan (it is not read); one that stays inside is fine", async () => {
+    const abs = await tree({ "svc/a.txt": "a" });
+    await symlink("/usr/bin/python3", join(abs, "svc", "python"));
+    expect(await scanTreeForSecrets(abs)).toEqual({ ok: false, reason: "unscannable", detail: "unsafe_link" });
+    const up = await tree({ "svc/a.txt": "a" });
+    await symlink("../../etc", join(up, "svc", "up"));
+    expect(await scanTreeForSecrets(up)).toEqual({ ok: false, reason: "unscannable", detail: "unsafe_link" });
+    const ok = await tree({ "svc/dir/a.txt": "a" });
+    await symlink("../a.txt", join(ok, "svc", "dir", "alias"));
+    await symlink("dir", join(ok, "svc", "dir2"));
+    expect((await scanTreeForSecrets(ok)).ok).toBe(true);
+  });
+
+  it("linkStaysInside: relative inside the tree only", () => {
+    expect(linkStaysInside("svc/a", "b")).toBe(true);
+    expect(linkStaysInside("svc/dir/a", "../b")).toBe(true);
+    expect(linkStaysInside("svc/dir/a", "../../b")).toBe(true);
+    expect(linkStaysInside("svc/a", "../../b")).toBe(false);
+    expect(linkStaysInside("a", "../b")).toBe(false);
+    expect(linkStaysInside("svc/a", "/etc/passwd")).toBe(false);
+    expect(linkStaysInside("svc/a", "")).toBe(false);
+    expect(linkStaysInside("svc/a", "..")).toBe(true); // the tree's own root: inside
+    expect(linkStaysInside("svc/a", "../..")).toBe(false);
+  });
+
+  it("a text file in .git/objects of a repository folder is not read; a log under .git is", async () => {
+    const root = await tree({ "svc/.git/objects/ab/note.txt": `${githubToken()}`, "svc/.git/logs/HEAD": `clone: from ${urlWithPassword()}\n` });
+    expect(found(await scanTreeForSecrets(root))).toEqual([{ kind: "url_password", path: "svc/.git/logs/HEAD" }]);
   });
 });
