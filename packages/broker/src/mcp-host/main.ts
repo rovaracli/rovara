@@ -21,6 +21,7 @@ import { dynamoInstanceLeases } from "./instance-leases.js";
 import { dynamoProbeSlots } from "./probe-slots.js";
 import { dynamoControllerEvents } from "./events.js";
 import { dynamoPauses } from "./pauses.js";
+import { dynamoBundleMarks } from "./bundle-marks.js";
 import { randomBytes } from "node:crypto";
 import { dynamoMcpServerStore, legacyToolsHash, summariseProbe } from "../context-sources/mcp-servers.js";
 
@@ -203,7 +204,7 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
     onEgressChange: (change) => { log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }); void events.egress(change); },
   });
   const controller = createMcpController({
-    token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => packageSecretName(installEnvironment, orgId, serverId))), runner, bundles,
+    token, events: (event) => events.record(event), pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), bundleMarks: dynamoBundleMarks({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => packageSecretName(installEnvironment, orgId, serverId))), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, legacyToolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
     leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),

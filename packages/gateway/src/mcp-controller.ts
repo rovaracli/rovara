@@ -193,6 +193,21 @@ export function memoryPauses(): PauseStore {
   };
 }
 
+/**
+ * Review N4: when the controller first saw a bundle that no entry references. A removed entry leaves its bundle behind, and the retention counts from the day the bundle was first seen unreferenced,
+ * not from its upload (a bundle uploaded two months ago and unreferenced today still waits 30 days). Kept in the install's table, so a restart does not start the clock again.
+ */
+export interface BundleMarks {
+  get(hash: string): Promise<number | undefined>;
+  set(hash: string, at: number): Promise<void>;
+  clear(hash: string): Promise<void>;
+}
+
+export function memoryBundleMarks(): BundleMarks {
+  const held = new Map<string, number>();
+  return { get: async (hash) => held.get(hash), set: async (hash, at) => { held.set(hash, at); }, clear: async (hash) => { held.delete(hash); } };
+}
+
 export interface McpControllerOptions {
   /** Where a pause after a tools change is kept (the install's table in production, so a restarted controller keeps it). Default: in memory. */
   pauses?: PauseStore | undefined;
@@ -223,8 +238,12 @@ export interface McpControllerOptions {
   pollMs?: number | undefined;
   /** How often reconcile runs (it also runs once at start). Default 60 s. 0: never on its own (a test calls `reconcile()`). */
   sweepMs?: number | undefined;
-  /** Review M10: a bundle no entry references is removed once it is older than this. Default 30 days (design section 6). */
+  /** Review M10, N4: a bundle no entry references is removed once it has been seen unreferenced for this long. Default 30 days (design section 6). */
   bundleRetentionMs?: number | undefined;
+  /** Review N4: where the day a bundle was first seen unreferenced is kept. Default: in memory (a restart then starts the 30 days again, which only delays a removal). */
+  bundleMarks?: BundleMarks | undefined;
+  /** Review N4: a bundle uploaded less than this long ago is never removed. Default 1 day. */
+  bundleMinAgeMs?: number | undefined;
   /** Review M10: the bundle sweep runs at the first pass and then at most this often. Default 6 hours. 0: every pass (a test). */
   bundleSweepEveryMs?: number | undefined;
   /** Review M10: bundles removed in one sweep, the oldest first. Default 50. */
@@ -1041,11 +1060,12 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /**
-   * Review M10. Removes bundles that no entry references and that are older than the retention. It removes NOTHING unless it knows both what is stored and what is referenced: the store must be
+   * Review M10, N4. Removes bundles that no entry references and that have been unreferenced for the retention (counted from the day they were first seen so, not from the upload). It removes NOTHING unless it knows both what is stored and what is referenced: the store must be
    * able to list and remove, and the registry must answer completely. A bundle a running task was started from is never removed. Oldest first, a
    * bounded number a pass, and one failing removal does not stop the others. Residual: the same package proposed again within the seconds of a sweep, when its old bundle is listed, is uploaded
    * again but removed from under the new entry; the next test of it says the bundle is missing and the admin adds it again (the bucket is versioned, so the bytes stay for 30 days).
    */
+  const bundleMarks = options.bundleMarks ?? memoryBundleMarks();
   let lastBundleSweepAt: number | undefined;
   async function sweepBundles(at: number): Promise<void> {
     const store = options.bundles;
@@ -1061,11 +1081,31 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     } catch { log("mcp_controller.bundle_sweep_failed", {}); return; }
     const inUse = new Set<string>();
     for (const entry of serving.values()) inUse.add(entry.bundleHash);
-    const cutoff = at - (options.bundleRetentionMs ?? 30 * 86_400_000);
-    const old = stored.filter((item) => /^[0-9a-f]{64}$/u.test(item.hash) && item.lastModified < cutoff && !referenced.has(item.hash) && !inUse.has(item.hash)).sort((a, b) => a.lastModified - b.lastModified);
+    const marks = bundleMarks;
+    const retention = options.bundleRetentionMs ?? 30 * 86_400_000;
+    const youngest = at - (options.bundleMinAgeMs ?? 86_400_000);
+    // Review N4: each stored bundle is marked the first time it is seen unreferenced, and the mark is cleared when it is referenced again. Only a bundle marked for the whole retention goes. A mark
+    // that cannot be read or written leaves that bundle alone (nothing is removed on a guess).
+    const due: Array<{ hash: string; since: number }> = [];
+    let looked = 0;
+    for (const item of stored) {
+      if (!/^[0-9a-f]{64}$/u.test(item.hash) || looked >= 500) continue;
+      looked += 1;
+      try {
+        if (referenced.has(item.hash) || inUse.has(item.hash)) {
+          if (await marks.get(item.hash) !== undefined) await marks.clear(item.hash);
+          continue;
+        }
+        const since = await marks.get(item.hash);
+        if (since === undefined) { await marks.set(item.hash, at); continue; }
+        if (at - since >= retention && item.lastModified <= youngest) due.push({ hash: item.hash, since });
+      } catch { log("mcp_controller.bundle_mark_failed", { bundle: item.hash.slice(0, 12) }); }
+    }
+    due.sort((a, b) => a.since - b.since);
+    const old = due;
     let removed = 0;
     for (const item of old.slice(0, options.bundleSweepMax ?? 50)) {
-      try { await store.remove(item.hash); removed += 1; } catch { log("mcp_controller.bundle_remove_failed", { bundle: item.hash.slice(0, 12) }); }
+      try { await store.remove(item.hash); removed += 1; await marks.clear(item.hash).catch(() => undefined); } catch { log("mcp_controller.bundle_remove_failed", { bundle: item.hash.slice(0, 12) }); }
     }
     if (removed > 0 || old.length > 0) log("mcp_controller.bundles_swept", { removed, waiting: Math.max(0, old.length - removed) });
   }

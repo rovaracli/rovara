@@ -52,6 +52,11 @@ describe("fix round 1, S2: the controller keeps its pauses in the install's tabl
     const source = await readFile("packages/broker/src/mcp-host/main.ts", "utf8");
     expect(source).toContain("pauses: dynamoPauses({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) })");
   });
+  it("review N4: and the day a bundle was first seen unreferenced, so a restarted controller does not start the 30 days again", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile("packages/broker/src/mcp-host/main.ts", "utf8");
+    expect(source).toContain("bundleMarks: dynamoBundleMarks({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) })");
+  });
 });
 
 describe("controller main: the registry", () => {
