@@ -11,6 +11,7 @@ interface Step {
   run?: string;
   uses?: string;
   shell?: string;
+  "continue-on-error"?: boolean | string;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
 }
@@ -18,6 +19,7 @@ interface Job {
   if?: string;
   "runs-on"?: string;
   needs?: string | string[];
+  "continue-on-error"?: boolean | string;
   outputs?: Record<string, string>;
   permissions?: Record<string, string>;
   steps: Step[];
@@ -93,6 +95,44 @@ describe("release workflow", () => {
     expect(conditionFor(bundle!.if, PUBLIC_REPOSITORY)).toBe("vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != ''");
     expect(bundle!.if).toContain("github.repository == 'PrepLabsAI/Rovara'");
     expect(bundle!.needs).toEqual(["images", "release"]);
+  });
+
+  it("SK-4: nothing in the signing job can let a failed kit, verify or sign step go on: no `|| true`, no `;` after them, no continue-on-error, no `set +e`, no weakened shell", async () => {
+    const wf = await workflow();
+    const bundle = wf.jobs.bundle!;
+    expect(bundle["continue-on-error"]).toBeUndefined();
+    for (const step of bundle.steps) {
+      expect(step["continue-on-error"], `step ${step.name ?? step.run?.slice(0, 30) ?? step.uses ?? ""}`).toBeUndefined();
+      // The default shell is `bash -e -o pipefail`; a step may not choose another one (sh without -e, `bash +e`, pwsh) for the commands that gate the signing.
+      if (step.run !== undefined && /release:(kit|verify|bundle)/u.test(step.run)) expect(step.shell, "the shell of the step that makes and signs the kit").toBeUndefined();
+      expect(step.run ?? "").not.toMatch(/set\s+\+e|set\s+\+o\s+errexit/u);
+    }
+    const runs = bundle.steps.map((step) => step.run ?? "").join("\n");
+    // Each gating command is the whole of its line, up to the arguments: nothing chained after it that could swallow its failure.
+    for (const command of ["npm run release:verify", "npm run release:kit", "npm run release:bundle"]) {
+      const lines = runs.split("\n").filter((line) => line.includes(command));
+      expect(lines.length, command).toBe(1);
+      expect(lines[0]!, command).not.toMatch(/\|\||;|&\s*$|&&\s*true|\|\s*(?:cat|tee|true)\b|!\s*npm/u);
+      expect(lines[0]!.trimStart().startsWith(command), `${command} starts its line`).toBe(true);
+    }
+    // The build the kit reads is a fresh one made in this job.
+    const ci = bundle.steps.findIndex((step) => step.run === "npm ci");
+    const build = bundle.steps.findIndex((step) => step.run === "npm run build");
+    const kitStep = bundle.steps.findIndex((step) => (step.run ?? "").includes("npm run release:kit"));
+    expect(ci).toBeGreaterThanOrEqual(0);
+    expect(build).toBeGreaterThan(ci);
+    expect(kitStep).toBeGreaterThan(build);
+  });
+
+  it("SK-4: no package.json script passes --allow-unsandboxed-check (the flag is for a developer's own computer, typed by hand)", async () => {
+    const scripts = (JSON.parse(await readFile("package.json", "utf8")) as { scripts: Record<string, string> }).scripts;
+    expect(Object.keys(scripts)).toContain("release:kit");
+    for (const [name, command] of Object.entries(scripts)) expect(command, `package.json script ${name}`).not.toContain("allow-unsandboxed");
+    // And nothing else the workflows run: not in any workflow file.
+    for (const file of ["release.yml", "ci.yml"]) {
+      const text = await readFile(`.github/workflows/${file}`, "utf8").catch(() => "");
+      expect(text, file).not.toContain("--allow-unsandboxed-check");
+    }
   });
 
   it("the test job runs typecheck, lint, build, test and infra:synth", async () => {

@@ -56,8 +56,6 @@ export interface FakeKitOptions {
 
 export async function writeFakeKit(dir: string, options: FakeKitOptions = {}): Promise<void> {
   await mkdir(dir, { recursive: true });
-  const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: options.nodeMajor ?? Number(process.versions.node.split(".")[0]), releaseSha256: options.releaseSha256 ?? "0".repeat(64), gitCommit: options.gitCommit ?? "b".repeat(40) });
-  await writeFile(join(dir, "kit.json"), `${JSON.stringify({ ...manifest, ...(options.kitJsonExtra ?? {}) })}\n`);
   const source = `
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -106,4 +104,10 @@ writeFileSync(out + "/kit-output.json", JSON.stringify({ schemaVersion: 1, packa
 ${options.strayFile === undefined ? "" : `writeFileSync(out + "/" + ${JSON.stringify(options.strayFile)}, "x");`}
 `;
   await writeFile(join(dir, "synth.mjs"), source);
+  // kit.json is written last: it names the hash of every other file (SK-4), as the release step does.
+  const manifest = SynthKitManifestSchema.parse({
+    schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: options.nodeMajor ?? Number(process.versions.node.split(".")[0]), releaseSha256: options.releaseSha256 ?? "0".repeat(64), gitCommit: options.gitCommit ?? "b".repeat(40),
+    files: { "synth.mjs": createHash("sha256").update(source).digest("hex") },
+  });
+  await writeFile(join(dir, "kit.json"), `${JSON.stringify({ ...manifest, ...(options.kitJsonExtra ?? {}) })}\n`);
 }

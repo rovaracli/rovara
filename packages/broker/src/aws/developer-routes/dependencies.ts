@@ -126,7 +126,7 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     // The deep tier starts a read-only task as the person (the ordinary start: their role, their payer, the allowed models, the budget floor and the planning limit).
     deep: (() => { const starter = agentRunStarterOf(deps); return starter === undefined ? undefined : { starter }; })(),
-    // "Propose this change" goes through the ordinary settings routes, as the person: the project's code settings and its settings save. A citation is read again with the setup draft's file reader.
+    // "Apply this change" goes through the ordinary settings routes, as the person: the project's code settings and its settings save. A citation is read again with the setup draft's file reader.
     propose: {
       project: async (orgId, project) => {
         const latest = await latestRevision(table, orgId, project);
@@ -136,6 +136,7 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
       putCodeSettings: (who, project, body) => putCodeSettings({ ...table, now: deps.now, projectFor: (person, rawName) => projectRoleForRoute(deps, person, rawName) }, who, project, body, deps.agents),
       updateSettings: (who, project, body, options) => putProjectSettings(deps, who, encodeURIComponent(project), body, options),
       ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
+      ...(deps.defaultBranchFileReader === undefined ? {} : { readDefaultBranchFile: deps.defaultBranchFileReader }),
     },
     context: {
       ...table, edition: deps.editionPolicy?.edition ?? "public", tagKey: diagnosisTagKeyOf(sessions.cursorKey),

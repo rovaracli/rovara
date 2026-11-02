@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,6 +12,7 @@ import { accumulateAsset, assetSignatureMismatch, type PackageAccumulator, type 
 import { sha256Hex } from "./hash.js";
 import { enterpriseReleaseProfiles } from "./profiles.js";
 import { ImageDigest, ReleaseManifestSchema, type ReleaseManifest } from "./manifest.js";
+import { gitSourceState, releaseCommitOfCleanTree } from "./source-state.js";
 import { zipDirectory } from "./zip.js";
 
 export { accumulateAsset, assetSignatureMismatch, type PackageAccumulator, type ReleaseAssetLike };
@@ -371,7 +371,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // failure gets.
     try {
       const args = parseBuildArgs(process.argv.slice(2));
-      const gitCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      // SK-4: the commit written into release.json is true: the tree is clean, nothing ignored changes what is built, and the build output is not older than its source.
+      const gitCommit = releaseCommitOfCleanTree(gitSourceState(process.cwd()));
       buildRelease({
         version: args.version,
         out: resolve(args.out),

@@ -11,7 +11,7 @@ import { BUILT_PARTS, BuiltManifestSchema, BundleManifestSchema, ENVIRONMENT_PLA
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { RELEASE_SYNTH_ROOT, buildRelease, synthReleaseProfile } from "../../scripts/release/build.js";
 import { ReleaseManifestSchema, type ReleaseManifest } from "../../scripts/release/manifest.js";
-import { buildSynthKit, firstTreeDifference, mergeFunctionCode, selfCheck } from "../../scripts/release/synth-kit.js";
+import { buildSynthKit, firstTreeDifference, mergeFunctionCode, selfCheck, verifyKitForSigning } from "../../scripts/release/synth-kit.js";
 import { assertNoLookups, checkedContext } from "../../scripts/release/synth-kit/kit-checks.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
@@ -56,7 +56,7 @@ beforeAll(async () => {
   sandboxed = (await buildSynthKit({ releaseDir, out: kitDir, source: ON_RELEASE_COMMIT })).sandboxed;
   const key = newTestKey();
   const dir = join(root, "bundle");
-  const { bundleSha256 } = await buildBundle({ releaseDir, out: dir, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: key.signer, synthKitDir: kitDir });
+  const { bundleSha256 } = await buildBundle({ releaseDir, out: dir, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: key.signer, synthKitDir: kitDir, kitCheck: (kit) => verifyKitForSigning({ ...kit, release, source: ON_RELEASE_COMMIT, runner: testRunner }) });
   built = { root, dir, bundleSha256, key, cleanup: async () => undefined };
 }, 1_800_000);
 afterAll(async () => {

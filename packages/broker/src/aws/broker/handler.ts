@@ -4,7 +4,7 @@ import { evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
-import { handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
+import { diagnosisDefaultBranchFileRoute, handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
@@ -783,6 +783,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {
             setupCitationReader: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => dependencies.githubPullRequests.getFileAtCommit!(repositoryUrl, path, commit, githubScope(dependencies, orgId), options),
           }),
+          // DG-1 S2: "Apply this change" checks a proposed dev container file against the default branch's head (wiring: the three GitHub reads, one line).
+          ...diagnosisDefaultBranchFileRoute(dependencies),
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),

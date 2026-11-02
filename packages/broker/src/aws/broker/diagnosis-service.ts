@@ -11,6 +11,10 @@
 // comes from the broker's own record of the diagnosis. The switch is OFF by default: with it off nothing is built and every route answers NOT_FOUND.
 import { DiagnosisModelAccessRequestSchema, DiagnosisRefSchema, agentXError, type OperationRequester } from "@agentx/contracts";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
+import type { DeveloperRouteDependencies } from "../developer-routes/types.js";
+import { defaultBranchFileReader } from "../../diagnosis/default-branch-file.js";
+import type { GitHubTokenScope } from "../../github-app.js";
+import { githubScope } from "./scope-helpers.js";
 import { completeDiagnosis, prepareDiagnosisTurn, waitingForKey, type DiagnosisCoreDependencies } from "../../diagnosis/light.js";
 import { diagnosisEnabled } from "../../diagnosis/switch.js";
 import { json } from "../json-reply.js";
@@ -38,6 +42,18 @@ export function installDiagnosisService(dependencies: AwsBrokerDependencies, acc
   if (access === undefined) return;
   const installed = diagnosisServiceDependenciesFor(dependencies, access, env);
   if (installed !== undefined) dependencies.diagnosisService = installed;
+}
+
+/** DG-1 S2: the route dependency that reads a file at the head of a repository's default branch (needs the three GitHub reads; absent where they are not set up, and then a dev container path is not applied). */
+export function diagnosisDefaultBranchFileRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "defaultBranchFileReader"> {
+  const github = dependencies.githubPullRequests;
+  if (github.getRepositoryIdentity === undefined || github.getDefaultBranchHead === undefined || github.getFileAtCommit === undefined) return {};
+  return {
+    defaultBranchFileReader: defaultBranchFileReader<GitHubTokenScope>({
+      getRepositoryIdentity: (url, scope) => github.getRepositoryIdentity!(url, scope), getDefaultBranchHead: (url, branch, scope) => github.getDefaultBranchHead!(url, branch, scope),
+      getFileAtCommit: (url, path, commit, scope, options) => github.getFileAtCommit!(url, path, commit, scope, options),
+    }, (orgId) => githubScope(dependencies, orgId)),
+  };
 }
 
 /** Whether Rovara pays for a light diagnosis: Public only (the customer's own account pays in Enterprise). The only place this is decided. */

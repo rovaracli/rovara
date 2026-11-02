@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
+  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
   agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
   type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type OrgId,
 } from "@agentx/contracts";
@@ -18,7 +18,7 @@ type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
 type TransactItem = Record<string, unknown>;
 
-export interface DiagnosisStoreDependencies { documentClient: Client; tableName: string; now: () => number }
+export interface DiagnosisStoreDependencies { documentClient: Client; tableName: string; now: () => number; log?: ((entry: Record<string, unknown>) => void) | undefined }
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -121,6 +121,40 @@ async function rateStep(deps: DiagnosisStoreDependencies, key: { pk: string; sk:
   };
 }
 
+/**
+ * DG-1 S1: the whole organization's day of Rovara-paid light diagnoses, as one more counter in the request's own transaction. `count` is the turns and `cents` the worst case Rovara can owe for them (every
+ * turn's key is capped at DIAGNOSIS_LIGHT_BUDGET_USD and is counted at that cap, because the chat service does not report what a turn cost). The two are Rovara's own record of this spend: the proxy's
+ * team figures for the org are the customer's, and the record's `costCents` is 0. A day is full when either would pass its limit.
+ */
+async function orgCapStep(deps: DiagnosisStoreDependencies, orgId: OrgId, limits: DiagnosisOrgCap): Promise<RateStep & { cents: number }> {
+  const key = diagnosisRateKey(orgId, "light_org", "all");
+  const turnCents = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
+  const stored = await getItem(deps, key);
+  const nowMs = deps.now();
+  const window = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  const seenWindow = stored?.["windowStart"], seenCount = stored?.["count"], seenCents = stored?.["cents"];
+  if (stored !== undefined && (typeof seenWindow !== "number" || typeof seenCount !== "number" || typeof seenCents !== "number")) throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
+  const inWindow = typeof seenWindow === "number" && seenWindow === window;
+  const count = inWindow && typeof seenCount === "number" ? seenCount : 0;
+  const cents = inWindow && typeof seenCents === "number" ? seenCents : 0;
+  return {
+    room: count + 1 <= limits.turnsPerDay && cents + turnCents <= limits.centsPerDay, cents: cents + turnCents,
+    item: { Update: {
+      TableName: deps.tableName, Key: key,
+      UpdateExpression: "SET entityType = :type, orgId = :org, windowStart = :window, #count = :next, cents = :nextCents, #expires = :expires",
+      ConditionExpression: stored === undefined ? "attribute_not_exists(pk)" : "windowStart = :seenWindow AND #count = :seenCount AND cents = :seenCents",
+      ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
+      ExpressionAttributeValues: {
+        ":type": "DIAGNOSIS_RATE", ":org": orgId, ":window": window, ":next": count + 1, ":nextCents": cents + turnCents, ":expires": Math.floor((window + 2 * DAY_MS) / 1000),
+        ...(stored === undefined ? {} : { ":seenWindow": seenWindow, ":seenCount": seenCount, ":seenCents": seenCents }),
+      },
+    } },
+  };
+}
+
+/** The most Rovara-paid light diagnoses one organization may have in a day (see `DIAGNOSIS_ROVARA_PAID_ORG_LIMITS`). */
+export interface DiagnosisOrgCap { turnsPerDay: number; centsPerDay: number }
+
 // ---- admitting
 
 export interface DiagnosisAdmission {
@@ -134,6 +168,8 @@ export interface DiagnosisAdmission {
   context?: string | undefined;
   /** Deep: the light diagnosis it follows. */
   basedOn?: string | undefined;
+  /** Light, where Rovara pays for the turn (Public): the organization's daily ceiling on those turns. Absent: the customer pays, and only the person and project limits apply. */
+  rovaraPaid?: DiagnosisOrgCap | undefined;
 }
 
 const isCancelled = (error: unknown): boolean => (error as { name?: string }).name === "TransactionCanceledException";
@@ -157,13 +193,16 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
     const existing = await openNow();
     if (existing !== undefined) return { diagnosisId: existing, created: false };
     const nowMs = deps.now();
+    const org = input.tier === "light" && input.rovaraPaid !== undefined ? await orgCapStep(deps, orgId, input.rovaraPaid) : undefined;
     const steps = input.tier === "light"
       ? [
         await rateStep(deps, diagnosisRateKey(orgId, "light_person", input.developerId), orgId, DIAGNOSIS_RATE.lightPerPersonPerHour, HOUR_MS),
         await rateStep(deps, diagnosisRateKey(orgId, "light_project", input.project), orgId, DIAGNOSIS_RATE.lightPerProjectPerDay, DAY_MS),
+        ...(org === undefined ? [] : [org]),
       ]
       : [await rateStep(deps, diagnosisRateKey(orgId, "deep_person", input.developerId), orgId, DIAGNOSIS_RATE.deepPerPersonPerDay, DAY_MS)];
-    if (steps.some((step) => !step.room)) throw agentXError("TOO_MANY_REQUESTS", input.tier === "light" ? DIAGNOSIS_REFUSALS.rateLimited : DIAGNOSIS_REFUSALS.deepRateLimited);
+    // The person's and the project's limits are answered first (in their own words); the organization's ceiling is the last thing that can refuse.
+    if (steps.some((step) => !step.room)) throw agentXError("TOO_MANY_REQUESTS", input.tier !== "light" ? DIAGNOSIS_REFUSALS.deepRateLimited : org !== undefined && !org.room && steps.slice(0, 2).every((step) => step.room) ? DIAGNOSIS_REFUSALS.orgRateLimited : DIAGNOSIS_REFUSALS.rateLimited);
     const waitingUntil = Math.floor(nowMs / 1000) + REQUEST_WAITING_SECONDS;
     const keep = Math.floor(nowMs / 1000) + DIAGNOSIS_RETENTION_DAYS * 86_400;
     try {
@@ -177,6 +216,7 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
         { Put: { TableName: deps.tableName, Item: { ...diagnosisKey(orgId, diagnosisId, "PERSON"), entityType: "DIAGNOSIS_PERSON", orgId, diagnosisId, requestedBy: input.developerId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
         { Put: { TableName: deps.tableName, Item: { ...diagnosisByPersonKey(orgId, input.developerId, diagnosisId), entityType: "DIAGNOSIS_BY", orgId, diagnosisId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
       ] as never }));
+      if (org !== undefined) deps.log?.({ event: "diagnosis.rovara_paid", orgId, orgDayCents: org.cents });
       return { diagnosisId, created: true };
     } catch (error) {
       // Another call won the place at the same moment: if it was this very request or the same error, that is the answer.
@@ -253,8 +293,11 @@ export async function claimProposedAudit(deps: DiagnosisStoreDependencies, orgId
 // ---- erasure
 
 /**
- * Removes a person's link to the diagnoses they asked for (the PERSON row of each, then the index item last), so a diagnosis stays and names no one. Bounded (`maxItems`) and resumable:
- * `complete` is false when more is left, and the next call goes on from the index. Org-scoped and idempotent.
+ * DG-1 S5: removes every diagnosis a person asked for, and their link to it. A diagnosis holds model text written from the task's title, its failure message and up to 80 event lines, and that text can
+ * hold a person's name, so the diagnosis cannot be kept "without names": its result (RECORD) and its request (REQUEST, with the context text if it is still waiting) are deleted, its open place is
+ * let go, then the person-link row, and the index item last. Whoever needs the diagnosis again asks again (one turn). Bounded (`maxItems`) and resumable: `complete` is false when more is left, and the
+ * next call goes on from the index; each step is a delete, so a pass that stopped half-way is finished by the next one. Org-scoped and idempotent. A waiting request that is answered after this is not
+ * written (the answer settles only a request that is still there).
  */
 export async function eraseDiagnosisPerson(deps: Pick<DiagnosisStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string, options: { maxItems?: number } = {}): Promise<{ complete: boolean; removed: number }> {
   const maxItems = options.maxItems ?? 200;
@@ -265,6 +308,11 @@ export async function eraseDiagnosisPerson(deps: Pick<DiagnosisStoreDependencies
   for (const item of response.Items ?? []) {
     const diagnosisId = item["diagnosisId"];
     if (typeof diagnosisId === "string" && item["orgId"] === orgId) {
+      // The request first: it names the error whose open place is let go. The result and the request go before the link, so a stopped pass leaves the index to resume from.
+      const request = await readDiagnosisRequest({ ...deps, now: Date.now }, orgId, diagnosisId).catch(() => undefined);
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "RECORD") }));
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST") }));
+      if (request !== undefined) await freeOpenPlace({ ...deps, now: Date.now }, orgId, request);
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "PERSON") }));
     }
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"] as string, sk: item["sk"] as string } }));

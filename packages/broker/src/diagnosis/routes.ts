@@ -3,7 +3,7 @@
 //   POST /v1/app/diagnoses                    ask for a light diagnosis of the error the app showed (body: requestId, errorRef)
 //   GET  /v1/app/diagnoses/{id}               where it is and, once ready, its proposals
 //   POST /v1/app/diagnoses/{id}/deep          ask for the deep tier of a light diagnosis that said it needs the code   (deep.ts)
-//   POST /v1/app/diagnoses/{id}/propose       "Propose this change" for one settings change, through the ordinary route   (propose.ts)
+//   POST /v1/app/diagnoses/{id}/propose       "Apply this change" for one settings change, through the ordinary route   (propose.ts)
 //
 // While the `fd` switch is off the dependencies are absent and every one of these is NOT_FOUND, as if it did not exist.
 import { agentXError } from "@agentx/contracts";
@@ -16,7 +16,7 @@ import { diagnosisStatusFor, startLightDiagnosis, type DiagnosisCaller, type Dia
 export interface DiagnosisRouteDependencies extends DiagnosisDependencies {
   /** The deep tier's start (a read-only task, started as the person). Absent where agents are not set up: the deep route then says it is not available. */
   deep: DeepDiagnosisPorts | undefined;
-  /** The ordinary settings routes "Propose this change" goes through. Absent where they are not set up: the route then says it has no path. */
+  /** The ordinary settings routes "Apply this change" goes through. Absent where they are not set up: the route then says it has no path. */
   propose: DiagnosisProposePorts | undefined;
 }
 

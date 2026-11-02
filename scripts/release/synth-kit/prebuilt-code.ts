@@ -43,12 +43,14 @@ class PrebuiltCode extends lambda.Code {
 /** The runtimes NodejsFunction needs no connection-reuse variable for (AWS SDK v3): Node 18 and later. An older one is refused, not approximated. */
 const SUPPORTED_RUNTIME = /^nodejs(\d+)\.x$/;
 
-const SOURCE_BUNDLER_ONLY = ["entry", "bundling", "projectRoot", "depsLockFilePath", "awsSdkConnectionReuse", "handler", "code"] as const;
+const SOURCE_BUNDLER_ONLY = ["entry", "bundling", "projectRoot", "depsLockFilePath", "handler", "code"] as const;
 
 export class NodejsFunction extends lambda.Function {
   public constructor(scope: Construct, id: string, props: NodejsFunctionProps = {}) {
     const { handler, code } = props;
-    // What only the source bundler uses (and the connection-reuse variable, which a Node 18+ runtime does not read) is dropped; every other property is the function's own.
+    // The real class adds AWS_NODEJS_CONNECTION_REUSE_ENABLED when this is set; the stand-in would drop it and the two would differ silently, so a function that sets it is refused (no infrastructure sets it today).
+    if (props.awsSdkConnectionReuse !== undefined) throw new Error(`the function ${id} sets awsSdkConnectionReuse; the synthesis kit's stand-in does not model it, so the kit and a build from source would differ`);
+    // What only the source bundler uses is dropped; every other property is the function's own.
     const rest: Record<string, unknown> = { ...props };
     for (const key of SOURCE_BUNDLER_ONLY) delete rest[key];
     const runtime = props.runtime;

@@ -123,6 +123,8 @@ export interface DeveloperRouteDependencies {
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.
    */
   setupCitationReader?: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>;
+  /** DG-1 S2: a file of one of an org's repositories at the head of its default branch, as GitHub holds it now. "Apply this change" checks a proposed dev container file with it. Absent: that change cannot be applied. */
+  defaultBranchFileReader?: (orgId: OrgId, repositoryUrl: string, path: string, options: { timeoutMs: number }) => Promise<string | undefined>;
   serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus">;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;

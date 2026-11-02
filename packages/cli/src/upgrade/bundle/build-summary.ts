@@ -137,6 +137,8 @@ export function summariseBuild(input: { built: BuiltBundle; settings: SynthSetti
   const drift = input.installedVersion === built.manifest.version ? diffs.filter((diff) => diff.status === "changed").map((diff) => diff.part) : [];
   if (drift.length > 0) lines.push(`  DRIFT: this install already runs release ${built.manifest.version}, yet ${drift.join(", ")} differ${drift.length === 1 ? "s" : ""} from what is deployed. The build settings recorded for this install do not reproduce the deployed stacks (or they were changed by hand). Check them before approving: this build would change those stacks to match the settings.`);
   lines.push(`  The kit ran inside ${input.sandbox}.`);
+  // SK-4 minor 2: the kit turns CDK's template validation off (its rule files are read from beside CDK's own source, which a bundled kit does not have). The release ran the validation on its own templates; a value only this install has is not validated here.
+  lines.push("  CDK's own template validation was not run for this build (the release ran it on its own templates); a value only this install has is checked by the approval above, not by CDK.");
   if (!input.confined) lines.push("  Note: this Node cannot confine the kit's file access itself; the sandbox above still denied it the network and writes outside its own directories.");
   return { diffs, accessAgrees, drift, lines };
 }

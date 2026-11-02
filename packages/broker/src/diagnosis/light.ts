@@ -3,11 +3,11 @@
 // existing chat service (its no-tools answer turn) and, when the service answers, reads the answer again (`sanitizeDiagnosis`), stores the proposals and audits.
 //
 // A diagnosis can never act. What it writes is its own records: the request, the result, the person link, the rate counters and the audit. Its proposals are text for a person; a settings change
-// reaches settings only through "Propose this change" (propose.ts), by the ordinary route and as that person.
+// reaches settings only through "Apply this change" (propose.ts), by the ordinary route and as that person.
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
 import {
-  DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
+  DIAGNOSIS_REFUSALS, DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
   DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
   type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
 } from "@agentx/contracts";
@@ -23,7 +23,7 @@ import { proposalCounts, sanitizeDiagnosis } from "./sanitize.js";
 export const DEEP_DIAGNOSIS_FAILED_MESSAGE = "Couldn't read the code to diagnose this. The first diagnosis stays." as const;
 import {
   REQUEST_STALE_MS, admitDiagnosis, claimProposedAudit, diagnosisEventId, diagnosisIdFor, freeOpenPlace, openDiagnosisFor, readDiagnosisRecord, readDiagnosisRequest, readDiagnosisRequester, settleDiagnosis,
-  type DiagnosisRequest,
+  type DiagnosisOrgCap, type DiagnosisRequest,
 } from "./store.js";
 
 type Edition = "enterprise" | "public";
@@ -46,6 +46,8 @@ export interface DiagnosisDependencies extends DiagnosisCoreDependencies {
   /** The chat service's request queue. Absent: the install cannot run a light diagnosis, and the route says so. */
   queue: SlackRequestQueue | undefined;
   context: DiagnosisContextPorts;
+  /** DG-1 S1: the organization's daily ceiling on the light diagnoses Rovara pays for (Public). Absent: `DIAGNOSIS_ROVARA_PAID_ORG_LIMITS`. */
+  rovaraPaidLimits?: DiagnosisOrgCap | undefined;
 }
 
 export type DiagnosisCaller = { orgId: OrgId; developerId: string };
@@ -147,6 +149,7 @@ export async function startLightDiagnosis(deps: DiagnosisDependencies, caller: D
   const rendered = renderDiagnosisContext(facts, nonceFor(deps.context.tagKey, diagnosisId));
   const admitted = await admitDiagnosis(deps, {
     orgId: caller.orgId, developerId: caller.developerId, requestId: body.data.requestId, tier, errorRef: facts.errorRef, project: subject.project, context: rendered.text,
+    ...(deps.edition === "public" /* the edition where Rovara pays for the turn (`rovaraPaysForLight`) */ ? { rovaraPaid: deps.rovaraPaidLimits ?? DIAGNOSIS_ROVARA_PAID_ORG_LIMITS } : {}),
   });
   const request = await readDiagnosisRequest(deps, caller.orgId, admitted.diagnosisId);
   if (request === undefined) throw unavailable();

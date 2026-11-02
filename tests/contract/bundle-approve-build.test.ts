@@ -303,7 +303,7 @@ describe("agentx bundle approve, Enterprise", () => {
 describe("the kit is part of the signed bundle", () => {
   it("names its entry as a .mjs file under synth-kit/, nothing else", async () => {
     const { SynthKitManifestSchema } = await import("@agentx/contracts");
-    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40) };
+    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40), files: { "synth.mjs": "c".repeat(64) } };
     expect(SynthKitManifestSchema.safeParse({ ...kit, entry: "synth-kit/synth.mjs" }).success).toBe(true);
     for (const entry of ["synth-kit/synth.js", "other/synth.mjs", "synth.mjs", "synth-kit/../x.mjs"]) expect(SynthKitManifestSchema.safeParse({ ...kit, entry }).success, entry).toBe(false);
   });
@@ -347,7 +347,7 @@ describe("the kit is part of the signed bundle", () => {
   it("is refused by the builder when it has no kit.json, names an entry it does not hold, or holds a link", async () => {
     const { mkdir, symlink, writeFile } = await import("node:fs/promises");
     const { buildBundle } = await import("../../scripts/release/bundle.js");
-    const { writeRelease, IMAGES, fakeExporter, newTestKey } = await import("../support/bundle-fixture.js");
+    const { writeRelease, IMAGES, fakeExporter, newTestKey, NO_KIT_CHECK } = await import("../support/bundle-fixture.js");
     const { writeFakeKit } = await import("../support/synth-kit-fixture.js");
     const root = await mkdtemp(join(tmpdir(), "kit-build-"));
     roots.push(root);
@@ -358,7 +358,7 @@ describe("the kit is part of the signed bundle", () => {
       const dir = join(root, name);
       await writeFakeKit(dir, { releaseSha256: sha256OfBytes(await readFile(join(release, "release.json"))) });
       await prepare(dir);
-      return buildBundle({ releaseDir: release, out: join(root, `out-${name}`), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: dir });
+      return buildBundle({ releaseDir: release, out: join(root, `out-${name}`), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: dir, kitCheck: NO_KIT_CHECK });
     };
     await expect(attempt("nokit", async (dir) => { await rm(join(dir, "kit.json")); })).rejects.toThrow(/no kit\.json/);
     const edited = (change: Record<string, string>) => async (dir: string) => {
