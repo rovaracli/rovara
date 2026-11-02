@@ -6097,6 +6097,6 @@ describe("a review with a second reviewer from another AI company (SR-1)", () =>
     expect(row().secondReviewAcknowledged).toHaveLength(1);
     const events = audit.recorded().filter((event) => event.action === "task.second_review_acknowledged");
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ actor: { id: MAYA.developerId }, target: { kind: "task", id: setup.taskId }, facts: { reason: "no-candidate" } });
+    expect(events[0]).toMatchObject({ actor: { id: MAYA.developerId }, target: { kind: "task", id: setup.taskId }, facts: { cause: "no-candidate" } });
   });
 });

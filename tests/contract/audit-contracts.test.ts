@@ -237,7 +237,7 @@ describe("the event catalog", () => {
     "company.known_failing_policy_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
     "company.second_review_choice_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["change", "count"], sample: { change: "choose", count: 2 } },
     "company.second_review_context_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["to", "widens"], sample: { to: "same_as_first", widens: true } },
-    "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["reason"], sample: { reason: "no-answer" } },
+    "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
     // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.

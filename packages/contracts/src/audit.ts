@@ -460,8 +460,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.second_review_narrowed": ["change", "count"],
   // `to` is `change_only` or `same_as_first`; `widens` is true when more of the company's connected context now reaches the second reviewer.
   "company.second_review_context_changed": ["to", "widens"],
-  // `reason` is one of the fixed words for why the second review did not run.
-  "task.second_review_acknowledged": ["reason"],
+  // `cause` is one of the fixed words for why the second review did not run.
+  "task.second_review_acknowledged": ["cause"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],

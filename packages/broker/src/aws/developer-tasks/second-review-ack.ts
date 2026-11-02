@@ -43,7 +43,7 @@ export async function acknowledgeSecondReview(deps: DeveloperTaskRouteDependenci
   const now = iso(deps);
   const event: AuditEventInput = {
     eventId: auditEventId("task.second_review_acknowledged", taskId, now, caller.developerId, randomUUID()), orgId: caller.orgId, action: "task.second_review_acknowledged", actor: { kind: "member", id: caller.developerId },
-    target: { kind: "task", id: taskId }, occurredAt: now, facts: { reason: opinion?.unavailableReason ?? "no-answer" },
+    target: { kind: "task", id: taskId }, occurredAt: now, facts: { cause: opinion?.unavailableReason ?? "no-answer" },
   };
   const put = auditPending({ audit: ledger }, event)[0]?.Put;
   if (put === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This needs the audit ledger.");
