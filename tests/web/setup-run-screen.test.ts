@@ -123,7 +123,8 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   const f = setup({ read: { status: 200, body: READY }, answers: { "/confirm": { status: 200, body: REPLY } } });
   const section = await region();
   const card = await within(section).findByRole("region", { name: "Use this setup" });
-  expect(within(card).getByText(/never the one this run used/u)).toBeTruthy();
+  expect(within(card).getByText(/saves it as a proposal in the test environment below; it does not change the project's settings/u)).toBeTruthy();
+  expect(within(card).queryByText(/Nothing is saved until/u)).toBeNull();
   expect(within(card).getByText("Does not match the code")).toBeTruthy();
   const boxes = within(card).getAllByRole("checkbox");
   expect(boxes).toHaveLength(2);
@@ -133,10 +134,24 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
   await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));
   expect(posts(f, "/setup-agent/confirm")[0]!.body).toMatchObject({ expectedRevision: 2, itemIds: ["setup-web"] });
-  expect(await within(card).findByText(/Proposed\. Next, in the test environment below/u)).toBeTruthy();
+  expect(await within(card).findByText(/Saved as a proposal\. Approve it in the test environment below, after a passing proof/u)).toBeTruthy();
   // Nothing was applied by it: no settings save, no setup check, no draft apply.
   expect(f.request.mock.calls.map(([r]) => r).filter((r) => r.method !== "GET" && !r.path.endsWith("/setup-agent/confirm"))).toEqual([]);
   await expectNoAxeViolations(section);
+  f.close();
+});
+
+it("only what the code host confirmed is ticked to begin with: an item that could not be checked against a file waits for the person to tick it", async () => {
+  const unchecked = { ...READY, verification: { "setup-web": "verified", "tests-web": "unchecked" } };
+  const f = setup({ read: { status: 200, body: unchecked }, answers: { "/confirm": { status: 200, body: { ...REPLY, used: ["setup-web", "tests-web"] } } } });
+  const card = await within(await region()).findByRole("region", { name: "Use this setup" });
+  const boxes = within(card).getAllByRole("checkbox");
+  expect([boxes[0]!.checked, boxes[1]!.checked]).toEqual([true, false]);
+  expect(boxes[1]!.disabled).toBe(false);
+  fireEvent.click(boxes[1]!);
+  fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
+  await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));
+  expect(posts(f, "/setup-agent/confirm")[0]!.body).toMatchObject({ itemIds: ["setup-web", "tests-web"] });
   f.close();
 });
 

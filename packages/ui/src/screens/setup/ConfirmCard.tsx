@@ -17,7 +17,8 @@ export function ConfirmCard({ project, view, settingsRevision, onProposed }: { p
   const items = setupItemsOf(view.proposal).filter(item => item.kind === "setup" || item.kind === "tests");
   const verdict = (id: string) => view.verification?.[id] ?? "unchecked";
   const [chosen, setChosen] = useState<Record<string, boolean>>({}), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<SetupConfirmReply>();
-  const on = (id: string) => chosen[id] ?? verdict(id) !== "unverified";
+  // Only what the code host confirmed is ticked to begin with; an item that could not be checked against a file can be ticked by the person, one that failed cannot.
+  const on = (id: string) => chosen[id] ?? verdict(id) === "verified";
   const ids = items.filter(item => on(item.id) && verdict(item.id) !== "unverified").map(item => item.id);
   const checked = view.verified === true;
   async function use() {

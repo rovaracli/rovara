@@ -41,6 +41,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
+import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 
@@ -234,6 +235,7 @@ export async function readEditedProposal(deps: TestEnvDeps, orgId: OrgId, projec
 }
 export async function clearEditedProposal(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<void> {
   await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: editedKey(orgId, project) }));
+  await clearSetupRunProposal(deps, orgId, project); // going back to Rovara's draft also drops a setup run's proposal (SH15)
 }
 
 /**

@@ -17,9 +17,9 @@ import { readSetupJournal } from "../../rovara-code/setup-journal.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
-import { editTestEnvironment, requireFreshSignIn } from "./test-environment-wizard.js";
+import { requireFreshSignIn } from "./test-environment-wizard.js";
 import { mergeDraftWithApproved, testEnvStoreOf } from "./test-environment.js";
-import { readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -96,7 +96,7 @@ function confirmDepsOf(deps: DeveloperRouteDependencies, setup: SetupAgentDepend
   return {
     ...setup, testEnvironmentOn: testEnvironmentEnabled(env),
     merge: async (project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(store, caller.orgId, project))?.environment),
-    propose: async (who, project, role, environment) => editTestEnvironment(store, { orgId: who.orgId, developerId: who.developerId, project, role, environment }),
+    propose: async (who, project, role, environment, valueSources) => { const { digest } = await proposeTestEnvironment(store, { orgId: who.orgId, project, proposedBy: who.developerId, role, body: environment, valueSources }); return { digest }; },
   };
 }
 

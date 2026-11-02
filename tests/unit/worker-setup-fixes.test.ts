@@ -214,6 +214,16 @@ describe("F3: money", () => {
     w.input.limits = { ...SETUP_AGENT_LIMITS_DEFAULT, budgetCents: 50 };
     expect((await runSetupAgent(w.input)).setupRunSummary.stop).toBe("budget_used");
   });
+  it("prices what the next turn adds as a possible cache write (1.25 times input) when it decides to stop", async () => {
+    // Spent 15 cents (10,000 input at $10 and 1,000 output at $50). The next turn at most: 12,024 input tokens and 8,192 output tokens = 52.98 cents, so 53; with the quarter more on the 2,024 new tokens
+    // it is 53.49, so 54. 15 + 53 = 68 fits a 69-cent budget; 15 + 54 = 69 does not.
+    const w = await world({ usage: { input: 10_000, output: 1_000 }, cost: 0.01 });
+    w.input.limits = { ...SETUP_AGENT_LIMITS_DEFAULT, budgetCents: 69 };
+    expect((await runSetupAgent(w.input)).setupRunSummary.stop).toBe("budget_used");
+    const roomy = await world({ usage: { input: 10_000, output: 1_000 }, cost: 0.01 });
+    roomy.input.limits = { ...SETUP_AGENT_LIMITS_DEFAULT, budgetCents: 70 };
+    expect((await runSetupAgent(roomy.input)).setupRunSummary.stop).not.toBe("budget_used");
+  });
   it("counts the spend itself when the session reports a cost of 0 (a proxy-routed model)", async () => {
     // 300,000 input tokens at $10 per million is $3.00 of spend that the session did not report.
     const w = await world({ usage: { input: 300_000, output: 100 }, cost: 0 });

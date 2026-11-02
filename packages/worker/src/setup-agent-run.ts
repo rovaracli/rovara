@@ -153,8 +153,8 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
         if (turns > 0 && (reported ?? 0) === 0 && (own ?? 0) === 0) return undefined;
         return reported === undefined ? own : own === undefined ? reported : Math.max(reported, own);
       },
-      // The next turn at most: the last turn's input and output and 4 KiB more as input, and the full output cap as output, at the model's own prices.
-      nextTurnCents: () => estimateNextTurnCents({ inputTokens: lastInputTokens + lastOutputTokens + SETUP_NEXT_TURN_MARGIN_TOKENS, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS, ...price }),
+      // The next turn at most: the last turn's input and output and 4 KiB more as input (what is new may be written to the cache, at 1.25 times the input price), and the full output cap as output, at the model's own prices.
+      nextTurnCents: () => estimateNextTurnCents({ inputTokens: lastInputTokens + lastOutputTokens + SETUP_NEXT_TURN_MARGIN_TOKENS + SETUP_CACHE_WRITE_EXTRA * (lastOutputTokens + SETUP_NEXT_TURN_MARGIN_TOKENS), maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS, ...price }),
       // The names the helper saw refused since the last entry: from the helper's file, never from any output.
       takeBlockedHosts: () => { const fresh = blocked.filter((name) => !delivered.includes(name)); delivered = [...delivered, ...fresh]; return fresh; },
       onStop: () => { void session?.abort().catch(() => undefined); },

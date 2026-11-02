@@ -20,8 +20,8 @@ export const VERDICT_WORDS = {
 } as const;
 
 export const CONFIRM_WORDS = {
-  rule: "Using this setup only proposes it. Nothing is saved until its commands pass on a fresh machine that Rovara prepares (never the one this run used) and you approve it in the test environment below.",
-  next: "Proposed. Next, in the test environment below: put the commands in the settings, run the setup check, prove it and approve it.",
+  rule: "Using this setup saves it as a proposal in the test environment below; it does not change the project's settings. You approve it there, after a passing proof.",
+  next: "Saved as a proposal. Approve it in the test environment below, after a passing proof.",
   checking: "Rovara is still checking where each suggestion came from.",
   leftOut: { unverified: "left out: it does not match the code", refused_command: "left out: it downloads and runs code, or holds a secret", not_a_command_item: "left out: not a command", too_many: "left out: too many commands", invalid_command: "left out: it could not be read as a command" },
 } as const;

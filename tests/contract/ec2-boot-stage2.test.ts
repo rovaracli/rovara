@@ -56,7 +56,7 @@ describe("boot-legacy.sh", () => {
     // Every legacy rule is still there, in order and last (so the metadata rejection is inserted after the setup rules and is above them).
     const rulesOf = (block: string) => [...block.matchAll(/"((?:DOCKER-USER|OUTPUT) [^"]+)"/gu)].map((match) => match[1]);
     expect(rulesOf(stageBlock).slice(-2)).toEqual(rulesOf(legacyBlock));
-    expect(rulesOf(stageBlock).slice(0, -2).every((rule) => /^DOCKER-USER -i rvbs\+ -o rvbs\+ /u.test(rule!))).toBe(true);
+    expect(rulesOf(stageBlock).slice(0, -2).every((rule) => /^DOCKER-USER -i rvbs\+ /u.test(rule!))).toBe(true);
     expect(stageBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in"))).toEqual(legacyBlock.replace(/^#[^\n]*\n/gmu, "").split("\n").filter((line) => !line.includes("for rule in")));
   });
 

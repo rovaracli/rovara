@@ -100,9 +100,12 @@ worker_network_args() {
 # Also, for a setup run (rvbs<slot> bridges, which the firewall unit already walls as rvb* bridges: the host's ports, every private range). With br_netfilter a packet inside one bridge passes DOCKER-USER with
 # -i and -o both that bridge, and the 172.16/12 drop would also drop the helper's replies (source port 53), so two things sit above the range drops, inserted first so the metadata rejection stays on top:
 # replies of a connection already allowed (conntrack), and the helper's port 53 for traffic that stays INSIDE one bridge (physdev), so one run's sandbox cannot reach another run's helper.
+# The firewall unit's "VPC DNS stays open" RETURN rules match -i rvb+ and so also rvbs+: a sandbox (172.29.<slot>.3) could ask the VPC resolver directly and skip the helper that watches its names. So its port 53
+# traffic that leaves its bridge is dropped, inserted after those and so above them (this launcher runs after the firewall unit: the worker unit is ordered after it, and the unit's own rules are only added when absent).
+# The helper (.2) keeps its own upstream path.
 block_imds() {
   local rule
-  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
+  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p tcp --dport 53 ! -o rvbs+ -j DROP" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
     iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   done
 }

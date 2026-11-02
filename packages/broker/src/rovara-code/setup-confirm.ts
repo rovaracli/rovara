@@ -16,6 +16,7 @@ import {
 import { refusedCommand } from "../test-env/draft.js";
 import type { DeveloperCaller } from "../aws/developer-routes/types.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { readSetupRunProposal, writeSetupRunProposal } from "./setup-run-proposal.js";
 import { maintainerOf, readState, verifiedView, type SetupAgentDependencies } from "./setup-agent.js";
 
 export const SetupConfirmBodySchema = z.object({
@@ -39,7 +40,14 @@ export const SETUP_CONFIRM_WORDS = {
 
 export type SetupConfirmLeftOut = "unverified" | "refused_command" | "not_a_command_item" | "too_many" | "invalid_command";
 
-export interface SetupConfirmEnvironment { environment: TestEnvironmentBody; used: string[]; unchecked: string[]; left: Array<{ id: string; reason: SetupConfirmLeftOut }> }
+type ValueSource = "model" | { path: string; line: number };
+export interface SetupConfirmEnvironment { environment: TestEnvironmentBody; used: string[]; unchecked: string[]; left: Array<{ id: string; reason: SetupConfirmLeftOut }>; valueSources: Array<{ field: string; source: ValueSource }> }
+
+/** Where a command came from, for the wizard to show: the first file and line the run cited for it, else the run's own reading. */
+function sourceOf(item: { proposed: { from: ReadonlyArray<{ path?: string | undefined; line?: number | undefined }> } }): ValueSource {
+  for (const citation of item.proposed.from) if (typeof citation.path === "string" && citation.path.length <= 500 && Number.isInteger(citation.line) && citation.line! >= 1) return { path: citation.path, line: citation.line! };
+  return "model";
+}
 
 const pathOf = (definition: Pick<StoredProjectDefinition, "repositories">, repo: string): string | undefined => definition.repositories.find((repository) => repository.name === repo)?.path;
 const idOf = (prefix: string, repo: string, n: number): string => `${prefix}-${repo.toLowerCase().replace(/[^a-z0-9-]+/gu, "-")}-${String(n)}`.replace(/^[^a-z]+/u, "t").slice(0, 63);
@@ -60,13 +68,16 @@ export function environmentFromProposal(
   const left: SetupConfirmEnvironment["left"] = [];
   const used: string[] = [];
   const unchecked: string[] = [];
-  const repos = new Map<string, { setupCommands: ReturnType<typeof parseCommandLine>[]; checks: Array<Record<string, unknown>> }>();
-  const forRepo = (repo: string) => { const found = repos.get(repo) ?? { setupCommands: [], checks: [] }; repos.set(repo, found); return found; };
+  const repos = new Map<string, { setupCommands: ReturnType<typeof parseCommandLine>[]; checks: Array<Record<string, unknown>>; setupSources: ValueSource[]; checkSources: ValueSource[] }>();
+  const forRepo = (repo: string) => { const found = repos.get(repo) ?? { setupCommands: [], checks: [], setupSources: [], checkSources: [] }; repos.set(repo, found); return found; };
   let tests = 0;
   for (const item of wanted) {
     if (only !== undefined && !only.has(item.id)) continue;
     const verdict = verification[item.id] ?? "unchecked";
+    if (verdict === "unchecked") unchecked.push(item.id);
     if (verdict === "unverified") { left.push({ id: item.id, reason: "unverified" }); continue; }
+    // With no choice made, only what the code host confirmed is used. A person's choice may add an item that could not be checked against a file (it is listed as unchecked), never one that failed.
+    if (only === undefined && verdict !== "verified") continue;
     const value = item.proposed.value as { repo: string; commands: string[] };
     const cwd = pathOf(definition, value.repo);
     if (cwd === undefined) { left.push({ id: item.id, reason: "invalid_command" }); continue; }
@@ -79,14 +90,16 @@ export function environmentFromProposal(
       if (item.kind === "setup") {
         if (target.setupCommands.length >= 20) { left.push({ id: item.id, reason: "too_many" }); continue; }
         target.setupCommands.push(command);
+        target.setupSources.push(sourceOf(item));
       } else {
         if (tests >= 32) { left.push({ id: item.id, reason: "too_many" }); continue; }
         tests += 1;
         target.checks.push({ id: idOf("tests", value.repo, target.checks.length + 1), label: "Tests", command, kind: "test" });
+        target.checkSources.push(sourceOf(item));
       }
       kept += 1;
     }
-    if (kept > 0) { used.push(item.id); if (verdict === "unchecked") unchecked.push(item.id); }
+    if (kept > 0) used.push(item.id);
   }
   if (used.length === 0) return { error: "nothing" };
   if (![...repos.values()].some((repo) => repo.checks.length > 0)) return { error: "no_test" };
@@ -100,7 +113,11 @@ export function environmentFromProposal(
     capture: { screenshots: "failed", video: false, traces: false },
   });
   if (!parsed.success) return { error: "invalid" };
-  return { environment: parsed.data, used, unchecked, left };
+  const valueSources = [...repos.values()].flatMap((repo, index) => [
+    ...repo.setupSources.map((source, at) => ({ field: `repos[${String(index)}].setupCommands[${String(at)}]`, source })),
+    ...repo.checkSources.map((source, at) => ({ field: `repos[${String(index)}].checks[${String(at)}]`, source })),
+  ]);
+  return { environment: parsed.data, used, unchecked, left, valueSources };
 }
 
 export interface SetupConfirmDependencies extends SetupAgentDependencies {
@@ -108,8 +125,8 @@ export interface SetupConfirmDependencies extends SetupAgentDependencies {
   testEnvironmentOn: boolean;
   /** The approved environment, when there is one: the proposal keeps what a person set there (`mergeDraftWithApproved`). */
   merge(project: string, environment: TestEnvironmentBody): Promise<TestEnvironmentBody | undefined>;
-  /** Stores the body as the test-environment proposal for this maintainer (`editTestEnvironment`): never approves it. */
-  propose(caller: DeveloperCaller, project: string, role: ProjectRole, environment: TestEnvironmentBody): Promise<{ digest: string }>;
+  /** Stores the body as the test-environment PROPOSAL (`proposeTestEnvironment`, with the sources of its commands): never approves it, and never marks it as a person's edit. */
+  propose(caller: DeveloperCaller, project: string, role: ProjectRole, environment: TestEnvironmentBody, valueSources: SetupConfirmEnvironment["valueSources"]): Promise<{ digest: string }>;
 }
 
 const refuse = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
@@ -123,6 +140,9 @@ export async function confirmSetupAgent(deps: SetupConfirmDependencies, caller: 
   const parsed = SetupConfirmBodySchema.safeParse(rawBody);
   if (!parsed.success) throw refuse("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "body"}: ${parsed.error.issues[0]?.message ?? "invalid"}`);
   const body = parsed.data;
+  // A repeat of the same request answers the same thing and stores nothing again.
+  const before = await readSetupRunProposal(deps, caller.orgId, name);
+  if (before !== undefined && before.requestId === body.requestId && before.by === caller.developerId) return new StatusReply(200, before.reply);
   if (!deps.testEnvironmentOn) throw refuse("NOT_FOUND", SETUP_CONFIRM_WORDS.testEnvironmentOff);
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw refuse("PROJECT_NOT_FOUND", "project not found");
@@ -141,11 +161,13 @@ export async function confirmSetupAgent(deps: SetupConfirmDependencies, caller: 
   }
   const merged = await deps.merge(name, made.environment);
   if (merged === undefined) throw refuse("CONFIG_INVALID", SETUP_CONFIRM_WORDS.invalid);
-  const stored = await deps.propose(caller, name, role, merged);
-  return new StatusReply(200, {
-    digest: stored.digest,
-    used: made.used, unchecked: made.unchecked, left: made.left,
+  const stored = await deps.propose(caller, name, role, merged, made.valueSources);
+  const reply = {
+    digest: stored.digest, used: made.used, unchecked: made.unchecked, left: made.left,
     // Applying needs the wizard's next steps; nothing is proved yet.
     proved: false, next: "apply_commands",
-  });
+  };
+  // This proposal came from this run, by this request: the wizard shows it as Rovara's and refuses to put its commands into the settings before it is approved.
+  await writeSetupRunProposal(deps, caller.orgId, name, { digest: stored.digest, taskId: view.taskId ?? "", requestId: body.requestId, by: caller.developerId, reply });
+  return new StatusReply(200, reply);
 }
