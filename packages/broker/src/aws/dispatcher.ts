@@ -12,6 +12,9 @@ import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { createEc2Delivery } from "./ec2-delivery.js";
+import { leaseForDispatch } from "../test-env/saved-env.js";
+import { dynamoSavedEnvStore } from "../test-env/saved-env-store.js";
+import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
 import { createLessonDelivery } from "../lessons/delivery-wiring.js";
 import { learnedLessonsEnabled } from "../lessons/switch.js";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionModelChoiceReader, createWorkflowE2EAdmissionNeedsModelFreeLimitsReader, createWorkflowE2EAdmissionSchemaReader } from "./workflow-e2e-admission-schema.js";
@@ -79,6 +82,28 @@ export function createSetupRecipesNegotiationRecorder(input: { documentClient: D
       UpdateExpression: "REMOVE setupRecipeOffers",
       ConditionExpression: "attribute_exists(pk)",
     }));
+  };
+}
+
+/**
+ * Saved project images: the lease token of the rebuild job a preparation was made for, handed over ONCE when the invocation is delivered (`leaseForDispatch`), so the stored invocation never holds it. Answers the token
+ * only for the job the operation was made for and only while the install's `sv` switch is on; anything else (the job moved on, the lease was already given out, the project is gone or turned off) is undefined and the
+ * job is not delivered. The workspace gives the org and the project: nothing is read from the invocation.
+ */
+export function createSavedEnvBuildLease(input: { documentClient: DynamoDBDocumentClient; tableName?: string; now?: () => number; env?: NodeJS.ProcessEnv }) {
+  const tableName = input.tableName ?? requiredEnvironment("STATE_TABLE_NAME");
+  const now = input.now ?? Date.now;
+  return async (record: Ec2OutboxRecord, jobId: string): Promise<string | undefined> => {
+    if (!savedEnvEnabled(input.env)) return undefined;
+    const workspace = (await input.documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${record.workspaceId}`, sk: "META" }, ConsistentRead: true }))).Item as { orgId?: unknown; projectName?: unknown } | undefined;
+    if (typeof workspace?.orgId !== "string" || typeof workspace.projectName !== "string") return undefined;
+    const ids = { orgId: workspace.orgId, projectId: workspace.projectName };
+    const deps = { store: dynamoSavedEnvStore({ documentClient: input.documentClient, tableName, now }), now, session: { config: { enabled: true } } };
+    // The job this operation was made for must be the project's current one: a lease is never taken for another job.
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    if (state?.job?.jobId !== jobId) return undefined;
+    const leased = await leaseForDispatch(deps, ids);
+    return leased.ok && leased.job.jobId === jobId ? leased.job.leaseToken : undefined;
   };
 }
 
@@ -706,6 +731,7 @@ const deliverEc2 = createEc2Delivery({
   applicationPlanNotNegotiated: createApplicationPlanNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   planQualityNotNegotiated: createPlanQualityNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   setupRecipesNotNegotiated: createSetupRecipesNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
+  savedEnvBuildLease: createSavedEnvBuildLease({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   validateWorkflowE2EReadiness: createWorkflowE2EReadinessValidator({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   guardProjectSetupDispatch,
   async progress(record, message) {

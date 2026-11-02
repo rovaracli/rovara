@@ -3,7 +3,7 @@
 // Every write of the row is ONE TransactWriteItems: the row Put (conditional on the stored version, or on no row yet) and the audit ledger's pending item for the change. The transaction answers false when it was
 // cancelled (the row changed meanwhile), and the caller then retries or reports `stale_write`. A change with an audit event and no audit ledger is refused: image lifecycle is company authority, there is no
 // unaudited path. An audit entry that is not tied to a row change (a refused lease, a routine deletion, a scan start) is written alone through the same outbox.
-// Only `activity` (a push or a task touched the row's times) is not an event of the ledger: it is the row write alone, with the same version fence. It happens on every push and task start.
+// Only `activity` (a push or a task touched the row's times) and the dispatcher's hand-over of a lease are not events of the ledger: each is the row write alone, with the same version fence.
 // `deletedNeedingPurge` reads the sparse due index the other cross-company sweeps use (`WORKFLOW_DISPATCH_DUE_INDEX`, partition `SAVED_ENV_PURGE`): a deleted row carries a due time until its registry deletion is final
 // (finished after `deletedAt` plus a job lease), then the attributes are dropped in the write that records the purge. No new index, no new table.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -80,6 +80,8 @@ function dueAttributes(state: SavedEnvState): Row {
 /** The ledger event of one entry, or undefined for `activity` (the row's times only). The actor is the person for a Reset, the system otherwise; the facts are fixed words, a digest and a count. */
 export function savedEnvAuditEvent(entry: SavedEnvAuditEntry, version: number | undefined): AuditEventInput | undefined {
   if (entry.action === "activity") return undefined;
+  // The dispatcher's hand-over of the lease is operational (the ledger has the job being queued, and its result): it is the row alone, which also lets the dispatcher (no audit ledger of its own) take it.
+  if (entry.action === "rebuild_queued" && entry.reason === "dispatched") return undefined;
   const occurrence = version === undefined ? auditOccurrence(entry.projectId, entry.at, entry.action, entry.digest ?? entry.reason ?? "") : auditOccurrence(entry.projectId, String(version), entry.action);
   const actor = entry.actor === undefined ? { kind: "system" as const, id: "rovara" as const } : { kind: "member" as const, id: entry.actor };
   if (entry.action === "setting_changed") return auditSavedEnvSettingChanged({ orgId: entry.orgId, actor, occurredAt: entry.at, occurrence, projectName: entry.projectId, enabled: entry.enabled === true });

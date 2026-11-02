@@ -84,6 +84,12 @@ describe("the row", () => {
     expect(db.get(orgPk(ORG), "SAVED_ENV#web")).toBeUndefined();
   });
 
+  it("writes the dispatcher's hand-over of a lease as the row alone, so the dispatcher needs no ledger", async () => {
+    const { capture, store } = bench({ noAudit: true });
+    expect(await store.commit(state({ lastPushAt: AT }), null, entry("rebuild_queued", { reason: "dispatched" }))).toBe(true);
+    expect(capture.recordedBy("saved_env.changed")).toEqual([]);
+  });
+
   it("audits a setting change with the person and the new value only", async () => {
     const { capture, store } = bench();
     await store.commit(state({ enabled: false }), null, entry("setting_changed", { enabled: false, actor: "dev_1" }));

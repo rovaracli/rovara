@@ -1313,6 +1313,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).
       dispatcher.addEnvironment(BROKER_SETTINGS.learnedLessons.variable, signInParameters.learnedLessonsEnabled.valueAsString);
+      // Saved project images: the dispatcher hands a rebuild job's lease to the worker when it delivers (aws/dispatcher.ts `createSavedEnvBuildLease`), and only while the same switch is on. A plain variable (its environment is small).
+      dispatcher.addEnvironment(BROKER_SETTINGS.savedEnv.variable, signInParameters.savedEnvEnabled.valueAsString);
       // The second review's track record is indexed from the table's stream by the outbox publisher, behind the same switch (a plain variable on that function; its environment is small).
       outboxPublisher.addEnvironment(BROKER_SETTINGS.secondReview.variable, signInParameters.secondReviewEnabled.valueAsString);
       // Four test results (setup and test health): its own switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".

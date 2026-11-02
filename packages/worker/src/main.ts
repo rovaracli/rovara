@@ -31,6 +31,7 @@ import { removeLeftoverMaskVolumes } from "./devcontainer.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 import { removeLeftoverSetupRuns, setupWorkspaceKey } from "./setup-network.js";
 import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./saved-env/login.js";
+import { runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
@@ -118,6 +119,15 @@ const state = createWorkerServerState(
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation }), undefined, createSavedEnvFallbackReporter({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
         });
+        // Saved project images: a rebuild job builds the project's image from this read-only, pinned preparation (saved-env/rebuild.ts) and posts the result to the broker's lease route.
+        if (invocation.payload.savedEnvBuild !== undefined) {
+          await runSavedEnvRebuild({
+            rootPath, controlPlaneUrl, invocation, manifest, docker: createDockerCli(),
+            // The workspace root is shared by everything on this machine: any other running operation means the build would not be in a workspace of its own.
+            otherOperations: async () => (anotherOperationActive(state, invocation.operationId) ? [{ id: "another-operation", rootPath }] : []),
+            credentialProvider: createRepositoryCredentialProvider({ controlPlaneUrl, invocation }),
+          });
+        }
         return {
           manifestPath: ".agentx/preparation-manifest.json",
           projectName: manifest.projectName,

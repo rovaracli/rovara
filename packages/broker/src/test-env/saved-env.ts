@@ -173,8 +173,10 @@ export interface SavedEnvDeps {
   random?(): string;
 }
 
+/** What the writes of the registry need: the store, the clock and whether the install's switch is on. The dispatcher's lease (which has no sessions or registry) is made from this alone. */
+export type SavedEnvStoreDeps = Pick<SavedEnvDeps, "store" | "now"> & { session: { config: { enabled: boolean } } };
 type Disabled = { ok: false; reason: "disabled" };
-const disabled = (deps: SavedEnvDeps): Disabled | undefined => (deps.session.config.enabled ? undefined : { ok: false, reason: "disabled" });
+const disabled = (deps: SavedEnvStoreDeps): Disabled | undefined => (deps.session.config.enabled ? undefined : { ok: false, reason: "disabled" });
 const iso = (ms: number): string => new Date(ms).toISOString();
 const keepOf = (value: number): number => Math.min(SAVED_ENV_KEEP_MAX, Math.max(SAVED_ENV_KEEP_MIN, Number.isInteger(value) ? value : SAVED_ENV_KEEP_DEFAULT));
 const token = (deps: SavedEnvDeps): string => (deps.random ?? (() => randomBytes(24).toString("hex")))();
@@ -186,10 +188,10 @@ function sameToken(left: string, right: string): boolean {
 }
 
 const blank = (orgId: string, projectId: string): SavedEnvState => ({ orgId, projectId, version: 0, enabled: true, images: [], health: "never_proved" });
-const audit = (deps: SavedEnvDeps, state: Pick<SavedEnvState, "orgId" | "projectId">, action: SavedEnvAuditEntry["action"], extra: Partial<SavedEnvAuditEntry> = {}): SavedEnvAuditEntry => ({ action, orgId: state.orgId, projectId: state.projectId, at: iso(deps.now()), ...extra });
+const audit = (deps: SavedEnvStoreDeps, state: Pick<SavedEnvState, "orgId" | "projectId">, action: SavedEnvAuditEntry["action"], extra: Partial<SavedEnvAuditEntry> = {}): SavedEnvAuditEntry => ({ action, orgId: state.orgId, projectId: state.projectId, at: iso(deps.now()), ...extra });
 
 /** Commits `next` over `prior` (null: first write). Returns the committed state, or undefined when the row changed meanwhile. */
-async function commit(deps: SavedEnvDeps, prior: SavedEnvState | undefined, next: SavedEnvState, entry: SavedEnvAuditEntry): Promise<SavedEnvState | undefined> {
+async function commit(deps: SavedEnvStoreDeps, prior: SavedEnvState | undefined, next: SavedEnvState, entry: SavedEnvAuditEntry): Promise<SavedEnvState | undefined> {
   const written = { ...next, version: (prior?.version ?? 0) + 1 };
   return (await deps.store.commit(written, prior === undefined ? null : prior.version, entry)) ? written : undefined;
 }
@@ -338,7 +340,7 @@ export async function authorizeLease(deps: SavedEnvDeps, ids: { orgId: string; p
  * The dispatcher takes the queued job's lease token, ONCE, to hand it to the worker that will build. Nobody else sees a token: not `checkRebuild`'s result, not a task, not the setup agent. A second call for the
  * same job returns nothing (the token was already given out).
  */
-export async function leaseForDispatch(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }): Promise<{ ok: true; job: Pick<RebuildJob, "jobId" | "leaseToken" | "reason" | "approved" | "commits" | "leaseUntil"> } | { ok: false; reason: "disabled" | "nothing_to_dispatch" | "stale_write" }> {
+export async function leaseForDispatch(deps: SavedEnvStoreDeps, ids: { orgId: string; projectId: string }): Promise<{ ok: true; job: Pick<RebuildJob, "jobId" | "leaseToken" | "reason" | "approved" | "commits" | "leaseUntil"> } | { ok: false; reason: "disabled" | "nothing_to_dispatch" | "stale_write" }> {
   const off = disabled(deps);
   if (off !== undefined) return off;
   const state = await deps.store.get(ids.orgId, ids.projectId);
