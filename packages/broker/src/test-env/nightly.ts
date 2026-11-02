@@ -319,11 +319,11 @@ export interface NightlyRecorded { orgId: OrgId; project: string; slotId: string
  * What the night's step words say (SH27), classified by the broker's own rules (SH6): nothing the worker says in words is read. Undefined for a result that carries no step words (an older worker), which then
  * stores nothing new. A report whose counts are not the result's own counts disagrees with itself and reads as unclear, never as passed.
  */
-export function nightlyHealthOf(result: NightlyResult): StoredNightlyHealth | undefined {
+export function nightlyHealthOf(result: NightlyResult, context: { noSmokeCheck?: boolean } = {}): StoredNightlyHealth | undefined {
   if (result.health === undefined) return undefined;
   const { ranFrom, ...report } = result.health;
   const agrees = report.tests.total === result.tests.total && report.tests.passed === result.tests.passed && report.tests.skipped === result.tests.skipped && report.tests.failures + report.tests.errors === result.tests.failed;
-  const verdict = agrees ? classifyNightlyHealth(report) : ({ class: "unclear", cause: "steps_disagree" } as const);
+  const verdict = agrees ? classifyNightlyHealth(report, context) : ({ class: "unclear", cause: "steps_disagree" } as const);
   return { class: verdict.class, ...("cause" in verdict ? { cause: verdict.cause } : {}), ...(verdict.class === "tests" ? { setupProved: verdict.setupProved } : {}), ranFrom: ranFrom ?? "fresh" };
 }
 
@@ -368,7 +368,8 @@ export async function recordNightlyResult(
     ...(result.coverageMapRef !== undefined && coverageMapBuiltAt !== undefined ? { coverageMapRef: result.coverageMapRef, coverageMapBuiltAt } : previous?.coverageMapRef === undefined || previous.coverageMapBuiltAt === undefined ? {} : { coverageMapRef: previous.coverageMapRef, coverageMapBuiltAt: previous.coverageMapBuiltAt }),
   });
   // The health sits BESIDE the baseline, not inside it: an older broker still reads the baseline. A result without step words stores exactly what it always did.
-  const health = nightlyHealthOf(result);
+  // A skipped smoke step is fine only when the approved environment of THIS night's revision defines no smoke check (read here, from the broker's own record).
+  const health = nightlyHealthOf(result, { noSmokeCheck: !env.environment.repos.some((repo) => repo.checks.some((check) => check.kind === "smoke")) });
   const healthField = health === undefined ? {} : { health };
   const history = { ...keyOf(input.orgId, input.project, `TESTENV#BASELINE#${result.finishedAt}`), entityType: "TEST_ENV_BASELINE", orgId: input.orgId, project: input.project, baseline, ...healthField, ...(result.coverageMapSkipped === undefined ? {} : { coverageMapSkipped: result.coverageMapSkipped }), slowest: result.slowest, durationMs: result.durationMs, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + BASELINE_TTL_MS) / 1000) };
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: history }));

@@ -195,12 +195,9 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
     }
 
     const stepStatus = (step: NightlyStepWord): NightlyStepStatus => (step === "pull" ? "passed" : step === "update" ? "skipped" : statusOf(step));
-    // A step the environment has nothing to run for is "skipped" in the Prove report. For `smoke` that would read as "the test steps did not both run": the project defines no smoke check, so every smoke check it has
-    // (none) passed, and the step is reported so once the suite itself ran. Every other step is reported as it is.
-    const noSmokeChecks = !checks.some((check) => check.kind === "smoke");
-    const steps = (["pull", "update", "setup", "build", "boot", "mocks", "preprod_probe", "smoke", "full_suite"] as const).map((step) => ({
-      step, status: step === "smoke" && noSmokeChecks && suiteRan && stepStatus("smoke") === "skipped" ? "passed" as const : stepStatus(step),
-    }));
+    // The steps are reported as they were: a step the environment has nothing to run for is "skipped" (smoke, boot, mocks, the pre-prod probe). Whether a skipped smoke step is fine is the BROKER's to say, from its own
+    // approved environment (`classifyNightlyHealth` with `noSmokeCheck`); the worker's word about it is never used.
+    const steps = (["pull", "update", "setup", "build", "boot", "mocks", "preprod_probe", "smoke", "full_suite"] as const).map((step) => ({ step, status: stepStatus(step) }));
     const healthChecks = checks.map((check) => {
       const run = runs.get(check.id)!;
       const isTest = check.kind === "test";

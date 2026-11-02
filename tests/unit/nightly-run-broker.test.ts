@@ -27,19 +27,19 @@ const WORKSPACE = "33333333-3333-4333-8333-333333333333";
 const TASK = "44444444-4444-4444-8444-444444444444";
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "service", executable, args, timeoutSeconds: 600 });
 const SERVICE = { name: "scorer", kind: "sagemaker_runtime", match: { endpointName: "scorer" }, mode: "mock", mock: { fixtureSetRef: "a".repeat(64), schemaRef: "b".repeat(64), unmatched: "fail" } };
-const body = (withServices = false): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
-  tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [{ id: "unit", label: "Unit", command: cmd("pytest"), kind: "test" }] }],
+const body = (withServices = false, withSmoke = false): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
+  tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [...(withSmoke ? [{ id: "smoke", label: "Smoke", command: cmd("pytest", ["smoke"]), kind: "smoke" }] : []), { id: "unit", label: "Unit", command: cmd("pytest"), kind: "test" }] }],
   roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" },
   services: withServices ? [SERVICE] : [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
 });
 
-async function harness(options: { approve?: boolean; services?: boolean } = {}) {
+async function harness(options: { approve?: boolean; services?: boolean; smoke?: boolean } = {}) {
   const db = new FakeDynamoDb();
   db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
   const clock = { now: T0 };
   const deps: TestEnvDeps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capturingAuditDeps({ db }).audit, secondPerson: () => Promise.resolve({ mode: "second_person" as const, membershipVersion: 1, conditions: [] }) };
   if (options.approve !== false) {
-    const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body(options.services === true) });
+    const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body(options.services === true, options.smoke === true) });
     await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "smoke", status: "passed", durationMs: 1 }], services: [], finishedAt: "2026-11-05T00:00:00.000Z" } });
     await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-run-1", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: T0, approval: { approverId: "dev_b", signedInAtMs: T0, sessionRef: "5".repeat(64) } });
   }
@@ -332,6 +332,26 @@ describe("the result route", () => {
     await record(h2, result({}, { tests: { total: 10, passed: 9, failures: 0, errors: 0, skipped: 1 } }));
     const stored2 = h2.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#BASELINE#LATEST" }) as { health?: { class: string; cause?: string } } | undefined;
     expect(stored2?.health).toMatchObject({ class: "unclear", cause: "steps_disagree" });
+  });
+});
+
+describe("a skipped smoke step", () => {
+  const passingNight = () => result({ tests: { total: 10, passed: 9, failed: 0, skipped: 1 }, failed: [], flaky: [], coverageMapRef: undefined }, {
+    steps: [{ step: "pull", status: "passed" }, { step: "setup", status: "passed" }, { step: "smoke", status: "skipped" }, { step: "full_suite", status: "passed" }], tests: { total: 10, passed: 9, failures: 0, errors: 0, skipped: 1 },
+  });
+  const stored = (h: Harness) => h.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#BASELINE#LATEST" }) as { health?: { class: string; cause?: string } } | undefined;
+  it("is fine when the broker's own approved environment defines no smoke check: the night reads as passed", async () => {
+    const h = await harness();
+    await h.fireNow();
+    const night = passingNight();
+    await record(h, { result: night.result });
+    expect(stored(h)?.health).toMatchObject({ class: "passed" });
+  });
+  it("is NOT fine when the approved environment defines a smoke check, whatever the worker says: the night is incomplete", async () => {
+    const h = await harness({ smoke: true });
+    await h.fireNow();
+    await record(h, { result: passingNight().result });
+    expect(stored(h)?.health).toMatchObject({ class: "unclear", cause: "incomplete_run" });
   });
 });
 

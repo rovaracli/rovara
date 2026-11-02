@@ -53,7 +53,7 @@ function fakes(script: Script = {}) {
 const night = (ports: NightlyPorts, environment = env(), over: { signal?: AbortSignal; deadlineMs?: number } = {}) =>
   runNightly({ environment, run: WIRE, ports, signal: over.signal ?? new AbortController().signal, deadlineMs: over.deadlineMs ?? 5_400_000 });
 /** What the broker makes of the night: it strips the worker's own words and classifies with its rules (`nightlyHealthOf`). */
-const verdict = (result: NightlyResult) => { const { ranFrom: _ranFrom, ...stored } = nightlyHealthOf(result) ?? {}; return stored; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- ranFrom is not part of the verdict
+const verdict = (result: NightlyResult, noSmokeCheck = true) => { const { ranFrom: _ranFrom, ...stored } = nightlyHealthOf(result, { noSmokeCheck }) ?? {}; return stored; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- ranFrom is not part of the verdict
 const MAP: CoverageMapData = { builtAt: "2026-11-05T06:00:00.000Z", files: { "service/src/match.py": ["tests/test_a.py::t1"] } };
 
 describe("a passing night", () => {
@@ -66,7 +66,7 @@ describe("a passing night", () => {
     expect(result.slowest[0]).toEqual({ id: "tests/test_a.py::t2", durationMs: 900 });
     expect(result.health!.steps).toEqual([
       { step: "pull", status: "passed" }, { step: "update", status: "skipped" }, { step: "setup", status: "passed" }, { step: "build", status: "passed" },
-      { step: "smoke", status: "passed" }, { step: "full_suite", status: "passed" }, { step: "boot", status: "skipped" }, { step: "mocks", status: "skipped" }, { step: "preprod_probe", status: "skipped" },
+      { step: "smoke", status: "skipped" }, { step: "full_suite", status: "passed" }, { step: "boot", status: "skipped" }, { step: "mocks", status: "skipped" }, { step: "preprod_probe", status: "skipped" },
     ].sort((a, b) => ["pull", "update", "setup", "build", "boot", "mocks", "preprod_probe", "smoke", "full_suite"].indexOf(a.step) - ["pull", "update", "setup", "build", "boot", "mocks", "preprod_probe", "smoke", "full_suite"].indexOf(b.step)));
     expect(verdict(result)).toEqual({ class: "passed" });
     expect(coverageMap).toEqual(MAP);
@@ -247,15 +247,21 @@ describe("bounds and shapes", () => {
     expect(f.ran.at(-1)).toBe("pytest -q tests/a.py::t2");
     expect(result.slowest.map((entry) => entry.id)).toEqual(["tests/a.py::t2"]);
   });
-  it("a project with a smoke check reports the smoke step as it ran; one without reports it passed only once the suite ran", async () => {
+  it("the smoke step is reported as it was: skipped when the environment has no smoke check, as it ran when it has one; the broker alone decides what a skipped smoke means", async () => {
     const withSmoke = [
       { id: "smoke", label: "Smoke", command: cmd("pytest", ["smoke"]), kind: "smoke" },
       { id: "unit", label: "Unit", command: cmd("pytest", ["-q"]), kind: "test", reportPath: "reports/junit.xml" },
     ];
-    const a = await night(fakes({ reports: { "pytest -q": report(t("a")) }, exits: { "pytest smoke": { exitCode: 1 } } }).ports, env({ selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } }, withSmoke));
+    const full = { selection: { method: "full", alwaysRun: [], fullSuiteOn: [] } };
+    const a = await night(fakes({ reports: { "pytest -q": report(t("a")) }, exits: { "pytest smoke": { exitCode: 1 } } }).ports, env(full, withSmoke));
     expect(a.result.health!.steps.find((s) => s.step === "smoke")?.status).toBe("failed");
     expect(a.result.health!.steps.find((s) => s.step === "full_suite")?.status).toBe("skipped");
     const b = await night(fakes({ exits: { "pip install -e .": { exitCode: 1 } } }).ports);
     expect(b.result.health!.steps.find((s) => s.step === "smoke")?.status).toBe("skipped");
+    // No smoke check in the environment: skipped. The broker's approved environment says whether that is fine.
+    const c = await night(fakes({ reports: { "pytest -q": report(t("a")) } }).ports);
+    expect(c.result.health!.steps.find((s) => s.step === "smoke")?.status).toBe("skipped");
+    expect(verdict(c.result, true)).toEqual({ class: "passed" });
+    expect(verdict(c.result, false)).toMatchObject({ class: "unclear", cause: "incomplete_run" });
   });
 });
