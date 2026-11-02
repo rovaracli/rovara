@@ -159,6 +159,19 @@ describe("a change and its audit are one write (L6)", () => {
     expect(bodyOf(await get(t, GPT_BUILDER)).choice).toBeNull();
   });
 
+  it("the change and its audit record are ONE transaction", async () => {
+    const { t } = await bench();
+    on();
+    const model = bodyOf(await get(t, GPT_BUILDER)).models[0]!.model;
+    const sent: Array<{ input?: { TransactItems?: Array<{ Update?: { ExpressionAttributeNames?: Record<string, string> }; Put?: { Item?: { pk?: string } } }> } }> = [];
+    const original = t.db.send.bind(t.db);
+    t.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
+    expect((await t.web(OMAR, "POST", PATH, { action: "choose", primary: model })).status).toBe(200);
+    t.db.send = original as never;
+    const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update?.ExpressionAttributeNames?.["#f"] === "models"));
+    expect(write?.input?.TransactItems?.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
+  });
+
   it("a choice and a context change touch only their own field", async () => {
     const { t } = await bench();
     on();
