@@ -7,6 +7,7 @@ import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { diagnosisDefaultBranchFileRoute, handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
+import { routeSecondReviewEvidence } from "./second-review-evidence-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
@@ -92,6 +93,7 @@ import { getProjectModels, putProjectModel } from "./records.js";
 import { decideEgress, decideRequestContext, egressDepsOf, githubScope, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { authorizeSlackTaskAction, captureSlackWorkflowFeedbackNote, closeSlackWorkflowTask, confirmSlackTaskPeople, decideSlackWorkflow, decideSlackWorkflowFeedbackFindings, handleSlackTaskPeople, isSlackStopTaskEvent, isSlackTaskAuthorizationEvent, isSlackTaskPeopleChangeEvent, isSlackTaskPeopleConfirmEvent, isSlackTaskPeopleReadEvent, isSlackTaskPeopleTakeOwnershipEvent, isSlackThreadNoteEvent, isSlackWorkflowCloseEvent, isSlackWorkflowDecisionEvent, isSlackWorkflowFeedbackFindingsDecisionEvent, isSlackWorkflowFeedbackNoteEvent, isSlackWorkflowFeedbackReviewRetryEvent, isSlackWorkflowKeepPullRequestsEvent, isSlackWorkflowPublishRetryEvent, isSlackWorkflowResolveFindingsEvent, isSlackWorkflowRetryEvent, isSlackWorkflowReviewRetryEvent, isSlackWorkflowSendBackEvent, isSlackWorkflowStartEvent, reviseSlackWorkflowPlan, keepSlackWorkflowPullRequests, recordSlackThreadNote, resolveSlackWorkflowFindings, retrySlackWorkflowChecks, retrySlackWorkflowFeedbackReview, retrySlackWorkflowPublication, retrySlackWorkflowReviews, sendSlackWorkflowBack, startSlackWorkflow, stopSlackThreadTask, workflowApplicationRouteDependencies, type SlackStopTaskEvent, type SlackTaskAuthorizationEvent, type SlackTaskPeopleChangeEvent, type SlackTaskPeopleConfirmEvent, type SlackTaskPeopleReadEvent, type SlackTaskPeopleTakeOwnershipEvent, type SlackWorkflowCloseEvent, type SlackWorkflowDecisionEvent, type SlackWorkflowResolveFindingsEvent, type SlackWorkflowRetryEvent, type SlackWorkflowReviewRetryEvent, type SlackWorkflowSendBackEvent, type SlackWorkflowStartEvent } from "./slack-workflow-events.js";
 import { fireTestEnvNightly, isTestEnvNightlyEvent } from "../../test-env/nightly-wiring.js";
+import { nightlyRunsOf } from "./nightly-run-wiring.js";
 import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isIntakePollEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
@@ -311,7 +313,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     }
     // Test environment (wire-testenv): the scheduler's nightly fire for a project. Answers "off" and reads nothing where the switch is off; no run can be started yet, so it never charges a budget or claims a slot.
     if (isTestEnvNightlyEvent(event)) {
-      return json(await fireTestEnvNightly({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, event), "test-env-nightly");
+      return json(await fireTestEnvNightly({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, event, nightlyRunsOf(dependencies, tasks, agents)), "test-env-nightly");
     }
     // Team record (wire-team-record): the scheduler's hourly and nightly jobs, and a Slack event the ingress verified and forwarded. Both answer "off" and do nothing where the record's switch is off.
     if (isTeamRecordJobEvent(event)) {
@@ -732,7 +734,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Lane E: the project's MCP context sources, for an Understand, Plan, Plan-check or Review stage; authorized by the operation's `context-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/context-tools") return json(await handleContextTools(dependencies, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
-      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent)$/.exec(
+      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result)$/.exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {
@@ -1084,6 +1086,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!dependencies.chatgpt) throw agentXError("NOT_FOUND", "Sign in with ChatGPT is not set up in this deployment");
         return json(await dependencies.chatgpt.health(), request.requestId);
       }
+      // Second review (switch `cr`): the writers of the evidence that lets a model block. Rovara staff on the hosted cloud, the install's administrator on Enterprise; never a company's member or project.
+      const secondReviewEvidence = await routeSecondReviewEvidence(dependencies, identity, request, url, body);
+      if (secondReviewEvidence !== undefined) return json(secondReviewEvidence.body, request.requestId, secondReviewEvidence.status);
       // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
         return json(await putInstallBudget(dependencies, identity, body), request.requestId);

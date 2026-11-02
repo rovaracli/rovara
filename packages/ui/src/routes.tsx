@@ -34,6 +34,8 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "how-we-work", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/HowWeWorkCompanyScreen.js")).HowWeWorkCompanyScreen }) },
  { path: "how-we-work/recipes", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/SetupRecipesScreen.js")).SetupRecipesScreen }) }, { path: "models/:section?", lazy: async () => ({ Component: (await import("./screens/admin/models/ModelsScreen.js")).ModelsScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) }, { path: "tracker-people", lazy: async () => ({ Component: (await import("./screens/admin/tracker-people/TrackerPeopleScreen.js")).TrackerPeopleScreen }) },
  // Lane C2: read-only company audit.
+ { path: "second-review", lazy: async () => ({ Component: (await import("./screens/admin/second-review/SecondReviewScreen.js")).SecondReviewScreen }) },
+ // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });

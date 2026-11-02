@@ -2,8 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { AgentXError, orgMemberKey, orgMetaKey, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
 import {
-  SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
-  recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupRecipeDeps,
+  LOCKS_PENDING_TTL_MS, SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
+  recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupLocksDeps, type SetupRecipeDeps,
 } from "../../packages/broker/src/org/setup-recipes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { memorySetupRecipeStore } from "../support/memory-setup-recipe-store.js";
@@ -33,7 +33,7 @@ const body = (changes: Record<string, unknown> = {}): SetupRecipeBody => SetupRe
 const FITS = { markerFiles: ["pyproject.toml"], registryHosts: ["pypi.internal.example.com"] };
 
 /** su-musts' reader, as the recipe code uses it: only the dev container image list, from the locks store. */
-const readerOf = (deps: SetupRecipeDeps) => ({ getCompanySetupLocks: async (orgId: OrgId) => (await deps.locksStore!.getLocks(orgId))?.locks });
+const readerOf = (deps: SetupLocksDeps) => ({ getCompanySetupLocks: async (orgId: OrgId) => (await deps.store.getLocks(orgId))?.locks });
 function harness(options: { admins?: string[]; maintainers?: Record<string, string[]>; refusedHosts?: string[]; repositoryNames?: Record<string, string[]> } = {}) {
   // The rows the evidence's conditions fence: the org META with its membership version, and the two admins' member records.
   const db = new FakeDynamoDb();
@@ -55,13 +55,13 @@ function harness(options: { admins?: string[]; maintainers?: Record<string, stri
   const calls: string[] = [];
   // Two eligible admins by default; tests change this to make a one-admin company or a recent loss.
   const evidence = { complete: true, membershipVersion: 7, ownerIds: [ADMIN], eligibleIds: [ADMIN, SECOND_ADMIN], lastEligibleLossAtMs: null as number | null };
-  const deps: SetupRecipeDeps = {
+  const deps: SetupRecipeDeps & SetupLocksDeps = {
     store: {
       ...store,
       getRecipe: (...args) => { calls.push("store"); return store.getRecipe(...args); },
       listRecipes: (...args) => { calls.push("store"); return store.listRecipes(...args); },
+      getLocks: (...args) => { calls.push("store"); return store.getLocks(...args); },
     },
-    locksStore: { ...store, getLocks: (...args) => { calls.push("store"); return store.getLocks(...args); } },
     requireAdmin: (caller) => { calls.push("admin"); return admins.has(caller.developerId) ? Promise.resolve() : Promise.reject(new AgentXError("FORBIDDEN", "Live company owner or admin access is required.", 403)); },
     approvalEvidence: (scope) => {
       // As readSecondPersonApprovalEvidence does: read the version, fence it and both people's live records, and answer a decision input.
@@ -351,14 +351,49 @@ describe("company locks", () => {
     expect(first).toMatchObject({ status: "applied", locks: { orgId: ORG, revision: 1, updatedBy: ADMIN, locks: { setupAgentOff: true } } });
     expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true }, expectedRevision: null }))).toBe("CHANGE_STALE");
     store.failNextCommit();
-    expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, nightlyHealthOn: true }, expectedRevision: 1 }))).toBe("CHANGE_STALE");
-    const second = await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, nightlyHealthOn: true }, expectedRevision: 1 });
+    expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 }))).toBe("CHANGE_STALE");
+    const second = await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 });
     expect(second).toMatchObject({ status: "applied", locks: { revision: 2 } });
-    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true, nightlyHealthOn: true });
+    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true, noSoleOwnerException: true });
     expect(await readCompanyLocks(deps, OTHER_ORG)).toBeUndefined();
     expect(store.audit.map((entry) => [entry.action, entry.loosened])).toEqual([["locks_changed", false], ["locks_changed", false]]);
     sessions.set("s-admin", { developerId: ADMIN });
     expect(await code(setCompanyLocks(deps, admin, { locks: {}, expectedRevision: 2 }))).toBe("REAUTH_REQUIRED");
+  });
+
+  it("refuses a lock nothing enforces yet ('not available yet'), whatever its value, and stores nothing", async () => {
+    const { deps, admin, store } = harness();
+    for (const locks of [{ hostsOnlyFromCompanyList: true }, { hostApprover: "admin" }, { nightlyHealthOn: true }, { setupAgentOff: true, nightlyHealthOn: true }]) {
+      let message = "";
+      try { await setCompanyLocks(deps, admin, { locks, expectedRevision: null }); } catch (error) { message = (error as Error).message; }
+      expect(message, JSON.stringify(locks)).toContain("That company lock is not available yet.");
+    }
+    expect(await readCompanyLocks(deps, ORG)).toBeUndefined();
+    expect(store.audit).toEqual([]);
+  });
+
+  it("L4: 'not available yet' applies only to a lock the request adds or changes: one already stored and left as it is does not stop another change", async () => {
+    const { deps, admin, store } = harness();
+    await store.commitLocks({ orgId: ORG, revision: 1, locks: { hostsOnlyFromCompanyList: true, hostApprover: "admin" }, updatedBy: ADMIN, updatedAt: NOW.toISOString() }, null,
+      { action: "locks_changed", orgId: ORG, actor: ADMIN, at: NOW.toISOString(), proof: "fresh_sign_in", revision: 1, previousDigest: "0".repeat(64), nextDigest: "1".repeat(64), loosened: false }, []);
+    const kept = await setCompanyLocks(deps, admin, { locks: { hostsOnlyFromCompanyList: true, hostApprover: "admin", setupAgentOff: true }, expectedRevision: 1 });
+    expect(kept.status).toBe("applied");
+    for (const locks of [{ hostsOnlyFromCompanyList: true, setupAgentOff: true }, { hostsOnlyFromCompanyList: true, hostApprover: "admin", setupAgentOff: true, nightlyHealthOn: true }]) {
+      let message = "";
+      try { await setCompanyLocks(deps, admin, { locks, expectedRevision: 2 }); } catch (error) { message = (error as Error).message; }
+      expect(message, JSON.stringify(locks)).toContain("That company lock is not available yet.");
+    }
+  });
+
+  it("L7: a waiting loosening is gone after 24 hours and can no longer be approved", async () => {
+    const { deps, admin, admin2, clock, sessions } = harness();
+    await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true }, expectedRevision: null });
+    const waiting = await setCompanyLocks(deps, admin, { locks: {}, expectedRevision: 1 });
+    if (waiting.status !== "needs_second_admin" || waiting.locks.pending === undefined) throw new Error("not waiting");
+    clock.now = new Date(clock.now.getTime() + LOCKS_PENDING_TTL_MS + 1000);
+    sessions.set("s-admin-2", { developerId: SECOND_ADMIN, authTime: new Date(clock.now.getTime() - 60_000).toISOString() });
+    expect(await code(approveLocksChange(deps, admin2, { expectedRevision: waiting.locks.revision, expectedDigest: waiting.locks.pending.digest }))).toBe("CHANGE_STALE");
+    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true });
   });
 
   it("refuses limits above the design's maximum, below one, unknown fields and values that loosen", async () => {
@@ -427,20 +462,22 @@ describe("sharing a confirmed project setup", () => {
 });
 
 describe("fix round 1: loosening a lock needs a second admin (owner choice A)", () => {
-  const strict: CompanySetupLocks = { setupAgentOff: true, limits: { commands: 20, spendUsd: 2 }, hostsOnlyFromCompanyList: true, devcontainerImages: ["a/b:1"], nightlyHealthOn: true, hostApprover: "admin" };
+  // What a company can set today (the locks something enforces), and every lock the schema reads (for the pure comparison).
+  const strict: CompanySetupLocks = { setupAgentOff: true, limits: { commands: 20, spendUsd: 2 }, devcontainerImages: ["a/b:1"] };
+  const strictAll: CompanySetupLocks = { ...strict, hostsOnlyFromCompanyList: true, nightlyHealthOn: true, hostApprover: "admin" };
 
-  it("tells a loosening from a stricter change, field by field", () => {
-    expect(isLoosening(undefined, strict)).toBe(false);
-    expect(isLoosening(strict, strict)).toBe(false);
-    expect(isLoosening(strict, {})).toBe(true);
+  it("tells a loosening from a strictAller change, field by field", () => {
+    expect(isLoosening(undefined, strictAll)).toBe(false);
+    expect(isLoosening(strictAll, strictAll)).toBe(false);
+    expect(isLoosening(strictAll, {})).toBe(true);
     const loosers: CompanySetupLocks[] = [
-      { ...strict, setupAgentOff: undefined }, { ...strict, hostsOnlyFromCompanyList: undefined }, { ...strict, nightlyHealthOn: undefined }, { ...strict, hostApprover: undefined },
-      { ...strict, limits: { commands: 21, spendUsd: 2 } }, { ...strict, limits: { spendUsd: 2 } }, { ...strict, limits: undefined },
-      { ...strict, devcontainerImages: ["a/b:1", "c/d:2"] }, { ...strict, devcontainerImages: undefined },
+      { ...strictAll, setupAgentOff: undefined }, { ...strictAll, hostsOnlyFromCompanyList: undefined }, { ...strictAll, nightlyHealthOn: undefined }, { ...strictAll, hostApprover: undefined },
+      { ...strictAll, limits: { commands: 21, spendUsd: 2 } }, { ...strictAll, limits: { spendUsd: 2 } }, { ...strictAll, limits: undefined },
+      { ...strictAll, devcontainerImages: ["a/b:1", "c/d:2"] }, { ...strictAll, devcontainerImages: undefined },
     ];
-    loosers.forEach((next, index) => expect(isLoosening(strict, next), String(index)).toBe(true));
-    const stricter: CompanySetupLocks[] = [{ ...strict, limits: { commands: 10, spendUsd: 2, hostAsks: 3 } }, { ...strict, devcontainerImages: [] }, { ...strict, devcontainerImages: ["a/b:1"] }];
-    stricter.forEach((next, index) => expect(isLoosening(strict, next), `s${String(index)}`).toBe(false));
+    loosers.forEach((next, index) => expect(isLoosening(strictAll, next), String(index)).toBe(true));
+    const strictAller: CompanySetupLocks[] = [{ ...strictAll, limits: { commands: 10, spendUsd: 2, hostAsks: 3 } }, { ...strictAll, devcontainerImages: [] }, { ...strictAll, devcontainerImages: ["a/b:1"] }];
+    strictAller.forEach((next, index) => expect(isLoosening(strictAll, next), `s${String(index)}`).toBe(false));
     expect(isLoosening({ devcontainerImages: [] }, { devcontainerImages: ["a/b:1"] })).toBe(true);
   });
 
@@ -623,7 +660,7 @@ describe("fix round 1: loosening a lock needs a second admin (owner choice A)", 
       const h = harness();
       Object.assign(h.evidence, SOLE, { lastEligibleLossAtMs: NOW.getTime() - 1000 });
       await setCompanyLocks(h.deps, h.admin, { locks: {}, expectedRevision: null });
-      expect((await setCompanyLocks(h.deps, h.admin, { locks: { nightlyHealthOn: true, noSoleOwnerException: true }, expectedRevision: 1 })).status).toBe("applied");
+      expect((await setCompanyLocks(h.deps, h.admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 })).status).toBe("applied");
     });
   });
 

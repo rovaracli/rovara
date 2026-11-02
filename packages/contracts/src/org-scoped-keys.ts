@@ -991,6 +991,16 @@ export function setupDraftKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `SETUP_DRAFT#${keyPart(project, "a project name")}`), sk: "META" };
 }
 
+/** The company's locks on setup (SH29: the setup run's limits and the other locks), one row per company. */
+export function setupLocksKey(orgId: OrgId): OrgKey {
+  return { pk: orgScoped(orgId, "SETUP_LOCKS"), sk: "META" };
+}
+
+/** A project's own limits for a setup run, in the project's setup partition beside the run's pointer (so a walk that removes the project's setup items finds it). */
+export function setupLimitsKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: setupDraftKey(orgId, project).pk, sk: "LIMITS" };
+}
+
 /** One person's discarded work, kept 7 days. */
 export function trashKey(orgId: OrgId, developerId: string, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `TRASH#${keyPart(developerId, "a developer id")}`), sk: keyPart(taskId, "a task id") };

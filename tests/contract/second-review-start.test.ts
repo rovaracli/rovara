@@ -55,7 +55,7 @@ const replayCases = (): SecondReviewReplayCase[] => {
 };
 const proof = (model: ModelIdentifier): { verdicts: SecondReviewVerdict[]; replayRuns: SecondReviewReplayRun[] } => ({
   replayRuns: [{ runId: "run-1", ranAt: "2026-11-01T00:00:00.000Z", candidate: model, baseline: OPUS, cases: replayCases() }],
-  verdicts: [{ model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4 }, createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice" }],
+  verdicts: [{ model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4, reviews: 10 }, createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice" }],
 });
 
 describe("the model picker", () => {

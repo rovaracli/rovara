@@ -1,6 +1,10 @@
 // Company setup recipes in the setup flow (SH30 + SR-3, switch `sp`), through the whole broker: the offered recipes are sent with the setup draft and RECORDED on its operation (id and revision).
 import { afterEach, describe, expect, it } from "vitest";
-import type { TestEnvDraft } from "@agentx/contracts";
+import { setupLocksKey, type TestEnvDraft } from "@agentx/contracts";
+import { dynamoSetupLocksStore } from "../../packages/broker/src/rovara-code/setup-locks-store.js";
+import { companyLocksReaderFor } from "../../packages/broker/src/org/setup-recipe-locks.js";
+import type { CompanySetupLocks } from "../../packages/broker/src/org/setup-recipes.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { createSetupRecipesNegotiationRecorder } from "../../packages/broker/src/aws/dispatcher.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -12,21 +16,31 @@ const allOn = () => { for (const name of SWITCHES) process.env[name] = "1"; };
 const PATH = "/v1/app/org/setup-recipes";
 const HOST = "artifactory.internal-build.io";
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "{repo}", executable, args, timeoutSeconds: 600 });
-const recipeBody = (label: string, hosts: string[]) => ({
-  schemaVersion: 1, label, buildSystems: ["python"], toolchains: [], setupCommands: [cmd("uv", ["sync", "--frozen"])], updateCommands: [],
-  checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test" }], approvedHosts: hosts, match: { markerFiles: ["pyproject.toml"], registryHosts: [] },
+const recipeBody = (label: string, hosts: string[], image?: string, marker = "pyproject.toml") => ({
+  schemaVersion: 1, label, ...(image === undefined ? {} : { devcontainerBaseImage: image }), buildSystems: ["python"], toolchains: [], setupCommands: [cmd("uv", ["sync", "--frozen"])], updateCommands: [],
+  checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test" }], approvedHosts: hosts, match: { markerFiles: [marker], registryHosts: [] },
 });
 
+const auditOf = new WeakMap<Bench, ReturnType<typeof capturingAuditDeps>>();
 async function bench() {
   const audit = capturingAuditDeps();
   const t = await setupWizardBench({ audit });
   audit.audit.documentClient = t.db as never;
+  auditOf.set(t, audit);
   await t.person(MAYA, "admin");
   allOn();
   return t;
 }
-async function createRecipe(t: Bench, label: string, hosts: string[]): Promise<{ recipeId: string; revision: number }> {
-  const made = await t.web(OMAR, "POST", PATH, { action: "create", body: recipeBody(label, hosts) });
+/** The company's locks, written the way su-musts' own store writes them (its audit item included). */
+async function setLocks(t: Bench, locks: CompanySetupLocks): Promise<void> {
+  const store = dynamoSetupLocksStore({ documentClient: t.db, tableName: "state", now: Date.now, audit: auditOf.get(t)!.audit });
+  const at = new Date().toISOString();
+  const written = await store.commitLocks({ orgId: TEST_ORG, revision: 1, locks, updatedBy: OMAR.developerId, updatedAt: at }, null,
+    { action: "locks_changed", orgId: TEST_ORG, actor: OMAR.developerId, at, proof: "fresh_sign_in", revision: 1, previousDigest: "0".repeat(64), nextDigest: "1".repeat(64), loosened: false }, []);
+  expect(written).toBe(true);
+}
+async function createRecipe(t: Bench, label: string, hosts: string[], image?: string, marker?: string): Promise<{ recipeId: string; revision: number }> {
+  const made = await t.web(OMAR, "POST", PATH, { action: "create", body: recipeBody(label, hosts, image, marker) });
   expect(made.status, JSON.stringify(made.body)).toBe(200);
   const listed = (await t.web(OMAR, "GET", PATH)).body as { recipes: Array<{ recipeId: string; revision: number; label: string }> };
   const found = listed.recipes.find((recipe) => recipe.label === label)!;
@@ -52,6 +66,47 @@ describe("an older worker (F7)", () => {
     expect(setupOperation(t)).not.toHaveProperty("setupRecipeOffers");
     expect(setupOperation(t)).toMatchObject({ id: operation.id, workflowMode: "SETUP_DRAFT" });
     await createSetupRecipesNegotiationRecorder({ documentClient: t.db as never, tableName: "state" })(record);
+  });
+});
+
+const PYTHON_312 = "mcr.microsoft.com/devcontainers/python:3.12";
+const PYTHON_313 = "mcr.microsoft.com/devcontainers/python:3.13";
+
+describe("the company's dev container lock reads through su-musts' store", () => {
+  it("the reader is always there: a missing reader would mean 'no lock'", async () => {
+    const t = await bench();
+    const reader = companyLocksReaderFor({ documentClient: t.db, tableName: "state" });
+    expect(typeof reader.getCompanySetupLocks).toBe("function");
+    expect(await reader.getCompanySetupLocks(TEST_ORG)).toBeUndefined();
+    await setLocks(t, { devcontainerImages: [PYTHON_312] });
+    expect(await reader.getCompanySetupLocks(TEST_ORG)).toEqual({ devcontainerImages: [PYTHON_312] });
+  });
+
+  it("a devcontainerImages lock filters what a setup draft is offered, and what is recorded on the operation", async () => {
+    const t = await bench();
+    const allowed = await createRecipe(t, "Allowed image", [HOST], PYTHON_312);
+    const blocked = await createRecipe(t, "Other image", [HOST], PYTHON_313, "go.mod");
+    const plain = await createRecipe(t, "No image", [HOST], undefined, "Cargo.toml");
+    await t.drafted(citing());
+    expect((setupOperation(t).setupRecipeOffers as unknown[]).length).toBe(3);
+    await setLocks(t, { devcontainerImages: [PYTHON_312] });
+    await t.drafted(citing(allowed));
+    const operation = setupOperation(t);
+    const ids = (operation.setupRecipeOffers as Array<{ recipeId: string }>).map((offer) => offer.recipeId).sort();
+    expect(ids).toEqual([allowed.recipeId, plain.recipeId].sort());
+    expect(ids).not.toContain(blocked.recipeId);
+    expect(payloadOf(t, operation.id).testEnvRecipes?.map((offer) => offer.recipeId).sort()).toEqual(ids);
+  });
+
+  it("offers nothing while the locks row cannot be read (never 'no lock')", async () => {
+    const t = await bench();
+    await createRecipe(t, "Allowed image", [HOST], PYTHON_312);
+    await setLocks(t, { devcontainerImages: [PYTHON_312] });
+    const row = t.db.get(setupLocksKey(TEST_ORG))!;
+    t.db.set({ ...row, locks: { devcontainerImages: "not a list" } });
+    await t.drafted(citing());
+    expect(setupOperation(t)).not.toHaveProperty("setupRecipeOffers");
+    expect(payloadOf(t, setupOperation(t).id)).not.toHaveProperty("testEnvRecipes");
   });
 });
 

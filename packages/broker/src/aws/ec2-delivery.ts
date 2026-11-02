@@ -17,6 +17,7 @@ import {
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
   SETUP_AGENT_FEATURE,
+  NIGHTLY_RUN_FEATURE,
   SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_COVERAGE_PATH_FEATURE,
@@ -24,6 +25,7 @@ import {
   SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
+  PREPARE_PINS_FEATURE,
   credentialKindsOfWorkerFeatures,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
@@ -382,6 +384,7 @@ async function forWorkerFeatures(
   // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
+  const carriesPins = invocation.kind === "prepare" && invocation.payload.pins !== undefined;
   // P8: a grant that names a credential kind beyond the legacy two (an ssh key). A worker that does not list repository.credentialKinds.v1 would be sent a shape it cannot take, so the run is refused here.
   const credentialKindsNeeded = invocation.kind === "prepare" || invocation.kind === "publish" || invocation.kind === "maintain" ? nonLegacyCredentialKindsOfGrant(invocation.payload.repositoryGrant) : [];
   const carriesCredentialKinds = credentialKindsNeeded.length > 0;
@@ -391,7 +394,7 @@ async function forWorkerFeatures(
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -423,6 +426,10 @@ async function forWorkerFeatures(
   }
   // SH14: a setup run that runs commands is never sent to a worker that does not list it (an older worker fails the mode at its own parse). The field is never dropped.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_AGENT" && !features.includes(SETUP_AGENT_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // NH-1: a nightly run is never sent to a worker that does not list it (an older worker would run the verification mode with no checks and say nothing of the night). The field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.nightlyRun !== undefined && !features.includes(NIGHTLY_RUN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
@@ -464,6 +471,8 @@ async function forWorkerFeatures(
   if (carriesMeta && !features.includes("prepare.metaRepo")) {
     throw agentXError("RUNTIME_UNAVAILABLE", META_FEATURE_MISSING);
   }
+  // P1: a setup run's pins are never dropped for an older worker, which would prepare whatever head it resolves: the run is refused.
+  if (carriesPins && !features.includes(PREPARE_PINS_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   // N9 (INTG2): a project's registries are never dropped for an older worker, which would run setup without them and fail on a 401 (or reach a public mirror): the run is refused.
   if (carriesRegistries && !features.includes(PREPARE_REGISTRIES_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", REGISTRY_FEATURE_MISSING);

@@ -74,7 +74,7 @@ function evidenceCell(row: ProofRow, level: number): string {
 }
 
 /** The names of the tests the broker's own TestProof, bound to this code's digest, says fail on the original code (per-test verdicts only); undefined when there is no such proof or it has no per-test verdicts. */
-function provenTestNames(testProof: unknown, candidateDigest: string | undefined): ReadonlySet<string> | undefined {
+export function provenTestNames(testProof: unknown, candidateDigest: string | undefined): ReadonlySet<string> | undefined {
   if (candidateDigest === undefined || testProof === undefined) return undefined;
   const parsed = TestProofSchema.safeParse(testProof);
   if (!parsed.success || parsed.data.candidateDigest !== candidateDigest) return undefined;

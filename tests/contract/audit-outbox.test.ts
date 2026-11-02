@@ -839,6 +839,9 @@ describe("I4: the builders", () => {
     // Setup agent website asks (SH12)
     ["auditSetupHostAsked", (occurrence) => builders.auditSetupHostAsked({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", taskId: "task_1", journalN: 4, host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" })],
     ["auditSetupHostRefused", (occurrence) => builders.auditSetupHostRefused({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", refusal: "person", host: "docs.corp.example" })],
+    // Setup run limits and company locks (sh-su-musts)
+    ["auditSetupLimitsChanged", (occurrence) => builders.auditSetupLimitsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, previousDigest: "a".repeat(64), nextDigest: "b".repeat(64), limits: { commands: 60, budgetCents: 800 } })],
+    ["auditSetupLocksChange", (occurrence) => builders.auditSetupLocksChange({ ...base, occurrence, details, action: "setup.locks_change_approved", revision: 3, previousDigest: "a".repeat(64), nextDigest: "b".repeat(64), loosened: true, approvalMode: "second_person", membershipVersion: 7 })],
     // Tracker people (team record)
     ["auditRecordTrackerPersonMapped", (occurrence) => builders.auditRecordTrackerPersonMapped({ ...base, occurrence, details, memberId: "dev_1", source: "jira" })],
     ["auditRecordTrackerPersonUnmapped", (occurrence) => builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence, details, memberId: "dev_1", source: "linear" })],

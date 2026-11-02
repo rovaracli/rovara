@@ -144,7 +144,7 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
     recipeDeps.store.listRecipes(caller.orgId, SETUP_RECIPES_MAX_PER_ORG + 50, ["proposed", "approved"]),
     queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#"),
     recipeDeps.store.unreadableIds?.(caller.orgId) ?? Promise.resolve([] as string[]),
-    companyLocksReaderFor({ documentClient: deps.documentClient, tableName: deps.tableName })?.getCompanySetupLocks(caller.orgId),
+    companyLocksReaderFor({ documentClient: deps.documentClient, tableName: deps.tableName }).getCompanySetupLocks(caller.orgId),
   ]);
   const projects = catalog.flatMap((row) => (typeof row.name === "string" ? [row.name] : [])).sort();
   const ids = [...new Set(recipes.map((recipe) => recipe.createdBy))].slice(0, 100);

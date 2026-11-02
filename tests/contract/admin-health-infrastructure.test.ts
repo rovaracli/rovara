@@ -249,6 +249,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/test-env/health.ts",
       // 2026-11-02, testenv-apply (TE-2): a proposal's candidate check record (`TEST_ENV_CANDIDATE_CHECK`, one item per project, digest and settings revision) expires with the proposal it checks (7 days); only commitSetupCheck (project-setup-check.ts) writes it, and test-env-candidate.ts reads it.
       "packages/broker/src/org/test-env-candidate.ts",
+      // 2026-11-02, nightly-run (NH-1): a night's status row (`TEST_ENV_NIGHT`, one per project and slot: unavailable or failed, with its reason) expires after the night-status retention (TTL_MS); only night-status.ts writes it.
+      "packages/broker/src/test-env/night-status.ts",
       // 2026-11-02, sh-health-wire (SH28): a proposed fix task (`TEST_ENV_PROPOSED_FIX_TASK`, written once per key, never updated) expires after 30 days (TTL_MS) if nobody starts or dismisses it; only proposed-tasks.ts writes it.
       "packages/broker/src/test-env/proposed-tasks.ts",
       // 2026-11-02, sh-setup-wire (SH12-SH15): the setup run's journal entries, its command counter, its host-ask items (31 days) and the setup-run proposal index (7 days) are working rows of one setup run, meant to expire; none is a durable record.
@@ -287,6 +289,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/intake/own-writes.ts", "packages/broker/src/agent-sessions/ask-store.ts", "packages/broker/src/agent-sessions/ask-erase.ts", "packages/broker/src/lessons/dynamo-store.ts",
       // B8: pending PR-learning proposals use the approved authority window plus cleanup TTL.
       "packages/broker/src/learning/settings.ts",
+      // Second review track record (lane cr-settings): a row per answered second opinion, kept TRACK_RETENTION_DAYS (400), then removed by the TTL.
+      "packages/broker/src/rovara-code/second-review-track.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

@@ -1,4 +1,4 @@
-import { SECOND_REVIEWER_FEATURE, SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
+import { NIGHTLY_RUN_FEATURE, SECOND_REVIEWER_FEATURE, SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
 
 /**
  * The optional invocation fields this worker implements, listed by hand and advertised on /ping. WORKER_INVOCATION_FEATURES
@@ -70,8 +70,12 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.testEnvCoveragePath.v1",
   // N9 (INTG2): the prepare invocation's `registries` (a project's private package registries for the setup and readiness commands; registry-config.ts).
   "prepare.registries.v1",
+  // P1: a prepare invocation's `pins` (the heads the broker read) are checked against what the worker resolves (prepare.ts).
+  "prepare.pins.v1",
   // Enterprise foundations P8: the repository credential exchange takes an ssh key as well as a token or a password (repository-credentials.ts, git-auth.ts).
   "repository.credentialKinds.v1",
   // SR-1 (switch `cr`): the second reviewer inside a review operation (verification/review.ts `secondReviewer`).
   SECOND_REVIEWER_FEATURE,
+  // NH-1: the nightly run (nightly-run.ts): the Prove sequence over the approved environment, with one rerun of failures and the coverage map, reported through the nightly action.
+  NIGHTLY_RUN_FEATURE,
 ] as const satisfies readonly WorkerInvocationFeature[];

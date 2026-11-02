@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, projectPk, type DecisionCard, type TestEnvDraft } from "@agentx/contracts";
 import { requestHostAsk } from "../../packages/broker/src/rovara-code/setup-host-ask.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { dynamoSetupLocksStore } from "../../packages/broker/src/rovara-code/setup-locks-store.js";
 import { companyApprovedHostMarks } from "../../packages/broker/src/org/setup-recipe-host-marks.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -17,8 +18,8 @@ const allOn = () => { for (const name of SWITCHES) process.env[name] = "1"; };
 const PATH = "/v1/app/org/setup-recipes";
 const HOST = "artifactory.internal-build.io";
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "{repo}", executable, args, timeoutSeconds: 600 });
-const recipeBody = (label: string, hosts: string[]) => ({
-  schemaVersion: 1, label, buildSystems: ["python"], toolchains: [], setupCommands: [cmd("uv", ["sync", "--frozen"])], updateCommands: [],
+const recipeBody = (label: string, hosts: string[], image?: string) => ({
+  schemaVersion: 1, label, ...(image === undefined ? {} : { devcontainerBaseImage: image }), buildSystems: ["python"], toolchains: [], setupCommands: [cmd("uv", ["sync", "--frozen"])], updateCommands: [],
   checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test" }], approvedHosts: hosts, match: { markerFiles: ["pyproject.toml"], registryHosts: [] },
 });
 
@@ -30,8 +31,8 @@ async function bench() {
   allOn();
   return t;
 }
-async function createRecipe(t: Bench, label: string, hosts: string[]): Promise<{ recipeId: string; revision: number }> {
-  const made = await t.web(OMAR, "POST", PATH, { action: "create", body: recipeBody(label, hosts) });
+async function createRecipe(t: Bench, label: string, hosts: string[], image?: string): Promise<{ recipeId: string; revision: number }> {
+  const made = await t.web(OMAR, "POST", PATH, { action: "create", body: recipeBody(label, hosts, image) });
   expect(made.status, JSON.stringify(made.body)).toBe(200);
   const listed = (await t.web(OMAR, "GET", PATH)).body as { recipes: Array<{ recipeId: string; revision: number; label: string }> };
   const found = listed.recipes.find((recipe) => recipe.label === label)!;
@@ -62,6 +63,20 @@ describe("the draft keeps only the recipe citations the broker offered (F6)", ()
     await t.drafted(citing(one));
     const stored = t.db.get({ pk: projectPk(TEST_ORG, NAME), sk: `TESTENV#DRAFT#${lastTask(t).taskId}` })!.draft as TestEnvDraft;
     expect(stored.valueSources).toEqual([]);
+  });
+});
+
+describe("host marks read the company's dev container lock through su-musts' store", () => {
+  it("a recipe whose image is no longer on the company's list contributes no host (read again now)", async () => {
+    const t = await bench();
+    const one = await createRecipe(t, "Python services", [HOST], "mcr.microsoft.com/devcontainers/python:3.13");
+    await t.drafted(citing(one));
+    expect([...(await marks(t)).keys()]).toEqual([HOST]);
+    const at = new Date().toISOString();
+    const store = dynamoSetupLocksStore({ documentClient: t.db, tableName: "state", now: Date.now, audit: capturingAuditDeps({ db: t.db }).audit });
+    expect(await store.commitLocks({ orgId: TEST_ORG, revision: 1, locks: { devcontainerImages: ["mcr.microsoft.com/devcontainers/python:3.12"] }, updatedBy: OMAR.developerId, updatedAt: at }, null,
+      { action: "locks_changed", orgId: TEST_ORG, actor: OMAR.developerId, at, proof: "fresh_sign_in", revision: 1, previousDigest: "0".repeat(64), nextDigest: "1".repeat(64), loosened: false }, [])).toBe(true);
+    expect([...(await marks(t)).keys()]).toEqual([]);
   });
 });
 

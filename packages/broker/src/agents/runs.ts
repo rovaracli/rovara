@@ -56,6 +56,8 @@ import {
   ROVARA_CODE_AGENT_ID,
   SetupAgentLimitsSchema,
   type SetupAgentLimits,
+  NightlyRunWireSchema,
+  type NightlyRunWire,
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { resolvePayer, type PayerFacts } from "../spend/payer.js";
@@ -141,6 +143,8 @@ export interface AgentRunRequest {
    * down to the company's lock); `seenTaskId` is the run the project's pointer named when the route read it.
    */
   setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
+  /** NH-1 (switch `nh`): the run is a project's nightly test run (origin `nightly`: the project pays). Only the nightly fire sets it, never a request body. */
+  nightlyRun?: NightlyRunWire;
   /** The named payer was worked out from the rules by the caller moments ago (not chosen by a client): a difference at the start is the setting changing under it (retryable busy). Only broker code sets it. */
   payerFromRules?: true;
 }
@@ -181,6 +185,8 @@ export interface RunStartOptions {
   diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
   /** SH14: the run is a setup run (see `AgentRunRequest.setupAgent`). */
   setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
+  /** NH-1: the run is a nightly test run (see `AgentRunRequest.nightlyRun`). */
+  nightlyRun?: NightlyRunWire;
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -215,6 +221,7 @@ const AgentRunRequestShape = z.object({
   setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
   diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
   setupAgent: z.object({ limits: SetupAgentLimitsSchema, seenTaskId: z.string().uuid().optional() }).strict().optional(),
+  nightlyRun: NightlyRunWireSchema.optional(),
   payerFromRules: z.literal(true).optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
@@ -573,6 +580,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     ...(request.diagnosis === undefined ? {} : { purpose: "diagnosis", diagnosis: request.diagnosis.diagnosisId }),
     // Likewise: only a setup run carries this (its pointer's seen task is not part of the request; its limits are).
     ...(request.setupAgent === undefined ? {} : { purpose: "setup_agent", limits: request.setupAgent.limits }),
+    // Likewise: only a nightly run carries this (what it was started to run).
+    ...(request.nightlyRun === undefined ? {} : { purpose: "nightly_run", nightlyRun: request.nightlyRun }),
   });
 }
 
@@ -636,6 +645,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.setupDraft === undefined ? {} : { setupDraft: request.setupDraft }),
     ...(request.diagnosis === undefined ? {} : { diagnosis: request.diagnosis }),
     ...(request.setupAgent === undefined ? {} : { setupAgent: request.setupAgent }),
+    ...(request.nightlyRun === undefined ? {} : { nightlyRun: request.nightlyRun }),
   });
   return started.run;
 }

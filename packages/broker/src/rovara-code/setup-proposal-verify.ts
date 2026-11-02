@@ -34,8 +34,8 @@ export const VERIFY_LINE_SLACK = 3;
 /** The shortest quote (whitespace collapsed) that can support a value. A one-word quote is in nearly every file. */
 export const VERIFY_QUOTE_MIN_CHARS = 8;
 
-/** The only commit form the GitHub reader fetches (`getFileAtCommit`). A citation with another form can never be read, so it is a final `unchecked`. */
-const READABLE_COMMIT = /^[a-f0-9]{40}$/u;
+/** The commit forms the code host reader fetches (`getFileAtCommit`): a full SHA-1 or SHA-256 hash. A citation with another form can never be read, so it is a final `unchecked`. */
+const READABLE_COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 const collapse = (text: string): string => text.replace(/\s+/gu, " ").trim();
 

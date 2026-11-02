@@ -3266,6 +3266,12 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 },
               ],
             },
+            {
+              "ExpirationInDays": 30,
+              "Id": "ExpireNightlyMaps",
+              "Prefix": "nightly-maps/",
+              "Status": "Enabled",
+            },
           ],
         },
         "PublicAccessBlockConfiguration": {
@@ -9027,6 +9033,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "/event",
                 ],
               ],
+            },
+            "SECOND_REVIEW_ENABLED": {
+              "Ref": "SecondReviewEnabled",
             },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",

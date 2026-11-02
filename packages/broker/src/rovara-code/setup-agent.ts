@@ -33,6 +33,7 @@ import {
   agentXError,
   effectiveSetupAgentLimits,
   isSetupRunLimitStop,
+  oneLineText,
   projectAllows,
   runRequestKey,
   sanitizeSetupProposal,
@@ -41,6 +42,7 @@ import {
   type Payer,
   type ProjectRole,
   type SetupAgentLimits,
+  type SetupAgentWire,
   type SetupProposal,
   type SetupVerification,
   type SetupRunEndWord,
@@ -63,6 +65,10 @@ export const SETUP_AGENT_WORKFLOW_MODE = "SETUP_AGENT" as const;
 
 // ---- the words a person is told (fixed: never a model's, a worker's or a repository's)
 
+/** A company admin turned setup runs off for the whole company (the `setupAgentOff` lock). */
+export const SETUP_AGENT_COMPANY_OFF = "A company admin has turned off setup runs for this company.";
+/** The company's locks row does not read (M3): every start is held until an admin repairs it. */
+export const SETUP_AGENT_LOCKS_UNREADABLE = "Company locks unreadable, runs held. A company admin has to repair them.";
 export const SETUP_AGENT_BUSY = "Rovara is already setting up this project.";
 export const SETUP_AGENT_FAILURES = {
   attempts_used: "Rovara used up its tries before the setup worked. It kept what it learned.",
@@ -162,6 +168,12 @@ export interface SetupAgentView {
    */
   verification?: Record<string, SetupVerification>;
   verified?: boolean;
+  /** True when a company admin has turned setup runs off (the `setupAgentOff` lock): the page says so and offers no start. */
+  companySetupOff?: true;
+  /** The company's locks row does not read: runs are held (and `companySetupOff` is set) until an admin repairs it. */
+  companyLocksUnreadable?: true;
+  /** F5: who pressed Stop (their name as the company knows it, "Unknown" when it cannot be read) and when, on a run a person stopped. The proposal such a run keeps is partial, unproven and never applied. */
+  stoppedBy?: { name: string; at: string };
 }
 
 /** What a run may take at the longest: its wall clock, the longest wait on an administrator, and an hour of grace for the end to be reported. Past it with no result the run reads as failed. */
@@ -171,7 +183,7 @@ function staleAfterMs(limits: SetupAgentLimits): number {
 
 /** Where the project's run stands, read now. See the file header: the pointer, then the task. */
 export async function setupAgentState(
-  deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now" | "limitSettings">,
+  deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now" | "limitSettings" | "stopperName">,
   orgId: OrgId,
   project: string,
   latestRevision: number,
@@ -180,7 +192,7 @@ export async function setupAgentState(
 }
 
 export async function readState(
-  deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now" | "limitSettings">,
+  deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now" | "limitSettings" | "stopperName">,
   orgId: OrgId,
   project: string,
   latestRevision: number,
@@ -194,7 +206,12 @@ export async function readState(
   // The limits the run started with. A pointer whose limits do not read is held to the defaults (never looser).
   const limits = effectiveSetupAgentLimits(pointer.limits);
   const base: Pick<SetupAgentView, "basedOnRevision" | "limits" | "taskId" | "startedAt" | "sessionId"> = { basedOnRevision: pointer.basedOnRevision, limits, taskId: pointer.taskId, startedAt: pointer.startedAt };
-  const failed = (stop: SetupRunEndWord, failure: string, extra: Partial<SetupAgentView> = {}): { view: SetupAgentView; pointer: SetupAgentPointer } => ({ view: { status: "failed", ...base, stop, failure, ...extra }, pointer });
+  // A run a person stopped says who and when (F5); the name is read now, the person's stop is the task's own record.
+  const failed = async (stop: SetupRunEndWord, failure: string, extra: Partial<SetupAgentView> = {}): Promise<{ view: SetupAgentView; pointer: SetupAgentPointer }> => {
+    const stopper = stop === "stopped_by_person" ? task?.setupAgentStop : undefined;
+    const stoppedBy = stopper === undefined ? {} : { stoppedBy: { name: oneLineText(await deps.stopperName?.(orgId, stopper.by).catch(() => undefined), 100) || "Unknown", at: stopper.at } };
+    return { view: { status: "failed", ...base, stop, failure, ...extra, ...stoppedBy }, pointer };
+  };
   const task = (await getItem(deps.documentClient, deps.tableName, taskKey(pointer.taskId))) as DeveloperTaskRecord | undefined;
   if (task === undefined || task.orgId !== orgId || task.purpose !== "setup_agent") return failed("infrastructure", SETUP_AGENT_FAILURES.stale);
   if (typeof task.sessionId === "string") base.sessionId = task.sessionId;
@@ -225,28 +242,48 @@ export interface SetupAgentEndOutcome { status: string; result: unknown; error: 
 
 type StoredResult = NonNullable<DeveloperTaskRecord["setupAgentResult"]>;
 
-function readProposal(reported: unknown, task: Pick<DeveloperTaskRecord, "startingRevision">, repositories: SetupDraftRepositories): SetupProposal | undefined {
+/**
+ * M2: every citation is read at the commit the broker recorded (and pinned) for its repository, never at one the worker or the model names: `sanitizeSetupProposal` replaces a citation's commit with the
+ * repository's. A repository with no recorded commit leaves no proposal at all (there would be nothing to re-read it against).
+ */
+function recordedCommits(task: Pick<DeveloperTaskRecord, "preparedBase">, repositories: SetupDraftRepositories): Map<string, string> | undefined {
+  const recorded = new Map((task.preparedBase ?? []).map((entry) => [entry.repositoryId, entry.baseCommitSha]));
+  return repositories.names.length > 0 && repositories.names.every((name) => recorded.has(name)) ? recorded : undefined;
+}
+
+function readProposal(reported: unknown, task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase">, repositories: SetupDraftRepositories): SetupProposal | undefined {
+  const commits = recordedCommits(task, repositories);
+  if (commits === undefined) return undefined;
   const reportedMeta = typeof reported === "object" && reported !== null ? (reported as { metaRepo?: { name?: unknown; commit?: unknown } }).metaRepo : undefined;
   const metaRepo = repositories.meta !== undefined && reportedMeta?.name === repositories.meta && typeof reportedMeta.commit === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(reportedMeta.commit)
     ? { name: repositories.meta, commit: reportedMeta.commit } : undefined;
   const read = sanitizeSetupProposal(reported, {
     basedOnRevision: task.startingRevision,
-    repositories: repositories.names.map((name) => ({ name, ...(repositories.urls[name] === undefined ? {} : { url: repositories.urls[name] }) })),
+    repositories: repositories.names.map((name) => ({ name, commit: commits.get(name), ...(repositories.urls[name] === undefined ? {} : { url: repositories.urls[name] }) })),
     ...(metaRepo === undefined ? {} : { metaRepo }),
   });
   return read.ok ? read.proposal : undefined;
 }
 
 /** What the worker said, read again: `{ setupProposal, setupRunSummary }`. Either part may be missing or unreadable. */
-function readWorkerAnswer(result: unknown, task: Pick<DeveloperTaskRecord, "startingRevision">, repositories: SetupDraftRepositories): { proposal?: SetupProposal; summary?: SetupRunSummary } {
+function readWorkerAnswer(result: unknown, task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase">, repositories: SetupDraftRepositories): { proposal?: SetupProposal; summary?: SetupRunSummary } {
   const answer = typeof result === "object" && result !== null ? (result as { setupProposal?: unknown; setupRunSummary?: unknown }) : {};
   const proposal = answer.setupProposal === undefined ? undefined : readProposal(answer.setupProposal, task, repositories);
   const summary = answer.setupRunSummary === undefined ? undefined : SetupRunSummarySchema.safeParse(answer.setupRunSummary);
   return { ...(proposal === undefined ? {} : { proposal }), ...(summary?.success === true ? { summary: summary.data } : {}) };
 }
 
+/** A person's stop: the fixed sentence, the proposal the run had (re-read by the caller) and its summary, marked stopped and partial. Nothing here proves or applies anything. */
+function personStopped(
+  failed: (stop: SetupRunEndWord, failure: string, learned?: { proposal?: SetupProposal; summary?: SetupRunSummary }) => StoredResult,
+  learned: { proposal?: SetupProposal; summary?: SetupRunSummary },
+): StoredResult {
+  const summary = learned.summary === undefined ? undefined : SetupRunSummarySchema.parse({ ...learned.summary, stop: "stopped_by_person", partial: true });
+  return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person, { ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(summary === undefined ? {} : { summary }) });
+}
+
 /** The result for an outcome: which stop word, which fixed sentence, and what the run learned. Pure. */
-function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined }, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
+function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase"> & { setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined }, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
   const failed = (stop: SetupRunEndWord, failure: string, learned: { proposal?: SetupProposal; summary?: SetupRunSummary } = {}): StoredResult => ({
     status: "failed", stop, failure, ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(learned.summary === undefined ? {} : { summary: learned.summary }),
   });
@@ -256,12 +293,17 @@ function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupA
   // What the run learned before it was cut short is kept: the proposal and its summary.
   const kept = { ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(learned.summary === undefined ? {} : { summary: learned.summary }) };
   // A cancel is a person's stop only when Stop was pressed (recorded on the task before the cancel). Any other cancel (a sweep, a closed workspace) is a run that could not go on.
-  if (outcome.status === "CANCELLED" && task.setupAgentStop !== undefined) return failed("stopped_by_person", SETUP_AGENT_FAILURES.stopped_by_person, kept);
+  if (outcome.status === "CANCELLED" && task.setupAgentStop !== undefined) return personStopped(failed, learned);
+  // F5: the worker finishes and reports its partial proposal when it is stopped, so its answer can arrive as a normal end. With a stop recorded, an answer that says the run was cut short (the worker's own word
+  // for an abort is `infrastructure`) or says nothing readable is the person's stop; an answer that finished by itself (a proposal, a limit, a code change needed, changed files) stands as the worker said it.
+  if (task.setupAgentStop !== undefined && outcome.status === "SUCCEEDED" && (learned.summary === undefined || learned.summary.stop === "infrastructure")) return personStopped(failed, learned);
   if (outcome.status !== "SUCCEEDED") {
     const stop = outcome.status !== "CANCELLED" && outcome.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? "budget_used" : "infrastructure";
     return failed(stop, SETUP_AGENT_FAILURES[stop], kept);
   }
   const { proposal, summary } = learned;
+  // The worker ended the run itself without a person's stop (a company switch turned setup runs off, a fault): what it learned is kept, with the fixed sentence for a run that could not go on.
+  if (summary?.stop === "infrastructure") return failed("infrastructure", SETUP_AGENT_FAILURES.infrastructure, kept);
   if (summary === undefined || !WORKER_STOPS.has(summary.stop)) return failed("infrastructure", SETUP_AGENT_FAILURES.unreadable);
   // Two stops mean there is nothing to confirm: setup needs a code change, or it changed tracked files (which are never kept).
   if (summary.stop === "needs_code_change") return failed("needs_code_change", SETUP_AGENT_FAILURES.needs_code_change, { summary });
@@ -280,7 +322,7 @@ function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupA
  */
 export function setupAgentEndItems(
   tableName: string,
-  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision"> & { orgId?: OrgId | undefined; setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined },
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision" | "preparedBase"> & { orgId?: OrgId | undefined; setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined },
   operation: { kind: string; workflowMode?: string | undefined },
   outcome: SetupAgentEndOutcome,
   now: string,
@@ -298,6 +340,72 @@ export function setupAgentEndItems(
     ConditionExpression: "attribute_exists(pk)",
     ExpressionAttributeValues: { ":end": { state, at: now }, ":result": result, ":now": now },
   } }];
+}
+
+/** What a prepare reports of where each repository stands: a repository and its full commit. */
+const ReportedBaseSchema = z.array(z.object({ repositoryId: z.string().min(1).max(200), baseCommitSha: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u) }).strict()).min(1).max(32);
+
+/**
+ * P1: keeps the prepare's report of where each repository was checked out (`preparedBase`) on the setup task, BEFORE the task's first operation is built from it in the same terminal transaction (the terminal
+ * result calls this for a prepare that succeeded whose task pointer still waits to start `SETUP_AGENT`). The report is kept ONLY when it equals the heads the broker pinned for that prepare (`pins`: every
+ * repository, the same commit); a report that differs, or a prepare with no pins, leaves the task with NO recorded base (the worker then refuses the run for want of commits). A later prepare at a newer head, pinned the same
+ * way, replaces the base: the run is never refused for a head that moved when the broker pinned the new one.
+ */
+export async function keepSetupPreparedBase(deps: Pick<SetupAgentDependencies, "documentClient" | "tableName">, taskId: string, result: unknown, now: string, pins: ReadonlyArray<{ repository: string; commit: string }> | undefined): Promise<void> {
+  const reported = typeof result === "object" && result !== null ? (result as { preparedBase?: unknown }).preparedBase : undefined;
+  const base = ReportedBaseSchema.safeParse(reported);
+  const pinned = new Map((pins ?? []).map((pin) => [pin.repository, pin.commit]));
+  const matches = base.success && pinned.size > 0 && base.data.length === pinned.size && new Set(base.data.map((entry) => entry.repositoryId)).size === base.data.length && base.data.every((entry) => pinned.get(entry.repositoryId) === entry.baseCommitSha);
+  const keep = { TableName: deps.tableName, Key: taskKey(taskId), ConditionExpression: "attribute_exists(pk) AND purpose = :purpose" };
+  await deps.documentClient.send(new UpdateCommand(matches
+    ? { ...keep, UpdateExpression: "SET preparedBase = :base, updatedAt = :now", ExpressionAttributeValues: { ":base": base.data, ":now": now, ":purpose": "setup_agent" } }
+    : { ...keep, UpdateExpression: "REMOVE preparedBase SET updatedAt = :now", ExpressionAttributeValues: { ":now": now, ":purpose": "setup_agent" } }));
+}
+
+/**
+ * What a setup run's invocation carries (P1): the limits it started with, read again through the contract, and the commits the broker recorded when the preparation reported. Without a record there are no
+ * commits and the worker refuses the run.
+ */
+export function setupAgentWireOf(task: Pick<DeveloperTaskRecord, "setupAgentLimits" | "preparedBase"> | undefined): SetupAgentWire {
+  const commits = task?.preparedBase?.map((entry) => ({ repository: entry.repositoryId, commit: entry.baseCommitSha }));
+  return { limits: effectiveSetupAgentLimits(task?.setupAgentLimits), ...(commits === undefined || commits.length === 0 ? {} : { commits }) };
+}
+
+/** How long after a person pressed Stop the worker's own report may still add the partial proposal to the stopped run. The worker bounds its own finish to a few seconds; this is the broker's larger bound. */
+export const SETUP_STOP_KEEP_MS = 2 * 60_000;
+
+/**
+ * F5: the cancel ends the task at once (its transaction writes the stopped result with whatever it has: nothing), and the worker's own report, with the partial proposal it finished after the abort, arrives
+ * afterwards at an operation that is already over. This keeps that proposal on the stopped run, and ONLY there: the task must hold a recorded stop, its result must still be the person's stop with no proposal,
+ * the report must come within `SETUP_STOP_KEEP_MS` of the stop, its proposal is read again like any other (`sanitizeSetupProposal`, the project's repositories), and nothing has been verified yet. The stop
+ * stays the person's; the proposal is not proved and never applied. Returns whether the proposal was stored.
+ */
+export async function keepStoppedSetupProposal(
+  deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now">,
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "startingRevision" | "setupAgentStop" | "setupAgentResult" | "preparedBase">,
+  workerResult: unknown,
+  repositories: SetupDraftRepositories,
+): Promise<boolean> {
+  const stop = task.setupAgentStop;
+  const current = task.setupAgentResult;
+  if (task.purpose !== "setup_agent" || stop === undefined || current?.status !== "failed" || current.stop !== "stopped_by_person" || current.proposal !== undefined) return false;
+  const stoppedAt = Date.parse(stop.at);
+  if (!Number.isFinite(stoppedAt) || deps.now() - stoppedAt > SETUP_STOP_KEEP_MS || deps.now() < stoppedAt) return false;
+  const learned = readWorkerAnswer(workerResult, task, repositories);
+  if (learned.proposal === undefined) return false;
+  const summary = learned.summary === undefined ? current.summary : SetupRunSummarySchema.parse({ ...learned.summary, stop: "stopped_by_person", partial: true });
+  const next: StoredResult = { status: "failed", stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person, proposal: learned.proposal, ...(summary === undefined ? {} : { summary }) };
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET setupAgentResult = :next, updatedAt = :now",
+      ConditionExpression: "attribute_exists(setupAgentStop) AND setupAgentResult.#stop = :stopped AND attribute_not_exists(setupAgentResult.proposal) AND attribute_not_exists(setupAgentVerification)",
+      ExpressionAttributeNames: { "#stop": "stop" }, ExpressionAttributeValues: { ":next": next, ":stopped": "stopped_by_person", ":now": new Date(deps.now()).toISOString() },
+    }));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 // ---- routes (not wired: SH14)
@@ -366,11 +474,13 @@ export interface SetupAgentDependencies {
   requireNewWork(caller: DeveloperCaller, project: string, role: ProjectRole): Promise<void>;
   latest(orgId: OrgId, project: string): Promise<{ revision: number; definition: StoredProjectDefinition } | undefined>;
   /** The project's own setup-run limits and the company's lock, as stored (any shape: `effectiveSetupAgentLimits` reads them and never throws). */
-  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown }>;
+  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean; locksUnreadable?: boolean }>;
   /** SH14: throws unless the caller has a fresh browser sign-in (within 10 minutes), as the test-environment approvals ask. Absent: a person's command is refused. */
   requireFreshSignIn?(caller: DeveloperCaller): Promise<void>;
   /** Who pays for a task this person starts in this project: `resolveRunPayer`'s answer for an app start. */
   payerFor(caller: DeveloperCaller, project: string): Promise<Payer>;
+  /** F5: a person's name as the company knows it, for "stopped by <person>". Absent or throwing: "Unknown". */
+  stopperName?: ((orgId: OrgId, developerId: string) => Promise<string | undefined>) | undefined;
   /** SH14: the citation reader (GitHub's file read at a commit). Absent: a proposal is shown with every item `unchecked`. */
   readFile?: ((orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>) | undefined;
   /** SH14: the install has a model proxy, which meters and prices a setup run. Without it a run is refused. */
@@ -414,6 +524,8 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const starter = deps.starter;
   const settings = await deps.limitSettings(caller.orgId, name);
+  if (settings.locksUnreadable === true) throw agentXError("FORBIDDEN", SETUP_AGENT_LOCKS_UNREADABLE);
+  if (settings.setupOff === true) throw agentXError("FORBIDDEN", SETUP_AGENT_COMPANY_OFF);
   const limits = effectiveSetupAgentLimits(settings.project, settings.companyLock);
   const payer = await deps.payerFor(caller, name);
   // Whose money: the project's, or the member who asked. Never an agent's, a chain's, or another member's.
@@ -449,7 +561,9 @@ export async function getSetupAgent(deps: SetupAgentDependencies, caller: Develo
   const { name } = await maintainerOf(deps, caller, rawName);
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
-  return new StatusReply(200, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
+  const view = await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision));
+  const settings = await deps.limitSettings(caller.orgId, name);
+  return new StatusReply(200, settings.locksUnreadable === true ? { ...view, companySetupOff: true, companyLocksUnreadable: true } : settings.setupOff === true ? { ...view, companySetupOff: true } : view);
 }
 
 /**

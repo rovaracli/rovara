@@ -48,6 +48,8 @@ export interface PickerInput {
   unusable?: readonly ModelIdentifier[] | undefined;
   /** The recorded models the reviewer must differ in company from (every build's and the first reviewer's). */
   against: readonly ModelIdentifier[];
+  /** The company's settings page does not know which model writes the code (it differs per task): fit is then only "its maker is known", and the list says so. */
+  fitUnknown?: boolean | undefined;
   price?: ((model: ModelIdentifier) => SecondReviewPrice | undefined) | undefined;
   verdicts?: readonly SecondReviewVerdict[] | undefined;
   replayRuns?: readonly SecondReviewReplayRun[] | undefined;
@@ -82,7 +84,7 @@ export function secondReviewPicker(input: PickerInput): { entries: PickerEntry[]
   const usable = rankCriticModels([...exact.values()].filter((model) => candidatesOf(limits, [model]).length > 0));
   const entries: PickerEntry[] = usable.map((model) => {
     const company = modelCompany(model);
-    const eligible = company !== "other" && input.against.length > 0 && input.against.every((other) => differentCompany(model, other));
+    const eligible = company !== "other" && (input.fitUnknown === true || (input.against.length > 0 && input.against.every((other) => differentCompany(model, other))));
     const price = input.price?.(model);
     const verdict = (input.verdicts ?? []).find((entry) => entry.model === secondReviewModelKey(model) && secondReviewVerdictHolds(entry, (input.replayRuns ?? []).find((run) => run.runId === entry.replayRunId)));
     return {

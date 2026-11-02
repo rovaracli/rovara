@@ -170,7 +170,9 @@ function resumeRequestId(spendRequestId: string, what: string): string {
 export function heldPreparationOptions(task: Pick<DeveloperTaskRecord, "purpose">, held: NonNullable<NonNullable<DeveloperTaskRecord["budgetPause"]>["firstDispatch"]>) {
   return {
     ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true as const } : {}),
-    ...(task.purpose === "setup_draft" || task.purpose === "setup_agent" || task.purpose === "diagnosis" ? { setupDraft: true as const } : {}),
+    ...(task.purpose === "setup_draft" || task.purpose === "setup_agent" || task.purpose === "nightly_run" || task.purpose === "diagnosis" ? { setupDraft: true as const } : {}),
+    // P1: a setup run that was paused for its budget is pinned again when it is dispatched (the heads may have moved while it waited), else the worker would refuse it for want of commits.
+    ...(task.purpose === "setup_agent" ? { pinHeads: true as const } : {}),
   };
 }
 

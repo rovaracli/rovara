@@ -25,3 +25,9 @@ export const CONFIRM_WORDS = {
   checking: "Rovara is still checking where each suggestion came from.",
   leftOut: { unverified: "left out: it does not match the code", refused_command: "left out: it downloads and runs code, or holds a secret", not_a_command_item: "left out: not a command", too_many: "left out: too many commands", invalid_command: "left out: it could not be read as a command" },
 } as const;
+
+export const PARTIAL_WORDS = {
+  heading: "What Rovara had when it was stopped",
+  rule: "This is only what Rovara had so far. It is not proven and nothing was applied. To use a setup, run it again and let it finish.",
+  none: "Rovara had no setup to show yet.",
+} as const;

@@ -13,6 +13,7 @@ import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from "@aws-
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@agentx/contracts";
 import { taskKey } from "../developer/task-records.js";
+import { nightlyMapsOfOrg, nightlyMapsOfProject } from "../test-env/map-keys.js";
 
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 
@@ -165,13 +166,21 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
     try { await ports.documentClient.send(new PutCommand({ TableName: ports.tableName, Item: { ...pendingKey(p), entityType: "EVIDENCE_ERASE_PENDING", orgId: p.orgId, kind: p.kind, scopeKey: p.scopeKey }, ConditionExpression: "attribute_not_exists(pk)" })); } catch { /* the first fault is the one that is reported */ }
   };
 
+  /** The nightly coverage maps of a project or a company (NH-1), whether or not evidence was ever kept: one prefix, deleted with the rest. A person's erase has none. */
+  const eraseMaps = (p: PendingErase, stop: number): Promise<boolean> => (p.kind === "person" ? Promise.resolve(true) : deletePrefix(ports, p.kind === "project" ? nightlyMapsOfProject(p.orgId, p.scopeKey) : nightlyMapsOfOrg(p.orgId), stop));
+
   /** One erase, continued from its saved cursor. True when finished (its record is gone). */
   async function run(p: PendingErase, budgetMs: number): Promise<boolean> {
     // An org that never kept evidence has nothing to erase: one read, no lists. The two reads before the record exists are tried twice, and when one still fails the record is written first (a close or an archive
     // swallows the error, so without a record nothing would resume the erase); with no marker the resume finds nothing to do and clears it.
     let stored: boolean;
     try { stored = await twice(() => evidenceStoredIn(ports, p.orgId)); } catch (error) { await ensureRecord(p); throw error; }
-    if (!stored) { await clear(p); return true; }
+    if (!stored) {
+      // No evidence, but there may be maps: a project's or a company's nightly maps are deleted all the same, and the record stays until they are.
+      if (await eraseMaps(p, now() + budgetMs)) { await clear(p); return true; }
+      await ensureRecord(p);
+      return false;
+    }
     const stop = now() + budgetMs;
     let progress: Awaited<ReturnType<typeof load>>;
     try { progress = await twice(() => load(p)); } catch (error) { await ensureRecord(p); throw error; }
@@ -194,6 +203,7 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
         }
       }
     }
+    if (done) done = await eraseMaps(p, stop);
     if (done) await clear(p);
     return done;
   }

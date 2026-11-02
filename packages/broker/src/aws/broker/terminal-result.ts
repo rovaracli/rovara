@@ -9,6 +9,8 @@ import { TEST_ENV_DRAFT_RESULT_KEY, checksForSection, StandingFailuresSchema, ne
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
+import { keepSetupPreparedBase } from "../../rovara-code/setup-agent.js";
+import { isStoppedSetupOperation, keepStoppedSetupRun } from "./setup-stopped-result.js";
 import { settleAfterCheckReported } from "../developer-routes/settings-proof-hook.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
@@ -193,7 +195,7 @@ async function cancelledWorkflowStepItems(
   if (target === undefined || pointer === undefined || target.kind !== "task" || target.workflowMode === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // A cancelled setup draft ends as cancelled, in the cancel's own transaction (it has no workflow step to block).
-  if (task?.purpose === "setup_draft" || task?.purpose === "diagnosis" || task?.purpose === "setup_agent") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
+  if (task?.purpose === "setup_draft" || task?.purpose === "diagnosis" || task?.purpose === "setup_agent" || task?.purpose === "nightly_run") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   if (task === undefined || target.workflowMode === "SETUP_DRAFT" || target.workflowMode === "SETUP_AGENT" || target.workflowMode === "SPEC_WRITE" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   // Only the one conditional update of the step the target ran, exactly, and the AUTOFIX row that rides with a block of VERIFY or REVIEW when automatic fixing is on (DISPATCHEXHAUST: refusing
@@ -259,6 +261,8 @@ export async function recordTerminalResult(
       const released = await releaseOnOwnResult(dependencies, operation);
       if (released !== undefined) return released;
     }
+    // F5 (su): a stopped setup run's late report adds its partial proposal to the run and changes nothing else (setup-stopped-result.ts); it is never a conflict.
+    if (isStoppedSetupOperation(operation)) { await keepStoppedSetupRun(dependencies, operation, input.result); if (operation.status !== status) return operation; }
     if (operation.status !== status && !isQueueFailedPrepare(operation, status) && !isSweptPrepare(operation)) throw agentXError("IDEMPOTENCY_CONFLICT", "terminal result is immutable");
     // #213: a repeated result releases a failed prepare's slot too, in case the first one's release
     // did not land (the release is idempotent, and does nothing to a workspace that moved on).
@@ -409,6 +413,8 @@ export async function recordTerminalResult(
         ? await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspace.id))
         : undefined;
       taskPointer = pointer;
+      // P1 (su): a setup run's preparation report of where each repository stands is kept before the run's first operation is built from it (rovara-code/setup-agent.ts).
+      if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now, operation.preparePins);
       const completed = await completedTurnItems(dependencies, operation, pointer, terminalStatus, { result, error }, now);
       inlineEvidence.length = 0;
       plannerReplies.length = 0;

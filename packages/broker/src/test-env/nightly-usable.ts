@@ -2,9 +2,9 @@
 // are based on (the project's default branch; a project whose repositories do not agree has none). A stale baseline, one from another branch, one that did not fit (truncated) or one that cannot be read is not
 // used at all: its failures excuse nothing and no mark is offered from it. The same rule serves the automatic removal of marks (`known-failing-undo.ts`).
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_FAILED_MAX, PROJECT_REVISION_SK_PREFIX, projectPk, type NightlyBaseline, type OrgId } from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, projectPk, type NightlyBaseline, type OrgId } from "@agentx/contracts";
 import type { TestEnvDeps } from "../org/test-environment.js";
-import { readNightlyBaseline } from "./nightly.js";
+import { failingSetIsWhole, readNightlyBaseline } from "./nightly.js";
 
 /** A baseline older than this is not used. */
 export const NIGHTLY_BASELINE_MAX_AGE_MS = 7 * 86_400_000;
@@ -60,7 +60,7 @@ export interface UsableNightlyOptions {
  * head now. The one rule behind both the excuse for a failing test and the automatic removal of a mark (KF-1).
  */
 export async function nightlyBaselineUsable(deps: TestEnvDeps, orgId: OrgId, project: string, baseline: NightlyBaseline, options: UsableNightlyOptions = {}): Promise<boolean> {
-  if (baseline.tests.failed > NIGHTLY_FAILED_MAX || baseline.failed.length !== baseline.tests.failed) return false;
+  if (!failingSetIsWhole(baseline)) return false;
   const finished = Date.parse(baseline.finishedAt), now = deps.now();
   if (!Number.isFinite(finished) || finished > now + FUTURE_SKEW_MS) return false;
   const own = options.taskBranches ?? [];

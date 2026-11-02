@@ -215,6 +215,9 @@ export class ControlPlaneStack extends Stack {
           expiration: Duration.days(evidenceRetentionDays(retentionClass, evidenceRetentionSetting(this.node.tryGetContext("evidenceRetentionDays"))?.[retentionClass] as number | undefined) ?? EVIDENCE_RETENTION_DAYS[retentionClass].default),
           // Prefix AND tag (S3 reads that as an `And` filter): another writer's object that happens to carry the tag, outside the private evidence keys, never matches (Opus review M1).
           prefix: "private/", tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: retentionClass } })),
+        // NH-1: the nightly run's coverage maps (`nightly-maps/<company>/<project>/<digest>.json`) expire after 30 days; selection reads a map no older than 7 days, so nothing live is lost. Archiving a project or closing
+        // a company deletes the prefix sooner (evidence-erase.ts).
+        { id: "ExpireNightlyMaps", prefix: "nightly-maps/", expiration: Duration.days(30) },
       ] }),
       // Retained: the broker's operation artifacts must outlive a stack deletion.
       removalPolicy: RemovalPolicy.RETAIN,
@@ -1303,6 +1306,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).
       dispatcher.addEnvironment(BROKER_SETTINGS.learnedLessons.variable, signInParameters.learnedLessonsEnabled.valueAsString);
+      // The second review's track record is indexed from the table's stream by the outbox publisher, behind the same switch (a plain variable on that function; its environment is small).
+      outboxPublisher.addEnvironment(BROKER_SETTINGS.secondReview.variable, signInParameters.secondReviewEnabled.valueAsString);
       // Four test results (setup and test health): its own switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("verifyResults", signInParameters.verifyResultsEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.

@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
-import { runSetupAgent, serialize, setupRepositoriesOf, type SetupRunInput, type SetupRunPorts } from "../../packages/worker/src/setup-agent-run.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_HOST_WAIT_MAX_HOURS } from "../../packages/contracts/src/index.js";
+import { assertCommitsMatch, hostAnswerNote, runSetupAgent, serialize, setupRepositoriesOf, type SetupRunInput, type SetupRunPorts } from "../../packages/worker/src/setup-agent-run.js";
 import { createSetupSandbox, type TrackedFilesVerdict } from "../../packages/worker/src/setup-agent.js";
 import { helperRunArgs, networkCreateArgs, setupWorkspaceKey, setupNetworkAddresses, setupNetworkName, setupNetworkSlot, startRunNetwork } from "../../packages/worker/src/setup-network.js";
 import type { PiSessionHandle } from "../../packages/worker/src/pi-session.js";
@@ -25,6 +25,7 @@ const ANSWER = {
 };
 const block = (answer: unknown) => `done\n\`\`\`agentx-setup-proposal\n${JSON.stringify(answer)}\n\`\`\``;
 const repo = { name: "web", path: "repo/web", resolvedCommit: COMMIT };
+const COMMITS = [{ repository: "web", commit: COMMIT }];
 
 interface World {
   order: string[];
@@ -35,17 +36,20 @@ interface World {
   ran: Array<{ command: string; at: number }>;
   concurrent: { now: number; max: number };
   steered: string[];
+  prompts: string[];
+  progress: string[];
   base: { exec: BashOperations["exec"] };
+  control?: { abort(): Promise<void>; steer(text: string): Promise<boolean>; streaming(): boolean };
 }
 
 async function world(options: {
-  script?: (parts: { bash: BashOperations; world: World; emit: (event: unknown) => void }) => Promise<void>;
-  final?: string; poll?: (n: number) => unknown; files?: TrackedFilesVerdict[]; blocked?: string[]; limits?: Partial<typeof SETUP_AGENT_LIMITS_DEFAULT>; repositories?: SetupRunInput["repositories"];
+  script?: (parts: { bash: BashOperations; world: World; n: number; emit: (event: unknown) => void }) => Promise<void>;
+  final?: string; hostOutcome?: string; poll?: (n: number) => unknown; files?: TrackedFilesVerdict[]; blocked?: string[]; limits?: Partial<typeof SETUP_AGENT_LIMITS_DEFAULT>; repositories?: SetupRunInput["repositories"];
 } = {}) {
   const rootPath = await mkdtemp(join(tmpdir(), "setup-run-"));
   roots.push(rootPath);
   await mkdir(join(rootPath, "repo/web"), { recursive: true });
-  const w: World = { order: [], callbacks: [], files: options.files ?? [], blocked: options.blocked ?? [], stopped: { network: false }, ran: [], concurrent: { now: 0, max: 0 }, steered: [], base: { exec: async () => ({ exitCode: 0 }) } };
+  const w: World = { order: [], callbacks: [], files: options.files ?? [], blocked: options.blocked ?? [], stopped: { network: false }, ran: [], concurrent: { now: 0, max: 0 }, steered: [], prompts: [], progress: [], base: { exec: async () => ({ exitCode: 0 }) } };
   let polls = 0;
   const base: BashOperations = {
     async exec(command, _cwd, opts) {
@@ -60,7 +64,7 @@ async function world(options: {
   w.base = base;
   const listeners: Array<(event: unknown) => void> = [];
   const session: PiSessionHandle = {
-    conversationId: "c", sessionFile: "f", prompt: async () => { w.order.push("prompt"); await options.script?.({ bash: sessionBash!, world: w, emit: (event) => { for (const l of listeners) l(event); } }); for (const l of listeners) l({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: options.final ?? block(ANSWER) }], usage: { input: 1000 } } }); },
+    conversationId: "c", sessionFile: "f", prompt: async (text?: string) => { w.prompts.push(String(text)); w.order.push("prompt"); await options.script?.({ bash: sessionBash!, world: w, n: w.prompts.length, emit: (event) => { for (const l of listeners) l(event); } }); for (const l of listeners) l({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: options.final ?? block(ANSWER) }], usage: { input: 1000 } } }); },
     steer: async (text) => { w.steered.push(text); }, isStreaming: () => true, abort: async () => { w.order.push("abort"); },
     getModel: () => ({ provider: "p", modelId: "m" }), getSessionStats: () => ({ cost: 0.05 }) as never, subscribe: (l) => { listeners.push(l); return () => undefined; }, dispose: () => { w.order.push("session.dispose"); },
   };
@@ -70,14 +74,15 @@ async function world(options: {
     startNetwork: async () => network,
     createSandbox: () => ({ bashOperations: () => base, dispose: async () => { w.order.push("sandbox.dispose"); }, fileOpsTarget: () => ({}) }) as never,
     openSession: async (parts) => { sessionBash = parts.bashOperations; return session; },
-    callback: async (body) => { w.callbacks.push(body); const kind = (body as { kind: string }).kind; return kind === "poll" ? (options.poll?.(++polls) ?? { hosts: [] }) : { ok: true }; },
-    progress: async () => undefined,
-    register: () => () => undefined,
+    callback: async (body) => { w.callbacks.push(body); const kind = (body as { kind: string }).kind; return kind === "poll" ? (options.poll?.(++polls) ?? { hosts: [] }) : kind === "host" && options.hostOutcome !== undefined ? { outcome: options.hostOutcome } : { ok: true }; },
+    progress: async (message) => { w.progress.push(message); },
+    register: (control) => { w.control = control; return () => undefined; },
     checkFiles: async () => { w.order.push("checkFiles"); return w.files.shift() ?? { ok: true }; },
     tickMs: 5,
+    parkTickMs: 5,
   };
   ports.beforeStart = async () => ({ scan: { repositories: [], setup: [], tests: [], checks: [], knowledge: [], sources: [], foundNotUsed: [], notes: [] }, tracked: new Map([["web", new Set(["package.json", ".github/workflows/ci.yml"])]]) });
-  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, price: { inputPerMTok: 3, outputPerMTok: 15 }, repositories: options.repositories ?? [repo], ports };
+  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, price: { inputPerMTok: 3, outputPerMTok: 15 }, repositories: options.repositories ?? [repo], commits: options.repositories === undefined ? [{ repository: "web", commit: COMMIT }] : options.repositories.map((r) => ({ repository: r.name, commit: r.resolvedCommit })), ports };
   return { w, input, rootPath };
 }
 
@@ -97,6 +102,250 @@ describe("what the run reads (ED-1)", () => {
     t.input.ports.checkFiles = async (repositories) => { seen.push(...repositories.map((r) => `${r.directory}@${r.resolvedCommit ?? ""}`)); return { ok: true }; };
     await runSetupAgent(t.input);
     expect(new Set(seen)).toEqual(new Set([`${t.rootPath}/repo/web@${COMMIT}`]));
+  });
+});
+
+describe("P1: the manifest is held to the commits the broker recorded", () => {
+  it("accepts the manifest when every repository's commit equals the recorded one", () => {
+    expect(() => assertCommitsMatch([repo], COMMITS)).not.toThrow();
+  });
+  it("refuses a different commit, a missing list, a repository the broker did not record, a repository missing from the manifest and a repeated entry", () => {
+    expect(() => assertCommitsMatch([repo], [{ repository: "web", commit: "b".repeat(40) }])).toThrow(/another commit/u);
+    expect(() => assertCommitsMatch([repo], undefined)).toThrow(/commits the broker recorded/u);
+    expect(() => assertCommitsMatch([repo], [{ repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => assertCommitsMatch([repo], [...COMMITS, { repository: "api", commit: COMMIT }])).toThrow();
+    expect(() => assertCommitsMatch([repo, { ...repo, name: "api", path: "repo/api" }], COMMITS)).toThrow();
+    expect(() => assertCommitsMatch([repo], [...COMMITS, ...COMMITS])).toThrow();
+  });
+  it("starts nothing (no network, no sandbox) when the commits differ", async () => {
+    const t = await world();
+    t.input.commits = [{ repository: "web", commit: "c".repeat(40) }];
+    await expect(runSetupAgent(t.input)).rejects.toThrow(/another commit/u);
+    expect(t.w.order).toEqual([]);
+    expect(t.w.stopped.network).toBe(false);
+  });
+});
+
+describe("F5: a run a person stopped finishes, within a few seconds, and reports what it had", () => {
+  const stopMidRun = async ({ bash, world: w }: { bash: BashOperations; world: World }) => {
+    await bash.exec("npm ci", "/work", { onData: () => undefined });
+    await w.control!.abort();
+  };
+  it("kills the sandbox, looks at the tracked files once more, and reports the proposal it had, marked partial", async () => {
+    const t = await world({ script: stopMidRun });
+    const result = await runSetupAgent(t.input);
+    expect(JSON.stringify(result.setupProposal)).toContain("npm ci");
+    expect(result.setupRunSummary).toMatchObject({ partial: true, commandsRun: 1 });
+    expect(result.setupRunSummary.stop).not.toBe("proposed");
+    const afterPrompt = t.w.order.slice(t.w.order.indexOf("prompt"));
+    expect(afterPrompt.indexOf("sandbox.dispose")).toBeLessThan(afterPrompt.lastIndexOf("checkFiles"));
+    expect(t.w.stopped.network).toBe(true);
+  });
+  it("keeps no proposal when the last look at the tracked files finds a change, as for any end", async () => {
+    const t = await world({ script: stopMidRun, files: [{ ok: true }, { ok: false, reason: "tracked_files_changed" }] });
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary.stop).toBe("changed_repository_files");
+  });
+  it("is bounded: when the finish takes longer than the bound it reports the stop with no proposal, and still tears the sandbox and the network down", async () => {
+    const t = await world({ script: stopMidRun });
+    t.input.stopFinishMs = 30;
+    t.input.ports.checkFiles = async () => { t.w.order.push("checkFiles"); if (t.w.order.includes("sandbox.dispose")) await new Promise((resolve) => setTimeout(resolve, 400)); return { ok: true }; };
+    const started = Date.now();
+    const result = await runSetupAgent(t.input);
+    expect(Date.now() - started).toBeLessThan(350);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary).toMatchObject({ partial: true });
+    expect(t.w.stopped.network).toBe(true);
+    expect(t.w.order).toContain("sandbox.dispose");
+  });
+  it("a finish that fails is the stop with no proposal, never an error that hides the stop", async () => {
+    const t = await world({ script: stopMidRun });
+    t.input.ports.checkFiles = async () => { if (t.w.order.includes("sandbox.dispose")) throw new Error("git is gone"); return { ok: true }; };
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary.partial).toBe(true);
+  });
+  it("a run nobody stopped has no bound on its finish: a slow last look still ends with its proposal", async () => {
+    const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); } });
+    t.input.stopFinishMs = 5;
+    t.input.ports.checkFiles = async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { ok: true }; };
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeDefined();
+    expect(result.setupRunSummary).toMatchObject({ stop: "proposed", partial: false });
+  });
+});
+
+describe("hosts_waiting: the run parks while a website waits for an administrator", () => {
+  const HOUR = 3_600_000;
+  const npmCi = async ({ bash }: { bash: BashOperations }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); };
+  /** A run whose first command is blocked on `registry.acme.dev` (asked for, waiting), with a clock the test moves. */
+  async function parked(poll: (n: number, w: World, clock: { now: number }) => unknown, over: { final?: string; hostOutcome?: string; limits?: Record<string, number> } = {}) {
+    const clock = { now: Date.parse("2026-11-02T10:00:00.000Z") };
+    const t = await world({ script: async (parts) => { if (parts.n === 1) await npmCi(parts); }, blocked: ["registry.acme.dev"], hostOutcome: over.hostOutcome ?? "created", ...(over.final === undefined ? {} : { final: over.final }), ...(over.limits === undefined ? {} : { limits: over.limits }), poll: (n) => poll(n, t.w, clock) });
+    t.input.ports.now = () => clock.now;
+    return { ...t, clock };
+  }
+  const open = [{ host: "registry.acme.dev", state: "open" }];
+
+  it("waits without a model call while the ask is open, and goes on with one more prompt when an administrator allows the website", async () => {
+    let promptsWhileOpen = -1;
+    const t = await parked((n, w, clock) => {
+      if (n === 3) { promptsWhileOpen = w.prompts.length; clock.now += 2 * HOUR; }
+      return { hosts: n < 4 ? open : [{ host: "registry.acme.dev", state: "approved" }] };
+    });
+    const result = await runSetupAgent(t.input);
+    expect(promptsWhileOpen).toBe(1);
+    expect(t.w.prompts).toHaveLength(2);
+    expect(t.w.prompts[1]).toContain("Allowed: registry.acme.dev");
+    expect(t.w.prompts[1]).not.toContain("Not allowed");
+    expect(t.w.progress).toContain("Rovara is waiting for an administrator to decide a website.");
+    expect(result.setupRunSummary).toMatchObject({ stop: "proposed", partial: false });
+    // The two hours parked are not the run's time.
+    expect(result.setupRunSummary.elapsedMs).toBeLessThan(HOUR);
+    expect(result.setupProposal).toBeDefined();
+    // The sandbox was kept for the whole wait: it is removed once, at the end.
+    expect(t.w.order.filter((entry) => entry === "sandbox.dispose").length).toBeGreaterThanOrEqual(1);
+    expect(t.w.order.indexOf("sandbox.dispose")).toBeGreaterThan(t.w.order.lastIndexOf("prompt"));
+  });
+
+  it("goes on when the administrator refuses, and tells the agent not to reach the website another way", async () => {
+    const t = await parked((n) => ({ hosts: n < 3 ? open : [{ host: "registry.acme.dev", state: "refused" }] }));
+    const result = await runSetupAgent(t.input);
+    expect(t.w.prompts).toHaveLength(2);
+    expect(t.w.prompts[1]).toContain("Not allowed: registry.acme.dev");
+    expect(t.w.prompts[1]).toContain("Do not try to reach them another way");
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+
+  it("ends hosts_waiting after 24 hours parked, keeps the partial proposal the agent had given, and makes no further model call", async () => {
+    const t = await parked((n, _w, clock) => { if (n === 3) clock.now += SETUP_HOST_WAIT_MAX_HOURS * HOUR + 1000; return { hosts: open }; });
+    const result = await runSetupAgent(t.input);
+    expect(result.setupRunSummary).toMatchObject({ stop: "hosts_waiting", partial: true });
+    expect(t.w.prompts).toHaveLength(1);
+    expect(JSON.stringify(result.setupProposal)).toContain("npm ci");
+    expect(t.w.stopped.network).toBe(true);
+  });
+
+  it("does not end early: just under 24 hours parked it still waits", async () => {
+    const t = await parked((n, _w, clock) => {
+      if (n === 3) clock.now += SETUP_HOST_WAIT_MAX_HOURS * HOUR - 60_000;
+      return { hosts: n < 6 ? open : [{ host: "registry.acme.dev", state: "approved" }] };
+    });
+    const result = await runSetupAgent(t.input);
+    expect(result.setupRunSummary.stop).toBe("proposed");
+    expect(t.w.prompts).toHaveLength(2);
+  });
+
+  it("the 24 hours are the whole run's wait: two waits of 20 hours end it at 24 hours in all, and a run that used them up does not park again", async () => {
+    // Wait one: 20 hours, answered "approved" for a.acme.dev. Wait two: b.acme.dev stays open, and 4 hours more end the run.
+    const clock = { now: Date.parse("2026-11-02T10:00:00.000Z") };
+    let n = 0;
+    const t = await world({
+      script: async (parts) => { if (parts.n === 1) await parts.bash.exec("npm ci", "/work", { onData: () => undefined }); },
+      blocked: ["a.acme.dev", "b.acme.dev"], hostOutcome: "created",
+      poll: () => {
+        n += 1;
+        if (n === 3) clock.now += 20 * HOUR;
+        if (n === 8) clock.now += 4 * HOUR + 1000;
+        return { hosts: [{ host: "a.acme.dev", state: n < 4 ? "open" : "approved" }, { host: "b.acme.dev", state: "open" }] };
+      },
+    });
+    t.input.ports.now = () => clock.now;
+    const result = await runSetupAgent(t.input);
+    expect(result.setupRunSummary).toMatchObject({ stop: "hosts_waiting", partial: true });
+    expect(t.w.prompts).toHaveLength(2);
+  });
+
+  it("a run whose total wait is already used up ends hosts_waiting instead of parking again", async () => {
+    const { SetupAgentGovernor } = await import("../../packages/worker/src/setup-agent-journal.js");
+    const clock = { now: 0 };
+    const governor = new SetupAgentGovernor({ limits: SETUP_AGENT_LIMITS_DEFAULT, now: () => clock.now, spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+    governor.parkOnHosts();
+    clock.now += 20 * HOUR;
+    governor.resumeFromHosts();
+    governor.parkOnHosts();
+    clock.now += 4 * HOUR - 1;
+    expect(governor.check()).toBeUndefined();
+    clock.now += 1;
+    expect(governor.check()).toBe("hosts_waiting");
+    const spent = new SetupAgentGovernor({ limits: SETUP_AGENT_LIMITS_DEFAULT, now: () => clock.now, spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+    spent.parkOnHosts();
+    clock.now += 24 * HOUR;
+    spent.resumeFromHosts();
+    spent.parkOnHosts();
+    expect(spent.ended()).toBe("hosts_waiting");
+    // The wall clock does not count the parked time.
+    expect(spent.elapsedMs()).toBe(0);
+  });
+
+  it("a person's Stop ends the wait at once and the run finishes as a stopped run (bounded), without another model call", async () => {
+    const t = await parked((n, w) => { if (n === 3) void w.control!.abort(); return { hosts: open }; });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.prompts).toHaveLength(1);
+    expect(result.setupRunSummary).toMatchObject({ partial: true });
+    expect(result.setupRunSummary.stop).not.toBe("proposed");
+    expect(JSON.stringify(result.setupProposal)).toContain("npm ci");
+  });
+
+  it("does not park for an ask that waits for nobody (refused, already allowed), nor when the agent says setup needs a code change", async () => {
+    for (const hostOutcome of ["refused", "already_allowed", "refused_before", "no_run", "too_many_open"]) {
+      const t = await parked(() => ({ hosts: [] }), { hostOutcome });
+      const result = await runSetupAgent(t.input);
+      expect(t.w.prompts, hostOutcome).toHaveLength(1);
+      expect(result.setupRunSummary.stop, hostOutcome).toBe("proposed");
+    }
+    const code = await parked(() => ({ hosts: open }), { final: `NEEDS CODE CHANGE: the lock file is broken\n${block(ANSWER)}` });
+    const result = await runSetupAgent(code.input);
+    expect(code.w.prompts).toHaveLength(1);
+    expect(code.w.progress).not.toContain("Rovara is waiting for an administrator to decide a website.");
+    expect(result.setupRunSummary.stop).toBe("needs_code_change");
+  });
+
+  it("sends the last command's entry and its website ask before it decides to wait, even if no talk with the broker has happened yet", async () => {
+    const t = await parked((n) => ({ hosts: n < 3 ? open : [{ host: "registry.acme.dev", state: "approved" }] }));
+    t.input.ports.tickMs = 600_000;
+    const result = await runSetupAgent(t.input);
+    expect(t.w.callbacks.filter((body) => (body as { kind: string }).kind === "host")).toHaveLength(1);
+    expect(t.w.prompts).toHaveLength(2);
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+
+  it("a run with no ask never parks", async () => {
+    const t = await world({ script: npmCi });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.prompts).toHaveLength(1);
+    expect(t.w.progress).not.toContain("Rovara is waiting for an administrator to decide a website.");
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+
+  it("parks again for the asks still open after the first answer, and each wait is one more prompt at most", async () => {
+    const clock = { now: Date.parse("2026-11-02T10:00:00.000Z") };
+    let n = 0;
+    const t = await world({
+      script: async (parts) => { if (parts.n === 1) await parts.bash.exec("npm ci", "/work", { onData: () => undefined }); },
+      blocked: ["a.acme.dev", "b.acme.dev"], hostOutcome: "created",
+      poll: () => {
+        n += 1;
+        const state = (host: string): string => (host === "a.acme.dev" ? (n < 4 ? "open" : "approved") : (n < 9 ? "open" : "approved"));
+        return { hosts: ["a.acme.dev", "b.acme.dev"].map((host) => ({ host, state: state(host) })) };
+      },
+    });
+    t.input.ports.now = () => clock.now;
+    const result = await runSetupAgent(t.input);
+    expect(t.w.prompts).toHaveLength(3);
+    expect(t.w.prompts[1]).toContain("Allowed: a.acme.dev");
+    expect(t.w.prompts[2]).toContain("Allowed: b.acme.dev");
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+
+  it("the note names only hosts and fixed words", () => {
+    expect(hostAnswerNote(["a.acme.dev"], ["b.acme.dev"])).toBe([
+      "Rovara note (not from the repository): you waited while an administrator decided the websites you asked for.",
+      "Allowed: a.acme.dev. Rovara staff may still need to approve a website, so it may not work for a few minutes.",
+      "Not allowed: b.acme.dev. Do not try to reach them another way.",
+      "Redo only the steps that needed these websites, then answer again with your whole proposal in the same format.",
+    ].join("\n"));
   });
 });
 
@@ -350,5 +599,84 @@ describe("the network and the helper (deployment code; not run against Docker he
     expect(args.join(" ")).toContain("--opt com.docker.network.bridge.name=rvbs7");
     expect(args).toContain("agentx.setup-workspace=ws-key");
     expect(args.at(-1)).toBe("agentx-setup-abc");
+  });
+});
+
+describe("L12: setup runs turned off for the company end a run that is going", () => {
+  it("a poll that says so ends the run at once: no more commands are run, and what it had is reported", async () => {
+    let polls = 0;
+    const t = await world({
+      script: async ({ bash }) => {
+        await bash.exec("npm ci", "/work", { onData: () => undefined });
+        // The model goes on while the run talks to the broker (a few ticks).
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await bash.exec("npm test", "/work", { onData: () => undefined });
+      },
+      poll: () => { polls += 1; return polls >= 2 ? { hosts: [], companyOff: true } : { hosts: [] }; },
+    });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci"]);
+    expect(result.setupRunSummary).toMatchObject({ stop: "infrastructure", partial: true });
+    expect(result.setupProposal).toBeDefined();
+  });
+  it("the run still looks at the broker when its journal callback fails: a stop reaches it", async () => {
+    let polls = 0;
+    const t = await world({
+      script: async ({ bash }) => {
+        await bash.exec("npm ci", "/work", { onData: () => undefined });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await bash.exec("npm test", "/work", { onData: () => undefined });
+      },
+    });
+    t.input.ports.callback = async (body) => {
+      const kind = (body as { kind: string }).kind;
+      if (kind === "journal") throw new Error("the journal is refused");
+      polls += 1;
+      return polls >= 2 ? { hosts: [], companyOff: true } : { hosts: [] };
+    };
+    const result = await runSetupAgent(t.input);
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci"]);
+    expect(result.setupRunSummary.stop).toBe("infrastructure");
+  });
+  it("ends after 5 polls in a row that failed (nothing can reach the run), and not after fewer, and a good poll in between starts the count again", async () => {
+    const outcome = async (failures: (n: number) => boolean) => {
+      let polls = 0;
+      const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); await new Promise((resolve) => setTimeout(resolve, 200)); await bash.exec("npm test", "/work", { onData: () => undefined }); } });
+      t.input.ports.callback = async (body) => {
+        if ((body as { kind: string }).kind !== "poll") return { ok: true };
+        polls += 1;
+        if (failures(polls)) throw new Error("the broker is unreachable");
+        return { hosts: [] };
+      };
+      const result = await runSetupAgent(t.input);
+      return { ran: t.w.ran.map((entry) => entry.command), stop: result.setupRunSummary.stop };
+    };
+    expect(await outcome(() => true)).toEqual({ ran: ["npm ci"], stop: "infrastructure" });
+    expect(await outcome((n) => n >= 1 && n <= 4)).toEqual({ ran: ["npm ci", "npm test"], stop: "proposed" });
+    expect(await outcome((n) => n % 3 !== 0)).toEqual({ ran: ["npm ci", "npm test"], stop: "proposed" });
+  });
+  it("without it nothing changes", async () => {
+    const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); await bash.exec("npm test", "/work", { onData: () => undefined }); } });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci", "npm test"]);
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+});
+
+describe("F5: the invocation of a stopped run ends cancelled and carries its report", () => {
+  it("is a cancelled end with the run's result when the cancel controller stopped the operation, and nothing for a run nobody cancelled", async () => {
+    const { WorkerCancellationController, WorkerOperationCancelledError } = await import("../../packages/worker/src/cancel.js");
+    const { cancelledWithReport } = await import("../../packages/worker/src/setup-agent-invocation.js");
+    const controller = new WorkerCancellationController();
+    const result = { workflowMode: "SETUP_AGENT" as const, setupRunSummary: { stop: "infrastructure", commandsRun: 1, spendCents: 0, elapsedMs: 5, hostAsks: 0, partial: true } as never };
+    expect(cancelledWithReport(controller, OPERATION, result)).toBeUndefined();
+    expect(cancelledWithReport(undefined, OPERATION, result)).toBeUndefined();
+    controller.register(OPERATION, { abort: async () => undefined });
+    await controller.cancel(OPERATION, 1);
+    const stopped = cancelledWithReport(controller, OPERATION, result);
+    expect(stopped).toBeInstanceOf(WorkerOperationCancelledError);
+    expect(stopped?.setupRunResult).toBe(result);
+    expect(cancelledWithReport(controller, "22222222-2222-4222-8222-222222222222", result)).toBeUndefined();
   });
 });

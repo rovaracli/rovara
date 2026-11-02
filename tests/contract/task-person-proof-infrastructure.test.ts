@@ -323,18 +323,24 @@ describe("the named TEST proof-only installation gate", () => {
     // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
     // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
+    // 2026-11-02, NH-1 (nightly run): the named and foreign digests were retaken after ONE intended addition to the artifact bucket (checked by synthesizing with and without it: nothing else moved): the lifecycle
+    // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
+    // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
+    // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
+    // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
+    // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4eb11f80907e9a77d8b9a5a0d24f760e2100e0725035b689f086dbf13512c3d4",
-        withoutRoute: "dafcc5a1bebbbc6c17cf99d28adb3281bb78b507a59e7025b7838141c793aa11",
+        withRoute: "4c105b2dd764c4a88c059c9d1b0cd673e7c726ed69e67371d174741893573267",
+        withoutRoute: "e74e2fef4928c621758159e507eafaa4d30a0811c4b73dce74ccca570cc45ce1",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7831380a195694131dfe7ae5aae6d01718d3c4798b04d432b0549a1f313e95a7",
-        withoutRoute: "b2575d646bf959c749d4d27992e584df48e7a4e52c94d4483685007c8d6c18eb",
+        withRoute: "fde3ddaf4b19da60e1bc15f22741af9e3ac7082912cde44a7352a1f7d113129c",
+        withoutRoute: "885f2a80dfd7696ddbcf1483ec01035e0a794bf5ab8fb3554b0d404dc048bfd9",
       },
       {
         label: "legacy",
