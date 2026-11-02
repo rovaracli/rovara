@@ -8,8 +8,11 @@
 //   - what is shown to people (notes, questions, services) is one plain line each.
 // The draft is stored under the project, keyed by the setup draft's task (a newer setup draft makes an older one stale), and expires with the proposal's own life.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
+  SETUP_RECIPE_OFFERS_MAX,
+  SetupRecipeIdSchema,
   TEST_ENV_DRAFT_MAX_BYTES,
   TEST_ENV_DRAFT_RESULT_KEY,
   TEST_ENV_ROUND_BUDGET_MIN,
@@ -36,6 +39,7 @@ export const DRAFT_SELECTION_NOTE = "A way of narrowing the tests that Rovara do
 export const DRAFT_TOO_LARGE_NOTE = "The environment Rovara found was too large to keep, so none is proposed.";
 export const DRAFT_LEFT_OUT_NOTE = "A command that downloads and runs code, or that holds a secret, was left out of the proposal.";
 
+const RecordedOffersSchema = z.array(z.object({ recipeId: SetupRecipeIdSchema, revision: z.number().int().min(1) }).strict()).max(SETUP_RECIPE_OFFERS_MAX);
 const draftKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#DRAFT#${taskId}` });
 
 /** A command the broker will not carry in a draft: it fetches code and runs it, or its text changes under the redactor (a secret-shaped value). */
@@ -95,7 +99,7 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
 export function testEnvDraftEndItems(
   tableName: string,
   task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project"> & { orgId?: OrgId | undefined },
-  operation: { kind: string; workflowMode?: string | undefined },
+  operation: { kind: string; workflowMode?: string | undefined; /** SR-3: the recipes (id and revision) the BROKER offered this run at dispatch, copied from its own operation record. */ setupRecipeOffers?: ReadonlyArray<{ recipeId: string; revision: number }> | undefined },
   outcome: { status: string; result: unknown },
   nowIso: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -112,12 +116,13 @@ export function testEnvDraftEndItems(
   }
   return [{ Put: {
     TableName: tableName,
-    Item: { ...draftKey(task.orgId, task.project, task.taskId), entityType: "TEST_ENV_DRAFT", orgId: task.orgId, project: task.project, taskId: task.taskId, draft, at: nowIso, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((Date.parse(nowIso) + TEST_ENV_PROPOSAL_TTL_MS) / 1000) },
+    Item: { ...draftKey(task.orgId, task.project, task.taskId), entityType: "TEST_ENV_DRAFT", orgId: task.orgId, project: task.project, taskId: task.taskId, draft, at: nowIso,
+      ...(operation.setupRecipeOffers === undefined || operation.setupRecipeOffers.length === 0 ? {} : { recipeOffers: operation.setupRecipeOffers.map(({ recipeId, revision }) => ({ recipeId, revision })) }), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((Date.parse(nowIso) + TEST_ENV_PROPOSAL_TTL_MS) / 1000) },
   } }];
 }
 
 /** The stored draft of a setup draft task, read again through the sanitizer (a damaged or unsafe item is "none"), or undefined. */
-export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number): Promise<{ draft: TestEnvDraft; at: string } | undefined> {
+export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number): Promise<{ draft: TestEnvDraft; at: string; /** The recipes the broker offered the run that made this draft (id and revision); empty when none. */ recipeOffers: Array<{ recipeId: string; revision: number }> } | undefined> {
   const item = (await client.send(new GetCommand({ TableName: tableName, Key: draftKey(orgId, project, taskId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
   const stored = item.Item;
   if (stored === undefined || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId || typeof stored["at"] !== "string") return undefined;
@@ -125,7 +130,9 @@ export async function readTestEnvDraft(client: Send, tableName: string, orgId: O
   if (typeof expires === "number" && expires * 1000 <= nowMs) return undefined;
   if (stored["entityType"] !== "TEST_ENV_DRAFT") return undefined;
   const draft = sanitizeTestEnvDraft(stored["draft"]);
-  return draft === undefined ? undefined : { draft, at: stored["at"] };
+  if (draft === undefined) return undefined;
+  const offers = RecordedOffersSchema.safeParse(stored["recipeOffers"]);
+  return { draft, at: stored["at"], recipeOffers: offers.success ? offers.data : [] };
 }
 
 /** The fixed note when the task's draft was too large to keep (a marker item), else undefined. */
