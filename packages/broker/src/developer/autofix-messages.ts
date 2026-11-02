@@ -44,6 +44,7 @@ const CODE_SENTENCES: Readonly<Record<AutoFixCode, string>> = Object.freeze({
   "seed-failed": "The app couldn't load its test data.",
   "e2e-assertion-failed": "A browser or API check ran and its result was not the one the plan expects.",
   "check-failed": "A check failed on this code.",
+  "new-failing-test": "A check that also failed before has a failing test that was not failing before this change.",
   "review-findings": "The reviews found problems in this code.",
   "regression-found": "A test that passed before this change fails now.",
   "round-refused": "The browser and API checks could not be started for this code.",

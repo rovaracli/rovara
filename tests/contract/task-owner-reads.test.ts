@@ -75,6 +75,7 @@ const ROWS: readonly Row[] = [
   ["aws/broker/evidence-wiring.ts", "keepEvidenceAfterChecks", "principal", ".ownerKey"],
   // Setup and test health (SH17): the Fix setup port reads the task's principal only to name the evidence pack's object prefix (the broker's own pack of the task's current code); it decides nothing about who owns the task.
   ["aws/broker/fix-setup-wiring.ts", "fixSetupDependencies>record", "principal", ".ownerKey"],
+  ["aws/broker/fix-setup-wiring.ts", "fixSetupDependencies>newFailingChecks", "principal", ".ownerKey"],
   ["aws/task-evidence-download.ts", "routeEvidenceDownload>authorize", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "evidencePackKey", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "keepEvidence", "principal", ".ownerKey"],

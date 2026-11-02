@@ -44,6 +44,7 @@ const SOURCES: Record<Exclude<AutoFixCode, "pull-request-open">, () => [Workflow
   "seed-failed": () => [verifyE2e(incomplete("g1: seed-failed"))],
   "e2e-assertion-failed": () => [verifyE2e("one or more admitted E2E groups failed", { e2e: e2eProgress({ failedRound: { status: "FAILED", candidateDigest: candidate.digest, roundId, groupRunIds: [groupRunId], admissionSha256: hex("7"), evidenceSha256: hex("8") } }) })],
   "check-failed": () => [blocked("VERIFY", undefined, results([{ checkId: "c", status: "FAILED" }])), { checkOriginal: { c: "passed" } }],
+  "new-failing-test": () => [blocked("VERIFY", undefined, results([{ checkId: "c", status: "FAILED" }])), { checkOriginal: { c: "failed" }, newFailingChecks: ["c"] }],
   "review-findings": () => [blocked("REVIEW", undefined, { reviews: [review("CRITIC", "FINDINGS", [{ text: "bug", origin: "INTRODUCED" }]), review("SECURITY", "PASS")] })],
   "regression-found": () => [blocked("VERIFY", WORKFLOW_BLOCK_REASONS.regressionFound)],
   "round-refused": () => [verifyE2e(`${WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX}the build source is unusable.`)],
@@ -105,7 +106,7 @@ describe("every code's class (design 4.2)", () => {
 
   it("lists the codes by class as the design says", () => {
     const by = (kind: string) => AUTO_FIX_CODES.filter((entry) => AUTO_FIX_CODE_CLASS[entry] === kind);
-    expect(by("code")).toEqual(["build-failed", "app-exited", "app-unhealthy", "seed-failed", "e2e-assertion-failed", "check-failed", "review-findings", "regression-found", "round-refused"]);
+    expect(by("code")).toEqual(["build-failed", "app-exited", "app-unhealthy", "seed-failed", "e2e-assertion-failed", "check-failed", "new-failing-test", "review-findings", "regression-found", "round-refused"]);
     for (const entry of ["setup-failed-in-task", "host-blocked", "build-host-offline"] as const) expect(AUTO_FIX_CODE_CLASS[entry]).toBe("transient");
   });
 });

@@ -62,6 +62,20 @@ describe("the wiring and the nightly baseline", () => {
     return item as { knownFailingTests: number } | undefined;
   };
 
+  const newFailing = async (db: FakeDynamoDb, names: string[], env: NodeJS.ProcessEnv = { VERIFY_RESULTS_ENABLED: "1" }) => {
+    const deps = fixSetupDependencies({ documentClient: db, tableName: "state", now: () => NOW } as never, env, async () => pack(names));
+    return deps.newFailingChecks === undefined ? undefined : deps.newFailingChecks(taskOf);
+  };
+
+  it("names the checks that failed before and also have a failing test the usable nightly does not show (the auto-fix policy sends those back), only while vx is on", async () => {
+    expect(await newFailing(bench({}), ["Y", "Z"])).toEqual(["unit"]);
+    expect(await newFailing(bench({}), ["Y"])).toEqual([]);
+    // No usable nightly: every failing test of a check that failed before is unconfirmed.
+    expect(await newFailing(bench({ ageMs: 8 * 86_400_000 }), ["Y"])).toEqual(["unit"]);
+    expect(await newFailing(bench({ branch: "release" }), ["Y"])).toEqual(["unit"]);
+    for (const value of [undefined, "0", "true", " 1"]) expect(await newFailing(bench({}), ["Y", "Z"], value === undefined ? {} : { VERIFY_RESULTS_ENABLED: value }), String(value)).toBeUndefined();
+  });
+
   it("offers the mark for a test a usable nightly lists", async () => {
     expect(await run(bench({}), ["Y"])).toMatchObject({ knownFailingTests: 1 });
   });

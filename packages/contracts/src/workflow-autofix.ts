@@ -28,7 +28,7 @@ export type AutoFixClass = "code" | "transient" | "person" | "unclear";
 export const AUTO_FIX_CODES = [
   // Code: a group the candidate broke (E2E_APPLICATION_SEND_BACK_CODES), and the rest of what new code fixes.
   "build-failed", "app-exited", "app-unhealthy", "seed-failed",
-  "e2e-assertion-failed", "check-failed", "review-findings", "regression-found", "round-refused",
+  "e2e-assertion-failed", "check-failed", "new-failing-test", "review-findings", "regression-found", "round-refused",
   // Transient: Rovara's side or the environment's, which a retry may fix.
   "deadline-exceeded", "executor-failed", "executor-result-mismatch", "mock-unavailable", "model-channel-unavailable", "cancelled", "evidence too large",
   "check-runner-failed", "check-not-started", "review-not-run", "review-run-failed", "provider-outage", "runner-busy",
@@ -88,6 +88,12 @@ export interface AutoFixFacts {
    * The caller always lists every UNKNOWN group of the round (from the stored round); an empty or absent list means the groups are not known yet.
    */
   e2eUnknownGroups?: Readonly<Record<string, GroupOriginalResult>> | undefined;
+  /**
+   * Setup and test health (owner decision, Opus re-check M2): the checks (by ID) that failed on the original code too but ALSO have a failing test the already-failing list does not show, one the change added, or failing
+   * tests nobody named. The broker sets it from its own evidence pack, and only while the four results (`vx`) are on; absent, every mapping is today's. Such a check is the CODE's fault: it is sent back like any code
+   * fault (within the same limits: two send backs, then a person is asked), and is never "fails on the original code" (which asks a person straight away).
+   */
+  newFailingChecks?: readonly string[] | undefined;
   /** The blocked run ended RUNTIME_UNAVAILABLE with a provider-outage class. */
   providerOutage?: boolean | undefined;
   /** The runner was busy. */
@@ -164,6 +170,7 @@ function groupSignal(groupCode: string, facts: AutoFixFacts): Signal {
 
 /** What the original-code result of a failed check says. `undefined`: nothing is known about the original code. */
 function failedCheckSignal(checkId: string, facts: AutoFixFacts): Signal {
+  if (facts.newFailingChecks?.includes(checkId) === true) return code("new-failing-test");
   const original = facts.checkOriginal?.[checkId];
   if (original === "passed") return code("check-failed");
   if (original === "failed" || original === "cannot-run") return person("fails-on-original-code");
@@ -251,7 +258,7 @@ export function classifyBlockedWorkflow(workflow: WorkflowSnapshot, facts: AutoF
 
 /** The class of every code (the signal constructors above are the source; a test drives each code through the real classifier and keeps this table equal to them). A new code is a compile error here until it is placed. */
 export const AUTO_FIX_CODE_CLASS: Readonly<Record<AutoFixCode, AutoFixClass>> = {
-  "build-failed": "code", "app-exited": "code", "app-unhealthy": "code", "seed-failed": "code", "e2e-assertion-failed": "code", "check-failed": "code", "review-findings": "code", "regression-found": "code", "round-refused": "code",
+  "build-failed": "code", "app-exited": "code", "app-unhealthy": "code", "seed-failed": "code", "e2e-assertion-failed": "code", "check-failed": "code", "new-failing-test": "code", "review-findings": "code", "regression-found": "code", "round-refused": "code",
   "deadline-exceeded": "transient", "executor-failed": "transient", "executor-result-mismatch": "transient", "mock-unavailable": "transient", "model-channel-unavailable": "transient", "cancelled": "transient",
   "evidence too large": "transient", "check-runner-failed": "transient", "check-not-started": "transient", "review-not-run": "transient", "review-run-failed": "transient", "provider-outage": "transient", "runner-busy": "transient",
   "setup-failed-in-task": "transient", "host-blocked": "transient", "build-host-offline": "transient", "runtime-renewed": "transient",

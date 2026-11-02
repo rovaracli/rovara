@@ -73,7 +73,7 @@ const ASK: Rule = { kind: "ask" };
  */
 export const RESULT_RULES: Readonly<Record<AutoFixCode, Rule>> = {
   "build-failed": code("app_failed"), "app-exited": code("app_failed"), "app-unhealthy": code("app_failed"), "seed-failed": code("app_failed"),
-  "e2e-assertion-failed": code("e2e_assertion_failed"), "check-failed": code("check_failed"), "regression-found": code("regression_found"), "round-refused": code("round_refused"),
+  "e2e-assertion-failed": code("e2e_assertion_failed"), "check-failed": code("check_failed"), "new-failing-test": code("new_failing_test"), "regression-found": code("regression_found"), "round-refused": code("round_refused"),
   "review-findings": { kind: "review" },
   "deadline-exceeded": env("timed_out"), "executor-failed": env("executor_failed"), "executor-result-mismatch": env("executor_failed"), "mock-unavailable": env("mock_unavailable"),
   "check-runner-failed": env("check_runner_failed"), "check-not-started": env("check_could_not_start"), "provider-outage": env("provider_outage"), "runner-busy": env("runner_busy"),
@@ -122,6 +122,11 @@ export function hasUnconfirmedFailingTest(check: EvidencePack["checks"][number],
   const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
   const added = new Set(check.tests.newTests);
   return failed.some((test) => added.has(test.name) || !(anyCheck.has(test.name) || perCheck.has(`${check.checkId}\u0000${test.name}`)));
+}
+
+/** The checks (by ID) that failed on the original code too but have a failing test that was not failing before (see `hasUnconfirmedFailingTest`): the broker's input to the auto-fix policy while the four results are on. */
+export function newFailingCheckIds(evidence: EvidencePack | undefined, alreadyFailing: readonly KnownFailingEntry[]): string[] {
+  return (evidence?.checks ?? []).filter((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)).map((check) => check.checkId);
 }
 
 /** Whether every failing check of the evidence failed on the original code too and every failing test of it is in the already-failing set. Anything short of that excuses nothing. */
