@@ -2,6 +2,7 @@
 //  - The statements are plain IAM JSON; a small evaluator reads exactly that text, so the tests prove what the policy allows, not what its author hoped.
 //  - The switch (`rovaraCodeArtifactDomains`) is off by default: the template is unchanged and the broker setting is absent.
 // AWS docs: https://docs.aws.amazon.com/codeartifact/latest/ug/security_iam_id-based-policy-examples.html , auth-and-access-control-permissions-reference.html
+import { readFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -83,6 +84,18 @@ describe("the policy text", () => {
     const two = registryTokenStatements([DOMAIN, { name: "beta", owner: "210987654321", region: "eu-west-1", orgId: ORG, repositories: ["a", "b"] }], "aws-us-gov");
     expect(two[0]!.Resource).toEqual(["arn:aws-us-gov:codeartifact:us-west-2:123456789012:domain/acme", "arn:aws-us-gov:codeartifact:eu-west-1:210987654321:domain/beta"]);
     expect(() => registryTokenStatements([DOMAIN], "aws/../x")).toThrow(/partition/);
+  });
+});
+
+describe("the known limit is written down for the admin (S3)", () => {
+  it("day-two.md says the token is install-wide over the listed repositories, not per project, and how to cut tokens off", () => {
+    const guide = readFileSync("docs/day-two.md", "utf8");
+    const section = guide.slice(guide.indexOf("## Private package registries"));
+    expect(section).toContain("rovaraCodeArtifactDomains");
+    expect(section).toMatch(/install-wide, not per project/);
+    expect(section).toMatch(/GetAuthorizationToken. takes only a domain, an owner and a duration/);
+    expect(section).toMatch(/Cutting off outstanding tokens/);
+    expect(section).toMatch(/Public edition/);
   });
 });
 

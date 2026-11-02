@@ -330,3 +330,30 @@ agentx --env <env> admin task share-mode --task <task-id> --mode view|continue
 The mode stays within the project's settings: with continue not allowed, the task stays view only.
 An admin cannot share a private task or move a shared one to another channel. `agentx --env <env>
 admin turns export --since 7d` shows task IDs.
+
+## Private package registries (Enterprise, off by default)
+
+A project can name private package registries (npm, PyPI, Maven; CodeArtifact first) that its setup and readiness commands install from. It is switched on only when the install is
+synthesised with the context key `rovaraCodeArtifactDomains`; without it nothing is granted and a project that names a registry cannot start a preparation.
+
+```text
+-c rovaraCodeArtifactDomains=<domain>:<account>:<region>:<org>:<repository>+<repository>[,<more>]
+```
+
+`<org>` is an org id (`org_` and 20 characters) or the word `install`, the install's one org. Repositories are named, never a wildcard. At most 4 domains. The key is refused for the
+Public edition, the hosted cloud and an install with no edition: those installs are shared by many companies and have no per-org binding yet.
+
+What the admin accepts, plainly:
+
+- **The token reads the named repositories, install-wide, not per project.** CodeArtifact's `GetAuthorizationToken` takes only a domain, an owner and a duration: it has no way to scope a
+  token to one repository or one run. A token carries the permissions of the role that minted it, so Rovara limits the broker role to `codeartifact:ReadFromRepository` on the repositories
+  you list. Every project of the bound org that names a listed repository gets a token that can read ALL listed repositories. Do not list a repository some of the org's projects should
+  not read.
+- A token lasts one hour (IAM refuses a longer one on this role: `sts:DurationSeconds` 900 to 3600) and exists only during a project's preparation. It is readable by that project's own
+  setup and readiness commands, which need it to install. A command that copies it somewhere the agent can read stops the preparation and sets the workspace aside (it is set up again from
+  a fresh clone), but a command that sends it over the network to a host the project may reach is not stopped.
+- A read through a repository that has an upstream or external connection can make CodeArtifact fetch and keep new package versions from upstream. That is how CodeArtifact reads work.
+- **Cutting off outstanding tokens.** A token made with an assumed role's credentials stops working when that role's policy denies it (CodeArtifact docs, "Revoking CodeArtifact
+  authorization tokens"). In an incident, remove the three registry statements from the broker role (redeploy without `rovaraCodeArtifactDomains`, or add an explicit deny): every
+  token already issued stops working.
+- Generic registries you run (npm, pypi, maven) need a credential store the install does not have yet, and projects with a devcontainer cannot use registries yet.
