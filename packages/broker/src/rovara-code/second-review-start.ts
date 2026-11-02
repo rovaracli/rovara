@@ -54,7 +54,7 @@ const REASON_OF: Record<Extract<SecondReviewPlan, { run: false }>["reason"], Sec
 export async function prepareSecondReview(input: SecondReviewStartInput): Promise<SecondReviewStart> {
   if (!secondReviewEnabled()) return {};
   const candidate = input.task?.workflow?.candidate;
-  if (input.workflowMode !== "REVIEW" || input.agentRun !== undefined || input.task?.workflow?.definitionVersion !== "1.1.0" || candidate === undefined) return {};
+  if (input.workflowMode !== "REVIEW" || input.agentRun !== undefined || candidate === undefined) return {};
   if (input.workflowReviewers !== undefined && !input.workflowReviewers.includes("CRITIC")) return {};
   const { dependencies } = input;
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };

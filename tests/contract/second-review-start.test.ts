@@ -12,9 +12,9 @@ import {
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, openReviewFindings, resolveWorkflowReviewFindings, returnWorkflowToImplementationAutomatically, sendBackProblems, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
+import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
 import { defaultModelLine, secondReviewPicker, secondReviewTrackRecord } from "../../packages/broker/src/rovara-code/second-review-picker.js";
-import { secondOpinionFromReviewResult, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
+import { secondOpinionFromReviewResult, secondReviewMergeWait, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -617,5 +617,23 @@ describe("M3: the usage event stays the telemetry the activity index reads", () 
     expect(TaskUsageTelemetrySchema.safeParse(usage).success).toBe(true);
     expect(reviewUsageArtifactName("CRITIC", undefined)).toBe("workflow-review-critic-usage.json");
     expect(reviewUsageArtifactName("CRITIC", 2)).toBe("workflow-second-review-2-usage.json");
+  });
+});
+
+describe("H2: the merge waits for the owner's acknowledgement", () => {
+  const flagged = secondOpinionUnavailable({ mode: "on", company: "openai" }, "no-answer");
+  const task = (over: Record<string, unknown> = {}) => ({ secondOpinion: { candidateDigest: code.digest, opinion: flagged, recordedAt: NOW }, workflow: { candidate: { digest: code.digest } }, ...over });
+
+  it("says why, only for an `on` review that did not run, for this code, until acknowledged; cr off waits for nothing", () => {
+    expect(secondReviewMergeWait(task())).toMatch(/^Second review did not run: the reviewer gave no usable answer after retrying\. The task owner has to acknowledge it on the task page/u);
+    const ack = secondReviewAcknowledgement(flagged, code.digest);
+    if (!ack.required) throw new Error("expected an ask");
+    expect(secondReviewMergeWait(task({ secondReviewAcknowledged: [ack.key] }))).toBeUndefined();
+    expect(secondReviewMergeWait(task({ secondReviewAcknowledged: ["0".repeat(64)] }))).toBeDefined();
+    expect(secondReviewMergeWait(task({ secondOpinion: { candidateDigest: code.digest, opinion: secondOpinionUnavailable({ mode: "shadow", company: "openai" }, "no-answer"), recordedAt: NOW } }))).toBeUndefined();
+    expect(secondReviewMergeWait(task({ workflow: { candidate: { digest: "d".repeat(64) } } }))).toBeUndefined();
+    expect(secondReviewMergeWait({ workflow: { candidate: { digest: code.digest } } })).toBeUndefined();
+    delete process.env.SECOND_REVIEW_ENABLED;
+    expect(secondReviewMergeWait(task())).toBeUndefined();
   });
 });

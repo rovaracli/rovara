@@ -4,7 +4,7 @@
 import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
-import { SECOND_REVIEW_OPERATION, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
+import { SECOND_REVIEW_OPERATION, mergeWaitsForSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
 
 type RunPlan = Extract<SecondReviewPlan, { run: true }>;
 
@@ -80,6 +80,18 @@ export function secondReviewPullRequestLines(task: { secondOpinion?: unknown }, 
   if (!secondReviewEnabled(env)) return [];
   const opinion = secondOpinionOfTask(task, candidateDigest);
   return opinion === undefined ? [] : secondOpinionPrLines(opinion, accepted);
+}
+
+/**
+ * Why a merge must wait for the task owner: an `on` second review that did not run, for the code the task holds, that nobody has acknowledged (`mergeWaitsForSecondReview`). Rovara opens pull requests as drafts and never
+ * marks them ready, so this gate IS the merge card: Merge is refused with these words until the owner acknowledges on the task page. Undefined while `cr` is off, for a shadow review, once acknowledged, or for other code.
+ */
+export function secondReviewMergeWait(task: { secondOpinion?: unknown; secondReviewAcknowledged?: readonly string[] | undefined; workflow?: { candidate?: { digest: string } | undefined } | undefined }, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!secondReviewEnabled(env)) return undefined;
+  const digest = task.workflow?.candidate?.digest;
+  const opinion = secondOpinionOfTask(task, digest);
+  if (opinion === undefined || digest === undefined || !mergeWaitsForSecondReview(opinion, digest, task.secondReviewAcknowledged ?? [])) return undefined;
+  return `${secondReviewDidNotRunLine(opinion.unavailableReason ?? "no-answer")}. The task owner has to acknowledge it on the task page before this can be merged.`;
 }
 
 const plainLine = (text: string, max: number): string => Array.from(redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()).slice(0, max).join("");
