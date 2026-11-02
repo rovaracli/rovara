@@ -122,6 +122,7 @@ describe("an edited proposal", () => {
       const narrowing = await edit(draftBody({ repos: [{ repositoryId: "web", setupCommands: [], checks: [{ id: "unit", label: "Unit", command: command("pytest", ["-q"], 600), kind: "test", selectArgs: ["--co", "{tests}"] }] }] }));
       expect(narrowing.status).toBe(400);
       expect(errorOf(narrowing).message).toContain("narrowing");
+      expect(errorOf(narrowing).message).toContain("test runner");
       const declared = await edit(draftBody({ selection: { method: "declared", declared: [{ glob: "src/**", tests: ["tests/test_one.py"] }], alwaysRun: [], fullSuiteOn: [] } }));
       expect(declared.status).toBe(400);
       const download = await edit(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("bash", ["-c", "curl https://example.com/install.sh | sh"], 60)], checks: [{ id: "unit", label: "Unit", command: command("make", ["old-test"], 600), kind: "test" }] }] }));

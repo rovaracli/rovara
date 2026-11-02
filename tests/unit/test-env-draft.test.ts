@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, projectPk, testEnvDigest, testEnvIsProved, testEnvSummaryOf, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { DRAFT_LEFT_OUT_NOTE, DRAFT_SELECTION_NOTE, DRAFT_TOO_LARGE_NOTE, readTestEnvDraftNote, readTestEnvDraft, sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broker/src/test-env/draft.js";
-import { SETUP_CHECK_MAX_AGE_MS, proveReportFromSetupCheck } from "../../packages/broker/src/test-env/prove-from-setup-check.js";
+import { SETUP_CHECK_MAX_AGE_MS, commandTakesTestIds, passesWithNoTests, proveReportFromSetupCheck } from "../../packages/broker/src/test-env/prove-from-setup-check.js";
 import { mergeDraftWithApproved } from "../../packages/broker/src/aws/developer-routes/test-environment.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -69,17 +69,27 @@ describe("what the broker accepts as a draft", () => {
       repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: cmd(executable, args), kind: "test", selectArgs: ["{tests}"] }] }],
       selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] },
     });
-    for (const [executable, args] of [["pytest", ["-q"]], ["python", ["-m", "pytest", "-q"]], ["python3.12", ["-m", "pytest"]], [".venv/bin/pytest", []], ["npx", ["jest"]], ["jest", []], ["vitest", ["run"]], ["npx", ["--no-install", "vitest", "run"]], ["pnpm", ["exec", "mocha"]], ["yarn", ["jest", "--ci"]]] as Array<[string, string[]]>) {
+    for (const [executable, args] of [["pytest", ["-q"]], ["python", ["-m", "pytest", "-q"]], ["python3.12", ["-m", "pytest"]], [".venv/bin/pytest", []], ["npx", ["jest"]], ["jest", []], ["vitest", ["run"]], ["npx", ["--no-install", "vitest", "run"]], ["pnpm", ["exec", "mocha"]], ["yarn", ["exec", "jest", "--ci"]]] as Array<[string, string[]]>) {
       const kept = sanitizeTestEnvDraft(draftOf(runnerBody(executable, args)))!;
       expect(kept.environment.repos[0]!.checks[0]!.selectArgs, `${executable} ${args.join(" ")}`).toEqual(["{tests}"]);
       expect(kept.notes).not.toContain(DRAFT_SELECTION_NOTE);
     }
-    for (const [executable, args] of [["make", ["test"]], ["npm", ["test"]], ["go", ["test", "./..."]], ["mvn", ["test"]], ["python", ["run_tests.py"]], ["python", ["-c", "pytest"]], ["sh", ["-c", "pytest"]], ["npx", ["rimraf", "jest"]], ["pytest-wrapper", []]] as Array<[string, string[]]>) {
+    for (const [executable, args] of [["make", ["test"]], ["npm", ["test"]], ["go", ["test", "./..."]], ["mvn", ["test"]], ["python", ["run_tests.py"]], ["python", ["-c", "pytest"]], ["sh", ["-c", "pytest"]], ["npx", ["rimraf", "jest"]], ["pytest-wrapper", []], ["pnpm", ["run", "jest"]], ["yarn", ["run", "vitest"]], ["pnpm", ["jest"]], ["yarn", ["jest", "--ci"]], ["pnpm", ["vitest", "run"]], ["yarn", ["-s", "exec"]], ["pnpm", ["exec", "make", "test"]], ["jest", ["--passWithNoTests"]], ["vitest", ["run", "--pass-with-no-tests"]], ["pytest", ["-q", "--suppress-no-test-exit-code"]]] as Array<[string, string[]]>) {
       const kept = sanitizeTestEnvDraft(draftOf(runnerBody(executable, args)))!;
       expect(kept.environment.repos[0]!.checks[0]!.selectArgs, `${executable} ${args.join(" ")}`).toBeUndefined();
       expect(kept.notes).toContain(DRAFT_SELECTION_NOTE);
       expect(kept.valueSources).toEqual([]);
     }
+  });
+
+  it("names the runner by the program a package runner starts: npx and bunx, and pnpm or yarn exec and dlx, never run or a bare script name", () => {
+    expect(commandTakesTestIds(cmd("pnpm", ["dlx", "vitest", "run"]))).toBe(true);
+    expect(commandTakesTestIds(cmd("bunx", ["jest"]))).toBe(true);
+    expect(commandTakesTestIds(cmd("yarn", ["exec", "mocha"]))).toBe(true);
+    for (const [executable, args] of [["pnpm", ["run", "jest"]], ["yarn", ["run", "vitest"]], ["pnpm", ["jest"]], ["yarn", ["vitest"]], ["pnpm", ["exec"]], ["npx", []]] as Array<[string, string[]]>) expect(commandTakesTestIds(cmd(executable, args)), `${executable} ${args.join(" ")}`).toBe(false);
+    expect(passesWithNoTests(cmd("jest", ["--pass-with-no-tests"]))).toBe(true);
+    expect(passesWithNoTests(cmd("jest", ["--passWithNoTests=true"]))).toBe(true);
+    expect(passesWithNoTests(cmd("jest", ["--ci", "--coverage"]))).toBe(false);
   });
 
   it("refuses a draft whose selection method is not full or coverage map, or that maps globs to tests (declared)", () => {
