@@ -3024,6 +3024,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "The foundation's session manager security group",
       "Type": "String",
     },
+    "SetupAgentEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: Set up this project can start a live setup run that runs commands in a sandbox (turn on only after the five Linux checks of SH-1 pass and the worker image that carries task.setupAgent.v1 is deployed); 0: setup is the read-only draft, the prove run and the confirm card, as before",
+      "Type": "String",
+    },
     "SetupRecipesEnabled": {
       "AllowedValues": [
         "0",
@@ -3411,6 +3420,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                       "QueueName",
                     ],
                   },
+                  ",dp=",
+                  {
+                    "Ref": "DispatcherD4A12972",
+                  },
                   ",dq=",
                   {
                     "Fn::GetAtt": [
@@ -3589,6 +3602,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",ss=",
                   {
                     "Ref": "DeveloperSignInSlack",
+                  },
+                  ",su=",
+                  {
+                    "Ref": "SetupAgentEnabled",
                   },
                   ",tm=",
                   {
@@ -7338,11 +7355,20 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
             },
+            "DISPATCH_QUEUE_ARN": {
+              "Fn::GetAtt": [
+                "DispatchQueue898EB017",
+                "Arn",
+              ],
+            },
             "INVOKE_SIGNING_KEY_ARN": {
               "Fn::GetAtt": [
                 "InvokeSigningKey2B33EC11",
                 "Arn",
               ],
+            },
+            "LEARNED_LESSONS_ENABLED": {
+              "Ref": "LearnedLessonsEnabled",
             },
             "MAX_DISPATCH_ATTEMPTS": "5",
             "PROVISIONER_ARN": {
@@ -10633,14 +10659,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "Arn",
                 ],
               },
-              "","Payload":{"action":"probePing","privateIp":"{% $privateIp %}"}},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Assign":{"healthy":"{% $states.result.Payload.healthy %}","probes":"{% $probes + 1 %}"},"Catch":[{"ErrorEquals":["States.ALL"],"Next":"Cleanup","Assign":{"failure":"{% $states.errorOutput.Error & ': ' & $states.errorOutput.Cause %}"}}],"Next":"WorkerHealthy"},"WorkerHealthy":{"Type":"Choice","Choices":[{"Condition":"{% $healthy %}","Next":"MarkReady"},{"Condition":"{% $probes < 60 %}","Next":"WaitToProbe"}],"Default":"ProbeTimedOut"},"ProbeTimedOut":{"Type":"Pass","Assign":{"failure":"worker did not answer /ping within 10 minutes"},"Next":"Cleanup"},"MarkReady":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Arguments":{"FunctionName":"",
+              "","Payload":{"action":"probePing","privateIp":"{% $privateIp %}"}},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Assign":{"healthy":"{% $states.result.Payload.healthy %}","features":"{% $states.result.Payload.features[] %}","probes":"{% $probes + 1 %}"},"Catch":[{"ErrorEquals":["States.ALL"],"Next":"Cleanup","Assign":{"failure":"{% $states.errorOutput.Error & ': ' & $states.errorOutput.Cause %}"}}],"Next":"WorkerHealthy"},"WorkerHealthy":{"Type":"Choice","Choices":[{"Condition":"{% $healthy %}","Next":"MarkReady"},{"Condition":"{% $probes < 60 %}","Next":"WaitToProbe"}],"Default":"ProbeTimedOut"},"ProbeTimedOut":{"Type":"Pass","Assign":{"failure":"worker did not answer /ping within 10 minutes"},"Next":"Cleanup"},"MarkReady":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Arguments":{"FunctionName":"",
               {
                 "Fn::GetAtt": [
                   "SessionsSteps3B98DD2B",
                   "Arn",
                 ],
               },
-              "","Payload":{"action":"markReady","workspaceId":"{% $workspaceId %}","generation":"{% $generation %}"}},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"Next":"Cleanup","Assign":{"failure":"{% $states.errorOutput.Error & ': ' & $states.errorOutput.Cause %}"}}],"Next":"Provisioned"},"Provisioned":{"Type":"Succeed"},"Cleanup":{"Type":"Choice","Choices":[{"Condition":"{% $instanceId != null %}","Next":"TerminateInstance"}],"Default":"MarkFailed"},"TerminateInstance":{"Type":"Task","Resource":"arn:aws:states:::aws-sdk:ec2:terminateInstances","Arguments":{"InstanceIds":["{% $instanceId %}"]},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"Next":"MarkFailed"}],"Next":"MarkFailed"},"MarkFailed":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Arguments":{"FunctionName":"",
+              "","Payload":{"action":"markReady","workspaceId":"{% $workspaceId %}","generation":"{% $generation %}","workerFeatures":"{% $features %}"}},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"Next":"Cleanup","Assign":{"failure":"{% $states.errorOutput.Error & ': ' & $states.errorOutput.Cause %}"}}],"Next":"Provisioned"},"Provisioned":{"Type":"Succeed"},"Cleanup":{"Type":"Choice","Choices":[{"Condition":"{% $instanceId != null %}","Next":"TerminateInstance"}],"Default":"MarkFailed"},"TerminateInstance":{"Type":"Task","Resource":"arn:aws:states:::aws-sdk:ec2:terminateInstances","Arguments":{"InstanceIds":["{% $instanceId %}"]},"Retry":[{"ErrorEquals":["States.ALL"],"IntervalSeconds":2,"MaxAttempts":3,"BackoffRate":2}],"Catch":[{"ErrorEquals":["States.ALL"],"Next":"MarkFailed"}],"Next":"MarkFailed"},"MarkFailed":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Arguments":{"FunctionName":"",
               {
                 "Fn::GetAtt": [
                   "SessionsSteps3B98DD2B",

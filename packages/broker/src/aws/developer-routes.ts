@@ -199,6 +199,7 @@ import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
 import { EVIDENCE_DOWNLOAD_PATH, routeEvidenceDownload } from "./task-evidence-download.js";
 import { isDecisionPath, decisionRouteDepsOf } from "./developer-routes/decisions.js";
+import { routeSetupAgent } from "./developer-routes/setup-agent.js";
 import { routeDecisionCards } from "../decisions/routes.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-routes/types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
@@ -614,6 +615,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
   if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
+  // SH14 (switch `su`, off by default): the setup run that runs commands. With the switch off this answers undefined and the path falls through as any unknown path.
+  const setupAgentReply = await routeSetupAgent(deps, caller, request, url);
+  if (setupAgentReply !== undefined) return setupAgentReply;
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
     const drafting = setupDraftDepsOf(deps);

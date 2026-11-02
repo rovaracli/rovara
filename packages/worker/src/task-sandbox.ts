@@ -173,6 +173,11 @@ export interface TaskSandboxRunInput {
    * forwarder (setup-dns-watch.ts), which is how a blocked website is found without reading any command's output. At most `TASK_SANDBOX_DNS_MAX`.
    */
   dns?: readonly string[];
+  /**
+   * A network of the sandbox's own instead of the shared task network, and the address it takes on it (`--network <name> --ip <ip>`). Only the setup run sets it: each setup run has a small network of its
+   * own, with the DNS watch's helper container on it (setup-network.ts). The network is made and removed by the caller; the sandbox does not create it. Absent: the task network, as every sandbox.
+   */
+  network?: { name: string; ip: string };
 }
 
 /** The most DNS servers a sandbox is given (a resolver uses at most three). */
@@ -199,7 +204,8 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--name", input.name,
     "--label", `${TASK_SANDBOX_LABEL}=${input.taskId}`,
     "--label", `${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(input.rootPath)}`,
-    "--network", TASK_SANDBOX_NETWORK,
+    "--network", input.network?.name ?? TASK_SANDBOX_NETWORK,
+    ...(input.network === undefined ? [] : ["--ip", input.network.ip]),
     ...dnsArgs(input.dns),
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
@@ -229,6 +235,8 @@ export interface TaskSandboxOptions {
   environment?: NodeJS.ProcessEnv;
   /** DNS servers for the sandbox (see `TaskSandboxRunInput.dns`). Default: none, the daemon's resolver. */
   dns?: readonly string[];
+  /** A network of its own (see `TaskSandboxRunInput.network`). */
+  network?: { name: string; ip: string };
   /** Where the sandbox reports what it does not fail on; default: one JSON line on the worker's log. */
   log?: (event: Record<string, unknown>) => void;
 }
@@ -313,10 +321,10 @@ export class TaskSandbox {
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX has no task sandbox image (${TASK_SANDBOX_IMAGE_ENVIRONMENT}), so it did not run the task's commands`);
     }
     const root = resolve(this.options.rootPath);
-    await this.ensureNetwork();
+    if (this.options.network === undefined) await this.ensureNetwork();
     const maskedPaths = await hiddenWorkspaceDirectories(root);
     const result = await this.docker.run(
-      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths, ...(this.options.dns === undefined ? {} : { dns: this.options.dns }) }),
+      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths, ...(this.options.dns === undefined ? {} : { dns: this.options.dns }), ...(this.options.network === undefined ? {} : { network: this.options.network }) }),
       { timeoutMs: SANDBOX_START_TIMEOUT_MS },
     );
     if (result.exitCode !== 0) {

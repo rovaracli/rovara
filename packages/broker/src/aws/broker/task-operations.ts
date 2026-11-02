@@ -35,7 +35,7 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { canonicalModelName, metaRepositoryOf } from "@agentx/contracts";
+import { canonicalModelName, effectiveSetupAgentLimits, metaRepositoryOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
@@ -309,7 +309,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 export async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; ownerRedirect?: OwnerRedirectInvocation; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; ownerRedirect?: OwnerRedirectInvocation; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -470,6 +470,8 @@ export async function taskOperationParts(
   const diagnosing = task?.purpose === "diagnosis" && task.diagnosis !== undefined && input.workflowMode === "SETUP_DRAFT";
   const selectedPrompt = diagnosing
     ? `${DIAGNOSIS_DEEP_PREAMBLE}\n\n${input.prompt}`
+    // SH14: a setup run is told what to do by the worker's own instructions (setup-agent-prompt.ts); the request is the fixed sentence naming the project, nothing more.
+    : input.workflowMode === "SETUP_AGENT" ? input.prompt
     : input.workflowMode === "SETUP_DRAFT"
     ? `${SETUP_DRAFT_PREAMBLE}${agentSection}\n\nRequest:\n${input.prompt}`
     // Meta repo lane D: the spec write sees the approved plan (the prompt) and nothing else the thread said; no agent section, no thread notes.
@@ -517,10 +519,11 @@ export async function taskOperationParts(
       // The AI browser-test agent's model budget (M1.4): only a round that has agent steps may ask for it.
       e2eModelBudget: input.workflowE2EAdmission?.agentSteps === true,
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
-      agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
+      agentSkills: (setupRunStepOf(input.workflowMode, applied?.agentStep)?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
-      agentTools: givesAgentTools(applied),
+      agentTools: runGivesAgentTools(input.workflowMode, applied),
       contextTools: contextToolsOn,
+      setupAgent: input.workflowMode === "SETUP_AGENT",
     }),
     payload: {
       conversationId: input.conversationId,
@@ -531,6 +534,8 @@ export async function taskOperationParts(
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
+      // SH14: the limits the setup run started with, read again through the contract (a damaged value is held to the defaults). A worker without "task.setupAgent.v1" is refused the run at delivery, never sent it without the field.
+      ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: { limits: effectiveSetupAgentLimits(task?.setupAgentLimits) } } : {}),
       // Live interaction F3: the marker that makes the worker's read-only look a diagnosis. A worker without "task.diagnosis.v1" is refused the run at delivery, never sent it without the field.
       ...(diagnosing ? { diagnosis: { diagnosisId: task.diagnosis!.diagnosisId } } : {}),
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
@@ -571,12 +576,12 @@ export async function taskOperationParts(
       ...(applied?.modelPolicy===undefined?{}:{modelPolicy:applied.modelPolicy}),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
-      ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
+      ...(setupRunStepOf(input.workflowMode, applied?.agentStep) === undefined ? {} : { agentStep: applied!.agentStep }),
       // Learning v2: advice from the team's approved lessons; a worker without "task.learnedContext.v1" has it removed at delivery (it is never refused for it).
       ...learned,
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
-      ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || input.workflowMode === "SPEC_WRITE" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
+      ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || input.workflowMode === "SETUP_AGENT" || input.workflowMode === "SPEC_WRITE" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
     },
   };
   const fallback=turnPolicy!==undefined||applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
@@ -584,6 +589,19 @@ export async function taskOperationParts(
   const modelChecks=turnPolicy===undefined?undefined:[...turnPolicy.checks,...(turnAudit?.items??[])];
   if(modelChecks!==undefined&&modelChecks.length>25)throw new TurnAdmissionLimitError(modelChecks.length,25);
   return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
+}
+
+/**
+ * The plan step's settings a setup run is sent: NONE. The step's time limit would cut a setup run short (its clock is the run's own wall-clock limit, set when it started, which can be longer than a planning
+ * step's), and its skills and tool list are the coding agent's, not the setup run's (the worker builds the setup session itself). Every other mode keeps its step.
+ */
+/** Whether the run is served connector tools: an agent step's grants, never a setup run's (it has a shell and no connector). */
+export function runGivesAgentTools(mode: string | undefined, applied: Pick<AppliedAgentStep, "agentStep" | "toolGrants"> | undefined): boolean {
+  return mode !== "SETUP_AGENT" && givesAgentTools(applied);
+}
+
+export function setupRunStepOf<T>(mode: string | undefined, step: T | undefined): T | undefined {
+  return mode === "SETUP_AGENT" ? undefined : step;
 }
 
 /** Whether the workspace's task has a baseline round that is requested and not yet started, so a coding run is to export the unchanged code. Never throws: a baseline never stops the coding. */

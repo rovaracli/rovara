@@ -99,6 +99,13 @@ Enterprise: Names the environment detector holds so it can tell a repository's u
 - The Gradle wrapper's usual download host, which the environment detector compares a repository's wrapper properties with (a host other than the usual ones is reported to the person). (only in `packages/worker/src/env-detect/java.ts`)
   `services.gradle.org`
 
+## Hosts a setup run is never allowed to ask for
+
+Enterprise: Names the setup agent's website ask refuses without a card (paste and file-drop sites, link shorteners, tunnels, webhook collectors, open storage and hosting). Compared with names the setup sandbox failed to resolve; never called by the install, and never added to an allow-list.
+
+- The suffixes the setup agent's host ask refuses outright, so no card is made for them and a run cannot get them approved. (only in `packages/broker/src/rovara-code/setup-host-ask.ts`)
+  `0bin.net`, `anonfiles.com`, `appspot.com`, `azurestaticapps.net`, `azurewebsites.net`, `backblazeb2.com`, `beeceptor.com`, `bitbucket.io`, `blob.core.windows.net`, `burpcollaborator.net`, `canarytokens.com`, `ceye.io`, `cloudfront.net`, `ddns.net`, `digitaloceanspaces.com`, `dnslog.cn`, `dpaste.com`, `dpaste.org`, `duckdns.org`, `file.io`, `firebaseapp.com`, `firebasestorage.googleapis.com`, `fly.dev`, `github.io`, `gitlab.io`, `glitch.me`, `gofile.io`, `hastebin.com`, `herokuapp.com`, `hookbin.com`, `hopto.org`, `ipfs.io`, `ix.io`, `localtest.me`, `localtunnel.me`, `lvh.me`, `mockbin.org`, `myftp.org`, `netlify.app`, `ngrok-free.app`, `ngrok-free.dev`, `ngrok.app`, `ngrok.com`, `ngrok.dev`, `ngrok.io`, `nip.io`, `no-ip.com`, `no-ip.org`, `oast.me`, `oast.online`, `oast.site`, `oastify.com`, `onrender.com`, `pagekite.me`, `pages.dev`, `pastebin.com`, `pinggy.io`, `pipedream.net`, `portmap.io`, `r2.cloudflarestorage.com`, `r2.dev`, `rbndr.us`, `rentry.co`, `repl.co`, `replit.dev`, `requestbin.com`, `requestbin.net`, `requestcatcher.com`, `requestrepo.com`, `serveo.net`, `sslip.io`, `storage.googleapis.com`, `sytes.net`, `t.co`, `termbin.com`, `tinyurl.com`, `traefik.me`, `trycloudflare.com`, `ts.net`, `tunnelmole.net`, `vcap.me`, `vercel.app`, `wasabisys.com`, `web.app`, `webhook.site`, `wetransfer.com`, `workers.dev`, `xip.io`, `zapto.org`, `zrok.io`
+
 ## Links shown to people
 
 Enterprise: Shown in help text and messages. Never called by the install.

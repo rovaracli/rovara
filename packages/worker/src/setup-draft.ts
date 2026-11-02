@@ -12,6 +12,7 @@ import {
   DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal,
 } from "@agentx/contracts";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
+import { dropUntrackedCitations, isTracked, trackedScanOf, type TrackedPaths } from "./setup-citations.js";
 
 export interface SetupDraftRepository { name: string; path: string; resolvedCommit?: string | undefined }
 
@@ -118,10 +119,15 @@ function withScan(answer: Record<string, unknown>, scan: SetupScan): Record<stri
  */
 export async function readSetupProposalAnswer(
   finalText: string,
-  input: { basedOnRevision: number; rootPath: string; repositories: ReadonlyArray<SetupDraftRepository>; metaRepo?: string | undefined },
+  input: {
+    basedOnRevision: number; rootPath: string; repositories: ReadonlyArray<SetupDraftRepository>; metaRepo?: string | undefined;
+    /** The setup run (SH14): the scan taken BEFORE the agent ran (the working tree after it may hold files its commands wrote), and the files of the resolved commit (a citation of any other file is dropped). */
+    scan?: SetupScan | undefined; tracked?: TrackedPaths | undefined;
+  },
 ): Promise<SetupProposalOutcome> {
-  const answer = setupProposalAnswerOf(finalText);
-  const scan = await scanRepositories(input.rootPath, input.repositories, { metaRepo: input.metaRepo });
+  const answer = input.tracked === undefined ? setupProposalAnswerOf(finalText) : dropUntrackedCitations(setupProposalAnswerOf(finalText), input.tracked);
+  const scanned = input.scan === undefined ? await scanRepositories(input.rootPath, input.repositories, { metaRepo: input.metaRepo }) : structuredClone(input.scan);
+  const scan = input.tracked === undefined ? scanned : trackedScanOf(scanned, input.tracked);
   const base: Record<string, unknown> = typeof answer === "object" && answer !== null && !Array.isArray(answer) ? { ...(answer as Record<string, unknown>) } : {};
   const answered = Object.keys(base).length > 0;
   if (!answered) scan.notes.push("Rovara's model did not give an answer that could be read, so only what Rovara found by looking in the folders is listed.");
@@ -134,7 +140,7 @@ export async function readSetupProposalAnswer(
     const named = container as Record<string, unknown>;
     const repository = input.repositories.find((candidate) => candidate.name === named["repository"]);
     const configPath = typeof named["configPath"] === "string" ? named["configPath"] : "";
-    base["devcontainer"] = { ...named, exists: repository !== undefined && await exists(input.rootPath, repository, configPath) };
+    base["devcontainer"] = { ...named, exists: repository !== undefined && (input.tracked === undefined ? await exists(input.rootPath, repository, configPath) : isTracked(input.tracked, repository.name, configPath)) };
   }
   const meta = input.metaRepo === undefined ? undefined : input.repositories.find((repository) => repository.name === input.metaRepo);
   const read = sanitizeSetupProposal(withScan(base, scan), {

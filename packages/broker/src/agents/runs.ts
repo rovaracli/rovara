@@ -54,6 +54,8 @@ import {
   type WorkflowPath,
   type WorkflowProgram,
   ROVARA_CODE_AGENT_ID,
+  SetupAgentLimitsSchema,
+  type SetupAgentLimits,
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { resolvePayer, type PayerFacts } from "../spend/payer.js";
@@ -134,6 +136,13 @@ export interface AgentRunRequest {
    * task, as `startedBy`). Only `startDeepDiagnosis` sets it, never a request body. It carries ids and codes only: the data is the run's context.
    */
   diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
+  /**
+   * SH14 (switch `su`): the run is a setup run that runs commands. Only `startSetupAgent` sets it (through the starter adapter), never a request body. `limits` are fixed by the broker (the project's setting cut
+   * down to the company's lock); `seenTaskId` is the run the project's pointer named when the route read it.
+   */
+  setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
+  /** The named payer was worked out from the rules by the caller moments ago (not chosen by a client): a difference at the start is the setting changing under it (retryable busy). Only broker code sets it. */
+  payerFromRules?: true;
 }
 
 /**
@@ -170,6 +179,8 @@ export interface RunStartOptions {
   setupDraft?: { seenTaskId?: string | undefined };
   /** Live interaction F3: the run is a deep diagnosis (see `AgentRunRequest.diagnosis`). */
   diagnosis?: { diagnosisId: string; errorRef: ErrorRef };
+  /** SH14: the run is a setup run (see `AgentRunRequest.setupAgent`). */
+  setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -203,6 +214,8 @@ const AgentRunRequestShape = z.object({
   codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional() }).strict().optional(),
   setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
   diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
+  setupAgent: z.object({ limits: SetupAgentLimitsSchema, seenTaskId: z.string().uuid().optional() }).strict().optional(),
+  payerFromRules: z.literal(true).optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -558,6 +571,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     ...(request.setupDraft === undefined ? {} : { purpose: "setup_draft" }),
     // Likewise: only a deep diagnosis carries this.
     ...(request.diagnosis === undefined ? {} : { purpose: "diagnosis", diagnosis: request.diagnosis.diagnosisId }),
+    // Likewise: only a setup run carries this (its pointer's seen task is not part of the request; its limits are).
+    ...(request.setupAgent === undefined ? {} : { purpose: "setup_agent", limits: request.setupAgent.limits }),
   });
 }
 
@@ -596,7 +611,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   // may differ from who started it and who pays, so everyone else the run names must be allowed to start work here.
   const { payer } = await resolveRunPayer(deps, {
     orgId: request.orgId, project: request.project, agentId: request.agent.agentId, origin: originOf(request.origin, request.agent),
-    startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts,
+    startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts, ...(request.payerFromRules === true ? { payerFromRules: true } : {}),
   });
   const fingerprint = runRequestFingerprint({ ...rest, payer });
   const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
@@ -609,7 +624,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(intent?.binding?.kind === "slack_thread" ? { shareToChannel: true, channel: intent.binding.channelId } : {}),
   };
   const started = await deps.startTask(actingAs, body, {
-    origin: request.origin, autonomous, payer, ...(request.payer === undefined ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
+    origin: request.origin, autonomous, payer, ...(request.payer === undefined || request.payerFromRules === true ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
     ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
     ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
     ...(request.chain === undefined ? {} : { chain: request.chain }),
@@ -620,6 +635,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(intent === undefined ? {} : { codeIntent: intent }),
     ...(request.setupDraft === undefined ? {} : { setupDraft: request.setupDraft }),
     ...(request.diagnosis === undefined ? {} : { diagnosis: request.diagnosis }),
+    ...(request.setupAgent === undefined ? {} : { setupAgent: request.setupAgent }),
   });
   return started.run;
 }

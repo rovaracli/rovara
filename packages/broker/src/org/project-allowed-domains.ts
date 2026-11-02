@@ -36,7 +36,9 @@ async function read(deps: Dependencies, key: { pk: string; sk: string }): Promis
 }
 /** Internal browser-route core. Pending proposals never change desired websites,
  * staff decisions, DNS sync state or the immutable project definition. */
-export async function proposeProjectAllowedDomains(deps: Dependencies, input: { orgId: OrgId; project: string; by: string; body: unknown }): Promise<AllowedDomainProposal> {
+/** Extra audit details a caller may add to the event it causes (the setup host ask names its origin and who pressed): short plain fields, kept apart from the facts. */
+export type AllowedDomainAuditDetails = Record<string, string>;
+export async function proposeProjectAllowedDomains(deps: Dependencies, input: { orgId: OrgId; project: string; by: string; body: unknown; auditDetails?: AllowedDomainAuditDetails }): Promise<AllowedDomainProposal> {
  const authority = await readAllowedDomainActorConditions(deps, { orgId: input.orgId, project: input.project, actorId: input.by });
  const parsedBody = bodySchema.safeParse(input.body);
  if (!parsedBody.success) throw agentXError("CONFIG_INVALID", "Review a valid website list and request id.");
@@ -76,6 +78,7 @@ export async function proposeProjectAllowedDomains(deps: Dependencies, input: { 
   added: afterDomains.filter(domain => !beforeDomains.includes(domain)).length, removed: beforeDomains.filter(domain => !afterDomains.includes(domain)).length,
   beforeDigest: digest(beforeDomains), afterDigest: proposal.afterDigest,
  });
+ if (input.auditDetails !== undefined) event.details?.push({ subject: "org", fields: input.auditDetails });
  const pending = auditPending(deps, event);if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Website changes require the audit ledger.");
  const items: TransactItem[] = [...authority,
   { ConditionCheck: { TableName: deps.tableName, Key: catalogKey, ConditionExpression: "latestRevision = :revision", ExpressionAttributeValues: { ":revision": body.expectedRevision } } },
@@ -213,7 +216,7 @@ function immutableRecordFence(tableName: string, key: { pk: string; sk: string }
 /** Internal primitive only. No browser/CLI registration input grants this capability.
  * It copies the immutable registration and branch pins verbatim and changes only
  * the revision number and reviewed website list, with all effects in one commit. */
-export async function commitReviewedProjectAllowedDomains(deps: Dependencies, input: { orgId: OrgId; project: string; by: string; body: unknown }): Promise<z.infer<typeof approvalReceiptSchema>> {
+export async function commitReviewedProjectAllowedDomains(deps: Dependencies, input: { orgId: OrgId; project: string; by: string; body: unknown; auditDetails?: AllowedDomainAuditDetails }): Promise<z.infer<typeof approvalReceiptSchema>> {
  await readAllowedDomainActorConditions(deps, { orgId: input.orgId, project: input.project, actorId: input.by });
  const parsed = approvalBodySchema.safeParse(input.body);if (!parsed.success || parsed.data.requestId === parsed.data.proposalId) throw agentXError("CONFIG_INVALID", "Review a website approval with a fresh request id.");
  const body = parsed.data, receiptKey = keyOf(input.orgId, input.project, body.requestId), bodyHash = digest({ orgId: input.orgId, project: input.project, by: input.by, body });
@@ -255,6 +258,7 @@ export async function commitReviewedProjectAllowedDomains(deps: Dependencies, in
   membershipVersion: String(decision.membershipVersion),
   ...(decision.mode === "sole_owner_exception" ? { ownerCount: String(evidence.decisionInput.ownerIds.length), exceptionReason: "sole_owner_no_other_eligible_24h_clear" } : {}),
  } });
+ if (input.auditDetails !== undefined) event.details?.push({ subject: "org", fields: input.auditDetails });
  const pending = auditPending(deps, event);if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Website changes require the audit ledger.");
  const catalogKey = orgProjectCatalogKey(input.orgId, input.project);
  // Evidence pins project META after live eligibility. Context was checked after

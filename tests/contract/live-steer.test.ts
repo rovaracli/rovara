@@ -38,6 +38,24 @@ describe("a message to a task whose step is running", () => {
     expect((f.outbox()[0]!["invocation"] as { payload: { step: string } }).payload.step).toBe(step);
   });
 
+  it("reaches a running setup run: its operation mode SETUP_AGENT is the step SETUP, and the strict payload takes it", async () => {
+    const f = world({ operation: { workflowMode: "SETUP_AGENT" } });
+    await f.send(PRIYA);
+    expect(f.outbox()).toHaveLength(1);
+    const invocation = WorkerInvocationSchema.parse(f.outbox()[0]!["invocation"]);
+    if (invocation.kind !== "steer") throw new Error("not a steer");
+    expect(invocation.payload).toMatchObject({ step: "SETUP", authority: "owner_instruction" });
+    expect(LiveSteerPayloadSchema.safeParse({ ...invocation.payload, step: "SETUP_AGENT" }).success).toBe(false);
+  });
+
+  it("a mode that is not a steerable step, and a look-alike of the setup mode, stay notes", async () => {
+    for (const workflowMode of ["SETUP_DRAFT", "setup_agent", "constructor", "REVIEW"]) {
+      const f = world({ operation: { workflowMode } });
+      await f.send(PRIYA);
+      expect(f.outbox(), workflowMode).toHaveLength(0);
+    }
+  });
+
   it("is information only when it comes from anyone else with can use, and an instruction only from the owner", async () => {
     const f = world();
     await f.send(ARJUN, "teammate note");

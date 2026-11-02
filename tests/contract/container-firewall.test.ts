@@ -73,6 +73,24 @@ describe("the container firewall rules in boot.sh", () => {
     expect([...opened].sort()).toEqual([...new Set(expected)].sort());
   });
 
+  it("with the setup launcher's rules added after it, a setup sandbox's own port-53 traffic is dropped ABOVE every rvb+ rule of this unit (the VPC resolver exceptions included), whichever of the two ran last", () => {
+    const stage2 = readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
+    const block = /^block_imds\(\) \{\n[\s\S]*?^\}$/mu.exec(stage2)?.[0] ?? "";
+    expect(block).toContain("block_imds()");
+    const first = apply({ ip6tables: false });
+    const launcher = spawnSync("/bin/bash", ["-c", `${block}\nblock_imds`], { env: { PATH: `${first.directory}/bin:/usr/bin:/bin`, FAKE_DIR: first.directory }, encoding: "utf8" });
+    expect(launcher.status, launcher.stderr).toBe(0);
+    const rules = readFileSync(join(first.directory, "iptables.rules"), "utf8").split("\n").filter((line) => line.startsWith("DOCKER-USER "));
+    const drop = rules.findIndex((rule) => rule.includes("-s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP"));
+    expect(drop).toBeGreaterThanOrEqual(0);
+    const unitRules = rules.filter((rule) => rule.startsWith("DOCKER-USER -i rvb+ "));
+    expect(unitRules.length).toBeGreaterThan(0);
+    for (const rule of unitRules) expect(drop, rule).toBeLessThan(rules.indexOf(rule));
+    // The unit run again afterwards adds nothing (its rules are present), so the order holds.
+    const again = apply({ ip6tables: false, directory: first.directory });
+    expect(again.iptables.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual(rules);
+  });
+
   it("is idempotent: a second run installs nothing, and a run without ip6tables still succeeds", () => {
     const first = apply({ ip6tables: true });
     const second = apply({ ip6tables: true, directory: first.directory });

@@ -36,6 +36,8 @@ export const DECISION_KINDS = [
   "spec_choice",
   /** Setup and test health (SH17): the test environment, not the code, kept a task's checks from giving a verdict. One card per project per cause; later tasks join it. Exists only while `vx` is on. */
   "fix_setup",
+  // A website the setup run needs (SH12): one card per host per project. Approving goes through the project's own website change, which has its own second-person rule and, on Cloud, the staff step.
+  "setup_host",
 ] as const;
 export const DecisionKindSchema = z.enum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindSchema>;
@@ -68,6 +70,7 @@ export const DECISION_KIND_FLOOR_RISK: Record<DecisionKind, DecisionRisk> = {
   confirm_env_change: "medium",
   spec_choice: "low",
   fix_setup: "medium",
+  setup_host: "medium",
 };
 
 export const DecisionFrictionSchema = z.object({ expandEvidenceFirst: z.boolean(), freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict();

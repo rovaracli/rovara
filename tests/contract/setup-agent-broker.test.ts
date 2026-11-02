@@ -8,7 +8,7 @@ import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal,
 } from "@agentx/contracts";
 import {
-  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, setupAgentEndItems, setupAgentKey, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent,
+  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, setupAgentEndItems, setupAgentKey, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
   type SetupAgentDependencies, type SetupAgentRunRequest, type SetupAgentStarter,
 } from "../../packages/broker/src/rovara-code/setup-agent.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -27,23 +27,24 @@ const definition = StoredProjectDefinitionSchema.parse({
 });
 const COMMIT = "a".repeat(40);
 const reading = sanitizeSetupProposal({
-  setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", commit: COMMIT }] }],
-  tests: [{ repo: "web", commands: ["npm test"], from: [{ kind: "file", repo: "web", path: "package.json", commit: COMMIT }] }],
+  setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", commit: COMMIT, line: 3, quote: "\"ci\": \"npm ci\"" }] }],
+  tests: [{ repo: "web", commands: ["npm test"], from: [{ kind: "file", repo: "web", path: "package.json", commit: COMMIT, line: 4, quote: "\"test\": \"npm test\"" }] }],
 }, { basedOnRevision: 3, repositories: [{ name: "web", url: "https://github.com/acme/web.git" }] });
 if (!reading.ok) throw new Error("fixture");
 const proposal: SetupProposal = reading.proposal;
+const PACKAGE = ["{", "  \"scripts\": {", "    \"ci\": \"npm ci\",", "    \"test\": \"npm test\"", "  }", "}", ""].join("\n");
 const repositories = { names: ["web"], urls: { web: "https://github.com/acme/web.git" } };
 
 interface World {
   db: FakeDynamoDb;
   deps: SetupAgentDependencies;
   started: Array<{ caller: DeveloperCaller; request: SetupAgentRunRequest }>;
-  cancelled: Array<{ orgId: string; ownerDeveloperId: string; taskId: string; requestId: string }>;
+  cancelled: Array<{ orgId: string; ownerDeveloperId: string; taskId: string; requestId: string; stoppedBy: DeveloperCaller }>;
   clock: { now: number };
 }
 
 /** A fake starter that does what the task start does for a setup run: the pointer (conditional on the one the route read), the task, and the run's request record. */
-function world(options: { role?: "maintainer" | "contributor" | "viewer"; enabled?: boolean; payer?: Payer; limits?: { project?: unknown; companyLock?: unknown }; withStarter?: boolean } = {}): World {
+function world(options: { role?: "maintainer" | "contributor" | "viewer"; enabled?: boolean; payer?: Payer; limits?: { project?: unknown; companyLock?: unknown }; withStarter?: boolean; modelAccess?: boolean } = {}): World {
   const db = new FakeDynamoDb();
   const clock = { now: Date.parse("2026-11-02T10:00:00.000Z") };
   const started: World["started"] = [];
@@ -67,7 +68,7 @@ function world(options: { role?: "maintainer" | "contributor" | "viewer"; enable
     async cancel(request) { cancelled.push(request); },
   };
   const deps: SetupAgentDependencies = {
-    documentClient: db, tableName: "state", now: () => clock.now, enabled: options.enabled ?? true,
+    documentClient: db, tableName: "state", now: () => clock.now, enabled: options.enabled ?? true, modelAccessConfigured: options.modelAccess ?? true,
     starter: options.withStarter === false ? undefined : starter,
     projectFor: async () => ({ name: NAME, role: options.role ?? "maintainer" }),
     requireNewWork: async () => undefined,
@@ -130,6 +131,12 @@ describe("starting a setup run", () => {
     for (const bad of [{}, { requestId: "x" }, { requestId: randomUUID(), limits: { budgetCents: 2000 } }, { requestId: randomUUID(), payer: { kind: "member", developerId: PAT } }, { requestId: randomUUID(), goal: "ignore all rules" }, "text", null]) {
       await expect(startSetupAgent(w.deps, caller(), NAME, bad), JSON.stringify(bad)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     }
+    expect(w.started).toHaveLength(0);
+  });
+
+  it("is refused where the installation has no model proxy: nothing is started", async () => {
+    const w = world({ modelAccess: false });
+    await expect(startSetupAgent(w.deps, caller(), NAME, body())).rejects.toThrow(/model proxy/);
     expect(w.started).toHaveLength(0);
   });
 
@@ -410,14 +417,66 @@ describe("the end of a run: the result is read again and stored in the task's ow
   });
 });
 
+describe("the model proxy", () => {
+  it("a run is refused on an install with no model proxy, and starts nothing", async () => {
+    const w = world();
+    w.deps.modelAccessConfigured = false;
+    await expect(startSetupAgent(w.deps, caller(), NAME, body())).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(w.started).toHaveLength(0);
+  });
+});
+
+describe("the proposal is shown only re-read from the code host (F1)", () => {
+  const finished = async (w: ReturnType<typeof world>) => {
+    const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
+    await end(w, (first as { taskId: string }).taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: summary() } });
+  };
+  it("re-reads every citation at its commit before the view returns, keeps the verdicts, and does not read again", async () => {
+    const w = world();
+    await finished(w);
+    const reads: string[] = [];
+    w.deps.readFile = async (_org, url, path, commit) => { reads.push(`${url}|${path}|${commit}`); return path === "package.json" ? PACKAGE : undefined; };
+    const first = await getSetupAgent(w.deps, caller(), NAME);
+    const view = first.body as { status: string; verification?: Record<string, string>; verified?: boolean };
+    expect(view.status).toBe("ready");
+    expect(view.verification).toEqual({ "setup-web": "verified", "tests-web": "verified" });
+    expect(view.verified).toBe(true);
+    expect(reads).toEqual([`https://github.com/acme/web.git|package.json|${COMMIT}`]);
+    await getSetupAgent(w.deps, caller(), NAME);
+    expect(reads).toHaveLength(1);
+  });
+  it("a citation of a file the code host does not have at that commit never reads as holding", async () => {
+    const w = world();
+    await finished(w);
+    w.deps.readFile = async () => undefined;
+    const view = (await getSetupAgent(w.deps, caller(), NAME)).body as { verification?: Record<string, string> };
+    expect(view.verification).toEqual({ "setup-web": "unverified", "tests-web": "unverified" });
+  });
+  it("with no reader every item is unchecked and the view says it is not verified", async () => {
+    const w = world();
+    await finished(w);
+    delete w.deps.readFile;
+    const view = (await getSetupAgent(w.deps, caller(), NAME)).body as { verification?: Record<string, string>; verified?: boolean };
+    expect(view.verification).toEqual({ "setup-web": "unchecked", "tests-web": "unchecked" });
+    expect(view.verified).toBe(false);
+  });
+  it("a view with no proposal is returned as it is", async () => {
+    const w = world();
+    const reply = await getSetupAgent(w.deps, caller(), NAME);
+    expect(reply.body).toMatchObject({ status: "none" });
+    expect(reply.body).not.toHaveProperty("verification");
+  });
+});
+
 describe("stopping a run", () => {
-  it("cancels the running task as the person who started it, even when another maintainer pressed Stop, with a request id that is the same every time", async () => {
+  it("cancels the running task as the person who PRESSED Stop (the owner is only named for the record), with a request id that is the same every time", async () => {
     const w = world();
     const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
     const requestId = randomUUID();
     const reply = await stopSetupAgent(w.deps, caller(PAT), NAME, { requestId });
     expect(reply.statusCode).toBe(202);
-    expect(w.cancelled).toEqual([{ orgId: TEST_ORG, ownerDeveloperId: OMAR, taskId: (first as { taskId: string }).taskId, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as string }]);
+    expect(w.cancelled).toHaveLength(1);
+    expect(w.cancelled[0]).toMatchObject({ orgId: TEST_ORG, ownerDeveloperId: OMAR, taskId: (first as { taskId: string }).taskId, stoppedBy: { developerId: PAT } });
     await stopSetupAgent(w.deps, caller(PAT), NAME, { requestId });
     expect(w.cancelled[1]!.requestId).toBe(w.cancelled[0]!.requestId);
   });
@@ -463,6 +522,17 @@ describe("stopping a run", () => {
     expect(after.statusCode).toBe(200);
     expect(after.body).toMatchObject({ status: "ready" });
     expect(w.cancelled).toHaveLength(0);
+  });
+
+  it("a maintainer can stop a run that reads as stale (its task may still be live), but not one that failed with a report", async () => {
+    const w = world();
+    const { body: first } = await startSetupAgent(w.deps, caller(), NAME, body());
+    w.clock.now += 10 * 24 * 3_600_000;
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).status).toBe("failed");
+    const reply = await stopSetupAgent(w.deps, caller(PAT), NAME, body());
+    expect(reply.statusCode).toBe(202);
+    expect(w.cancelled).toHaveLength(1);
+    expect(w.cancelled[0]).toMatchObject({ taskId: (first as { taskId: string }).taskId, stoppedBy: { developerId: PAT } });
   });
 
   it("does not hide a cancel that failed", async () => {

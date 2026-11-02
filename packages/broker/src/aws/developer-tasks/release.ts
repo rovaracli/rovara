@@ -38,8 +38,8 @@ export type ReleaseDeps = {
  * proxy that can't say is logged; the next release of the task before it is released tries again, and after that the run's cost is not in the history.
  */
 export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<void> {
-  // A setup draft is no run of the agent's kind of work: its cost never feeds the estimates.
-  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined || task.purpose === "setup_draft" || task.purpose === "diagnosis") return;
+  // A task with a purpose (a setup draft, a diagnosis, a setup run) is no run of the agent's kind of work: its cost never feeds the estimates. An ALLOW-list: only a task with no purpose is recorded, so a purpose added later is out by default.
+  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined || task.purpose !== undefined) return;
   let ended: { path: "QUICK" | "FULL" | "AGENT"; endedAt: string };
   if (task.agentRunEnd !== undefined) {
     if (task.agentRunEnd.state !== "COMPLETE") return;

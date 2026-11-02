@@ -11,6 +11,8 @@
 //   confirm_env_change  a running task's owner moves the task onto a newer approved test environment, when the change is one a running task takes; "Not now" keeps the task where it is.
 //   fix_setup           (SH17, only while `vx` is on) a project's test environment, not its code, kept tasks' checks from giving a verdict (test-env/fix-setup.ts). The card is for the project's maintainers. Approve is "Mark as
 //                       known failing" (adds the record's own tests to the project's already-failing set), "Not now" puts the card away; Run setup agent, Fix with agent and Retry task checks are on the pages it opens.
+//   setup_host   a website the setup agent needs (SH12, only while the `su` switch is on): one card per host per project for a company admin; approve is the project's own website change (propose, then the
+//                approver's commit with the second-person rule), "Not now" refuses the host for a week.
 //   NOT connected: spend requests (`decideSpendRequest` is reachable only through the decide page's fresh sign-in; a card press would decide one with no sign-in proof, so Home's own card stays), and plan,
 //   requirements, design, dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -32,6 +34,9 @@ import type { DecisionRouteDependencies } from "../../decisions/routes.js";
 import { pressMerge } from "../../rovara-code/merge.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
+import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
+import { hostAskItemsFor, setupHostHandler, type HostDecisionDeps } from "../../rovara-code/setup-host-ask.js";
+import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { specChoiceItemsFor } from "../developer-tasks/spec-wiring.js";
 import { developerTaskRouteDependencies, sessionDependenciesOf, sessionReadDependencies } from "./dependencies.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
@@ -71,10 +76,19 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     policy: { task: loadTask, alwaysTwoPeople: (orgId: string) => alwaysTwoPeople(table, orgId) },
     ...(secondPerson === undefined ? {} : { approvals: { deps: agents, secondPerson } }),
   };
+  // Setup agent (SH12): the host-ask cards and their handler exist only while `su` is on; with it off nothing here reads or writes anything.
+  // Cloud only (F5): the website change the card runs is Cloud's (proposal, second person, staff step). On a private install a person adds a website the way they do today (an administrator runs
+  // `agentx project add`), so no card exists and no handler is registered there.
+  const hostsOn = setupAgentEnabled(env) && deps.cloud === true;
+  const hostDeps: HostDecisionDeps = {
+    documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    prodDeny: async (orgId, project) => (await readApprovedTestEnvironment(store, orgId, project))?.environment.prodDeny,
+  };
+  const approvableHostProjects = async (who: DeveloperCaller): Promise<string[]> => (who.orgRole === "owner" || who.orgRole === "admin" ? [...(await visibleProjectRoles(deps, who)).keys()].sort() : []);
   return {
     sources: {
       async list(who) {
-        const [merges, specs, testEnv, envChanges, fixSetup] = await Promise.all([
+        const [merges, specs, testEnv, envChanges, fixSetup, hosts] = await Promise.all([
           mergeItemsFor({
             ...table, now: deps.now,
             sessionIdOf: async (task) => (await new AgentSessionStore(sessions).getForTask(who.orgId, task))?.sessionId,
@@ -85,8 +99,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           approveTestEnvItemsFor(testEnvCards, who),
           envChangeItemsFor({ store, task: loadTask }, who),
           fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
+          hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true }, who) : Promise.resolve([]),
         ]);
-        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup];
+        return [...merges, ...specs, ...testEnv, ...envChanges, ...fixSetup, ...hosts];
       },
       // Company locks that raise a card's tier are not stored anywhere yet: none apply, so the tiers are the projector's own.
       async locks() { return {}; },
@@ -102,6 +117,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
         markKnownFailing: (who, item, requestId) => markKnownFailing(fixSetupPorts, who, item, requestId),
         dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),
       }),
+      ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     store: dynamoDecisionStore({ ...table, now: deps.now }),
     now: deps.now,

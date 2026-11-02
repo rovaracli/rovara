@@ -199,6 +199,8 @@ export function setupRecipeDigest(body: SetupRecipeBody): string {
 // ---- offers (SH30)
 
 /** The most recipes one setup run is offered, and the most bytes of their bodies: the broker offers one recipe per fingerprint, newest first, and stops at either bound. */
+/** A worker that lists this runs a setup draft that is offered company recipes (`testEnvRecipes`, switch `sp`); the broker sends the field only to such a worker, never dropped. */
+export const SETUP_RECIPES_FEATURE = "task.setupRecipes.v1" as const;
 export const SETUP_RECIPE_OFFERS_MAX = 30;
 export const SETUP_RECIPE_OFFERS_MAX_BYTES = 262_144;
 

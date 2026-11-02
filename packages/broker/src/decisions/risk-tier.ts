@@ -115,6 +115,9 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
     case "fix_setup":
       if ((inputs.fixSetup?.knownFailingTests ?? 0) > 0) tally.raise("medium", "Marking tests as already failing changes how later results are judged.");
       break;
+    case "setup_host":
+      tally.raise("medium", "Lets this project's machines reach a new website.");
+      break;
     default:
       break;
   }

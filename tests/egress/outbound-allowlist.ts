@@ -6,7 +6,7 @@
 
 export type OutboundCategory =
   | "customer-integration" | "model-provider" | "agent-egress-default" | "aws-service-principal" | "aws-endpoint" | "audit-timestamp" | "rovara-operated"
-  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "doc-link" | "reserved-example";
+  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
 
 export interface HostRule {
   hosts: readonly string[];
@@ -60,6 +60,10 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   "detector-comparison": {
     title: "Hosts a repository scan compares against",
     enterprise: "Names the environment detector holds so it can tell a repository's usual download source from an unusual one. Compared with text read from a repository; never called by the install.",
+  },
+  "host-refusal-list": {
+    title: "Hosts a setup run is never allowed to ask for",
+    enterprise: "Names the setup agent's website ask refuses without a card (paste and file-drop sites, link shorteners, tunnels, webhook collectors, open storage and hosting). Compared with names the setup sandbox failed to resolve; never called by the install, and never added to an allow-list.",
   },
   "doc-link": {
     title: "Links shown to people",
@@ -164,6 +168,10 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "detector-comparison", why: "The Gradle wrapper's usual download host, which the environment detector compares a repository's wrapper properties with (a host other than the usual ones is reported to the person).", files: ["packages/worker/src/env-detect/java.ts"],
     hosts: ["services.gradle.org"],
+  },
+  {
+    category: "host-refusal-list", why: "The suffixes the setup agent's host ask refuses outright, so no card is made for them and a run cannot get them approved.", files: ["packages/broker/src/rovara-code/setup-host-ask.ts"],
+    hosts: ["0bin.net", "anonfiles.com", "appspot.com", "azurestaticapps.net", "azurewebsites.net", "backblazeb2.com", "beeceptor.com", "bitbucket.io", "blob.core.windows.net", "burpcollaborator.net", "canarytokens.com", "ceye.io", "cloudfront.net", "ddns.net", "digitaloceanspaces.com", "dnslog.cn", "dpaste.com", "dpaste.org", "duckdns.org", "file.io", "firebaseapp.com", "firebasestorage.googleapis.com", "fly.dev", "github.io", "gitlab.io", "glitch.me", "gofile.io", "hastebin.com", "herokuapp.com", "hookbin.com", "hopto.org", "ipfs.io", "ix.io", "localtest.me", "localtunnel.me", "lvh.me", "mockbin.org", "myftp.org", "netlify.app", "ngrok-free.app", "ngrok-free.dev", "ngrok.app", "ngrok.com", "ngrok.dev", "ngrok.io", "nip.io", "no-ip.com", "no-ip.org", "oast.me", "oast.online", "oast.site", "oastify.com", "onrender.com", "pagekite.me", "pages.dev", "pastebin.com", "pinggy.io", "pipedream.net", "portmap.io", "r2.cloudflarestorage.com", "r2.dev", "rbndr.us", "rentry.co", "repl.co", "replit.dev", "requestbin.com", "requestbin.net", "requestcatcher.com", "requestrepo.com", "serveo.net", "sslip.io", "storage.googleapis.com", "sytes.net", "t.co", "termbin.com", "tinyurl.com", "traefik.me", "trycloudflare.com", "ts.net", "tunnelmole.net", "vcap.me", "vercel.app", "wasabisys.com", "web.app", "webhook.site", "wetransfer.com", "workers.dev", "xip.io", "zapto.org", "zrok.io"],
   },
   {
     category: "doc-link", why: "Documentation links in CLI messages.", files: ["packages/cli/src/init/"],

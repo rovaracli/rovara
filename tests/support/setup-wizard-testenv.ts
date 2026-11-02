@@ -12,6 +12,7 @@ import { TEST_ORG } from "./orgs.js";
 import { candidatePassed } from "./candidate-check.js";
 import { candidateCheckKey } from "../../packages/broker/src/org/test-env-candidate.js";
 import type { AuditCapture } from "./audit-capture.js";
+import { fakeModelAccess } from "./fake-model-access.js";
 
 export const NAME = "web";
 export const ENV = `/v1/app/projects/${NAME}/test-environment`;
@@ -34,14 +35,15 @@ const SETUP_PROPOSAL = { setup: [{ repo: "web", commands: ["npm ci"], confidence
 /** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`agentx-<env>-team-record`). A read of the wrong table finds nothing. */
 export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
 
-export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; /** TE-2: by default a Prove first finds a passing candidate check for the digest (an older suite is about approval, not about where the Prove reads from); `false` leaves every check to the test. */ autoCandidate?: boolean } = {}) {
+export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; cloud?: boolean; modelProxy?: boolean; /** Files the code host holds at any commit, by path (what the broker re-reads a citation from). */ files?: Record<string, string | Error>; /** TE-2: by default a Prove first finds a passing candidate check for the digest (an older suite is about approval, not about where the Prove reads from); `false` leaves every check to the test. */ autoCandidate?: boolean } = {}) {
   const teamDb = new FakeDynamoDb();
   const h = await createDeveloperTaskBroker({
     register: false,
     ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
-      cloud: true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
-      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async () => undefined), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
+      ...(options.modelProxy === true ? { modelAccess: { access: fakeModelAccess(), proxyUrl: "http://internal-proxy.example.test:4000" } } : {}),
+      cloud: options.cloud ?? true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
+      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async (_url: string, path: string) => { const file = options.files?.[path]; if (file instanceof Error) throw file; return file; }), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       // The Team record is on (its table is separate from the State table) unless the test says otherwise. Only its table is used by the test-environment code; the rest is what other callers would find missing.
       ...(options.teamRecord === false ? {} : { teamRecord: { table: { documentClient: teamDb, tableName: TEAM_RECORD_TABLE }, taps: {}, erase: {}, jobs: {} } }),
