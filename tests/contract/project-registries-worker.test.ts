@@ -149,6 +149,16 @@ describe("a session", () => {
     await expect(openRegistrySession({ rootPath: root, registries: registries(CA), provider: async () => ({ token: fakeToken("e"), expiresAt: new Date(Date.now() - 1000).toISOString() }) })).rejects.toThrow(/cannot use the credential/);
   });
 
+  it("never sweeps a repository whose folder happens to start with the prefix, nor a folder with anything of its own in it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "registries-session-"));
+    await mkdir(join(root, `${REGISTRY_CONFIG_PREFIX}repo`, ".git"), { recursive: true });
+    await writeFile(join(root, `${REGISTRY_CONFIG_PREFIX}repo`, "README.md"), "mine");
+    await mkdir(join(root, `${REGISTRY_CONFIG_PREFIX}ours`));
+    await writeFile(join(root, `${REGISTRY_CONFIG_PREFIX}ours`, "npmrc"), "x");
+    expect(await removeLeftoverRegistryConfigs(root)).toBe(1);
+    expect((await readdir(root)).sort()).toEqual([`${REGISTRY_CONFIG_PREFIX}repo`]);
+  });
+
   it("sweeps what a crashed preparation left, including a link (removed itself, never followed), and nothing else", async () => {
     const root = await mkdtemp(join(tmpdir(), "registries-session-"));
     await mkdir(join(root, `${REGISTRY_CONFIG_PREFIX}old`));

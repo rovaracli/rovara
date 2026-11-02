@@ -157,6 +157,16 @@ describe("scrubbing", () => {
     expect(`pip install https://aws:${encodeURIComponent(token)}@host/`).toContain(encodeURIComponent(token));
     expect(scrubRegistrySecrets(`pip install https://aws:${encodeURIComponent(token)}@host/`, [token])).not.toContain(encodeURIComponent(token));
   });
+  it("finds a token that a tool wrapped across lines (base64 at 76 columns, fold), in the raw and base64 spellings", () => {
+    const token = fakeToken("m");
+    const wrap = (text: string, width: number) => text.replace(new RegExp(`(.{${String(width)}})`, "g"), "$1\n");
+    for (const spelling of [token, Buffer.from(token).toString("base64"), Buffer.from(token).toString("base64url")]) {
+      const wrapped = `head\n${wrap(spelling, 76)}\ntail`;
+      expect(wrapped, "positive control: the spelling is broken across lines").not.toContain(spelling);
+      const out = scrubRegistrySecrets(wrapped, [token]);
+      expect(out).toBe("head\n[redacted]\ntail");
+    }
+  });
   it("ignores a value too short to be a token, so common strings are not corrupted", () => {
     expect(scrubRegistrySecrets("true 1 en-US", ["1", "true", "en-US"])).toBe("true 1 en-US");
   });

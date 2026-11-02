@@ -92,6 +92,7 @@ describe("the exchange", () => {
   it.each([
     ["a task", { kind: "task", status: "RUNNING", workspace: { status: "PREPARING", activeOperationId: OP } }],
     ["a publication", { kind: "publish", status: "RUNNING", workspace: { status: "PREPARING", activeOperationId: OP } }],
+    ["a prepare whose own status is FAILED, in a workspace still preparing (the status check alone)", { kind: "prepare", status: "FAILED", workspace: { status: "PREPARING", activeOperationId: OP } }],
     ["a preparation that has finished", { kind: "prepare", status: "SUCCEEDED", workspace: { status: "READY", activeOperationId: null } }],
     ["a preparation that is no longer the workspace's active operation", { kind: "prepare", status: "RUNNING", workspace: { status: "PREPARING", activeOperationId: "33333333-3333-4333-8333-333333333333" } }],
     ["a workspace that is ready", { kind: "prepare", status: "RUNNING", workspace: { status: "READY", activeOperationId: OP } }],

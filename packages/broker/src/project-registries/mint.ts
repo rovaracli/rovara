@@ -1,6 +1,6 @@
 // N9 (INTG2): the broker's half of a registry credential. A token is minted per request, for one registry of one project, and held to three rules before the worker sees it:
 //   - it must parse (printable, long enough to be scrubbed for), not be expired, and not outlive REGISTRY_TOKEN_SECONDS (plus a minute of clock skew): a minter that answers with a
-//     longer-lived token is refused, because a registry token cannot be revoked;
+//     longer-lived token is refused: the duration is the normal bound on a leak (a token is cut off early only by denying the minting role in IAM, see day-two.md);
 //   - CodeArtifact's is asked for with that duration and nothing else (no 12-hour default);
 //   - a failure is one fixed sentence that names the registry. What the service said (an AWS error, a path, a credential reference's value) is never carried.
 // A generic registry (npm, pypi, maven the customer runs) is reached with a credential the install holds under `credentialRef`; the install supplies `stored`. Without it the

@@ -21,8 +21,8 @@ export const REGISTRY_FORMATS = ["npm", "pypi", "maven"] as const;
 export type RegistryFormat = (typeof REGISTRY_FORMATS)[number];
 
 /**
- * How long the token the broker mints lasts. CodeArtifact accepts 0 or 900 to 43200 seconds (GetAuthorizationToken, durationSeconds) and a token cannot be revoked, so this is the
- * whole exposure of a leak: one hour covers a long install and nothing more. The broker refuses a minter that answers with a longer-lived token.
+ * How long the token the broker mints lasts. CodeArtifact accepts 0 or 900 to 43200 seconds (GetAuthorizationToken, durationSeconds). A token made from an assumed role's credentials can be cut off early only by denying that role in IAM
+ * (tokens-authentication.html, "Revoking CodeArtifact authorization tokens"; day-two.md), so the duration is the normal bound on a leak: one hour covers a long install and nothing more. The broker refuses a minter that answers with a longer-lived token.
  * https://docs.aws.amazon.com/codeartifact/latest/APIReference/API_GetAuthorizationToken.html
  */
 export const REGISTRY_TOKEN_SECONDS = 3_600;
@@ -239,9 +239,19 @@ export function registryProblems(input: { edition: Edition | undefined; registri
  */
 export function scrubRegistrySecrets(text: string, secrets: readonly string[]): string {
   let result = text;
-  const forms = secrets.filter((secret) => secret.length >= REGISTRY_TOKEN_MIN_LENGTH).flatMap((secret) => e2eSecretSpellings(secret));
+  const tokens = secrets.filter((secret) => secret.length >= REGISTRY_TOKEN_MIN_LENGTH);
+  const forms = tokens.flatMap((secret) => e2eSecretSpellings(secret));
   for (const form of [...new Set(forms)].sort((a, b) => b.length - a.length)) {
     if (form.length >= 6) result = result.split(form).join("[redacted]");
+  }
+  // Output that a tool wrapped (`base64` breaks at 76 columns, `fold`, a terminal's width) splits a spelling across lines; the raw, base64 and base64url spellings are also found with
+  // line breaks between any two of their characters.
+  for (const token of tokens) {
+    for (const form of [token, Buffer.from(token).toString("base64"), Buffer.from(token).toString("base64url")]) {
+      if (form.length < 16 || form.length > 8_192) continue;
+      const wrapped = new RegExp([...form].map((char) => char.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&")).join("[\\r\\n]*"), "g");
+      result = result.replace(wrapped, "[redacted]");
+    }
   }
   return result;
 }

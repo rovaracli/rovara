@@ -12,7 +12,7 @@
 // A token that cannot be written safely (not URL-safe), a registry that cannot be reached, or a project with a devcontainer (the folder is not mounted there) fails the
 // preparation with a fixed sentence. There is no unauthenticated retry and no fall-back to a public mirror.
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { REGISTRY_TOKEN_MIN_LENGTH, agentXError, scrubRegistrySecrets, type PrepareRegistry, type ProjectCommand, type RegistryCredential } from "@agentx/contracts";
 import type { CommandResult } from "./readiness.js";
@@ -176,13 +176,25 @@ export async function openRegistrySession(input: {
   };
 }
 
-/** At start (and before a preparation): removes the config a crashed preparation left. A symbolic link is removed itself, never followed. */
+/**
+ * At start (and before a preparation): removes the config a crashed preparation left. Only a folder that is ours is removed: a name with the prefix, no `.git`, and nothing in it but the three
+ * config files, so a repository whose path happens to start with the prefix is never touched. A symbolic link is removed itself, never followed.
+ */
 export async function removeLeftoverRegistryConfigs(rootPath: string): Promise<number> {
   const root = resolve(rootPath);
   const names = await readdir(root).catch(() => [] as string[]);
   let removed = 0;
   for (const name of names.filter((entry) => entry.startsWith(REGISTRY_CONFIG_PREFIX))) {
-    await rm(join(root, name), { recursive: true, force: true }).then(() => { removed += 1; }, () => undefined);
+    const path = join(root, name);
+    const info = await lstat(path).catch(() => undefined);
+    if (info === undefined) continue;
+    if (info.isDirectory()) {
+      const inside = await readdir(path).catch(() => undefined);
+      if (inside === undefined || inside.some((entry) => !OWN_FILES.has(entry))) continue;
+    }
+    await rm(path, { recursive: true, force: true }).then(() => { removed += 1; }, () => undefined);
   }
   return removed;
 }
+
+const OWN_FILES = new Set(["npmrc", "pip.conf", "settings.xml"]);
