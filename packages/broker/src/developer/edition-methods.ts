@@ -2,8 +2,12 @@
 // that already existed when an install became Enterprise (Slack, cloud, or a company session from before the group mapping) is held to the same rules as a new one.
 import type { DeveloperSignInMethod, EditionPolicy } from "@agentx/contracts";
 
-/** Whether the edition allows a sign-in method: where it has no public sign-in methods, only the company's own (`oidc`). */
+/**
+ * Whether the edition allows a sign-in method: where it has no public sign-in methods, only the company's own (`oidc`, and `saml`). SAML is the company's own sign-in and is
+ * Enterprise only (the `sso` feature): an install with no edition, and the Public edition, refuse it even though Public allows the other methods.
+ */
 export function methodAllowedByEdition(policy: EditionPolicy | undefined, method: DeveloperSignInMethod): boolean {
+  if (method === "saml") return policy !== undefined && policy.features.sso;
   return policy === undefined || policy.features.publicSignInMethods || method === "oidc";
 }
 

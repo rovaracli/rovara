@@ -3,7 +3,7 @@
 // A Slack workspace user is not the person the identity provider groups name. So each allowed company sign-in leaves a short record here: this Slack user belongs to a
 // person the mapping let in, until the end of that sign-in's session (the edition's cap). A refused sign-in removes it. The Slack ingress asks for it before it acts, so a
 // person removed from the groups is refused in Slack within the cap at the latest, and at their next company sign-in attempt at the soonest.
-import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, orgPk, type OrgId } from "@agentx/contracts";
 
 export const SLACK_NOT_ALLOWED_MESSAGE = "Sign in to Rovara with your company account first. This Slack account is not signed in to Rovara, or your access has ended.";
@@ -12,8 +12,10 @@ type DocumentClient = { send(command: unknown): Promise<unknown> };
 const keyOf = (orgId: OrgId, slackUserId: string) => ({ pk: orgPk(orgId), sk: `SSO_SLACK#${slackUserId}` });
 
 export interface SlackAllowanceStore {
-  /** Records that this Slack user is the person `developerId`, whom the mapping let in, until `allowedUntil` (epoch seconds). */
-  record(orgId: OrgId, slackUserId: string, developerId: string, allowedUntil: number): Promise<void>;
+  /** Records that this Slack user is the person `developerId`, whom the mapping let in, until `allowedUntil` (epoch seconds). `method` is the sign-in method that granted it. */
+  record(orgId: OrgId, slackUserId: string, developerId: string, allowedUntil: number, method?: string): Promise<void>;
+  /** Removes every allowance a sign-in of `method` granted (the SAML settings' cutoff clears the ones a SAML email granted). Returns how many were removed. */
+  revokeGrantedBy(orgId: OrgId, method: string): Promise<number>;
   /** Removes the record (the person's sign-in was refused). */
   revoke(orgId: OrgId, slackUserId: string): Promise<void>;
   /** The developer the Slack user is allowed as, or undefined when there is no current record. */
@@ -23,8 +25,25 @@ export interface SlackAllowanceStore {
 export function dynamoSlackAllowanceStore(input: { documentClient: DocumentClient; tableName: string }): SlackAllowanceStore {
   const { documentClient, tableName } = input;
   return {
-    async record(orgId, slackUserId, developerId, allowedUntil) {
-      await documentClient.send(new PutCommand({ TableName: tableName, Item: { ...keyOf(orgId, slackUserId), entityType: "SSO_SLACK", developerId, allowedUntil, expiresAt: allowedUntil + 86_400 } }));
+    async record(orgId, slackUserId, developerId, allowedUntil, method) {
+      await documentClient.send(new PutCommand({ TableName: tableName, Item: { ...keyOf(orgId, slackUserId), entityType: "SSO_SLACK", developerId, allowedUntil, expiresAt: allowedUntil + 86_400, ...(method === undefined ? {} : { method }) } }));
+    },
+    async revokeGrantedBy(orgId, method) {
+      let removed = 0;
+      let start: Record<string, unknown> | undefined;
+      do {
+        const page = await documentClient.send(new QueryCommand({
+          TableName: tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true,
+          ExpressionAttributeValues: { ":pk": orgPk(orgId), ":prefix": "SSO_SLACK#" }, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+        })) as { Items?: Array<{ pk: string; sk: string; method?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+        for (const item of page.Items ?? []) {
+          if (item.method !== method) continue;
+          await documentClient.send(new DeleteCommand({ TableName: tableName, Key: { pk: item.pk, sk: item.sk } }));
+          removed += 1;
+        }
+        start = page.LastEvaluatedKey;
+      } while (start !== undefined);
+      return removed;
     },
     async revoke(orgId, slackUserId) {
       await documentClient.send(new DeleteCommand({ TableName: tableName, Key: keyOf(orgId, slackUserId) }));

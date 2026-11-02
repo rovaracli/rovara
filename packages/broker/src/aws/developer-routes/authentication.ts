@@ -1,5 +1,5 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DEVELOPER_TOKEN_AUDIENCE, agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
+import { DEVELOPER_TOKEN_AUDIENCE, agentXError, singleOrgIdForEnv, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../../developer/edition-methods.js";
 import { safeDisplayName } from "../../developer/person-name.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
@@ -8,6 +8,7 @@ import {
   META,
   endedByAdmin,
   endedByUnlink,
+  samlSessionEnded,
   startedBeforeMethodOn,
   type DeveloperMarks,
   type DeveloperRecord,
@@ -28,9 +29,9 @@ export function developerClaims(claims: Record<string, unknown> | undefined, con
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
   const amr = claims.amr;
-  if (amr !== "slack" && amr !== "oidc" && amr !== "cloud" && amr !== "github") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  if (amr !== "slack" && amr !== "oidc" && amr !== "cloud" && amr !== "github" && amr !== "saml") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (config.methods[amr] !== true) {
-    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
+    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : amr === "saml" ? "SAML" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
   }
   // A token with no org (one issued before orgs, or forged) is refused like a token with no session: sign in again.
   const orgId = OrgIdSchema.safeParse(claims.org);
@@ -60,7 +61,7 @@ export async function authenticateBearer(deps: DeveloperRouteDependencies, autho
 
 /** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
 async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
-  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
+  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "authTime" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
   if (session === undefined || session.developerId !== token.developerId || session.revokedAt !== undefined || session.endsAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
@@ -74,6 +75,17 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   // session at its next refresh.
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
+  }
+  // SAML is turned off, and its certificate rotated, by the saved settings (not the environment): their cutoff ends the sessions that started before it (Enterprise foundations I4, review S3).
+  // Settings that cannot be read, or none, end the session: a SAML session with nothing to stand on is not kept.
+  if (session.amr === "saml") {
+    let validFrom = Number.MAX_SAFE_INTEGER;
+    try {
+      validFrom = (await deps.sso?.saml.config.get(singleOrgIdForEnv(deps.developer.env)))?.sessionsValidFrom ?? validFrom;
+    } catch {
+      validFrom = Number.MAX_SAFE_INTEGER;
+    }
+    if (samlSessionEnded(session, validFrom)) throw agentXError("AUTH_REQUIRED", "your sign-in ended when SAML single sign-on was changed; sign in again");
   }
   // Release 0.4.18: the name the person chose is an item in the State table, read with their sign-in record.
   const [developer, chosenName] = await Promise.all([
@@ -113,7 +125,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
 export async function authenticateDeveloperSessionId(deps: DeveloperRouteDependencies, sessionId: string): Promise<DeveloperCaller> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "reviewExpiresAt">>(deps, `SESSION#${sessionId}`);
-  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc" && session.amr !== "cloud" && session.amr !== "github")
+  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc" && session.amr !== "cloud" && session.amr !== "github" && session.amr !== "saml")
     || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }

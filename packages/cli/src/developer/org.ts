@@ -25,7 +25,7 @@ const LeaveResponseSchema = z.object({ left: z.literal(true), orgClosed: z.boole
 export type OrgMember = z.infer<typeof MemberSchema>;
 export type OrgMembersResult = { env: string; url: string; members: OrgMember[] };
 
-const METHOD_TEXT = { slack: "Slack", oidc: "company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
+const METHOD_TEXT = { slack: "Slack", oidc: "company sign-in", saml: "company sign-in (SAML)", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
 export async function orgMembers(deps: DeveloperSessionDeps, env: string | undefined): Promise<OrgMembersResult> {
   const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/org/members", MembersResponseSchema, { explain: true });

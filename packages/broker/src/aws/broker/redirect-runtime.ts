@@ -45,7 +45,7 @@ async function redirectCaller(dependencies: AwsBrokerDependencies, record: Redir
   if (role !== "owner" && role !== "admin" && role !== "member") throw new Error("the person who redirected is not a member of the organization any more");
   const developer = dependencies.developer === undefined ? undefined
     : ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${record.actorId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: { displayName?: unknown; provider?: unknown; slackUserId?: unknown } }).Item;
-  const provider: DeveloperSignInMethod = developer?.provider === "slack" || developer?.provider === "cloud" || developer?.provider === "github" ? developer.provider : "oidc";
+  const provider: DeveloperSignInMethod = developer?.provider === "slack" || developer?.provider === "cloud" || developer?.provider === "github" || developer?.provider === "saml" ? developer.provider : "oidc";
   return {
     developerId: record.actorId, sessionId: "redirect", amr: provider, name: safeDisplayName(typeof developer?.displayName === "string" ? developer.displayName : "", record.actorId), orgId: record.orgId, orgRole: role,
     // As a signed-in request carries it: the project access check reads a Slack channel's contributor access through it, and the send-back gate (0.4.27) needs that access.

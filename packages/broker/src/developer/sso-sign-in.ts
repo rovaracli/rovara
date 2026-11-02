@@ -13,12 +13,15 @@ import { auditOccurrence, auditSsoBreakGlassUsed, auditSsoSignIn, auditSsoSignIn
 import { decideSignIn, dynamoBreakGlassStore, dynamoGroupMappingStore, readBreakGlassForSignIn, readMappingForSignIn, type BreakGlassStore, type GroupMappingStore } from "./group-mapping.js";
 import type { ProviderIdentity } from "./providers.js";
 import { dynamoSlackAllowanceStore, type SlackAllowanceStore } from "./slack-allowance.js";
+import { dynamoSamlConfigStore, dynamoSamlReplayStore, dynamoSamlResponseStash, type SamlStores } from "./saml.js";
 
 export interface SsoStores {
   mappings: GroupMappingStore;
   breakGlass: BreakGlassStore;
   /** Which Slack users the company sign-in currently allows (the Slack ingress asks). */
   slack: SlackAllowanceStore;
+  /** SAML sign-in (I4): the saved identity provider settings, the one-time assertion id store and the posted-response stash. */
+  saml: SamlStores;
 }
 
 /** The stores, built once per process where the edition has company group sign-in; none elsewhere. */
@@ -26,7 +29,8 @@ export function ssoStoresFor(input: { documentClient: { send(command: unknown): 
   if (input.policy === undefined || !input.policy.features.sso) return undefined;
   const { documentClient, tableName, policy } = input;
   const audit = input.audit === undefined ? {} : { audit: input.audit };
-  return { mappings: dynamoGroupMappingStore({ documentClient, tableName, policy, ...audit }), breakGlass: dynamoBreakGlassStore({ documentClient, tableName, policy, ...audit }), slack: dynamoSlackAllowanceStore({ documentClient, tableName }) };
+  return { mappings: dynamoGroupMappingStore({ documentClient, tableName, policy, ...audit }), breakGlass: dynamoBreakGlassStore({ documentClient, tableName, policy, ...audit }), slack: dynamoSlackAllowanceStore({ documentClient, tableName }),
+    saml: { config: dynamoSamlConfigStore({ documentClient, tableName, policy, ...audit }), replay: dynamoSamlReplayStore({ documentClient, tableName }), stash: dynamoSamlResponseStash({ documentClient, tableName }) } };
 }
 
 export type CompanySignIn =
@@ -52,7 +56,7 @@ export async function decideCompanySignIn(input: {
   policy: EditionPolicy;
   /** Absent only by a wiring mistake: the sign-in is then refused as a mapping that is not configured. */
   stores: SsoStores | undefined;
-  /** The sign-in method. Only the company's own (`oidc`) is ever let in by a mapping. */
+  /** The sign-in method. Only the company's own (`oidc` or `saml`) is ever let in by a mapping. */
   method: string;
   /** The install's single org. Absent (a wiring mistake): refused as not configured. */
   orgId: OrgId | undefined;
@@ -69,7 +73,7 @@ export async function decideCompanySignIn(input: {
 }): Promise<CompanySignIn> {
   const occurredAt = new Date(input.nowMs).toISOString();
   // Anything but the company's own sign-in, or an install with no org to map into, has no mapping to read: refused, as a mapping that is not configured.
-  if (input.method !== "oidc" || input.orgId === undefined) return { allow: false, reason: "not_configured", message: GROUP_MAPPING_MESSAGES.not_configured, event: undefined };
+  if ((input.method !== "oidc" && input.method !== "saml") || input.orgId === undefined) return { allow: false, reason: "not_configured", message: GROUP_MAPPING_MESSAGES.not_configured, event: undefined };
   const base = { orgId: input.orgId, actor: { kind: "member" as const, id: input.developerId }, occurredAt, occurrence: auditOccurrence(input.occurrence, input.developerId) };
   const refused = (reason: string, message: string): CompanySignIn => ({ allow: false, reason, message, event: auditSsoSignInRefused({ ...base, memberId: input.developerId, reason }) });
 

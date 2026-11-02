@@ -61,7 +61,7 @@ export const AdminOriginSchema = z.enum(["slack", "ai_tool"]);
 export type AdminOrigin = z.infer<typeof AdminOriginSchema>;
 
 const RequesterSlackShape = { kind: z.literal("slack"), teamId: SlackTeamIdSchema, userId: SlackUserIdSchema };
-const RequesterDeveloperShape = { kind: z.literal("developer"), developerId: Hex64, provider: z.enum(["slack", "oidc", "cloud", "github"]), name: z.string().min(1).max(200).optional() };
+const RequesterDeveloperShape = { kind: z.literal("developer"), developerId: Hex64, provider: z.enum(["slack", "oidc", "cloud", "github", "saml"]), name: z.string().min(1).max(200).optional() };
 const RequesterNoneShape = { kind: z.literal("none") };
 
 /** A5: who asked for the operation, as the operation record says. Strict: the index side. */

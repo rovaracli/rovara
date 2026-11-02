@@ -190,7 +190,7 @@ describe("the event catalog", () => {
       "context_source.proposed", "context_source.applied", "context_source.rejected",
       // Live interaction part 2
       "session.redirected", "task.asked", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared",
-      "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed",
+      "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed", "sso.saml_changed",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
       // the company's master suggestions switch

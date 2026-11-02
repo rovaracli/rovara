@@ -6,7 +6,8 @@ import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
 import type { EditionPolicy, OrgId } from "@agentx/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
-import { githubSignInProvider, oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
+import { githubSignInProvider, oidcSignInProvider, samlSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
+import { samlServiceProviderAddresses } from "../../packages/broker/src/developer/saml.js";
 import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
 import type { DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
 import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/broker/src/developer/server.js";
@@ -416,6 +417,8 @@ export function identityHarness(options: {
   editionPolicy?: EditionPolicy;
   /** Enterprise foundations I1: the group mapping and the break-glass list, over the State table fake (built as the Lambda builds them, from the edition). */
   sso?: boolean;
+  /** Enterprise foundations I4: the SAML sign-in, over the State table's SAML stores (needs `sso` and an edition with company sign-in). */
+  saml?: boolean;
   /** Enterprise foundations I1: the Audit Ledger's outbox, attached to the State table fake. */
   audit?: AuditCapture;
 } = {}) {
@@ -448,6 +451,11 @@ export function identityHarness(options: {
     ...(githubProvider === undefined ? {} : { github: githubProvider }),
   };
   const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now });
+  const ssoStores = options.sso !== true ? undefined : ssoStoresFor({ documentClient: state, tableName: "state", policy: options.editionPolicy });
+  const samlProvider = options.saml !== true || ssoStores === undefined || options.singleOrg === false ? undefined : samlSignInProvider({
+    sp: samlServiceProviderAddresses(ISSUER), orgId: TEST_ORG, load: (orgId) => ssoStores.saml.config.get(orgId), replay: ssoStores.saml.replay, stash: ssoStores.saml.stash, now,
+  });
+  if (samlProvider !== undefined) providers.saml = samlProvider;
   const deps: DeveloperIdentityDependencies = {
     config: {
       env: "staging", issuer: ISSUER,
@@ -462,7 +470,8 @@ export function identityHarness(options: {
     ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
     ...(options.editionPolicy === undefined ? {} : { editionPolicy: options.editionPolicy }),
-    ...(options.sso !== true ? {} : (() => { const sso = ssoStoresFor({ documentClient: state, tableName: "state", policy: options.editionPolicy }); return sso === undefined ? {} : { sso }; })()),
+    ...(ssoStores === undefined ? {} : { sso: ssoStores }),
+    ...(samlProvider === undefined ? {} : { saml: samlProvider }),
     ...(options.audit === undefined ? {} : { audit: options.audit.audit }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,

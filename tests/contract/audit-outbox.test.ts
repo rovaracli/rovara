@@ -792,6 +792,7 @@ describe("I4: the builders", () => {
     ["auditSsoSignInRefused", (occurrence) => builders.auditSsoSignInRefused({ ...base, occurrence, details, memberId: "dev_1", reason: "no_group" })],
     ["auditSsoBreakGlassUsed", (occurrence) => builders.auditSsoBreakGlassUsed({ ...base, occurrence, details, memberId: "dev_1", sessionSeconds: 3600 })],
     ["auditSsoGroupMappingChanged", (occurrence) => builders.auditSsoGroupMappingChanged({ ...base, occurrence, details, fromVersion: 1, toVersion: 2, rules: 3, added: ["users"], removed: [] })],
+    ["auditSsoSamlChanged", (occurrence) => builders.auditSsoSamlChanged({ ...base, occurrence, details, fromVersion: 1, toVersion: 2, changed: ["certificate"], certificateSha256: "a".repeat(64) })],
     ["auditSsoBreakGlassChanged", (occurrence) => builders.auditSsoBreakGlassChanged({ ...base, occurrence, details, toVersion: 1, owners: 1, ownerIds: ["a".repeat(64)] })],
     // Lane E (private MCP servers, project Sources)
     ["auditMcpServerChanged", (occurrence) => builders.auditMcpServerChanged({ ...base, occurrence, details, action: "mcp_server.added", serverId: "mcp_1", label: "Docs server", transport: "http", hasToken: true })],

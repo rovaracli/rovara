@@ -98,7 +98,7 @@ function refusalMessage(body: unknown): string | undefined {
 }
 
 /** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
-const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
+const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", saml: "your company sign-in (SAML)", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
 /** The channels a Slack-channel role comes through: `#name` when it has a public name, else the channel's ID. */
 const channelText = (project: DeveloperProject) => project.channels.map((channel) => (channel.name === undefined ? channel.channelId : `#${sanitizeServerText(channel.name)}`)).join(", ");

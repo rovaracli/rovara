@@ -63,14 +63,20 @@ import type { HandoffRuntime } from "../../agent-sessions/handoff.js";
 import type { SessionTakeOverDependencies } from "../../agent-sessions/take-over.js";
 import type { OrgConnectionStore } from "../../connections/store.js";
 import type { SsoStores } from "../../developer/sso-sign-in.js";
+import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
 
 /** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
 export const CLOSE_STOP_BUDGET_MS = 8_000;
 
 export interface DeveloperApiConfiguration {
-  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
+  /**
+   * Enterprise foundations I4: the issuers of the install's other sign-in methods (the company OpenID Connect provider, the hosted cloud provider, Slack, GitHub, this sign-in server). A SAML entity id
+   * equal to one of them is refused when the settings are saved. A defence beside the method prefix in every SAML account key.
+   */
+  reservedIssuers?: readonly string[];
+  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean; saml?: boolean }; slackTeamId?: string;
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
-  since?: { slack?: number; oidc?: number; cloud?: number; github?: number };
+  since?: { slack?: number; oidc?: number; cloud?: number; github?: number; saml?: number };
   signInTableName: string;
   /** The hosted Rovara web app's origin, which invite links point at (ROVARA_WEB_ORIGIN); https://rovara.dev when absent. */
   webOrigin?: string;
@@ -172,6 +178,8 @@ export interface DeveloperRouteDependencies {
   cloud?: boolean;
   /** Enterprise foundations I1: the group mapping and break-glass stores behind the company sign-in routes. Absent where the edition has no company sign-in. */
   sso?: SsoStores;
+  /** Enterprise foundations I4: the SES sender the owners are told of a change to the SAML settings through (the sign-in notices' sender). Absent: nothing is sent, and the skip is logged. */
+  ownerNotice?: IdentityNoticeDependencies;
   /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). The Auditor role (I2) needs it: without a policy, or with one that has no `auditorRole`, an Auditor's session is refused and the role cannot be given. */
   editionPolicy?: EditionPolicy;
   /** Enterprise foundations P7: the code hosts this install registers (the router's kinds). A task start refuses a repository whose host is not among them. Absent in a harness that builds no registry: no check. */

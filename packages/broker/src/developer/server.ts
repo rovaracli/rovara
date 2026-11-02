@@ -1,6 +1,6 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
-import { SessionIdSchema, agentXError } from "@agentx/contracts";
+import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -64,9 +64,9 @@ import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from 
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
 } from "./join-page.js";
-import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SignInProvider } from "./providers.js";
+import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SamlSignInProvider, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
 import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
@@ -86,6 +86,11 @@ export interface DeveloperIdentityDependencies {
   store: DeveloperSignInStore;
   signer: TokenSigner;
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
+  /**
+   * Enterprise foundations I4: the SAML sign-in, when the edition has company sign-in (`sso`). It is also `providers.saml`; this is the same object with the parts only SAML needs (the identity
+   * provider's POST, our metadata). Absent: `/v1/auth/callback/saml` and `/v1/auth/saml/metadata` answer not found.
+   */
+  saml?: SamlSignInProvider;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
   orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole">;
@@ -169,6 +174,7 @@ export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config
   const methods: DeveloperSignInMethod[] = [];
   if (deps.config.slack.enabled && deps.config.slack.teamId !== undefined && deps.providers.slack !== undefined) methods.push("slack");
   if (deps.config.oidc !== undefined && deps.providers.oidc !== undefined) methods.push("oidc");
+  if (deps.providers.saml !== undefined) methods.push("saml");
   if (deps.config.cloud !== undefined && deps.providers.cloud !== undefined) methods.push("cloud");
   // GitHub makes accounts the way the cloud method does, so it exists only where cloud does.
   if (deps.config.cloud !== undefined && deps.config.github !== undefined && deps.providers.github !== undefined) methods.push("github");
@@ -229,7 +235,19 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const { config, store } = deps;
   const endpoint = (path: string) => `${config.issuer}${path}`;
   const methodLabel = (method: DeveloperSignInMethod) =>
-    method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : method === "github" ? config.github?.displayName ?? "GitHub" : config.oidc?.displayName ?? "company sign-in";
+    method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : method === "github" ? config.github?.displayName ?? "GitHub" : method === "saml" ? "SAML single sign-on" : config.oidc?.displayName ?? "company sign-in";
+  /** The enabled methods, minus SAML until an administrator has saved and enabled the identity provider (the sign-in page shows only what can work). */
+  const availableMethods = async (): Promise<DeveloperSignInMethod[]> => {
+    const methods = enabledMethods(deps);
+    if (!methods.includes("saml")) return methods;
+    let configured = false;
+    try {
+      configured = deps.saml !== undefined && await deps.saml.configured();
+    } catch (error) {
+      deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
+    }
+    return configured ? methods : methods.filter((method) => method !== "saml");
+  };
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
     // Every flow that talks to a provider (sign-in, join, link, decide) comes through here: an edition that has no such method never reaches it.
     if (!methodAllowedByEdition(deps.editionPolicy, method)) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not available in this edition`);
@@ -258,7 +276,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   }
 
   async function authorize(query: URLSearchParams): Promise<HttpResult> {
-    const methods = enabledMethods(deps);
+    const methods = await availableMethods();
     const requestId = query.get("request");
     if (requestId !== null) {
       const chosen = query.get("method");
@@ -319,7 +337,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function authorizeBrowser(query: URLSearchParams): Promise<HttpResult> {
     const returnTo = query.get("return_to") ?? "";
     if (!BROWSER_RETURN_TO.test(returnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
-    const methods = enabledMethods(deps);
+    const methods = await availableMethods();
     if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask an AgentX administrator to enable a sign-in method."]);
     const verifier = randomBytes(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -414,7 +432,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function joinStart(query: URLSearchParams): Promise<HttpResult> {
     const found = await joinInvite(query);
     if ("page" in found) return found.page;
-    const methods = enabledMethods(deps);
+    const methods = await availableMethods();
     if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask a Rovara administrator to enable a sign-in method."]);
     const verifier = randomBytes(32).toString("base64url");
     const auth = await store.createAuthRequest({
@@ -525,6 +543,41 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     ],
   });
 
+  const NO_SAML = (): HttpResult => jsonResult(404, { error: "not_found" });
+
+  /** `GET /v1/auth/saml/metadata`: our service provider metadata, for the administrator to give the identity provider. Public; no secret in it. */
+  function samlMetadata(): HttpResult {
+    if (deps.saml === undefined || !methodAllowedByEdition(deps.editionPolicy, "saml")) return NO_SAML();
+    return { statusCode: 200, headers: { "content-type": "application/samlmetadata+xml; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }, body: deps.saml.metadata() };
+  }
+
+  /**
+   * `POST /v1/auth/callback/saml`: the identity provider's POST of the response, made from its site. A browser sends no SameSite=Lax cookie on a cross-site POST, so the response is not read
+   * here: it is kept for two minutes under a single-use handle, and the browser is sent on to the GET callback (which carries the cookies). Only a response for a sign-in that is waiting for SAML
+   * is kept, so a stranger's POST writes nothing.
+   */
+  async function samlPost(body: string | undefined): Promise<HttpResult> {
+    if (deps.saml === undefined || !methodAllowedByEdition(deps.editionPolicy, "saml")) return NO_SAML();
+    const refused = () => page(400, "Sign-in could not be completed", [SAML_SIGN_IN_REFUSED_MESSAGE]);
+    if (body === undefined || body.length > 400_000) return refused();
+    const form = new URLSearchParams(body);
+    const relay = form.get("RelayState") ?? "";
+    const response = form.get("SAMLResponse") ?? "";
+    if (!REQUEST_ID_PATTERN.test(relay) || response === "") return refused();
+    const pending = await store.getAuthRequest(relay);
+    if (pending === undefined || pending.method !== "saml" || pending.consumedAt !== undefined) return refused();
+    let handle: string | undefined;
+    try {
+      handle = await deps.saml.accept(relay, response);
+    } catch (error) {
+      deps.log({ event: "signin.saml_post_failed", error: errorName(error) });
+      return refused();
+    }
+    if (handle === undefined) return refused();
+    // The relay state is the auth request id and the handle is single use; neither is a secret by itself (the request is consumed, with its nonce and PKCE checks, at the callback).
+    return { statusCode: 303, headers: { location: endpoint(`/callback/saml?state=${encodeURIComponent(relay)}&code=${encodeURIComponent(handle)}`), "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" };
+  }
+
   async function callback(method: DeveloperSignInMethod, query: URLSearchParams, headers: Record<string, string | undefined>): Promise<HttpResult> {
     const state = query.get("state") ?? "";
     const pending = state === "" ? undefined : await store.getAuthRequest(state);
@@ -628,13 +681,13 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       : browserReturn(request.browserReturnTo, false, undefined, "cancelled");
     let result: ProviderResult;
     try {
-      result = await provider(method).complete({ code, nonce: request.nonce, redirectUri: endpoint(`/callback/${method}`) });
+      result = await provider(method).complete({ code, nonce: request.nonce, redirectUri: endpoint(`/callback/${method}`), state: request.id });
     } catch (error) {
       if (request.browserReturnTo !== undefined || join) throw error;
       return providerFailure(error, method, request.clientRedirectUri, request.clientState);
     }
     if (!result.ok) {
-      deps.log({ event: "signin.refused", method, reason: result.reason });
+      deps.log({ event: "signin.refused", method, reason: result.code ?? result.reason });
       if (join) return page(403, "Sign-in was refused", [result.reason, "Open the invite link again to try another account."]);
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
       // A provider may quietly reuse the refused account's session on the next try, so say how to switch.
@@ -676,6 +729,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
       return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
+    /** The earliest end this sign-in may have: the edition's session cap, and for SAML the provider's own SessionNotOnOrAfter (review N2). */
+    const endsCap = (): number | undefined => {
+      const ends = [companySignIn?.sessionEndsAt, identity.sessionNotOnOrAfter].filter((value): value is number => value !== undefined);
+      return ends.length === 0 ? undefined : Math.min(...ends);
+    };
     /** What a company sign-in leaves on its session for a later mapping change to check itself against (Enterprise foundations N-2). */
     const sessionClaims = (): { groupClaims?: Record<string, unknown>; ssoBreakGlass?: true } => companySignIn === undefined ? {}
       : { groupClaims: identity.claims ?? {}, ...(companySignIn.breakGlass ? { ssoBreakGlass: true as const } : {}) };
@@ -731,7 +789,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
     if (companySignIn !== undefined) {
       if (!companySignIn.breakGlass && companySignIn.event !== undefined) await recordAuditRead(deps.audit === undefined ? {} : { audit: deps.audit }, companySignIn.event);
-      if (slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
+      if (slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt, method);
     }
     // The mapped role replaces the person's role at every sign-in (an owner is never changed by a mapping): leaving a group takes the access away at the next sign-in.
     if (companySignIn !== undefined && org.orgId !== undefined && org.role !== companySignIn.orgRole) {
@@ -744,7 +802,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
       }
       if (outcome === "joined") {
-        const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
+        const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, endsCap() ?? Number.MAX_SAFE_INTEGER);
         const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime), ...sessionClaims(),
           ...(slackUserId === undefined ? {} : { slackUserId }), reviewExpiresAt: endsAt, endsAt });
         return browserReturn(endpoint(`/join/done?request=${request.id}`), true, session.sessionId);
@@ -760,7 +818,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (request.fresh === true && !isFreshSignIn({ authTime }, deps.now())) deps.log({ event: "signin.fresh_sign_in_not_fresh", method });
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal (an edition's sign-in cap, when it has one, comes sooner): the session record ends then, whatever the cookie says.
-      const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
+      const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, endsCap() ?? Number.MAX_SAFE_INTEGER);
       const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime, ...sessionClaims(),
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
@@ -768,7 +826,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...sessionClaims(), ...(companySignIn === undefined ? {} : { sessionEndsAt: companySignIn.sessionEndsAt }), ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...sessionClaims(), ...(endsCap() === undefined ? {} : { sessionEndsAt: endsCap()! }), ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
@@ -893,6 +951,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
     // A code issued just before the person unlinked its identity must not start a session afterwards.
     if (redeemed.identityKey !== undefined && !await store.identityBelongsTo(redeemed.identityKey, redeemed.developerId)) return oauthError(400, ...SIGN_IN_ENDED);
+    // A SAML code made from an assertion that is older than the settings' cutoff (the certificate was rotated, or SAML turned off, after the person authenticated) starts no session.
+    if (redeemed.amr === "saml") {
+      let validFrom = Number.MAX_SAFE_INTEGER;
+      try {
+        validFrom = deps.saml === undefined ? validFrom : await deps.saml.sessionsValidFrom();
+      } catch (error) {
+        deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
+      }
+      if (samlSessionEnded({ startedAt: new Date(deps.now()).toISOString(), ...(redeemed.authTime === undefined ? {} : { authTime: redeemed.authTime }) }, validFrom)) {
+        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
+      }
+    }
     // The edition's sign-in cap (Enterprise foundations I1) rides on the code: the session ends then, and a refresh never moves it.
     const { sessionEndsAt, ...started } = redeemed;
     if (sessionEndsAt !== undefined && sessionEndsAt <= Math.floor(deps.now() / 1000)) return oauthError(400, ...SIGN_IN_ENDED);
@@ -928,6 +998,19 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (startedBeforeMethodOn(session.startedAt, session.amr === "slack" ? config.slack.since : session.amr === "oidc" ? config.oidc?.since : undefined)) {
       await revoke(session.sessionId, "method_disabled");
       return oauthError(400, "invalid_grant", `your sign-in ended when ${methodLabel(session.amr)} was turned off; sign in again with agentx login`);
+    }
+    // SAML is switched off, or its certificate rotated, by the saved settings, not by the environment: their cutoff ends the sessions that started before it (review S3).
+    if (session.amr === "saml") {
+      let validFrom = Number.MAX_SAFE_INTEGER;
+      try {
+        validFrom = deps.saml === undefined ? validFrom : await deps.saml.sessionsValidFrom();
+      } catch (error) {
+        deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
+      }
+      if (samlSessionEnded(session, validFrom)) {
+        await revoke(session.sessionId, "method_disabled");
+        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
+      }
     }
     const developer = await store.getDeveloper(session.developerId);
     if (developer === undefined || developer.revoked) {
@@ -1000,8 +1083,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     });
   }
 
-  const configuration = () => {
-    const methods = enabledMethods(deps);
+  const configuration = async () => {
+    const methods = await availableMethods();
     return {
       env: config.env,
       apiVersion: DEVELOPER_API_VERSION,
@@ -1014,6 +1097,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       methods: {
         slack: methods.includes("slack"),
         oidc: methods.includes("oidc") && config.oidc !== undefined ? { displayName: config.oidc.displayName } : null,
+        // Absent (not null) until an administrator has turned SAML on, so the document of an install without it reads as it always did.
+        ...(methods.includes("saml") ? { saml: { displayName: methodLabel("saml") } } : {}),
         cloud: methods.includes("cloud") && config.cloud !== undefined ? { displayName: config.cloud.displayName } : null,
         github: methods.includes("github") && config.github !== undefined ? { displayName: config.github.displayName } : null,
       },
@@ -1054,7 +1139,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         case "/v1/auth/.well-known/jwks.json":
           return publicJson({ keys: [await deps.signer.publicJwk()] });
         case "/v1/auth/.well-known/agentx-configuration":
-          return jsonResult(200, configuration());
+          return jsonResult(200, await configuration());
         case "/v1/auth/authorize":
           return authorize(url.searchParams);
         case "/v1/auth/browser/authorize":
@@ -1077,8 +1162,13 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return callback("cloud", url.searchParams, headers);
         case "/v1/auth/callback/github":
           return callback("github", url.searchParams, headers);
+        case "/v1/auth/callback/saml":
+          return deps.saml === undefined ? jsonResult(404, { error: "not_found" }) : callback("saml", url.searchParams, headers);
+        case "/v1/auth/saml/metadata":
+          return samlMetadata();
       }
     }
+    if (method === "POST" && pathname === "/v1/auth/callback/saml") return samlPost(body);
     if (method === "POST" && pathname === "/v1/auth/browser/sign-out") return browserSignOut(headers);
     if (method === "POST" && pathname === "/v1/auth/token") return token(new URLSearchParams(body ?? ""));
     if (method === "POST" && pathname === "/v1/auth/revoke") return revokeToken(new URLSearchParams(body ?? ""));

@@ -12,7 +12,7 @@ export const NOTICE_SEND_TIMEOUT_MS = 2500;
 /** A login (only GitHub has one): letters, digits and hyphens, at most 39 characters. Anything else is left out of the email rather than quoted in it. */
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 
-const PROVIDER_LABEL: Record<DeveloperSignInMethod, string> = { github: "GitHub", cloud: "Email code", slack: "Slack", oidc: "Company sign-in" };
+const PROVIDER_LABEL: Record<DeveloperSignInMethod, string> = { github: "GitHub", cloud: "Email code", slack: "Slack", oidc: "Company sign-in", saml: "Company SAML sign-in" };
 
 export interface IdentityNoticeDependencies {
   /** Without it, or without `from`, nothing is sent. */
@@ -160,5 +160,40 @@ export async function sendGithubRequestReminder(deps: IdentityNoticeDependencies
     } },
   }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
   deps.log({ event: "github.request_reminder_sent" });
+  return "sent";
+}
+
+/** The words a SAML settings change is described with in the owners' mail; the settings' values are never in it. */
+const SAML_CHANGE_WORDS: Readonly<Record<string, string>> = {
+  entity_id: "the identity provider's entity id", sign_in_address: "the sign-in address", certificate: "the signing certificate",
+  enabled: "whether SAML single sign-on is turned on", trust_email: "whether the provider's email addresses are trusted",
+};
+export const SAML_SETTINGS_NOTICE_SUBJECT = "SAML single sign-on settings changed on Rovara";
+
+/**
+ * Tells an owner that the SAML single sign-on settings were changed, by whom and what kind of change (never the values). "skipped" when no SES sender is configured. A failed send throws; the
+ * caller logs it and never lets it undo the change.
+ */
+export async function sendSamlSettingsChangedNotice(
+  deps: IdentityNoticeDependencies,
+  input: { to: string; actorName: string; changed: readonly string[]; cellUrl: string },
+): Promise<"sent" | "skipped"> {
+  if (deps.ses === undefined || deps.from === undefined || deps.from === "") {
+    deps.log({ event: "saml.settings_notice_skipped", reason: "no_sender" });
+    return "skipped";
+  }
+  const what = input.changed.map((word) => SAML_CHANGE_WORDS[word]).filter((text): text is string => text !== undefined).join(", ") || "the settings";
+  const name = oneLine(input.actorName).slice(0, 80) || "An owner";
+  const text = `${name} changed the SAML single sign-on settings for your Rovara company: ${what}. A change to these settings decides who can sign in as whom. `
+    + `If this was not expected, sign in at ${input.cellUrl} and review the settings now, and turn SAML off if you are unsure.`;
+  await deps.ses.send(new SendEmailCommand({
+    FromEmailAddress: deps.from,
+    Destination: { ToAddresses: [input.to] },
+    Content: { Simple: {
+      Subject: { Data: SAML_SETTINGS_NOTICE_SUBJECT, Charset: "UTF-8" },
+      Body: { Text: { Data: text, Charset: "UTF-8" }, Html: { Data: `<p>${escapeHtml(text)}</p>`, Charset: "UTF-8" } },
+    } },
+  }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
+  deps.log({ event: "saml.settings_notice_sent" });
   return "sent";
 }

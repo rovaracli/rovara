@@ -1,6 +1,8 @@
 import type { DeveloperApiConfiguration } from "./developer-routes.js";
 import { developerSinceFromEnvironment } from "./developer-routes.js";
 import { webOriginFromEnvironment } from "../org/invite-url.js";
+import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { GITHUB_ISSUER } from "../developer/providers.js";
 
 export function workflowDependenciesConfigurationFromEnvironment(environment: Record<string, string | undefined>): {
   workflowDependenciesEnabled: boolean;
@@ -31,11 +33,14 @@ export function createDeveloperApiConfiguration(
   const slackTeamId = environment.SLACK_TEAM_ID ?? "";
   return {
     ...integrations(issuer, identityFunctionName),
+    reservedIssuers: [issuer, environment.DEVELOPER_OIDC_ISSUER, environment.DEVELOPER_CLOUD_ISSUER, SLACK_OIDC_ISSUER, GITHUB_ISSUER].filter((value): value is string => value !== undefined && value !== ""),
     issuer,
     env,
     methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "",
       // GitHub sign-in needs a cloud install and a configured GitHub OAuth app (the client id is not a secret; the sign-in function holds the secret).
-      github: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "" && (environment.DEVELOPER_GITHUB_CLIENT_ID ?? "") !== "" },
+      github: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "" && (environment.DEVELOPER_GITHUB_CLIENT_ID ?? "") !== "",
+      // SAML (Enterprise foundations I4) is on or off by the administrator's saved settings and by the edition, not by the environment: a SAML session is refused at every request where the edition has no `sso`.
+      saml: true },
     ...(slackTeamId === "" ? {} : { slackTeamId }),
     since: developerSinceFromEnvironment(environment),
     signInTableName,
