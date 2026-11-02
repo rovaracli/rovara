@@ -205,9 +205,9 @@ export interface AwsBrokerDependencies {
    * Saved environments (SH25): what a preparation's `savedEnv` field is, for a project and the TASK'S approved environment pin (`testEnvPin`, set only by the developer task start and continue paths). Installed by
    * `installSavedEnv` only while the `sv` switch is on; absent otherwise, so nothing is sent. Never throws. The field names an image and carries no credential.
    */
-  savedEnvPrepare?: (input: { orgId: string; projectName: string; testEnvPin: { revision: number; digest: string } }) => Promise<{ savedEnv?: PrepareSavedEnv }>;
+  savedEnvPrepare?: ((input: { orgId: string; projectName: string; testEnvPin: { revision: number; digest: string } }) => Promise<{ savedEnv?: PrepareSavedEnv }>) | undefined;
   /** Saved environments (SH25, review M1): the pull login for the image a running preparation was told to pull. Installed with `savedEnvPrepare`. Undefined: no login. Never carries more than the one repository. */
-  savedEnvLogin?: (input: { orgId: string; projectName: string; digest: string }) => Promise<SavedEnvRegistryAuth | undefined>;
+  savedEnvLogin?: ((input: { orgId: string; projectName: string; digest: string }) => Promise<SavedEnvRegistryAuth | undefined>) | undefined;
   /** Saved environments (SH24/SH25): the registry's ports (store, sessions, ECR). Wired with the routes; `installSavedEnv` derives the two hooks above from it, only while the switch is on. */
   savedEnvDeps?: SavedEnvDeps;
   /** Injectable clock for funding evidence and its durable audit. */

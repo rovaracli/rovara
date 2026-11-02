@@ -37,9 +37,13 @@ describe("installSavedEnv", () => {
   const deps = { session: { config: { enabled: true } } } as never;
   it("installs both hooks only while the switch is on, and only with the registry's ports", () => {
     expect(Object.keys(installSavedEnv({ savedEnvDeps: deps }, { SAVED_ENV_ENABLED: "1" })).sort()).toEqual(["savedEnvLogin", "savedEnvPrepare"]);
-    expect(installSavedEnv({ savedEnvDeps: deps }, {})).toEqual({});
-    expect(installSavedEnv({ savedEnvDeps: deps }, { SAVED_ENV_ENABLED: "0" })).toEqual({});
-    expect(installSavedEnv({ savedEnvDeps: deps }, { SAVED_ENV_ENABLED: "true" })).toEqual({});
-    expect(installSavedEnv({}, { SAVED_ENV_ENABLED: "1" })).toEqual({});
+    // off is EXPLICIT: both keys are present and undefined, so spreading the result over an input that already had a hook clears it
+    const off = { savedEnvPrepare: undefined, savedEnvLogin: undefined };
+    expect(installSavedEnv({ savedEnvDeps: deps }, {})).toStrictEqual(off);
+    expect(installSavedEnv({ savedEnvDeps: deps }, { SAVED_ENV_ENABLED: "0" })).toStrictEqual(off);
+    expect(installSavedEnv({ savedEnvDeps: deps }, { SAVED_ENV_ENABLED: "true" })).toStrictEqual(off);
+    expect(installSavedEnv({}, { SAVED_ENV_ENABLED: "1" })).toStrictEqual(off);
+    const inherited = { savedEnvPrepare: async () => ({}), savedEnvLogin: async () => undefined };
+    expect({ ...inherited, ...installSavedEnv({ savedEnvDeps: deps }, {}) }).toStrictEqual(off);
   });
 });

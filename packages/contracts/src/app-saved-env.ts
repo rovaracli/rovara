@@ -7,6 +7,13 @@ export const SAVED_ENV_PANEL_REBUILD_REASONS = ["no_image", "key_changed", "max_
 export const SavedEnvPanelReasonSchema = z.enum(SAVED_ENV_PANEL_REBUILD_REASONS);
 export type SavedEnvPanelReason = z.infer<typeof SavedEnvPanelReasonSchema>;
 
+/** The words a failed build may be shown as. The server maps anything else to "failed", so no text of a builder, a log or a person reaches the page. */
+export const SAVED_ENV_PANEL_FAILURES = [
+  "not_proved", "not_approved", "not_fresh", "not_default_branch", "secrets_found", "unsafe_tree", "no_push_session", "build_failed", "push_failed", "digest_mismatch", "base_not_pinned", "prove_failed", "fresh_sandbox_failed",
+  "wrong_commits", "wrong_manifest", "wrong_repository", "repository_mismatch", "failed",
+] as const;
+export const SavedEnvPanelFailureSchema = z.enum(SAVED_ENV_PANEL_FAILURES);
+
 export const SavedEnvPanelSchema = z.object({
   /** "never_proved": no passing Prove yet; "healthy": a ready image; "needs_repair": the last build failed or the image is gone. */
   health: z.enum(["never_proved", "healthy", "needs_repair"]),
@@ -17,7 +24,7 @@ export const SavedEnvPanelSchema = z.object({
   /** Why the last rebuild was queued. */
   lastRebuildReason: SavedEnvPanelReasonSchema.optional(),
   /** The last build that failed, as a fixed word, and when. Cleared by the next one that works. */
-  lastFailure: z.object({ at: z.string().datetime(), reason: z.string().regex(/^[a-z_]{1,40}$/u) }).strict().optional(),
+  lastFailure: z.object({ at: z.string().datetime(), reason: SavedEnvPanelFailureSchema }).strict().optional(),
   /** The caller may press Reset (a maintainer of the project). */
   canReset: z.boolean(),
 }).strict();
@@ -26,6 +33,9 @@ export const SavedEnvPanelReaderSchema = forwardReader(SavedEnvPanelSchema);
 
 export const SavedEnvResetBodySchema = z.object({ action: z.literal("reset"), requestId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/u) }).strict();
 export type SavedEnvResetBody = z.infer<typeof SavedEnvResetBodySchema>;
-/** `queued`: a rebuild is now waiting; `nothing_to_do`: no approved environment, no code to build from, or the project is archived or turned off (the panel says which by what it shows). */
-export const SavedEnvResetAnswerSchema = z.object({ status: z.enum(["queued", "nothing_to_do"]), panel: SavedEnvPanelSchema }).strict();
+/**
+ * `queued`: a rebuild is now waiting (also the answer to the same press sent again); `in_flight`: one is already waiting or running, so nothing was written; `cooldown`: a Reset was asked less than 15 minutes ago;
+ * `nothing_to_do`: no approved environment, no code to build from, or the project is archived or turned off (the panel says which by what it shows).
+ */
+export const SavedEnvResetAnswerSchema = z.object({ status: z.enum(["queued", "in_flight", "cooldown", "nothing_to_do"]), panel: SavedEnvPanelSchema }).strict();
 export const SavedEnvResetAnswerReaderSchema = forwardReader(SavedEnvResetAnswerSchema);

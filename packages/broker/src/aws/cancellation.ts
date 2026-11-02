@@ -65,6 +65,8 @@ export interface OperationRecord extends Operation {
   knowledgeCommit?: string;
   /** Saved environments (SH25): the image digest this prepare invocation was told to pull. The pull login is given for this digest only. */
   savedEnvDigest?: string;
+  /** How many pull logins this preparation was given (at most 3). */
+  savedEnvLoginCount?: number;
   /** The model proxy keys minted for this operation's worker by key id (a hash), when no task record keeps them (Slack work, ruling R31). */
   modelKeyIds?: string[];
   /** The project revision whose non-disk settings applied, which may be newer than the workspace's. */

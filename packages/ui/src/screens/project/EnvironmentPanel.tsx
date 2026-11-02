@@ -24,7 +24,7 @@ export function EnvironmentPanel({ project }: { project: string }) {
   try {
    const answer = await api.reset(project);
    query.setQueryData(savedEnvKey(project), answer.panel);
-   setMessage({ kind: "status", text: answer.status === "queued" ? T.RESET_QUEUED : T.RESET_NOTHING });
+   setMessage({ kind: "status", text: answer.status === "queued" ? T.RESET_QUEUED : answer.status === "in_flight" ? T.RESET_IN_FLIGHT : answer.status === "cooldown" ? T.RESET_COOLDOWN : T.RESET_NOTHING });
   } catch (error) {
    setMessage({ kind: "alert", text: error instanceof ApiError && error.status === 403 ? T.RESET_REFUSED : T.RESET_FAILED });
   } finally { sending.current = false;setBusy(false); }

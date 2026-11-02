@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { PrepareSavedEnvSchema, savedEnvRepositoryName, type SavedEnvManifest } from "../../packages/contracts/src/index.js";
 import {
-  ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, savedEnvPullLogin, sweepDeleted, SAVED_ENV_TASK_CHECK_MS, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
+  ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, savedEnvPullLogin, sweepDeleted, SAVED_ENV_TASK_CHECK_MS, SAVED_ENV_RESET_COOLDOWN_MS, onProjectRegistered, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
   type RegistryImage, type RegistryPort, type SavedEnvDeps, type SavedEnvImageRecord, type SavedEnvState,
 } from "../../packages/broker/src/test-env/saved-env.js";
 import { expectedRepositoryPolicy, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
@@ -719,14 +719,67 @@ describe("SH24 review items", () => {
     expect(w.calls.deleted).toEqual([[dig(5)]]);
   });
 
-  it("the nightly sweep runs the registry deletion again for projects deleted in the last two days, and not for older ones", async () => {
+  it("the nightly sweep runs the registry deletion for a deleted project until a deletion finished AFTER the delete plus a job's lease, and then leaves it alone", async () => {
     const w = world();
-    await onProjectDeleted(w.deps, { orgId: "org-1", projectId: "recent" });
-    seed(w, { deleted: true, deletedAt: iso(T0 - 5 * 86_400_000) });
-    const before = w.calls.repoDeleted;
-    const swept = await sweepDeleted(w.deps);
-    expect(swept).toEqual({ ok: true, swept: 1, failed: 0 });
-    expect(w.calls.repoDeleted).toBe(before + 1);
+    // deleted now, deletion done now: not final yet (a build in flight could still push)
+    await onProjectDeleted(w.deps, ids);
+    const row = () => w.store.rows.get("org-1#proj-1")!;
+    expect(row().registryPurgedAt).toBe(iso(T0));
+    expect(await sweepDeleted(w.deps)).toEqual({ ok: true, swept: 1, failed: 0 });
+    // a sweep a lease later is final
+    w.clock.now = T0 + SAVED_ENV_JOB_LEASE_MS + 1;
+    expect(await sweepDeleted(w.deps)).toEqual({ ok: true, swept: 1, failed: 0 });
+    expect(Date.parse(row().registryPurgedAt!)).toBeGreaterThanOrEqual(Date.parse(row().deletedAt!) + SAVED_ENV_JOB_LEASE_MS);
+    const repeated = w.calls.repoDeleted;
+    expect(await sweepDeleted(w.deps)).toEqual({ ok: true, swept: 0, failed: 0 });
+    expect(w.calls.repoDeleted).toBe(repeated);
+  });
+
+  it("a deleted project whose registry could not be reached is swept until it can, however old", async () => {
+    const down = world({ registry: { async listImages() { throw new Error("ecr down"); } } });
+    expect(await onProjectDeleted(down.deps, ids)).toEqual({ ok: false, reason: "unavailable" });
+    expect(down.store.rows.get("org-1#proj-1")!.registryPurgedAt).toBeUndefined();
+    down.clock.now = T0 + 90 * 86_400_000;
+    expect(await sweepDeleted(down.deps)).toEqual({ ok: true, swept: 0, failed: 1 });
+    const up = world(); seed(up, { deleted: true, deletedAt: iso(T0 - 90 * 86_400_000) });
+    expect(await sweepDeleted(up.deps)).toEqual({ ok: true, swept: 1, failed: 0 });
+    expect(up.store.rows.get("org-1#proj-1")!.registryPurgedAt).toBe(iso(T0));
+  });
+
+  it("the nightly walk of a deleted project deletes its repository whole, and records it", async () => {
+    const w = world({ images: [{ digest: dig(5), tags: ["t"], pushedAt: iso(T0) }] }); seed(w, { deleted: true, deletedAt: iso(T0 - 1000) });
+    expect(await walk(w.deps, ids)).toEqual({ ok: true, deleted: 1 });
+    expect(w.calls.repoDeleted).toBe(1);
+    expect(w.calls.deleted).toEqual([]);
+    expect(w.store.rows.get("org-1#proj-1")!.registryPurgedAt).toBe(iso(T0));
+  });
+
+  it("a project registered again under a deleted name starts over; a live project's row is not touched", async () => {
+    const w = world(); seed(w, { deleted: true, deletedAt: iso(T0 - 1000), registryPurgedAt: iso(T0 - 500), images: [], archived: true, resetRequested: true, lastResetAt: iso(T0 - 5000) });
+    expect(await onProjectRegistered(w.deps, ids)).toEqual({ ok: true });
+    const row = w.store.rows.get("org-1#proj-1")!;
+    expect(row).toMatchObject({ enabled: true, images: [], health: "never_proved" });
+    expect(row.deleted).toBeUndefined();
+    expect(row.archived).toBeUndefined();
+    expect(row.resetRequested).toBeUndefined();
+    expect(row.lastResetAt).toBeUndefined();
+    expect(row.registryPurgedAt).toBeUndefined();
+    expect(await checkRebuild(w.deps, ids, "push")).toMatchObject({ ok: true, queued: true });
+    expect(w.store.log.some((entry) => entry.action === "project_registered")).toBe(true);
+    const live = world(); seed(live, { images: [imageOf(dig(1))] });
+    const before = structuredClone(live.store.rows.get("org-1#proj-1"));
+    expect(await onProjectRegistered(live.deps, ids)).toEqual({ ok: true });
+    expect(live.store.rows.get("org-1#proj-1")).toEqual(before);
+    // with `sv` off the mark is cleared all the same
+    const off = world({ enabled: false }); seed(off, { deleted: true });
+    await onProjectRegistered(off.deps, ids);
+    expect(off.store.rows.get("org-1#proj-1")!.deleted).toBeUndefined();
+  });
+  it("a registration retried after a lost write clears the mark", async () => {
+    const w = world(); seed(w, { deleted: true });
+    w.store.failNextCommit();
+    expect(await onProjectRegistered(w.deps, ids)).toEqual({ ok: true });
+    expect(w.store.rows.get("org-1#proj-1")!.deleted).toBeUndefined();
   });
 });
 
@@ -807,8 +860,10 @@ describe("the Environment panel (SH26)", () => {
 
   it("carries the last failure as a fixed word only", () => {
     const base = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [], health: "needs_repair" as const };
-    expect(panelView({ ...base, lastFailure: "secret_found", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure).toEqual({ at: iso(T0), reason: "secret_found" });
-    expect(panelView({ ...base, lastFailure: "Boom: <b>x</b> 123", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure?.reason).toBe("oombxb");
+    expect(panelView({ ...base, lastFailure: "secrets_found", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure).toEqual({ at: iso(T0), reason: "secrets_found" });
+    // anything outside the fixed words is "failed": a builder's or a person's text never reaches the page
+    for (const text of ["Boom: <b>x</b> 123", "disk full at /srv/build", "", "secrets_found_extra"]) expect(panelView({ ...base, lastFailure: text, lastFailureAt: iso(T0) }, T0, "viewer").lastFailure?.reason, text).toBe("failed");
+    expect(panelView({ ...base, lastFailure: "wrong_commits", lastFailureAt: iso(T0) }, T0, "viewer").lastFailure?.reason).toBe("wrong_commits");
   });
 
   it("only a maintainer of a live project can reset", () => {
@@ -826,7 +881,7 @@ describe("the Environment panel (SH26)", () => {
 
   it("a maintainer's Reset queues a rebuild and the answer is the new panel; the person is in the audit entry", async () => {
     const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
-    const done = await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer" });
+    const done = await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId: "request-0001" });
     expect(done).toMatchObject({ ok: true, status: "queued", panel: { rebuild: { state: "queued", reason: "reset" }, lastRebuildReason: "reset", canReset: true } });
     expect(w.store.log.some((entry) => entry.action === "reset_requested" && entry.actor === "person-1")).toBe(true);
   });
@@ -835,15 +890,97 @@ describe("the Environment panel (SH26)", () => {
     for (const projectRole of ["contributor", "viewer"] as const) {
       const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
       const before = structuredClone(w.store.rows.get("org-1#proj-1"));
-      expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole })).toEqual({ ok: false, reason: "not_maintainer" });
+      expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole, requestId: "request-0001" })).toEqual({ ok: false, reason: "not_maintainer" });
       expect(w.store.rows.get("org-1#proj-1")).toEqual(before);
       expect(w.store.log).toEqual([]);
     }
-    expect(await resetFromPanel(world({ enabled: false }).deps, ids, { actorId: "person-1", projectRole: "maintainer" })).toEqual({ ok: false, reason: "disabled" });
+    expect(await resetFromPanel(world({ enabled: false }).deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId: "request-0001" })).toEqual({ ok: false, reason: "disabled" });
   });
 
   it("a Reset with nothing to build from says so", async () => {
     const w = world({ approved: undefined }); seed(w, { images: [] });
-    expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer" })).toMatchObject({ ok: true, status: "nothing_to_do" });
+    expect(await resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId: "request-0001" })).toMatchObject({ ok: true, status: "nothing_to_do" });
+  });
+});
+
+describe("stale marking (SH25 review L2)", () => {
+  it("a step that says nothing about the image (login, expired) or one this version does not know leaves it ready and queues nothing", async () => {
+    for (const step of ["login", "expired", "from_the_future", ""]) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+      const before = structuredClone(w.store.rows.get("org-1#proj-1"));
+      expect(await markStale(w.deps, ids, { digest: dig(1), step }), step).toEqual({ ok: true });
+      expect(w.store.rows.get("org-1#proj-1"), step).toEqual(before);
+      expect(w.store.log, step).toEqual([]);
+    }
+  });
+
+  it("a step about the image marks it stale and queues the rebuild", async () => {
+    for (const step of ["pull", "inspect", "manifest", "links"]) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], health: "healthy" });
+      expect(await markStale(w.deps, ids, { digest: dig(1), step })).toEqual({ ok: true });
+      const row = w.store.rows.get("org-1#proj-1")!;
+      expect(row.images[0]).toMatchObject({ status: "stale", staleStep: step });
+      expect(row.job?.reason).toBe("stale");
+    }
+  });
+});
+
+describe("Reset is bounded (SH25 review)", () => {
+  it("writes nothing while a job is live or a Reset is already waiting (in_flight)", async () => {
+    const live = world(); seed(live, { images: [imageOf(dig(1))], job: { jobId: "j", leaseToken: "l", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0), leaseUntil: iso(T0 + 3_600_000) } });
+    const before = structuredClone(live.store.rows.get("org-1#proj-1"));
+    expect(await requestReset(live.deps, ids, "person-1", "request-0001")).toEqual({ ok: true, queued: false, why: "in_flight" });
+    expect(live.store.rows.get("org-1#proj-1")).toEqual(before);
+    expect(live.store.log).toEqual([]);
+    const waiting = world({ key: undefined }); seed(waiting, { resetRequested: true });
+    expect(await requestReset(waiting.deps, ids, "person-1")).toEqual({ ok: true, queued: false, why: "in_flight" });
+    // a job whose lease ran out is not in flight
+    const lapsed = world(); seed(lapsed, { images: [imageOf(dig(1))], job: { jobId: "j", leaseToken: "l", reason: "stale", approved: APPROVED, commits: { svc: COMMIT }, expectedKey: KEY, createdAt: iso(T0 - 7_200_000), leaseUntil: iso(T0 - 1) } });
+    expect(await requestReset(lapsed.deps, ids, "person-1")).toMatchObject({ queued: true });
+  });
+
+  it("a second Reset within 15 minutes writes nothing (cooldown), and one after it is taken", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))] });
+    expect(await requestReset(w.deps, ids, "person-1", "request-0001")).toMatchObject({ queued: true });
+    // the job finishes: a Reset again is judged by the cooldown alone
+    const done = structuredClone(w.store.rows.get("org-1#proj-1")!);
+    w.store.rows.set("org-1#proj-1", { ...done, job: undefined, version: done.version });
+    w.clock.now = T0 + SAVED_ENV_RESET_COOLDOWN_MS - 1;
+    const before = structuredClone(w.store.rows.get("org-1#proj-1"));
+    expect(await requestReset(w.deps, ids, "person-1", "request-0002")).toEqual({ ok: true, queued: false, why: "cooldown" });
+    expect(w.store.rows.get("org-1#proj-1")).toEqual(before);
+    w.clock.now = T0 + SAVED_ENV_RESET_COOLDOWN_MS;
+    expect(await requestReset(w.deps, ids, "person-1", "request-0003")).toMatchObject({ queued: true });
+  });
+
+  it("is never remembered on an archived or deleted row", async () => {
+    for (const mark of [{ archived: true }, { deleted: true }] as Array<Partial<SavedEnvState>>) {
+      const w = world(); seed(w, { images: [imageOf(dig(1))], ...mark });
+      const before = structuredClone(w.store.rows.get("org-1#proj-1"));
+      expect(await requestReset(w.deps, ids, "person-1", "request-0001")).toEqual({ ok: true, queued: false, why: "archived" });
+      expect(w.store.rows.get("org-1#proj-1")).toEqual(before);
+      expect(w.store.log).toEqual([]);
+    }
+  });
+
+  it("the same press sent again (same request id) is one press and writes nothing", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))] });
+    expect(await requestReset(w.deps, ids, "person-1", "request-0001")).toMatchObject({ queued: true });
+    const row = structuredClone(w.store.rows.get("org-1#proj-1"));
+    expect(await requestReset(w.deps, ids, "person-1", "request-0001")).toEqual({ ok: true, queued: false, why: "duplicate" });
+    expect(w.store.rows.get("org-1#proj-1")).toEqual(row);
+    expect(w.store.log.filter((entry) => entry.action === "reset_requested")).toHaveLength(1);
+  });
+
+  it("the panel answers queued for the first press and for its replay, in_flight and cooldown as such, and nothing_to_do for an archived project", async () => {
+    const w = world(); seed(w, { images: [imageOf(dig(1))] });
+    const press = (requestId: string) => resetFromPanel(w.deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId });
+    expect(await press("request-0001")).toMatchObject({ ok: true, status: "queued" });
+    expect(await press("request-0001")).toMatchObject({ ok: true, status: "queued" });
+    expect(await press("request-0002")).toMatchObject({ ok: true, status: "in_flight" });
+    const cool = world(); seed(cool, { images: [imageOf(dig(1))], lastResetAt: iso(T0 - 1000) });
+    expect(await resetFromPanel(cool.deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId: "request-0009" })).toMatchObject({ ok: true, status: "cooldown" });
+    const archived = world(); seed(archived, { archived: true });
+    expect(await resetFromPanel(archived.deps, ids, { actorId: "person-1", projectRole: "maintainer", requestId: "request-0009" })).toMatchObject({ ok: true, status: "nothing_to_do", panel: { canReset: false } });
   });
 });

@@ -35,6 +35,8 @@ import {
   SAVED_ENV_KEEP_MIN,
   SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT,
   SAVED_ENV_MAX_AGE_DAYS,
+  SAVED_ENV_USE_STEPS,
+  savedEnvStepMarksStale,
   PrepareSavedEnvSchema,
   SavedEnvBuildResultSchema,
   type PrepareSavedEnv,
@@ -103,6 +105,11 @@ export interface SavedEnvState {
   deleted?: boolean | undefined;
   /** When the project was deleted (the nightly sweep re-runs the registry deletion for a few days after, for a push that was in flight). */
   deletedAt?: string | undefined;
+  /** When the registry deletion last finished for a deleted project. A purge finished before `deletedAt` plus a job lease may have been undone by a push that was in flight, so the nightly sweep does it again. */
+  registryPurgedAt?: string | undefined;
+  /** When a Reset was last asked, and the request it came with (a press sent twice is one press). */
+  lastResetAt?: string | undefined;
+  lastResetRequestId?: string | undefined;
   lastPushAt?: string | undefined;
   lastTaskAt?: string | undefined;
   lastRebuildReason?: RebuildReason | undefined;
@@ -113,7 +120,7 @@ export interface SavedEnvState {
 
 /** What the audit ledger gets: ids, digests and fixed words only. */
 export interface SavedEnvAuditEntry {
-  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "ceiling_walk";
+  action: "activity" | "lease_refused" | "scan_started" | "rebuild_queued" | "build_recorded" | "build_refused" | "build_failed" | "marked_stale" | "reset_requested" | "images_deleted" | "project_archived" | "project_deleted" | "project_registered" | "ceiling_walk";
   orgId: string;
   projectId: string;
   at: string;
@@ -130,8 +137,8 @@ export interface SavedEnvStore {
   commit(next: SavedEnvState, expectedVersion: number | null, audit: SavedEnvAuditEntry): Promise<boolean>;
   /** An audit entry that is not tied to a change of the row (a refused lease, a routine deletion, a scan start). */
   audit(entry: SavedEnvAuditEntry): Promise<void>;
-  /** The projects whose row says deleted since `cutoffIso` (for `sweepDeleted`). */
-  deletedSince(cutoffIso: string): Promise<Array<{ orgId: string; projectId: string }>>;
+  /** The deleted projects whose registry deletion is not final: no `registryPurgedAt`, or one earlier than `deletedAt` plus `leaseMs` (for `sweepDeleted`). */
+  deletedNeedingPurge(leaseMs: number): Promise<Array<{ orgId: string; projectId: string }>>;
 }
 
 export interface RegistryImage { digest: string; tags: string[]; pushedAt: string }
@@ -218,7 +225,7 @@ export function lightSetup(state: Pick<SavedEnvState, "lastPushAt" | "lastTaskAt
 }
 
 export type CheckResult =
-  | { ok: true; queued: false; why: "no_change" | "in_flight" | "archived" | "idle" | "no_approved" | "backoff" | "off_for_project" | "no_heads" | "no_key" }
+  | { ok: true; queued: false; why: "no_change" | "in_flight" | "archived" | "idle" | "no_approved" | "backoff" | "off_for_project" | "no_heads" | "no_key" | "cooldown" | "duplicate" }
   | { ok: true; queued: true; job: Pick<RebuildJob, "jobId" | "reason" | "approved" | "commits"> }
   | { ok: false; reason: "disabled" | "stale_write" };
 
@@ -263,12 +270,26 @@ export async function checkRebuild(deps: SavedEnvDeps, ids: { orgId: string; pro
   return written === undefined ? { ok: false, reason: "stale_write" } : { ok: true, queued: true, job: { jobId: job.jobId, reason, approved, commits: job.commits } };
 }
 
-/** A maintainer pressed Reset: a rebuild is queued now (a fresh backoff does not apply). The caller has checked the maintainer's right and names who asked. */
-export async function requestReset(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, actor: string): Promise<CheckResult> {
+/** A second Reset within this long of the last one writes nothing: a rebuild builds and pushes a whole image. */
+export const SAVED_ENV_RESET_COOLDOWN_MS = 15 * 60_000;
+
+/**
+ * A maintainer pressed Reset: a rebuild is queued now (a fresh backoff does not apply). The caller has checked the maintainer's right and names who asked. Nothing is written when
+ *   - the project is archived or deleted (a Reset is never remembered on such a row: it would build the moment the project is unarchived or its name reused);
+ *   - this very press (`requestId`) was already seen;
+ *   - a job is live or a Reset is already waiting (`in_flight`);
+ *   - a Reset was asked in the last 15 minutes (`cooldown`).
+ */
+export async function requestReset(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, actor: string, requestId?: string): Promise<CheckResult> {
   const off = disabled(deps);
   if (off !== undefined) return off;
   const prior = await deps.store.get(ids.orgId, ids.projectId);
-  const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), resetRequested: true }, audit(deps, ids, "reset_requested", { actor: actor.slice(0, 200) }));
+  const now = deps.now();
+  if (prior?.deleted === true || prior?.archived === true) return { ok: true, queued: false, why: "archived" };
+  if (requestId !== undefined && prior?.lastResetRequestId === requestId) return { ok: true, queued: false, why: "duplicate" };
+  if (prior?.resetRequested === true || (prior?.job !== undefined && Date.parse(prior.job.leaseUntil) > now)) return { ok: true, queued: false, why: "in_flight" };
+  if (prior?.lastResetAt !== undefined && now - Date.parse(prior.lastResetAt) < SAVED_ENV_RESET_COOLDOWN_MS) return { ok: true, queued: false, why: "cooldown" };
+  const written = await commit(deps, prior, { ...(prior ?? blank(ids.orgId, ids.projectId)), resetRequested: true, lastResetAt: iso(now), ...(requestId === undefined ? {} : { lastResetRequestId: requestId }) }, audit(deps, ids, "reset_requested", { actor: actor.slice(0, 200) }));
   if (written === undefined) return { ok: false, reason: "stale_write" };
   return checkRebuild(deps, ids, "poll");
 }
@@ -429,6 +450,9 @@ export async function reportFailure(deps: SavedEnvDeps, ids: { orgId: string; pr
  */
 export async function markStale(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }, input: { digest: string; step: string }): Promise<{ ok: boolean }> {
   if (disabled(deps) !== undefined) return { ok: false };
+  // Only a step that says something about the IMAGE marks it: no login, an out-of-date login and a step this version does not know change nothing.
+  const step = SAVED_ENV_USE_STEPS.find((known) => known === input.step);
+  if (step === undefined || !savedEnvStepMarksStale(step)) return { ok: true };
   const state = await deps.store.get(ids.orgId, ids.projectId);
   if (state === undefined) return { ok: false };
   const at = state.images.findIndex((image) => image.digest === input.digest);
@@ -518,6 +542,11 @@ export async function walk(deps: SavedEnvDeps, ids: { orgId: string; projectId: 
   if (off !== undefined) return off;
   const state = await deps.store.get(ids.orgId, ids.projectId);
   if (state === undefined) return { ok: true, deleted: 0 };
+  // A deleted project's registry is deleted whole (a push that was in flight at the delete may have re-created the repository); the nightly walk includes deleted rows for this.
+  if (state.deleted === true) {
+    const purged = await purgeRegistry(deps, ids, "deleted_walk");
+    return purged.ok ? { ok: true, deleted: purged.deleted } : { ok: false, reason: "unavailable" };
+  }
   const manage = await mintManageSession(deps.session.config, deps.session.ports, ids);
   if (!manage.ok) return { ok: false, reason: "unavailable" };
   let listed: RegistryImage[];
@@ -586,26 +615,37 @@ async function purgeRegistry(deps: SavedEnvDeps, ids: { orgId: string; projectId
   if (off !== undefined) return off;
   const manage = await mintManageSession(deps.session.config, deps.session.ports, ids);
   if (!manage.ok) return { ok: false, reason: "unavailable" };
-  let count: number;
+  let count = 0;
   try {
     const found = await deps.registry.listImages(manage.credentials, manage.repository);
-    if (found === "absent") return { ok: true, deleted: 0 };
-    count = found.length;
-    await deps.registry.deleteRepository(manage.credentials, manage.repository);
+    if (found !== "absent") {
+      count = found.length;
+      await deps.registry.deleteRepository(manage.credentials, manage.repository);
+    }
   } catch { return { ok: false, reason: "unavailable" }; }
-  await deps.store.audit(audit(deps, ids, "images_deleted", { count, reason })).catch(() => undefined);
+  if (count > 0) await deps.store.audit(audit(deps, ids, "images_deleted", { count, reason })).catch(() => undefined);
+  await markPurged(deps, ids);
   return { ok: true, deleted: count };
 }
 
-/** How long after a delete the nightly sweep still re-runs the registry deletion: far longer than a job's lease, so a build that was in flight at the delete cannot leave a repository behind. */
-export const SAVED_ENV_DELETED_SWEEP_DAYS = 2;
+/** Records that the registry deletion finished now. Best effort: a row that cannot be written is simply swept again. */
+async function markPurged(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }): Promise<void> {
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    const state = await deps.store.get(ids.orgId, ids.projectId).catch(() => undefined);
+    if (state === undefined || state.deleted !== true) return;
+    if ((await commit(deps, state, { ...state, registryPurgedAt: iso(deps.now()) }, audit(deps, state, "images_deleted", { reason: "purged" })).catch(() => undefined)) !== undefined) return;
+  }
+}
 
-/** Nightly: the registry deletion is run again for every project deleted in the last `SAVED_ENV_DELETED_SWEEP_DAYS` days (a push in flight at the delete re-creates the repository). Best effort per project. */
+/**
+ * Nightly: the registry deletion is run again for every deleted project whose deletion is not final. A deletion is final once it finished AFTER `deletedAt` plus a job's lease: a build that was in flight at the
+ * delete cannot push after that. Best effort per project.
+ */
 export async function sweepDeleted(deps: SavedEnvDeps): Promise<{ ok: true; swept: number; failed: number } | { ok: false; reason: "disabled" | "unavailable" }> {
   const off = disabled(deps);
   if (off !== undefined) return off;
   let rows: Array<{ orgId: string; projectId: string }>;
-  try { rows = await deps.store.deletedSince(iso(deps.now() - SAVED_ENV_DELETED_SWEEP_DAYS * DAY_MS)); } catch { return { ok: false, reason: "unavailable" }; }
+  try { rows = await deps.store.deletedNeedingPurge(SAVED_ENV_JOB_LEASE_MS); } catch { return { ok: false, reason: "unavailable" }; }
   let swept = 0;
   let failed = 0;
   for (const row of rows) {
@@ -613,4 +653,17 @@ export async function sweepDeleted(deps: SavedEnvDeps): Promise<{ ok: true; swep
     if (done.ok) swept += 1; else failed += 1;
   }
   return { ok: true, swept, failed };
+}
+
+/**
+ * A project is registered under a name whose row says deleted (a name can be reused after a delete): the mark is cleared and the row starts over (no images, no job, nothing remembered of the old project). An
+ * old repository that was not deleted yet holds only digests the new row does not name, so the walk deletes them. The mark is written whatever the `sv` switch says. A project with no deleted row changes nothing.
+ */
+export async function onProjectRegistered(deps: SavedEnvDeps, ids: { orgId: string; projectId: string }): Promise<{ ok: boolean }> {
+  for (let attempt = 0; attempt < COMMIT_RETRIES; attempt += 1) {
+    const state = await deps.store.get(ids.orgId, ids.projectId);
+    if (state?.deleted !== true) return { ok: true };
+    if ((await commit(deps, state, blank(ids.orgId, ids.projectId), audit(deps, state, "project_registered"))) !== undefined) return { ok: true };
+  }
+  return { ok: false };
 }

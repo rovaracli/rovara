@@ -20,10 +20,13 @@ export async function savedEnvPrepareOf(
   try { return await resolve({ orgId: options.orgId, projectName: project.definition.name, testEnvPin: options.testEnvPin }); } catch { return {}; }
 }
 
-/** The two hooks, from the registry's ports, and only while the `sv` switch is on: with it off nothing is installed, so nothing is sent and no login is given. */
-export function installSavedEnv(input: Pick<AwsBrokerDependencies, "savedEnvDeps">, env: NodeJS.ProcessEnv = process.env): Pick<AwsBrokerDependencies, "savedEnvPrepare" | "savedEnvLogin"> {
+/**
+ * The two hooks, from the registry's ports, and only while the `sv` switch is on. With it off (or no ports) both are set to undefined EXPLICITLY, so a hook that arrived with the input is cleared too:
+ * nothing is sent and no login is given.
+ */
+export function installSavedEnv(input: Pick<AwsBrokerDependencies, "savedEnvDeps">, env: NodeJS.ProcessEnv = process.env): { savedEnvPrepare: AwsBrokerDependencies["savedEnvPrepare"] | undefined; savedEnvLogin: AwsBrokerDependencies["savedEnvLogin"] | undefined } {
   const deps = input.savedEnvDeps;
-  if (deps === undefined || !savedEnvEnabled(env)) return {};
+  if (deps === undefined || !savedEnvEnabled(env)) return { savedEnvPrepare: undefined, savedEnvLogin: undefined };
   return {
     savedEnvPrepare: ({ orgId, projectName, testEnvPin }) => savedEnvForPrepare(deps, { orgId, projectId: projectName }, testEnvPin),
     savedEnvLogin: async ({ orgId, projectName, digest }) => {

@@ -5,7 +5,8 @@
 //   - the request carries the operation's repository grant (signed, bound to this workspace and operation, short lived);
 //   - the operation is this workspace's ACTIVE PREPARE and live: no other operation (a task, a publication) and no finished preparation is ever given a login;
 //   - the image is the digest the broker recorded WITH THE OPERATION when it built the invocation (`savedEnvDigest`), never one the request names; an operation that was told no image gets no login;
-//   - the org and project come from the workspace, never from the request. The login is for that one repository, short lived, and is not logged: the line names the digest and the expiry only.
+//   - the org and project come from the workspace, never from the request. The login is for that one repository, short lived, and is not logged: the line names the workspace, the operation, the digest, the repository and the expiry; the login itself is never in it.
+//   - a preparation asks at most `SAVED_ENV_LOGIN_MAX_PER_OPERATION` times (the worker asks once): a counter on the operation, added to with a condition, refuses the rest with FORBIDDEN.
 import { SavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@agentx/contracts";
 
 export interface SavedEnvLoginContext {
@@ -15,11 +16,15 @@ export interface SavedEnvLoginContext {
   inspectGrant(grant: string): { workspaceId: string; operationId: string };
   /** The operation, its workspace, the org and project the workspace belongs to, and the image digest the operation was told to pull. */
   readOperation(workspaceId: string, operationId: string): Promise<{ kind: string; status: string; savedEnvDigest: string | undefined; orgId: string | undefined; projectName: string; workspace: { status: string; activeOperationId: string | null | undefined } }>;
+  /** Counts one login against the operation, atomically: false once the operation has had `SAVED_ENV_LOGIN_MAX_PER_OPERATION`. */
+  countLogin(workspaceId: string, operationId: string): Promise<boolean>;
   /** The login for that image, or undefined. */
   login(input: { orgId: string; projectName: string; digest: string }): Promise<SavedEnvRegistryAuth | undefined>;
   log?: (event: Record<string, unknown>) => void;
 }
 
+/** A preparation's worker asks once; a few more cover a retry of the request itself. */
+export const SAVED_ENV_LOGIN_MAX_PER_OPERATION = 3;
 const LIVE_STATUSES = new Set(["ACCEPTED", "DISPATCHING", "RUNNING"]);
 
 export async function exchangeSavedEnvLoginCore(context: SavedEnvLoginContext, input: { grant: string | undefined; workspaceId: string; operationId: string; body: unknown }): Promise<{ login: SavedEnvRegistryAuth }> {
@@ -34,6 +39,7 @@ export async function exchangeSavedEnvLoginCore(context: SavedEnvLoginContext, i
     throw agentXError("FORBIDDEN", "saved environment logins are given to a running preparation only");
   }
   if (operation.savedEnvDigest === undefined || operation.orgId === undefined) throw agentXError("FORBIDDEN", "saved environment login grant does not cover this request");
+  if (!(await context.countLogin(input.workspaceId, input.operationId))) throw agentXError("FORBIDDEN", "saved environment login was already given for this preparation");
   const login = await context.login({ orgId: operation.orgId, projectName: operation.projectName, digest: operation.savedEnvDigest });
   const parsed = SavedEnvRegistryAuthSchema.safeParse(login);
   if (!parsed.success) throw agentXError("FORBIDDEN", "saved environment login is not available");

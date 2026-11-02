@@ -58,12 +58,12 @@ it("shows health, the age of the saved copy and why the last rebuild started, in
 });
 
 it("says what a waiting or running rebuild is for, a stale copy, and the last failure", async () => {
- setup({ panel: panel({ health: "needs_repair", image: { builtAt: "2026-10-20T10:00:00.000Z", ageDays: 13, status: "stale" }, rebuild: { state: "running", reason: "stale" }, lastFailure: { at: "2026-11-01T09:00:00.000Z", reason: "secret_found" } }) });
+ setup({ panel: panel({ health: "needs_repair", image: { builtAt: "2026-10-20T10:00:00.000Z", ageDays: 13, status: "stale" }, rebuild: { state: "running", reason: "stale" }, lastFailure: { at: "2026-11-01T09:00:00.000Z", reason: "secrets_found" } }) });
  const section = await region();
  expect(await section.findByText("Needs repair. New tasks set up fresh until the next build works.")).toBeTruthy();
  expect(section.getByText("Saved copy built 13 days ago (2026-10-20). A task could not use it, so a new one is due.")).toBeTruthy();
  expect(section.getByText("Building a new saved copy now because a task could not use the saved copy.")).toBeTruthy();
- expect(section.getByText("The last build failed on 2026-11-01 (secret found).")).toBeTruthy();
+ expect(section.getByText("The last build failed on 2026-11-01 (secrets found).")).toBeTruthy();
 });
 
 it("says so when there is no saved copy yet", async () => {
@@ -103,12 +103,21 @@ it("Reset is sent once per press, with a request id, and the answer is the new p
  expect(typeof (f.posts()[0]!.body as { requestId: string }).requestId).toBe("string");
 });
 
+it("says when a rebuild is already waiting or a reset was just asked, and keeps what the server answered", async () => {
+ for (const [status, text] of [["in_flight", "A new saved environment is already waiting to be built or being built."], ["cooldown", "A reset was asked a few minutes ago. Wait a little before asking again."]] as const) {
+  const f = setup({ post: () => ({ status: 200, body: { status, panel: panel() } }) });
+  fireEvent.click(await (await region()).findByRole("button", { name: "Reset" }));
+  expect(await screen.findByText(text)).toBeTruthy();
+  f.unmount();
+ }
+});
+
 it("each press carries its own request id", async () => {
  const f = setup();
  const section = await region();
  fireEvent.click(await section.findByRole("button", { name: "Reset" }));
  await waitFor(() => expect(f.posts()).toHaveLength(1));
- await waitFor(() => expect((section.getByRole("button", { name: "Reset" })).disabled).toBe(false));
+ await waitFor(() => expect(section.getByRole("button", { name: "Reset" }).hasAttribute("disabled")).toBe(false));
  fireEvent.click(section.getByRole("button", { name: "Reset" }));
  await waitFor(() => expect(f.posts()).toHaveLength(2));
  expect((f.posts()[0]!.body as { requestId: string }).requestId).not.toBe((f.posts()[1]!.body as { requestId: string }).requestId);

@@ -7,6 +7,7 @@ export const ENV = {
  LOADING: "Loading the saved environment", LOAD_FAILED: "Couldn't load the saved environment. Try again.", TRY_AGAIN: "Try again",
  RESET: "Reset", RESET_HELP: "Throw away the saved copy and build a new one from the current code.",
  RESET_QUEUED: "A new saved environment is being built.", RESET_NOTHING: "Nothing to build right now. The project needs an approved test environment and code to build from.",
+ RESET_IN_FLIGHT: "A new saved environment is already waiting to be built or being built.", RESET_COOLDOWN: "A reset was asked a few minutes ago. Wait a little before asking again.",
  RESET_FAILED: "Couldn't start the rebuild. Try again.", RESET_REFUSED: "Only a maintainer of this project can reset the saved environment.",
  ONLY_MAINTAINER: "Only a maintainer of this project can reset it.",
  NO_IMAGE: "No saved copy yet.",
