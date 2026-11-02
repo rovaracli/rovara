@@ -245,6 +245,10 @@ describe("the health route's grants (A13)", () => {
       // B34: existing request retention reads and bounded Slack pending approval cleanup retention.
       "packages/broker/src/org/project-slack-browser.ts",
       "packages/broker/src/org/project-slack-proposals.ts",
+      // 2026-11-02, sh-health-wire (SH28): the project's health record (`TEST_ENV_HEALTH`, one item per project, rewritten by the nightly run) expires after 60 days (HEALTH_TTL_MS) if no run refreshes it; only health.ts writes it.
+      "packages/broker/src/test-env/health.ts",
+      // 2026-11-02, sh-health-wire (SH28): a proposed fix task (`TEST_ENV_PROPOSED_FIX_TASK`, written once per key, never updated) expires after 30 days (TTL_MS) if nobody starts or dismisses it; only proposed-tasks.ts writes it.
+      "packages/broker/src/test-env/proposed-tasks.ts",
       // 2026-10-31, the lanes merged into cloud/next. Each writes rows that are meant to expire, none a durable record, and each was read for that:
       // Meta repo lane E (context sources): the loaded-knowledge manifest of a run, a source's call and byte counters, the kept quotes and citations of a result, and a source change's history item.
       "packages/broker/src/developer/loaded-knowledge.ts", "packages/broker/src/context-sources/usage.ts", "packages/broker/src/context-sources/quotes.ts",
@@ -287,6 +291,8 @@ describe("the health route's grants (A13)", () => {
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
       // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
       "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
+      // 2026-11-02, live-fixes (N1): the marker that a refused Slack Ask question was answered with its saved reply, so a redelivery is not read as a new question; it lives two days, then the TTL deletes it.
+      "    await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: { ...slackAskRefusedKey(taskId, noteTs), entityType: \"SLACK_ASK_REFUSED\", [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) + 2 * 86_400 } }));",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
       // T7c: the held plan's marker (a small item the recovery sweep reads), always given a TTL; every finish deletes it, the TTL is only the backstop.
       "        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(planHold.deadlineAt) / 1000) + 7 * 86_400 } } }]",
@@ -301,6 +307,7 @@ describe("the health route's grants (A13)", () => {
     const projectCreation = broker.slice(broker.indexOf("async function createCloudProject("), broker.indexOf("async function createProjectSetupAdmissionRows("));
     expect(projectCreation).toContain('entityType: "PROJECT_CREATE_REQUEST"');
     expect(projectCreation).toContain(brokerUses.shift());
+    expect(brokerUses.shift()).toContain('entityType: "SLACK_ASK_REFUSED"');
     const channelOperation = broker.slice(broker.indexOf("function channelOperation("), broker.indexOf("function requesterOf("));
     expect(channelOperation).toContain('entityType: "CHANNEL_OPERATION"');
     expect(channelOperation).toContain(brokerUses[0]);
