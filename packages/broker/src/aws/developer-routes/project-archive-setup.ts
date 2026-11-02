@@ -176,8 +176,8 @@ export async function closeSupersededCheck(deps: DeveloperRouteDependencies, tas
   const started = Date.parse(previous.startedAt);
   try {
     await closeSetupCheck(deps.documentClient, deps.tableName, previous.workspaceId, {
-      // TE-4: `stop` ends a check that is still running because a newer save replaced it (its prepare is failed first, as for a stalled one); otherwise only a finished or stalled one is closed.
-      now: new Date(deps.now()), stalled: options.stop === true || (Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS), deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
+      // TE-4: `stop` ends a check that is still running because a newer save replaced it (a prepare not yet started is failed with its outbox record so nothing starts for it; a running one is failed and its machine deleted); otherwise only a finished or stalled one is closed.
+      now: new Date(deps.now()), stalled: Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS, ...(options.stop === true ? { stop: true } : {}), deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
     });
   } catch (error) {
     logDeveloperEvent({ event: "developer.setup_check_supersede_close_failed", workspaceId: previous.workspaceId, error: error instanceof Error ? error.name : "unknown" });

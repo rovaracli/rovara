@@ -70,6 +70,17 @@ async function failStalledPrepare(client: Client, tableName: string, workspaceId
 }
 
 /**
+ * TE-4: whether a check that a newer change replaced may be stopped now. Its prepare is failed (the dispatcher claims only an ACCEPTED operation, so a prepare not yet claimed is never started; a RUNNING one has its machine
+ * deleted by the close). One the dispatcher has claimed (DISPATCHING) may be starting a machine at this moment, which deleting now could miss, so it is left to finish (a check ends in 50 minutes at most, by its result or the sweep).
+ */
+async function mayStopPrepare(client: Client, tableName: string, workspaceId: string, workspace: Item): Promise<boolean> {
+  const operationId = workspace.activeOperationId;
+  if (typeof operationId !== "string") return true;
+  const operation = await get(client, tableName, { pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` });
+  return operation?.status !== "DISPATCHING";
+}
+
+/**
  * Ends a check: the machine and volume go, then one transaction closes the workspace (remembering the status it had, which the project's setup
  * status reads), gives the slot back and drops the watch. `stalled` says the check has had its 50 minutes, so a prepare still running is failed
  * first. Idempotent: a closed workspace only has its slot given back if that was missed, and a released slot is never given back twice.
@@ -79,7 +90,7 @@ export async function closeSetupCheck(
   client: Client,
   tableName: string,
   workspaceId: string,
-  options: { now: Date; stalled: boolean; deleteCompute: DeleteWorkspaceCompute },
+  options: { now: Date; stalled: boolean; deleteCompute: DeleteWorkspaceCompute; /** TE-4: a newer change replaced this check; end it even though it is not stalled. */ stop?: boolean },
 ): Promise<SetupCheckClose> {
   const now = options.now.toISOString();
   for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
@@ -93,7 +104,8 @@ export async function closeSetupCheck(
       return "closed";
     }
     if (workspace.status === "PREPARING") {
-      if (!options.stalled) return "busy";
+      if (!options.stalled && options.stop !== true) return "busy";
+      if (!options.stalled && !await mayStopPrepare(client, tableName, workspaceId, workspace)) return "busy";
       if (!await failStalledPrepare(client, tableName, workspaceId, workspace, now)) return "busy";
       workspace = await get(client, tableName, { pk: `WORKSPACE#${workspaceId}`, sk: "META" });
       if (workspace === undefined) continue;

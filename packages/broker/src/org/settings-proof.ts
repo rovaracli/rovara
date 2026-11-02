@@ -29,11 +29,13 @@ export interface SavedProof extends ProofLists {
 export interface HeldBody { setupCommands?: string[] | undefined; testCommands?: string[] | undefined; devcontainer?: { repository: string; configPath?: string | undefined } | null | undefined }
 export interface HeldChange {
   requestId: string; checkRequestId: string; digest: string; by: string; byName: string; amr: string; slackUserId?: string | undefined; heldAt: string; baseRevision: number;
-  body: HeldBody; fields: Array<"setupCommands" | "testCommands" | "devcontainer">;
+  sessionId: string; body: HeldBody; fields: Array<"setupCommands" | "testCommands" | "devcontainer">;
   /** The lists as the save would store them. `devcontainer: null` means the change removes it. */
   lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: ProofDevcontainer | null | undefined };
   workspaceId?: string | undefined; startedAt?: string | undefined;
   status: "checking" | "applying" | "applied" | "failed" | "stale" | "refused" | "not_started"; reason?: string | undefined; claimedAt?: string | undefined;
+  /** Set once the change ended without being written; the notifier tells the person who sent it, once. */
+  noticeAt?: string | undefined;
 }
 
 export interface ProofItem { proven?: ProvenSetup; saved?: SavedProof; held?: HeldChange; lastUndo?: { requestId: string; revision: number; at: string } }
@@ -112,6 +114,8 @@ export const PROOF_WORDS = {
   heldStale: "The settings changed while this change was being checked, so it was not saved. Send it again.",
   heldRefused: "This change passed its check but could not be saved, so nothing was changed.",
   heldNotStarted: "The check of this change did not start, so it was not saved. Send it again.",
+  heldTimedOut: "The check of this change did not finish in time, so it was not saved. Send it again.",
+  heldGone: "The sign-in of the person who sent this change has ended, or they can no longer change this project's settings, so it was not saved.",
   heldBusy: "A check is already running for this project. Send this change again when it has finished.",
   apiOnly: "Change setup commands in the Rovara app, in a browser, or send them again after the running check.",
   noCheck: "Checking commands on a fresh machine is not set up here, so commands cannot be changed with an API key.",

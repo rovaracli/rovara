@@ -7,25 +7,28 @@
 // One check in flight per project; a newer save supersedes an older pending one. The check's result is read live from its workspace; it is acted on (proof recorded, failure announced, held change written)
 // by `settleSettingsProof`, which runs whenever the project is read or saved, so no timer is needed and a person looking at the page is what drives it.
 import { randomUUID } from "node:crypto";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXError, AgentXNameSchema, ProjectDefinitionSchema, ProjectSettingsBodySchema, ProjectSettingsUndoBodySchema, agentXError, canonicalJson, projectAllows, settingOriginOf, withSettingOrigins,
+  AgentXError, AgentXNameSchema, StoredProjectDefinitionSchema, projectRevisionKey, type StoredProjectDefinition, ProjectDefinitionSchema, ProjectSettingsBodySchema, ProjectSettingsUndoBodySchema, agentXError, canonicalJson, projectAllows, settingOriginOf, withSettingOrigins,
   type AppProjectDetail, type OrgId, type ProjectOriginField, type ProjectRole, type ProjectSettingsBody, type SettingsHeld, type SettingsProof,
 } from "@agentx/contracts";
 import { auditedWrite } from "../../playbook/project-settings-audit.js";
+import type { TransactItem } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditOccurrence, auditProjectSetupRestored } from "../../audit/events.js";
 import { readProjectMeta } from "../../developer/project-roles.js";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { ManagedByFileError, SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../../org/project-settings.js";
-import { adoptCandidateAsProjectCheck, setupStateOfCheck } from "../../org/project-setup-check.js";
+import { adoptCandidateAsProjectCheck, setupCheckRecordKey, setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
 import {
-  PROOF_WORDS, heldAsLists, listsOfDefinition, provenNotNewerThan, readProof, reasonLine, sameProofLists, whileStill, writePart,
+  PROOF_WORDS, heldAsLists, settingsProofKey, listsOfDefinition, provenNotNewerThan, readProof, reasonLine, sameProofLists, whileStill, writePart,
   type HeldBody, type HeldChange, type ProofItem, type ProofLists, type SavedProof,
 } from "../../org/settings-proof.js";
 import { draftCommandLists, draftCommandsDigest, type DraftCommandLists } from "../../rovara-code/setup-draft-check.js";
 import { SETUP_CHECK_MAX_AGE_MS } from "../../test-env/prove-from-setup-check.js";
 import { PROJECT_NOT_FOUND_IN_APP, signInStoreOf } from "./common.js";
+import { authenticateSession } from "./authentication.js";
 import { freshSignInOf } from "./test-environment-wizard.js";
 import { setupCheckDepsOf, visibleProjectRoles } from "./project-list.js";
 import { closeSupersededCheck, getAppProject, startListsCandidateSetupCheck } from "./project-archive-setup.js";
@@ -38,6 +41,8 @@ type Fields = Array<"setupCommands" | "testCommands" | "devcontainer">;
 
 /** A held change whose claim is older than this was left by a reader that died between claiming and writing; another reader may take it. */
 const CLAIM_MS = 2 * 60_000;
+/** A held change whose check has not reported by now is dropped, with a notice. A check is failed at 50 minutes by the sweep; this leaves room for that. */
+const HOLD_MAX_MS = 3 * 60 * 60_000;
 
 const storeOf = (deps: DeveloperRouteDependencies) => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now });
 const nowIso = (deps: DeveloperRouteDependencies) => new Date(deps.now()).toISOString();
@@ -100,12 +105,38 @@ async function startCheck(deps: DeveloperRouteDependencies, caller: DeveloperCal
 
 // ---- settling: what a finished check means
 
-/** The person a held change is written as: who sent it, with the role they hold NOW (a Slack identity is not needed: a maintainer holds the role by grant or by org role). Undefined when they are no longer in the organization (the change is then never written). */
+/**
+ * The person a held change is written as: who sent it, as that sign-in stands NOW. The key's session must be live (not revoked or expired), the developer not revoked, the sign-in method still allowed and the person
+ * still in the organization, with the role they hold today (`authenticateSession`, the check every request makes). Undefined otherwise: the change is then never written. Whether they may still edit this project's
+ * settings is the settings save's own check, made when it is written.
+ */
 async function heldCaller(deps: DeveloperRouteDependencies, orgId: OrgId, held: HeldChange): Promise<DeveloperCaller | undefined> {
-  const membership = await deps.orgs?.orgForDeveloper(held.by);
-  if (membership === undefined || membership.orgId !== orgId) return undefined;
-  return { developerId: held.by, sessionId: "settings-proof", amr: held.amr as DeveloperCaller["amr"], name: held.byName, orgId, orgRole: membership.role };
+  try {
+    const caller = await authenticateSession(deps, { developerId: held.by, sessionId: held.sessionId, amr: held.amr as DeveloperCaller["amr"] });
+    return caller.orgId === orgId ? caller : undefined;
+  } catch (error) {
+    if (error instanceof AgentXError) return undefined;
+    throw error;
+  }
 }
+
+/** The definition stored at one revision, if it reads. */
+async function definitionAt(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<StoredProjectDefinition | undefined> {
+  const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectRevisionKey(orgId, name, revision), ConsistentRead: true }))) as { Item?: { definition?: unknown } }).Item;
+  const parsed = StoredProjectDefinitionSchema.safeParse(item?.definition);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** A held change that ended without being written: the state, why, and the mark that makes the notifier tell the person who sent it. */
+const endedHeld = (deps: DeveloperRouteDependencies, held: HeldChange, status: HeldChange["status"], reason: string | undefined): HeldChange => ({ ...held, status, ...(reason === undefined ? {} : { reason }), noticeAt: nowIso(deps) });
+
+/** Commits with the held change's write only while that change is still the one being applied: a newer change that replaced it makes this write land nowhere. */
+const heldGuard = (deps: DeveloperRouteDependencies, orgId: OrgId, name: string, held: HeldChange): TransactItem => ({ ConditionCheck: {
+  TableName: deps.tableName, Key: settingsProofKey(orgId, name),
+  ConditionExpression: "#held.checkRequestId = :guardId AND #held.#guardStatus = :guardStatus",
+  ExpressionAttributeNames: { "#held": "held", "#guardStatus": "status" },
+  ExpressionAttributeValues: { ":guardId": held.checkRequestId, ":guardStatus": "applying" },
+} });
 
 async function recordProven(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, lists: ProofLists, revision: number): Promise<void> {
   const provenAt = nowIso(deps);
@@ -121,25 +152,35 @@ async function applyHeld(deps: DeveloperRouteDependencies, orgId: OrgId, name: s
     ? { expression: "#part.checkRequestId = :guardId AND #part.#guardStatus = :guardStatus AND #part.claimedAt = :claimed", names: { "#guardStatus": "status" }, values: { ":guardId": held.checkRequestId, ":guardStatus": "applying", ":claimed": held.claimedAt ?? "" } }
     : whileStill(held.checkRequestId, "checking"));
   if (!claimed) return;
-  const end = (status: HeldChange["status"], reason?: string) => writePart(store, orgId, name, "held", { ...held, status, claimedAt, ...(reason === undefined ? {} : { reason }) }, whileStill(held.checkRequestId, "applying"));
+  const applying: HeldChange = { ...held, status: "applying", claimedAt };
+  const end = (status: HeldChange["status"], reason?: string) => writePart(store, orgId, name, "held", status === "applied" ? { ...applying, status } : endedHeld(deps, applying, status, reason), whileStill(held.checkRequestId, "applying"));
   const caller = await heldCaller(deps, orgId, held);
-  if (caller === undefined) { await end("refused", "the person who sent this change is no longer in this organization"); return; }
+  if (caller === undefined) { await end("refused", PROOF_WORDS.heldGone); return; }
   const body = { requestId: held.requestId, expectedRevision: held.baseRevision, ...held.body } as ProjectSettingsBody;
+  const writtenRevision = held.baseRevision + 1;
+  /** What the revision this change wrote holds is what was held, and nothing else was recorded in its place. */
+  const isTheChange = (definition: StoredProjectDefinition | undefined): definition is StoredProjectDefinition => definition !== undefined && sameProofLists(listsOfDefinition(definition), heldAsLists(held.lists, listsOfDefinition(definition)));
   try {
-    const written = await putProjectSettings(deps, caller, encodeURIComponent(name), body);
-    await recordProven(deps, orgId, name, heldAsLists(held.lists, listsOfDefinition((await latestRevision(store, orgId, name))!.definition)), written.project.latestRevision);
+    await putProjectSettings(deps, caller, encodeURIComponent(name), body, { guardItems: [heldGuard(deps, orgId, name, applying)] });
+    // The revision this very write made, not whatever is latest by now: a save that landed after it is not what was checked.
+    const written = await definitionAt(deps, orgId, name, writtenRevision);
+    if (!isTheChange(written)) { await end("refused", PROOF_WORDS.heldRefused); return; }
+    await recordProven(deps, orgId, name, listsOfDefinition(written), writtenRevision);
     // The check ran exactly what was written: it is the project's own check at the new revision, so the project's check is not run twice.
-    await adoptCandidateAsProjectCheck(setupCheckDepsOf(deps), { orgId, project: name, workspaceId: check.workspaceId, startedAt: check.startedAt, actorId: held.by, revision: written.project.latestRevision });
+    await adoptCandidateAsProjectCheck(setupCheckDepsOf(deps), { orgId, project: name, workspaceId: check.workspaceId, startedAt: check.startedAt, actorId: held.by, revision: writtenRevision });
     await end("applied");
   } catch (error) {
     if (code(error) === "PROJECT_REVISION_MISMATCH") {
       // The revision moved: nothing is written unless a repeat of this very write already landed (the claim was taken over after a reader died).
-      const latest = await latestRevision(store, orgId, name);
-      const landed = latest !== undefined && latest.definition.revision === held.baseRevision + 1 && sameProofLists(listsOfDefinition(latest.definition), heldAsLists(held.lists, listsOfDefinition(latest.definition)));
+      const landed = isTheChange(await definitionAt(deps, orgId, name, writtenRevision));
+      if (landed) {
+        const written = (await definitionAt(deps, orgId, name, writtenRevision))!;
+        await recordProven(deps, orgId, name, listsOfDefinition(written), writtenRevision);
+      }
       await end(landed ? "applied" : "stale", landed ? undefined : PROOF_WORDS.heldStale);
       return;
     }
-    logDeveloperEvent({ event: "developer.settings_proof_held_refused", orgId, project: name, code: code(error) ?? "unknown" });
+    logDeveloperEvent({ event: "developer.settings_proof_held_refused", orgId, project: name, code: code(error) ?? (error instanceof Error ? error.name : "unknown") });
     await end("refused", reasonLine(code(error) === undefined ? PROOF_WORDS.heldRefused : messageOf(error)) ?? PROOF_WORDS.heldRefused);
   }
 }
@@ -178,28 +219,45 @@ export async function settleSettingsProof(deps: DeveloperRouteDependencies, orgI
     }
     const held = proof?.held;
     if (held !== undefined && (held.status === "checking" || (held.status === "applying" && Date.parse(held.claimedAt ?? "") + CLAIM_MS < deps.now()))) {
+      const drop = async (status: HeldChange["status"], reason: string) => { acted = true; await writePart(store, orgId, name, "held", endedHeld(deps, held, status, reason), whileStill(held.checkRequestId, held.status)); };
       if (latest.definition.revision !== held.baseRevision) {
-        acted = true;
-        await writePart(store, orgId, name, "held", { ...held, status: "stale", reason: PROOF_WORDS.heldStale }, whileStill(held.checkRequestId, held.status));
+        await drop("stale", PROOF_WORDS.heldStale);
         await closeWorkspace(deps, held);
         return acted;
       }
       const { check, state } = await checkOf(deps, orgId, name, held.digest, held.baseRevision);
-      if (check === undefined) { acted = true; await writePart(store, orgId, name, "held", { ...held, status: "not_started", reason: PROOF_WORDS.heldNotStarted }, whileStill(held.checkRequestId, held.status)); }
-      else if (state.status === "failed") { acted = true; await writePart(store, orgId, name, "held", { ...held, status: "failed", reason: reasonLine(state.failedStep) ?? PROOF_WORDS.heldFailed }, whileStill(held.checkRequestId, held.status)); }
+      if (check === undefined) await drop("not_started", PROOF_WORDS.heldNotStarted);
+      else if (state.status === "failed") await drop("failed", reasonLine(state.failedStep) ?? PROOF_WORDS.heldFailed);
       else if (state.status === "ready") {
-        acted = true;
-        // The check must have run exactly the lists held, recently, at this revision; anything else is never written.
+        // The check must have run exactly what is held (the lists, and the dev container through the digest it was stored under), recently, at this revision; anything else is never written.
         const checkedAt = Date.parse(check.startedAt);
-        const exact = sameProofLists({ setup: check.setup, readiness: check.readiness }, { setup: held.lists.setup, readiness: held.lists.readiness }) && Number.isFinite(checkedAt) && deps.now() - checkedAt <= SETUP_CHECK_MAX_AGE_MS;
-        if (exact) await applyHeld(deps, orgId, name, held, check);
-        else await writePart(store, orgId, name, "held", { ...held, status: "failed", reason: PROOF_WORDS.heldFailed }, whileStill(held.checkRequestId, held.status));
+        const exact = sameProofLists({ setup: check.setup, readiness: check.readiness }, { setup: held.lists.setup, readiness: held.lists.readiness })
+          && draftCommandsDigest(draftListsOf(held.lists)) === check.digest && check.revision === held.baseRevision
+          && Number.isFinite(checkedAt) && deps.now() - checkedAt <= SETUP_CHECK_MAX_AGE_MS;
+        if (exact) { acted = true; await applyHeld(deps, orgId, name, held, check); }
+        else await drop("failed", PROOF_WORDS.heldFailed);
+      } else if (deps.now() - Date.parse(held.heldAt) > HOLD_MAX_MS) {
+        // A held change does not wait for ever: past this its check should long have reported, and the person who sent it is told.
+        await drop("failed", PROOF_WORDS.heldTimedOut);
+        await closeWorkspace(deps, held);
       }
     }
   } catch (error) {
     logDeveloperEvent({ event: "developer.settings_proof_settle_failed", orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
   }
   return acted;
+}
+
+/**
+ * The broker's hook (aws/developer-routes/settings-proof-hook.ts): a setup check's prepare has reported and its workspace is closed. The check record names the project, and its proof is settled now, so a held change
+ * is written (or dropped) and a failed save's message is sent without waiting for anyone to open the page. A workspace that is not a check, or a check of no project's settings, settles nothing.
+ */
+export async function settleSettingsProofOfCheck(routeDeps: () => DeveloperRouteDependencies | undefined, workspaceId: string): Promise<void> {
+  const deps = routeDeps();
+  if (deps === undefined) return;
+  const record = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: setupCheckRecordKey(workspaceId), ConsistentRead: true }))) as { Item?: { orgId?: unknown; project?: unknown } }).Item;
+  if (typeof record?.orgId !== "string" || typeof record.project !== "string") return;
+  await settleSettingsProof(deps, record.orgId, record.project);
 }
 
 // ---- what the page is told
@@ -286,14 +344,21 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
   const latest = await latestRevision(store, caller.orgId, name);
   if (latest === undefined || latest.definition.revision !== body.expectedRevision) return plain();
   const current = latest.definition;
-  let lists: DraftCommandLists;
-  try { lists = draftCommandLists(current, body); } catch (error) { if (error instanceof AgentXError) return plain(); throw error; }
-  // The commands and the dev container the save would store are the ones already there: nothing to prove.
-  const before = listsOfDefinition(current);
-  const after: ProofLists = { setup: lists.setup, readiness: lists.readiness, ...(lists.devcontainer === undefined ? (before.devcontainer === undefined ? {} : { devcontainer: before.devcontainer }) : lists.devcontainer === null ? {} : { devcontainer: lists.devcontainer }) };
-  if (sameProofLists(before, after)) return plain();
-  if (caller.browserSession === true) return browserSave(deps, caller, rawName, name, rawBody, options);
-  return heldSave(deps, caller, rawName, name, body, fields, latest);
+  const changesRepositories = body.addRepositories !== undefined || body.removeRepositories !== undefined;
+  // Never the old save once commands or the dev container are in the body: whatever else is wrong with it, the save refuses it in its own words, with a check of what is saved, or a hold.
+  if (caller.browserSession !== true) {
+    // A key's commands are held against the repositories the project has now; a body that also changes them cannot be checked as one piece.
+    if (changesRepositories) throw agentXError("CONFIG_INVALID", PROOF_WORDS.needsOwnRequest);
+    // An unreadable command or a dev container that is not a repository of the project is the save's own CONFIG_INVALID, raised here.
+    const lists = draftCommandLists(current, body);
+    const before = listsOfDefinition(current);
+    const after: ProofLists = { setup: lists.setup, readiness: lists.readiness, ...(lists.devcontainer === undefined ? (before.devcontainer === undefined ? {} : { devcontainer: before.devcontainer }) : lists.devcontainer === null ? {} : { devcontainer: lists.devcontainer }) };
+    // The commands and the dev container the save would store are the ones already there: nothing to prove.
+    if (sameProofLists(before, after)) return plain();
+    return heldSave(deps, caller, rawName, name, body, fields, latest);
+  }
+  // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
+  return browserSave(deps, caller, rawName, name, rawBody, options);
 }
 
 /** A person in a browser: saved at once; the check of exactly what was saved starts, and is the project's own check. */
@@ -306,16 +371,17 @@ async function browserSave(deps: DeveloperRouteDependencies, caller: DeveloperCa
   await settleSettingsProof(deps, caller.orgId, name);
   const store = storeOf(deps);
   const before = await readProof(store, caller.orgId, name);
+  const previous = await latestRevision(store, caller.orgId, name);
   const done = await putProjectSettings(deps, caller, rawName, rawBody, options);
   const saved = await latestRevision(store, caller.orgId, name);
-  // A save that raced this one and moved the revision on is the one that gets a check.
-  if (saved !== undefined && saved.definition.revision === done.project.latestRevision) {
+  // A save that raced this one and moved the revision on is the one that gets a check; one that left the commands and the dev container as they were has nothing to prove.
+  if (saved !== undefined && saved.definition.revision === done.project.latestRevision && (previous === undefined || !sameProofLists(listsOfDefinition(previous.definition), listsOfDefinition(saved.definition)))) {
     // One check in flight per project: the earlier ones are stopped.
     const meta = await readProjectMeta(store, caller.orgId, name);
     await closeWorkspace(deps, before?.saved?.status === "checking" ? before.saved : undefined);
     if (before?.held?.status === "checking") {
       await closeWorkspace(deps, before.held);
-      await writePart(store, caller.orgId, name, "held", { ...before.held, status: "stale", reason: PROOF_WORDS.heldStale }, whileStill(before.held.checkRequestId, "checking"));
+      await writePart(store, caller.orgId, name, "held", endedHeld(deps, before.held, "stale", PROOF_WORDS.heldStale), whileStill(before.held.checkRequestId, "checking"));
     }
     if (meta?.setupCheck !== undefined && meta.setupCheck.workspaceId !== before?.saved?.workspaceId) await closeSupersededCheck(deps, deps.tasks, meta.setupCheck, { stop: true });
     const lists = listsOfDefinition(saved.definition);
@@ -352,8 +418,9 @@ async function heldSave(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   const proof = (await readProof(store, caller.orgId, name)) ?? {};
   // The same request again: what it started goes on (a repeat starts no second check).
   if (proof.held !== undefined && proof.held.requestId === body.requestId) return { project: await getAppProjectWithProof(deps, caller, rawName), warnings: [], ...(heldOf(proof.held) === undefined ? {} : { held: heldOf(proof.held)! }) };
-  // A browser save under its check is the settings now; a held change waits for it rather than racing it.
+  // A browser save under its check is the settings now; a held change waits for it rather than racing it. So does a held change being written this moment: it is not replaced under its writer.
   if (proof.saved?.status === "checking") throw agentXError("WORKSPACE_BUSY", PROOF_WORDS.heldBusy);
+  if (proof.held?.status === "applying" && Date.parse(proof.held.claimedAt ?? "") + CLAIM_MS >= deps.now()) throw agentXError("WORKSPACE_BUSY", PROOF_WORDS.heldBusy);
 
   // Everything else the request asks for changes as it always did, at once.
   const rest: Record<string, unknown> = { requestId: body.requestId, expectedRevision: body.expectedRevision };
@@ -368,12 +435,10 @@ async function heldSave(deps: DeveloperRouteDependencies, caller: DeveloperCalle
     if (moved !== undefined) { baseRevision = moved.definition.revision; definition = moved.definition; }
   }
   const heldLists = draftCommandLists(definition, body);
-  // The earlier held change is superseded: its check is stopped and the new one replaces it.
-  if (proof.held?.status === "checking" || proof.held?.status === "applying") await closeWorkspace(deps, proof.held);
   const started = await startCheck(deps, caller, name, heldLists, baseRevision);
   const slackUser = await slackUserOf(deps, caller);
   const held: HeldChange = {
-    requestId: body.requestId, checkRequestId: started.checkRequestId, digest: started.digest, by: caller.developerId, byName: caller.name, amr: caller.amr,
+    requestId: body.requestId, checkRequestId: started.checkRequestId, digest: started.digest, by: caller.developerId, byName: caller.name, amr: caller.amr, sessionId: caller.sessionId,
     ...(slackUser === undefined ? {} : { slackUserId: slackUser }), heldAt: nowIso(deps), baseRevision, fields,
     body: { ...(body.setupCommands === undefined ? {} : { setupCommands: body.setupCommands }), ...(body.testCommands === undefined ? {} : { testCommands: body.testCommands }), ...(body.devcontainer === undefined ? {} : { devcontainer: body.devcontainer }) } satisfies HeldBody,
     lists: { setup: heldLists.setup, readiness: heldLists.readiness, ...(heldLists.devcontainer === undefined ? {} : { devcontainer: heldLists.devcontainer }) },
@@ -384,7 +449,16 @@ async function heldSave(deps: DeveloperRouteDependencies, caller: DeveloperCalle
     const reply: SettingsHeld = { status: "not_started", fields, heldAt: held.heldAt, reason: started.reason };
     return { project: await getAppProjectWithProof(deps, caller, rawName), warnings, held: reply };
   }
-  await writePart(store, caller.orgId, name, "held", { ...held, workspaceId: started.check.workspaceId, startedAt: started.check.startedAt });
+  // The earlier held change is superseded, unless it began to be written since it was read: then this change is not held and the person sends it again.
+  const replaced = proof.held === undefined
+    ? { expression: "attribute_not_exists(#part)", values: {} }
+    : { expression: "#part.checkRequestId = :guardId AND #part.#guardStatus <> :guardApplying", names: { "#guardStatus": "status" }, values: { ":guardId": proof.held.checkRequestId, ":guardApplying": "applying" } };
+  if (!await writePart(store, caller.orgId, name, "held", { ...held, workspaceId: started.check.workspaceId, startedAt: started.check.startedAt }, replaced)) {
+    await closeWorkspace(deps, started.check);
+    throw agentXError("WORKSPACE_BUSY", PROOF_WORDS.heldBusy);
+  }
+  // Its check is stopped: one check in flight per project.
+  if (proof.held?.status === "checking") await closeWorkspace(deps, proof.held);
   return { project: await getAppProjectWithProof(deps, caller, rawName), warnings, held: heldOf({ ...held })! };
 }
 

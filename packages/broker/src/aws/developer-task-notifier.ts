@@ -87,23 +87,29 @@ class PeopleDeliveryRetry extends Error {
 }
 
 /**
- * TE-4: tells the person who saved setup commands in a browser that they failed their check on a fresh machine, with the check's own reason (already a redacted one-liner), once. The page has the banner and the
- * Undo button; this is the message that sends them there. Read from the stored item, never from the notice. A person with no linked Slack was never given a notice.
+ * TE-4: tells the person who saved setup commands in a browser that they failed their check on a fresh machine, or the person who sent a change with an API key that it was not saved, with the reason (already a redacted
+ * one-liner), once. The page has the banner and the Undo button; this is the message that sends them there. Read from the stored item, never from the notice. A person with no linked Slack was never given a notice.
  */
 async function deliverSettingsProof(deps: NotifierDependencies, notice: Notice): Promise<string> {
   if (notice.proofItem === undefined || notice.proofCheckId === undefined) return "invalid";
+  const part = notice.proofPart === "held" ? "held" : "saved";
   const key = notice.proofItem;
-  const row = await getItem<{ entityType?: unknown; project?: unknown; saved?: { checkRequestId?: unknown; status?: unknown; slackUserId?: unknown; reason?: unknown; notifiedAt?: unknown; noticeAt?: unknown } }>(deps, key);
-  const saved = row?.saved;
-  if (row?.entityType !== "PROJECT_SETTINGS_PROOF" || saved === undefined || saved.checkRequestId !== notice.proofCheckId || saved.status !== "failed" || typeof saved.slackUserId !== "string" || typeof row.project !== "string") return "stale";
-  if (saved.notifiedAt !== undefined) return "delivered";
-  const reason = typeof saved.reason === "string" ? saved.reason.slice(0, 400) : undefined;
-  const text = `The setup commands you saved for \`${row.project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
-  await deps.post({ channel: saved.slackUserId, text });
+  type Part = { checkRequestId?: unknown; status?: unknown; slackUserId?: unknown; reason?: unknown; notifiedAt?: unknown; noticeAt?: unknown };
+  const row = await getItem<{ entityType?: unknown; project?: unknown; saved?: Part; held?: Part }>(deps, key);
+  const stored = row?.[part];
+  if (row?.entityType !== "PROJECT_SETTINGS_PROOF" || stored === undefined || stored.checkRequestId !== notice.proofCheckId || typeof stored.slackUserId !== "string" || typeof row.project !== "string"
+    || typeof stored.noticeAt !== "string" || (part === "saved" && stored.status !== "failed") || (part === "held" && !["failed", "stale", "refused", "not_started"].includes(String(stored.status)))) return "stale";
+  if (stored.notifiedAt !== undefined) return "delivered";
+  const reason = typeof stored.reason === "string" ? stored.reason.slice(0, 400) : undefined;
+  const text = part === "saved"
+    ? `The setup commands you saved for \`${row.project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`
+    : `The setup change you sent for \`${row.project}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`;
+  await deps.post({ channel: stored.slackUserId, text });
   try {
     await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: key, UpdateExpression: "SET saved.notifiedAt = :at",
-      ConditionExpression: "saved.checkRequestId = :id AND attribute_not_exists(saved.notifiedAt)",
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #part.notifiedAt = :at",
+      ConditionExpression: "#part.checkRequestId = :id AND attribute_not_exists(#part.notifiedAt)",
+      ExpressionAttributeNames: { "#part": part },
       ExpressionAttributeValues: { ":at": new Date(deps.now()).toISOString(), ":id": notice.proofCheckId },
     }));
   } catch (error) {

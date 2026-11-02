@@ -34,6 +34,8 @@ export interface Notice {
   /** TE-4: the project's settings-proof item whose saved commands failed their check, and the check it is about. The notifier reads the item; the notice holds no text. */
   proofItem?: { pk: string; sk: string };
   proofCheckId?: string;
+  /** Which part of the item the notice is about: a browser save that failed, or a change an API key sent that was not saved. */
+  proofPart?: "saved" | "held";
   /** A workflow notice's revision: delivered only while the task is still at it, so a stale step is never said. */
   workflowRevision?: number;
   /** A workflow notice for the step a closed required pull request's reopening started: AgentX follows it again. */
@@ -174,14 +176,19 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       if (next.status === "failed" && previous?.status !== "failed") return [{ id: `${taskId}:spec_hold:${String(next.revision)}`, kind: "spec_hold", taskId, at }];
       return [];
     }
-    // TE-4: commands a person saved in a browser failed their check; the person who saved them hears once.
+    // TE-4: commands a person saved in a browser failed their check, or a change they sent with an API key ended without being saved; the person hears once, per check.
     case "PROJECT_SETTINGS_PROOF": {
-      const saved = record(next.saved);
-      const earlier = record(previous?.saved);
-      const checkId = text(saved?.checkRequestId);
-      if (saved?.status !== "failed" || checkId === "" || typeof saved.noticeAt !== "string" || typeof saved.slackUserId !== "string") return [];
-      if (earlier?.checkRequestId === checkId && earlier.status === "failed") return [];
-      return [{ id: `${text(next.pk)}:settings_proof:${checkId}`, kind: "settings_proof", proofItem: { pk: text(next.pk), sk: text(next.sk) }, proofCheckId: checkId, at }];
+      const notices: Notice[] = [];
+      for (const part of ["saved", "held"] as const) {
+        const now = record(next[part]);
+        const earlier = record(previous?.[part]);
+        const checkId = text(now?.checkRequestId);
+        const ended = part === "saved" ? now?.status === "failed" : now?.status === "failed" || now?.status === "stale" || now?.status === "refused" || now?.status === "not_started";
+        if (!ended || checkId === "" || typeof now?.noticeAt !== "string" || typeof now.slackUserId !== "string") continue;
+        if (earlier?.checkRequestId === checkId && typeof earlier.noticeAt === "string") continue;
+        notices.push({ id: `${text(next.pk)}:settings_proof:${part}:${checkId}`, kind: "settings_proof", proofItem: { pk: text(next.pk), sk: text(next.sk) }, proofCheckId: checkId, proofPart: part, at });
+      }
+      return notices;
     }
     case "ADMIN_CHANGE": {
       // Spec 025 E13: the Slack step started, or a change with a message ended. Only stored
