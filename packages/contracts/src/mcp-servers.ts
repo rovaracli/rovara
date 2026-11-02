@@ -196,6 +196,8 @@ export const McpServerEntrySchema = z.object({
   requestedAt: z.string().max(40),
   decidedBy: z.string().max(200).optional(),
   decidedAt: z.string().max(40).optional(),
+  /** Review M8: when the controller's pause moved the entry to `changed_needs_review`. Kept apart from `decidedBy` and `decidedAt`, which stay with the admin who approved. Cleared by a re-approve. */
+  pausedAt: z.string().max(40).optional(),
 }).strict().superRefine((entry, context) => {
   // An approved or waiting package-run entry always carries both hashes: nobody can store (or approve) a server whose install is not pinned.
   if (entry.transport.kind !== "stdio" || (entry.status !== "approved" && entry.status !== "awaiting_approval")) return;

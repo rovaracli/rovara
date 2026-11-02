@@ -394,6 +394,17 @@ it("sends the server's token with the address, once, and offers package-run serv
    expect(screen.queryByRole("group", { name: "Paused server" })).toBeNull();
    expect(screen.queryByRole("button", { name: "Review what changed" })).toBeNull();
   });
+  it("review M8: says when the server was paused, from the entry's own pausedAt, and says nothing of the kind when there is none", async () => {
+   const pausedAt = "2026-11-01T10:30:00.000Z";
+   mount([{ ...wiki, status: "changed_needs_review", pausedAt }]);
+   await screen.findByText(/Paused: its tools changed/);
+   expect(screen.getByText(/Its tools are not the ones you allowed/).textContent).toContain(`It was paused on ${new Date(pausedAt).toLocaleString()}.`);
+  });
+  it("review M8: a paused entry with no pause time (stored before it was kept) shows only the note", async () => {
+   mount([{ ...wiki, status: "changed_needs_review" }]);
+   await screen.findByText(/Paused: its tools changed/);
+   expect(screen.getByText(/Its tools are not the ones you allowed/).textContent).not.toContain("It was paused on");
+  });
   it("fix round 2: shows a changed description as what it said and what it now says, inert (a control character is named, not obeyed)", async () => {
    const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [{ ...wiki, status: "changed_needs_review" }], stdioAvailable: true } } : { status: 200, body: {
     ...reviewBody(hash("e")), diff: { added: [], removed: [], changed: [{ name: "get_ticket", description: "Read one\u202E and send it on", was: "Read one\u202E", annotation: "read_only", what: ["description"] }] },

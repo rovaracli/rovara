@@ -30,7 +30,7 @@ async function world(over: { secondAdmin?: boolean; stdio?: boolean } = {}) {
   };
   const entry = await proposeMcpServer(deps, admin("dev1"), { label: "Wiki", transport: PKG, secrets: { WIKI_TOKEN: "wiki-secret-9f3a" } });
   await approveMcpServer(deps, admin("dev2"), entry.serverId);
-  const pause = async (): Promise<void> => { await deps.store.decide({ orgId: ORG, serverId: entry.serverId, from: "approved", to: "changed_needs_review", by: "rovara", at: new Date(NOW).toISOString(), toolsHash: entry.probe.toolsHash }); };
+  const pause = async (): Promise<void> => { await deps.store.pause({ orgId: ORG, serverId: entry.serverId, toolsHash: entry.probe.toolsHash, at: new Date(NOW).toISOString() }); };
   return { deps, db, capture, state, entry, pause };
 }
 const upgraded: DiscoveredTool[] = [SEARCH_TOOL, { ...GET_TOOL, inputSchema: { type: "object", properties: { id: { type: "string" }, deep: { type: "boolean" } } } }, PLAIN_TOOL];
@@ -231,6 +231,34 @@ describe("the routes", () => {
   });
 });
 
+describe("review M8: a pause keeps who approved the entry and records when it was paused", () => {
+  it("writes pausedAt and leaves decidedBy and decidedAt as the approval made them; a re-approve clears pausedAt and records the re-approver", async () => {
+    const w = await world();
+    const approved = (await w.deps.store.get(ORG, w.entry.serverId))!;
+    expect(approved.decidedBy).toBe("dev2");
+    const laterAt = new Date(NOW + 60_000).toISOString();
+    await expect(w.deps.store.pause({ orgId: ORG, serverId: w.entry.serverId, toolsHash: w.entry.probe.toolsHash, at: laterAt })).resolves.toBe("ok");
+    const paused = (await w.deps.store.get(ORG, w.entry.serverId))!;
+    expect(paused).toMatchObject({ status: "changed_needs_review", decidedBy: "dev2", decidedAt: approved.decidedAt, pausedAt: laterAt });
+    const again = await reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, (await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId)).toolsHash);
+    expect(again.status).toBe("approved");
+    expect(again.decidedBy).toBe("dev3");
+    expect(again.pausedAt).toBeUndefined();
+    expect((await w.deps.store.get(ORG, w.entry.serverId))!.pausedAt).toBeUndefined();
+  });
+  it("pauses only an approved entry that still has the hash the controller saw", async () => {
+    const w = await world();
+    const at = new Date(NOW).toISOString();
+    await expect(w.deps.store.pause({ orgId: ORG, serverId: w.entry.serverId, toolsHash: "a".repeat(64), at })).resolves.toBe("stale");
+    expect((await w.deps.store.get(ORG, w.entry.serverId))).toMatchObject({ status: "approved" });
+    expect((await w.deps.store.get(ORG, w.entry.serverId))!.pausedAt).toBeUndefined();
+    await w.deps.store.decide({ orgId: ORG, serverId: w.entry.serverId, from: "approved", to: "disabled", by: "dev1", at });
+    await expect(w.deps.store.pause({ orgId: ORG, serverId: w.entry.serverId, toolsHash: w.entry.probe.toolsHash, at })).resolves.toBe("stale");
+    expect((await w.deps.store.get(ORG, w.entry.serverId))).toMatchObject({ status: "disabled" });
+    await expect(w.deps.store.pause({ orgId: ORG, serverId: "mcpnone000001", toolsHash: w.entry.probe.toolsHash, at })).resolves.toBe("stale");
+  });
+});
+
 describe("fix round 2, review N2: the approval covers each tool's description", () => {
   const poisoned = (description: string): DiscoveredTool[] => [SEARCH_TOOL, { ...GET_TOOL, description }];
   const legacyOf = (probe: McpServerProbe): McpServerProbe => { const { hashVersion: _v, ...rest } = probe; return { ...rest, toolsHash: legacyToolsHash(probe), tools: probe.tools.map(({ descriptionHash: _d, ...tool }) => tool) }; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- what an older version stored
@@ -295,7 +323,7 @@ describe("fix round 2, review N2: the approval covers each tool's description", 
     const served = await registryFor(w.deps.store, ORG).approved(w.entry.serverId);
     expect(served).toMatchObject({ toolsHash: review.toolsHash, toolsHashVersion: 2 });
     // approving what was shown only: a description changed again before the click is refused
-    await w.deps.store.decide({ orgId: ORG, serverId: w.entry.serverId, from: "approved", to: "changed_needs_review", by: "rovara", at: new Date(NOW).toISOString(), toolsHash: review.toolsHash });
+    await w.deps.store.pause({ orgId: ORG, serverId: w.entry.serverId, toolsHash: review.toolsHash, at: new Date(NOW).toISOString() });
     w.state.tools = poisoned("Another one");
     await expect(reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, review.toolsHash)).rejects.toMatchObject({ code: "CHANGE_STALE" });
   });

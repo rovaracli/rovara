@@ -60,6 +60,11 @@ export interface McpServerStore {
   create(orgId: OrgId, entry: McpServerEntry): Promise<boolean>;
   /** Moves an entry from one status to another only if it still has `from` (and, for an approval, the tools hash that was shown). */
   decide(input: { orgId: OrgId; serverId: string; from: McpServerEntry["status"]; to: McpServerEntry["status"]; by: string; at: string; toolsHash?: string }): Promise<"ok" | "stale">;
+  /**
+   * Review M8: the controller's automatic pause. Moves an APPROVED entry that still has the tools hash the controller saw to `changed_needs_review` and records `pausedAt`. It does not touch
+   * `decidedBy` and `decidedAt`: the approving admin stays on the entry. "stale" when the entry is gone, is not approved, or carries another hash.
+   */
+  pause(input: { orgId: OrgId; serverId: string; toolsHash: string; at: string }): Promise<"ok" | "stale">;
   remove(orgId: OrgId, serverId: string): Promise<boolean>;
   /**
    * Fix round 1, S3: puts a paused entry (`changed_needs_review`) back to `approved` with the tools the admin was shown, only if it is still paused and still carries the tools hash it was paused with.
@@ -135,10 +140,24 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
         throw error;
       }
     },
+    async pause({ orgId, serverId, toolsHash, at }) {
+      try {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
+          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :paused, pausedAt = :at",
+          ConditionExpression: "#status = :approved AND #probe.toolsHash = :hash",
+          ExpressionAttributeNames: { "#status": "status", "#probe": "probe" },
+          ExpressionAttributeValues: { ":paused": "changed_needs_review", ":approved": "approved", ":hash": toolsHash, ":at": at },
+        } }] }));
+        return "ok";
+      } catch (error) {
+        if (cancelled(error)) return "stale";
+        throw error;
+      }
+    },
     async reapprove({ orgId, serverId, pausedToolsHash, probe, by, at }) {
       try {
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
-          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :approved, #probe = :probe, decidedBy = :by, decidedAt = :at",
+          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :approved, #probe = :probe, decidedBy = :by, decidedAt = :at REMOVE pausedAt",
           ConditionExpression: "#status = :paused AND #probe.toolsHash = :old",
           ExpressionAttributeNames: { "#status": "status", "#probe": "probe" },
           ExpressionAttributeValues: { ":approved": "approved", ":paused": "changed_needs_review", ":probe": probe, ":old": pausedToolsHash, ":by": by, ":at": at },
@@ -538,7 +557,8 @@ export async function reapprovePausedMcpServer(deps: McpServerDependencies, acto
       destinations: pinned.destinations.map((item) => `${item.host}:${item.port}`).join(", "), secretNames: pinned.secretEnv.join(", "),
     },
   });
-  return { ...entry, status: "approved", probe: again.probe, decidedBy: actor.developerId, decidedAt: at };
+  const { pausedAt: _paused, ...kept } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- a re-approve ends the pause
+  return { ...kept, status: "approved", probe: again.probe, decidedBy: actor.developerId, decidedAt: at };
 }
 
 /** Takes an approved server out of the allow-list (or turns down one that waits). Any admin may, at once. */
