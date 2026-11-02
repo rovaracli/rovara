@@ -396,7 +396,14 @@ describe("the controller's task role is scoped to what the controller makes", ()
     expect(JSON.stringify(objects.Resource)).toContain("/bundles/*");
     expect(JSON.stringify(objects.Resource)).toContain("Bundles");
     expect(actionsOf(find(statements, "SeeWhichBundlesExist"))).toEqual(["s3:ListBucket"]);
-    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]);
+    // review M10: the sweep removes a bundle (a delete marker, in a versioned bucket) under `bundles/` only; it may not delete a version, so an earlier version stays for the lifecycle's 30 days
+    const remove = find(statements, "RemoveUnreferencedBundles");
+    expect(actionsOf(remove)).toEqual(["s3:DeleteObject"]);
+    expect(JSON.stringify(remove.Resource)).toContain("/bundles/*");
+    expect(JSON.stringify(remove.Resource)).toContain("Bundles");
+    expect(Array.isArray(remove.Resource)).toBe(false);
+    expect(statements.flatMap(actionsOf).filter((action) => action.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]);
+    expect(statements.flatMap(actionsOf).filter((action) => /DeleteObjectVersion|PutBucket|DeleteBucket|PutLifecycle|PutObjectVersion/u.test(action))).toEqual([]);
     const key = find(statements, "UseTheBundleKey");
     expect(actionsOf(key)).toEqual(["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]);
     expect(JSON.stringify(key.Resource)).toContain("BundleKey");
@@ -414,7 +421,9 @@ describe("the bundle bucket", () => {
     expect(at(bucket, "VersioningConfiguration", "Status")).toBe("Enabled");
     const rules = at(bucket, "LifecycleConfiguration", "Rules") as Array<Record<string, unknown>>;
     expect(rules.map((rule) => [rule.Id, at(rule, "AbortIncompleteMultipartUpload", "DaysAfterInitiation"), at(rule, "NoncurrentVersionExpiration", "NoncurrentDays")])).toEqual([["abort-incomplete-uploads", 1, undefined], ["expire-replaced-versions", undefined, 30]]);
-    expect(rules.some((rule) => rule.ExpirationInDays !== undefined)).toBe(false);
+    // a current bundle is never expired by age (the controller's sweep decides, from the registry); only the delete marker a sweep leaves is cleaned, once its versions are gone (review M10)
+    expect(rules.some((rule) => rule.ExpirationInDays !== undefined || rule.ExpirationDate !== undefined)).toBe(false);
+    expect(rules.map((rule) => rule.ExpiredObjectDeleteMarker)).toEqual([undefined, true]);
     expect(json.Resources[String(bucket.id)]).toMatchObject({ DeletionPolicy: "Retain" });
     expect(JSON.stringify(of("AWS::S3::BucketPolicy"))).toContain("aws:SecureTransport");
     const key = of("AWS::KMS::Key")[0]!;

@@ -72,6 +72,38 @@ describe("bundle bucket adapter", () => {
   });
 });
 
+describe("bundle bucket adapter: list and remove (review M10)", () => {
+  const client = (handlers: Record<string, (input: Record<string, unknown>) => unknown>) => {
+    const sent: Array<{ name: string; input: Record<string, unknown> }> = [];
+    return { sent, client: { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { sent.push({ name: command.constructor.name, input: command.input }); const handler = handlers[command.constructor.name]; if (handler === undefined) return {}; return handler(command.input); } } as never };
+  };
+  it("lists a prefix across pages, with each object's last write time in milliseconds, and drops entries with no key or time", async () => {
+    let page = 0;
+    const fake = client({ ListObjectsV2Command: () => { page += 1; return { Contents: [{ Key: `bundles/${page}`, LastModified: new Date(1_000 * page) }, { LastModified: new Date(5) }, { Key: "bundles/no-time" }], IsTruncated: page < 3, NextContinuationToken: page < 3 ? `t${page}` : undefined }; } });
+    expect(await bundleObjectApiFromS3(fake.client, "bucket").list!("bundles/")).toEqual([{ key: "bundles/1", lastModified: 1_000 }, { key: "bundles/2", lastModified: 2_000 }, { key: "bundles/3", lastModified: 3_000 }]);
+    expect(fake.sent.map((call) => call.input)).toEqual([
+      { Bucket: "bucket", Prefix: "bundles/" }, { Bucket: "bucket", Prefix: "bundles/", ContinuationToken: "t1" }, { Bucket: "bucket", Prefix: "bundles/", ContinuationToken: "t2" },
+    ]);
+  });
+  it("refuses a list that never ends, so a sweep never works from a part of the bucket", async () => {
+    const endless = client({ ListObjectsV2Command: () => ({ Contents: [], IsTruncated: true, NextContinuationToken: "more" }) });
+    await expect(bundleObjectApiFromS3(endless.client, "bucket").list!("bundles/")).rejects.toThrow("too many");
+    expect(endless.sent).toHaveLength(50);
+    const missingToken = client({ ListObjectsV2Command: () => ({ Contents: [], IsTruncated: true }) });
+    await expect(bundleObjectApiFromS3(missingToken.client, "bucket").list!("bundles/")).rejects.toThrow();
+  });
+  it("lists only under bundles/, and removes one key that is under it, and nothing else", async () => {
+    const fake = client({});
+    const api = bundleObjectApiFromS3(fake.client, "bucket");
+    await expect(api.list!("")).rejects.toThrow(/not allowed/u);
+    await expect(api.list!("other/")).rejects.toThrow(/not allowed/u);
+    await api.remove!(`bundles/${"a".repeat(64)}`);
+    expect(fake.sent).toEqual([{ name: "DeleteObjectCommand", input: { Bucket: "bucket", Key: `bundles/${"a".repeat(64)}` } }]);
+    for (const key of ["", "bundles/", "other/x", "bundles/../x", "bundles/a/b", `/bundles/${"a".repeat(64)}`]) await expect(api.remove!(key), key).rejects.toThrow(/not allowed/u);
+    expect(fake.sent).toHaveLength(1);
+  });
+});
+
 
 describe("ECS task definition adapter (T7)", () => {
   const FAMILY = "rovara-mcp-serve-mcpsim000001";

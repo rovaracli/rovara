@@ -5,7 +5,7 @@ import {
   AuthorizeSecurityGroupEgressCommand, AuthorizeSecurityGroupIngressCommand, CreateSecurityGroupCommand, DeleteSecurityGroupCommand, DescribeSecurityGroupsCommand, RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand, type EC2Client, type IpPermission,
 } from "@aws-sdk/client-ec2";
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import type { Readable } from "node:stream";
 import type { BundleObjectApi, DescribedGroup, Ec2GroupApi, EcsApi, EcsDefinitionApi, EcsTaskDescription, GroupRule, RunnerTaskDefinition } from "@agentx/gateway";
 
@@ -40,6 +40,10 @@ export interface EcsResponse {
 }
 
 const MAX_LIST_PAGES = 20;
+const BUNDLE_PREFIX = "bundles/";
+/** 1,000 objects a page: 50 pages is 50,000 bundles, far more than an install ever holds. */
+const MAX_BUNDLE_LIST_PAGES = 50;
+const BUNDLE_KEY = /^bundles\/[0-9a-f]{64}$/u;
 /** A family of this feature: `rovara-mcp-` and then a plain name (the same rule as the gateway's, which makes every name). */
 const OWN_FAMILY = /^rovara-mcp-[A-Za-z0-9_-]{1,200}$/u;
 
@@ -101,6 +105,24 @@ export function bundleObjectApiFromS3(client: Pick<S3Client, "send">, bucket: st
         if (name === "NotFound" || name === "NoSuchKey") return false;
         throw error;
       }
+    },
+    // Review M10. The controller's role may list the bucket and delete under `bundles/` only; the adapter holds to the same prefix.
+    async list(prefix) {
+      if (prefix !== BUNDLE_PREFIX) throw new Error("the bundle prefix is not allowed");
+      const found: Array<{ key: string; lastModified: number }> = [];
+      let token: string | undefined;
+      for (let page = 0; page < MAX_BUNDLE_LIST_PAGES; page += 1) {
+        const out = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ...(token === undefined ? {} : { ContinuationToken: token }) }));
+        for (const item of out.Contents ?? []) if (item.Key !== undefined && item.LastModified !== undefined) found.push({ key: item.Key, lastModified: item.LastModified.getTime() });
+        if (out.IsTruncated !== true) return found;
+        token = out.NextContinuationToken;
+        if (token === undefined) throw new Error("the bundle list has no continuation");
+      }
+      throw new Error("too many bundles to list");
+    },
+    async remove(key) {
+      if (!BUNDLE_KEY.test(key)) throw new Error("the bundle key is not allowed");
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
   };
 }

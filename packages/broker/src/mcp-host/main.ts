@@ -57,6 +57,14 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
       return { spec, toolsHash: entry.probe.toolsHash, toolsHashVersion: entry.probe.hashVersion === 2 ? 2 : 1, secretVersion: entry.secretVersion, secretRef };
     },
+    // Review M10: the bundles that are kept. Every package-run entry of the org counts, in any status. An entry that cannot be read could be the one that references a bundle, so there is no answer.
+    async referencedBundles(): Promise<ReadonlySet<string>> {
+      const { entries, unreadable } = await store.listAll(org);
+      if (unreadable > 0) throw new Error("an entry cannot be read, so the bundles in use cannot be told");
+      const kept = new Set<string>();
+      for (const entry of entries) if (entry.transport.kind === "stdio" && entry.transport.spec.bundleHash !== undefined) kept.add(entry.transport.spec.bundleHash);
+      return kept;
+    },
     async probeSecret(serverId, test): Promise<string | undefined> {
       if (secretArn === undefined) return undefined;
       // The broker stores a proposal's secrets under the proposal's id BEFORE the test. That secret is read by a test only while the proposal has no entry yet or its entry still waits for

@@ -108,6 +108,19 @@ describe("controller main: the registry", () => {
     // approved and disabled entries still give none, even to their own pinned package
     for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
   });
+  it("review M10: names the bundle of every package-run entry, whatever its status, and refuses to answer when an entry cannot be read", async () => {
+    const other = (id: string, status: McpServerEntry["status"], bundle: string | undefined): McpServerEntry => entry({ serverId: id, status, transport: { kind: "stdio", spec: { ...spec, ...(bundle === undefined ? { bundleHash: undefined as never } : { bundleHash: bundle }) } } });
+    const entries: McpServerEntry[] = [
+      other("mcpone0000001", "approved", "1".repeat(64)), other("mcptwo0000001", "awaiting_approval", "2".repeat(64)), other("mcpthree00001", "changed_needs_review", "3".repeat(64)),
+      other("mcpfour000001", "disabled", "4".repeat(64)), entry({ serverId: "mcphttp000001", transport: { kind: "http", address: "https://mcp.corp.example/mcp" } }),
+    ];
+    const reg = (listAll: () => Promise<{ entries: McpServerEntry[]; unreadable: number }>) => registryFor({ get: async () => undefined, listAll } as never, "org_aaaaaaaaaaaaaaaaaaaa");
+    expect([...(await reg(async () => ({ entries, unreadable: 0 })).referencedBundles!())].sort()).toEqual(["1".repeat(64), "2".repeat(64), "3".repeat(64), "4".repeat(64)]);
+    expect([...(await reg(async () => ({ entries: [], unreadable: 0 })).referencedBundles!())]).toEqual([]);
+    // an entry that cannot be read could be the one that references a bundle: no answer
+    await expect(reg(async () => ({ entries, unreadable: 1 })).referencedBundles!()).rejects.toThrow(/cannot be read/u);
+    await expect(reg(async () => { throw new Error("table down"); }).referencedBundles!()).rejects.toThrow();
+  });
   it("SR-7 H1: the equality check also holds the destinations, the size and the tarball's integrity: a paused entry's secret never goes to a task that may reach other addresses, or is another size, or another tarball", async () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
     const withSecret: McpStdioSpec = { ...spec, secretEnv: ["API_KEY"], destinations: [{ host: "jira.corp.example", port: 443 }, { host: "wiki.corp.example", port: 8443 }], size: { cpu: 512, memoryMiB: 1024 } };

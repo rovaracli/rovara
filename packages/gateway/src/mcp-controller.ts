@@ -55,6 +55,11 @@ export interface ControllerRegistry {
    * name, version, arguments and secret names, with both pinned hashes equal. A test of any other package under that id gets no secret.
    */
   probeSecret?(serverId: string, test?: { spec: McpStdioProposal; pinned?: { lockfileHash: string; bundleHash: string } | undefined }): Promise<string | undefined>;
+  /**
+   * Review M10: the bundle hash of EVERY entry the registry holds, whatever its status (approved, waiting, paused, disabled, needing re-approval): those bundles are kept. Throws when the registry
+   * cannot be read completely (an entry that cannot be read could reference a bundle), and the sweep then removes nothing. Absent: no sweep.
+   */
+  referencedBundles?(): Promise<ReadonlySet<string>>;
 }
 
 /** What a task definition is made from. */
@@ -218,6 +223,12 @@ export interface McpControllerOptions {
   pollMs?: number | undefined;
   /** How often reconcile runs (it also runs once at start). Default 60 s. 0: never on its own (a test calls `reconcile()`). */
   sweepMs?: number | undefined;
+  /** Review M10: a bundle no entry references is removed once it is older than this. Default 30 days (design section 6). */
+  bundleRetentionMs?: number | undefined;
+  /** Review M10: the bundle sweep runs at the first pass and then at most this often. Default 6 hours. 0: every pass (a test). */
+  bundleSweepEveryMs?: number | undefined;
+  /** Review M10: bundles removed in one sweep, the oldest first. Default 50. */
+  bundleSweepMax?: number | undefined;
   now?: (() => number) | undefined;
   /** No ids or text from tasks: server ids, task ids and fixed words only. */
   log?: ((event: string, fields: Record<string, string | number>) => void) | undefined;
@@ -1022,9 +1033,41 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           await resources.release(item.kind, item.id).catch(() => { log("mcp_controller.release_pending", { serverId: item.id }); });
         }
       }
+      // 4. Bundles nothing references any more (review M10).
+      await sweepBundles(at);
     } finally {
       sweeping = false;
     }
+  }
+
+  /**
+   * Review M10. Removes bundles that no entry references and that are older than the retention. It removes NOTHING unless it knows both what is stored and what is referenced: the store must be
+   * able to list and remove, and the registry must answer completely. A bundle a running task was started from is never removed. Oldest first, a
+   * bounded number a pass, and one failing removal does not stop the others. Residual: the same package proposed again within the seconds of a sweep, when its old bundle is listed, is uploaded
+   * again but removed from under the new entry; the next test of it says the bundle is missing and the admin adds it again (the bucket is versioned, so the bytes stay for 30 days).
+   */
+  let lastBundleSweepAt: number | undefined;
+  async function sweepBundles(at: number): Promise<void> {
+    const store = options.bundles;
+    if (store.list === undefined || store.remove === undefined || options.registry.referencedBundles === undefined) return;
+    if (lastBundleSweepAt !== undefined && at - lastBundleSweepAt < (options.bundleSweepEveryMs ?? 6 * 3_600_000)) return;
+    lastBundleSweepAt = at;
+    let referenced: ReadonlySet<string>;
+    let stored: Awaited<ReturnType<NonNullable<BundleStore["list"]>>>;
+    try {
+      // The store first, the registry after: an entry made while the store was being read is in the answer.
+      stored = await store.list();
+      referenced = await options.registry.referencedBundles();
+    } catch { log("mcp_controller.bundle_sweep_failed", {}); return; }
+    const inUse = new Set<string>();
+    for (const entry of serving.values()) inUse.add(entry.bundleHash);
+    const cutoff = at - (options.bundleRetentionMs ?? 30 * 86_400_000);
+    const old = stored.filter((item) => /^[0-9a-f]{64}$/u.test(item.hash) && item.lastModified < cutoff && !referenced.has(item.hash) && !inUse.has(item.hash)).sort((a, b) => a.lastModified - b.lastModified);
+    let removed = 0;
+    for (const item of old.slice(0, options.bundleSweepMax ?? 50)) {
+      try { await store.remove(item.hash); removed += 1; } catch { log("mcp_controller.bundle_remove_failed", { bundle: item.hash.slice(0, 12) }); }
+    }
+    if (removed > 0 || old.length > 0) log("mcp_controller.bundles_swept", { removed, waiting: Math.max(0, old.length - removed) });
   }
 
   const sweepMs = options.sweepMs ?? 60_000;

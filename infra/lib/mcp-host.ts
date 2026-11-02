@@ -279,8 +279,10 @@ export class McpHost extends Construct {
     this.bundleBucket = new s3.Bucket(this, "Bundles", {
       encryption: s3.BucketEncryption.KMS, encryptionKey: this.bundleKey, bucketKeyEnabled: true, blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, enforceSSL: true, versioned: true,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED, removalPolicy: RemovalPolicy.RETAIN,
-      // A bundle is an approved artefact and stays as long as its entry does. Replaced versions go after 30 days, and a failed upload leaves nothing behind.
-      lifecycleRules: [{ id: "abort-incomplete-uploads", abortIncompleteMultipartUploadAfter: Duration.days(1) }, { id: "expire-replaced-versions", noncurrentVersionExpiration: Duration.days(30) }],
+      // A bundle is an approved artefact and stays as long as its entry does. Replaced versions go after 30 days, and a failed upload leaves nothing behind. Nothing here expires a CURRENT bundle by
+      // age: the controller's sweep removes one that no entry references after 30 days (review M10; a delete marker in this versioned bucket), the version it covered goes 30 days later, and the
+      // marker is cleaned once nothing is left under it.
+      lifecycleRules: [{ id: "abort-incomplete-uploads", abortIncompleteMultipartUploadAfter: Duration.days(1) }, { id: "expire-replaced-versions", noncurrentVersionExpiration: Duration.days(30), expiredObjectDeleteMarker: true }],
     });
 
     // ---- logs and the load-balancer token -------------------------------------------------------------------------------------------------------------------------------
@@ -388,6 +390,8 @@ export class McpHost extends Construct {
     // the condition would fail it; the bucket holds nothing but bundles.
     policy({ sid: "ReadAndWriteBundles", actions: ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], resources: [this.bundleBucket.arnForObjects("bundles/*")] });
     policy({ sid: "SeeWhichBundlesExist", actions: ["s3:ListBucket"], resources: [this.bundleBucket.bucketArn] });
+    // Review M10: the sweep removes a bundle no entry references. DeleteObject without a version id only adds a delete marker; there is no DeleteObjectVersion, so the bytes stay for the lifecycle's 30 days.
+    policy({ sid: "RemoveUnreferencedBundles", actions: ["s3:DeleteObject"], resources: [this.bundleBucket.arnForObjects("bundles/*")] });
     policy({ sid: "UseTheBundleKey", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [this.bundleKey.keyArn] });
     const tableKeys = (partition: string) => ({ "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`ORG#${props.orgId}#${partition}`] }, Null: { "dynamodb:LeadingKeys": "false" } });
     policy({ sid: "ReadMcpServerRegistry", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [props.stateTableArn], conditions: tableKeys("MCPSRV") });
