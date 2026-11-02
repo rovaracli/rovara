@@ -29,7 +29,7 @@ const entry = (next: StoredRecipe, action: RecipeAuditEntry["action"] = "recipe_
 function bench(options: { noAudit?: boolean } = {}) {
   const db = new FakeDynamoDb();
   const capture = capturingAuditDeps({ db, now: () => NOW });
-  const store = dynamoSetupRecipeStore({ documentClient: db as never, tableName: "state", now: () => NOW, ...(options.noAudit === true ? {} : { audit: capture.audit }) });
+  const store = dynamoSetupRecipeStore({ documentClient: db, tableName: "state", now: () => NOW, ...(options.noAudit === true ? {} : { audit: capture.audit }) });
   return { db, capture, store };
 }
 
