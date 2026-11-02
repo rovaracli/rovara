@@ -49,7 +49,7 @@ describe("the fake tracker starts a task", () => {
     expect(results[0]?.outcome).toMatchObject({ outcome: "started", taskId: "task-1" });
     const { developerId, request } = w.started[0]!;
     expect(developerId).toBe(MEMBER);
-    expect(request).toMatchObject({ project: PROJECT, source: "tracker", binding: { kind: "tracker_item", system: FAKE_TRACKER_KIND, id: "ENG-1", url: "https://tracker.example.test/items/ENG-1" } });
+    expect(request).toMatchObject({ project: PROJECT, source: "tracker", binding: { kind: "tracker_item", system: FAKE_TRACKER_KIND, id: "ENG-1", url: "https://host.example.test/items/ENG-1" } });
     expect(CodeIntentRequestSchema.safeParse(request).success).toBe(true);
     expect(trackerOfCodeIntent(request)).toEqual({ tracker: FAKE_TRACKER_KIND, id: "ENG-1" });
     const stored = await readIntakeItem(w.ports.table, ORG, PROJECT, intakeItemIdOf(FAKE_TRACKER_KIND, "ENG-1"));
@@ -105,7 +105,7 @@ describe("the fake tracker starts a task", () => {
 
 describe("what makes a ticket that may be started", () => {
   const tracker = { kind: FAKE_TRACKER_KIND, capabilities: { startTasks: true, comment: true, status: true, link: true, events: "webhook" as const } };
-  const item = (over: Record<string, unknown> = {}) => ({ ref: { tracker: FAKE_TRACKER_KIND, id: "ENG-1", url: "https://tracker.example.test/items/ENG-1" }, title: "t", body: "b", status: "open" as const, labels: [], ...over });
+  const item = (over: Record<string, unknown> = {}) => ({ ref: { tracker: FAKE_TRACKER_KIND, id: "ENG-1", url: "https://host.example.test/items/ENG-1" }, title: "t", body: "b", status: "open" as const, labels: [], ...over });
   const event = (over: Record<string, unknown> = {}) => ({ type: "item.labelled" as const, eventId: "e-1", tracker: FAKE_TRACKER_KIND, item: { tracker: FAKE_TRACKER_KIND, id: "ENG-1" }, label: "rovara", labelledBy: "acct-maya", ...over });
   const candidate = (over: { tracker?: typeof tracker; event?: Record<string, unknown>; item?: Record<string, unknown> } = {}) =>
     intakeCandidateOfTrackerEvent({ orgId: ORG, project: PROJECT, tracker: over.tracker ?? tracker, event: event(over.event), item: item(over.item) });
@@ -117,7 +117,7 @@ describe("what makes a ticket that may be started", () => {
   it.each([
     ["an event for another item than the one read", { event: { item: { tracker: FAKE_TRACKER_KIND, id: "ENG-2" } } }],
     ["an event of another tracker", { event: { tracker: "someone-else", item: { tracker: "someone-else", id: "ENG-1" } } }],
-    ["an item of another tracker", { item: { ref: { tracker: "someone-else", id: "ENG-1", url: "https://tracker.example.test/items/ENG-1" } } }],
+    ["an item of another tracker", { item: { ref: { tracker: "someone-else", id: "ENG-1", url: "https://host.example.test/items/ENG-1" } } }],
     ["an item with no link", { item: { ref: { tracker: FAKE_TRACKER_KIND, id: "ENG-1" } } }],
     ["an item whose link is not https", { item: { ref: { tracker: FAKE_TRACKER_KIND, id: "ENG-1", url: "http://tracker.example.test/x" } } }],
     ["an item id the intake engine would not hold", { item: { ref: { tracker: FAKE_TRACKER_KIND, id: "ENG 1; drop", url: "https://tracker.example.test/x" } }, event: { item: { tracker: FAKE_TRACKER_KIND, id: "ENG 1; drop" } } }],

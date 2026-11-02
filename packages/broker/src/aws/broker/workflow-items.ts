@@ -39,7 +39,9 @@ import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/
 import { testEnvDraftEndItems } from "../../test-env/draft.js";
 import { diagnosisEndItems } from "../../diagnosis/deep.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
-import { canReadBranchAndTree, canReadFeedback, canReadParents, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { findLinkedChangeRequest, linkedChangeRequestItem } from "../../rovara-code/linked-change-requests.js";
+import { canReadBranchAndTree, canReadFeedback, canReadParents, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost, changeRequestRepositoryKey } from "./repository-hosts.js";
 import { isSpecOperation, specOperationEndItems } from "../../spec/end-items.js";
 import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
@@ -504,11 +506,12 @@ export async function completedWorkflowItems(
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === published.data.repository);
     if (repository === undefined) throw agentXError("CONFIG_INVALID", "published pull request repository is not part of the task's registered project revision");
-    // P5d: the code host the repository's record names (an unknown kind is refused). The linked-pull-request rows are keyed by GitHub's full name (left for P6), so another host stops here.
+    // P5d: the code host the repository's record names (an unknown kind is refused). P10: the repository's key for the link and the head index is the host's own spelling
+    // (`changeRequestRepositoryKey`): GitHub's `owner/name` as before, another host's `<kind>:<address>`. GitHub's pull request address is checked against the repository's name here; another
+    // host's change request address is the host's own, which the read below compares with the reported one.
     const host = hostOfRepository(dependencies, repository);
-    requireGithubHost(host);
-    const repositoryFullName = githubRepositoryFullName(repository.url);
-    if (!pullRequestMatchesRepository(published.data.url, repositoryFullName, published.data.number)) {
+    const repositoryFullName = changeRequestRepositoryKey(host, repository.url);
+    if (host.kind === GITHUB_HOST_KIND && !pullRequestMatchesRepository(published.data.url, repositoryFullName, published.data.number)) {
       throw agentXError("CONFIG_INVALID", "published pull request URL does not match the task's registered repository");
     }
     const publishedRecord = await requirePullRequest(dependencies, task.workspaceId, published.data.repository, published.data.number);
@@ -527,24 +530,42 @@ export async function completedWorkflowItems(
       || publishedFeedback.pullRequest.headTreeSha !== candidateRepository.treeSha) {
       throw agentXError("STALE_FENCE", "published pull request does not contain the exact checked candidate tree");
     }
-    const indexKey = githubWorkflowPullRequestKey(repositoryFullName, published.data.number);
-    const existingIndex = await getItem<GithubWorkflowPullRequestRecord>(dependencies, indexKey);
-    const indexRecord: GithubWorkflowPullRequestRecord = {
-      ...indexKey,
-      entityType: "GITHUB_WORKFLOW_PR",
-      repositoryFullName,
-      repositoryId: published.data.repository,
-      number: published.data.number,
-      url: published.data.url,
-      taskId: task.taskId,
-      workspaceId: task.workspaceId,
-      candidateDigest: task.workflow.candidate.digest,
-      createdAt: now,
-    };
-    if (existingIndex !== undefined && (existingIndex.taskId !== indexRecord.taskId
-      || existingIndex.candidateDigest !== indexRecord.candidateDigest
-      || existingIndex.url !== indexRecord.url)) {
-      throw agentXError("CONFIG_INVALID", "this pull request is already linked to another task or candidate");
+    // The link from the change request to its task. GitHub keeps its own row, exactly as before; another host's is the neutral row (`linked-change-requests.ts`), which the readers find first.
+    // Either way the same change request linked again to the same task and candidate is the same link, and to another task or candidate is refused.
+    let linkPuts: TransactItems;
+    if (host.kind === GITHUB_HOST_KIND) {
+      const indexKey = githubWorkflowPullRequestKey(repositoryFullName, published.data.number);
+      const existingIndex = await getItem<GithubWorkflowPullRequestRecord>(dependencies, indexKey);
+      const indexRecord: GithubWorkflowPullRequestRecord = {
+        ...indexKey,
+        entityType: "GITHUB_WORKFLOW_PR",
+        repositoryFullName,
+        repositoryId: published.data.repository,
+        number: published.data.number,
+        url: published.data.url,
+        taskId: task.taskId,
+        workspaceId: task.workspaceId,
+        candidateDigest: task.workflow.candidate.digest,
+        createdAt: now,
+      };
+      if (existingIndex !== undefined && (existingIndex.taskId !== indexRecord.taskId
+        || existingIndex.candidateDigest !== indexRecord.candidateDigest
+        || existingIndex.url !== indexRecord.url)) {
+        throw agentXError("CONFIG_INVALID", "this pull request is already linked to another task or candidate");
+      }
+      linkPuts = existingIndex === undefined ? [{ Put: { TableName: dependencies.tableName, Item: indexRecord, ConditionExpression: "attribute_not_exists(pk)" } }] : [];
+    } else {
+      const existingLink = await findLinkedChangeRequest(dependencies, { hostKind: host.kind, repositoryAddress: repository.url, id: String(published.data.number) });
+      if (existingLink !== undefined && (existingLink.taskId !== task.taskId || existingLink.candidateDigest !== task.workflow.candidate.digest || existingLink.url !== published.data.url)) {
+        throw agentXError("CONFIG_INVALID", "this pull request is already linked to another task or candidate");
+      }
+      const put = existingLink !== undefined ? undefined : linkedChangeRequestItem(dependencies.tableName, {
+        hostKind: host.kind, repositoryAddress: repository.url, changeRequestId: String(published.data.number), repositoryId: published.data.repository, number: published.data.number,
+        url: published.data.url, taskId: task.taskId, workspaceId: task.workspaceId, candidateDigest: task.workflow.candidate.digest, createdAt: now,
+      });
+      // A repository address the neutral key cannot name leaves the change request unfollowable: the publication is refused here rather than recorded without a link.
+      if (existingLink === undefined && put === undefined) throw agentXError("CONFIG_INVALID", "the code host's repository cannot be linked to this task");
+      linkPuts = put === undefined ? [] : [put];
     }
     const next = registerWorkflowPullRequest(task.workflow, {
       repositoryId: published.data.repository,
@@ -562,11 +583,7 @@ export async function completedWorkflowItems(
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": "PULL_REQUEST", ":ready": "READY" },
-    } }, ...(existingIndex === undefined ? [{ Put: {
-      TableName: dependencies.tableName,
-      Item: indexRecord,
-      ConditionExpression: "attribute_not_exists(pk)",
-    } }] : []),
+    } }, ...linkPuts,
     // More repositories to go: the next draft pull request is due, as the first one was after the reviews.
     ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
       ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PUBLISH", next.candidate.digest, now)] : []),

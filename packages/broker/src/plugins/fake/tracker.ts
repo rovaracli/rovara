@@ -42,7 +42,7 @@ export class FakeTracker implements Tracker {
 
   /** Test driver: an item exists. */
   addItem(id: string, input: Partial<Omit<TrackerItem, "ref">> = {}): TrackerItem {
-    const item: TrackerItem = { ref: { tracker: FAKE_TRACKER_KIND, id, url: `https://tracker.example.test/items/${encodeURIComponent(id)}` }, title: input.title ?? `Item ${id}`, body: input.body ?? "", status: input.status ?? "open", labels: input.labels ?? [], ...(input.assignee === undefined ? {} : { assignee: input.assignee }) };
+    const item: TrackerItem = { ref: { tracker: FAKE_TRACKER_KIND, id, url: `https://host.example.test/items/${encodeURIComponent(id)}` }, title: input.title ?? `Item ${id}`, body: input.body ?? "", status: input.status ?? "open", labels: input.labels ?? [], ...(input.assignee === undefined ? {} : { assignee: input.assignee }) };
     this.items.set(id, item);
     return item;
   }
