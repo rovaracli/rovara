@@ -39,19 +39,26 @@ export function ranCommand(entryCommand: string, line: string): boolean {
 type Fate = { failedAtN: number } | { workedAtN: number } | "not_run";
 
 /**
- * How a journal command ran `line`, judged only from text the shell gives a trustworthy exit code for:
- *   - `alone`: the line is the whole command (after `cd <dir> &&`, `NAME=value` words and `2>&1`), so its exit code is the line's own;
- *   - `chain`: the line is one step of an `&&` chain, so an exit of 0 means every step worked, and a non-zero exit says nothing about this step;
- *   - undefined: the line is not one whole step of the command. A step is what sits between `&&`, so a pipe (`... | tail`, whose exit is its last program's), `|| true`, `;`, a background `&`, a subshell or
- *     a substitution makes the step something else than the line, and the line is not evidence.
+ * How a journal command ran `line`, judged only from text the shell gives a trustworthy exit code for. A command line is evidence only when it holds none of: `||`, `;`, a single `&`, a pipe, a quote,
+ * `#`, a backtick, `$(`, `<(` or a newline, ANYWHERE (not only in the step that matters): each of them can change the exit code or hide the text that decides it (`a && b || echo failed` exits 0 when
+ * `b` fails, `a && b; true` always does, `echo 'x && a && y'` ran no `a`, `ls # && a` is a comment). What is left is `&&` chains, and:
+ *   - `alone`: the line is the whole command (after `NAME=value` words and `2>&1`), so its exit code is the line's own;
+ *   - `chain`: the line is one step of an `&&` chain, or follows a `cd <dir> &&`. An exit of 0 means every step worked; a non-zero exit says nothing about this step (it may be the `cd` that failed,
+ *     or another step);
+ *   - undefined: anything else, or the line is not one whole step.
  */
 function evidenceOf(entryCommand: string, line: string): "alone" | "chain" | undefined {
+  if (entryCommand.length > 2_000 || /\|\||;|\||['"#`\n\r]|\$\(|<\(/u.test(entryCommand.replace(/\s2>&1(?=\s|$)/gu, " ").replace(/&&/gu, "  "))) return undefined;
   const text = oneSpace(entryCommand.replace(/\s2>&1(?=\s|$)/gu, " "));
-  if (text.length > 2_000) return undefined;
+  // What is left of `&` after `&&` and `2>&1` are gone is a background job.
+  if (/&/u.test(text.replace(/&&/gu, ""))) return undefined;
   const wanted = oneSpace(line);
   if (wanted === "") return undefined;
-  const steps = text.split("&&").map((step) => step.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, "")).filter((step) => step !== "" && !/^cd\s+\S+$/u.test(step));
+  const raw = text.split("&&").map((step) => step.trim());
+  if (raw.some((step) => step === "")) return undefined;
+  const steps = raw.map((step) => step.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, ""));
   if (!steps.includes(wanted)) return undefined;
+  // A `cd` step, or any other step, makes the line one of a chain: only a success is evidence then.
   return steps.length === 1 ? "alone" : "chain";
 }
 
@@ -163,7 +170,8 @@ export function mergeAgentFindings(detected: EnvironmentDraft, findings: AgentFi
       const stepKey = stepKeyOf(formatCommandLine(existing.command));
       const works = (index: number) => !used.has(index) && firstWorked(journal, fresh[index]!.line) !== undefined;
       const sameStep = fresh.findIndex((candidate, index) => works(index) && stepKeyOf(candidate.line) === stepKey);
-      const choice = sameStep >= 0 ? sameStep : fresh.findIndex((_candidate, index) => works(index));
+      // Only a command for the SAME step can take its place: a different command that happens to work is another step, not a fix for this one.
+      const choice = sameStep;
       if (choice < 0) { notes.push("A detected command failed when the setup run ran it, and the run found no command that works instead; it is kept so the proof shows the failure."); continue; }
       used.add(choice);
       const candidate = fresh[choice]!;

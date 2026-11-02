@@ -26,6 +26,7 @@ function harness({ limits: limitOverrides, ...over }: Partial<Omit<SetupGovernor
     limits: limits(limitOverrides),
     now: () => clock.t,
     spendCents: () => spend.cents,
+    nextTurnCents: () => 0,
     takeBlockedHosts: () => blocked.shift() ?? [],
     onStop: (word) => stops.push(word),
     onEntry: (entry) => entries.push(entry),
@@ -60,7 +61,9 @@ describe("what a step is", () => {
     expect(stepKeyOf("uv sync")).toBe("uv sync");
     expect(stepKeyOf("cd service && uv sync --frozen 2>&1 | tail -20")).toBe("uv sync");
     expect(stepKeyOf("FOO=1 npm ci --no-audit")).toBe("npm ci");
-    expect(stepKeyOf("python -m pytest -q tests/unit")).toBe("python pytest tests/unit");
+    expect(stepKeyOf("python -m pytest -q tests/unit")).toBe("pytest tests/unit");
+    expect(stepKeyOf("pytest -q")).toBe("pytest");
+    expect(stepKeyOf("python3 -m pytest")).toBe(stepKeyOf("pytest -q"));
     expect(stepKeyOf("pytest tests/a")).not.toBe(stepKeyOf("pytest tests/b"));
     expect(stepKeyOf("npm test")).not.toBe(stepKeyOf("npm run build"));
     expect(stepKeyOf("x".repeat(500)).length).toBeLessThanOrEqual(120);
@@ -99,7 +102,7 @@ describe("commands in all", () => {
     expect(h.governor.ended()).toBe("attempts_used");
   });
   it("does not start with a limit the contract would refuse: over the maximum, zero, a fraction or not a number", () => {
-    const start = (over: Partial<SetupAgentLimits>) => () => new SetupAgentGovernor({ limits: limits(over), spendCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+    const start = (over: Partial<SetupAgentLimits>) => () => new SetupAgentGovernor({ limits: limits(over), spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
     expect(start({ commands: SETUP_AGENT_LIMITS_MAX.commands })).not.toThrow();
     for (const bad of [{ commands: 121 }, { commands: 0 }, { sameStepTries: 6 }, { wallClockMin: 121 }, { budgetCents: 2_001 }, { hostAsks: 11 }, { hostAsks: 1.5 }, { commands: Number.NaN }, { budgetCents: -1 }]) expect(start(bad), JSON.stringify(bad)).toThrow();
   });
@@ -411,7 +414,7 @@ describe("a stopped run keeps what it learned", () => {
     h.run("npm ci");
     h.run("pytest", { exitCode: 1 });
     h.run("never runs");
-    const result = await finishStoppedRun({ governor: h.governor, lastText, basedOnRevision: 3, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
+    const result = await finishStoppedRun({ governor: h.governor, trackedFiles: { ok: true }, lastText, basedOnRevision: 3, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
     return { result, h };
   }
   it("returns the proposal the model had given, the commands that worked, and a partial report with the limit's word", async () => {
@@ -459,7 +462,7 @@ describe("fix round 1: parallel tool calls", () => {
     const shell = setupAgentShell({ base: { exec: async () => { ran += 1; await new Promise((resolve) => setTimeout(resolve, 15)); return { exitCode }; } }, hooks });
     return { shell, ran: () => ran, run: (command: string) => shell.operations.exec(command, "/w", { onData: () => undefined }) };
   };
-  const governorOf = (over: Partial<SetupAgentLimits>) => new SetupAgentGovernor({ limits: limits(over), spendCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+  const governorOf = (over: Partial<SetupAgentLimits>) => new SetupAgentGovernor({ limits: limits(over), spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
 
   it("holds the same-step limit when ten copies of a command are in flight at once (the review's probe: all ten used to run)", async () => {
     const governor = governorOf({ commands: 2, sameStepTries: 1 });
@@ -533,7 +536,7 @@ describe("fix round 1: a changed repository outranks every other reason", () => 
     roots.push(rootPath);
     await mkdir(join(rootPath, "repo/web"), { recursive: true });
     const answer = { setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", line: 2, quote: "\"scripts\"" }] }] };
-    const result = await finishStoppedRun({ governor: h.governor, shell, lastText: block(answer), basedOnRevision: 1, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
+    const result = await finishStoppedRun({ governor: h.governor, trackedFiles: { ok: true }, shell, lastText: block(answer), basedOnRevision: 1, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
     expect(result).toMatchObject({ end: "changed_repository_files", proposal: undefined, learned: [] });
     expect(result.summary).toMatchObject({ stop: "changed_repository_files", partial: true });
   });
@@ -544,7 +547,7 @@ describe("fix round 1: a changed repository outranks every other reason", () => 
     const shell = { ended: () => "changed_repository_files" };
     const rootPath = await mkdtemp(join(tmpdir(), "setup-outrank-"));
     roots.push(rootPath);
-    const result = await finishStoppedRun({ governor: h.governor, shell, lastText: "x", basedOnRevision: 1, rootPath, repositories: [] });
+    const result = await finishStoppedRun({ governor: h.governor, trackedFiles: { ok: true }, shell, lastText: "x", basedOnRevision: 1, rootPath, repositories: [] });
     expect(result.end).toBe("changed_repository_files");
     expect(result.proposal).toBeUndefined();
   });
@@ -583,5 +586,27 @@ describe("fix round 1: one model turn cannot carry the run past the budget", () 
     expect(h.stops).toEqual(["budget_used"]);
     listen(null);
     listen("x");
+  });
+});
+
+describe("fix round 2: the governor and the final look", () => {
+  it("has no default for the next turn's cost: a caller that cannot say it does not build a governor (type-checked, and the field is read on every check)", () => {
+    // A governor built without it (cast past the type, as a plain-JS caller could) fails closed on its first check instead of treating a turn as free.
+    const built = new SetupAgentGovernor({ limits: limits(), spendCents: () => 0, setTimer: () => ({ cancel: () => undefined }) } as unknown as SetupGovernorInput);
+    expect(() => built.check()).toThrow();
+  });
+  it("finishStoppedRun takes the final tracked-file verdict: a repository that is not clean ends the run changed_repository_files with no proposal, whatever stopped it first", async () => {
+    for (const verdict of [{ ok: false, reason: "tracked_files_changed" }, { ok: false, reason: "head_moved" }, { ok: false, reason: "index_flags" }, { ok: false, reason: "unreadable" }] as const) {
+      const h = harness({ limits: { commands: 1 } });
+      h.run("a");
+      h.run("b");
+      expect(h.governor.ended()).toBe("attempts_used");
+      const rootPath = await mkdtemp(join(tmpdir(), "setup-final-"));
+      roots.push(rootPath);
+      await mkdir(join(rootPath, "repo/web"), { recursive: true });
+      const answer = { setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "package.json", line: 2, quote: "\"scripts\"" }] }] };
+      const result = await finishStoppedRun({ governor: h.governor, trackedFiles: verdict, lastText: `x\n\`\`\`agentx-setup-proposal\n${JSON.stringify(answer)}\n\`\`\``, basedOnRevision: 1, rootPath, repositories: [{ name: "web", path: "repo/web", resolvedCommit: "a".repeat(40) }] });
+      expect(result, verdict.reason).toMatchObject({ end: "changed_repository_files", proposal: undefined, learned: [] });
+    }
   });
 });

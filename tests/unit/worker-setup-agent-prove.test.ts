@@ -78,10 +78,10 @@ describe("merging the agent's findings into the detectors' proposal", () => {
     expect(setupReplacementText(merged.replacements[0]!)).toBe("detected uv sync --frozen, replaced by uv sync because uv sync --frozen failed (journal #1)");
     expect(merged.draft.valueSources.find((item) => item.field === "repos[0].setupCommands[0]")?.source).toBe("observed:run-1#2");
   });
-  it("sees a failure through a wrapped command (a directory change, variables, `2>&1`), but not through a pipe, `||`, `;` or a chain", async () => {
+  it("sees a failure through a wrapped command (variables, `2>&1`), but not through a pipe, `||`, `;` or a chain", async () => {
     const proposal = await proposalOf(setupOf("uv sync"));
     const replaced = (command: string) => mergeAgentFindings(draftOf(), { runId: "run-1", proposal, journal: [entry(1, command, 2), entry(2, "uv sync", 0)] }, MERGE).replacements.length;
-    expect(replaced("cd service && FOO=1 uv sync --frozen 2>&1")).toBe(1);
+    expect(replaced("FOO=1 uv sync --frozen 2>&1")).toBe(1);
     // A pipe's exit is its last program's, `|| true` and `;` hide the failure, and in a chain the failure may be another step's.
     for (const unreliable of ["uv sync --frozen 2>&1 | tail -5", "uv sync --frozen || exit 2", "uv sync --frozen; false", "make gen && uv sync --frozen", "(uv sync --frozen)", "uv sync --frozen &"]) expect(replaced(unreliable), unreliable).toBe(0);
   });
@@ -385,5 +385,43 @@ describe("fix round 1: the fresh sandbox shares no folder with the agent's", () 
   it("accepts a separate workspace whose name only starts like the agent's", async () => {
     const { result } = await withRoots(async (agent) => { const sibling = `${agent}-two`; await mkdir(sibling); roots.push(sibling); return sibling; });
     expect(result).toMatchObject({ ok: true, proved: true });
+  });
+});
+
+describe("fix round 2: evidence from the shell's text", () => {
+  const replaces = async (detectedLine: string, agentLine: string, journal: SetupJournalEntry[]) => {
+    const proposal = await proposalOf(setupOf(agentLine));
+    return mergeAgentFindings(draftOf(detection({ setup: [detectedLine] })), { runId: "run-1", proposal, journal }, MERGE).replacements.length;
+  };
+  /** The review's reproduced cases, each of which used to count as "uv sync worked" (exit 0). */
+  const HIDING = [
+    "uv sync && echo ok || echo failed", "uv sync && echo ok; true", "uv sync && echo ok &", "uv sync && make build || true", "echo 'a && uv sync && b'", "ls # && uv sync && true",
+    "uv sync\ntrue", "true\nuv sync", "uv sync\n&& true", "echo \"x\" && uv sync", "uv sync && echo `date`", "uv sync && echo $(date)", "uv sync && diff <(ls) <(ls)", "uv sync && a | b", "true && uv sync || true",
+    "printf 'x\\n' && uv sync && echo done", "if false; then true && uv sync && true; fi",
+  ];
+  it("counts no success from a line that has `||`, `;`, a single `&`, a pipe, a quote, `#`, a backtick, `$(`, `<(` or a newline anywhere", async () => {
+    for (const command of HIDING) expect(await replaces("uv sync --frozen", "uv sync", [entry(1, "uv sync --frozen", 1), entry(2, command, 0)]), JSON.stringify(command)).toBe(0);
+  });
+  it("still counts a success in a plain && chain (the positive control for the cases above)", async () => {
+    for (const command of ["uv sync", "make gen && uv sync", "uv sync && echo ok", "cd service && uv sync", "uv sync&&echo ok", "FOO=1 uv sync 2>&1", "set +e && uv sync && make build"]) {
+      expect(await replaces("uv sync --frozen", "uv sync", [entry(1, "uv sync --frozen", 1), entry(2, command, 0)]), command).toBe(1);
+    }
+  });
+  it("counts no failure from a line with any of those either", async () => {
+    for (const command of ["uv sync --frozen # c", "echo 'x'; uv sync --frozen", "uv sync --frozen || echo x", "uv sync --frozen\nfalse", "uv sync --frozen &", "uv sync --frozen | cat"]) {
+      expect(await replaces("uv sync --frozen", "uv sync", [entry(1, command, 1), entry(2, "uv sync", 0)]), command).toBe(0);
+    }
+  });
+  it("a failed `cd missing && X` is not evidence that X failed (the cd may be what failed); a success after a cd still counts", async () => {
+    expect(await replaces("uv sync --frozen", "uv sync", [entry(1, "cd missing && uv sync --frozen", 1), entry(2, "uv sync", 0)])).toBe(0);
+    expect(await replaces("uv sync --frozen", "uv sync", [entry(1, "cd service && uv sync --frozen", 1), entry(2, "uv sync", 0)])).toBe(0);
+    expect(await replaces("uv sync --frozen", "uv sync", [entry(1, "uv sync --frozen", 1), entry(2, "cd service && uv sync", 0)])).toBe(1);
+  });
+  it("only a command for the SAME step can replace a failed detected command: a different command that works is another step (the review's L3)", async () => {
+    const proposal = await proposalOf(setupOf("make other"));
+    const merged = mergeAgentFindings(draftOf(), { runId: "run-1", proposal, journal: [entry(1, "uv sync --frozen", 1), entry(2, "make other", 0)] }, MERGE);
+    expect(merged.replacements).toEqual([]);
+    expect(lines(merged.draft.environment.repos[0]!.setupCommands)[0]).toBe("uv sync --frozen");
+    expect(merged.notes.join(" ")).toMatch(/found no command that works instead/u);
   });
 });

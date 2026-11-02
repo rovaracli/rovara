@@ -13,7 +13,7 @@ import {
   SETUP_AGENT_LIMITS_DEFAULT, SETUP_BLOCKED_HOSTS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_JOURNAL_TAIL_BYTES, SETUP_HOST_WAIT_MAX_HOURS, SetupAgentLimitsSchema, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema,
   oneLineText, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunEndWord, type SetupRunSummary,
 } from "@agentx/contracts";
-import type { SetupAgentHooks, SetupCommandDecision, SetupCommandRecord } from "./setup-agent.js";
+import type { SetupAgentHooks, SetupCommandDecision, SetupCommandRecord, TrackedFilesVerdict } from "./setup-agent.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
 
 const MINUTE_MS = 60_000;
@@ -48,12 +48,12 @@ export function stepKeyOf(command: string): string {
   text = text.replace(/^[\s(]*cd\s+\S+\s*&&\s*/u, "").replace(/^[\s({]+/u, "");
   // Wrappers that run the next word do not make a different step: `env npm ci`, `command npm ci`, `time npm ci`, `/usr/bin/npm ci`.
   for (let wrapper = 0; wrapper < 4 && /^(?:env|command|exec|time|nohup|nice|sudo|builtin)\s+/u.test(text); wrapper += 1) text = text.replace(/^(?:env|command|exec|time|nohup|nice|sudo|builtin)\s+(?:-\S+\s+)*/u, "");
-  text = text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, "").replace(/^(?:\/[\w.-]+)*\/([\w.+-]+)(?=\s|$)/u, "$1");
+  text = text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, "").replace(/^python3?\s+-m\s+/u, "").replace(/^(?:\/[\w.-]+)*\/([\w.+-]+)(?=\s|$)/u, "$1");
   const first = text.split(/&&|\|\||;|\||\)/u)[0] ?? text;
   const tokens = tokensOf(first).filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token));
   const program = tokens[0] ?? "";
   const rest = tokens.slice(1);
-  const parts = SUBCOMMAND_PROGRAMS.has(program) ? [program, ...rest.filter((token) => !token.startsWith("-")).slice(0, 2)] : [program, ...rest.slice(0, 1)];
+  const parts = SUBCOMMAND_PROGRAMS.has(program) ? [program, ...rest.filter((token) => !token.startsWith("-")).slice(0, 2)] : [program, ...rest.filter((token) => !token.startsWith("-")).slice(0, 1)];
   return parts.join(" ").toLowerCase().slice(0, 120);
 }
 
@@ -102,10 +102,10 @@ export interface SetupGovernorInput {
   /** The model spend so far, in whole cents (`centsFromDollars` of the session's cost); undefined when it cannot be read. Read at every check. */
   spendCents: () => number | undefined;
   /**
-   * What the next model turn may cost at most, in whole cents (`estimateNextTurnCents`). The run stops when the spend so far plus this would reach the budget, so a turn cannot carry it past the limit.
-   * A value that is not a non-negative number counts as the whole budget (fail closed). Default: 0, which leaves the overshoot at one turn; the caller that has the model's prices should pass it.
+   * What the next model turn may cost at most, in whole cents (`estimateNextTurnCents`). REQUIRED, with no default: the run stops when the spend so far plus this would reach the budget, so a turn
+   * cannot carry it past the limit, and a caller that cannot say what a turn costs does not get a governor that assumes it is free. A value that is not a non-negative number counts as the whole budget.
    */
-  nextTurnCents?: () => number;
+  nextTurnCents: () => number;
   /** The hosts the DNS watch (SH9) saw blocked since the last call, cleared by the call. Default: none. */
   takeBlockedHosts?: () => readonly string[];
   /** Called once, when the run must end: the caller aborts the model session. */
@@ -189,7 +189,7 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   check(): SetupRunEndWord | undefined {
     if (this.stopped !== undefined) return this.stopped;
     const spend = this.input.spendCents();
-    const next = this.input.nextTurnCents === undefined ? 0 : this.input.nextTurnCents();
+    const next = this.input.nextTurnCents();
     if (spend === undefined || !Number.isFinite(next) || next < 0 || spend + next >= this.limits.budgetCents) this.stop("budget_used");
     else if (this.elapsedMs() >= this.limits.wallClockMin * MINUTE_MS) this.stop("time_used");
     else if (this.waitedOnHostsTooLong()) this.stop("hosts_waiting");
@@ -368,7 +368,12 @@ export interface StoppedRunResult {
  */
 export async function finishStoppedRun(input: {
   governor: SetupAgentGovernor;
-  /** The agent's shell: when it found the repositories changed, there is no proposal, whatever else stopped the run. */
+  /**
+   * The verdict of `checkTrackedFiles` taken AFTER the agent's container and its processes were stopped, never an earlier one: a repository that is not clean (changed, moved, flagged or unreadable)
+   * ends the run `changed_repository_files` with no proposal, whatever stopped it first. Required, so a caller cannot forget the last look.
+   */
+  trackedFiles: TrackedFilesVerdict;
+  /** The agent's shell: when it found the repositories changed, there is no proposal either. */
   shell?: { ended(): string | undefined };
   lastText: string;
   basedOnRevision: number;
@@ -376,7 +381,7 @@ export async function finishStoppedRun(input: {
   repositories: ReadonlyArray<SetupDraftRepository>;
   metaRepo?: string | undefined;
 }): Promise<StoppedRunResult> {
-  if (input.shell?.ended() === "changed_repository_files") input.governor.onEnded("changed_repository_files");
+  if (!input.trackedFiles.ok || input.shell?.ended() === "changed_repository_files") input.governor.onEnded("changed_repository_files");
   const summary = input.governor.summary();
   if (summary.stop === "changed_repository_files") return { end: summary.stop, summary, proposal: undefined, learned: [] };
   const read = await readSetupProposalAnswer(input.lastText, {
