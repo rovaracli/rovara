@@ -213,6 +213,17 @@ export type SetupValueSource = z.infer<typeof SetupValueSourceSchema>;
 
 // ---- on the wire to the worker (SH14)
 
+/** A worker that lists this checks a prepare invocation's `pins` against the default-branch head it resolves, and refuses the preparation on any difference (P1). */
+export const PREPARE_PINS_FEATURE = "prepare.pins.v1" as const;
+
+/**
+ * P1: the commit the BROKER read as each repository's default-branch head when it built a setup run's prepare invocation. The worker resolves the head itself and refuses the preparation if it is not exactly
+ * this commit (or a repository has no pin), so the preparation the run reads is the one the broker pinned, never one the worker chose.
+ */
+export const PreparePinsSchema = z.array(z.object({ repository: z.string().min(1).max(200), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u) }).strict()).min(1).max(32)
+  .refine((pins) => new Set(pins.map((pin) => pin.repository)).size === pins.length, "pinned repositories must be unique");
+export type PreparePins = z.infer<typeof PreparePinsSchema>;
+
 /** A worker that lists this runs a setup run (`workflowMode: "SETUP_AGENT"`); the broker sends one only to such a worker. */
 export const SETUP_AGENT_FEATURE = "task.setupAgent.v1" as const;
 

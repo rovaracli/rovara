@@ -146,3 +146,30 @@ describe("workspace clone retries only Git's 'Repository not found'", () => {
     expect(f.events).toEqual([{ event: "workspace.clone_retry", repository: "demo", attempt: 1, delayMs: 2_000, outcome: "succeeded" }]);
   });
 });
+
+describe("P1: a setup run's preparation is held to the heads the broker pinned", () => {
+  const headOf = async (source: string) => (await execFileAsync("git", ["-C", source, "rev-parse", "HEAD"], { env: gitEnv })).stdout.trim();
+  it("prepares when each repository's own resolution is exactly its pin", async () => {
+    const f = await fixture();
+    const pin = await headOf(f.source);
+    const manifest = await prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []), pins: [{ repository: "demo", commit: pin }] });
+    expect(manifest.repositories.map((repository) => repository.resolvedCommit)).toEqual([pin]);
+  });
+  it("refuses when the head differs from the pin, when a repository has no pin, and when the pin is for another repository; and reports no base", async () => {
+    const f = await fixture();
+    for (const pins of [[{ repository: "demo", commit: "b".repeat(40) }], [], [{ repository: "other", commit: await headOf(f.source) }]]) {
+      await expect(prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []), pins }), JSON.stringify(pins)).rejects.toThrow(/not at the commit the control plane pinned/u);
+    }
+  });
+  it("without pins (every other preparation) nothing changes", async () => {
+    const f = await fixture();
+    const manifest = await prepareWorkspace({ rootPath: await f.workspace(), project: f.project, readOnly: true, cloneRetry: f.retry, credentialProvider: async () => ({}), materializer: flaky(f.source, []) });
+    expect(manifest.complete).toBe(true);
+  });
+  it("reports a 64-hex commit as the base too", async () => {
+    const { preparedBaseResult } = await import("../../packages/worker/src/prepare.js");
+    const long = "d".repeat(64);
+    expect(preparedBaseResult({ repositories: [{ name: "demo", resolvedCommit: long }] } as never)).toEqual({ preparedBase: [{ repositoryId: "demo", baseCommitSha: long }] });
+    expect(preparedBaseResult({ repositories: [{ name: "demo", resolvedCommit: "short" }] } as never)).toEqual({});
+  });
+});

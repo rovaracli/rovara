@@ -30,7 +30,6 @@ import {
   SETUP_HOST_WAIT_MAX_HOURS,
   SETUP_RUN_LIMIT_STOPS,
   SetupRunSummarySchema,
-  WorkflowReviewBaseSchema,
   agentXError,
   effectiveSetupAgentLimits,
   isSetupRunLimitStop,
@@ -239,20 +238,31 @@ export interface SetupAgentEndOutcome { status: string; result: unknown; error: 
 
 type StoredResult = NonNullable<DeveloperTaskRecord["setupAgentResult"]>;
 
-function readProposal(reported: unknown, task: Pick<DeveloperTaskRecord, "startingRevision">, repositories: SetupDraftRepositories): SetupProposal | undefined {
+/**
+ * M2: every citation is read at the commit the broker recorded (and pinned) for its repository, never at one the worker or the model names: `sanitizeSetupProposal` replaces a citation's commit with the
+ * repository's. A repository with no recorded commit leaves no proposal at all (there would be nothing to re-read it against).
+ */
+function recordedCommits(task: Pick<DeveloperTaskRecord, "preparedBase">, repositories: SetupDraftRepositories): Map<string, string> | undefined {
+  const recorded = new Map((task.preparedBase ?? []).map((entry) => [entry.repositoryId, entry.baseCommitSha]));
+  return repositories.names.length > 0 && repositories.names.every((name) => recorded.has(name)) ? recorded : undefined;
+}
+
+function readProposal(reported: unknown, task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase">, repositories: SetupDraftRepositories): SetupProposal | undefined {
+  const commits = recordedCommits(task, repositories);
+  if (commits === undefined) return undefined;
   const reportedMeta = typeof reported === "object" && reported !== null ? (reported as { metaRepo?: { name?: unknown; commit?: unknown } }).metaRepo : undefined;
   const metaRepo = repositories.meta !== undefined && reportedMeta?.name === repositories.meta && typeof reportedMeta.commit === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(reportedMeta.commit)
     ? { name: repositories.meta, commit: reportedMeta.commit } : undefined;
   const read = sanitizeSetupProposal(reported, {
     basedOnRevision: task.startingRevision,
-    repositories: repositories.names.map((name) => ({ name, ...(repositories.urls[name] === undefined ? {} : { url: repositories.urls[name] }) })),
+    repositories: repositories.names.map((name) => ({ name, commit: commits.get(name), ...(repositories.urls[name] === undefined ? {} : { url: repositories.urls[name] }) })),
     ...(metaRepo === undefined ? {} : { metaRepo }),
   });
   return read.ok ? read.proposal : undefined;
 }
 
 /** What the worker said, read again: `{ setupProposal, setupRunSummary }`. Either part may be missing or unreadable. */
-function readWorkerAnswer(result: unknown, task: Pick<DeveloperTaskRecord, "startingRevision">, repositories: SetupDraftRepositories): { proposal?: SetupProposal; summary?: SetupRunSummary } {
+function readWorkerAnswer(result: unknown, task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase">, repositories: SetupDraftRepositories): { proposal?: SetupProposal; summary?: SetupRunSummary } {
   const answer = typeof result === "object" && result !== null ? (result as { setupProposal?: unknown; setupRunSummary?: unknown }) : {};
   const proposal = answer.setupProposal === undefined ? undefined : readProposal(answer.setupProposal, task, repositories);
   const summary = answer.setupRunSummary === undefined ? undefined : SetupRunSummarySchema.safeParse(answer.setupRunSummary);
@@ -269,7 +279,7 @@ function personStopped(
 }
 
 /** The result for an outcome: which stop word, which fixed sentence, and what the run learned. Pure. */
-function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined }, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
+function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision" | "preparedBase"> & { setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined }, operation: { kind: string }, outcome: SetupAgentEndOutcome): StoredResult {
   const failed = (stop: SetupRunEndWord, failure: string, learned: { proposal?: SetupProposal; summary?: SetupRunSummary } = {}): StoredResult => ({
     status: "failed", stop, failure, ...(learned.proposal === undefined ? {} : { proposal: learned.proposal }), ...(learned.summary === undefined ? {} : { summary: learned.summary }),
   });
@@ -306,7 +316,7 @@ function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision"> & { setupA
  */
 export function setupAgentEndItems(
   tableName: string,
-  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision"> & { orgId?: OrgId | undefined; setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined },
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "startingRevision" | "preparedBase"> & { orgId?: OrgId | undefined; setupAgentStop?: DeveloperTaskRecord["setupAgentStop"] | undefined },
   operation: { kind: string; workflowMode?: string | undefined },
   outcome: SetupAgentEndOutcome,
   now: string,
@@ -326,19 +336,24 @@ export function setupAgentEndItems(
   } }];
 }
 
+/** What a prepare reports of where each repository stands: a repository and its full commit. */
+const ReportedBaseSchema = z.array(z.object({ repositoryId: z.string().min(1).max(200), baseCommitSha: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u) }).strict()).min(1).max(32);
+
 /**
- * P1: keeps the prepare's report of where each repository was checked out (`preparedBase`) on the setup task, BEFORE the task's first operation is built from it in the same terminal transaction (the
- * terminal result calls this for a prepare that succeeded whose task pointer still waits to start `SETUP_AGENT`). The first report stands; a report that does not read keeps nothing, and the worker then
- * refuses the run for want of commits.
+ * P1: keeps the prepare's report of where each repository was checked out (`preparedBase`) on the setup task, BEFORE the task's first operation is built from it in the same terminal transaction (the terminal
+ * result calls this for a prepare that succeeded whose task pointer still waits to start `SETUP_AGENT`). The report is kept ONLY when it equals the heads the broker pinned for that prepare (`pins`: every
+ * repository, the same commit); a report that differs, or a prepare with no pins, leaves the task with NO recorded base (the worker then refuses the run for want of commits). A later prepare at a newer head, pinned the same
+ * way, replaces the base: the run is never refused for a head that moved when the broker pinned the new one.
  */
-export async function keepSetupPreparedBase(deps: Pick<SetupAgentDependencies, "documentClient" | "tableName">, taskId: string, result: unknown, now: string): Promise<void> {
+export async function keepSetupPreparedBase(deps: Pick<SetupAgentDependencies, "documentClient" | "tableName">, taskId: string, result: unknown, now: string, pins: ReadonlyArray<{ repository: string; commit: string }> | undefined): Promise<void> {
   const reported = typeof result === "object" && result !== null ? (result as { preparedBase?: unknown }).preparedBase : undefined;
-  const base = WorkflowReviewBaseSchema.safeParse(reported);
-  if (!base.success) return;
-  await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET preparedBase = if_not_exists(preparedBase, :base), updatedAt = :now",
-    ConditionExpression: "attribute_exists(pk) AND purpose = :purpose", ExpressionAttributeValues: { ":base": base.data, ":now": now, ":purpose": "setup_agent" },
-  }));
+  const base = ReportedBaseSchema.safeParse(reported);
+  const pinned = new Map((pins ?? []).map((pin) => [pin.repository, pin.commit]));
+  const matches = base.success && pinned.size > 0 && base.data.length === pinned.size && new Set(base.data.map((entry) => entry.repositoryId)).size === base.data.length && base.data.every((entry) => pinned.get(entry.repositoryId) === entry.baseCommitSha);
+  const keep = { TableName: deps.tableName, Key: taskKey(taskId), ConditionExpression: "attribute_exists(pk) AND purpose = :purpose" };
+  await deps.documentClient.send(new UpdateCommand(matches
+    ? { ...keep, UpdateExpression: "SET preparedBase = :base, updatedAt = :now", ExpressionAttributeValues: { ":base": base.data, ":now": now, ":purpose": "setup_agent" } }
+    : { ...keep, UpdateExpression: "REMOVE preparedBase SET updatedAt = :now", ExpressionAttributeValues: { ":now": now, ":purpose": "setup_agent" } }));
 }
 
 /**
@@ -361,7 +376,7 @@ export const SETUP_STOP_KEEP_MS = 2 * 60_000;
  */
 export async function keepStoppedSetupProposal(
   deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now">,
-  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "startingRevision" | "setupAgentStop" | "setupAgentResult">,
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "startingRevision" | "setupAgentStop" | "setupAgentResult" | "preparedBase">,
   workerResult: unknown,
   repositories: SetupDraftRepositories,
 ): Promise<boolean> {

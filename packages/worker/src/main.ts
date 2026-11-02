@@ -109,6 +109,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
           // Meta repo lane A3: the project's meta repository, read-only and sparse.
           ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
+          // P1: the heads the broker pinned for a setup run.
+          ...(invocation.payload.pins === undefined ? {} : { pins: invocation.payload.pins }),
           // N9 (INTG2): the project's private package registries, for the setup and readiness commands.
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
         });

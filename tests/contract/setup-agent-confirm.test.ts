@@ -10,7 +10,8 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 
 afterEach(() => { delete process.env.SETUP_AGENT_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; });
 const ROUTE = `/v1/app/projects/${NAME}/setup-agent`;
-const COMMIT = "a".repeat(40);
+// The head the bench's code host answers when the broker pins the run (setup-wizard-testenv.ts getDefaultBranchHead).
+const COMMIT = "c".repeat(40);
 const PACKAGE = ["{", "  \"scripts\": {", "    \"ci\": \"npm ci\",", "    \"test\": \"npm test\"", "  }", "}", ""].join("\n");
 const cite = (line: number, quote: string) => ({ kind: "file", repo: "web", path: "package.json", commit: COMMIT, line, quote });
 const raw = (over: Record<string, unknown> = {}) => ({

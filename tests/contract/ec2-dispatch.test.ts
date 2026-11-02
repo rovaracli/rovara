@@ -1340,6 +1340,20 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).registries).toEqual(registries);
       });
 
+      it("refuses a setup run's preparation that carries pins on a worker that lacks prepare.pins.v1, and sends them unchanged to one that has it (P1)", async () => {
+        const pins = [{ repository: "web", commit: "c".repeat(40) }];
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", pins } } as unknown as WorkerInvocation };
+        for (const features of [undefined, [], ["task.agentRun", "prepare.metaRepo", "prepare.registries.v1"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string });
+          expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["prepare.pins.v1"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).pins).toEqual(pins);
+      });
+
       it("refuses a run whose repository grant names a credential kind beyond token and password on a worker that lacks repository.credentialKinds.v1, and sends it unchanged to one that has it (P8)", async () => {
         const grantOf = (credentialKinds?: string[]) => `${Buffer.from(JSON.stringify({ version: 3, repositories: [{ credentialRef: "r", repositoryUrl: "https://git.example.invalid/a.git", access: "clone", hostKind: "customer-host", ...(credentialKinds === undefined ? {} : { credentialKinds }) }] })).toString("base64url")}.signature`;
         const recordOf = (kind: "prepare" | "publish" | "maintain", repositoryGrant: string) => ({ ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind, payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant } } as unknown as WorkerInvocation });

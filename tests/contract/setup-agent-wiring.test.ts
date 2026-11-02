@@ -35,12 +35,14 @@ const ops = (t: Bench, workspaceId: string) => t.db.find((item) => item.entityTy
 const outbox = (t: Bench, operationId: string) => WorkerInvocationSchema.parse((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0] as { invocation: unknown }).invocation);
 
 /** Starts a run and finishes its preparation, so the setup operation exists. */
-async function started(t: Bench, preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }>) {
+/** The head the bench's code host answers when the broker pins the run (setup-wizard-testenv.ts getDefaultBranchHead). */
+const PINNED = [{ repositoryId: "web", baseCommitSha: "c".repeat(40) }];
+async function started(t: Bench, preparedBase: Array<{ repositoryId: string; baseCommitSha: string }> | null = PINNED) {
   const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
   expect(reply.status, JSON.stringify(reply.body)).toBe(202);
   const [task] = tasks(t);
   const prepare = ops(t, task!.workspaceId).find((operation) => operation.kind === "prepare")!;
-  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase } });
+  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase: preparedBase ?? undefined } });
   const own = ops(t, task!.workspaceId).find((operation) => operation.kind === "task")!;
   // The worker's first event moves the operation to RUNNING, as it does for every task.
   await t.events(task!.workspaceId, own.id, [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
@@ -85,19 +87,40 @@ describe("with the switch on", () => {
     expect(task["budgetUsd"] === undefined || task["budgetUsd"] === SETUP_AGENT_LIMITS_DEFAULT.budgetCents / 100).toBe(true);
   });
 
-  it("P1: the commits the preparation reported travel in the run's payload (the worker holds its manifest to them), and none are sent when the preparation reported none", async () => {
+  it("P1: the broker pins each repository's head in the prepare invocation, keeps the worker's report only when it equals the pin, and sends those commits in the run's payload", async () => {
     process.env.SETUP_AGENT_ENABLED = "1";
     const t = await bench();
-    const { task, own } = await started(t, [{ repositoryId: "web", baseCommitSha: "a".repeat(40) }]);
-    expect(t.db.get(`DEVTASK#${task.taskId}`, "META") ?? t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]).toMatchObject({ preparedBase: [{ repositoryId: "web", baseCommitSha: "a".repeat(40) }] });
+    const { task, own } = await started(t);
+    const prepare = ops(t, task.workspaceId).find((operation) => operation.kind === "prepare")!;
+    const sentPrepare = outbox(t, prepare.id);
+    if (sentPrepare.kind !== "prepare") throw new Error("not a prepare");
+    expect(sentPrepare.payload.pins).toEqual([{ repository: "web", commit: "c".repeat(40) }]);
+    expect(t.db.find((item) => item.id === prepare.id)[0]).toMatchObject({ preparePins: [{ repository: "web", commit: "c".repeat(40) }] });
+    expect(t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]).toMatchObject({ preparedBase: PINNED });
     const invocation = outbox(t, own.id);
     if (invocation.kind !== "task") throw new Error("not a task");
-    expect(invocation.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT, commits: [{ repository: "web", commit: "a".repeat(40) }] });
-    const bare = await bench();
-    const second = await started(bare);
-    const sent = outbox(bare, second.own.id);
-    if (sent.kind !== "task") throw new Error("not a task");
-    expect(sent.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+    expect(invocation.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT, commits: [{ repository: "web", commit: "c".repeat(40) }] });
+  });
+
+  it("P1: a report that is not the pinned head, or none at all, leaves the run with no commits (the worker then refuses it)", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    for (const report of [[{ repositoryId: "web", baseCommitSha: "a".repeat(40) }], null]) {
+      const t = await bench();
+      const { task, own } = await started(t, report);
+      expect(t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]?.preparedBase).toBeUndefined();
+      const sent = outbox(t, own.id);
+      if (sent.kind !== "task") throw new Error("not a task");
+      expect(sent.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+    }
+  });
+
+  it("P1: a head the broker cannot read refuses the start, and nothing is started", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    t.githubHead.mockRejectedValueOnce(new Error("GitHub is down"));
+    const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect(tasks(t)).toEqual([]);
   });
 
   it("holds the start to the payer the route resolved once (payerFromRules), so a setting that changes in between is a retryable busy answer and never a charge to another", async () => {

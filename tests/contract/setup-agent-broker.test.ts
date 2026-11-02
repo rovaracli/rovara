@@ -60,7 +60,7 @@ function world(options: { role?: "maintainer" | "contributor" | "viewer"; enable
           orgId: TEST_ORG, project: NAME, taskId, requestId: request.requestId, requestedBy: who.developerId, basedOnRevision: 3, startedAt: new Date(clock.now).toISOString(),
           limits: request.limits, seenTaskId: request.seenTaskId,
         }),
-        { Put: { TableName: "state", Item: { ...taskKey(taskId), orgId: TEST_ORG, taskId, project: NAME, purpose: "setup_agent", workspaceId: randomUUID(), startingRevision: 3, payer: request.payer, budgetUsd: request.runLimitUsd } } },
+        { Put: { TableName: "state", Item: { ...taskKey(taskId), orgId: TEST_ORG, taskId, project: NAME, purpose: "setup_agent", workspaceId: randomUUID(), startingRevision: 3, payer: request.payer, budgetUsd: request.runLimitUsd, preparedBase: [{ repositoryId: "web", baseCommitSha: COMMIT }] } } },
         { Put: { TableName: "state", Item: { ...runRequestKey(TEST_ORG, request.requestId), result: { taskId, runLimitUsd: request.runLimitUsd, stopAtUsd: request.runLimitUsd, paused: false } } } },
       ] }));
       return { taskId, runLimitUsd: request.runLimitUsd, stopAtUsd: request.runLimitUsd, paused: false };
@@ -570,18 +570,47 @@ describe("what the view shows", () => {
 describe("P1: the commits the broker recorded travel in the run's payload", () => {
   const BASE = [{ repositoryId: "web", baseCommitSha: COMMIT }];
   const started = async (w: World) => (await startSetupAgent(w.deps, caller(), NAME, body())).body as { taskId: string };
-  const keep = (w: World, taskId: string, result: unknown) => keepSetupPreparedBase(w.deps, taskId, result, "2026-11-02T10:00:00.000Z");
-  it("keeps the prepare's report of where each repository was checked out on the task, and the first report stands", async () => {
+  const PIN = [{ repository: "web", commit: COMMIT }];
+  const keep = (w: World, taskId: string, result: unknown, pins: ReadonlyArray<{ repository: string; commit: string }> | null = PIN) => keepSetupPreparedBase(w.deps, taskId, result, "2026-11-02T10:00:00.000Z", pins ?? undefined);
+  const bare = (w: World, taskId: string) => w.db.set({ ...taskOf(w, taskId), preparedBase: undefined });
+  it("keeps the prepare's report on the task when it equals the heads the broker pinned, and a later prepare at a newer pinned head replaces it", async () => {
     const w = world();
     const { taskId } = await started(w);
+    bare(w, taskId);
     await keep(w, taskId, { preparedBase: BASE });
     expect(taskOf(w, taskId).preparedBase).toEqual(BASE);
-    await keep(w, taskId, { preparedBase: [{ repositoryId: "web", baseCommitSha: "b".repeat(40) }] });
-    expect(taskOf(w, taskId).preparedBase).toEqual(BASE);
+    const NEWER = "b".repeat(40);
+    await keep(w, taskId, { preparedBase: [{ repositoryId: "web", baseCommitSha: NEWER }] }, [{ repository: "web", commit: NEWER }]);
+    expect(taskOf(w, taskId).preparedBase).toEqual([{ repositoryId: "web", baseCommitSha: NEWER }]);
+  });
+  it("keeps NO base when the report differs from the pin, misses a repository or names one the broker did not pin, or when the prepare had no pins; a base kept before is removed", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    const cases: Array<[unknown, ReadonlyArray<{ repository: string; commit: string }> | null]> = [
+      [{ preparedBase: [{ repositoryId: "web", baseCommitSha: "b".repeat(40) }] }, PIN],
+      [{ preparedBase: BASE }, null], [{ preparedBase: BASE }, []],
+      [{ preparedBase: [...BASE, { repositoryId: "api", baseCommitSha: COMMIT }] }, PIN],
+      [{ preparedBase: BASE }, [...PIN, { repository: "api", commit: COMMIT }]],
+      [{ preparedBase: [{ repositoryId: "api", baseCommitSha: COMMIT }] }, PIN],
+      [{ preparedBase: [...BASE, ...BASE] }, PIN],
+    ];
+    for (const [result, pins] of cases) {
+      await keep(w, taskId, { preparedBase: BASE });
+      await keep(w, taskId, result, pins);
+      expect(taskOf(w, taskId).preparedBase, JSON.stringify([result, pins])).toBeUndefined();
+    }
+  });
+  it("takes full 64-hex commits too", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    const long = "d".repeat(64);
+    await keep(w, taskId, { preparedBase: [{ repositoryId: "web", baseCommitSha: long }] }, [{ repository: "web", commit: long }]);
+    expect(taskOf(w, taskId).preparedBase).toEqual([{ repositoryId: "web", baseCommitSha: long }]);
   });
   it("keeps nothing from a report that does not read, and nothing on a task that is not a setup run", async () => {
     const w = world();
     const { taskId } = await started(w);
+    bare(w, taskId);
     for (const result of [{ preparedBase: [{ repositoryId: "web", baseCommitSha: "main" }] }, { preparedBase: [] }, {}, undefined, "x"]) await keep(w, taskId, result);
     expect(taskOf(w, taskId).preparedBase).toBeUndefined();
     w.db.set({ ...taskOf(w, taskId), purpose: "setup_draft" });
@@ -735,5 +764,46 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
       w.db.set({ ...taskOf(w, taskId), setupAgentVerification: { at: "2026-11-02T10:00:00.000Z", items: {} } });
       expect(await keep(w, taskId, report)).toBe(false);
     });
+  });
+});
+
+describe("M2: every citation is read at the commit the broker recorded", () => {
+  const started = async (w: World) => (await startSetupAgent(w.deps, caller(), NAME, body())).body as { taskId: string };
+  const other = "b".repeat(40);
+  const citing = (commit: string) => ({
+    setup: [{ repo: "web", commands: ["npm ci"], confidence: "high", from: [{ kind: "file", repo: "web", path: "package.json", commit, line: 3, quote: "\"ci\": \"npm ci\"" }] }],
+    tests: [], basedOnRevision: 3,
+  });
+  const commitsIn = (proposalValue: unknown): string[] => [...JSON.stringify(proposalValue).matchAll(/"commit":"([a-f0-9]+)"/gu)].map((match) => match[1]!);
+
+  it("a citation at another commit (the model's, the worker's) is read at the recorded one instead", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: citing(other), setupRunSummary: summary() } });
+    const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+    expect(state.status).toBe("ready");
+    expect(commitsIn(state.proposal)).toEqual([COMMIT]);
+  });
+
+  it("a repository with no recorded commit leaves no proposal, whoever ended the run", async () => {
+    for (const preparedBase of [undefined, [{ repositoryId: "api", baseCommitSha: COMMIT }]]) {
+      const w = world();
+      const { taskId } = await started(w);
+      w.db.set({ ...taskOf(w, taskId), preparedBase });
+      await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: citing(COMMIT), setupRunSummary: summary() } });
+      const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+      expect(state.proposal, JSON.stringify(preparedBase)).toBeUndefined();
+      expect(state.status).toBe("failed");
+    }
+  });
+
+  it("the late report of a stopped run is read the same way: pinned to the recorded commit, and kept only with one", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await stopSetupAgent(w.deps, caller(PAT), NAME, body());
+    await end(w, taskId, { status: "CANCELLED" });
+    expect(await keepStoppedSetupProposal(w.deps, { ...(taskOf(w, taskId) as never as Record<string, unknown>), preparedBase: undefined } as never, { setupProposal: citing(COMMIT), setupRunSummary: summary() }, repositories)).toBe(false);
+    expect(await keepStoppedSetupProposal(w.deps, taskOf(w, taskId) as never, { setupProposal: citing(other), setupRunSummary: summary() }, repositories)).toBe(true);
+    expect(commitsIn((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).proposal)).toEqual([COMMIT]);
   });
 });

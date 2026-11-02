@@ -414,7 +414,7 @@ export async function recordTerminalResult(
         : undefined;
       taskPointer = pointer;
       // P1 (su): a setup run's preparation report of where each repository stands is kept before the run's first operation is built from it (rovara-code/setup-agent.ts).
-      if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now);
+      if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now, operation.preparePins);
       const completed = await completedTurnItems(dependencies, operation, pointer, terminalStatus, { result, error }, now);
       inlineEvidence.length = 0;
       plannerReplies.length = 0;
