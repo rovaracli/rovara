@@ -16,11 +16,11 @@ const viaWords: Record<string, string> = { verified_email: "Matched by a verifie
 const reasonWords: Record<string, string> = {
   switch_off: "Automatic linking is off.",
   no_email: "The tool shows no email for this person.",
-  no_verified_domains: "Your company has no verified sign-in domains recorded, so Rovara cannot check the email's domain.",
-  domain_not_verified: "The email's domain is not one your company has verified for sign-in.",
+  no_verified_domains: "Your company has no verified domains yet, so Rovara cannot check the email's domain. An owner can verify one on the Company domains page.",
+  domain_not_verified: "The email's domain is not one your company has verified (an owner can verify it on the Company domains page).",
   guest: "This person is a guest in the tool.",
-  company_control_unavailable: "Rovara cannot tell whether your company controls this account (Jira managed accounts cannot be read with this connection).",
-  not_company_controlled: "This account is not company-controlled (the workspace does not enforce your company's sign-in).",
+  company_control_unavailable: "Rovara cannot tell whether your company controls this account. For Jira it needs a read-only Atlassian organization admin API key saved with the connection; without one, map people by hand. For Linear, the workspace's sign-in settings could not be read.",
+  not_company_controlled: "This account is not company-controlled (Linear: the workspace does not enforce your company's SAML sign-in. Jira: Atlassian does not list it as one of your managed accounts).",
   unmapped_by_admin: "An admin took this person's mapping away.",
   no_matching_member: "No company member has this exact verified sign-in email.",
 };

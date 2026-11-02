@@ -8,6 +8,7 @@
 // an admin unmaps them.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { normalizeEmailDomain } from "../org/company-domains/normalize.js";
 import type { TeamRecordTable } from "./types.js";
 
 /** The domains a company has verified for its Rovara sign-in. `undefined`: the company has none recorded (nothing is guessed). */
@@ -35,11 +36,8 @@ export interface AutoLinkFacts {
   suppressed: boolean;
 }
 
-export const emailDomain = (email: string): string | undefined => {
-  const at = email.trim().lastIndexOf("@");
-  const domain = at < 0 ? "" : email.trim().slice(at + 1).toLowerCase();
-  return /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/u.test(domain) && domain.includes(".") ? domain : undefined;
-};
+/** The domain of an email in the stored form of a company domain (lower-case, punycode), or undefined when it is none, or is an IP address, a public suffix or a lookalike. */
+export const emailDomain = (email: string): string | undefined => email.includes("@") ? normalizeEmailDomain(email.trim()) : undefined;
 
 /** Conditions 1 and 2, and the switch, in order; the first that fails is the reason. `undefined` means conditions 1 and 2 hold: the exact-member match (3) is the next step. */
 export function autoLinkRefusal(facts: AutoLinkFacts): AutoLinkReason | undefined {

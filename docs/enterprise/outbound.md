@@ -14,8 +14,8 @@ Enterprise: Reached only when an admin connects that system (or registers a GitH
   `*.github.com`, `api.github.com`, `api.githubcopilot.com`, `github.com`
 - Slack: the Slack app, webhooks and links.
   `*.slack.com`, `api.slack.com`, `app.slack.com`, `hooks.slack.com`, `slack-gov.com`, `slack.com`
-- Trackers and work-management connectors (Linear, Jira, Asana).
-  `*.atlassian.net`, `api.linear.app`, `app.asana.com`, `linear.app`, `mcp.asana.com`, `mcp.atlassian.com`, `mcp.linear.app`
+- Trackers and work-management connectors (Linear, Jira, Asana), and Atlassian's organization admin API (api.atlassian.com), read with a key the company supplies to tell which Jira accounts it manages.
+  `*.atlassian.net`, `api.atlassian.com`, `api.linear.app`, `app.asana.com`, `linear.app`, `mcp.asana.com`, `mcp.atlassian.com`, `mcp.linear.app`
 - Observability and operations connectors (read-only): Sentry, Datadog (regional hosts), Grafana, PagerDuty, Vercel.
   `ap1.datadoghq.com`, `ap2.datadoghq.com`, `api.eu.pagerduty.com`, `api.pagerduty.com`, `api.vercel.com`, `datadoghq.com`, `datadoghq.eu`, `ddog-gov.com`, `sentry.io`, `uk1.datadoghq.com`, `us2.ddog-gov.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `vercel.com`
 

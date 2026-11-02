@@ -87,8 +87,8 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["slack.com", "api.slack.com", "app.slack.com", "hooks.slack.com", "slack-gov.com", "*.slack.com"],
   },
   {
-    category: "customer-integration", why: "Trackers and work-management connectors (Linear, Jira, Asana).",
-    hosts: ["linear.app", "api.linear.app", "mcp.linear.app", "mcp.atlassian.com", "*.atlassian.net", "mcp.asana.com", "app.asana.com"],
+    category: "customer-integration", why: "Trackers and work-management connectors (Linear, Jira, Asana), and Atlassian's organization admin API (api.atlassian.com), read with a key the company supplies to tell which Jira accounts it manages.",
+    hosts: ["linear.app", "api.linear.app", "mcp.linear.app", "mcp.atlassian.com", "api.atlassian.com", "*.atlassian.net", "mcp.asana.com", "app.asana.com"],
   },
   {
     category: "customer-integration", why: "Observability and operations connectors (read-only): Sentry, Datadog (regional hosts), Grafana, PagerDuty, Vercel.",
