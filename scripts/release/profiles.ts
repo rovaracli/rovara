@@ -60,6 +60,8 @@ function everythingOn(): Record<string, string> {
     rovaraMcpControllerTlsSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/mcp-controller-tls-AbCdEf",
     rovaraMcpControllerDnsNamespace: "runners.example.internal",
     rovaraMcpControllerCa: sampleControllerCa(),
+    // Project package registries (N9): one CodeArtifact domain bound to the install's own org, with the repositories its projects may read.
+    rovaraCodeArtifactDomains: "example-domain:123456789012:us-east-1:install:shared+tools",
     agentxReservedConcurrency: "true",
     agentxRovaraOrgId: "o-abcdef1234",
     // (Text, as every recorded setting is; the infrastructure parses it as JSON.)

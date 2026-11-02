@@ -4,13 +4,15 @@
 // token by registry NAME (`/registry-credentials`), writes the package manager's config outside every repository, runs the project's setup and readiness commands, and removes
 // the file. The token never enters model context, the transcript, evidence, logs, the manifest or a pull request: every command result passes `scrubRegistrySecrets` first.
 //
-// Public edition: CodeArtifact only. The public registries (npmjs, PyPI, Maven Central) need no entry and no credential: they stay reachable under the default allow-list.
-// Enterprise: CodeArtifact, or a generic registry (npm, pypi, maven) the customer runs, reached with a credential reference the broker resolves.
+// Public edition: none yet (the install is shared by many companies; a CodeArtifact domain is install-wide until a per-org binding exists). The public registries (npmjs, PyPI, Maven
+// Central) need no entry and no credential: they stay reachable under the default allow-list.
+// Enterprise: CodeArtifact (a domain and repositories the install bound to the org), or a generic registry (npm, pypi, maven) the customer runs, reached with a credential reference the
+// broker resolves.
 import { z } from "zod";
 import { AgentXNameSchema } from "./names.js";
-import { DEFAULT_AGENT_ALLOW_DOMAINS } from "./default-allow-domains.js";
 import { e2eSecretSpellings } from "./e2e-secret-spellings.js";
 import type { Edition } from "./edition.js";
+import { OrgIdSchema, type OrgId } from "./browser-ids.js";
 
 /** The feature a worker lists when it can take the prepare payload's `registries` and run setup with a registry's config. Added to WORKER_INVOCATION_FEATURES. */
 export const PREPARE_REGISTRIES_FEATURE = "prepare.registries.v1" as const;
@@ -156,16 +158,47 @@ export const RegistryCredentialSchema = z.object({
 }).strict();
 export type RegistryCredential = z.infer<typeof RegistryCredentialSchema>;
 
-// ---- what a project may name, by edition
+// ---- what a project may name, by edition and org
 
-export type RegistryProblemCode = "edition_kind" | "host_not_approved";
+export type RegistryProblemCode = "edition_kind" | "host_not_approved" | "domain_not_bound";
 export interface RegistryProblem { code: RegistryProblemCode; registry: string }
 
 /** Fixed sentences: they name a registry (a name the project chose), never a host's path or a value. */
 export const REGISTRY_PROBLEM_MESSAGES: Readonly<Record<RegistryProblemCode, string>> = {
-  edition_kind: "This install allows CodeArtifact registries only. Public package registries need no entry.",
+  edition_kind: "This edition does not support project package registries yet. Public package registries need no entry.",
   host_not_approved: "The registry's host is not on the project's approved websites. Ask an admin to approve it, then try again.",
+  domain_not_bound: "This registry's CodeArtifact domain and repository are not set up for this organization on this install. Ask the install's admin.",
 };
+
+/**
+ * A CodeArtifact domain the install lets ONE org use, and the repositories of it that org's projects may read. The broker role's IAM is install-wide (a role holds its permissions for
+ * every caller), so the org binding is what keeps one org from naming another's domain: the exchange and the start check it, and the infrastructure grants ReadFromRepository on the
+ * listed repositories only (so the token, which carries its minter's permissions, reads nothing else).
+ */
+export interface BoundRegistryDomain { name: string; owner: string; region: string; orgId: OrgId; repositories: readonly string[] }
+
+/** The broker's variable that holds the bindings (`formatBoundRegistryDomains`). */
+export const BOUND_REGISTRY_DOMAINS_VARIABLE = "PROJECT_REGISTRY_DOMAINS";
+
+/** `name:owner:region:orgSuffix:repo+repo`, entries joined by `,`. The org id is written without its `org_` prefix (the Lambda environment is held to 4 KB). */
+export function formatBoundRegistryDomains(domains: readonly BoundRegistryDomain[]): string {
+  return domains.map((domain) => `${domain.name}:${domain.owner}:${domain.region}:${domain.orgId.slice(4)}:${domain.repositories.join("+")}`).join(",");
+}
+
+/** Reads `formatBoundRegistryDomains`. Anything malformed yields no binding at all (fail closed: an unreadable value binds nothing). */
+export function parseBoundRegistryDomains(text: string | undefined): BoundRegistryDomain[] {
+  if (text === undefined || text === "") return [];
+  const result: BoundRegistryDomain[] = [];
+  for (const item of text.split(",")) {
+    const [name, owner, region, suffix, repositories, extra] = item.split(":");
+    const orgId = OrgIdSchema.safeParse(`org_${suffix ?? ""}`);
+    const repos = (repositories ?? "").split("+");
+    if (extra !== undefined || name === undefined || owner === undefined || region === undefined || !CODEARTIFACT_DOMAIN.test(name) || !/^\d{12}$/.test(owner) || !AWS_REGION.test(region)
+      || !orgId.success || repos.length === 0 || repos.some((repo) => !CODEARTIFACT_REPOSITORY.test(repo))) return [];
+    result.push({ name, owner, region, orgId: orgId.data, repositories: repos });
+  }
+  return result;
+}
 
 /** Whether `host` is one of `patterns`: exactly, or under a `*.` entry (subdomains only, as the DNS firewall reads it). */
 export function hostMatchesDomain(host: string, patterns: readonly string[]): boolean {
@@ -178,19 +211,21 @@ export function hostMatchesDomain(host: string, patterns: readonly string[]): bo
 
 /**
  * Everything that keeps a project's registries from being used on this install, in registry order:
- *  - Public allows CodeArtifact only;
- *  - the registry's host must be on the project's approved websites (the normal egress approval). On Public the cell-wide default list also counts, as it does for any
- *    project (it already holds `*.amazonaws.com`, which covers CodeArtifact); an Enterprise install's firewall serves approved domains only.
- * Fail closed: an install that has no edition on record is held to Public's rule.
+ *  - Public uses none yet: its install is shared by many companies and a CodeArtifact domain is install-wide until a per-org binding exists;
+ *  - a CodeArtifact registry must name a domain, account, region AND repository that the install bound to the requesting org (`boundDomains`); another org's domain gets no token;
+ *  - the registry's host must be on the project's approved websites (the normal egress approval).
+ * Fail closed: an install that has no edition on record is held to Public's rule, and a missing org binds nothing.
  */
-export function registryProblems(input: { edition: Edition | undefined; registries: readonly ProjectRegistry[]; allowedDomains: readonly string[] }): RegistryProblem[] {
+export function registryProblems(input: { edition: Edition | undefined; registries: readonly ProjectRegistry[]; allowedDomains: readonly string[]; orgId?: string | undefined; boundDomains?: readonly BoundRegistryDomain[] }): RegistryProblem[] {
   const edition = input.edition ?? "public";
   const problems: RegistryProblem[] = [];
   for (const entry of input.registries) {
-    if (edition === "public" && entry.kind !== "codeartifact") { problems.push({ code: "edition_kind", registry: entry.name }); continue; }
-    const host = registryHostOf(entry);
-    const covered = hostMatchesDomain(host, input.allowedDomains) || (edition === "public" && hostMatchesDomain(host, DEFAULT_AGENT_ALLOW_DOMAINS));
-    if (!covered) problems.push({ code: "host_not_approved", registry: entry.name });
+    if (edition === "public") { problems.push({ code: "edition_kind", registry: entry.name }); continue; }
+    if (entry.kind === "codeartifact") {
+      const bound = input.orgId !== undefined && (input.boundDomains ?? []).some((domain) => domain.orgId === input.orgId && domain.name === entry.domain && domain.owner === entry.domainOwner && domain.region === entry.region && domain.repositories.includes(entry.repository));
+      if (!bound) { problems.push({ code: "domain_not_bound", registry: entry.name }); continue; }
+    }
+    if (!hostMatchesDomain(registryHostOf(entry), input.allowedDomains)) problems.push({ code: "host_not_approved", registry: entry.name });
   }
   return problems;
 }

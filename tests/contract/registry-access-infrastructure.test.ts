@@ -5,7 +5,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { REGISTRY_TOKEN_SECONDS } from "@agentx/contracts";
+import { BOUND_REGISTRY_DOMAINS_VARIABLE, REGISTRY_TOKEN_SECONDS, parseBoundRegistryDomains } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseCodeArtifactDomains, registryTokenStatements, type PolicyStatementJson } from "../../infra/lib/registry-access.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
@@ -13,7 +13,9 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
 
-const DOMAIN = { name: "acme", owner: "123456789012", region: "us-west-2" } as const;
+const ORG = "org_abcdefghijklmnopqrst" as never;
+const DOMAIN = { name: "acme", owner: "123456789012", region: "us-west-2", orgId: ORG, repositories: ["shared"] } as const;
+const ENT = { edition: "enterprise", cloud: false, env: "ent" } as const;
 const ENTERPRISE = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.99.0.0/16", agentxAuditTsa: "off" } as const;
 const PUBLIC = { agentxEnv: "staging", agentxCloud: true } as const;
 
@@ -53,6 +55,9 @@ describe("the policy text", () => {
     expect(allows(statements, mint({ resource: "arn:aws:codeartifact:us-east-1:123456789012:domain/acme" }))).toBe(false);
     expect(allows(statements, mint({ resource: "*" }))).toBe(false);
     expect(allows(statements, { action: "codeartifact:ReadFromRepository", resource: "arn:aws:codeartifact:us-west-2:123456789012:repository/other/shared" })).toBe(false);
+    // S3: only the NAMED repositories of the domain, not its other repositories.
+    expect(allows(statements, { action: "codeartifact:ReadFromRepository", resource: "arn:aws:codeartifact:us-west-2:123456789012:repository/acme/secret-team" })).toBe(false);
+    expect(allows(statements, { action: "codeartifact:ReadFromRepository", resource: "arn:aws:codeartifact:us-west-2:123456789012:repository/acme/*" })).toBe(false);
   });
 
   it("refuses the bearer token for another service, for the 12-hour default, for 0 (the role session's lifetime) and when the duration is not stated", () => {
@@ -75,22 +80,34 @@ describe("the policy text", () => {
   });
 
   it("lists each domain separately and uses the install's partition", () => {
-    const two = registryTokenStatements([DOMAIN, { name: "beta", owner: "210987654321", region: "eu-west-1" }], "aws-us-gov");
+    const two = registryTokenStatements([DOMAIN, { name: "beta", owner: "210987654321", region: "eu-west-1", orgId: ORG, repositories: ["a", "b"] }], "aws-us-gov");
     expect(two[0]!.Resource).toEqual(["arn:aws-us-gov:codeartifact:us-west-2:123456789012:domain/acme", "arn:aws-us-gov:codeartifact:eu-west-1:210987654321:domain/beta"]);
     expect(() => registryTokenStatements([DOMAIN], "aws/../x")).toThrow(/partition/);
   });
 });
 
 describe("the install setting", () => {
-  it("reads domain:account:region, as a list or a comma string, and nothing set means none", () => {
-    expect(parseCodeArtifactDomains(undefined)).toBeUndefined();
-    expect(parseCodeArtifactDomains("")).toBeUndefined();
-    expect(parseCodeArtifactDomains([])).toBeUndefined();
-    expect(parseCodeArtifactDomains("acme:123456789012:us-west-2")).toEqual([DOMAIN]);
-    expect(parseCodeArtifactDomains(["acme:123456789012:us-west-2", "beta:210987654321:eu-west-1"])).toHaveLength(2);
+  it("reads domain:account:region:org:repositories for an Enterprise install, as a list or a comma string, and nothing set means none", () => {
+    expect(parseCodeArtifactDomains(undefined, ENT)).toBeUndefined();
+    expect(parseCodeArtifactDomains("", ENT)).toBeUndefined();
+    expect(parseCodeArtifactDomains([], ENT)).toBeUndefined();
+    expect(parseCodeArtifactDomains("acme:123456789012:us-west-2:org_abcdefghijklmnopqrst:shared", ENT)).toEqual([DOMAIN]);
+    expect(parseCodeArtifactDomains(["acme:123456789012:us-west-2:org_abcdefghijklmnopqrst:shared+tools", "beta:210987654321:eu-west-1:org_abcdefghijklmnopqrst:x1"], ENT)).toHaveLength(2);
   });
-  it.each([["a wildcard", "*:123456789012:us-west-2"], ["no region", "acme:123456789012"], ["a short account", "acme:12345:us-west-2"], ["a duplicate", "acme:123456789012:us-west-2,acme:123456789012:us-west-2"], ["a path", "acme/x:123456789012:us-west-2"], ["a number", 5], ["nine domains", Array.from({ length: 9 }, (_, i) => `d${String(i)}x:123456789012:us-west-2`)]])("refuses %s", (_name, value) => {
-    expect(() => parseCodeArtifactDomains(value)).toThrow(/rovaraCodeArtifactDomains/);
+  it("`install` means the install's own org", () => {
+    const [domain] = parseCodeArtifactDomains("acme:123456789012:us-west-2:install:shared", ENT)!;
+    expect(domain!.orgId).toMatch(/^org_[0-9a-z]{20}$/);
+    expect(() => parseCodeArtifactDomains("acme:123456789012:us-west-2:install:shared", { ...ENT, env: undefined })).toThrow(/rovaraCodeArtifactDomains/);
+  });
+  it.each([["a wildcard", "*:123456789012:us-west-2:install:shared"], ["no repositories", "acme:123456789012:us-west-2:install"], ["a wildcard repository", "acme:123456789012:us-west-2:install:*"], ["no org", "acme:123456789012:us-west-2::shared"], ["a bad org", "acme:123456789012:us-west-2:org_short:shared"], ["a short account", "acme:12345:us-west-2:install:shared"], ["a duplicate domain", "acme:123456789012:us-west-2:install:shared,acme:123456789012:us-west-2:install:tools"], ["a repeated repository", "acme:123456789012:us-west-2:install:shared+shared"], ["a number", 5], ["five domains", Array.from({ length: 5 }, (_, i) => `d${String(i)}x:123456789012:us-west-2:install:shared`)]])("refuses %s", (_name, value) => {
+    expect(() => parseCodeArtifactDomains(value, ENT)).toThrow(/rovaraCodeArtifactDomains/);
+  });
+  it("is refused at synth for Public, the hosted cloud and an install with no edition: a shared install cannot hold a domain for one org (B1)", () => {
+    const value = "acme:123456789012:us-west-2:install:shared";
+    expect(() => parseCodeArtifactDomains(value, { edition: "public", cloud: true, env: "staging" })).toThrow(/Enterprise install only|applies only to an Enterprise/);
+    expect(() => parseCodeArtifactDomains(value, { edition: "public", cloud: false, env: "staging" })).toThrow(/Enterprise/);
+    expect(() => parseCodeArtifactDomains(value, { edition: undefined, cloud: false, env: "staging" })).toThrow(/Enterprise/);
+    expect(() => parseCodeArtifactDomains(value, { edition: "enterprise", cloud: true, env: "ent" })).toThrow(/Enterprise/);
   });
 });
 
@@ -118,26 +135,34 @@ const policyStatements = (template: Template): Array<Record<string, unknown>> =>
   return found;
 };
 
-describe.each([["Public", PUBLIC], ["Enterprise", ENTERPRISE]] as const)("the control plane (%s)", (_name, base) => {
-  it("is unchanged with the key absent or empty: no statement, no setting", () => {
-    const plain = controlPlane(base);
-    expect(controlPlane({ ...base, rovaraCodeArtifactDomains: "" }).toJSON()).toStrictEqual(plain.toJSON());
-    expect(JSON.stringify(plain.toJSON())).not.toMatch(/codeartifact|GetServiceBearerToken/);
-    expect(Object.keys(brokerSettingsIn(brokerVariables(plain)))).not.toContain("projectRegistries");
+describe("the control plane", () => {
+  it("is unchanged with the key absent or empty, on Public and on Enterprise: no statement, no setting, no variable", () => {
+    for (const base of [PUBLIC, ENTERPRISE]) {
+      const plain = controlPlane(base);
+      expect(controlPlane({ ...base, rovaraCodeArtifactDomains: "" }).toJSON()).toStrictEqual(plain.toJSON());
+      expect(JSON.stringify(plain.toJSON())).not.toMatch(/codeartifact|GetServiceBearerToken|PROJECT_REGISTRY_DOMAINS/);
+      expect(Object.keys(brokerSettingsIn(brokerVariables(plain)))).not.toContain("projectRegistries");
+    }
   }, 240_000);
 
-  it("with a domain named: the broker role gets the three statements and nothing else of CodeArtifact, and the switch is on", () => {
-    const template = controlPlane({ ...base, rovaraCodeArtifactDomains: "acme:123456789012:us-west-2" });
-    // The synth merges a role's statements (the Sids go), so they are found by what they allow.
+  it("refuses the key on Public (B1): the hosted cloud shares one install between companies", () => {
+    expect(() => controlPlane({ ...PUBLIC, rovaraCodeArtifactDomains: "acme:123456789012:us-west-2:install:shared" })).toThrow(/Enterprise/);
+  }, 240_000);
+
+  it("Enterprise with a domain named: the broker role gets the three statements on the named repositories only, the switch is on, and the bindings travel in one variable", () => {
+    const template = controlPlane({ ...ENTERPRISE, rovaraCodeArtifactDomains: "acme:123456789012:us-west-2:install:shared+tools" });
+    // The synth merges a role's statements (the Sids may go), so they are found by what they allow.
     const mine = policyStatements(template).filter((statement) => /codeartifact:|GetServiceBearerToken/.test(JSON.stringify(statement.Action)));
     const flatten = (value: unknown): string[] => [value].flat() as string[];
     const mint = mine.find((statement) => flatten(statement.Action).includes("codeartifact:GetAuthorizationToken"))!;
     expect(flatten(mint.Action)).toEqual(["codeartifact:GetAuthorizationToken"]);
-    expect(JSON.stringify(mint.Resource)).toMatch(/^"arn:[^"]*:codeartifact:us-west-2:123456789012:domain\/acme"$|codeartifact:us-west-2:123456789012:domain\/acme/);
+    expect(JSON.stringify(mint.Resource)).toContain("codeartifact:us-west-2:123456789012:domain/acme");
     expect(JSON.stringify(mint.Resource)).not.toContain("*");
     const read = mine.find((statement) => flatten(statement.Action).includes("codeartifact:ReadFromRepository"))!;
     expect(flatten(read.Action)).toEqual(["codeartifact:ReadFromRepository"]);
-    expect(JSON.stringify(read.Resource)).toContain("repository/acme/*");
+    expect(JSON.stringify(read.Resource)).toContain("repository/acme/shared");
+    expect(JSON.stringify(read.Resource)).toContain("repository/acme/tools");
+    expect(JSON.stringify(read.Resource)).not.toContain("*");
     const bearerStatement = mine.find((statement) => flatten(statement.Action).includes("sts:GetServiceBearerToken"))!;
     expect(bearerStatement.Resource).toBe("*");
     expect(bearerStatement.Condition).toEqual({
@@ -149,5 +174,8 @@ describe.each([["Public", PUBLIC], ["Enterprise", ENTERPRISE]] as const)("the co
     expect([...text.matchAll(/"codeartifact:[A-Za-z*]+"/g)].map((match) => match[0].slice(1, -1)).sort()).toEqual(["codeartifact:GetAuthorizationToken", "codeartifact:ReadFromRepository"]);
     expect(text.match(/sts:GetServiceBearerToken/g)).toHaveLength(1);
     expect(brokerSettingsIn(brokerVariables(template)).projectRegistries).toBe("1");
+    const bound = parseBoundRegistryDomains(brokerVariables(template)[BOUND_REGISTRY_DOMAINS_VARIABLE] as string);
+    expect(bound).toHaveLength(1);
+    expect(bound[0]).toMatchObject({ name: "acme", repositories: ["shared", "tools"] });
   }, 240_000);
 });

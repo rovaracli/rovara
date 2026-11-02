@@ -762,7 +762,7 @@ async function startThreadPreparation(
       project: workerProjectDefinition(latest.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, latest, identity.ownerKey, workspace.id, operationId),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
-      ...registriesPrepareOf(dependencies, latest),
+      ...registriesPrepareOf(dependencies, latest, { orgId: requireOrgId(identity.orgId) }),
     },
   };
   // The runtime fields stay the workspace's own (only deploymentMode today); outboxRecord refuses a
@@ -1456,7 +1456,7 @@ export async function retryWorkspacePreparation(
         operationId,
       ),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
-      ...registriesPrepareOf(dependencies, project),
+      ...registriesPrepareOf(dependencies, project, { orgId: requireOrgId(identity.orgId) }),
     },
   };
   const updated = WorkspaceInstanceSchema.parse({

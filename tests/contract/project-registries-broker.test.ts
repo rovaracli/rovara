@@ -13,6 +13,9 @@ const NOW = new Date("2026-11-02T12:00:00.000Z");
 const WS = "11111111-1111-4111-8111-111111111111";
 const OP = "22222222-2222-4222-8222-222222222222";
 const CA: ProjectRegistry = { kind: "codeartifact", name: "internal-npm", format: "npm", domain: "acme", domainOwner: "123456789012", repository: "shared", region: "us-west-2" };
+const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa";
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb";
+const BOUND = [{ name: "acme", owner: "123456789012", region: "us-west-2", orgId: ORG_A as never, repositories: ["shared"] }];
 const GENERIC: ProjectRegistry = { kind: "npm", name: "corp-npm", url: "https://npm.corp.acme.dev/", credentialRef: "corp-npm-reader" };
 
 describe("minting a token", () => {
@@ -65,10 +68,10 @@ describe("the exchange", () => {
     const codeArtifact = vi.fn(async () => ({ token, expiresAt: new Date(NOW.getTime() + 3_600_000) }));
     const log = vi.fn();
     const base: RegistryExchangeContext = {
-      enabled: true, edition: "enterprise", source: { codeArtifact },
+      enabled: true, edition: "enterprise", boundDomains: BOUND, source: { codeArtifact },
       inspectGrant: (value) => service.inspect(value),
       readOperation: async () => ({ kind: "prepare", status: "RUNNING", workspace: { status: "PREPARING", activeOperationId: OP } }),
-      readProject: async () => ({ registries: [CA, GENERIC], allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com", "npm.corp.acme.dev"] }),
+      readProject: async () => ({ registries: [CA, GENERIC], allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com", "npm.corp.acme.dev"], orgId: ORG_A }),
       now: () => NOW, log,
     };
     return { ctx: { ...base, ...overrides }, codeArtifact, log };
@@ -128,26 +131,66 @@ describe("the exchange", () => {
   it("applies the edition and the approved websites again at exchange time", async () => {
     const pub = context({ edition: "public" });
     await expect(ask(pub.ctx, { body: { registry: "corp-npm" } })).rejects.toThrow(REGISTRY_PROBLEM_MESSAGES.edition_kind);
-    const unapproved = context({ readProject: async () => ({ registries: [GENERIC], allowedDomains: [] }) });
+    await expect(ask(pub.ctx)).rejects.toThrow(REGISTRY_PROBLEM_MESSAGES.edition_kind);
+    const unapproved = context({ readProject: async () => ({ registries: [GENERIC], allowedDomains: [], orgId: ORG_A }) });
     await expect(ask(unapproved.ctx, { body: { registry: "corp-npm" } })).rejects.toThrow(REGISTRY_PROBLEM_MESSAGES.host_not_approved);
     expect(pub.codeArtifact).not.toHaveBeenCalled();
     expect(unapproved.codeArtifact).not.toHaveBeenCalled();
   });
 });
 
+describe("one org cannot use another org's CodeArtifact domain (B1)", () => {
+  const service = new RepositoryGrantService(Buffer.alloc(32, 9), async () => ({}));
+  const grant = service.issue({ ownerKey: "o", projectName: "payments", workspaceId: WS, operationId: OP, repositories: [] });
+  const make = (orgId: string | undefined, registries: ProjectRegistry[] = [CA]) => {
+    const codeArtifact = vi.fn(async () => ({ token: fakeToken("b"), expiresAt: new Date(NOW.getTime() + 3_600_000) }));
+    const ctx: RegistryExchangeContext = {
+      enabled: true, edition: "enterprise", boundDomains: BOUND, source: { codeArtifact },
+      inspectGrant: (value) => service.inspect(value),
+      readOperation: async () => ({ kind: "prepare", status: "RUNNING", workspace: { status: "PREPARING", activeOperationId: OP } }),
+      readProject: async () => ({ registries, allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com"], orgId }),
+      now: () => NOW, log: vi.fn(),
+    };
+    return { ctx, codeArtifact };
+  };
+  const ask = (ctx: RegistryExchangeContext) => exchangeRegistryCredentialCore(ctx, { grant, workspaceId: WS, operationId: OP, body: { registry: "internal-npm" } });
+
+  it("org A (the domain's org) gets a token, positive control", async () => {
+    const { ctx, codeArtifact } = make(ORG_A);
+    await expect(ask(ctx)).resolves.toBeDefined();
+    expect(codeArtifact).toHaveBeenCalledTimes(1);
+  });
+  it("org B naming org A's domain gets no token, and nothing is minted", async () => {
+    const { ctx, codeArtifact } = make(ORG_B);
+    await expect(ask(ctx)).rejects.toThrow(REGISTRY_PROBLEM_MESSAGES.domain_not_bound);
+    expect(codeArtifact).not.toHaveBeenCalled();
+  });
+  it("a workspace with no org, or a repository the org was not given, gets none either", async () => {
+    for (const made of [make(undefined), make(ORG_A, [{ ...CA, repository: "secret-team" }])]) {
+      await expect(ask(made.ctx)).rejects.toThrow(REGISTRY_PROBLEM_MESSAGES.domain_not_bound);
+      expect(made.codeArtifact).not.toHaveBeenCalled();
+    }
+  });
+  it("the START is refused for org B too, before any worker is asked", () => {
+    const project = { registries: [CA], network: { allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com"] } };
+    expect(registriesPrepareFor({ project, edition: "enterprise", enabled: true, orgId: ORG_A, boundDomains: BOUND }).registries).toHaveLength(1);
+    expect(() => registriesPrepareFor({ project, edition: "enterprise", enabled: true, orgId: ORG_B, boundDomains: BOUND })).toThrow(REGISTRY_PROBLEM_MESSAGES.domain_not_bound);
+  });
+});
+
 describe("the registries a prepare invocation carries", () => {
   const project = { registries: [CA], network: { allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com"] } };
   it("carries where, never how; nothing for a project with none or a run that runs none of its code", () => {
-    expect(registriesPrepareFor({ project, edition: "enterprise", enabled: true }).registries).toEqual([
+    expect(registriesPrepareFor({ project, edition: "enterprise", enabled: true, orgId: ORG_A, boundDomains: BOUND }).registries).toEqual([
       { name: "internal-npm", kind: "codeartifact", format: "npm", url: "https://acme-123456789012.d.codeartifact.us-west-2.amazonaws.com/npm/shared/" },
     ]);
-    expect(registriesPrepareFor({ project: {}, edition: "enterprise", enabled: false })).toEqual({});
-    expect(registriesPrepareFor({ project, edition: "enterprise", enabled: false, readOnly: true })).toEqual({});
+    expect(registriesPrepareFor({ project: {}, edition: "enterprise", enabled: false, orgId: ORG_A, boundDomains: BOUND })).toEqual({});
+    expect(registriesPrepareFor({ project, edition: "enterprise", enabled: false, readOnly: true, orgId: ORG_A, boundDomains: BOUND })).toEqual({});
   });
   it("refuses the START rather than run setup without the registry: switch off, edition, or host not approved", () => {
-    expect(() => registriesPrepareFor({ project, edition: "enterprise", enabled: false })).toThrow(REGISTRIES_OFF_MESSAGE);
-    expect(() => registriesPrepareFor({ project: { registries: [GENERIC], network: { allowedDomains: ["npm.corp.acme.dev"] } }, edition: "public", enabled: true })).toThrow(/CodeArtifact registries only/);
-    expect(() => registriesPrepareFor({ project: { registries: [CA] }, edition: "enterprise", enabled: true })).toThrow(/approved websites/);
+    expect(() => registriesPrepareFor({ project, edition: "enterprise", enabled: false, orgId: ORG_A, boundDomains: BOUND })).toThrow(REGISTRIES_OFF_MESSAGE);
+    expect(() => registriesPrepareFor({ project: { registries: [GENERIC], network: { allowedDomains: ["npm.corp.acme.dev"] } }, edition: "public", enabled: true, orgId: ORG_A, boundDomains: BOUND })).toThrow(/does not support project package registries/);
+    expect(() => registriesPrepareFor({ project: { registries: [CA] }, edition: "enterprise", enabled: true, orgId: ORG_A, boundDomains: BOUND })).toThrow(/approved websites/);
     expect(REGISTRY_FEATURE_MISSING).toContain("newer worker");
   });
 });

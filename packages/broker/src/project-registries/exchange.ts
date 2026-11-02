@@ -2,9 +2,9 @@
 //   - the request must carry the operation's repository grant (signed, bound to this workspace and operation, short-lived);
 //   - the operation must be this workspace's ACTIVE PREPARE: no other kind of operation (a task, a publication) ever receives a registry token, and neither does a prepare that is over;
 //   - the registry is looked up in the project revision the workspace is pinned to, never taken from the request, so a worker cannot ask for a domain the project did not name;
-//   - the install switch, the edition and the project's approved websites are checked again here (they may have changed since the invocation was built);
+//   - the install switch, the edition, the org's binding of the CodeArtifact domain (another org's domain gets no token) and the project's approved websites are checked again here (they may have changed since the invocation was built);
 //   - the token is minted for that one registry, read-only by the broker's identity, and is not logged: the audit line names the registry and the expiry only.
-import { REGISTRY_PROBLEM_MESSAGES, RegistryCredentialRequestSchema, agentXError, registryProblems, type Edition, type ProjectRegistry, type RegistryCredential } from "@agentx/contracts";
+import { REGISTRY_PROBLEM_MESSAGES, RegistryCredentialRequestSchema, agentXError, registryProblems, type BoundRegistryDomain, type Edition, type ProjectRegistry, type RegistryCredential } from "@agentx/contracts";
 import { mintRegistryCredential, type RegistryTokenSource } from "./mint.js";
 
 export const REGISTRIES_OFF_MESSAGE = "Package registries are not switched on for this install.";
@@ -12,13 +12,15 @@ export const REGISTRIES_OFF_MESSAGE = "Package registries are not switched on fo
 export interface RegistryExchangeContext {
   enabled: boolean;
   edition: Edition | undefined;
+  /** The CodeArtifact domains the install bound to an org: a registry naming another org's domain gets no token. */
+  boundDomains: readonly BoundRegistryDomain[];
   source: RegistryTokenSource;
   /** Verifies the grant's signature and expiry and returns what it is bound to. Throws FORBIDDEN. */
   inspectGrant(grant: string): { workspaceId: string; operationId: string };
   /** The operation and its workspace, as stored. */
   readOperation(workspaceId: string, operationId: string): Promise<{ kind: string; status: string; workspace: { status: string; activeOperationId: string | null | undefined } }>;
-  /** The registries and approved websites of the project revision the workspace is pinned to. */
-  readProject(workspaceId: string): Promise<{ registries: readonly ProjectRegistry[]; allowedDomains: readonly string[] }>;
+  /** The registries and approved websites of the project revision the workspace is pinned to, and the org the workspace belongs to. */
+  readProject(workspaceId: string): Promise<{ registries: readonly ProjectRegistry[]; allowedDomains: readonly string[]; orgId: string | undefined }>;
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
 }
@@ -39,7 +41,7 @@ export async function exchangeRegistryCredentialCore(context: RegistryExchangeCo
   const project = await context.readProject(input.workspaceId);
   const entry = project.registries.find((candidate) => candidate.name === request.data.registry);
   if (entry === undefined) throw agentXError("FORBIDDEN", "registry credential grant does not cover this request");
-  const problem = registryProblems({ edition: context.edition, registries: [entry], allowedDomains: project.allowedDomains })[0];
+  const problem = registryProblems({ edition: context.edition, registries: [entry], allowedDomains: project.allowedDomains, orgId: project.orgId, boundDomains: context.boundDomains })[0];
   if (problem !== undefined) throw agentXError("FORBIDDEN", REGISTRY_PROBLEM_MESSAGES[problem.code]);
   const now = context.now ?? (() => new Date());
   const credential = await mintRegistryCredential(entry, context.source, now);

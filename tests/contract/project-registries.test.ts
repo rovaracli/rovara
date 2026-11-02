@@ -10,7 +10,9 @@ import {
   StoredProjectDefinitionSchema,
   WORKER_INVOCATION_FEATURES,
   WorkerInvocationSchema,
+  formatBoundRegistryDomains,
   hostMatchesDomain,
+  parseBoundRegistryDomains,
   prepareRegistriesOf,
   registryHostOf,
   registryProblems,
@@ -91,27 +93,43 @@ describe("the prepare payload", () => {
   });
 });
 
-describe("what an edition allows", () => {
-  const approved = ["*.amazonaws.com"];
-  it("Enterprise: CodeArtifact or a generic registry, each on an approved website", () => {
-    expect(registryProblems({ edition: "enterprise", registries: [CA, GENERIC], allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com", "pypi.corp.acme.dev"] })).toEqual([]);
-    expect(registryProblems({ edition: "enterprise", registries: [GENERIC], allowedDomains: [] })).toEqual([{ code: "host_not_approved", registry: "corp-pypi" }]);
-    // The cell-wide default list counts on Public only: an Enterprise firewall serves approved domains and nothing else.
-    expect(registryProblems({ edition: "enterprise", registries: [CA], allowedDomains: [] })).toEqual([{ code: "host_not_approved", registry: "internal-npm" }]);
+describe("what an edition and an org allow", () => {
+  const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa";
+  const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb";
+  const bound = [{ name: "acme", owner: "123456789012", region: "us-west-2", orgId: ORG_A as never, repositories: ["shared"] }];
+  const approved = ["*.d.codeartifact.us-west-2.amazonaws.com", "pypi.corp.acme.dev"];
+  it("Enterprise: a CodeArtifact registry in a domain and repository bound to the org, or a generic one, each on an approved website", () => {
+    expect(registryProblems({ edition: "enterprise", registries: [CA, GENERIC], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual([]);
+    expect(registryProblems({ edition: "enterprise", registries: [GENERIC], allowedDomains: [], orgId: ORG_A, boundDomains: bound })).toEqual([{ code: "host_not_approved", registry: "corp-pypi" }]);
+    expect(registryProblems({ edition: "enterprise", registries: [CA], allowedDomains: [], orgId: ORG_A, boundDomains: bound })).toEqual([{ code: "host_not_approved", registry: "internal-npm" }]);
   });
-  it("Public: CodeArtifact only (the default list already holds *.amazonaws.com); any other kind is refused", () => {
-    expect(registryProblems({ edition: "public", registries: [CA], allowedDomains: [] })).toEqual([]);
-    expect(registryProblems({ edition: "public", registries: [GENERIC], allowedDomains: ["pypi.corp.acme.dev"] })).toEqual([{ code: "edition_kind", registry: "corp-pypi" }]);
+  it("another org's domain gets nothing, nor does an unlisted domain, account, region or repository, nor a missing org or binding", () => {
+    const refused = [{ code: "domain_not_bound", registry: "internal-npm" }];
+    expect(registryProblems({ edition: "enterprise", registries: [CA], allowedDomains: approved, orgId: ORG_B, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [{ ...CA, domain: "other" }], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [{ ...CA, domainOwner: "999999999999" }], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [{ ...CA, region: "us-east-1" }], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [{ ...CA, repository: "secret-team" }], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [CA], allowedDomains: approved, orgId: undefined, boundDomains: bound })).toEqual(refused);
+    expect(registryProblems({ edition: "enterprise", registries: [CA], allowedDomains: approved, orgId: ORG_A, boundDomains: [] })).toEqual(refused);
   });
-  it("an install with no edition on record is held to Public's rule", () => {
-    expect(registryProblems({ edition: undefined, registries: [GENERIC], allowedDomains: ["pypi.corp.acme.dev"] })).toEqual([{ code: "edition_kind", registry: "corp-pypi" }]);
+  it("Public (and an install with no edition on record) uses no project registry yet", () => {
+    for (const edition of ["public", undefined] as const) {
+      expect(registryProblems({ edition, registries: [CA, GENERIC], allowedDomains: approved, orgId: ORG_A, boundDomains: bound })).toEqual([{ code: "edition_kind", registry: "internal-npm" }, { code: "edition_kind", registry: "corp-pypi" }]);
+    }
+  });
+  it("the bindings travel as one variable and read back; a malformed value binds nothing", () => {
+    const text = formatBoundRegistryDomains([{ ...bound[0]!, repositories: ["shared", "tools"] }]);
+    expect(text).toBe("acme:123456789012:us-west-2:aaaaaaaaaaaaaaaaaaaa:shared+tools");
+    expect(parseBoundRegistryDomains(text)).toEqual([{ ...bound[0]!, repositories: ["shared", "tools"] }]);
+    for (const bad of ["acme:123456789012:us-west-2:aaaa:shared", "acme:123456789012:us-west-2:aaaaaaaaaaaaaaaaaaaa:", "acme:1:us-west-2:aaaaaaaaaaaaaaaaaaaa:shared", "acme:123456789012:us-west-2:aaaaaaaaaaaaaaaaaaaa:shared,broken", "x:y"]) expect(parseBoundRegistryDomains(bad), bad).toEqual([]);
+    expect(parseBoundRegistryDomains(undefined)).toEqual([]);
   });
   it("a wildcard covers subdomains only, never the bare domain or a lookalike", () => {
     expect(hostMatchesDomain("a.b.example.com", ["*.example.com"])).toBe(true);
     expect(hostMatchesDomain("example.com", ["*.example.com"])).toBe(false);
     expect(hostMatchesDomain("evilexample.com", ["*.example.com"])).toBe(false);
     expect(hostMatchesDomain("x.example.com.evil.io", ["*.example.com"])).toBe(false);
-    expect(approved).toHaveLength(1);
   });
 });
 

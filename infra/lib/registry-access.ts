@@ -7,30 +7,48 @@
 //   - `sts:GetServiceBearerToken` is required beside it. The docs give it `Resource: "*"` and scope it with `sts:AWSServiceName = codeartifact.amazonaws.com`; it takes no
 //     resource ARN, so the DOMAIN is named on the statement above. Here it is also held to `sts:DurationSeconds` between 900 and 3600, so IAM itself refuses a token the broker's
 //     code should never ask for (the 12-hour default, or 0 = the role session's lifetime). 3600 is REGISTRY_TOKEN_SECONDS.
-//   - `codeartifact:ReadFromRepository` on the named domain's repositories: a token carries the permissions of the identity that minted it, so read is what the token can do.
+//   - `codeartifact:ReadFromRepository` on the NAMED repositories only: a token carries the permissions of the identity that minted it, so it can read those repositories and no other of the
+//     domain. GetAuthorizationToken takes no scope-down parameter (the API has only domain, owner and duration), so this is the narrowest scope CodeArtifact offers: per install, not per run.
 //     Nothing else is allowed, so publish, delete and every other write is refused by the absence of an Allow. [verify in the test environment: a minted token can read and cannot publish]
 import { Token } from "aws-cdk-lib";
-import { REGISTRY_TOKEN_SECONDS } from "@agentx/contracts";
+import { OrgIdSchema, REGISTRY_TOKEN_SECONDS, singleOrgIdForEnv, type BoundRegistryDomain } from "@agentx/contracts";
 
 export const CODEARTIFACT_DOMAINS_CONTEXT_KEY = "rovaraCodeArtifactDomains";
-export interface RegistryDomain { readonly name: string; readonly owner: string; readonly region: string }
+/** One domain, the org that may use it, and the repositories of it that org's projects may read. */
+export type RegistryDomain = BoundRegistryDomain;
 
 const NAME = /^[a-z][a-z0-9-]{0,48}[a-z0-9]$/;
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/;
-const MAX_DOMAINS = 8;
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{1,99}$/;
+// The Lambda environment is held to 4 KB (ENV-ROOM): the bindings travel in one variable, so only a few fit.
+const MAX_DOMAINS = 4;
+const MAX_REPOSITORIES = 8;
 
-/** `domain:account:region`, comma separated (or an array of those). Anything else, a duplicate or more than 8 stops the synth. Absent or empty: none. */
-export function parseCodeArtifactDomains(value: unknown): readonly RegistryDomain[] | undefined {
+/**
+ * `domain:account:region:org:repo+repo`, comma separated (or an array of those). `org` is an org id (`org_` and 20 characters) or the word `install`, the install's one org (Enterprise
+ * is one company per install). Repositories are named, never a wildcard: the broker's ReadFromRepository grant is exactly these, and so is everything a token can read.
+ *
+ * Install-wide domains are for an Enterprise install only. The Public edition is shared by many companies and a role's permissions are install-wide, so any domain listed there could
+ * be named by any org: the key is refused at synth for Public and for the hosted cloud, and for an install with no edition.
+ * Absent or empty: none.
+ */
+export function parseCodeArtifactDomains(value: unknown, install: { edition: string | undefined; cloud: boolean; env: string | undefined }): readonly RegistryDomain[] | undefined {
   if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return undefined;
+  if (install.cloud || install.edition !== "enterprise") {
+    throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY} applies only to an Enterprise install (rovaraEdition=enterprise): a shared install cannot hold a CodeArtifact domain for one org`);
+  }
   const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : undefined;
-  if (items === undefined) throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY} must be a list of domain:account:region`);
+  if (items === undefined) throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY} must be a list of domain:account:region:org:repositories`);
   const domains = items.map((item): RegistryDomain => {
     const parts = typeof item === "string" ? item.trim().split(":") : [];
-    const [name, owner, region] = parts;
-    if (parts.length !== 3 || name === undefined || owner === undefined || region === undefined || !NAME.test(name) || !/^\d{12}$/.test(owner) || !REGION.test(region)) {
-      throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY}: each entry must be domain:account:region (a 12-digit account and a region such as us-west-2)`);
+    const [name, owner, region, org, repositories] = parts;
+    const orgId = org === "install" ? (install.env === undefined ? undefined : singleOrgIdForEnv(install.env)) : OrgIdSchema.safeParse(org).data;
+    const repos = (repositories ?? "").split("+");
+    if (parts.length !== 5 || name === undefined || owner === undefined || region === undefined || orgId === undefined || !NAME.test(name) || !/^\d{12}$/.test(owner) || !REGION.test(region)
+      || repos.length === 0 || repos.length > MAX_REPOSITORIES || repos.some((repo) => !REPOSITORY.test(repo)) || new Set(repos).size !== repos.length) {
+      throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY}: each entry must be domain:account:region:org:repo+repo (a 12-digit account, a region such as us-west-2, an org id or "install" in a named environment, and named repositories)`);
     }
-    return { name, owner, region };
+    return { name, owner, region, orgId, repositories: repos };
   });
   if (domains.length > MAX_DOMAINS) throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY}: at most ${String(MAX_DOMAINS)} domains`);
   if (new Set(domains.map((domain) => `${domain.name}:${domain.owner}:${domain.region}`)).size !== domains.length) throw new Error(`${CODEARTIFACT_DOMAINS_CONTEXT_KEY}: a domain is listed twice`);
@@ -59,6 +77,6 @@ export function registryTokenStatements(domains: readonly RegistryDomain[], part
         NumericGreaterThanEquals: { "sts:DurationSeconds": 900 },
       },
     },
-    { Sid: "RegistryRead", Effect: "Allow", Action: "codeartifact:ReadFromRepository", Resource: domains.map((domain) => arn(domain, `repository/${domain.name}/*`)) },
+    { Sid: "RegistryRead", Effect: "Allow", Action: "codeartifact:ReadFromRepository", Resource: domains.flatMap((domain) => domain.repositories.map((repository) => arn(domain, `repository/${domain.name}/${repository}`))) },
   ];
 }

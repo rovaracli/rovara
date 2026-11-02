@@ -10,15 +10,17 @@ const fakeToken = (seed: string): string => `eyJ${Buffer.from(`${seed}-token-mat
 const WS = "11111111-1111-4111-8111-111111111111";
 const OP = "22222222-2222-4222-8222-222222222222";
 const ORG = "org_abcdefghijklmnopqrst" as OrgId;
+const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
+const BINDING = "acme:123456789012:us-west-2:abcdefghijklmnopqrst:shared";
 const CA = { kind: "codeartifact", name: "internal-npm", format: "npm", domain: "acme", domainOwner: "123456789012", repository: "shared", region: "us-west-2" } as const;
 const DEFINITION = { name: "payments", revision: 3, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x", registries: [CA], network: { allowedDomains: ["*.d.codeartifact.us-west-2.amazonaws.com"] } };
 
-function world(over: { workspaceStatus?: string; operationKind?: string; active?: string | null } = {}) {
+function world(over: { workspaceStatus?: string; operationKind?: string; active?: string | null; workspaceOrg?: OrgId } = {}) {
   const items = new Map<string, unknown>();
   const put = (key: { pk: string; sk: string }, item: unknown) => items.set(`${key.pk}|${key.sk}`, item);
-  put({ pk: `WORKSPACE#${WS}`, sk: "META" }, { id: WS, ownerKey: "owner-key-0123456789", orgId: ORG, projectName: "payments", projectRevision: 3, deploymentMode: "ec2-ebs", rootPath: "/mnt/workspace", status: over.workspaceStatus ?? "PREPARING", activeOperationId: over.active === undefined ? OP : over.active, fence: 1, createdAt: "2026-11-02T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z" });
+  put({ pk: `WORKSPACE#${WS}`, sk: "META" }, { id: WS, ownerKey: "owner-key-0123456789", orgId: over.workspaceOrg ?? ORG, projectName: "payments", projectRevision: 3, deploymentMode: "ec2-ebs", rootPath: "/mnt/workspace", status: over.workspaceStatus ?? "PREPARING", activeOperationId: over.active === undefined ? OP : over.active, fence: 1, createdAt: "2026-11-02T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z" });
   put({ pk: `WORKSPACE#${WS}`, sk: `OPERATION#${OP}` }, { id: OP, workspaceId: WS, kind: over.operationKind ?? "prepare", status: "RUNNING" });
-  put(projectRevisionKey(ORG, "payments", 3), { definition: DEFINITION });
+  put(projectRevisionKey(over.workspaceOrg ?? ORG, "payments", 3), { definition: DEFINITION });
   const reads: string[] = [];
   const token = fakeToken("g");
   const grants = new RepositoryGrantService(Buffer.alloc(32, 5), async () => ({}));
@@ -43,7 +45,8 @@ describe("the registry credential route", () => {
   describe("with the switch on", () => {
     const withSwitch = async <T>(run: () => Promise<T>): Promise<T> => {
       process.env.PROJECT_REGISTRIES_ENABLED = "1";
-      try { return await run(); } finally { delete process.env.PROJECT_REGISTRIES_ENABLED; }
+      process.env.PROJECT_REGISTRY_DOMAINS = BINDING;
+      try { return await run(); } finally { delete process.env.PROJECT_REGISTRIES_ENABLED; delete process.env.PROJECT_REGISTRY_DOMAINS; }
     };
 
     it("gives the running preparation the token of the registry its pinned project revision names", async () => {
@@ -64,6 +67,11 @@ describe("the registry credential route", () => {
       await expect(withSwitch(() => exchangeRegistryCredential(dependencies, request("not an object"), WS, OP))).rejects.toThrow();
     });
 
+    it("another org's workspace naming this org's domain gets no token through the route either", async () => {
+      const { dependencies, request } = world({ workspaceOrg: OTHER_ORG });
+      await expect(withSwitch(() => exchangeRegistryCredential(dependencies, request({ registry: "internal-npm" }), WS, OP))).rejects.toThrow(/not set up for this organization/);
+    });
+
     it("no AWS-shaped error escapes: a failing minter answers with the fixed sentence", async () => {
       const { dependencies, request } = world();
       const failing = { ...dependencies, registryTokens: { codeArtifact: async () => { throw agentXError("RUNTIME_UNAVAILABLE", `AccessDenied ${fakeToken("leak")}`); } } } as unknown as AwsBrokerDependencies;
@@ -78,12 +86,15 @@ describe("the prepare payload's registries", () => {
   it("comes from the project record, only with the switch on, and never for a read-only run", () => {
     const { dependencies } = world();
     const project = { definition: DEFINITION } as never;
-    expect(registriesPrepareOf(dependencies, { definition: { ...DEFINITION, registries: undefined } } as never)).toEqual({});
-    expect(() => registriesPrepareOf(dependencies, project)).toThrow(/not switched on/);
+    expect(registriesPrepareOf(dependencies, { definition: { ...DEFINITION, registries: undefined } } as never, { orgId: ORG })).toEqual({});
+    expect(() => registriesPrepareOf(dependencies, project, { orgId: ORG })).toThrow(/not switched on/);
     process.env.PROJECT_REGISTRIES_ENABLED = "1";
+    process.env.PROJECT_REGISTRY_DOMAINS = BINDING;
     try {
-      expect(registriesPrepareOf(dependencies, project).registries).toEqual([{ name: "internal-npm", kind: "codeartifact", format: "npm", url: "https://acme-123456789012.d.codeartifact.us-west-2.amazonaws.com/npm/shared/" }]);
-      expect(registriesPrepareOf(dependencies, project, { readOnly: true })).toEqual({});
-    } finally { delete process.env.PROJECT_REGISTRIES_ENABLED; }
+      expect(registriesPrepareOf(dependencies, project, { orgId: ORG }).registries).toEqual([{ name: "internal-npm", kind: "codeartifact", format: "npm", url: "https://acme-123456789012.d.codeartifact.us-west-2.amazonaws.com/npm/shared/" }]);
+      expect(registriesPrepareOf(dependencies, project, { readOnly: true, orgId: ORG })).toEqual({});
+      // Another org's project naming this org's domain cannot start.
+      expect(() => registriesPrepareOf(dependencies, project, { orgId: OTHER_ORG })).toThrow(/not set up for this organization/);
+    } finally { delete process.env.PROJECT_REGISTRIES_ENABLED; delete process.env.PROJECT_REGISTRY_DOMAINS; }
   });
 });

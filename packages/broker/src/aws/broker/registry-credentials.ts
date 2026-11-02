@@ -5,19 +5,21 @@ import { requireOperation } from "../cancellation.js";
 import { requireWorkspace } from "./records.js";
 import { exchangeRegistryCredentialCore } from "../../project-registries/exchange.js";
 import { registriesPrepareFor } from "../../project-registries/prepare.js";
-import { projectRegistriesEnabled } from "../../project-registries/switch.js";
+import { boundRegistryDomains, projectRegistriesEnabled } from "../../project-registries/switch.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { object, parseBody } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, RegisteredProjectRecord } from "./definitions.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 
 /** `{ registries }` for a prepare payload, or nothing: see registriesPrepareFor. `readOnly` runs run none of the project's code. */
-export function registriesPrepareOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, options: { readOnly?: boolean } = {}): { registries?: PrepareRegistries } {
+export function registriesPrepareOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, options: { readOnly?: boolean; orgId: string | undefined }): { registries?: PrepareRegistries } {
   return registriesPrepareFor({
     project: project.definition,
     edition: dependencies.editionPolicy?.edition,
     enabled: projectRegistriesEnabled(),
     readOnly: options.readOnly,
+    orgId: options.orgId,
+    boundDomains: boundRegistryDomains(),
   });
 }
 
@@ -26,6 +28,7 @@ export async function exchangeRegistryCredential(dependencies: AwsBrokerDependen
   return exchangeRegistryCredentialCore({
     enabled: projectRegistriesEnabled() && registryTokens !== undefined,
     edition: dependencies.editionPolicy?.edition,
+    boundDomains: boundRegistryDomains(),
     source: registryTokens ?? {},
     inspectGrant: (grant) => dependencies.repositoryGrants.inspect(grant),
     readOperation: async (workspace, operation) => {
@@ -37,7 +40,7 @@ export async function exchangeRegistryCredential(dependencies: AwsBrokerDependen
       const instance = await requireWorkspace(dependencies, workspace);
       const stored = await requireRecordProject(dependencies, instance, instance.projectName, instance.projectRevision);
       const definition = stored.definition;
-      return { registries: definition.registries ?? [], allowedDomains: definition.network?.allowedDomains ?? [] };
+      return { registries: definition.registries ?? [], allowedDomains: definition.network?.allowedDomains ?? [], orgId: typeof instance.orgId === "string" ? instance.orgId : undefined };
     },
   }, { grant: request.headers["x-agentx-repository-grant"], workspaceId, operationId, body: parseBodyObject(request.body) });
 }

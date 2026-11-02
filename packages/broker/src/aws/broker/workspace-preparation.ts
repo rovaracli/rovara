@@ -167,7 +167,7 @@ export async function newWorkspacePreparation(
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
       // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
-      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true }),
+      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) }),
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -259,7 +259,7 @@ export async function heldPreparationDispatch(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
-      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true }),
+      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId }),
     },
   };
   const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {
