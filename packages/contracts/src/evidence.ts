@@ -4,6 +4,7 @@
 // (no control or format characters) that readers escape for their own markup, and a pack for any other candidate digest is ignored by the broker.
 import { z } from "zod";
 import { forwardReader } from "./forward-reader.js";
+import { TEST_ID_MAX } from "./test-id.js";
 import { TestProofVerdictSchema } from "./test-proof.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -185,7 +186,8 @@ export const EVIDENCE_NOT_TESTED_MAX = 200;
 
 export const EvidenceTestSchema = z
   .object({
-    name: line(300),
+    // The test's id (`testIdOf`: file::name), the same string the nightly run and the known-failing marks use.
+    name: line(TEST_ID_MAX),
     status: z.enum(EVIDENCE_TEST_STATUSES),
     /** TESTPROOF's verdict for this test, when the check wrote a per-test report and the test is new or changed. */
     proof: TestProofVerdictSchema.optional(),
@@ -250,7 +252,7 @@ export const EvidenceChecksTestsSchema = z
     skippedBefore: CountSchema.optional(),
     skippedAfter: CountSchema.optional(),
     names: z.array(EvidenceTestSchema).max(EVIDENCE_TEST_NAMES_MAX),
-    newTests: z.array(line(300)).max(EVIDENCE_NEW_TESTS_MAX),
+    newTests: z.array(line(TEST_ID_MAX)).max(EVIDENCE_NEW_TESTS_MAX),
   })
   .strict();
 export const EvidenceCoverageSchema = z

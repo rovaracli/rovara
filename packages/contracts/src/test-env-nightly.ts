@@ -2,9 +2,10 @@
 // that test selection reads, the set of tests that already fail on the default branch (so a known failure is not a regression of the task), and the flaky set (a failure that passed on its one rerun).
 // Everything is bounded and holds ids and counts only: no test output, no message text. Nothing here imports a Node module.
 import { z } from "zod";
+import { TestIdSchema } from "./test-id.js";
 
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
-const TestId = z.string().min(1).max(500).regex(/^[^\p{Cc}\p{Cf}\s]+$/u, "a test id has no whitespace or control characters");
+const TestId = TestIdSchema;
 
 export const NIGHTLY_FAILED_MAX = 500;
 export const NIGHTLY_FLAKY_MAX = 500;

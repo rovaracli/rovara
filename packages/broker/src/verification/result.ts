@@ -12,7 +12,7 @@
 //   5. Verified: every required check ran on the current candidate, the evidence is for exactly this code, and nothing is missing.
 // Anything that cannot be read is never Verified.
 import {
-  autoFixDecision, classifyBlockedWorkflow, E2E_PROJECT_CHECK_ID,
+  autoFixDecision, classifyBlockedWorkflow, E2E_PROJECT_CHECK_ID, isSafeTestId,
   type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingCodeReason, type TestingPartialReason, type TestingReason, type TestingResult,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -131,6 +131,8 @@ export function readableFailingTests(check: EvidencePack["checks"][number]): str
   if (declared === 0) return undefined;
   const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored").map((test) => test.name);
   if (failed.length !== declared || new Set(failed).size !== failed.length) return undefined;
+  // A failing test whose id is not safe (whitespace, hidden characters; contracts `test-id.ts`) cannot be in the nightly's failing set or a mark, so it is never confirmed as already failing: unreadable here.
+  if (!failed.every(isSafeTestId)) return undefined;
   return failed;
 }
 

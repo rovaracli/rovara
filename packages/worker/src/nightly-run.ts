@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import {
-  CoverageMapSchema, NightlyResultSchema, agentXError, canonicalJson, testEnvDigest,
+  CoverageMapSchema, NightlyResultSchema, agentXError, canonicalJson, isSafeTestId, testEnvDigest, testIdOf,
   type CoverageMapData, type NightlyResult, type NightlyRunWire, type NightlyStepWord, type TestEnvCheck, type TestEnvironmentBody, type TEST_ENV_PROVE_STEPS,
 } from "@agentx/contracts";
 import { nightlyCountsAndHealth, type NightlyRunFacts, type NightlyStepStatus } from "./nightly-health-report.js";
@@ -25,7 +25,6 @@ import type { ParsedTestReport } from "./verification/test-report.js";
 /** The most failing and flaky ids a result lists (the contract's own bounds). More failing than this: the count stands, the list is cut, and the broker then excuses no failure. */
 const LISTED_MAX = 500;
 const SLOWEST_MAX = 20;
-const TEST_ID_MAX = 500;
 
 export interface NightlyPorts extends Omit<ProvePorts, "buildCoverageMap" | "suiteTestCount"> {
   /** The test report the check wrote (at its approved `reportPath`), parsed; undefined when none was written, it was refused or it cannot be read. Called right after the check's command ended. */
@@ -54,13 +53,6 @@ export function splitFailures(firstRunFailures: readonly string[], rerunFailures
   const again = new Set(rerunFailures);
   const first = [...new Set(firstRunFailures)];
   return { failed: first.filter((id) => again.has(id)).sort(), flaky: first.filter((id) => !again.has(id)).sort() };
-}
-
-/** A test's id in the result: its file and name, whitespace and control characters turned into `_`, at most 500 characters. A report with a test of no name is one called `test`. */
-export function testIdOf(test: { file?: string | undefined; name: string }): string {
-  const clean = (text: string) => text.replace(/[\s\p{Cc}\p{Cf}]+/gu, "_");
-  const id = test.file === undefined || test.file === "" ? clean(test.name) : `${clean(test.file)}::${clean(test.name)}`;
-  return Array.from(id === "" ? "test" : id).slice(0, TEST_ID_MAX).join("");
 }
 
 type TestState = "passed" | "failed" | "errored" | "skipped";
@@ -148,7 +140,8 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
     const reran = new Set<string>();
     for (const run of runs.values()) {
       if (run.check.kind !== "test") continue;
-      const ids = [...run.states].filter(([, state]) => failing(state)).map(([id]) => id).sort();
+      // Only SAFE ids are listed and rerun: an id with whitespace or hidden characters is counted in the totals, stays failing, and is never put on a command line or in the failing set (contracts `test-id.ts`).
+      const ids = [...run.states].filter(([id, state]) => failing(state) && isSafeTestId(id)).map(([id]) => id).sort();
       firstFailures.set(run.check.id, ids);
       if (ids.length === 0 || run.check.selectArgs === undefined || run.check.reportPath === undefined) continue;
       const command = commandWithSelection(run.check.command, run.check.selectArgs, ids);
@@ -186,7 +179,7 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
         else if (state === "failed") failures += 1;
         else errors += 1;
         const duration = run.durations.get(id);
-        if (duration !== undefined) slowest.push({ id, durationMs: duration });
+        if (duration !== undefined && isSafeTestId(id)) slowest.push({ id, durationMs: duration });
       }
       failedIds.push(...split.failed);
       flakyIds.push(...split.flaky);
@@ -257,8 +250,9 @@ export function coverageMapFromContexts(text: string, builtAt: string, options: 
       for (const name of names) {
         if (typeof name !== "string" || name === "") continue;
         sawContext = true;
-        const id = testIdOf({ name: name.replace(/\|(?:run|setup|teardown)$/u, "") });
-        if (id !== "") tests.add(id);
+        const id = name.replace(/\|(?:run|setup|teardown)$/u, "");
+        // A context that is not a safe id (whitespace, hidden characters) is left out, never rewritten into another test's id.
+        if (isSafeTestId(id)) tests.add(id);
       }
     }
     if (tests.size === 0 || tests.size > 5_000) continue;

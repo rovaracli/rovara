@@ -11,7 +11,7 @@
 //   - a suite that failed to run (jest and vitest list it with no test results and a message) counts as one errored test, so a load failure never reads as zero failures;
 //   - every name is redacted, one plain line, and cut; at most 500 names go to the evidence, the failing ones first.
 // Pure: no file is read here. The caller reads the bytes (inside the workspace, never through a link) and passes the text.
-import { EVIDENCE_NEW_TESTS_MAX, EVIDENCE_TEST_NAMES_MAX, redactText, type EvidenceTest, type TestProofVerdict } from "@agentx/contracts";
+import { EVIDENCE_NEW_TESTS_MAX, EVIDENCE_TEST_NAMES_MAX, redactText, testIdOf, type EvidenceTest, type TestProofVerdict } from "@agentx/contracts";
 
 /** A report file larger than this is not read (the TESTPROOF reader's own limit). */
 export const TEST_REPORT_MAX_BYTES = 8 * 1024 * 1024;
@@ -23,8 +23,12 @@ export type ReportedTestStatus = "passed" | "failed" | "skipped" | "errored";
 export interface ReportedTest {
   /** The test file or module, as the report names it (a path, or a dotted module path). */
   file?: string;
-  /** The test's own name, redacted, one line, cut. */
+  /** The test's own name, redacted, one line, cut. After `withTestIds` it is the class path and the test (`TestRules::test_discount`) for a pytest report, so `file::name` is the test's id. */
   name: string;
+  /** JUnit: the case's `classname` as the report wrote it (pytest writes the module and classes dotted: `tests.test_cart_rules.TestRules`). Kept so `withTestIds` can find the test's file and classes. */
+  classname?: string;
+  /** JUnit: `file` came from the case's own `file` attribute (a path), not made from the classname. */
+  fileGiven?: boolean;
   status: ReportedTestStatus;
   durationMs?: number;
 }
@@ -176,7 +180,7 @@ export function parseJunit(text: string): ParsedTestReport | undefined {
     const file = rawFile === undefined || rawFile === "" ? undefined : plainName(rawFile);
     const time = attributes.get("time") === undefined ? undefined : Number(attributes.get("time"));
     const ms = duration(time, "s");
-    tests.push({ ...(file === undefined ? {} : { file }), name: plainName(attributes.get("name") ?? ""), status, ...(ms === undefined ? {} : { durationMs: ms }) });
+    tests.push({ ...(file === undefined ? {} : { file }), name: plainName(attributes.get("name") ?? ""), status, ...(classname === undefined || classname === "" ? {} : { classname: plainName(classname) }), ...(attributes.get("file") === undefined ? {} : { fileGiven: true }), ...(ms === undefined ? {} : { durationMs: ms }) });
   }
   return tests.length === 0 ? undefined : counted("junit", tests);
 }
@@ -368,13 +372,14 @@ export function evidenceTests(report: ParsedTestReport, options: EvidenceTestsOp
   const seen = new Set<string>();
   for (const { test } of ordered) {
     if (names.length >= EVIDENCE_TEST_NAMES_MAX) break;
-    const key = `${test.file ?? ""}::${test.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const proof = touched(test) ? options.proofByTest?.get(test.name) : undefined;
-    names.push({ name: test.name, status: test.status, ...(proof === undefined ? {} : { proof }), ...(test.durationMs === undefined ? {} : { durationMs: test.durationMs }) });
+    // The name the pack keeps is the test's ID (contracts `testIdOf`), the string the nightly run and the known-failing marks use for the same test.
+    const id = testIdOf(test);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const proof = touched(test) ? (options.proofByTest?.get(id) ?? options.proofByTest?.get(test.name)) : undefined;
+    names.push({ name: id, status: test.status, ...(proof === undefined ? {} : { proof }), ...(test.durationMs === undefined ? {} : { durationMs: test.durationMs }) });
   }
-  const newTests = [...new Set(report.tests.filter((test) => test.status !== "skipped" && touched(test)).map((test) => test.name))].slice(0, EVIDENCE_NEW_TESTS_MAX);
+  const newTests = [...new Set(report.tests.filter((test) => test.status !== "skipped" && touched(test)).map((test) => testIdOf(test)))].slice(0, EVIDENCE_NEW_TESTS_MAX);
   return {
     total: report.total, passed: report.passed, failed: report.failed, skipped: report.skipped, errored: report.errored,
     ...(options.skippedOutside === undefined ? {} : { skippedBefore: options.skippedOutside.before, skippedAfter: options.skippedOutside.after }),

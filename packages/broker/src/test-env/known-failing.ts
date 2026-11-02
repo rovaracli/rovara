@@ -5,7 +5,7 @@
 // Each mark is stored with the check it was marked for (`checkId`) and who marked it, when, and in which card (`epoch`): the classifier matches a mark on BOTH the test and the check, so a test marked for one check
 // does not excuse the same name failing in another. A nightly failure has no check and matches the name in any check.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectPk, type OrgId } from "@agentx/contracts";
+import { TEST_ID_MAX, TestIdSchema, agentXError, projectPk, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { KnownFailingEntry } from "../verification/result.js";
@@ -14,11 +14,11 @@ import { usableNightlyFailing, type UsableNightlyOptions } from "./nightly-usabl
 /** The most marks one project can have. A project with more has a bigger problem than a card can fix: a mark that would pass it is refused, not cut. */
 export const KNOWN_FAILING_MAX = 500;
 /** The longest test id a mark can carry: every name that is marked is shown in full on the card. */
-export const KNOWN_FAILING_NAME_MAX = 200;
+export const KNOWN_FAILING_NAME_MAX = TEST_ID_MAX;
 export const KNOWN_FAILING_FULL_MESSAGE = `This project's known-failing list is full (${String(KNOWN_FAILING_MAX)}). Remove some before marking more.`;
 
-/** A test id as the nightly run and the evidence name it: one token, no whitespace or hidden characters, short enough to be shown in full. */
-export const KnownFailingTestId = z.string().min(1).max(KNOWN_FAILING_NAME_MAX).regex(/^[^\p{Cc}\p{Cf}\s]+$/u, "a test id has no whitespace or control characters");
+/** A test id as the nightly run, the evidence and the selection name it (contracts `test-id.ts`): one safe token. An id with whitespace or hidden characters cannot be marked. */
+export const KnownFailingTestId = TestIdSchema;
 const CheckId = z.string().min(1).max(64).regex(/^[^\p{Cc}\p{Cf}\s]+$/u);
 
 export const KnownFailingMarkSchema = z.object({

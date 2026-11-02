@@ -20,6 +20,7 @@ import { setupRepositoriesOf } from "./setup-agent-run.js";
 import type { CheckRunners } from "./verification/checks.js";
 import { readContainedReport } from "./verification/report-file.js";
 import { readTestReportAt } from "./verification/test-report-folder.js";
+import { withTestIds } from "./verification/test-ids.js";
 
 /** The most bytes of coverage data read for a map (coverage.py's JSON with contexts is large). */
 const CONTEXTS_MAX_BYTES = 64 * 1_048_576;
@@ -54,7 +55,8 @@ function productionPorts(deps: NightlyInvocationDependencies, startedAtMs: numbe
     mockUnmatched: async () => [],
     async readReport(check: TestEnvCheck, command) {
       if (check.reportPath === undefined) return undefined;
-      return (await readTestReportAt(deps.rootPath, reportLocation(command, check.reportPath))).report;
+      const report = (await readTestReportAt(deps.rootPath, reportLocation(command, check.reportPath))).report;
+      return report === undefined ? undefined : withTestIds(report, { root: deps.rootPath, cwd: command.cwd });
     },
     async buildCoverageMap(signal) {
       // coverage.py with contexts: `coverage json --show-contexts` over the data the suite just wrote, in the directory of the first test check that approves a coverage report.

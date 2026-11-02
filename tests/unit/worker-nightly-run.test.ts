@@ -1,8 +1,8 @@
 // NH-1: the nightly run on the worker. The Prove sequence over the approved environment, one rerun of failures, the coverage map, and ONE tally for the counts and the step words.
 import { describe, expect, it } from "vitest";
-import { CoverageMapSchema, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
+import { CoverageMapSchema, isSafeTestId, testIdOf, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
 import { coverageMapDigest, nightlyHealthOf, splitFailures as brokerSplitFailures } from "../../packages/broker/src/test-env/nightly.js";
-import { coverageMapDigestOf, coverageMapFromContexts, runNightly, splitFailures, testIdOf, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
+import { coverageMapDigestOf, coverageMapFromContexts, runNightly, splitFailures, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
 import { counted, type ParsedTestReport, type ReportedTest } from "../../packages/worker/src/verification/test-report.js";
 
 const HEAD = "a".repeat(40);
@@ -232,11 +232,20 @@ describe("bounds and shapes", () => {
     expect(result.tests.failed).toBe(600);
     expect(result.failed).toHaveLength(500);
   });
-  it("test ids carry no whitespace or control characters and stay inside the contract's bound", () => {
-    const id = testIdOf({ file: "tests/a b.py", name: "does a\tthing‮ with \n spaces" });
-    expect(id).toMatch(/^[^\p{Cc}\p{Cf}\s]+$/u);
-    expect(testIdOf({ name: "x".repeat(900) })).toHaveLength(500);
-    expect(testIdOf({ name: "" })).toBe("test");
+  it("an id is file::name, never rewritten; one with whitespace is not safe: it is counted, never listed, never rerun and never in the map", async () => {
+    expect(testIdOf({ file: "tests/a.py", name: "TestC::t[1-2]" })).toBe("tests/a.py::TestC::t[1-2]");
+    expect(testIdOf({ name: "bare" })).toBe("bare");
+    expect(isSafeTestId("tests/a.py::t[a b]")).toBe(false);
+    expect(isSafeTestId("tests/a.py::t[a-b]")).toBe(true);
+    expect(isSafeTestId("-x")).toBe(false);
+    expect(isSafeTestId("x".repeat(501))).toBe(false);
+    const f = fakes({ reports: { "pytest -q": report(t("t[a b]", "failed", "tests/a.py", 500), t("t2", "failed", "tests/a.py", 100), t("t3", "passed")) } });
+    const { result } = await night(f.ports);
+    // Counted as failing, not listed (so the broker will excuse nothing), not rerun (only the safe id is on the command line), not among the slowest.
+    expect(result.tests).toEqual({ total: 3, passed: 1, failed: 2, skipped: 0 });
+    expect(result.failed).toEqual(["tests/a.py::t2"]);
+    expect(f.ran.at(-1)).toBe("pytest -q tests/a.py::t2");
+    expect(result.slowest.map((entry) => entry.id)).toEqual(["tests/a.py::t2"]);
   });
   it("a project with a smoke check reports the smoke step as it ran; one without reports it passed only once the suite ran", async () => {
     const withSmoke = [

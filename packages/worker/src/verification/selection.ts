@@ -14,6 +14,7 @@
 import { posix } from "node:path";
 import type { z } from "zod";
 import {
+  isSafeTestId,
   type EvidenceSelectionSchema,
   TEST_ENV_SELECT_PLACEHOLDER,
   TEST_ENV_ROUND_BUDGET_MIN,
@@ -196,10 +197,8 @@ function graphMentions(graph: ImportGraph, path: string): boolean {
   return false;
 }
 
-/** A test id passed on a command line: plain visible text that cannot read as an option or an argument file (`-x`, `@file`), no control characters, no whitespace. */
-function safeTestId(id: string): boolean {
-  return id.length > 0 && id.length <= 500 && !id.startsWith("-") && !id.startsWith("@") && !/[\s\p{Cc}\p{Cf}]/u.test(id);
-}
+/** A test id passed on a command line: the one shared rule (contracts `test-id.ts`). */
+const safeTestId = isSafeTestId;
 
 /**
  * The check's command with the selected tests in the approved `{tests}` place, as separate arguments: no shell, so no quoting to get wrong. Without the placeholder exactly once the command is returned
