@@ -175,9 +175,29 @@ export function modelCompany(model: ModelIdentifier): ModelCompany {
  */
 export function canonicalModelName(model: ModelIdentifier): string {
   let id = model.modelId;
-  if (isBedrock(model)) id = bedrockWithoutRegion(id).replace(/^anthropic\./, "").replace(/:\d+$/, "").replace(/-v\d+$/, "");
-  if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "").replace(/:[a-z][a-z0-9_-]*$/i, "");
+  if (isBedrock(model)) id = bedrockModelName(id);
+  if (model.provider === "openrouter") {
+    // Amazon's own ids end in the same bare `-v1` on OpenRouter (`amazon/nova-lite-v1`) as on Bedrock; no other maker's `-vN` is a revision (`deepseek/deepseek-v3`).
+    if (/^amazon\//i.test(id)) id = id.replace(/-v\d+$/i, "");
+    id = id.replace(/^[^/]+\//, "").replace(/:[a-z][a-z0-9_-]*$/i, "");
+  }
   return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
+}
+
+/**
+ * Makers whose Bedrock ids leave their own name out of the model's (`deepseek.v3.2`), while OpenRouter keeps it in (`deepseek/deepseek-v3.2`): the name is put back, so both read `deepseek-v3-2`. Every other maker
+ * names its model in full (`openai.gpt-5.4`, `qwen.qwen3-32b-v1:0`, `minimax.minimax-m2`), so the maker is dropped, as OpenRouter's `openai/` is.
+ */
+const BEDROCK_MAKERS_NOT_IN_MODEL_NAME: readonly string[] = ["deepseek"];
+
+/** A Bedrock id without its geography, its maker, and its revision (`:0`, `-v1`, and the `-1:0` of `openai.gpt-oss-120b-1:0`), so the same model reads the same on Bedrock, OpenRouter and its maker's own API. */
+function bedrockModelName(modelId: string): string {
+  let id = bedrockWithoutRegion(modelId);
+  const dot = id.indexOf(".");
+  const maker = dot < 1 ? "" : id.slice(0, dot);
+  if ((BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(maker)) id = `${BEDROCK_MAKERS_NOT_IN_MODEL_NAME.includes(maker) ? `${maker}-` : ""}${id.slice(dot + 1)}`;
+  // `-1:0` is a revision only after a letter (`gpt-oss-120b-1:0`); in `gpt-5-1:0` the 1 belongs to the name.
+  return id.replace(/(?<=[a-z])-1:0$/, "").replace(/:\d+$/, "").replace(/-v\d+$/, "");
 }
 
 /**

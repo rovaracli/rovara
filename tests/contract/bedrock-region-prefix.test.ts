@@ -71,8 +71,8 @@ describe("canonicalModelName and modelCompany over every geography", () => {
     expect(canonicalModelName(bedrock("apac.anthropic.claude-sonnet-4-20250514-v1:0"))).toBe("claude-sonnet-4");
     expect(canonicalModelName(bedrock("global.anthropic.claude-fable-5"))).toBe("claude-fable-5");
     expect(canonicalModelName(bedrock("anthropic.claude-opus-5"))).toBe("claude-opus-5");
-    expect(canonicalModelName(bedrock("amazon.nova-lite-v1:0"))).toBe("amazon-nova-lite");
-    expect(canonicalModelName(bedrock("us.amazon.nova-lite-v1:0"))).toBe("amazon-nova-lite");
+    expect(canonicalModelName(bedrock("amazon.nova-lite-v1:0"))).toBe("nova-lite");
+    expect(canonicalModelName(bedrock("us.amazon.nova-lite-v1:0"))).toBe("nova-lite");
     expect(canonicalModelName({ provider: "openrouter", modelId: "anthropic/claude-haiku-4.5" })).toBe("claude-haiku-4-5");
     expect(modelCompany(bedrock("eu.anthropic.claude-opus-5"))).toBe("anthropic");
     // SH33 (setup-test-health, owner 2026-11-01): Bedrock's own vendors are named companies, so Nova is Amazon's.
@@ -243,6 +243,14 @@ const CATALOG: ModelIdentifier[] = [
   ...openrouterProvider().getModels().map((entry) => ({ provider: "openrouter", modelId: entry.id })),
 ];
 
+/** An independent reading of a catalog id as the model it names: no geography, no maker (a Bedrock prefix or an OpenRouter directory), no variant, revision, version or date. */
+const MODEL_ONLY = (model: ModelIdentifier): string => {
+  let id = model.modelId.toLowerCase();
+  if (model.provider === "amazon-bedrock") id = id.replace(/^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./, "").replace(/^[a-z0-9]+\./, "");
+  if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "");
+  return id.replace(/:[a-z][a-z0-9_-]*$/, "").replace(/-1:0$/, "").replace(/:\d+$/, "").replace(/-v\d+$/, "").replace(/-\d{8}$/, "").replaceAll(".", "-");
+};
+
 describe("proxy aliases and stored sources do not move", () => {
   it("names every catalog model's alias exactly as before, though canonicalModelName now reads more of it", () => {
     expect(CATALOG.length).toBeGreaterThan(300);
@@ -288,10 +296,92 @@ describe("a bare version and an OpenRouter variant do not make another model", (
   it("collapses nothing in the catalogs except the same model on another geography, version suffix or variant", () => {
     const byName = new Map<string, ModelIdentifier[]>();
     for (const model of CATALOG) byName.set(canonicalModelName(model), [...(byName.get(canonicalModelName(model)) ?? []), model]);
-    // A crude, independent reading of the same id: drop the geography, the maker, a variant, a revision and a date.
-    const crude = (model: ModelIdentifier): string => model.modelId.toLowerCase().replace(/^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./, "").replace(/^[a-z0-9]+[./]/, "")
-      .replace(/:[a-z][a-z0-9_-]*$/, "").replace(/:\d+$/, "").replace(/-v\d+$/, "").replace(/-\d{8}$/, "").replaceAll(".", "-");
-    const unexplained = [...byName].filter(([, models]) => new Set(models.map(FROZEN_ALIAS_NAME)).size > 1 && new Set(models.map(crude)).size > 1).map(([name, models]) => `${name}: ${models.map((model) => `${model.provider}:${model.modelId}`).join(" | ")}`);
+    const unexplained = [...byName].filter(([, models]) => new Set(models.map(FROZEN_ALIAS_NAME)).size > 1 && new Set(models.map(MODEL_ONLY)).size > 1).map(([name, models]) => `${name}: ${models.map((model) => `${model.provider}:${model.modelId}`).join(" | ")}`);
     expect(unexplained).toEqual([]);
+  });
+});
+
+describe("one name for a model across Bedrock, OpenRouter and its maker's own API", () => {
+  const openrouter = (modelId: string): ModelIdentifier => ({ provider: "openrouter", modelId });
+  const PAIRS: Array<[string, ModelIdentifier, ModelIdentifier]> = [
+    ["gpt-6-sol: openai vs bedrock", { provider: "openai", modelId: "gpt-6-sol" }, bedrock("us.openai.gpt-6-sol")],
+    ["gpt-6-sol: openai vs openrouter", { provider: "openai", modelId: "gpt-6-sol" }, openrouter("openai/gpt-6-sol")],
+    ["gpt-5.4: openai vs global bedrock", { provider: "openai", modelId: "gpt-5.4" }, bedrock("global.openai.gpt-5.4")],
+    ["gpt-oss-120b: openrouter vs the -1:0 id", openrouter("openai/gpt-oss-120b"), bedrock("openai.gpt-oss-120b-1:0")],
+    ["gpt-oss-120b: the plain bedrock id vs the -1:0 id", bedrock("openai.gpt-oss-120b"), bedrock("us-gov.openai.gpt-oss-120b-1:0")],
+    ["gpt-oss-20b: openrouter :batch vs the -1:0 id", openrouter("openai/gpt-oss-20b:batch"), bedrock("openai.gpt-oss-20b-1:0")],
+    ["qwen3-32b", openrouter("qwen/qwen3-32b"), bedrock("qwen.qwen3-32b-v1:0")],
+    ["grok-4.6 (xai vs x-ai)", openrouter("x-ai/grok-4.6"), bedrock("global.xai.grok-4.6")],
+    ["glm-4.7 (zai vs z-ai)", openrouter("z-ai/glm-4.7"), bedrock("zai.glm-4.7")],
+    ["minimax-m2.1", openrouter("minimax/minimax-m2.1"), bedrock("minimax.minimax-m2.1")],
+    ["kimi-k2.5 (moonshotai)", openrouter("moonshotai/kimi-k2.5"), bedrock("moonshotai.kimi-k2.5")],
+    ["kimi-k2-thinking (moonshot vs moonshotai)", openrouter("moonshotai/kimi-k2-thinking"), bedrock("moonshot.kimi-k2-thinking")],
+    ["nova-lite: amazon vs bedrock", openrouter("amazon/nova-lite-v1"), bedrock("us.amazon.nova-lite-v1:0")],
+    ["deepseek-v3.2 stays one model", openrouter("deepseek/deepseek-v3.2"), bedrock("deepseek.v3.2")],
+  ];
+
+  it.each(PAIRS)("reads %s as one model: forbidden by either, never independent of the other", (_name, left, right) => {
+    expect(canonicalModelName(left)).toBe(canonicalModelName(right));
+    expect(forbiddenModelMatcher([left])(right)).toBe(true);
+    expect(forbiddenModelMatcher([right])(left)).toBe(true);
+    expect(sameModelOrUnrecognised(left, right)).toBe(true);
+    expect(recommendCriticModel({}, left, [right])).toMatchObject({ sameModelAsPlanner: true });
+    expect(reviewerModelFor({ step: undefined, project: {}, guardrails: { forbiddenModels: [] as ModelIdentifier[] }, builderModel: left, sources: [right] })).toMatchObject({ sameModelAsBuilder: true });
+  });
+
+  it("resolves a forbidden openai model out of a bedrock route, and keeps a different gpt model apart", () => {
+    const candidate = { sourceId: "rovara", enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "rovara_catalog" as const } };
+    const model = bedrock("us.openai.gpt-6-sol");
+    const input: StageModelInput = { orgId: "org_a", stage: "build", sourcesRevision: 2, candidates: [{ ...candidate, model }], forbidden: [{ provider: "openai", modelId: "gpt-6-sol" }], approved: [model], builtinDefault: model, projectChoice: { model } };
+    expect(resolveStageModel(input)).toEqual({ kind: "refusal", code: "MODEL_FORBIDDEN" });
+    expect(forbiddenModelMatcher([{ provider: "openai", modelId: "gpt-6-sol" }])(bedrock("us.openai.gpt-6-luna"))).toBe(false);
+    expect(forbiddenModelMatcher([{ provider: "openai", modelId: "gpt-5" }])(bedrock("us.openai.gpt-5-1:0"))).toBe(false);
+    expect(canonicalModelName(bedrock("openai.gpt-5-1:0"))).toBe("gpt-5-1");
+  });
+
+  /** The canonical name of the first fix round (0.4.29 candidate): geography, `anthropic.`, revision and `-vN` stripped, but not other makers. */
+  const PREVIOUS_CANONICAL = (model: ModelIdentifier): string => {
+    let id = model.modelId;
+    if (model.provider === "amazon-bedrock") id = id.toLowerCase().replace(/^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./, "").replace(/^anthropic\./, "").replace(/:\d+$/, "").replace(/-v\d+$/, "");
+    if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "").replace(/:[a-z][a-z0-9_-]*$/i, "");
+    return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
+  };
+  /** Every name this change newly merges, each one model sold under two spellings (maker named or not, revision suffix, the maker's directory spelling). A new merge not on this list fails the test. */
+  const EXPECTED_NEW_MERGES = [
+    "glm-4-7", "glm-4-7-flash", "glm-5", "glm-5-3", "gpt-5-4", "gpt-5-5", "gpt-5-6-luna", "gpt-5-6-sol", "gpt-5-6-terra", "gpt-6-1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
+    "gpt-oss-120b", "gpt-oss-20b", "gpt-oss-safeguard-20b", "grok-4-3", "grok-4-6", "grok-4-7", "kimi-k2-5", "kimi-k2-thinking", "kimi-k3", "minimax-m2", "minimax-m2-1", "minimax-m2-5",
+    "nova-2-lite", "nova-lite", "nova-micro", "nova-premier", "nova-pro", "qwen3-235b-a22b-2507", "qwen3-32b", "qwen3-coder-next", "voxtral-small-24b-2507",
+  ];
+
+  it("merges exactly the listed names, each of one model written two ways, and no two different models", () => {
+    const groups = new Map<string, ModelIdentifier[]>();
+    for (const model of CATALOG) groups.set(canonicalModelName(model), [...(groups.get(canonicalModelName(model)) ?? []), model]);
+    const merged = [...groups].filter(([, models]) => new Set(models.map(PREVIOUS_CANONICAL)).size > 1);
+    expect(merged.map(([name]) => name).sort()).toEqual([...EXPECTED_NEW_MERGES].sort());
+    // Each merged group is one model: stripping the geography, the maker, a variant, a revision and a version leaves one name.
+    for (const [name, models] of merged) expect(new Set(models.map(MODEL_ONLY)).size, `${name}: ${models.map((m) => m.modelId).join(" | ")}`).toBe(1);
+  });
+
+  it("gives every catalog id the company it had before: Anthropic's models, the OpenAI and Gemini ids by name, Bedrock's own vendors (SH33), everything else other", () => {
+    const FROZEN_COMPANY = (m: ModelIdentifier): string => {
+      const provider = m.provider.toLowerCase();
+      const id = m.modelId.toLowerCase();
+      if (provider === "anthropic") return "anthropic";
+      if (provider === "openai") return "openai";
+      if (provider === "amazon-bedrock") {
+        // SH33: Bedrock's own vendors are named from the id; any other vendor stays other.
+        const vendor = id.replace(/^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./, "").split(".", 1)[0]!;
+        return ["anthropic", "amazon", "meta", "mistral", "deepseek", "openai", "qwen", "cohere"].includes(vendor) ? vendor : "other";
+      }
+      if (provider === "openrouter") {
+        if (id.startsWith("anthropic/")) return "anthropic";
+        if (id.startsWith("openai/")) return "openai";
+        if (id.startsWith("google/")) return "google";
+      }
+      if (id.startsWith("gpt-")) return "openai";
+      if (id.startsWith("gemini")) return "google";
+      return "other";
+    };
+    for (const model of CATALOG) expect(modelCompany(model), `${model.provider}:${model.modelId}`).toBe(FROZEN_COMPANY(model));
   });
 });
