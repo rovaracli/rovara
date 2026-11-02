@@ -122,10 +122,13 @@ function answerOfRecord(record: DecisionRecord): DecisionAnswered {
   return { cardId: record.cardId, outcome: record.outcome, ...(record.tab === undefined ? {} : { tab: record.tab }), remainingTabs: record.tab === "requirements" && record.outcome === "approved" ? ["design"] : [] };
 }
 
-function outcomeReply(cardId: string, outcome: PerformOutcome): StatusReply | undefined {
+/** `merging` is additive: a client that can read it asks with `?merging=1` (an older bundle, whose reader is strict, never does and gets the earlier shape). */
+const asksForMerging = (request: DecisionRequest): boolean => request.searchParams.get("merging") === "1";
+
+function outcomeReply(cardId: string, outcome: PerformOutcome, withMerging = false): StatusReply | undefined {
   if (outcome.kind === "done") return undefined;
   if (outcome.kind === "needs_confirmation") {
-    const body: DecisionNeedsConfirmation = { cardId: DecisionCardIdSchema.parse(cardId), outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl, ...(outcome.merging === undefined ? {} : { merging: outcome.merging }) };
+    const body: DecisionNeedsConfirmation = { cardId: DecisionCardIdSchema.parse(cardId), outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl, ...(!withMerging || outcome.merging === undefined ? {} : { merging: outcome.merging }) };
     return new StatusReply(202, body);
   }
   const refusal = DECISION_REFUSALS[outcome.reason];
@@ -197,7 +200,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     }
     const acting = actingSubject(pending, body.data.tab);
     const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab });
-    const notDecided = outcomeReply(cardId, outcome);
+    const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();
     await remember(deps, { ...who, cardId: acting.card.id, kind: acting.card.kind, risk: acting.card.risk, outcome: "approved", tab: body.data.tab, requestId: body.data.requestId, createdAt: acting.card.createdAt, openedAt, decidedAt });
@@ -221,7 +224,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
   const tab = tabs === undefined ? undefined : tabsPending(tabs)[0];
   const acting = actingSubject(pending, tab);
   const outcome = await deps.performer.reject(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, reason: body.data.reason, tab });
-  const notDecided = outcomeReply(cardId, outcome);
+  const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
   if (notDecided !== undefined) return notDecided;
   const decidedAt = nowIso();
   await remember(deps, { ...who, cardId: acting.card.id, kind: acting.card.kind, risk: acting.card.risk, outcome: "rejected", reason: body.data.reason, tab, requestId: body.data.requestId, createdAt: acting.card.createdAt, decidedAt });

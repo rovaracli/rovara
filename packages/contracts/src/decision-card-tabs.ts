@@ -92,7 +92,11 @@ export type DecisionNeedsConfirmation = z.infer<typeof DecisionNeedsConfirmation
 
 /** What an approve or a reject answers: decided, or waiting on a confirmation page. */
 export const DecisionOutcomeSchema = z.union([DecisionAnsweredSchema, DecisionNeedsConfirmationSchema]);
-export const DecisionOutcomeReaderSchema = z.union([DecisionAnsweredSchema, DecisionNeedsConfirmationSchema]);
+/** What the app reads: a field a newer server adds to either answer is kept, never a reason to refuse the answer (an older bundle's strict reader once refused `merging`). */
+export const DecisionOutcomeReaderSchema = z.union([
+  z.looseObject({ cardId: DecisionCardIdSchema, outcome: z.enum(["approved", "rejected"]), tab: DecisionTabIdSchema.optional(), remainingTabs: z.array(DecisionTabIdSchema).max(2) }),
+  z.looseObject({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link"), merging: DecisionMergingSchema.optional() }),
+]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
 
 /** The fixed reasons a performer refuses, and what each means to the person. */

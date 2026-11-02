@@ -227,7 +227,7 @@ it("I7: a 202 needs-confirmation answer is not shown as done: the card says noth
 });
 const MERGE_URL = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
 const mergeItem: DecisionItem = { ...base("pr1"), kind: "merge", sessionId: "ses_" + "a".repeat(20), heads: [{ repositoryId: "payments", number: 7, headSha: "a".repeat(40) }], targets: [{ repositoryId: "payments", number: 7, baseBranch: "main" }], prRisk: "low", prReasons: [], proof: { proven: 1, passed: 0, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
-const mergeAnswer = (merging: unknown) => (request: { method: string; path: string }) => request.method === "POST" && request.path.endsWith("/approve") ? { status: 202, body: { cardId: "merge:pr1", outcome: "needs_confirmation", confirmUrl: MERGE_URL, ...(merging === undefined ? {} : { merging }) } } : undefined;
+const mergeAnswer = (merging: unknown) => (request: { method: string; path: string }) => request.method === "POST" && /\/approve(\?|$)/.test(request.path) ? { status: 202, body: { cardId: "merge:pr1", outcome: "needs_confirmation", confirmUrl: MERGE_URL, ...(merging === undefined ? {} : { merging }) } } : undefined;
 it("WEB-1: a Merge press asks 'Merge #N into <branch>?' with Confirm and Cancel before anything is confirmed; Confirm opens the confirmation page, Cancel opens nothing", async () => {
  const f = setupHome([mergeItem], mergeAnswer([{ repositoryId: "payments", number: 7, baseBranch: "main" }]));
  await screen.findByRole("heading", { name: "Retry failed payments" });
@@ -245,6 +245,31 @@ it("WEB-1: a Merge press asks 'Merge #N into <branch>?' with Confirm and Cancel 
  expect(f.host.openExternal).toHaveBeenCalledWith(MERGE_URL);
  expect(screen.queryByRole("group", { name: "Confirm merge" })).toBeNull();
  expect(screen.queryByText(/Approved|Merged/)).toBeNull();
+});
+it("WEB-1: a Merge approve asks for the pull requests it names (?merging=1); another card's approve does not", async () => {
+ const f = setupHome([mergeItem], mergeAnswer([{ repositoryId: "payments", number: 7, baseBranch: "main" }]));
+ await screen.findByRole("heading", { name: "Retry failed payments" });
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await screen.findByRole("group", { name: "Confirm merge" });
+ expect(posts(f)[0]!.path).toBe("/v1/app/decisions/merge/pr1/approve?merging=1");
+});
+it("WEB-1 S1: Approve, Cancel, Approve sends the same requestId, so the server makes one pending change; a changed card sends a new one", async () => {
+ const f = setupHome([mergeItem], mergeAnswer([{ repositoryId: "payments", number: 7, baseBranch: "main" }]));
+ await screen.findByRole("heading", { name: "Retry failed payments" });
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await screen.findByRole("group", { name: "Confirm merge" });
+ const ids = posts(f).map(r => (r.body as { requestId: string }).requestId);
+ expect(ids).toHaveLength(2);
+ expect(ids[0]).toBe(ids[1]);
+ expect(typeof ids[0]).toBe("string");
+});
+it("WEB-1 S2: the app reads an answer that carries a field it does not know yet", async () => {
+ setupHome([mergeItem], request => request.method === "POST" && request.path.includes("/approve") ? { status: 202, body: { cardId: "merge:pr1", outcome: "needs_confirmation", confirmUrl: MERGE_URL, merging: [{ repositoryId: "payments", number: 7, baseBranch: "main" }], somethingNewer: { a: 1 } } } : undefined);
+ await screen.findByRole("heading", { name: "Retry failed payments" });
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ expect(await screen.findByRole("group", { name: "Confirm merge" })).toBeTruthy();
 });
 it("WEB-1: several pull requests are named with their repository and branch, and a hostile branch name is plain text", async () => {
  setupHome([mergeItem], mergeAnswer([{ repositoryId: "payments", number: 7, baseBranch: "main" }, { repositoryId: "billing", number: 8, baseBranch: "<img src=x onerror=alert(1)>" }]));
@@ -264,7 +289,7 @@ it("WEB-1: a confirmation with nothing to name keeps the earlier wording and lin
  expect(f.host.openExternal).toHaveBeenCalledWith(MERGE_URL);
 });
 it("WEB-1: a confirmation link that is not this app's own is never opened, even from Confirm", async () => {
- const f = setupHome([mergeItem], request => request.method === "POST" && request.path.endsWith("/approve") ? { status: 202, body: { cardId: "merge:pr1", outcome: "needs_confirmation", confirmUrl: "https://evil.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", merging: [{ repositoryId: "payments", number: 7, baseBranch: "main" }] } } : undefined);
+ const f = setupHome([mergeItem], request => request.method === "POST" && /\/approve(\?|$)/.test(request.path) ? { status: 202, body: { cardId: "merge:pr1", outcome: "needs_confirmation", confirmUrl: "https://evil.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", merging: [{ repositoryId: "payments", number: 7, baseBranch: "main" }] } } : undefined);
  await screen.findByRole("heading", { name: "Retry failed payments" });
  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
  await screen.findByText(/Nothing is decided yet/);

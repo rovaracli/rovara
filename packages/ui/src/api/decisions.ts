@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
- DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeSchema, DecisionTabsSchema,
+ DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionTabsSchema,
  type DecisionDetailGroup, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
@@ -52,9 +52,9 @@ export function readDecisions(view: View): ReadDecision[] {
 export type DecisionResult = { kind: "decided"; outcome: "approved" | "rejected" } | { kind: "needs_confirmation"; confirmUrl: string | undefined; /** A merge: the pull requests and the branch each goes into, for the "Merge #N into <branch>?" question. */ merging?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined };
 
 export function createDecisionsApi(host: AppHost) {
- const api = createApiClient(host);
+ const api = createApiClient(host), waiting = new Map<string, string>();
  const done = <T,>(result: { kind: string; value?: T }): T => { if (result.kind !== "done" || result.value === undefined) throw new ApiError(409, "PENDING", "This isn't finished. Open the decision to continue."); return result.value; };
- const resultOf = (value: ReturnType<typeof DecisionOutcomeSchema.parse>): DecisionResult => value.outcome === "needs_confirmation"
+ const resultOf = (value: ReturnType<typeof DecisionOutcomeReaderSchema.parse>): DecisionResult => value.outcome === "needs_confirmation"
   ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined, merging: value.merging }
   : { kind: "decided", outcome: value.outcome };
  return {
@@ -62,12 +62,17 @@ export function createDecisionsApi(host: AppHost) {
   async approve(decision: ReadDecision, tab?: DecisionTabId): Promise<DecisionResult> {
    const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }) }, DecisionOutcomeSchema, { retry: "never" })));
+   // A merge asks for the pull requests it names (`merging`), which only a reader that knows the field is sent. Approve, Cancel, Approve of the SAME card as shown (same digest) is one request, not a new pending change each time.
+   const key = decision.card.id + "|" + decision.digest + "|" + (tab ?? ""), requestId = waiting.get(key) ?? crypto.randomUUID();
+   waiting.delete(key);
+   const result = resultOf(done(await api.send("POST", decision.card.kind === "merge" ? path + "?merging=1" : path, { requestId, shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
+   if (result.kind === "needs_confirmation") waiting.set(key, requestId);
+   return result;
   },
   async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {
    const path = decision.card.risk === "high" ? undefined : decisionActionPath(decision.card, "reject");
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionOutcomeSchema, { retry: "never" })));
+   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
  };
 }
