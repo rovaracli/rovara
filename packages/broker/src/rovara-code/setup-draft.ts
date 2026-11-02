@@ -1,6 +1,7 @@
 // Rovara Code (Plan 6 Task 10; meta repo lane B, task B3): Rovara proposes a project's setup. The proposal is read from untrusted repository files by a model: it never runs
 // as the project's setup until a person who may edit the project's settings applies it item by item (`applySetupDraft` goes through Plan 2's `updateProjectSettings`, then
 // Plan 2's setup check). Every proposed value carries where it came from, and this module re-reads each of those places from GitHub (setup-proposal-verify.ts).
+// TE-3: setup and test commands are saved only after a candidate check ran exactly those commands on a fresh workspace and passed (setup-draft-check.ts).
 //
 // The draft runs as a task with `purpose: "setup_draft"`: the same start as every task (the payer rules, the allowed-model checks of the plan step, the budget floor, the
 // workspace limits and the QUICK planning limit as its run limit), on a workspace that clones the repositories and runs no command. Its worker answers with a proposal; the
@@ -66,6 +67,7 @@ import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposa
 import { addIntakeSource } from "../intake/sources.js";
 import { registerIntakeSetupApplier } from "../intake/setup-applier.js";
 import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
+import { DRAFT_CHECK_WORDS, gateDraftCommands, type SetupDraftCandidatePort } from "./setup-draft-check.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
@@ -284,6 +286,11 @@ export interface SetupDraftDependencies {
   /** `startCodeIntent`, as the caller. */
   startPullRequest(caller: DeveloperCaller, request: { requestId: string; project: string; text: string }): Promise<{ taskId: string; sessionId?: string; sessionUrl?: string }>;
   readProject(caller: DeveloperCaller, project: string): Promise<AppProjectDetail>;
+  /**
+   * TE-3: the candidate check that proves a draft's setup and test commands on a fresh workspace before they are saved (setup-draft-check.ts). Absent where setup checks are not set up: the apply then
+   * saves no commands, and says so.
+   */
+  candidate?: SetupDraftCandidatePort | undefined;
   /** The approvals, for a risky item's own card. Absent where approvals are not set up: such an item then says so and gets no card. */
   approvals?: ApprovalDependencies | undefined;
   /** A file of one of an org's repositories at a commit (undefined when it is not there; throws when GitHub cannot answer). Absent: every citation is `unchecked`. */
@@ -594,7 +601,9 @@ const isManagedByFile = (error: unknown): boolean => error instanceof ManagedByF
 /**
  * `POST /v1/app/projects/{name}/setup-draft/apply`: applies the items the person ticked, each by id, and says what happened to each.
  *   - A setting (setup or test commands, an existing dev container) is saved through Plan 2's `updateProjectSettings` (so the role, the revision the person saw and the
- *     command rules apply as they do for a person's own save), then the setup check starts. A value the project already has that differs is KEPT unless the item's
+ *     command rules apply as they do for a person's own save), then the setup check starts. TE-3: setup and test commands are saved only from a browser session and only when a
+ *     candidate check of exactly the commands the settings would hold passed on a fresh workspace at this revision; with none, the check is started and the item answers `checking`
+ *     (the same request id asks again), a failed check answers `check_failed` with its reason, and nothing is saved in either case. A value the project already has that differs is KEPT unless the item's
  *     `useSuggestion` is ticked: a value a person typed is never replaced silently.
  *   - A risky item (a repository to add, a dev container pull request, a source, an intake trigger, a secret) gets its OWN approval card; nothing changes until an
  *     administrator approves it, and then the maintainer applies it with a second press.
@@ -660,6 +669,16 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     else if (item.kind === "devcontainer") settings["devcontainer"] = { repository: value["repository"], configPath: value["configPath"] };
     settingItems.push(item);
   }
+  // TE-3: a batch that changes setup or test commands is saved only when a candidate check of exactly those commands passed at this settings revision; otherwise the check is started (or its failure
+  // shown) and nothing is saved, for any item of the batch (they are one save).
+  const gate = settingItems.length === 0 ? { kind: "not_needed" as const } : await gateDraftCommands({
+    candidate: deps.candidate, caller, orgId: caller.orgId, project: name, requestId: body.requestId, derivedRequestId: (purpose) => derivedRequestId(body.requestId, purpose),
+    definition: latest.definition, settings: { setupCommands: settings["setupCommands"] as string[] | undefined, testCommands: settings["testCommands"] as string[] | undefined }, nowMs: deps.now(),
+  });
+  const waiting = gate.kind === "blocked";
+  if (gate.kind === "blocked") {
+    for (const item of settingItems) result(item, gate.outcome, { message: gate.message, ...(gate.reason === undefined ? {} : { reason: gate.reason }) });
+  }
   let project: AppProjectDetail | undefined;
   let setupCheck: SetupApplyResponse["setupCheck"] = "not_needed";
   let setupCheckMessage: string | undefined;
@@ -668,7 +687,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // this proposal follows (it would then look as if the proposal still applied to settings it never saw).
   let revisionNow = body.expectedRevision;
   const savedAt = (saved: { project: AppProjectDetail }) => { if (typeof saved.project.latestRevision === "number") revisionNow = saved.project.latestRevision; };
-  if (settingItems.length > 0) {
+  if (settingItems.length > 0 && !waiting) {
     try {
       const saved = await deps.updateSettings(caller, name, { requestId: body.requestId, expectedRevision: body.expectedRevision, ...settings }, { origin: "agent" });
       project = saved.project;
@@ -693,6 +712,8 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // 2. Items that need a person's approval card (and, once approved, their application).
   for (const { item } of requested) {
     if (setupItemHandling(item.kind, item.proposed.value) !== "approval") continue;
+    // Nothing else is done in a request whose commands still wait for their check: the request is not kept, so its repeat would otherwise find a used consent.
+    if (waiting) { result(item, "not_available", { message: DRAFT_CHECK_WORDS.notTried }); continue; }
     const currently = currentOf(latest.definition, item);
     if (currently?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
     const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined });
@@ -745,6 +766,8 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // The record of the request and of what was applied, in one transaction. The settings are already saved: a lost write here costs only the replay's shortcut (a repeat then
   // finds the revision moved and is refused as stale), never a second application. A card's link carries a ticket and is not kept: a replay mints a new one.
   const kept: StoredOutcome = { ...outcome, results: ordered.map(({ approval, ...rest }) => (approval === undefined ? rest : { ...rest, approval: { approvalId: approval.approvalId, confirmUrl: "" } })) };
+  // A request whose commands wait for (or failed) their check is not kept: its repeat, with the same id, reads the check again and goes on from where it stands.
+  if (waiting) return new StatusReply(200, { project: await deps.readProject(caller, name), ...outcome });
   try {
     const at = new Date(deps.now()).toISOString();
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AppProjectDetail, SetupApplyResponse } from "@agentx/contracts/web";
 import { useOnboardingApi } from "../../../api/onboarding.js";
@@ -11,6 +11,8 @@ import { ProposalReview } from "./ProposalReview.js";
 const TestEnvironmentSection = lazy(async () => ({ default: (await import("./TestEnvironmentSection.js")).TestEnvironmentSection }));
 // A run of Rovara's own (SH15) is its own chunk, too: it loads when the Setup step shows it, and shows nothing at all while the feature is off.
 const SetupRunSection = lazy(() => import("../../setup/SetupRunSection.js"));
+/** How often the check of a draft's commands is asked after, and how long this page waits for it before it says to press again (the broker fails a stalled check at 50 minutes). */
+const CHECK_POLL_MS=10_000,CHECK_WAIT_MS=60*60_000;
 export function SetupStep({project,onProject,onNext,refresh}:{project:AppProjectDetail;onProject:(project:AppProjectDetail)=>void;onNext:()=>void;refresh:()=>void}){
  const api=useOnboardingApi(),[revision,setRevision]=useState(project.latestRevision),[setup,setSetup]=useState(project.settings.setupCommands.join("\n")),[tests,setTests]=useState(project.settings.testCommands.join("\n")),[repository,setRepository]=useState(project.settings.devcontainer?.repository??""),[config,setConfig]=useState(project.settings.devcontainer?.configPath??""),[busy,setBusy]=useState(false),[error,setError]=useState<string>(),[intent,setIntent]=useState(()=>crypto.randomUUID());
  const checking=project.setup.status==="checking";
@@ -19,7 +21,9 @@ export function SetupStep({project,onProject,onNext,refresh}:{project:AppProject
  const draft=useQuery({queryKey:["onboard","setup-draft",project.name],queryFn:()=>api.setupDraft(project.name),retry:false,refetchInterval:query=>query.state.data?.status==="drafting"?3000:false});
  const status=draft.data?.status;
  async function ask(){setDrafting(true);setError(undefined);setResults(undefined);setAsked(true);try{await api.startSetupDraft(project.name,draftIntent);setDraftIntent(crypto.randomUUID());await draft.refetch();}catch(e){setError(e instanceof Error?e.message:"Couldn't ask Rovara to propose the setup.");}finally{setDrafting(false);}}
- async function applyItems(items:Array<{id:string;useSuggestion?:boolean}>){setApplying(true);setError(undefined);try{const result=await api.applySetupDraft(project.name,{requestId:crypto.randomUUID(),expectedRevision:revision,items});setResults(result.results);acceptSaved(result.project);await draft.refetch();}catch(e){setError(e instanceof Error?e.message:"Couldn't apply the suggestions.");}finally{setApplying(false);}}
+ // Check and apply (TE-3): commands are run on a fresh machine before they are saved. The same request id is sent again until the check has finished; the broker saves nothing until it passed.
+ const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
+ async function applyItems(items:Array<{id:string;useSuggestion?:boolean}>){setApplying(true);setError(undefined);const requestId=crypto.randomUUID(),until=Date.now()+CHECK_WAIT_MS;try{for(;;){const result=await api.applySetupDraft(project.name,{requestId,expectedRevision:revision,items});if(!alive.current)return;setResults(result.results);if(result.results.some(entry=>entry.outcome==="checking")&&Date.now()<until){await new Promise(done=>setTimeout(done,CHECK_POLL_MS));if(!alive.current)return;continue;}acceptSaved(result.project);await draft.refetch();break;}}catch(e){if(alive.current)setError(e instanceof Error?e.message:"Couldn't apply the suggestions.");}finally{if(alive.current)setApplying(false);}}
  const unchanged=setup===project.settings.setupCommands.join("\n")&&tests===project.settings.testCommands.join("\n")&&repository===(project.settings.devcontainer?.repository??"")&&config===(project.settings.devcontainer?.configPath??"");
  function acceptSaved(value:AppProjectDetail){setRevision(value.latestRevision);setSetup(value.settings.setupCommands.join("\n"));setTests(value.settings.testCommands.join("\n"));setRepository(value.settings.devcontainer?.repository??"");setConfig(value.settings.devcontainer?.configPath??"");onProject(value);}
  const lines=(value:string)=>value.split("\n").filter(line=>line.trim());

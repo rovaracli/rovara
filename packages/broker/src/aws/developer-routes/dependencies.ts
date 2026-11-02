@@ -66,6 +66,7 @@ import { errorName } from "./identity-lambda.js";
 import { getSignIn } from "./authentication.js";
 import {
   appProjectSummary,
+  setupCheckDepsOf,
   bindingsOf,
   channelNames,
   latestDefinition,
@@ -75,7 +76,9 @@ import {
   queryAll,
   safeChannelMembers,
 } from "./project-list.js";
-import { getAppProject, startProjectSetupCheck } from "./project-archive-setup.js";
+import { getAppProject, startListsCandidateSetupCheck, startProjectSetupCheck } from "./project-archive-setup.js";
+import { candidateStateOf } from "./test-environment-candidate.js";
+import { setupCheckReplay } from "../../org/project-setup-check.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { putProjectSettings } from "./project-settings.js";
 import { checkProjectAccess } from "./project-access.js";
@@ -103,6 +106,14 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
       return { taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }), ...(started.sessionUrl === undefined ? {} : { sessionUrl: started.sessionUrl }) };
     },
     readProject: (who, project) => getAppProject(deps, who, project),
+    // TE-3: a draft's setup and test commands are run on a fresh workspace (a candidate check) before they are saved. Where setup checks are not set up the apply saves no commands.
+    ...(deps.tasks === undefined ? {} : {
+      candidate: {
+        read: (who, project, digest, definition) => candidateStateOf(deps, who.orgId, project, digest, definition),
+        started: (who, project, requestId) => setupCheckReplay(setupCheckDepsOf(deps), who.orgId, project, requestId, who.developerId),
+        start: async (who, project, input) => { await startListsCandidateSetupCheck(deps, who, encodeURIComponent(project), input); },
+      },
+    }),
     // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),

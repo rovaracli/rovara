@@ -32,6 +32,7 @@ import {
   type AppProjectDetail,
   type OrgId,
   type OrgRole,
+  type ProjectCommand,
   type ProjectDefinition,
   type ProjectRole,
   type ProjectSettingsBody,
@@ -82,6 +83,21 @@ export { githubNotConnectedMessage };
 
 const withoutCode = (error: AgentXError) => error.message.replace(new RegExp(`^${error.code}: `), "");
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+
+/**
+ * The commands a settings save stores for a list of command lines: each parsed to one program in the project's first repository's directory, with the list's own timeout and no env. The save uses this and
+ * so does the check of a setup draft's commands (rovara-code/setup-draft-check.ts), so what is checked is exactly what is stored.
+ */
+export function settingsCommands(field: "setupCommands" | "testCommands", lines: readonly string[], cwd: string, timeoutSeconds: number): ProjectCommand[] {
+  return lines.map((line, index) => {
+    try {
+      return parseCommandLine(line, cwd, timeoutSeconds);
+    } catch (error) {
+      if (error instanceof AgentXError) throw invalid(`${field}.${String(index)}: ${withoutCode(error)}`);
+      throw error;
+    }
+  });
+}
 
 /** What a project's repository is called to a person: GitHub's `owner/name`, from its URL. */
 function fullNameOf(repository: { name: string; url: string }): string {
@@ -309,16 +325,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   }
   // Commands run in the project's first repository, the way the one repository of a created project is.
   const cwd = repositories[0]!.path;
-  const commands = (field: "setupCommands" | "testCommands", timeoutSeconds: number) => (body[field] ?? []).map((line, index) => {
-    try {
-      return parseCommandLine(line, cwd, timeoutSeconds);
-    } catch (error) {
-      if (error instanceof AgentXError) throw invalid(`${field}.${String(index)}: ${withoutCode(error)}`);
-      throw error;
-    }
-  });
-  if (body.setupCommands !== undefined) next.setup = commands("setupCommands", SETUP_TIMEOUT);
-  if (body.testCommands !== undefined) next.readiness = commands("testCommands", TEST_TIMEOUT);
+  if (body.setupCommands !== undefined) next.setup = settingsCommands("setupCommands", body.setupCommands, cwd, SETUP_TIMEOUT);
+  if (body.testCommands !== undefined) next.readiness = settingsCommands("testCommands", body.testCommands, cwd, TEST_TIMEOUT);
   // A command the save keeps still runs where it did; one whose repository is removed would run in a directory that is gone.
   for (const [index, entry] of (body.removeRepositories ?? []).entries()) {
     const path = resolveRepository(current.repositories, entry)!.path;

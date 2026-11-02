@@ -30,7 +30,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
 import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckDepsOf, visibleProjectRoles } from "./project-list.js";
 import { projectRoleForRoute } from "./project-members.js";
-import { type OrgId } from "@agentx/contracts";
+import { type OrgId, type ProjectCommand } from "@agentx/contracts";
 import { clearArchivedProjectLearning as clearArchivedProject } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 
@@ -209,7 +209,21 @@ export async function startCandidateSetupCheck(deps: DeveloperRouteDependencies,
   return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, body: input.body, ...(input.origin === undefined ? {} : { origin: input.origin }) });
 }
 
-async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: { digest: string; body: TestEnvironmentBody; origin?: "setup_run" }): Promise<StatusReply> {
+/**
+ * TE-3: the CANDIDATE check of the exact command lists a setup draft would save. The same admissions, limits, workspace and stored result (per project, digest and settings revision) as a test environment's
+ * candidate check, but the lists are given (built by the settings save's own rule), not derived from a proposal. `expectedRevision` is the revision the lists were built against: a project whose settings have
+ * moved since is refused (PROJECT_REVISION_MISMATCH) and nothing is started. Nothing is written to the settings.
+ */
+export async function startListsCandidateSetupCheck(
+  deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string,
+  input: { requestId: string; digest: string; lists: { setup: ProjectCommand[]; readiness: ProjectCommand[] }; expectedRevision: number },
+): Promise<StatusReply> {
+  return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, lists: input.lists, expectedRevision: input.expectedRevision });
+}
+
+type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[] }; expectedRevision: number });
+
+async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: CandidateInput): Promise<StatusReply> {
   const { name, role } = await projectRoleForRoute(deps, caller, rawName);
   if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a setup check");
   const tasks = deps.tasks;
@@ -224,7 +238,8 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
     const meta = await readProjectMeta(deps, caller.orgId, name);
     // A candidate check is prepared from the lists the proposal would make; the project's own check from the settings as they are.
-    const lists = candidate === undefined ? undefined : candidateListsChecked(candidate.body, project.definition);
+    if (candidate !== undefined && "expectedRevision" in candidate && project.definition.revision !== candidate.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "someone changed this project's settings; reload and try again");
+    const lists = candidate === undefined ? undefined : "lists" in candidate ? candidate.lists : candidateListsChecked(candidate.body, project.definition);
     // The check this one replaces: the project's own, or the candidate record of the same proposal at the same revision.
     const previousCandidate = candidate === undefined ? undefined : await readCandidateCheck(checks, caller.orgId, name, candidate.digest, project.definition.revision);
     const previous = candidate === undefined ? meta?.setupCheck : previousCandidate;
