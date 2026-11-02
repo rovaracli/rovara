@@ -3,6 +3,7 @@
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { registriesPrepareOf } from "./registry-credentials.js";
 import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
@@ -165,6 +166,8 @@ export async function newWorkspacePreparation(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
+      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true }),
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -256,6 +259,7 @@ export async function heldPreparationDispatch(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true }),
     },
   };
   const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {

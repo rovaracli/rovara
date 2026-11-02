@@ -62,4 +62,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.testEnvDetect.v1",
   // Test environment (wire-testenv): a verification run that carries the environment's plan applies its test selection and round budget and reports the selection (verification/test-env-plan.ts).
   "task.testEnvironment.v1",
+  // N9 (INTG2): the prepare invocation's `registries` (a project's private package registries for the setup and readiness commands; registry-config.ts).
+  "prepare.registries.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

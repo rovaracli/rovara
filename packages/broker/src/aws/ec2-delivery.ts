@@ -1,4 +1,5 @@
 import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
+import { REGISTRY_FEATURE_MISSING } from "../project-registries/prepare.js";
 import {
   AGENT_RUN_FEATURE,
   AGENT_STEP_FEATURE,
@@ -17,6 +18,7 @@ import {
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
+  PREPARE_REGISTRIES_FEATURE,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -350,13 +352,14 @@ async function forWorkerFeatures(
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
+  const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && invocation.payload.learnedContext !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -424,6 +427,10 @@ async function forWorkerFeatures(
   }
   if (carriesMeta && !features.includes("prepare.metaRepo")) {
     throw agentXError("RUNTIME_UNAVAILABLE", META_FEATURE_MISSING);
+  }
+  // N9 (INTG2): a project's registries are never dropped for an older worker, which would run setup without them and fail on a 401 (or reach a public mirror): the run is refused.
+  if (carriesRegistries && !features.includes(PREPARE_REGISTRIES_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", REGISTRY_FEATURE_MISSING);
   }
   if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {

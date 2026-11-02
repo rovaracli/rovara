@@ -330,6 +330,7 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
+import { registryTokenSource } from "./broker/registry-tokens-wiring.js";
 import { createEditionGuard, editionBackupName, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
 import { portCredentialResolver } from "./broker/credential-exchange.js";
@@ -398,6 +399,7 @@ const github = createGitHubAppCredentials(
 const githubCredentials = github.provider;
 // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
 const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
+const registryTokens = registryTokenSource(awsClientConfiguration);
 // Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router is what consumers move to (tasks P5a-e).
 const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, webhookSecret: github.webhookSecret, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
@@ -614,6 +616,8 @@ export const handler = createAwsBrokerHandler({
   cloud: cloudOrgResolver !== undefined,
   // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
   ...(editionPolicy === undefined ? {} : { editionPolicy }),
+  // N9 (INTG2): a project's registry tokens, only where the install switch is on.
+  ...(registryTokens === undefined ? {} : { registryTokens }),
   ...(ssoStores === undefined ? {} : { sso: ssoStores }),
   // Enterprise foundations I-2: the stamp is checked against the install's retained edition record before the first request.
   editionGuard: createEditionGuard({ stamp: editionPolicy?.edition, recordName: process.env.AGENTX_ENV ? editionRecordName(installEnvironmentName()) : undefined, backupName: process.env.AGENTX_ENV ? editionBackupName(installEnvironmentName()) : undefined, read: ssmEditionRecordReader(ssm), log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })) }),

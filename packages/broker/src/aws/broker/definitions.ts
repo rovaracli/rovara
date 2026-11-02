@@ -9,6 +9,7 @@ import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
+import type { RegistryTokenSource } from "../../project-registries/mint.js";
 import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
@@ -275,6 +276,8 @@ export interface AwsBrokerDependencies {
   sso?: SsoStores;
   /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. The Auditor role (I2) is refused where it is absent (fail closed); see `slackCallerFor`. */
   editionPolicy?: EditionPolicy;
+  /** N9 (INTG2): what the broker can mint a project registry's token with (its own AWS identity for CodeArtifact; a stored credential for a generic registry). Absent: no registry credential is ever issued, whatever the switch says. */
+  registryTokens?: RegistryTokenSource;
   /**
    * Ruling R55: where, and with which credential, a cloud org's owner or admin creates a project (the foundation's launch template and
    * subnets, and the built-in GitHub App). Absent, POST /v1/dev/projects answers RUNTIME_UNAVAILABLE.

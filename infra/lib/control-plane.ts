@@ -5,6 +5,8 @@ import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachTeamRecord } from "./team-record-wiring.js";
+import { attachProjectRegistries } from "./registry-wiring.js";
+import type { RegistryDomain } from "./registry-access.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
@@ -99,6 +101,8 @@ export interface ControlPlaneStackProps extends StackProps {
    * the record is created and the templates are unchanged. Named environments only (checked by `parseTeamRecordSwitch`).
    */
   teamRecord?: TeamRecordContext;
+  /** N9 (INTG2): the CodeArtifact domains a project's registries may name. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains`; absent (the default), nothing is granted and the switch is off. */
+  registryDomains?: readonly RegistryDomain[];
 }
 
 /**
@@ -1091,6 +1095,8 @@ export class ControlPlaneStack extends Stack {
     }
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, scheduleRole: githubRecoveryRole });
+    // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
+    if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
     // aws:SourceArn to the schedule GROUP's ARN, not the schedule's, so that is what the role's trust names (a `schedule/...` pattern would never match, and a schedule of any
     // other group is refused). The role can invoke the broker function and write the dead-letter queue, nothing else. The queue is encrypted with SQS-managed keys, so no KMS

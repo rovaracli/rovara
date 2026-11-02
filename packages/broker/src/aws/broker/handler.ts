@@ -74,6 +74,7 @@ import { adaptHttpApiEvent, identityFromJwtClaims, type HttpApiV2Event } from ".
 import { getSwebenchRunForThread, handleSwebenchCallback, isSwebenchCallbackPath, startSwebenchRun } from "../swebench.js";
 import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSlackBatch, updateWatchedBatch } from "../eval-batch-service.js";
 import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
+import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
@@ -654,6 +655,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {
         return await handleCallback(dependencies, request, callback[1], callback[2], callback[3]);
+      }
+      // N9 (INTG2): a project's registry token, given to a running preparation only (project-registries/exchange.ts).
+      const registryExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/registry-credentials$/.exec(url.pathname);
+      if (request.method === "POST" && registryExchange?.[1] && registryExchange[2]) {
+        return json(await exchangeRegistryCredential(dependencies, request, registryExchange[1], registryExchange[2]), request.requestId);
       }
       const credentialExchange = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/repository-credentials$/.exec(
         url.pathname,

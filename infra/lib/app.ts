@@ -1,3 +1,4 @@
+import { CODEARTIFACT_DOMAINS_CONTEXT_KEY, parseCodeArtifactDomains } from "./registry-access.js";
 import { readFileSync } from "node:fs";
 import { App, Aspects, LegacyStackSynthesizer, Stack, Tags } from "aws-cdk-lib";
 import type { IReusableStackSynthesizer } from "aws-cdk-lib";
@@ -162,10 +163,13 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   assertStdioHostStackBuilt(privateMcp);
   // The Team record's switch (off by default; `-c agentxTeamRecord=enabled` turns its storage, schedules and broker setting on). Checked here so a wrong value stops the synth.
   const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
+  // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region,...`). Off by default.
+  const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY));
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
     ...(teamRecord === undefined ? {} : { teamRecord }),
+    ...(registryDomains === undefined ? {} : { registryDomains }),
     ...(Object.keys(privateMcpBrokerEnvironment(privateMcp)).length === 0 ? {} : { brokerEnvironment: privateMcpBrokerEnvironment(privateMcp) }),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),

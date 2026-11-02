@@ -34,6 +34,7 @@ import { ROVARA_CODE_NAME, linkedRequester, slackWorkPayment } from "./model-acc
 import { EARLIER_PLAN_MAX_BYTES, readObjectText } from "./plan-answers.js";
 import { developerRequested, getDefaultWorkspace, getMembership, getThreadWorkspace, requireLatestProject, requireWorkspace } from "./records.js";
 import { resolveSlackThreadKey } from "./scope-helpers.js";
+import { registriesPrepareOf } from "./registry-credentials.js";
 import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, membershipPreparationItem, newWorkspacePreparation, metaPrepareOf, requireSlackRequesterMayWork, slackRequesterRole } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
 import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
@@ -761,6 +762,7 @@ async function startThreadPreparation(
       project: workerProjectDefinition(latest.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, latest, identity.ownerKey, workspace.id, operationId),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...registriesPrepareOf(dependencies, latest),
     },
   };
   // The runtime fields stay the workspace's own (only deploymentMode today); outboxRecord refuses a
@@ -1454,6 +1456,7 @@ export async function retryWorkspacePreparation(
         operationId,
       ),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...registriesPrepareOf(dependencies, project),
     },
   };
   const updated = WorkspaceInstanceSchema.parse({
