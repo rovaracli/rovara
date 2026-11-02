@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import { agentXError, type OrgId } from "@agentx/contracts";
 import { approvalIdFor, createPendingChange, getApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalCaller, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
+import "../agents/approval-viewed.js"; // registers the decision guard that makes a confirmation need the page opened first
 import { decideFromRecords, type LessSafeApproval } from "./test-environment.js";
 import { confirmationOf } from "./test-env-approval.js";
 

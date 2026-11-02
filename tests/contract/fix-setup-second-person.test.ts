@@ -1,7 +1,7 @@
 // Setup and test health SH17 (owner decision F4, option D): who must confirm "Mark as known failing", through the whole broker with a live browser session and the real approval cards. One maintainer may mark, unless
 // they own an affected task, an owner is unknown, the card is full, or the company turned on "always two people"; the second person is a different eligible maintainer or admin, or the company's only owner through the
 // sole-owner exception (audited as such, and refused when the company turned the exception off).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DecisionCardsViewSchema, orgMetaKey, teamRecordPk } from "../../packages/contracts/src/index.js";
 
@@ -145,7 +145,8 @@ describe("the company setting always two people", () => {
 });
 
 // M3 (Opus re-check): the second person's confirmation page lists the tests, and they must have opened it before confirming (the same rule the presser follows on the card).
-import { approvalDecideKind, KNOWN_FAILING_OPEN_FIRST_MESSAGE } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { KNOWN_FAILING_OPEN_FIRST_MESSAGE } from "../../packages/broker/src/agents/approval-viewed.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 
@@ -175,9 +176,12 @@ describe("the confirmation page of a mark (M3)", () => {
     await expect(kind.decide(target, "approve", proof())).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
     expect(t.approvals().filter((card) => (card as { status: string }).status === "PENDING")).toHaveLength(1);
     // Someone else opening it does not count for this person.
-    await kind.inspect({ ...target, developerId: OMAR.developerId }).catch(() => undefined);
+    await kind.opened!({ ...target, developerId: OMAR.developerId }).catch(() => undefined);
     await expect(kind.decide(target, "approve", proof())).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    // Eligibility checks (inspect) run before every decision and from the sign-in code: they must not count as the page having been opened.
     await kind.inspect(target);
+    await expect(kind.decide(target, "approve", proof())).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    await kind.opened!(target);
     const decided = await kind.decide(target, "approve", proof());
     expect(decided.message).toMatch(/Approved/u);
   });
@@ -185,5 +189,72 @@ describe("the confirmation page of a mark (M3)", () => {
   it("a decline needs no reading", async () => {
     const { kind, target } = await pending();
     expect((await kind.decide(target, "decline", proof())).message).toMatch(/Declined/u);
+  });
+});
+
+// M3 (second Opus re-check): "opened" is recorded only when the page is rendered, and it is enforced for every route that can decide.
+import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";
+import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
+import { DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
+
+describe("opening the page before confirming holds on every route (M3)", () => {
+  const CELL = "https://cell.example.com";
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  async function world() {
+    const made = await bench({ owner: OMAR, maya: true });
+    process.env.VERIFY_RESULTS_ENABLED = "1"; process.env.DECISION_CARDS_ENABLED = "1";
+    await recordFixSetup(store(made.t), { orgId: TEST_ORG, project: NAME, taskId: "22222222-2222-4222-8222-222222222222", cause: "fails-on-original-code", tests: [{ name: "tests/b.py::two", checkId: "lint" }] });
+    expect((await press(made.t, OMAR)).status).toBe(403);
+    const card = knownFailingCards(made.t)[0] as { approvalId: string };
+    const deps = { documentClient: made.t.db, tableName: "state", modelSignInTableName: "state", signInStore: new DeveloperSignInStore({ documentClient: made.t.db, tableName: "state", now: () => Date.now() }), teamRecordTable: { documentClient: made.t.teamDb, tableName: "team" }, now: () => Date.now() } as unknown as ApprovalDependencies;
+    const kind = approvalDecideKind(deps);
+    const decideStore = new DecideStore({ documentClient: made.t.db, tableName: "state", now: () => Date.now() });
+    const context: DecideRequestContext = { store: decideStore, now: () => Date.now(), cellOrigin: CELL, kinds: { apr: kind }, authenticateBearer: async () => { throw new Error("no bearer here"); } };
+    let counter = 0;
+    const session = async (approvalId: string) => {
+      counter += 1;
+      const cookie = `cookie-${String(counter)}-${"x".repeat(40)}`;
+      const signedInAt = Math.floor(Date.now() / 1000) - 30;
+      await decideStore.putSession(cookie, { orgId: TEST_ORG, developerId: MAYA.developerId, approvalId, signedInAt, method: "email_code", csrfHash: sha(csrfTokenFor(cookie)), expiresAt: signedInAt + 600 });
+      return cookie;
+    };
+    const page = (method: "GET" | "POST", cookie: string, decision = "approve") => routeDecidePage(context, {
+      method, path: `/v1/app/approve/${card.approvalId}`, requestId: "r",
+      headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}) },
+      ...(method === "POST" ? { body: new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString() } : {}),
+    }, new URL(`${CELL}/v1/app/approve/${card.approvalId}`));
+    const route = (cookie: string) => routeApprovalRequest(
+      { ...deps, requireDecide: (request: Parameters<typeof requireDecideSession>[1]) => requireDecideSession(context, request) } as unknown as ApprovalDependencies,
+      { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "admin" } as never,
+      { method: "POST", path: `/v1/app/approvals/${card.approvalId}/decide`, requestId: "r", headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: CELL, "content-type": "application/json" }, body: JSON.stringify({ csrf: csrfTokenFor(cookie), requestId: randomUUID(), decision: "APPROVE" }) },
+      new URL(`${CELL}/v1/app/approvals/${card.approvalId}/decide`),
+    );
+    return { ...made, card, page, session, route, status: () => (made.t.approvals().find((entry) => (entry as { approvalId: string }).approvalId === card.approvalId) as { status: string }).status };
+  }
+
+  it("the page refuses a POST approve with no earlier GET, and the session is given back; a GET then a POST confirms", async () => {
+    const w = await world();
+    const cookie = await w.session(w.card.approvalId);
+    const refused = await w.page("POST", cookie);
+    expect(refused.body).toContain(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    expect(w.status()).toBe("PENDING");
+    expect((await w.page("GET", cookie)).statusCode).toBe(200);
+    expect((await w.page("POST", cookie)).body).toMatch(/Approved/u);
+    expect(w.status()).not.toBe("PENDING");
+  });
+
+  it("a decline through the page needs no GET", async () => {
+    const w = await world();
+    expect((await w.page("POST", await w.session(w.card.approvalId), "decline")).body).toMatch(/Declined/u);
+  });
+
+  it("POST /v1/app/approvals/{id}/decide refuses a confirmation without the page having been rendered, and takes it after", async () => {
+    const w = await world();
+    const cookie = await w.session(w.card.approvalId);
+    await expect(w.route(cookie)).rejects.toThrow(KNOWN_FAILING_OPEN_FIRST_MESSAGE);
+    expect(w.status()).toBe("PENDING");
+    expect((await w.page("GET", cookie)).statusCode).toBe(200);
+    await w.route(cookie);
+    expect(w.status()).not.toBe("PENDING");
   });
 });
