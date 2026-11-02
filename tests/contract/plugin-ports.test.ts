@@ -36,15 +36,17 @@ describe("code host capabilities", () => {
 
 describe("git credentials", () => {
   const NOW = Date.parse("2026-10-30T10:00:00.000Z");
-  const soon = new Date(NOW + 30 * 60_000).toISOString();
+  // P8: an ssh key credential carries the key, the ssh:// address and the pinned host keys (never trusting the first server that answers).
+const SSH_KEY = { privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n", sshUrl: "ssh://git@git.example.test/srv/app.git", knownHosts: `git.example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(43)}` };
+const soon = new Date(NOW + 30 * 60_000).toISOString();
   it("takes each of the four kinds with its own fields and an expiry", () => {
     expect(GitCredentialSchema.safeParse({ kind: "token", token: "t", expiresAt: soon }).success).toBe(true);
     expect(GitCredentialSchema.safeParse({ kind: "basic", username: "u", password: "p", expiresAt: soon }).success).toBe(true);
-    expect(GitCredentialSchema.safeParse({ kind: "ssh-key", privateKey: "k", expiresAt: soon }).success).toBe(true);
+    expect(GitCredentialSchema.safeParse({ kind: "ssh-key", ...SSH_KEY, expiresAt: soon }).success).toBe(true);
     expect(GitCredentialSchema.safeParse({ kind: "helper", helper: "aws-codecommit", expiresAt: soon }).success).toBe(true);
   });
   it("refuses a credential with no expiry, whatever its kind", () => {
-    for (const credential of [{ kind: "token", token: "t" }, { kind: "basic", username: "u", password: "p" }, { kind: "ssh-key", privateKey: "k" }, { kind: "helper", helper: "aws-codecommit" }]) {
+    for (const credential of [{ kind: "token", token: "t" }, { kind: "basic", username: "u", password: "p" }, { kind: "ssh-key", ...SSH_KEY }, { kind: "helper", helper: "aws-codecommit" }]) {
       expect(GitCredentialSchema.safeParse(credential).success, credential.kind).toBe(false);
       expect(workerGitCredentialUsable(credential, { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "invalid" });
     }
@@ -71,7 +73,7 @@ describe("git credentials", () => {
     expect(workerGitCredentialUsable({ kind: "basic", username: "u", password: "p", expiresAt: new Date(NOW + 365 * 86_400_000).toISOString() }, { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "too_long_lived" });
   });
   it("lets an ssh key go to a worker only for a service identity", () => {
-    const key = { kind: "ssh-key", privateKey: "k", expiresAt: soon };
+    const key = { kind: "ssh-key", ...SSH_KEY, expiresAt: soon };
     expect(workerGitCredentialUsable(key, { now: NOW, actingAs: "service" })).toMatchObject({ ok: true });
     expect(workerGitCredentialUsable(key, { now: NOW, actingAs: "on-behalf-of" })).toEqual({ ok: false, reason: "ssh_key_needs_service_identity" });
   });
