@@ -68,6 +68,8 @@ export type DecisionItem =
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
   | (ItemBase & { kind: "spec_choice"; message: string })
+  /** Second review (lane cr-settings): the model that gives the second opinion stopped qualifying. `message` is the broker's fixed sentence; the card only opens the settings page. */
+  | (ItemBase & { kind: "second_review_notice"; message: string })
   /**
    * Setup and test health (SH17): the project's test environment kept `taskCount` tasks' checks from giving a verdict. `cause` is the auto-fix code that names the fault (a fixed word), `step` the failing step
    * in the card's words, `blockedResult` the fixed result label. `knownFailingTests` is how many tests "Mark as known failing" would add (0: the card has no such action). All of it is the broker's own record,
@@ -190,6 +192,8 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
     case "spec_choice":
       return { question: plainLine(item.message, 160), next: "You choose on the task page; the code pull requests wait until you do.", evidence: [], why: "Only the task owner can choose." };
+    case "second_review_notice":
+      return { question: plainLine(item.message, 160), next: "Choose another model on the settings page, or wait until it qualifies again. Tasks are not stopped.", evidence: [], why: "Only a company admin can choose the model." };
     case "fix_setup":
       return {
         question: "Fix the test setup?",
@@ -246,6 +250,8 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
   // A held spec is answered on the task page (its buttons are POSTs of that page): the card only opens it.
   if (item.kind === "spec_choice") return { actions: [{ ...open, label: "Choose" }], recommended: "open" };
+  // A notice that the second-opinion model stopped qualifying: the card only opens the settings page, where the choice is made and "I've seen it" is pressed.
+  if (item.kind === "second_review_notice") return { actions: [{ ...open, label: "Open the settings" }], recommended: "open" };
   // Fix setup: Run setup agent, Fix with agent and Retry task checks are done on the pages the card opens (the setup page and the affected task's page); the card itself only decides the two things that need
   // the server's friction. "Mark as known failing" is the card's one approve (medium: the evidence is opened first, and the tests it marks are the broker's own record, never the request's); "Not now" puts
   // the card away until the cause comes back. Recommended is to look first.

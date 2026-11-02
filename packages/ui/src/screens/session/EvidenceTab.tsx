@@ -1,4 +1,5 @@
 import { TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, testingSummary } from "@agentx/contracts/web";
+import { SecondReviewAck } from "./SecondReviewAck.js";
 import { useAppHost } from "../../host.js";
 import { DataTable } from "../../design/DataTable.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -114,7 +115,7 @@ function EvidenceSections({ evidence }: { evidence: Evidence }) {
  return <section aria-label="Evidence from the checks"><ChecksByKind checks={evidence.checks} /><TestsSection evidence={evidence} /><CoverageSection checks={evidence.checks} /><ApiSection evidence={evidence} /><BrowserSection evidence={evidence} /><EnvironmentSection environment={evidence.environment} />
   {extra.length > 0 && <><h3>Also not tested here</h3><ul className="rv-not-tested">{extra.map((item, index) => <li key={item.kind + ":" + item.id + ":" + index}><VisibleText text={item.text + " (" + item.reason + ")"} /></li>)}</ul></>}</section>;
 }
-export function EvidenceTab({ task }: { task: ReadTask }) {
+export function EvidenceTab({ task, sessionId }: { task: ReadTask; sessionId?: string }) {
  const shared = task.e2ePresentation?.shared, workflow = task.workflow, verification = workflow?.verification;
  const labels = new Map([...(workflow?.checkPolicy?.required ?? []), ...(workflow?.checkPolicy?.optional ?? []), ...(workflow?.checkPolicy?.proposed ?? [])].map(check => [check.id, check.label]));
  const current = verification !== undefined && workflow?.candidate?.digest === verification.candidateDigest;
@@ -126,6 +127,6 @@ export function EvidenceTab({ task }: { task: ReadTask }) {
  {task.evidence && <EvidenceSections evidence={task.evidence} />}
  {verification && <><h2>{current ? "Recorded checks" : "Earlier check results"}</h2>{!current && <p className="rv-muted">These checks have not been matched to the current code.</p>}<ul className="rv-check-results">{verification.results.map((result, index) => <li key={result.checkId + ":" + String(index)}><VisibleText text={labels.get(result.checkId) ?? result.checkId} /><span>{result.broken || result.neverStarted || result.programNotFound ? "Couldn't run" : resultWords[result.status] ?? "Status unavailable"}</span></li>)}</ul></>}
  {task.reviewModelLines && <><h2>Reviews</h2><ul className="rv-review-models">{task.reviewModelLines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul></>}
- {task.secondReview && <><h2>Second review</h2><ul className="rv-second-review">{task.secondReview.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>{task.secondReview.needsAcknowledgement && !task.secondReview.acknowledged && <p className="rv-muted">The task owner is asked to acknowledge this before the pull request is merged.</p>}</>}
+ {task.secondReview && <><h2>Second review</h2><ul className="rv-second-review">{task.secondReview.lines.map((line, index) => <li key={index}><VisibleText text={line} /></li>)}</ul>{task.secondReview.needsAcknowledgement && !task.secondReview.acknowledged && (sessionId === undefined || task.workflow?.candidate?.digest === undefined ? <p className="rv-muted">The task owner is asked to acknowledge this before the pull request is merged.</p> : <SecondReviewAck taskId={task.taskId} candidateDigest={task.workflow.candidate.digest} sessionId={sessionId} canAcknowledge={task.secondReview.canAcknowledge === true} />)}</>}
  {!shared && !verification && !task.proofTable && !task.evidence && !task.testing && !task.reviewModelLines && !task.secondReview && <p>No test results are available yet.</p>}</section>;
 }

@@ -215,6 +215,15 @@ export const AUDIT_ACTIONS = [
   "company.second_review_context_changed",
   // The task owner acknowledged that an `on` second review did not run (the merge gate).
   "task.second_review_acknowledged",
+  // The second review's mode (`review.otherCompany`): raising applies at once; lowering is a proposal a different admin approves. `scope` is `company` or `project`.
+  "company.second_review_mode_proposed",
+  "company.second_review_mode_changed",
+  "company.second_review_mode_refused",
+  "company.second_review_mode_cancelled",
+  // The evidence that lets a model block (written by Rovara staff in Public, the install's administrator in Enterprise; an admin can only withdraw a verdict).
+  "company.second_review_replay_recorded",
+  "company.second_review_verdict_recorded",
+  "company.second_review_verdict_withdrawn",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -478,6 +487,16 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.second_review_context_changed": ["to", "widens"],
   // `cause` is one of the fixed words for why the second review did not run.
   "task.second_review_acknowledged": ["cause"],
+  // `scope` is `company` or `project`; `from` / `to` are `off`, `shadow` or `on`; `mode` is `direct` or `second_person`; `refusal` a fixed word.
+  "company.second_review_mode_proposed": ["scope", "from", "to"],
+  "company.second_review_mode_changed": ["scope", "from", "to", "mode"],
+  "company.second_review_mode_refused": ["refusal"],
+  // A waiting proposal withdrawn (by a person) or replaced by a newer one because the mode it was made against moved (`cause`: `withdrawn` or `stale`).
+  "company.second_review_mode_cancelled": ["scope", "from", "to", "cause"],
+  // `runId` is the replay run's id; `cases` how many it holds; `passed` what the bar says when it is scored afresh (never stored). `model` is the model's key; `days`, `findings` and `agreed` are the shadow window the broker counted itself.
+  "company.second_review_replay_recorded": ["runId", "cases", "passed"],
+  "company.second_review_verdict_recorded": ["model", "runId", "days", "findings", "agreed"],
+  "company.second_review_verdict_withdrawn": ["model"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],

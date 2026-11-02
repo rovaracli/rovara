@@ -289,6 +289,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/intake/own-writes.ts", "packages/broker/src/agent-sessions/ask-store.ts", "packages/broker/src/agent-sessions/ask-erase.ts", "packages/broker/src/lessons/dynamo-store.ts",
       // B8: pending PR-learning proposals use the approved authority window plus cleanup TTL.
       "packages/broker/src/learning/settings.ts",
+      // Second review track record (lane cr-settings): a row per answered second opinion, kept TRACK_RETENTION_DAYS (400), then removed by the TTL.
+      "packages/broker/src/rovara-code/second-review-track.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

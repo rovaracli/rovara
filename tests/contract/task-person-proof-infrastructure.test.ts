@@ -327,18 +327,20 @@ describe("the named TEST proof-only installation gate", () => {
     // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
     // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
     // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
+    // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
+    // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "7fbe2526a4c3dbdce670a74858e81a193b251861cb649bf7d159a2dd6ebd3c67",
-        withoutRoute: "e1280d580dcd35e213872e9dc4c36aff8d0a467a65fb5c417fc3095de8138322",
+        withRoute: "4c105b2dd764c4a88c059c9d1b0cd673e7c726ed69e67371d174741893573267",
+        withoutRoute: "e74e2fef4928c621758159e507eafaa4d30a0811c4b73dce74ccca570cc45ce1",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "4f107dcdffba70f895f367f0850e3079a9f378b5d7c043980f82a6bfac3c3062",
-        withoutRoute: "8a0bad499f6ab6de2932a6826e2c634fc0b76f4eeaa35461c98fd60d83acec6b",
+        withRoute: "fde3ddaf4b19da60e1bc15f22741af9e3ac7082912cde44a7352a1f7d113129c",
+        withoutRoute: "885f2a80dfd7696ddbcf1483ec01035e0a794bf5ab8fb3554b0d404dc048bfd9",
       },
       {
         label: "legacy",

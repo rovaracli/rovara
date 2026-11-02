@@ -6082,7 +6082,8 @@ describe("a review with a second reviewer from another AI company (SR-1)", () =>
     // A version 1 task shows the flag on its page too, asking for the acknowledgement.
     const viewOf = async () => ((await harness.dev(MAYA, "GET", `/v1/dev/tasks/${setup.taskId}?details=true`)).body as { task?: { secondReview?: { lines: string[]; needsAcknowledgement: boolean; acknowledged: boolean } } }).task?.secondReview;
     expect(row().workflow.definitionVersion).toBe("1.0.0");
-    expect(await viewOf()).toEqual({ lines: ["Second review did not run: no allowed model from a different AI company could be used"], needsAcknowledgement: true, acknowledged: false });
+    // The task's owner (the view is built for the owner) is offered "I've seen it" (canAcknowledge).
+    expect(await viewOf()).toEqual({ lines: ["Second review did not run: no allowed model from a different AI company could be used"], needsAcknowledgement: true, acknowledged: false, canAcknowledge: true });
     // A token, and anyone who is not the owner, cannot acknowledge; a wrong candidate is out of date. Nothing is stored.
     expect((await harness.dev(MAYA, "POST", route.replace("/v1/app/", "/v1/dev/"), body)).status).toBeGreaterThanOrEqual(400);
     expect((await web(harness, OMAR, "POST", route, body)).status).toBeGreaterThanOrEqual(400);
