@@ -197,12 +197,93 @@ describe("re-approve: one click", () => {
     await expect(reviewPausedMcpServer(off.deps, admin(), off.entry.serverId)).rejects.toMatchObject({ code: "FORBIDDEN" });
     const w = await world();
     await expect(reapprovePausedMcpServer(w.deps, admin(), w.entry.serverId, summariseProbe(w.state.tools, NOW).toolsHash)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // an address-server that is not paused is not reviewed either
     const http = await proposeMcpServer(w.deps, admin(), { label: "SIM", transport: { kind: "http", address: "https://sim.corp.example/mcp" } });
     await expect(reviewPausedMcpServer(w.deps, admin(), http.serverId)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    // even an address-server that somehow carries the paused status is not re-approved this way
-    await w.deps.store.decide({ orgId: ORG, serverId: http.serverId, from: "awaiting_approval", to: "changed_needs_review", by: "x", at: new Date(NOW).toISOString() });
-    await expect(reviewPausedMcpServer(w.deps, admin(), http.serverId)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(reapprovePausedMcpServer(w.deps, admin(), http.serverId, "a".repeat(64))).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("review B1: an address-based server paused for a tools change is reviewed and re-approved like a package-run one", () => {
+  async function httpWorld(over: { secondAdmin?: boolean; stdio?: boolean } = {}) {
+    const db = new FakeDynamoDb();
+    const vault = new Map<string, string>();
+    const secrets: McpServerSecrets = { put: async (_o, id, value) => { vault.set(id, value); return "v1"; }, read: async (_o, id) => vault.get(id), remove: async (_o, id) => { vault.delete(id); } };
+    const state = { tools: [SEARCH_TOOL, GET_TOOL] as DiscoveredTool[], tokens: [] as Array<string | undefined> };
+    let ids = 0;
+    const deps: McpServerDependencies = {
+      store: dynamoMcpServerStore({ documentClient: db, tableName: "state" }), edition: "enterprise", now: () => NOW, secrets, stdioEnabled: over.stdio ?? false, newId: () => `0000000${++ids}abcd`,
+      prober: { http: async (_address, token) => { state.tokens.push(token); return state.tools; }, stdio: async () => { throw new Error("not used"); } },
+      ...(over.secondAdmin === undefined ? {} : { secondAdminToApprove: over.secondAdmin }),
+    };
+    const entry = await proposeMcpServer(deps, admin("dev1"), { label: "SIM", transport: { kind: "http", address: "https://sim.corp.example/mcp" }, secret: "sim-token-9f" });
+    await approveMcpServer(deps, admin("dev2"), entry.serverId);
+    const pause = async (): Promise<void> => { await deps.store.pause({ orgId: ORG, serverId: entry.serverId, toolsHash: entry.probe.toolsHash, at: new Date(NOW).toISOString() }); };
+    return { deps, state, entry, pause };
+  }
+  it("shows what changed, with the server's own token in the test, and changes nothing; works with package-run servers off", async () => {
+    const w = await httpWorld();
+    await w.pause();
+    w.state.tools = upgraded;
+    const review = await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId);
+    expect(review.diff.added.map((tool) => tool.name)).toEqual(["lookup_page"]);
+    expect(review.diff.changed.map((tool) => tool.name)).toEqual(["get_ticket"]);
+    expect(w.state.tokens.at(-1)).toBe("sim-token-9f");
+    expect((await w.deps.store.get(ORG, w.entry.serverId))!.status).toBe("changed_needs_review");
+  });
+  it("re-approves the tools the admin was shown in one click, stores them, and the server is on the allow-list again", async () => {
+    const w = await httpWorld();
+    await w.pause();
+    w.state.tools = upgraded;
+    const review = await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId);
+    const after = await reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, review.toolsHash);
+    expect(after).toMatchObject({ status: "approved", decidedBy: "dev3" });
+    const stored = (await w.deps.store.get(ORG, w.entry.serverId))!;
+    expect(stored.probe.toolsHash).toBe(review.toolsHash);
+    expect(stored.pausedAt).toBeUndefined();
+    expect(stored.probe.tools.map((tool) => tool.name).sort()).toEqual(["get_ticket", "lookup_page", "search_tickets"]);
+  });
+  it("approves nothing when the tools moved again after the review, when the token cannot be read, for a member, or for the admin who added it under the two-admin setting", async () => {
+    const w = await httpWorld({ secondAdmin: true });
+    await w.pause();
+    w.state.tools = upgraded;
+    const { toolsHash } = await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId);
+    w.state.tools = [SEARCH_TOOL];
+    await expect(reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, toolsHash)).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    w.state.tools = upgraded;
+    await expect(reapprovePausedMcpServer(w.deps, admin("dev1"), w.entry.serverId, toolsHash)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(reapprovePausedMcpServer(w.deps, admin("dev3", "member"), w.entry.serverId, toolsHash)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await w.deps.secrets.remove(ORG, w.entry.serverId);
+    await expect(reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await w.deps.store.get(ORG, w.entry.serverId))!.status).toBe("changed_needs_review");
+  });
+  it("is audited as an approval of an address-based server, with no install pin", async () => {
+    const w = await httpWorld();
+    const events: Array<Record<string, unknown>> = [];
+    w.deps.audit = async (event) => { events.push(event as never); };
+    await w.pause();
+    const review = await reviewPausedMcpServer(w.deps, admin("dev3"), w.entry.serverId);
+    await reapprovePausedMcpServer(w.deps, admin("dev3"), w.entry.serverId, review.toolsHash);
+    const approved = events.find((event) => event.action === "mcp_server.approved")!;
+    expect(approved).toMatchObject({ transport: "http", hasToken: true });
+    expect(approved).not.toHaveProperty("pin");
+  });
+});
+
+describe("review B1: a server that lists more than 100 tools is refused", () => {
+  const many = (count: number): DiscoveredTool[] => Array.from({ length: count }, (_, index) => ({ name: `tool_${String(index).padStart(3, "0")}`, description: "d", inputSchema: { type: "object" } }));
+  it("refuses a proposal of either kind, and the hash covers every tool so a change past the 100th is a change", async () => {
+    const w = await world();
+    const h = await proposeMcpServer({ ...w.deps, prober: { ...w.deps.prober, http: async () => many(101) } }, admin(), { label: "BIG", transport: { kind: "http", address: "https://big.corp.example/mcp" } }).catch((error: unknown) => error);
+    expect(h).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(String((h as Error).message)).toMatch(/more than 100 tools/u);
+    const s = await proposeMcpServer({ ...w.deps, prober: { ...w.deps.prober, stdio: async () => ({ tools: many(101), integrity: INTEGRITY, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) }) } }, admin(), { label: "BIG", transport: PKG }).catch((error: unknown) => error);
+    expect(s).toMatchObject({ code: "CONFIG_INVALID" });
+    const ok = await proposeMcpServer({ ...w.deps, prober: { ...w.deps.prober, http: async () => many(100) } }, admin(), { label: "OK", transport: { kind: "http", address: "https://ok.corp.example/mcp" } });
+    expect(ok.probe.tools).toHaveLength(100);
+    // 101 tools hash differently from the first 100
+    expect(summariseProbe(many(101), NOW).toolsHash).not.toBe(summariseProbe(many(100), NOW).toolsHash);
+    expect(summariseProbe(many(101), NOW).tools).toHaveLength(100);
   });
 });
 
