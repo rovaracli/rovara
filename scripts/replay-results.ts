@@ -2,7 +2,9 @@
 // when a CODE failure would be labelled as an environment fault, or shown as passing. Usage:
 //   npx tsx scripts/replay-results.ts --dir <folder of task snapshots>   (exit 0: clean, 1: a violation or an unreadable file, 2: bad usage)
 // A snapshot is one JSON file per task: { "taskId", "workflow", "facts"?, "evidence"?, "alreadyFailing"?, "planned"? } (what the broker stores plus the facts the auto-fix runner reads); the exporter from staging is
-// separate. The check is made against an INDEPENDENT oracle (the auto-fix code classes and the evidence pack's own regression class, not the result rules), so a mistake in the rules cannot hide itself:
+// produced by scripts/export-replay-tasks.ts (names hashed, no repository content). The check is made against an INDEPENDENT oracle (the auto-fix code classes and the evidence pack's own regression class, not the result rules),
+// so a mistake in the rules cannot hide itself. "Already failing" is judged by the oracle itself, directly from the raw data: the failing tests of the evidence pack against the last nightly's failing list and the maintainers'
+// marks that the exporter kept under "known" (no use of the result rules' own helpers for it); a snapshot without "known" falls back to its "alreadyFailing" list:
 //   - a task with a code signal that the result calls "Blocked by environment" is a violation (the one the owner asked for);
 //   - a task with a code signal that the result calls Verified or Partially verified is a violation too (a code failure shown as passing);
 //   - a snapshot that cannot be read is a violation (nothing is skipped silently).
@@ -16,9 +18,18 @@ import {
   type AutoFixBudget, type AutoFixFacts, type TestingResult, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { testingViewOf } from "../packages/broker/src/rovara-code/testing-section.js";
-import { hasUnconfirmedFailingTest, testCheckFailedBeforeWithoutData, type KnownFailingEntry } from "../packages/broker/src/verification/result.js";
+import type { KnownFailingEntry } from "../packages/broker/src/verification/result.js";
 
 const KnownFailingEntrySchema = z.union([z.string().min(1).max(500), z.object({ name: z.string().min(1).max(500), checkId: z.string().min(1).max(64) }).strict()]);
+/** The raw data "already failing" comes from, as the exporter kept it (names hashed): the last nightly baseline, the maintainers' marks, the branches the task is based on, and the time the rules would have read. */
+export const RawKnownSchema = z.object({
+  now: z.string().datetime(),
+  branches: z.array(z.string().min(1).max(500)).max(20),
+  nightly: z.object({ branch: z.string().min(1).max(500), finishedAt: z.string().datetime(), failedCount: z.number().int().min(0), failed: z.array(z.string().min(1).max(500)).max(500), flaky: z.array(z.string().min(1).max(500)).max(500) }).strict().optional(),
+  marks: z.array(z.object({ name: z.string().min(1).max(500), checkId: z.string().min(1).max(64) }).strict()).max(500),
+}).strict();
+export type RawKnown = z.infer<typeof RawKnownSchema>;
+
 export const ReplaySnapshotSchema = z.object({
   taskId: z.string().min(1).max(100),
   workflow: z.unknown(),
@@ -26,7 +37,9 @@ export const ReplaySnapshotSchema = z.object({
   evidence: z.unknown().optional(),
   alreadyFailing: z.array(KnownFailingEntrySchema).max(2_000).optional(),
   planned: z.object({ fullSuite: z.enum(["not_needed", "pending", "not_run"]).optional(), claimsNeedingRealService: z.array(z.string()).max(100).optional() }).strict().optional(),
+  known: RawKnownSchema.optional(),
 }).strict();
+export type ReplaySnapshot = z.infer<typeof ReplaySnapshotSchema>;
 
 export type ReplayVerdict = TestingResult | "undecided" | "unreadable";
 export interface ReplayRow { taskId: string; verdict: ReplayVerdict; codeSignal: boolean; /** A check that failed on the original code too has a failing test outside the already-failing list, or one the change added. */ suspect: boolean }
@@ -49,26 +62,75 @@ const BUDGET: AutoFixBudget = { enabled: false, dayBudgetHasRoom: false, baselin
 /** Codes whose class is "code" and that are about the tests (a review's findings have their own section, not a test result). */
 const isTestCodeFault = (code: keyof typeof AUTO_FIX_CODE_CLASS): boolean => AUTO_FIX_CODE_CLASS[code] === "code" && code !== "review-findings";
 
-/** A test check that failed on the original code (by the original-code facts) that the evidence pack of THIS code does not name, or there is no such pack: it has no per-test data, so nothing about its failures is confirmed (M2). */
+const WEEK_MS = 7 * 86_400_000;
+const HOUR_MS = 3_600_000;
+const perCheckKey = (checkId: string, name: string): string => `${checkId}\u0000${name}`;
+
+/** The tests the oracle treats as already failing: a name in any check (the nightly's) and a name in one check (a mark). */
+export interface KnownSets { any: ReadonlySet<string>; perCheck: ReadonlySet<string> }
+
+/**
+ * What already fails, as the ORACLE reads it. From the raw data when the snapshot kept it: the last nightly counts only when its failing list is whole, it is not from the future, it is at most 7 days older than the time the rules
+ * read, and its branch is exactly each branch the task is based on; a test the nightly lists as failing is known in any check. The maintainers' marks are known in their own check. (A nightly older than a week whose branch has not
+ * moved is NOT counted here: the export has no way to ask the code host, so this is the stricter reading.) Without raw data, the snapshot's own list.
+ */
+export function knownSetsOf(alreadyFailing: readonly KnownFailingEntry[], raw: RawKnown | undefined): KnownSets {
+  if (raw === undefined) {
+    return { any: new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string")), perCheck: new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [perCheckKey(entry.checkId, entry.name)]))) };
+  }
+  const now = Date.parse(raw.now), nightly = raw.nightly;
+  const finished = nightly === undefined ? Number.NaN : Date.parse(nightly.finishedAt);
+  const counts = nightly !== undefined && nightly.failed.length === nightly.failedCount && raw.branches.length > 0 && raw.branches.every((branch) => branch === nightly.branch)
+    && Number.isFinite(finished) && finished <= now + HOUR_MS && finished >= now - WEEK_MS;
+  return { any: new Set(counts ? nightly.failed : []), perCheck: new Set(raw.marks.map((mark) => perCheckKey(mark.checkId, mark.name))) };
+}
+
+/**
+ * Whether a check that failed on the original code too has a failing test that was NOT failing before, compared directly: the failing tests the pack names for the check against the known sets, and against the tests the change added.
+ * Also unconfirmed: failing tests the pack does not name once each (fewer names than the count, or a name twice), and a TEST check with no per-test failure data at all (a build or import break runs no test).
+ */
+export function hasUnconfirmedFailure(check: z.infer<typeof EvidencePackSchema>["checks"][number], known: KnownSets): boolean {
+  const tests = check.tests;
+  const declared = tests === undefined ? 0 : tests.failed + tests.errored;
+  if (tests === undefined || declared === 0) return check.kind === "test";
+  const failing = tests.names.filter((test) => test.status === "failed" || test.status === "errored").map((test) => test.name);
+  const distinct = new Set(failing);
+  if (failing.length !== declared || distinct.size !== failing.length) return true;
+  const added = new Set(tests.newTests);
+  for (const name of distinct) if (added.has(name) || !(known.any.has(name) || known.perCheck.has(perCheckKey(check.checkId, name)))) return true;
+  return false;
+}
+
+/** The kind of a check by its id, from the task's own check list. Undefined when the list does not name it. */
+function checkKindOf(workflow: WorkflowSnapshot, checkId: string): string | undefined {
+  const policy = workflow.checkPolicy;
+  return [...(policy?.required ?? []), ...(policy?.optional ?? []), ...(policy?.proposed ?? [])].find((entry) => entry.id === checkId)?.kind;
+}
+
+/** A test check that failed on the original code (by the original-code facts) that the evidence pack of THIS code does not name (or there is no pack): it has no per-test data, so nothing about its failures is confirmed (M2). */
 function failedBeforeWithoutData(workflow: WorkflowSnapshot, facts: AutoFixFacts, current: z.infer<typeof EvidencePackSchema> | undefined): boolean {
-  const results = workflow.verification?.candidateDigest === workflow.candidate?.digest ? workflow.verification?.results ?? [] : [];
-  return testCheckFailedBeforeWithoutData(workflow, results.filter((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED" && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run")), current);
+  if (workflow.verification?.candidateDigest !== workflow.candidate?.digest) return false;
+  return (workflow.verification?.results ?? []).some((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED"
+    && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run")
+    && !(current?.checks ?? []).some((check) => check.checkId === result.checkId) && checkKindOf(workflow, result.checkId) === "test");
 }
 
 /** Whether the stored fields show a failure of the code, by the auto-fix code classes and the evidence pack's own regression class (not by the result rules). */
-export function hasCodeSignal(workflow: WorkflowSnapshot, facts: AutoFixFacts, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[] = []): boolean {
+export function hasCodeSignal(workflow: WorkflowSnapshot, facts: AutoFixFacts, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[] = [], raw?: RawKnown): boolean {
   const blocked = workflow.state === "BLOCKED" && (workflow.stage === "VERIFY" || workflow.stage === "REVIEW");
   if (blocked && classifyBlockedWorkflow(workflow, facts).some((signal) => isTestCodeFault(signal.code))) return true;
   const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
+  const known = knownSetsOf(alreadyFailing, raw);
   // Owner decision (M2): a check that failed before with a failing test outside the already-failing list (or one the change added) is the code's fault too.
-  return current?.checks.some((check) => check.after === "failed" && (check.class === "regression" || (check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)))) === true
+  return current?.checks.some((check) => check.after === "failed" && (check.class === "regression" || (check.class === "already_failing" && hasUnconfirmedFailure(check, known)))) === true
     || failedBeforeWithoutData(workflow, facts, current);
 }
 
-/** The suspect checks: failed on the original code too, with a failing test the already-failing list does not show, one the change added, failing tests the pack does not name (or names twice), a test check whose per-test data cannot be read (a compile or import break runs no test), or a check the pack does not cover. */
-export function hasSuspectCheck(workflow: WorkflowSnapshot, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[], facts: AutoFixFacts = {}): boolean {
+/** The suspect checks: failed on the original code too, with a failing test the already-failing data does not show, one the change added, failing tests the pack does not name (or names twice), a test check whose per-test data cannot be read (a compile or import break runs no test), or a check the pack does not cover. */
+export function hasSuspectCheck(workflow: WorkflowSnapshot, evidence: z.infer<typeof EvidencePackSchema> | undefined, alreadyFailing: readonly KnownFailingEntry[], facts: AutoFixFacts = {}, raw?: RawKnown): boolean {
   const current = evidence !== undefined && evidence.candidateDigest === workflow.candidate?.digest ? evidence : undefined;
-  return current?.checks.some((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)) === true || failedBeforeWithoutData(workflow, facts, current);
+  const known = knownSetsOf(alreadyFailing, raw);
+  return current?.checks.some((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailure(check, known)) === true || failedBeforeWithoutData(workflow, facts, current);
 }
 
 /** The classifier under test; the check passes the real one, and a test passes a broken one to prove the check can fail. */
@@ -85,8 +147,8 @@ export function replayOne(raw: unknown, viewOf: ViewOf = testingViewOf): ReplayR
   const facts = (snapshot.data.facts ?? {}) as AutoFixFacts;
   const pack = evidence?.data;
   const known = snapshot.data.alreadyFailing ?? [];
-  const codeSignal = hasCodeSignal(flow, facts, pack, known);
-  const suspect = hasSuspectCheck(flow, pack, known, facts);
+  const codeSignal = hasCodeSignal(flow, facts, pack, known, snapshot.data.known);
+  const suspect = hasSuspectCheck(flow, pack, known, facts, snapshot.data.known);
   const outcome = viewOf({ workflow: flow, facts, budget: BUDGET, evidence: pack, alreadyFailing: known, planned: snapshot.data.planned });
   return { taskId, verdict: outcome.view === undefined ? (outcome.waiting === "unreadable" ? "unreadable" : "undecided") : outcome.view.result, codeSignal, suspect };
 }

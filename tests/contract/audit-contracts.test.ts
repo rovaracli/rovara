@@ -177,9 +177,9 @@ describe("the event catalog", () => {
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // Proof and evidence
-      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged",
+      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged",
       // Team record and lessons (learning v2, R1)
-      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "lesson.mode_changed", "lesson.proposed",
+      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
       "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",
@@ -232,6 +232,7 @@ describe("the event catalog", () => {
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
     "project.known_failing_marked": { target: { kind: "project", name: "web" }, keys: ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"], sample: { cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" } },
+    "project.known_failing_removed": { target: { kind: "project", name: "web" }, keys: ["removal", "testCount", "markEpoch", "testSetSha256", "rowVersionAfter", "totalAfter"], sample: { removal: "undo", testCount: 1, markEpoch: 2, testSetSha256: "b".repeat(64), rowVersionAfter: 4, totalAfter: 2 } },
     "company.known_failing_policy_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["fromAlwaysTwo", "toAlwaysTwo"], sample: { fromAlwaysTwo: true, toAlwaysTwo: false } },
     "company.known_failing_policy_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["fromAlwaysTwo", "toAlwaysTwo", "mode"], sample: { fromAlwaysTwo: false, toAlwaysTwo: true, mode: "direct" } },
     "company.known_failing_policy_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },

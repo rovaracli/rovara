@@ -1,6 +1,6 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
 import { describe, expect, it } from "vitest";
-import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
 import { nightlyHealthListener, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
 import { NIGHTLY_ENVIRONMENT_CAUSES, NIGHTLY_HEALTH_STEPS, NIGHTLY_UNCLEAR_CAUSES } from "../../packages/broker/src/test-env/nightly-health.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
@@ -11,6 +11,8 @@ import {
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeSchedulerClient } from "../support/fake-scheduler.js";
+import { recordNightlyResultWithHealth } from "../../packages/broker/src/test-env/health-wiring.js";
+import { knownFailingKey, readKnownFailingRow } from "../../packages/broker/src/test-env/known-failing.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;
 const PROJECT = "partner-service";
@@ -471,5 +473,38 @@ describe("SH28: recording a night drives the project health, only while nh is on
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
     expect(p.opened).toHaveLength(0);
     expect((await readNightlyBaseline(h.deps, ORG, PROJECT))?.headSha).toBe(HEAD1);
+  });
+});
+
+describe("a recorded night and the known-failing marks (KF-1)", () => {
+  const markOf = (name: string) => ({ name, checkId: "unit", markedBy: "dev_a", markedAt: "2026-11-01T00:00:00.000Z", epoch: 1 });
+  // The step words of a healthy night (every setup step passed; the result fixture is 10 tests: 7 passed, 2 failed, 1 skipped).
+  const stepWords = { steps: NIGHTLY_STEP_WORDS.map((step) => ({ step, status: "passed" })), checks: [{ runsTests: true, started: true, timedOut: false, reportApproved: true, reportWritten: true, testsCollected: 10 }], tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 } };
+  async function recorded(env: NodeJS.ProcessEnv, over: Record<string, unknown> = { health: stepWords }) {
+    const h = await harness();
+    h.db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", definition: { name: PROJECT, revision: 1, repositories: [{ name: "svc", url: "https://github.com/acme/svc.git", path: "repo/svc", defaultBranch: "main" }] } });
+    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", orgId: ORG, project: PROJECT, version: 2, updatedAt: "2026-11-01T00:00:00.000Z", marks: [markOf("tests/test_x.py::bad1"), markOf("tests/test_y.py::flaky1"), markOf("tests/test_a.py::t1")] });
+    const started = await handleNightlyFire(h.deps, h.fire());
+    if (started.outcome !== "started") throw new Error("not started");
+    const data = result(started.slotId, over);
+    await recordNightlyResultWithHealth(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap }, env);
+    return (await readKnownFailingRow(h.deps, ORG, PROJECT))!;
+  }
+  it("with vx on, recording a healthy night takes off the marks it shows passing and keeps those it lists failing or flaky", async () => {
+    const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" });
+    expect(row.marks.map((m) => m.name)).toEqual(["tests/test_x.py::bad1", "tests/test_y.py::flaky1"]);
+    expect(row.version).toBe(3);
+  });
+  it("a night that carries no step words never takes a mark off, even with vx on", async () => {
+    const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" }, {});
+    expect(row.marks).toHaveLength(3);
+    expect(row.version).toBe(2);
+  });
+  it("with vx off the same night leaves the list exactly as it was", async () => {
+    for (const env of [{}, { VERIFY_RESULTS_ENABLED: "true" }]) {
+      const row = await recorded(env);
+      expect(row.marks).toHaveLength(3);
+      expect(row.version).toBe(2);
+    }
   });
 });

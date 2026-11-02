@@ -66,12 +66,14 @@ export function resultWords(result: SetupApplyResultItem): string {
     case "managed_by_file": return "The meta repo's config file manages this. Change it there.";
     case "unknown_item": return "This proposal has no such item.";
     case "failed": return "Rovara couldn't apply this item.";
+    case "checking": return result.message ?? "Checking these commands on a fresh machine. Nothing is saved until they pass.";
+    case "check_failed": return result.message ?? "These commands did not pass the check, so nothing was saved.";
     default: return result.message ?? "Rovara can't set this up from here yet.";
   }
 }
 
 export function ProposalReview({ project, response, busy, results, onApply }: {
-  project: string; response: Ready; busy: boolean; results: SetupApplyResponse["results"] | undefined; onApply: (items: Choice[]) => void;
+  project: string; response: Ready; busy: boolean; results: SetupApplyResponse["results"] | undefined; onApply: (items: Choice[], checkAgain?: boolean) => void;
 }) {
   const host = useAppHost();
   const { proposal } = response;
@@ -109,6 +111,7 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
         {card?.state === "approved" && <><p role="status">Approved.</p><Button variant="primary" busy={busy} onClick={() => onApply([{ id: item.id }])}>Apply now</Button></>}
       </div>}
       {result !== undefined && <p role="status" className="rv-proposal-result"><VisibleText text={resultWords(result)} /></p>}
+      {result?.reason !== undefined && <p role="alert" className="rv-proposal-result"><VisibleText text={result.reason} /></p>}
     </li>;
   }
 
@@ -121,6 +124,7 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
     })}
     {proposal.flaggedCommands.length > 0 && <fieldset><legend>Commands Rovara will not propose</legend><p>These download and run a script. They are shown so you can see what the repository asks for, and cannot be applied.</p><ul>{proposal.flaggedCommands.map((flagged, index) => <li key={index}><code><VisibleText text={flagged.command} /></code> <VisibleText text={flagged.reason} /></li>)}</ul></fieldset>}
     {proposal.foundNotUsed.length > 0 && <fieldset><legend>Found, not used</legend><ul>{proposal.foundNotUsed.map((found, index) => <li key={index}><VisibleText text={`${found.kind === "hook" ? "Hooks" : "MCP server config"} in ${found.repo}/${found.path}`} />: {found.kind === "hook" ? "found, not run" : "found, not connected. Ask an administrator to connect a source."}</li>)}</ul></fieldset>}
-    <Button variant="primary" busy={busy} disabled={chosen.length === 0} onClick={() => onApply(chosen.map((item) => ({ id: item.id, ...(replace[item.id] === true ? { useSuggestion: true } : {}) })))}>Apply selected</Button>
+    {!busy && results?.some((result) => result.outcome === "check_failed") === true && chosen.length > 0 && <Button busy={busy} onClick={() => onApply(chosen.map((item) => ({ id: item.id, ...(replace[item.id] === true ? { useSuggestion: true } : {}) })), true)}>Check again</Button>}
+    <Button variant="primary" busy={busy} disabled={chosen.length === 0} onClick={() => onApply(chosen.map((item) => ({ id: item.id, ...(replace[item.id] === true ? { useSuggestion: true } : {}) })))}>{chosen.some((item) => item.kind === "setup" || item.kind === "tests") ? "Check and apply" : "Apply selected"}</Button>
   </div>;
 }

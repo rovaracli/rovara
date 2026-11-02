@@ -238,6 +238,8 @@ export const SetupApplyBodySchema = z.object({
   requestId: z.string().uuid(),
   expectedRevision: z.number().int().positive(),
   items: z.array(z.object({ id: ItemId, useSuggestion: z.boolean().optional() }).strict()).min(1).max(SETUP_APPLY_ITEMS_MAX),
+  /** True only when the person asks to run the check of these commands again after it failed (without it, a failed check for the same commands and settings is shown again, not re-run). */
+  checkAgain: z.boolean().optional(),
 }).strict().superRefine((body, context) => {
   const seen = new Set<string>();
   for (const [index, item] of body.items.entries()) {
@@ -247,7 +249,8 @@ export const SetupApplyBodySchema = z.object({
 });
 export type SetupApplyBody = z.infer<typeof SetupApplyBodySchema>;
 
-export const SETUP_APPLY_OUTCOMES = ["applied", "already_set", "kept_yours", "approval_needed", "website_proposal", "not_available", "managed_by_file", "unknown_item", "failed"] as const;
+/** `checking`: the commands are being run on a fresh machine and nothing is saved yet; `check_failed`: they did not pass, so nothing was saved. */
+export const SETUP_APPLY_OUTCOMES = ["applied", "already_set", "kept_yours", "approval_needed", "website_proposal", "not_available", "managed_by_file", "unknown_item", "failed", "checking", "check_failed"] as const;
 export type SetupApplyOutcome = (typeof SETUP_APPLY_OUTCOMES)[number];
 
 export const SetupApplyResultItemSchema = z.object({
@@ -256,6 +259,8 @@ export const SetupApplyResultItemSchema = z.object({
   outcome: z.enum(SETUP_APPLY_OUTCOMES),
   /** Fixed words, never the model's or a repository's. */
   message: z.string().max(300).optional(),
+  /** `check_failed`: why the check of the commands did not pass or did not start (a redacted one-liner from the check, never a model's text). */
+  reason: z.string().max(400).optional(),
   /** `approval_needed`: the card for this one item. */
   approval: z.object({ approvalId: z.string().min(1).max(200), confirmUrl: z.string().max(2_048) }).strict().optional(),
   /** `website_proposal`: the domains to carry to the website proposal flow. */
