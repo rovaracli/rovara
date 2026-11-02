@@ -885,6 +885,15 @@ export const slackAskRefusalContext = (words: string): string => `This question 
 export const SLACK_ASK_NOT_ALLOWED_WORDS = "This question can't be answered here.";
 
 /**
+ * Whether an answer is one of the fixed refusal sentences a refused question is answered with (LA-6, N5). Such a question is not an Ask: no rate was spent for it, so it is neither recorded nor counted.
+ * The model is told to reply with exactly the sentence; quotes and spacing round it are ignored, nothing else is.
+ */
+export function isSlackAskRefusalAnswer(answer: string): boolean {
+  const said = answer.trim().replace(/^["'\u201c\u201d\u2018\u2019`]+|["'\u201c\u201d\u2018\u2019`]+$/gu, "").trim().toLowerCase();
+  return [SLACK_ASK_NOT_ALLOWED_WORDS, ASK_RATE_TEXT].some((words) => said === words.toLowerCase());
+}
+
+/**
  * Task mode for the chat agent in a Slack-started task's own thread: a read-only view. No repositories, connectors or actions, no operation and no compute (nothing is created, prepared or
  * charged); `taskContext` is the broker's untrusted-data text about the task. Undefined (the thread stays closed) when the task is closed or its context cannot be built.
  *
@@ -927,6 +936,12 @@ async function taskAnswerWorkspace(
   const developerId = await linkedRequester(dependencies, orgId, requester);
   const context = await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, ...(developerId === undefined ? {} : { asker: { developerId } }) }, shared.taskId, slackAsk.readers);
   if (context === undefined) return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
+  // A page-comment answer whose section is gone is not answered, and spends nothing: the section is read before the rates are taken (LA-5, M3).
+  let section: string[] | undefined;
+  if (commentId !== undefined) {
+    section = await taskCommentSection({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions }, shared.taskId, commentId);
+    if (section === undefined) return undefined;
+  }
   try {
     await takeSlackAskRates(slackAsk.ask, task, developerId ?? slackAskerKey(thread.teamId, requester.userId));
   } catch (error) {
@@ -937,9 +952,7 @@ async function taskAnswerWorkspace(
     throw error;
   }
   let taskContext = context.text;
-  if (commentId !== undefined) {
-    const section = await taskCommentSection({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions }, shared.taskId, commentId);
-    if (section === undefined) return undefined;
+  if (section !== undefined) {
     // The answer is shown on the task page, not in the thread: the context says so (the audience's limits are the Slack tier's all the same).
     taskContext = [taskContext.replace(/^This Slack thread is an AgentX task/u, "This is an AgentX task"), ...section].join("\n");
   }
@@ -968,7 +981,7 @@ export async function markThreadNoteAnswered(dependencies: AwsBrokerDependencies
   if (outcome === "missing") throw agentXError("NOT_FOUND", "that reply was not saved for this task");
   // Live interaction A3: with the Ask switch on, the question is kept as an Ask (rates were spent when its context was built) and audited. The answer is already in the thread: nothing here can fail it.
   const slackAsk = dependencies.slackAsk?.ask;
-  if (slackAsk !== undefined && body.ask !== undefined && identity.orgId !== undefined) {
+  if (slackAsk !== undefined && body.ask !== undefined && identity.orgId !== undefined && !isSlackAskRefusalAnswer(body.ask.answer)) {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(body.taskId));
     const askedBy = await linkedRequester(dependencies, identity.orgId, identity.slack.requester);
     if (task !== undefined) await recordSlackAsk(slackAsk, { task, messageTs: body.messageTs, askedBy, question: body.ask.question, answer: body.ask.answer, contextBytes: body.ask.contextBytes ?? 0 });

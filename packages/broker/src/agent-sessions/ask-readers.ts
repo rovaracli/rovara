@@ -12,6 +12,7 @@ import { personLabel, readWorkflowThreadNotes } from "../aws/developer-tasks/thr
 import type { AskContextReaders } from "./ask-context.js";
 import { createAskDiffReader, type AskPullRequestDiffPort } from "./ask-diff.js";
 import type { PeekClient } from "./peek-client.js";
+import { loadTaskPeople } from "../developer/task-people.js";
 
 export interface AskReaderDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -96,6 +97,19 @@ async function failingCheckTails(deps: AskReaderDependencies, task: DeveloperTas
   return tails;
 }
 
+/**
+ * The members who may speak in the task's thread without being its owner (the task's co-owners and the others on its People list, not those it denies), by their Slack user id. A Slack reply by one of them
+ * is a teammate's information note, not outsider text (LA-5, M7). A list that cannot be read names no one: everyone but the owner stays outsider text, as before.
+ */
+async function listedMembersBySlackId(deps: AskReaderDependencies, task: DeveloperTaskRecord): Promise<Map<string, string>> {
+  try {
+    const people = await loadTaskPeople(deps as never, task.taskId);
+    return new Map((people?.people ?? []).filter((person) => person.role !== "denied").map((person) => [person.slackUserId, person.developerId]));
+  } catch {
+    return new Map();
+  }
+}
+
 export function createAskReaders(deps: AskReaderDependencies): AskContextReaders {
   return {
     async timeline(task, tier) {
@@ -114,16 +128,20 @@ export function createAskReaders(deps: AskReaderDependencies): AskContextReaders
     async notes(task) {
       const owner = effectiveTaskOwner(task).developerId;
       const notes = await readWorkflowThreadNotes(deps, task.taskId, undefined, { includeAnswered: true });
+      const members = await listedMembersBySlackId(deps, task);
       return notes.flatMap((note) => {
         if (note.source === "app" || note.source === "linear") return [{ authorLabel: personLabel(note.developerId), authority: note.isOwner ? "owner_instruction" as const : "information" as const, text: note.text }];
-        // A Slack reply by the task's owner is the owner's; anyone else's is outsider text (see `outsider`).
-        return note.isOwner ? [{ authorLabel: personLabel(owner), authority: "owner_instruction" as const, text: note.text }] : [];
+        // A Slack reply by the task's owner is the owner's; one by another member on its People list is a teammate's information (M7); anyone else's is outsider text (see `outsider`).
+        if (note.isOwner) return [{ authorLabel: personLabel(owner), authority: "owner_instruction" as const, text: note.text }];
+        const member = "slackUserId" in note ? members.get(note.slackUserId) : undefined;
+        return member === undefined ? [] : [{ authorLabel: personLabel(member), authority: "information" as const, text: note.text }];
       });
     },
     async outsider(task: DeveloperTaskRecord, sources) {
       if (!sources.includes("slack_thread")) return [];
       const notes = await readWorkflowThreadNotes(deps, task.taskId, undefined, { includeAnswered: true });
-      return notes.flatMap((note) => (note.source === "app" || note.source === "linear" || note.isOwner ? [] : [{ source: "slack_thread" as const, text: note.text }]));
+      const members = await listedMembersBySlackId(deps, task);
+      return notes.flatMap((note) => (note.source === "app" || note.source === "linear" || note.isOwner || ("slackUserId" in note && members.has(note.slackUserId)) ? [] : [{ source: "slack_thread" as const, text: note.text }]));
     },
   };
 }

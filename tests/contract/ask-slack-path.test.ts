@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as AskService from "../../packages/broker/src/aws/broker/ask-service.js";
 import { ASK_RATE, orgBanKey, orgRemovedKey, projectMemberKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
+import { SLACK_ASK_NOT_ALLOWED_WORDS, isSlackAskRefusalAnswer, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";
 import { ASK_RATE_TEXT, slackAskerKey } from "../../packages/broker/src/agent-sessions/ask.js";
 import { createSingleAnswerPlanBroker, seedMembership, teammate } from "../support/developer-task-broker.js";
@@ -218,6 +218,57 @@ describe("a question in a task's thread with the Ask switch on", () => {
     const sessionless = await planWaiting("1695500000.000146");
     sessionless.harness.db.set({ ...sessionless.harness.db.get(`DEVTASK#${sessionless.taskId}`, "META")!, sessionId: undefined });
     expect(await contextOf(sessionless)).toBe(refused(SLACK_ASK_NOT_ALLOWED_WORDS));
+  });
+
+  describe("a refused question is not an Ask (LA-6, N5), and a missing comment spends nothing (LA-5, M3)", () => {
+    const asks = (t: Awaited<ReturnType<typeof planWaiting>>) => t.harness.db.find((item) => item.entityType === "ASK" && item.audience === "slack");
+    const rateCount = (t: Awaited<ReturnType<typeof planWaiting>>) => {
+      const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META")! as { orgId: string };
+      return (t.harness.db.get(sessionRateKey(task.orgId as never, "ses_aaaaaaaaaaaaaaaaaaaa", "task", "ask_day")) as { count?: number } | undefined)?.count ?? 0;
+    };
+    const answered = (t: Awaited<ReturnType<typeof planWaiting>>, threadTs: string, messageTs: string, answer: string) =>
+      teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/tasks/thread-notes/answered", { taskId: t.taskId, messageTs, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, ask: { question: "what is left?", answer } });
+    const note = (t: Awaited<ReturnType<typeof planWaiting>>, threadTs: string, messageTs: string) => t.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: t.taskId, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, userId: "U0TEAMMATE1", messageTs, eventId: `Ev${messageTs}`, text: "what is left?" });
+
+    it("recognises the two fixed sentences (with quotes or spacing round them) and nothing else", () => {
+      for (const words of [SLACK_ASK_NOT_ALLOWED_WORDS, ASK_RATE_TEXT]) {
+        expect(isSlackAskRefusalAnswer(words)).toBe(true);
+        expect(isSlackAskRefusalAnswer(`  "${words}"\n`)).toBe(true);
+        expect(isSlackAskRefusalAnswer(`\u201c${words}\u201d`)).toBe(true);
+        expect(isSlackAskRefusalAnswer(words.toUpperCase())).toBe(true);
+      }
+      for (const other of ["", "The retry limit is 9.", `${SLACK_ASK_NOT_ALLOWED_WORDS} Also, the retry limit is 9.`, "This question can't be answered."]) expect(isSlackAskRefusalAnswer(other), other).toBe(false);
+    });
+
+    it("an answer that is the rate sentence or the 'can't be answered here' sentence is neither recorded nor counted, and a real answer is (the control)", async () => {
+      const threadTs = "1695500000.000190";
+      const t = await planWaiting(threadTs);
+      // Past the hourly limit the asker is told the rate sentence; the service then marks the note answered, with that sentence as the answer.
+      for (let index = 0; index < ASK_RATE.perPersonPerHour; index += 1) await contextOf(t);
+      expect(await contextOf(t)).toBe(refused(ASK_RATE_TEXT));
+      const spent = rateCount(t);
+      expect(JSON.parse((await note(t, threadTs, "1695500003.000001")).body)).toMatchObject({ outcome: "captured" });
+      expect((await answered(t, threadTs, "1695500003.000001", ASK_RATE_TEXT)).status).toBe(200);
+      expect(asks(t)).toEqual([]);
+      expect(rateCount(t)).toBe(spent);
+      expect(JSON.parse((await note(t, threadTs, "1695500003.000002")).body)).toMatchObject({ outcome: "captured" });
+      expect((await answered(t, threadTs, "1695500003.000002", `"${SLACK_ASK_NOT_ALLOWED_WORDS}"`)).status).toBe(200);
+      expect(asks(t)).toEqual([]);
+      // Control: a question that was answered is recorded.
+      expect(JSON.parse((await note(t, threadTs, "1695500003.000003")).body)).toMatchObject({ outcome: "captured" });
+      expect((await answered(t, threadTs, "1695500003.000003", "Only the tests are left.")).status).toBe(200);
+      expect(asks(t).length).toBeGreaterThan(0);
+    });
+
+    it("a page comment that is gone is not answered and spends no rate; one that is there spends one", async () => {
+      const t = await planWaiting("1695500000.000191");
+      const before = rateCount(t);
+      const gone = await teammate(t.harness.handler, t.subject, "U0TEAMMATE1", "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), ...TASK_REQUEST, taskAnswer: { taskId: t.taskId, commentId: randomUUID() } });
+      expect(gone.body.taskContext).toBeUndefined();
+      expect(rateCount(t)).toBe(before);
+      await contextOf(t);
+      expect(rateCount(t)).toBe(before + 1);
+    });
   });
 
   it("gives the channel file names and counts only, never patch text", async () => {

@@ -19,7 +19,7 @@ const policy = { required: [{ id: "unit", label: "Unit tests", command: { progra
 
 function world(options: { withReport?: boolean } = {}) {
   const db = new FakeDynamoDb();
-  const task = { pk: `DEVTASK#${TASK_ID}`, sk: "META", taskId: TASK_ID, orgId: ORG, sessionId: SESSION, workspaceId: WORKSPACE, title: "Fix retry", project: "payments", ownerKey: "o".repeat(64),
+  const task = { pk: `DEVTASK#${TASK_ID}`, sk: "META", taskId: TASK_ID, orgId: ORG, sessionId: SESSION, workspaceId: WORKSPACE, title: "Fix retry", project: "payments", ownerKey: "o".repeat(64), developerId: "d".repeat(64), developerName: "Maya Chen",
     workflow: { revision: 5, stage: "REVIEW", state: "BLOCKED", checkPolicy: policy, artifacts: [], decisions: [], pullRequests: [] } };
   db.set(task);
   if (options.withReport !== false) {
@@ -123,5 +123,37 @@ describe("the agent's last tool events (LA-3)", () => {
     const web = await askContext(deps, { audience: "web", orgId: ORG, developerId: "d".repeat(64) }, TASK_ID, readers);
     expect(web?.text).toContain("Started read_file");
     expect(web?.text).toContain("Failed run_command");
+  });
+});
+
+describe("a Slack reply by a member who is not the owner (LA-5, M7)", () => {
+  const slackNote = (slackUserId: string, messageTs: string, text: string, isOwner = false) => ({
+    pk: `DEVTASK#${TASK_ID}`, sk: `NOTE#${messageTs}`, entityType: "THREAD_NOTE", schemaVersion: 1, source: "slack", taskId: TASK_ID, slackUserId, isOwner, teamId: "T0123456789", channelId: "C0123456789",
+    threadTs: "1700000000.000100", messageTs, eventId: `Ev${messageTs}`, text, truncated: false, receivedAt: `2026-11-02T10:00:${messageTs.slice(-2)}.000Z`, workflowRevision: 1,
+  });
+  const people = (db: FakeDynamoDb, entries: Array<{ developerId: string; slackUserId: string; role: string }>) =>
+    db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: entries.map((entry) => ({ ...entry, name: `Name ${entry.slackUserId}` })) });
+  const CO_OWNER = { developerId: "c".repeat(64), slackUserId: "U0COOWNER01", role: "owner" };
+
+  it("is a teammate's information note, not outsider text, when the person is on the task's People list; anyone else stays outsider text; a denied person is outsider text too", async () => {
+    const { db, readers, task } = world();
+    people(db, [CO_OWNER, { developerId: "e".repeat(64), slackUserId: "U0DENIED001", role: "denied" }]);
+    db.set(slackNote("U0COOWNER01", "1700000001.000011", "CO-OWNER-WORDS"));
+    db.set(slackNote("U0STRANGER1", "1700000001.000012", "STRANGER-WORDS"));
+    db.set(slackNote("U0DENIED001", "1700000001.000013", "DENIED-WORDS"));
+    const notes = (await readers.notes!(task as never)) ?? [];
+    expect(notes).toEqual([expect.objectContaining({ authority: "information", text: "CO-OWNER-WORDS", authorLabel: expect.stringMatching(/^person p_[0-9a-f]{6}$/u) as string })]);
+    const outsider = (await readers.outsider!(task as never, ["slack_thread"])) ?? [];
+    expect(outsider.map((item) => item.text).sort()).toEqual(["DENIED-WORDS", "STRANGER-WORDS"]);
+    // The member's words are in exactly one place.
+    expect(outsider.map((item) => item.text)).not.toContain("CO-OWNER-WORDS");
+  });
+
+  it("with a People list that cannot be read, everyone but the owner stays outsider text", async () => {
+    const { db, readers, task } = world();
+    db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 99, revision: 1, orphaned: false, people: "broken" });
+    db.set(slackNote("U0COOWNER01", "1700000001.000011", "CO-OWNER-WORDS"));
+    expect(await readers.notes!(task as never)).toEqual([]);
+    expect(((await readers.outsider!(task as never, ["slack_thread"])) ?? []).map((item) => item.text)).toEqual(["CO-OWNER-WORDS"]);
   });
 });
