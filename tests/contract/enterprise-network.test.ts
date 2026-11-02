@@ -124,6 +124,20 @@ describe("the Enterprise edition's network", () => {
     expect(cloudAllow.Domains).toContain("github.com");
   });
 
+  it("review M6: an install with package-run servers lets the controller, the registry and the ECS API through the DNS firewall; without them the list is the plain Enterprise one", () => {
+    const names = ["controller.mcp.rovara.internal", "ecs.us-east-1.amazonaws.com", "registry.corp.example.net"];
+    const allowOf = (template: Template): string[] => resourcesOf(template, "AWS::Route53Resolver::FirewallDomainList").map(([, list]) => list.Properties as { Name: string; Domains?: string[] }).find((list) => list.Name.endsWith("-allow"))!.Domains ?? [];
+    const withMcp = allowOf(foundation({ ...ENTERPRISE, stdioMcpAllowDomains: names }));
+    expect(withMcp).toEqual(expect.arrayContaining(names));
+    expect(withMcp.filter((name) => !names.includes(name)).sort()).toEqual(enterpriseAllowDomains("us-east-1").filter((name) => !names.includes(name)).sort());
+    expect(withMcp.filter((name) => name === "ecs.us-east-1.amazonaws.com")).toHaveLength(1);
+    expect(allowOf(foundation(ENTERPRISE))).toEqual(enterpriseAllowDomains("us-east-1"));
+    expect(allowOf(foundation(ENTERPRISE))).not.toContain("ecs.us-east-1.amazonaws.com");
+    // Enterprise only, and only plain names
+    expect(() => foundation({ env: "staging", cloud: true, edition: "public", stdioMcpAllowDomains: names })).toThrow(/Enterprise/u);
+    for (const bad of ["*.example.com", "https://x.example.com", "", "x y", "a".repeat(260)]) expect(() => foundation({ ...ENTERPRISE, stdioMcpAllowDomains: [bad] }), bad).toThrow(/package-run/u);
+  });
+
   it("builds with no internet route by default, and keeps the NAT gateways only when asked", () => {
     expect(resourcesOf(template, "AWS::EC2::NatGateway")).toHaveLength(0);
     expect(resourcesOf(template, "AWS::EC2::EIP")).toHaveLength(0);

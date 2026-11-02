@@ -213,6 +213,15 @@ describe("T12: the release flag for package-run servers", () => {
     expect(lock).toBeGreaterThan(parse);
     expect(lock).toBeLessThan(source.indexOf('new ControlPlaneStack(app, "AgentXControlPlane"'));
   });
+  it("review M6: the app gives the foundation the host's DNS names only when package-run servers are requested, after the lock, and builds them from the install's own settings", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile("infra/lib/app.ts", "utf8");
+    const lock = source.indexOf("assertStdioHostStackBuilt(privateMcp);");
+    const props = source.indexOf("const mcpHostProps = privateMcp.stdioRequested ? mcpHostPropsFromInstall(privateMcp) : undefined;");
+    expect(props).toBeGreaterThan(lock);
+    expect(props).toBeLessThan(source.indexOf('new ProductionFoundationStack(app, "AgentXProductionFoundation"'));
+    expect(source).toContain("mcpHostProps === undefined ? {} : { stdioMcpAllowDomains: mcpHostAllowDomains({ controllerDnsNamespace: mcpHostProps.controllerDnsNamespace, npmRegistry: mcpHostProps.npmRegistry,");
+  });
   it("past the flag, a build without the host's stack still stops synth, rather than point the broker at a host that does not exist", () => {
     const released = parsePrivateMcpContext({ ...ENT, stdioReleased: true, get: context(asked) });
     expect(() => assertStdioHostStackBuilt(released)).toThrow(/does not yet contain the MCP host's stack/u);
