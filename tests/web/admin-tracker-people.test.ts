@@ -18,9 +18,10 @@ const features = { localAgents: false, admin: true, usage: false, chains: false,
 const SAM = "b".repeat(64), PRIYA = "c".repeat(64);
 const members = [{ developerId: SAM, name: "Sam Kerr", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" }, { developerId: PRIYA, name: "Priya Rao", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" }];
 const people = {
-  unmatched: [{ tool: "Linear", system: "linear", sourceId: "lin-sam", displayName: "Sam K" }, { tool: "Jira", system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine <b>bold</b>" }],
-  linked: [{ tool: "Linear", system: "linear", sourceId: "lin-priya", displayName: "Priya R", developerId: PRIYA, via: "admin" }],
+  unmatched: [{ tool: "Linear", system: "linear", sourceId: "lin-sam", displayName: "Sam K", reason: "no_verified_domains" }, { tool: "Jira", system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine <b>bold</b>" }],
+  linked: [{ tool: "Linear", system: "linear", sourceId: "lin-priya", displayName: "Priya R", developerId: PRIYA, via: "admin" }, { tool: "Linear", system: "linear", sourceId: "lin-auto", displayName: "Auto A", developerId: SAM, via: "auto", why: "domain_company_account_exact_email" }],
   truncated: false,
+  autoLink: { enabled: false, verifiedDomainsRecorded: false },
 };
 function mount(options: { role?: "owner" | "admin" | "member"; respond?: (request: ApiRequest) => Promise<ApiResponse | undefined> } = {}) {
   const role = options.role ?? "owner";
@@ -74,7 +75,7 @@ it("unmaps a matched person", async () => {
   const f = mount();
   await screen.findByText("Priya R");
   f.request.mockImplementation(async request => (request.method === "POST" ? { status: 200, body: { status: "unmapped" } } : { status: 200, body: request.path === "/v1/app/org/tracker-people" ? people : request.path === "/v1/app/org/members" ? { members } : {} }));
-  fireEvent.click(screen.getByRole("button", { name: "Unmap" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Unmap" })[0]!);
   await waitFor(() => expect(posts(f)).toHaveLength(1));
   expect(posts(f)[0]!.body).toMatchObject({ action: "unmap", system: "linear", sourceId: "lin-priya" });
   await screen.findByText(/Took away the mapping of Priya R/);
@@ -101,4 +102,27 @@ it("a member does not get the page; a company without the Team record is told so
   const off = mount({ respond: async request => (request.path === "/v1/app/org/tracker-people" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } } : undefined) });
   await screen.findByText("Tracker people are not turned on for this company.");
   off.close();
+});
+
+it("shows, for each person not linked, why not; and for a person linked automatically, why they were", async () => {
+  const f = mount();
+  await screen.findByText("Sam K");
+  expect(screen.getAllByText(/no verified sign-in domains recorded/).length).toBeGreaterThan(0);
+  expect(screen.getByText("Not checked yet")).toBeTruthy();
+  expect(screen.getByText(/Linked automatically: Verified domain, company-controlled account, exact email match/)).toBeTruthy();
+  expect(screen.getByText(/Automatic linking is off\./)).toBeTruthy();
+  f.close();
+});
+
+it("turns automatic linking on with one request carrying a request id, and says so; it explains the three conditions and what turning it off does", async () => {
+  const f = mount();
+  await screen.findByText("Sam K");
+  expect(screen.getByText(/Turning it off stops new automatic links; people already linked stay until you unmap them/)).toBeTruthy();
+  f.request.mockImplementation(async request => (request.method === "POST" ? { status: 200, body: { status: "auto_link_on" } } : { status: 200, body: request.path === "/v1/app/org/tracker-people" ? people : { members } }));
+  fireEvent.click(screen.getByRole("button", { name: "Turn automatic linking on" }));
+  await waitFor(() => expect(posts(f)).toHaveLength(1));
+  expect(posts(f)[0]!.body).toMatchObject({ action: "auto_link", enabled: true });
+  expect((posts(f)[0]!.body as { requestId: string }).requestId).toMatch(/^[0-9a-f-]{36}$/);
+  await screen.findByText("Automatic linking is on.");
+  f.close();
 });

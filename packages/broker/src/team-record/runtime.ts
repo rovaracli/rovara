@@ -42,8 +42,9 @@ import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
+import { autoLinkEnabled, setAutoLinkEnabled, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { markSyncDue, syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
-import { auditOccurrence, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
+import { auditOccurrence, auditRecordTrackerAutolinkChanged, auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
 import { priorEditsPort } from "./prior-edits.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
@@ -103,6 +104,11 @@ export interface TeamRecordRuntimeInput {
    * has not connected a tool has nothing here for it, and nothing is read for it.
    */
   trackers?: ConnectedTrackersPort;
+  /**
+   * The domains the company has verified for its Rovara sign-in (condition 1 of the opt-in automatic linking). No install records such a list today, so nothing supplies it and the answer is always "none recorded": no
+   * person is linked by themselves, and nothing is guessed from members' emails.
+   */
+  verifiedDomains?: VerifiedDomainsPort;
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -136,7 +142,9 @@ export interface TeamRecordRuntime {
    */
   readonly trackerPeople: {
     /** Tool users nobody is linked to (display name and tool id only) and the ones linked (so an admin can unmap one). */
-    list(orgId: OrgId): Promise<{ unmatched: UnmatchedTrackerUser[]; linked: LinkedTrackerUser[]; truncated: boolean }>;
+    list(orgId: OrgId): Promise<{ unmatched: UnmatchedTrackerUser[]; linked: LinkedTrackerUser[]; truncated: boolean; autoLink: { enabled: boolean; verifiedDomainsRecorded: boolean } }>;
+    /** Turns the company's automatic linking on or off (off by default). Audited first; the request id is bound to the change. Turning it on marks the org's connected tools due; turning it off stops NEW automatic links only. */
+    setAutoLink(orgId: OrgId, input: { enabled: boolean; by: string; requestId: string }): Promise<"set" | "audit_unavailable" | "request_reused">;
     /** Maps an unmatched tool user to a member of the SAME org. `audit_unavailable` when the audit event cannot be written (nothing is changed then). */
     map(orgId: OrgId, input: TrackerLink & { developerId: string; by: string; requestId: string }): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable" | "request_reused">;
     unmap(orgId: OrgId, input: TrackerLink & { by: string; requestId: string }): Promise<"unmapped" | "not_found" | "audit_unavailable" | "request_reused">;
@@ -886,13 +894,13 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   // ---- tracker people: the automatic link through the connected app's user list, and the admin's mapping of the rest
   const membership = { orgOfDeveloper: orgOfDeveloper };
-  const linkVerified = (orgId: OrgId, link: Parameters<TeamRecordRuntime["links"]["linkByVerifiedEmail"]>[1] & { displayName?: string }) =>
+  const linkVerified = (orgId: OrgId, link: Parameters<TeamRecordRuntime["links"]["linkByVerifiedEmail"]>[1] & { displayName?: string; via?: "auto"; why?: string }) =>
     linkTrackerByVerifiedEmail(table, { developerForVerifiedEmail: (email) => orgStore.developerForVerifiedEmail(email).catch(() => undefined), orgOfDeveloper }, orgId, { ...link, at: new Date(now()).toISOString() });
   async function syncOne(orgId: OrgId, connectionId: string, maxMs: number): Promise<SyncResult | undefined> {
     const tracker = await input.trackers?.get(orgId, connectionId);
     if (tracker === undefined) return undefined;
     await listOrg(orgId);
-    return syncTrackerUsers({ table, now, log, linkByVerifiedEmail: linkVerified }, orgId, tracker, { maxMs });
+    return syncTrackerUsers({ table, now, log, linkByVerifiedEmail: linkVerified, autoLink: { enabled: (org) => autoLinkEnabled(table, org), domains: input.verifiedDomains ?? { domainsOf: async () => undefined } } }, orgId, tracker, { maxMs });
   }
   // S3: a request id is single use and bound to the exact change it first named. The same id with the same change answers what it answered (nothing is done twice, nothing is audited twice); the same id with another
   // change is refused. Written after the change; a crash before it only means the next try does the work again (and its audit event, bound to the same change, is the same event).
@@ -909,8 +917,21 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const trackerPeople: TeamRecordRuntime["trackerPeople"] = {
     async list(orgId) {
       const parsed = OrgIdSchema.parse(orgId);
-      const [unmatched, linked] = await Promise.all([listUnmatchedTrackerUsers(table, parsed), listLinkedTrackerUsers(table, parsed)]);
-      return { unmatched: unmatched.users, linked: linked.users, truncated: unmatched.truncated || linked.truncated };
+      const [unmatched, linked, enabled, domains] = await Promise.all([listUnmatchedTrackerUsers(table, parsed), listLinkedTrackerUsers(table, parsed), autoLinkEnabled(table, parsed), (input.verifiedDomains?.domainsOf(parsed) ?? Promise.resolve(undefined)).catch(() => undefined)]);
+      return { unmatched: unmatched.users, linked: linked.users, truncated: unmatched.truncated || linked.truncated, autoLink: { enabled, verifiedDomainsRecorded: domains !== undefined && domains.size > 0 } };
+    },
+    async setAutoLink(orgId, call) {
+      const parsed = OrgIdSchema.parse(orgId);
+      const change = `autolink|${call.enabled ? "on" : "off"}`;
+      const earlier = await requestOutcome(parsed, call.requestId, change);
+      if (earlier !== undefined) return earlier === "reused" ? "request_reused" : "set";
+      if (input.audit === undefined) return "audit_unavailable";
+      try { await input.audit(auditRecordTrackerAutolinkChanged({ orgId: parsed, actor: { kind: "member", id: call.by }, occurredAt: new Date(now()).toISOString(), occurrence: auditOccurrence(call.requestId, change), enabled: call.enabled })); } catch { return "audit_unavailable"; }
+      await setAutoLinkEnabled(table, parsed, { enabled: call.enabled, by: call.by, at: new Date(now()).toISOString() });
+      // Turning it on: the org's tools are read again at the next run, so people are judged under the new setting. Turning it off changes nothing already linked.
+      if (call.enabled && input.trackers !== undefined) { await listOrg(parsed); for (const tracker of await input.trackers.list(parsed)) await markSyncDue(table, parsed, tracker.connectionId, now()); }
+      await rememberRequest(parsed, call.requestId, change, "set");
+      return "set";
     },
     async map(orgId, call) {
       const parsed = OrgIdSchema.parse(orgId);

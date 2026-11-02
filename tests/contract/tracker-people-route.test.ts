@@ -10,10 +10,12 @@ const REQ = "8f3f2f5e-1c1b-4a53-9d0c-0b1f2a3b4c5d";
 function fakePeople() {
   return {
     list: vi.fn(async () => ({
-      unmatched: [{ system: "linear", sourceId: "lin-sam", displayName: "Sam K", seenAt: "2026-11-02T10:00:00.000Z" }, { system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine", seenAt: "2026-11-02T10:00:00.000Z" }],
-      linked: [{ system: "linear", sourceId: "lin-priya", developerId: "dev-priya", displayName: "Priya R", via: "admin", at: "2026-11-02T10:00:00.000Z" }],
+      unmatched: [{ system: "linear", sourceId: "lin-sam", displayName: "Sam K", seenAt: "2026-11-02T10:00:00.000Z", reason: "no_verified_domains" }, { system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine", seenAt: "2026-11-02T10:00:00.000Z" }],
+      linked: [{ system: "linear", sourceId: "lin-priya", developerId: "dev-priya", displayName: "Priya R", via: "auto", at: "2026-11-02T10:00:00.000Z", why: "domain_company_account_exact_email" }],
       truncated: false,
+      autoLink: { enabled: false, verifiedDomainsRecorded: false },
     })),
+    setAutoLink: vi.fn(async (): Promise<"set" | "audit_unavailable" | "request_reused"> => "set"),
     map: vi.fn(async (): Promise<"mapped" | "not_found" | "not_member" | "audit_unavailable" | "request_reused"> => "mapped"),
     unmap: vi.fn(async (): Promise<"unmapped" | "not_found" | "audit_unavailable" | "request_reused"> => "unmapped"),
     syncConnection: vi.fn(async () => undefined),
@@ -42,9 +44,10 @@ describe("reading", () => {
     expect(read.status).toBe(200);
     const { requestId: _requestId, ...answer } = read.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the web boundary's own request id
     expect(answer).toStrictEqual({
-      unmatched: [{ tool: "Linear", system: "linear", sourceId: "lin-sam", displayName: "Sam K" }, { tool: "Jira", system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine" }],
-      linked: [{ tool: "Linear", system: "linear", sourceId: "lin-priya", displayName: "Priya R", developerId: "dev-priya", via: "admin" }],
+      unmatched: [{ tool: "Linear", system: "linear", sourceId: "lin-sam", displayName: "Sam K", reason: "no_verified_domains" }, { tool: "Jira", system: "jira:acme.atlassian.net", sourceId: "acc-9", displayName: "Nine" }],
+      linked: [{ tool: "Linear", system: "linear", sourceId: "lin-priya", displayName: "Priya R", developerId: "dev-priya", via: "auto", why: "domain_company_account_exact_email" }],
       truncated: false,
+      autoLink: { enabled: false, verifiedDomainsRecorded: false },
     });
     expect(people.list).toHaveBeenCalledWith(expect.stringMatching(/^org_/));
     const member = await t.web(MAYA, "GET", PATH);
@@ -107,6 +110,25 @@ describe("changing", () => {
     expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
     people.unmap.mockResolvedValueOnce("request_reused");
     expect(errorOf(await t.web(OMAR, "POST", PATH, { action: "unmap", requestId: REQ, system: "linear", sourceId: "lin-x" })).code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("the company's automatic linking switch: owner or admin, a browser, a fresh sign-in, a strict body; the caller's own org and id are used", async () => {
+    const { t, people } = await bench({ maya: "member" });
+    const body = { action: "auto_link", requestId: REQ, enabled: true };
+    expect((await t.dev(OMAR, "POST", PATH, body)).status).toBe(403);
+    expect((await t.web(MAYA, "POST", PATH, body)).status).toBe(403);
+    t.ageSignIn(OMAR, 11);
+    expect(JSON.stringify((await t.web(OMAR, "POST", PATH, body)).body)).toContain("REAUTH_REQUIRED");
+    expect(people.setAutoLink).not.toHaveBeenCalled();
+    t.ageSignIn(OMAR, 2);
+    expect(await t.web(OMAR, "POST", PATH, body)).toMatchObject({ status: 200, body: { status: "auto_link_on" } });
+    expect(people.setAutoLink).toHaveBeenCalledWith(expect.stringMatching(/^org_/), { enabled: true, by: OMAR.developerId, requestId: REQ });
+    expect(await t.web(OMAR, "POST", PATH, { ...body, enabled: false })).toMatchObject({ status: 200, body: { status: "auto_link_off" } });
+    people.setAutoLink.mockResolvedValueOnce("audit_unavailable");
+    expect(errorOf(await t.web(OMAR, "POST", PATH, body)).code).toBe("AUDIT_UNAVAILABLE");
+    people.setAutoLink.mockResolvedValueOnce("request_reused");
+    expect(errorOf(await t.web(OMAR, "POST", PATH, body)).code).toBe("IDEMPOTENCY_CONFLICT");
+    for (const bad of [{ ...body, enabled: "yes" }, { ...body, orgId: "org_aaaaaaaaaaaaaaaaaaaa" }, { action: "auto_link", requestId: REQ }]) expect((await t.web(OMAR, "POST", PATH, bad)).status).toBe(400);
   });
 
   it("refuses a body that is not one of the two actions, with field names only", async () => {

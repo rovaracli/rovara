@@ -849,3 +849,8 @@ export function auditRecordTrackerPersonMapped(input: AuditBuilderBase & { membe
 export function auditRecordTrackerPersonUnmapped(input: AuditBuilderBase & { memberId: string; source: string }): AuditEventInput {
   return build("record.tracker_person_unmapped", input, { kind: "member", id: input.memberId }, { source: input.source });
 }
+
+/** `occurrence`: the admin's request id and the new state. The target is the company; `enabled` is the new state of the switch. */
+export function auditRecordTrackerAutolinkChanged(input: AuditBuilderBase & { enabled: boolean }): AuditEventInput {
+  return build("record.tracker_autolink_changed", input, { kind: "org", id: input.orgId }, { enabled: input.enabled });
+}

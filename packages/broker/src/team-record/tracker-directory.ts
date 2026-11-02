@@ -1,18 +1,20 @@
-// Linking tracker people automatically (lane team-record-links, owner 2026-11-02). When a company has connected Linear or Jira through the app, Rovara reads the tool's user list (the tool's id and
-// the email it holds) through that connection: when the connection is saved, and once a day after. A tool user is LINKED to a Rovara person only when
-//   - the tool reports the email as verified (a tool that gives no such signal has its emails treated as unverified: see `LINEAR_EMAIL_VERIFIED` and `JIRA_EMAIL_VERIFIED`), and
-//   - it equals, normalised and case-insensitive, the verified sign-in email of a person of the SAME org (`linkTrackerByVerifiedEmail`; never across orgs).
-// Everyone else is recorded as UNMATCHED, with the name the tool showed and the tool's id and nothing else (the email is never stored), for an admin to map by hand.
-// No connection, no read: a company that has not connected a tool is never asked about it. Reads are bounded (pages, people, time) and a run can be repeated: it changes nothing that is already right.
+// Linking tracker people automatically (lane team-record-links). When a company has connected Linear or Jira through the app, Rovara reads the tool's user list (the tool's id, the name it shows, the email it holds,
+// and whether the account is a guest and company-controlled) through that connection: when the connection is saved (marked due, read by the next scheduled run) and once a day after. Everyone is LISTED for an admin
+// to map by hand (the name and the tool's id; the email is never stored). Only when the company has turned the opt-in switch ON (`tracker-autolink.ts`) is anyone LINKED by themselves, and only when all three of its
+// conditions hold. No connection, no read: a company that has not connected a tool is never asked about it. Reads are bounded (pages, people, time) and a run can be repeated: it changes nothing already right.
 import { z } from "zod";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
 import { isErasedActor } from "./erased.js";
+import { AUTOLINK_LINKED_WHY, autoLinkRefusal, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { clearUnmatchedTrackerUser, developerOfTrackerAuthor, isAutoLinkSuppressed, noteUnmatchedTrackerUser, pruneUnmatchedTrackerUsers, shownName } from "./identity-links.js";
 import type { RecordLog, TeamRecordTable } from "./types.js";
 
-/** One person in a tool's user list. `emailVerified` is the tool's own claim about `email`, never a guess. */
-export interface TrackerUser { sourceId: string; displayName: string; email?: string | undefined; emailVerified: boolean }
+/**
+ * One person in a tool's user list. `control` says whether the account is company-controlled (a Jira account the company manages, or a Linear workspace that enforces the company's SAML): `unavailable` when the tool
+ * cannot be asked with the connection Rovara has. Never a guess.
+ */
+export interface TrackerUser { sourceId: string; displayName: string; email?: string | undefined; guest?: boolean | undefined; control: CompanyControl }
 export interface TrackerUserPage { users: TrackerUser[]; /** An opaque cursor for the next page; absent on the last. */ next?: string | undefined }
 
 /** A Linear or Jira connection of the org, with a saved secret, as the sync sees it. */
@@ -36,20 +38,23 @@ export const USERS_PER_RUN_MAX = 2_000;
 export const SYNC_EVERY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Linear's `User` has an `email` and no field that says it was verified (checked against the published GraphQL schema). Linear signs people in by a code sent to the address, a Google or SSO account, but the API
- * does not report it, so by the owner's rule ("an email the tool reports as verified") every Linear email is UNVERIFIED here, and Linear people are matched by an admin. The day Linear reports it, this is the one place.
+ * Linear workspace "enforces SAML" only when it is plain that it does: SAML sign-in is on, SAML is the ONLY allowed sign-in service, and no bypass is set. `authSettings` is untyped JSON on Linear's side, so
+ * anything that is not exactly that shape counts as NOT enforced (fail closed).
  */
-export const LINEAR_EMAIL_VERIFIED = (): boolean => false;
-/**
- * Jira Cloud's user search returns `accountId`, `accountType`, `emailAddress` (often hidden by the person's privacy setting), `displayName` and `active`; none says an address is verified. Treated as UNVERIFIED, and a
- * hidden email is no email at all. Jira people are matched by an admin.
- */
-export const JIRA_EMAIL_VERIFIED = (): boolean => false;
+export function linearEnforcesSaml(organization: { samlEnabled?: unknown; authSettings?: unknown } | null | undefined): boolean {
+  if (organization?.samlEnabled !== true) return false;
+  const settings = organization.authSettings;
+  if (settings === null || typeof settings !== "object") return false;
+  const record = settings as Record<string, unknown>;
+  const services = record.allowedAuthServices;
+  if (!Array.isArray(services) || services.length !== 1 || services[0] !== "saml") return false;
+  return !Object.entries(record).some(([name, value]) => /bypass/iu.test(name) && value !== false && value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0) && !(typeof value === "object" && Object.keys(value as object).length === 0));
+}
 
 const PageBody = z.object({ data: z.object({ users: z.object({
-  nodes: z.array(z.object({ id: z.string().min(1).max(200), name: z.string().max(500).nullish(), displayName: z.string().max(500).nullish(), email: z.string().max(500).nullish(), active: z.boolean().nullish(), app: z.boolean().nullish() }).passthrough()).max(250),
+  nodes: z.array(z.object({ id: z.string().min(1).max(200), name: z.string().max(500).nullish(), displayName: z.string().max(500).nullish(), email: z.string().max(500).nullish(), active: z.boolean().nullish(), app: z.boolean().nullish(), guest: z.boolean().nullish() }).passthrough()).max(250),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().max(500).nullish() }).passthrough(),
-}).passthrough() }).passthrough() }).passthrough();
+}).passthrough(), organization: z.object({ samlEnabled: z.boolean().nullish(), authSettings: z.unknown().optional() }).passthrough().nullish() }).passthrough() }).passthrough();
 const JiraUsers = z.array(z.object({ accountId: z.string().min(1).max(200), accountType: z.string().max(40).nullish(), active: z.boolean().nullish(), displayName: z.string().max(500).nullish(), emailAddress: z.string().max(500).nullish() }).passthrough()).max(1_000);
 
 const READ_TIMEOUT_MS = 10_000;
@@ -65,16 +70,17 @@ export function linearUsersReader(input: { fetch: typeof fetch; graphqlUrl: stri
   return async ({ after, limit }) => {
     const response = await input.fetch(input.graphqlUrl, {
       method: "POST", headers: { authorization: input.apiKey, "content-type": "application/json" }, redirect: "error", signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-      body: JSON.stringify({ query: "query($first:Int!,$after:String){ users(first:$first, after:$after){ nodes{ id name displayName email active app } pageInfo{ hasNextPage endCursor } } }", variables: { first: Math.min(limit, 250), ...(after === undefined ? {} : { after }) } }),
+      body: JSON.stringify({ query: "query($first:Int!,$after:String){ organization{ samlEnabled authSettings } users(first:$first, after:$after){ nodes{ id name displayName email active app guest } pageInfo{ hasNextPage endCursor } } }", variables: { first: Math.min(limit, 250), ...(after === undefined ? {} : { after }) } }),
     });
     if (!response.ok) throw new Error("linear refused the read");
     const text = await cappedText(response);
     const parsed = text === undefined ? undefined : PageBody.safeParse(JSON.parse(text));
     if (parsed === undefined || !parsed.success) throw new Error("linear answered with something unreadable");
     const { nodes, pageInfo } = parsed.data.data.users;
+    const enforced = linearEnforcesSaml(parsed.data.data.organization);
     const users: TrackerUser[] = nodes.filter((node) => node.app !== true && node.active !== false).map((node) => {
       const email = typeof node.email === "string" && node.email !== "" ? node.email : undefined;
-      return { sourceId: node.id, displayName: shownName(node.displayName || node.name || undefined, node.id), ...(email === undefined ? {} : { email }), emailVerified: email !== undefined && LINEAR_EMAIL_VERIFIED() };
+      return { sourceId: node.id, displayName: shownName(node.displayName || node.name || undefined, node.id), ...(email === undefined ? {} : { email }), guest: node.guest === true, control: enforced ? "yes" as const : "no" as const };
     });
     return { users, ...(pageInfo.hasNextPage && typeof pageInfo.endCursor === "string" && pageInfo.endCursor !== "" ? { next: pageInfo.endCursor } : {}) };
   };
@@ -93,9 +99,10 @@ export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; e
     const text = await cappedText(response);
     const parsed = text === undefined ? undefined : JiraUsers.safeParse(JSON.parse(text));
     if (parsed === undefined || !parsed.success) throw new Error("jira answered with something unreadable");
+    // Whether an account is MANAGED by the company is in the Atlassian Admin API (an organization admin's key), which a site's API token cannot reach: it is recorded as unavailable, so no Jira person links by themselves.
     const users: TrackerUser[] = parsed.data.filter((user) => user.accountType === "atlassian" && user.active !== false).map((user) => {
       const email = typeof user.emailAddress === "string" && user.emailAddress !== "" ? user.emailAddress : undefined;
-      return { sourceId: user.accountId, displayName: shownName(user.displayName || undefined, user.accountId), ...(email === undefined ? {} : { email }), emailVerified: email !== undefined && JIRA_EMAIL_VERIFIED() };
+      return { sourceId: user.accountId, displayName: shownName(user.displayName || undefined, user.accountId), ...(email === undefined ? {} : { email }), control: "unavailable" as const };
     });
     // Jira pages by position, over everyone it lists (apps included), so a full page means there may be more.
     return { users, ...(parsed.data.length >= size ? { next: String(startAt + parsed.data.length) } : {}) };
@@ -105,8 +112,10 @@ export function jiraUsersReader(input: { fetch: typeof fetch; siteUrl: string; e
 export interface SyncDependencies {
   table: TeamRecordTable;
   now: () => number;
-  /** `runtime.links.linkByVerifiedEmail`: links only when the tool said the email is verified and the person is a member of this org. */
-  linkByVerifiedEmail(orgId: OrgId, input: { system: string; sourceId: string; email: string; emailVerified: boolean | undefined; displayName?: string }): Promise<boolean>;
+  /** `runtime.links.linkByVerifiedEmail`: links only when the person is a member of this org whose verified sign-in email is the one given. */
+  linkByVerifiedEmail(orgId: OrgId, input: { system: string; sourceId: string; email: string; emailVerified: boolean | undefined; displayName?: string; via?: "auto"; why?: string }): Promise<boolean>;
+  /** Whether the company turned automatic linking on, and the domains it has verified for its sign-in. Absent: automatic linking is off and nobody is linked by themselves. */
+  autoLink?: { enabled(orgId: OrgId): Promise<boolean>; domains: VerifiedDomainsPort };
   log?: RecordLog;
 }
 
@@ -156,11 +165,16 @@ export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tra
         const link = { system: tracker.system, sourceId: user.sourceId };
         if (await isErasedActor(deps.table, orgId, tracker.system, { sourceId: user.sourceId })) { await clearUnmatchedTrackerUser(deps.table, orgId, link); continue; }
         if (await developerOfTrackerAuthor(deps.table, orgId, link) !== undefined) { result.alreadyLinked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); continue; }
+        // Opt-in automatic linking: the switch, then the three conditions (the third is the exact match of a member's verified sign-in email, made by `linkByVerifiedEmail`). The first that fails is the person's reason.
+        const enabled = deps.autoLink === undefined ? false : await deps.autoLink.enabled(orgId).catch(() => false);
+        const domains = enabled && deps.autoLink !== undefined ? await deps.autoLink.domains.domainsOf(orgId).catch(() => undefined) : undefined;
+        let reason: AutoLinkReason | undefined = autoLinkRefusal({ enabled, email: user.email, domains, guest: user.guest === true, control: user.control, suppressed: enabled && await isAutoLinkSuppressed(deps.table, orgId, link) });
         let linked = false;
-        if (user.emailVerified && user.email !== undefined && !await isAutoLinkSuppressed(deps.table, orgId, link)) {
-          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: user.email, emailVerified: true, displayName: user.displayName }); } catch { linked = false; }
+        if (reason === undefined && user.email !== undefined) {
+          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: user.email, emailVerified: true, displayName: user.displayName, via: "auto", why: AUTOLINK_LINKED_WHY }); } catch { linked = false; }
+          if (!linked) reason = "no_matching_member";
         }
-        if (linked) { result.linked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); } else { result.unmatched += 1; await noteUnmatchedTrackerUser(deps.table, orgId, { ...link, displayName: user.displayName, at: new Date(deps.now()).toISOString() }); }
+        if (linked) { result.linked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); } else { result.unmatched += 1; await noteUnmatchedTrackerUser(deps.table, orgId, { ...link, displayName: user.displayName, at: new Date(deps.now()).toISOString(), ...(reason === undefined ? {} : { reason }) }); }
       }
       after = page.next;
       if (after === undefined) { result.complete = true; break; }

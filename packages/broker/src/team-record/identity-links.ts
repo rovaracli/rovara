@@ -8,7 +8,7 @@ import { isErasedActor } from "./erased.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 
-export type TrackerLinkVia = "connect" | "signin" | "verified_email" | "admin";
+export type TrackerLinkVia = "connect" | "signin" | "verified_email" | "admin" | "auto";
 export interface TrackerLink { system: string; sourceId: string }
 
 const SYSTEM = /^(linear|jira:[a-z0-9][a-z0-9.-]{0,252})$/;
@@ -36,13 +36,13 @@ export interface OrgMembershipPort {
  * Links a tracker author id to a person of the org. Refused (false) for an id that is not well formed, a person who is not a member of THIS org (a link in this org's partition to another org's person
  * would put that person's id on rows that their own org's erase never reaches), or a person who has been erased. A second link for the same author id replaces the first.
  */
-export async function linkTrackerIdentity(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { developerId: string; via: TrackerLinkVia; at: string; displayName?: string | undefined }, members: OrgMembershipPort): Promise<boolean> {
+export async function linkTrackerIdentity(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { developerId: string; via: TrackerLinkVia; at: string; displayName?: string | undefined; why?: string | undefined }, members: OrgMembershipPort): Promise<boolean> {
   if (!SYSTEM.test(input.system) || !SOURCE_ID.test(input.sourceId) || input.developerId === "") return false;
   if ((await members.orgOfDeveloper(input.developerId)) !== orgId) return false;
   if (await isErasedActor(table, orgId, input.system, { sourceId: input.sourceId, developerId: input.developerId })) return false;
   const existing = await developerOfTrackerAuthor(table, orgId, input);
   if (existing !== undefined && existing !== input.developerId) await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: reverseKey(orgId, existing, input) }));
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...forwardKey(orgId, input), entityType: "TEAM_RECORD_TRACKER_LINK", orgId, developerId: input.developerId, via: input.via, at: input.at, ...(input.displayName === undefined ? {} : { displayName: shownName(input.displayName, input.sourceId) }) } }));
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...forwardKey(orgId, input), entityType: "TEAM_RECORD_TRACKER_LINK", orgId, developerId: input.developerId, via: input.via, at: input.at, ...(input.displayName === undefined ? {} : { displayName: shownName(input.displayName, input.sourceId) }), ...(input.why === undefined ? {} : { why: input.why.slice(0, 60) }) } }));
   await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...reverseKey(orgId, input.developerId, input), entityType: "TEAM_RECORD_TRACKER_LINK_BY_PERSON", orgId, system: input.system, sourceId: input.sourceId, at: input.at } }));
   return true;
 }
@@ -56,11 +56,11 @@ export interface VerifiedEmailDependencies extends OrgMembershipPort {
  * Links a tracker author by an email the TRACKER reported as verified. `emailVerified` must be exactly `true`: a tracker that does not say, or says no, links nothing. The person must be a member of THIS org.
  * Returns whether a link was made.
  */
-export async function linkTrackerByVerifiedEmail(table: TeamRecordTable, deps: VerifiedEmailDependencies, orgId: OrgId, input: TrackerLink & { email: string; emailVerified: boolean | undefined; at: string; displayName?: string | undefined }): Promise<boolean> {
+export async function linkTrackerByVerifiedEmail(table: TeamRecordTable, deps: VerifiedEmailDependencies, orgId: OrgId, input: TrackerLink & { email: string; emailVerified: boolean | undefined; at: string; displayName?: string | undefined; via?: "verified_email" | "auto"; why?: string | undefined }): Promise<boolean> {
   if (input.emailVerified !== true || input.email === "") return false;
   const developerId = await deps.developerForVerifiedEmail(input.email);
   if (developerId === undefined || (await deps.orgOfDeveloper(developerId)) !== orgId) return false;
-  return linkTrackerIdentity(table, orgId, { system: input.system, sourceId: input.sourceId, developerId, via: "verified_email", at: input.at, ...(input.displayName === undefined ? {} : { displayName: input.displayName }) }, deps);
+  return linkTrackerIdentity(table, orgId, { system: input.system, sourceId: input.sourceId, developerId, via: input.via ?? "verified_email", at: input.at, ...(input.displayName === undefined ? {} : { displayName: input.displayName }), ...(input.why === undefined ? {} : { why: input.why }) }, deps);
 }
 
 /** The person an author id is linked to, or undefined. */
@@ -112,19 +112,19 @@ const unmatchedKey = (orgId: OrgId, link: TrackerLink): { pk: string; sk: string
 const unmappedKey = (orgId: OrgId, link: TrackerLink): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId), sk: `${UNMAPPED_PREFIX}${link.system}#${link.sourceId}` });
 const validLink = (link: TrackerLink): boolean => SYSTEM.test(link.system) && SOURCE_ID.test(link.sourceId);
 
-export interface UnmatchedTrackerUser { system: string; sourceId: string; displayName: string; seenAt: string }
+export interface UnmatchedTrackerUser { system: string; sourceId: string; displayName: string; seenAt: string; /** Why automatic linking did not link them (a fixed code; see `tracker-autolink.ts`). */ reason?: string }
 
 /**
  * Records a tool user nobody is linked to. Only the name the tool showed and the tool's own id are kept: never an email. An update, not a replacement, so what an unmap left on the entry (the hash of the
  * person it was unmapped from, which their erase looks for) stays.
  */
-export async function noteUnmatchedTrackerUser(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { displayName: string; at: string; formerDeveloperHash?: string }): Promise<void> {
+export async function noteUnmatchedTrackerUser(table: TeamRecordTable, orgId: OrgId, input: TrackerLink & { displayName: string; at: string; formerDeveloperHash?: string; reason?: string }): Promise<void> {
   if (!validLink(input)) return;
   await table.documentClient.send(new UpdateCommand({
     TableName: table.tableName, Key: unmatchedKey(orgId, input),
-    UpdateExpression: `SET entityType = :type, orgId = :org, #system = :system, sourceId = :id, displayName = :name, seenAt = :at${input.formerDeveloperHash === undefined ? "" : ", formerDeveloperHash = :former"}`,
+    UpdateExpression: `SET entityType = :type, orgId = :org, #system = :system, sourceId = :id, displayName = :name, seenAt = :at${input.formerDeveloperHash === undefined ? "" : ", formerDeveloperHash = :former"}${input.reason === undefined ? "" : ", reason = :reason"}`,
     ExpressionAttributeNames: { "#system": "system" },
-    ExpressionAttributeValues: { ":type": "TEAM_RECORD_TRACKER_UNMATCHED", ":org": orgId, ":system": input.system, ":id": input.sourceId, ":name": shownName(input.displayName, input.sourceId), ":at": input.at, ...(input.formerDeveloperHash === undefined ? {} : { ":former": input.formerDeveloperHash }) },
+    ExpressionAttributeValues: { ":type": "TEAM_RECORD_TRACKER_UNMATCHED", ":org": orgId, ":system": input.system, ":id": input.sourceId, ":name": shownName(input.displayName, input.sourceId), ":at": input.at, ...(input.formerDeveloperHash === undefined ? {} : { ":former": input.formerDeveloperHash }), ...(input.reason === undefined ? {} : { ":reason": input.reason.slice(0, 40) }) },
   }));
 }
 
@@ -136,7 +136,7 @@ export async function clearUnmatchedTrackerUser(table: TeamRecordTable, orgId: O
 /** The tool users nobody is linked to, oldest id first, up to `limit`. `truncated` says there are more. */
 export async function listUnmatchedTrackerUsers(table: TeamRecordTable, orgId: OrgId, limit = 500): Promise<{ users: UnmatchedTrackerUser[]; truncated: boolean }> {
   const found = await queryPrefix(table, orgId, undefined, UNMATCHED_PREFIX, limit);
-  const users = found.items.flatMap((item) => (typeof item.system === "string" && typeof item.sourceId === "string" && typeof item.displayName === "string" && typeof item.seenAt === "string" ? [{ system: item.system, sourceId: item.sourceId, displayName: item.displayName, seenAt: item.seenAt }] : []));
+  const users = found.items.flatMap((item) => (typeof item.system === "string" && typeof item.sourceId === "string" && typeof item.displayName === "string" && typeof item.seenAt === "string" ? [{ system: item.system, sourceId: item.sourceId, displayName: item.displayName, seenAt: item.seenAt, ...(typeof item.reason === "string" ? { reason: item.reason } : {}) }] : []));
   return { users, truncated: found.truncated };
 }
 
@@ -159,13 +159,13 @@ export async function isAutoLinkSuppressed(table: TeamRecordTable, orgId: OrgId,
   return ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: unmappedKey(orgId, link), ConsistentRead: true }))) as { Item?: unknown }).Item !== undefined;
 }
 
-export interface LinkedTrackerUser { system: string; sourceId: string; developerId: string; displayName: string; via: string; at: string }
+export interface LinkedTrackerUser { system: string; sourceId: string; developerId: string; displayName: string; via: string; at: string; /** Why the automatic linker linked them (a fixed code), when it did. */ why?: string }
 
 /** The tool users linked to a person of the org, with how: for the admin page (so it can unmap one). Bounded. */
 export async function listLinkedTrackerUsers(table: TeamRecordTable, orgId: OrgId, limit = 500): Promise<{ users: LinkedTrackerUser[]; truncated: boolean }> {
   const found = await queryPrefix(table, orgId, undefined, LINK_PREFIX, limit);
   const users = found.items.flatMap((item) => (item.entityType === "TEAM_RECORD_TRACKER_LINK" && typeof item.sk === "string" && typeof item.developerId === "string"
-    ? [{ ...splitLinkKey(item.sk), developerId: item.developerId, displayName: typeof item.displayName === "string" ? item.displayName : "", via: typeof item.via === "string" ? item.via : "", at: typeof item.at === "string" ? item.at : "" }] : []));
+    ? [{ ...splitLinkKey(item.sk), developerId: item.developerId, displayName: typeof item.displayName === "string" ? item.displayName : "", via: typeof item.via === "string" ? item.via : "", at: typeof item.at === "string" ? item.at : "", ...(typeof item.why === "string" ? { why: item.why } : {}) }] : []));
   return { users: users.flatMap((user) => (user.system === "" ? [] : [user])), truncated: found.truncated };
 }
 

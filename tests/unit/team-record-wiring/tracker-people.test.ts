@@ -1,16 +1,16 @@
 // Lane team-record-links: linking Linear and Jira people to their Rovara accounts.
-//  1. AUTOMATIC: when a company's connected tool reports an email as verified, and it equals (case-insensitive, normalised) the verified sign-in email of a person in the SAME org, the tool user is linked.
-//     Nobody else is: an unverified email, a hidden one, one that matches nobody, or one that matches a person of another org. They are listed as unmatched with their name and the tool's id, never an email.
+//  1. OPT-IN AUTOMATIC LINKING (owner, 2026-11-02): off by default; with the switch on, a person is linked only when ALL THREE hold (the email's domain is verified for the company's sign-in, the account is
+//     company-controlled and not a guest, the email exactly matches a member's verified sign-in email of the SAME org). Everyone else is listed with the first reason. Turning it off stops new links only.
 //  2. BOUNDED AND REPEATABLE: pages, people and time are capped; a run that stopped resumes; a second run changes nothing; a tool the company has not connected is never read.
 //  3. THE ADMIN'S MAPPING: list, map to a member of the same org (with an audit event), unmap (the link and future rows go; the automatic linker leaves them alone; the person's erase still takes their rows).
-//  4. THE READERS: Linear and Jira's real readers (a fake fetch) treat their emails as unverified, skip bots and deactivated people, and call only their own addresses.
+//  4. THE READERS: Linear's and Jira's real readers (a fake fetch) read guests and company control (Linear: SAML enforced; Jira: unavailable), skip bots and deactivated people, and call only their own addresses.
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, teamRecordPk, type OrgId } from "@agentx/contracts";
 import { OrgConnectionStore, LINEAR_GRAPHQL } from "../../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../../packages/broker/src/connections/org-secrets.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { connectedTrackersOf } from "../../../packages/broker/src/team-record/tracker-connections.js";
-import { jiraUsersReader, linearUsersReader, syncIsDue, syncTrackerUsers, SYNC_EVERY_MS, USERS_PER_PAGE, USERS_PER_RUN_MAX, type ConnectedTracker, type ConnectedTrackersPort, type TrackerUser } from "../../../packages/broker/src/team-record/tracker-directory.js";
+import { jiraUsersReader, linearEnforcesSaml, linearUsersReader, syncIsDue, syncTrackerUsers, SYNC_EVERY_MS, USERS_PER_PAGE, USERS_PER_RUN_MAX, type ConnectedTracker, type ConnectedTrackersPort, type TrackerUser } from "../../../packages/broker/src/team-record/tracker-directory.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -20,9 +20,9 @@ import { ORG_A, ORG_B, T0 } from "../../support/team-record-core.js";
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", ROVARA_EDITION: "enterprise" } as const;
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
-const T = (extra: Partial<TrackerUser> & { sourceId: string }): TrackerUser => ({ displayName: extra.sourceId, emailVerified: false, ...extra });
+const T = (extra: Partial<TrackerUser> & { sourceId: string }): TrackerUser => ({ displayName: extra.sourceId, control: "yes", ...extra });
 
-/** A fake tool: `pages` are what it lists, `reads` counts what was asked of it. `verifies` is the tool's claim about every email it lists. */
+/** A fake tool: `users` are what it lists, `reads` counts what was asked of it. */
 function fakeTracker(input: { system: string; connectionId?: string; kind?: "linear" | "jira"; users: TrackerUser[]; pageSize?: number; reads?: { count: number; limits: number[] }; fail?: boolean }): ConnectedTracker {
   const size = input.pageSize ?? USERS_PER_PAGE;
   return {
@@ -41,7 +41,8 @@ const portOf = (trackers: ConnectedTracker[]): ConnectedTrackersPort => ({
   get: async (orgId, connectionId) => (orgId === ORG_A ? trackers.find((tracker) => tracker.connectionId === connectionId) : undefined),
 });
 
-function worldOf(options: { trackers?: ConnectedTracker[]; audit?: boolean; vectors?: boolean } = {}) {
+/** `autoLink`: the company turned the opt-in switch on; `domains`: the domains it has verified for its sign-in (none given: no list is recorded). */
+function worldOf(options: { trackers?: ConnectedTracker[]; audit?: boolean; vectors?: boolean; autoLink?: true; domains?: string[] } = {}) {
   const db = new FakeDynamoDb({ indexKeys });
   const events: Array<{ action: string; actor: { id: string }; target: { kind: string; id: string }; facts?: Record<string, unknown> }> = [];
   const clock = { at: T0 };
@@ -52,11 +53,13 @@ function worldOf(options: { trackers?: ConnectedTracker[]; audit?: boolean; vect
     db.set({ ...developerOrgKey(developerId), entityType: "DEVELOPER_ORG", orgId, role: "member" });
     db.set({ ...orgEmailKey(email), entityType: "ORG_EMAIL", developerId, orgId });
   }
+  if (options.autoLink === true) db.set({ pk: teamRecordPk(ORG_A), sk: "TRAUTOLINK", entityType: "TEAM_RECORD_AUTOLINK_SETTING", orgId: ORG_A, enabled: true, changedBy: "dev-sam", at: "2026-10-30T10:00:00.000Z" });
   const aws = options.vectors === true ? vectorFakes() : undefined;
   const runtime = createTeamRecordRuntime({
     env: { ...(options.vectors === true ? VECTORS_ENV : {}), ...ON }, documentClient: db, stateTableName: "State", now: () => clock.at,
     ...(aws === undefined ? {} : { sdk: aws.sdk, sts: aws.sts }),
     ...(options.trackers === undefined ? {} : { trackers: portOf(options.trackers) }),
+    ...(options.domains === undefined ? {} : { verifiedDomains: { domainsOf: async (orgId) => (orgId === ORG_A ? new Set(options.domains) : undefined) } }),
     ...(options.audit === false ? {} : { audit: async (event) => { events.push(event as never); } }),
   }) as TeamRecordRuntime;
   return { db, runtime, events, clock };
@@ -77,61 +80,120 @@ const linksOf = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEA
 const unmatchedOf = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_UNMATCHED");
 const sync = (runtime: TeamRecordRuntime, connectionId = "con_aaaaaaaaaaaaaaaaaaaa") => runtime.trackerPeople.syncConnection(ORG_A, connectionId);
 
-describe("automatic linking by a verified email", () => {
-  const users = [
-    T({ sourceId: "lin-priya", displayName: "Priya R", email: "  Priya@ACME.test ", emailVerified: true }),
-    T({ sourceId: "lin-sam", displayName: "Sam K", email: "sam@acme.test", emailVerified: false }),
-    T({ sourceId: "lin-hidden", displayName: "Hidden H", emailVerified: true }),
-    T({ sourceId: "lin-nobody", displayName: "Nobody N", email: "nobody@acme.test", emailVerified: true }),
-    T({ sourceId: "lin-olga", displayName: "Olga O", email: "olga@other.test", emailVerified: true }),
-  ];
+const DOMAINS = ["acme.test", "other.test"];
+const users = [
+  T({ sourceId: "lin-priya", displayName: "Priya R", email: "  Priya@ACME.test " }),
+  T({ sourceId: "lin-sam", displayName: "Sam K", email: "sam@acme.test", control: "no" }),
+  T({ sourceId: "lin-hidden", displayName: "Hidden H" }),
+  T({ sourceId: "lin-nobody", displayName: "Nobody N", email: "nobody@acme.test" }),
+  T({ sourceId: "lin-olga", displayName: "Olga O", email: "olga@other.test" }),
+  T({ sourceId: "lin-guest", displayName: "Guest G", email: "priya@acme.test", guest: true }),
+  T({ sourceId: "lin-elsewhere", displayName: "Else E", email: "sam@elsewhere.test" }),
+  T({ sourceId: "lin-jira", displayName: "Jira J", email: "sam@acme.test", control: "unavailable" }),
+];
+const reasons = (db: FakeDynamoDb) => Object.fromEntries(unmatchedOf(db).map((item) => [item.sourceId as string, item.reason as string | undefined]));
 
-  it("links only a verified email that matches a person of the SAME org (case and spacing ignored); everyone else is listed unmatched with a name and a tool id", async () => {
-    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })] });
-    expect(await sync(runtime)).toMatchObject({ read: 5, linked: 1, unmatched: 4, complete: true });
-    expect(linksOf(db).map((item) => [item.sk, item.developerId, item.via])).toStrictEqual([["TRLINK#linear#lin-priya", "dev-priya", "verified_email"]]);
-    expect(unmatchedOf(db).map((item) => item.sourceId).sort()).toStrictEqual(["lin-hidden", "lin-nobody", "lin-olga", "lin-sam"]);
-    // The unmatched list holds the name the tool showed and its id, and never an email.
-    const everythingKept = JSON.stringify([...unmatchedOf(db), ...linksOf(db), ...db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_SYNC")]);
-    for (const email of ["priya@", "sam@", "nobody@", "olga@", "acme.test", "other.test"]) expect(everythingKept.toLowerCase(), email).not.toContain(email);
-    // Olga is a person of another company: not linked to anyone here.
-    expect(linksOf(db).some((item) => item.developerId === "dev-olga")).toBe(false);
-    const listed = await runtime.trackerPeople.list(ORG_A);
-    expect(listed.unmatched.find((user) => user.sourceId === "lin-sam")).toMatchObject({ system: "linear", displayName: "Sam K" });
-    expect(listed.linked.map((user) => [user.sourceId, user.developerId, user.via])).toStrictEqual([["lin-priya", "dev-priya", "verified_email"]]);
+describe("opt-in automatic linking: the switch and the three conditions", () => {
+  it("is OFF by default: nobody is linked by themselves, however well they match, and every person says why", async () => {
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: DOMAINS });
+    expect(await sync(runtime)).toMatchObject({ read: 8, linked: 0, unmatched: 8, complete: true });
+    expect(linksOf(db)).toStrictEqual([]);
+    expect(Object.values(reasons(db)).every((reason) => reason === "switch_off")).toBe(true);
+    expect((await runtime.trackerPeople.list(ORG_A)).autoLink).toStrictEqual({ enabled: false, verifiedDomainsRecorded: true });
   });
 
-  it("a tool that reports nothing as verified links nobody, even when the emails match exactly", async () => {
-    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users: users.map((user) => ({ ...user, emailVerified: false })) })] });
-    expect(await sync(runtime)).toMatchObject({ linked: 0, unmatched: 5 });
+  it("with the switch ON links a person only when ALL THREE hold, and every other person carries the first reason they were not linked", async () => {
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: DOMAINS, autoLink: true });
+    expect(await sync(runtime)).toMatchObject({ read: 8, linked: 1, unmatched: 7, complete: true });
+    expect(linksOf(db).map((item) => [item.sk, item.developerId, item.via, item.why])).toStrictEqual([["TRLINK#linear#lin-priya", "dev-priya", "auto", "domain_company_account_exact_email"]]);
+    expect(reasons(db)).toStrictEqual({
+      "lin-sam": "not_company_controlled", "lin-hidden": "no_email", "lin-nobody": "no_matching_member", "lin-olga": "no_matching_member",
+      "lin-guest": "guest", "lin-elsewhere": "domain_not_verified", "lin-jira": "company_control_unavailable",
+    });
+    const listed = await runtime.trackerPeople.list(ORG_A);
+    expect(listed.linked.map((user) => [user.sourceId, user.via, user.why])).toStrictEqual([["lin-priya", "auto", "domain_company_account_exact_email"]]);
+    expect(listed.autoLink).toStrictEqual({ enabled: true, verifiedDomainsRecorded: true });
+    // Olga's domain is verified, but her sign-in email belongs to a member of ANOTHER company: nothing here links to her.
+    expect(linksOf(db).some((item) => item.developerId === "dev-olga")).toBe(false);
+    // The email is never kept.
+    const kept = JSON.stringify([...unmatchedOf(db), ...linksOf(db), ...db.find((item) => item.entityType === "TEAM_RECORD_TRACKER_SYNC")]).toLowerCase();
+    for (const email of ["priya@", "sam@", "nobody@", "olga@", "acme.test", "other.test"]) expect(kept, email).not.toContain(email);
+  });
+
+  it("with the switch ON but no verified sign-in domains recorded for the company, nobody is linked and nothing is guessed from members' emails", async () => {
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], autoLink: true });
+    expect(await sync(runtime)).toMatchObject({ linked: 0, unmatched: 8 });
+    expect(linksOf(db)).toStrictEqual([]);
+    expect(reasons(db)["lin-priya"]).toBe("no_verified_domains");
+    expect(reasons(db)["lin-hidden"]).toBe("no_email");
+    expect((await runtime.trackerPeople.list(ORG_A)).autoLink).toStrictEqual({ enabled: true, verifiedDomainsRecorded: false });
+    // An empty list is none.
+    const empty = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: [], autoLink: true });
+    await sync(empty.runtime);
+    expect(linksOf(empty.db)).toStrictEqual([]);
+  });
+
+  it("turning it off stops NEW automatic links; people already linked stay until an admin unmaps them", async () => {
+    const list = [...users.slice(0, 1)];
+    const { db, runtime, clock } = worldOf({ trackers: [fakeTracker({ system: "linear", users: list })], domains: DOMAINS, autoLink: true });
+    await sync(runtime);
+    expect(linksOf(db).map((item) => item.sk)).toStrictEqual(["TRLINK#linear#lin-priya"]);
+    expect(await runtime.trackerPeople.setAutoLink(ORG_A, { enabled: false, by: "dev-sam", requestId: "req-off" })).toBe("set");
+    clock.at += 1_000;
+    // Sam's tool user would have matched, but the switch is off: listed with the reason, not linked. Priya stays.
+    list.push(T({ sourceId: "lin-sam", displayName: "Sam K", email: "sam@acme.test" }));
+    await sync(runtime);
+    expect(linksOf(db).map((item) => item.sk)).toStrictEqual(["TRLINK#linear#lin-priya"]);
+    expect(reasons(db)["lin-sam"]).toBe("switch_off");
+    expect(await runtime.trackerPeople.unmap(ORG_A, { system: "linear", sourceId: "lin-priya", by: "dev-sam", requestId: "req-unmap" })).toBe("unmapped");
     expect(linksOf(db)).toStrictEqual([]);
   });
 
-  it("is repeatable: the second run changes nothing, and a person already linked is not linked again", async () => {
-    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })] });
-    await sync(runtime);
-    const before = JSON.stringify(db.find(() => true).filter((item) => item.entityType !== "TEAM_RECORD_TRACKER_SYNC" && item.entityType !== "TEAM_RECORD_TRACKER_UNMATCHED").map((item) => [item.pk, item.sk, item.at, item.developerId]));
-    const second = await sync(runtime);
-    expect(second).toMatchObject({ read: 5, linked: 0, alreadyLinked: 1, unmatched: 4 });
-    expect(JSON.stringify(db.find(() => true).filter((item) => item.entityType !== "TEAM_RECORD_TRACKER_SYNC" && item.entityType !== "TEAM_RECORD_TRACKER_UNMATCHED").map((item) => [item.pk, item.sk, item.at, item.developerId]))).toBe(before);
-    expect(unmatchedOf(db)).toHaveLength(4);
+  it("the switch is changed only with an audit event first, its request id is bound to the change, and turning it on marks the org's tools due", async () => {
+    const reads = { count: 0, limits: [] as number[] };
+    const { db, runtime, events } = worldOf({ trackers: [fakeTracker({ system: "linear", users, reads })], domains: DOMAINS });
+    expect(await runtime.trackerPeople.setAutoLink(ORG_A, { enabled: true, by: "dev-sam", requestId: "req-1" })).toBe("set");
+    expect(events.map((event) => [event.action, event.actor.id, event.target.kind, event.facts])).toStrictEqual([["record.tracker_autolink_changed", "dev-sam", "org", { enabled: true }]]);
+    expect(reads.count).toBe(0);
+    await runtime.jobs.run("hourly");
+    expect(reads.count).toBe(1);
+    expect(linksOf(db)).toHaveLength(1);
+    // The same id for the same change answers the same; for another change it is refused and nothing changes.
+    expect(await runtime.trackerPeople.setAutoLink(ORG_A, { enabled: true, by: "dev-sam", requestId: "req-1" })).toBe("set");
+    expect(await runtime.trackerPeople.setAutoLink(ORG_A, { enabled: false, by: "dev-sam", requestId: "req-1" })).toBe("request_reused");
+    expect((await runtime.trackerPeople.list(ORG_A)).autoLink.enabled).toBe(true);
+    expect(events).toHaveLength(1);
+    // A ledger that cannot take the event leaves the switch as it was.
+    const noLedger = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: DOMAINS, audit: false });
+    expect(await noLedger.runtime.trackerPeople.setAutoLink(ORG_A, { enabled: true, by: "dev-sam", requestId: "req-2" })).toBe("audit_unavailable");
+    expect((await noLedger.runtime.trackerPeople.list(ORG_A)).autoLink.enabled).toBe(false);
   });
 
-  it("a person the tool no longer lists leaves the unmatched list after a complete read; a person who gets linked leaves it at once", async () => {
+  it("is repeatable: the second run changes nothing, and a person already linked is not linked again", async () => {
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: DOMAINS, autoLink: true });
+    await sync(runtime);
+    const snapshot = () => JSON.stringify(db.find(() => true).filter((item) => item.entityType !== "TEAM_RECORD_TRACKER_SYNC" && item.entityType !== "TEAM_RECORD_TRACKER_UNMATCHED").map((item) => [item.pk, item.sk, item.at, item.developerId]));
+    const before = snapshot();
+    expect(await sync(runtime)).toMatchObject({ read: 8, linked: 0, alreadyLinked: 1, unmatched: 7 });
+    expect(snapshot()).toBe(before);
+    expect(unmatchedOf(db)).toHaveLength(7);
+  });
+
+  it("a person the tool no longer lists leaves the unmatched list after a complete read; a person who becomes linkable is linked and leaves it at once", async () => {
     const list = [...users];
-    const tracker = fakeTracker({ system: "linear", users: list });
-    const { db, runtime, clock } = worldOf({ trackers: [tracker] });
+    const { db, runtime, clock } = worldOf({ trackers: [fakeTracker({ system: "linear", users: list })], domains: DOMAINS, autoLink: true });
     await sync(runtime);
     clock.at += 1_000;
     list.splice(list.findIndex((user) => user.sourceId === "lin-nobody"), 1);
-    list[list.findIndex((user) => user.sourceId === "lin-sam")] = { ...list.find((user) => user.sourceId === "lin-sam")!, emailVerified: true };
+    list[list.findIndex((user) => user.sourceId === "lin-sam")] = { ...list.find((user) => user.sourceId === "lin-sam")!, control: "yes" };
     await sync(runtime);
-    expect(unmatchedOf(db).map((item) => item.sourceId).sort()).toStrictEqual(["lin-hidden", "lin-olga"]);
+    expect(unmatchedOf(db).map((item) => item.sourceId)).not.toContain("lin-nobody");
+    expect(unmatchedOf(db).map((item) => item.sourceId)).not.toContain("lin-sam");
     expect(linksOf(db).map((item) => item.developerId).sort()).toStrictEqual(["dev-priya", "dev-sam"]);
   });
 
   it("an erased person is not brought back: their tool user stays out of the lists and is not linked again", async () => {
-    const { db, runtime, clock } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], vectors: true });
+    const { db, runtime, clock } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], vectors: true, domains: DOMAINS, autoLink: true });
     await sync(runtime);
     expect(linksOf(db)).toHaveLength(1);
     await runtime.erase.person(ORG_A, "dev-priya");
@@ -146,14 +208,15 @@ describe("automatic linking by a verified email", () => {
   });
 
   it("never replaces an admin's mapping and never relinks a tool user an admin unmapped", async () => {
-    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })] });
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users })], domains: DOMAINS, autoLink: true });
     await sync(runtime);
     // The admin maps Sam's tool user, then Priya's link is removed by the admin: the linker leaves both alone.
     expect(await runtime.trackerPeople.map(ORG_A, { system: "linear", sourceId: "lin-sam", developerId: "dev-sam", by: "dev-priya", requestId: "req-1" })).toBe("mapped");
     expect(await runtime.trackerPeople.unmap(ORG_A, { system: "linear", sourceId: "lin-priya", by: "dev-priya", requestId: "req-2" })).toBe("unmapped");
     await sync(runtime);
-    expect(linksOf(db).map((item) => [item.sourceId ?? item.sk, item.via])).toStrictEqual([["TRLINK#linear#lin-sam", "admin"]]);
+    expect(linksOf(db).map((item) => [item.sk, item.via])).toStrictEqual([["TRLINK#linear#lin-sam", "admin"]]);
     expect(unmatchedOf(db).map((item) => item.sourceId)).toContain("lin-priya");
+    expect(reasons(db)["lin-priya"]).toBe("unmapped_by_admin");
   });
 });
 
@@ -264,7 +327,7 @@ describe("a tool the company has not connected is never read", () => {
 describe("an org that connected its tools before it wrote anything", () => {
   it("is in the scheduled jobs' directory as soon as one of its changes is refused for want of a linked person, so the hourly read finds its people", async () => {
     const reads = { count: 0, limits: [] as number[] };
-    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users: [T({ sourceId: "lin-priya", email: "priya@acme.test", emailVerified: true })], reads })] });
+    const { db, runtime } = worldOf({ trackers: [fakeTracker({ system: "linear", users: [T({ sourceId: "lin-priya", email: "priya@acme.test" })], reads })], domains: ["acme.test"], autoLink: true });
     await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source: "linear", scope: "linear:team/t1", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-sam", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
     expect((await runtime.jobs.run("hourly")).orgs).toBe(0);
     await runtime.taps.hook({ orgId: ORG_A, hook: { source: "linear", project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } }, body: { type: "Issue", action: "create", organizationId: "lin-org", actor: { id: "lin-priya" }, data: { id: "i1", teamId: "t1", title: "t", creatorId: "lin-priya", updatedAt: "2026-10-30T10:00:00.000Z" } } });
@@ -381,35 +444,42 @@ describe("the admin's mapping", () => {
 describe("the real readers", () => {
   const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-  it("Linear: one POST per page to its fixed address with the key, bots and deactivated people left out, and every email unverified", async () => {
+  it("Linear: one POST per page to its fixed address with the key, bots and deactivated people left out; guests and company control are read from the same answer", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    const fetcher = (async (url: string, init: RequestInit) => {
-      calls.push({ url, init });
-      return json({ data: { users: { nodes: [
-        { id: "u1", name: "Priya R", displayName: "priya", email: "priya@acme.test", active: true, app: false },
-        { id: "u2", name: "A Bot", displayName: "bot", email: "bot@acme.test", active: true, app: true },
-        { id: "u3", name: "Gone G", displayName: "gone", email: "gone@acme.test", active: false, app: false },
-        { id: "u4", name: "priya2@acme.test", displayName: "", email: null, active: true, app: false },
-      ], pageInfo: { hasNextPage: true, endCursor: "c1" } } } });
-    }) as unknown as typeof fetch;
-    const page = await linearUsersReader({ fetch: fetcher, graphqlUrl: LINEAR_GRAPHQL, apiKey: "lin_api_test" })({ limit: 100 });
-    expect(page.users.map((user) => [user.sourceId, user.emailVerified, user.email])).toStrictEqual([["u1", false, "priya@acme.test"], ["u4", false, undefined]]);
+    const answer = (organization: unknown) => json({ data: { organization, users: { nodes: [
+      { id: "u1", name: "Priya R", displayName: "priya", email: "priya@acme.test", active: true, app: false, guest: false },
+      { id: "u2", name: "A Bot", displayName: "bot", email: "bot@acme.test", active: true, app: true },
+      { id: "u3", name: "Gone G", displayName: "gone", email: "gone@acme.test", active: false, app: false },
+      { id: "u4", name: "priya2@acme.test", displayName: "", email: null, active: true, app: false, guest: true },
+    ], pageInfo: { hasNextPage: true, endCursor: "c1" } } } });
+    const fetcher = (organization: unknown) => (async (url: string, init: RequestInit) => { calls.push({ url, init }); return answer(organization); }) as unknown as typeof fetch;
+    const enforced = { samlEnabled: true, authSettings: { allowedAuthServices: ["saml"] } };
+    const page = await linearUsersReader({ fetch: fetcher(enforced), graphqlUrl: LINEAR_GRAPHQL, apiKey: "lin_api_test" })({ limit: 100 });
+    expect(page.users.map((user) => [user.sourceId, user.email, user.guest, user.control])).toStrictEqual([["u1", "priya@acme.test", false, "yes"], ["u4", undefined, true, "yes"]]);
     expect(page.users[1]!.displayName).toBe("[email]");
     expect(page.next).toBe("c1");
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(LINEAR_GRAPHQL);
+    expect(String(calls[0]!.init.body)).toContain("samlEnabled");
     expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe("lin_api_test");
     expect(calls[0]!.init.redirect).toBe("error");
-    await expect(linearUsersReader({ fetch: async () => json({}, 401), graphqlUrl: LINEAR_GRAPHQL, apiKey: "k" })({ limit: 10 })).rejects.toThrow();
+    // A workspace that does not enforce SAML, or whose settings are not exactly "SAML only, no bypass", is not company-controlled.
+    for (const organization of [null, { samlEnabled: false, authSettings: { allowedAuthServices: ["saml"] } }, { samlEnabled: true, authSettings: { allowedAuthServices: ["saml", "google"] } }, { samlEnabled: true, authSettings: { allowedAuthServices: [] } },
+      { samlEnabled: true, authSettings: {} }, { samlEnabled: true, authSettings: "x" }, { samlEnabled: true, authSettings: { allowedAuthServices: ["saml"], bypassRules: { admins: true } } }, { samlEnabled: true }]) {
+      const other = await linearUsersReader({ fetch: fetcher(organization), graphqlUrl: LINEAR_GRAPHQL, apiKey: "k" })({ limit: 100 });
+      expect(other.users[0]!.control, JSON.stringify(organization)).toBe("no");
+    }
+    expect(linearEnforcesSaml({ samlEnabled: true, authSettings: { allowedAuthServices: ["saml"], bypassRules: {} } })).toBe(true);
+    await expect(linearUsersReader({ fetch: (async () => json({}, 401)) as unknown as typeof fetch, graphqlUrl: LINEAR_GRAPHQL, apiKey: "k" })({ limit: 10 })).rejects.toThrow();
   });
 
-  it("Jira: GET on the connection's own site with basic auth, real people only, a hidden email is none, every email unverified, and it pages by position", async () => {
+  it("Jira: GET on the connection's own site with basic auth, real people only, a hidden email is none, company control is unavailable for every one, and it pages by position", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const people = (count: number) => Array.from({ length: count }, (_, i) => ({ accountId: `acc-${String(i)}`, accountType: i === 1 ? "app" : "atlassian", active: i !== 2, displayName: `P${String(i)}`, ...(i === 0 ? { emailAddress: "p0@acme.test" } : {}) }));
     const fetcher = (async (url: string, init: RequestInit) => { calls.push({ url, init }); return json(people(5)); }) as unknown as typeof fetch;
     const read = jiraUsersReader({ fetch: fetcher, siteUrl: "https://acme.atlassian.net", email: "svc@acme.test", apiToken: "tok" });
     const page = await read({ limit: 5 });
-    expect(page.users.map((user) => [user.sourceId, user.email, user.emailVerified])).toStrictEqual([["acc-0", "p0@acme.test", false], ["acc-3", undefined, false], ["acc-4", undefined, false]]);
+    expect(page.users.map((user) => [user.sourceId, user.email, user.control])).toStrictEqual([["acc-0", "p0@acme.test", "unavailable"], ["acc-3", undefined, "unavailable"], ["acc-4", undefined, "unavailable"]]);
     expect(page.next).toBe("5");
     expect(calls[0]!.url).toBe("https://acme.atlassian.net/rest/api/3/users/search?startAt=0&maxResults=5");
     expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe(`Basic ${Buffer.from("svc@acme.test:tok").toString("base64")}`);

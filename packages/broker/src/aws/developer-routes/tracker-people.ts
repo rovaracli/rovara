@@ -3,6 +3,7 @@
 //   GET    an owner or admin, from a live browser session only: the tool users nobody is linked to (the name the tool showed and the tool's id; never an email) and the ones that are linked (so one can be unmapped).
 //   POST   an owner or admin, from a live browser session only, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise):
 //            { action: "map",   requestId, system, sourceId, developerId }   links the tool user to a member of the SAME company; audited (the event is written first: a ledger that cannot take it refuses the change);
+//            { action: "auto_link", requestId, enabled }  turns the company's automatic linking on or off (off by default; audited). Off stops NEW automatic links; existing links stay until unmapped.
 //            { action: "unmap", requestId, system, sourceId }                 takes the link away; audited. Changes by that tool user are then not stored (and are counted); rows already stored stay and a
 //                                                                             person's erase still takes them.
 // Answers are fixed words, ids and the names the tool showed.
@@ -24,6 +25,7 @@ const RequestId = z.string().uuid();
 const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("map"), requestId: RequestId, system: System, sourceId: SourceId, developerId: z.string().min(1).max(100) }).strict(),
   z.object({ action: z.literal("unmap"), requestId: RequestId, system: System, sourceId: SourceId }).strict(),
+  z.object({ action: z.literal("auto_link"), requestId: RequestId, enabled: z.boolean() }).strict(),
 ]);
 
 const isAdmin = (caller: DeveloperCaller): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
@@ -40,9 +42,10 @@ export async function routeTrackerPeople(deps: DeveloperRouteDependencies, calle
   if (request.method === "GET") {
     const listed = await people.list(caller.orgId);
     return new StatusReply(200, {
-      unmatched: listed.unmatched.map((user) => ({ tool: toolOf(user.system), system: user.system, sourceId: user.sourceId, displayName: user.displayName })),
-      linked: listed.linked.map((user) => ({ tool: toolOf(user.system), system: user.system, sourceId: user.sourceId, displayName: user.displayName, developerId: user.developerId, via: user.via })),
+      unmatched: listed.unmatched.map((user) => ({ tool: toolOf(user.system), system: user.system, sourceId: user.sourceId, displayName: user.displayName, ...(user.reason === undefined ? {} : { reason: user.reason }) })),
+      linked: listed.linked.map((user) => ({ tool: toolOf(user.system), system: user.system, sourceId: user.sourceId, displayName: user.displayName, developerId: user.developerId, via: user.via, ...(user.why === undefined ? {} : { why: user.why }) })),
       truncated: listed.truncated,
+      autoLink: listed.autoLink,
     });
   }
   // The change needs a sign-in within the last 10 minutes (a token, the CLI and Slack were refused above).
@@ -54,6 +57,13 @@ export async function routeTrackerPeople(deps: DeveloperRouteDependencies, calle
   }
   await requireFreshSignIn(deps, caller);
   const body = parsed.data;
+  if (body.action === "auto_link") {
+    const outcome = await people.setAutoLink(caller.orgId, { enabled: body.enabled, by: caller.developerId, requestId: body.requestId });
+    if (outcome === "audit_unavailable") throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");
+    if (outcome === "request_reused") throw agentXError("IDEMPOTENCY_CONFLICT", "That request was used for a different change. Start again.");
+    logDeveloperEvent({ event: "developer.tracker_autolink_changed", orgId: caller.orgId, enabled: String(body.enabled) });
+    return new StatusReply(200, { status: body.enabled ? "auto_link_on" : "auto_link_off" });
+  }
   if (body.action === "map") {
     const outcome = await people.map(caller.orgId, { system: body.system, sourceId: body.sourceId, developerId: body.developerId, by: caller.developerId, requestId: body.requestId });
     if (outcome === "not_found") throw agentXError("NOT_FOUND", "That person is not on the list. Reload the page.");
