@@ -177,6 +177,8 @@ const ROWS: readonly Row[] = [
   ["aws/broker/workflow-items.ts", "completedWorkflowItems", "principal", ".ownerKey"],
   // Plan 6 Task 4: an Understand that chose the Full path is admitted as a Full start is, against the budget of whoever pays for the task (the recorded payer, else the creator; a test run's starter): money, read as `paymentOfTask` reads it
   ["aws/broker/workflow-items.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
+  // SR-1: the second review is admitted against the same payer as the first review (whose budget pays), exactly as the understand-to-full admission above reads it.
+  ["rovara-code/second-review-start.ts", "prepareSecondReview", "money", ".developerId*2", ".startedBy"],
   ["aws/broker/plan-answers.ts", "storePlanAnswer", "principal", ".ownerKey*2"],
   // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes
   ["aws/broker/e2e-rounds.ts", "runGroundingStep", "principal", ".ownerKey"],

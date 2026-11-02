@@ -275,5 +275,8 @@ export * from "./saved-env.js";
 // Setup and test health: setup recipes and their fingerprint (SH4).
 export * from "./setup-recipe.js";
 
+// Setup and test health: the team build runner contract R3 (SH35). Contract only; no runner is built.
+export * from "./runner.js";
+
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";

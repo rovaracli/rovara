@@ -30,10 +30,10 @@ const WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED = 20;
  * 30,000 bytes.
  */
 export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
+  // SH34: the second review of this code (switch `cr`; none for a shadow opinion, none while `cr` is off), kept beside the workflow and never part of the first review's lines. Both versions show it.
+  const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest, workflow.acceptedFindings);
   // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.
   if (workflow.definitionVersion === "1.1.0") {
-    // SH34: the second review of this code (switch `cr`; none for a shadow opinion), kept beside the workflow and never part of the first review's lines.
-    const secondLines = secondReviewPullRequestLines(task, workflow.candidate?.digest, workflow.acceptedFindings);
     return rovaraPullRequestBody({
       summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
       fallbackTitle: task.title, workflow, context: { ...(context ?? {}), ...(proofLines.length === 0 ? {} : { proofLines }), ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }) }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
@@ -54,7 +54,7 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
     "",
     // Between markers, so a pushed PR feedback fix can bring them up to date and leave the rest as the person left it.
     PULL_REQUEST_STATUS_START,
-    ...workflowPullRequestStatusLines(workflow, undefined, proofLines),
+    ...workflowPullRequestStatusLines(workflow, secondLines.length === 0 ? undefined : { secondReviewLines: secondLines }, proofLines),
     PULL_REQUEST_STATUS_END,
     ...attributionBodyLines(context?.attribution),
     ...(pageUrl === undefined ? [] : [`AgentX task: ${pageUrl}`]),
@@ -84,6 +84,7 @@ export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, conte
   return [
     ...(reviewOnly ? [] : [`Checks: ${passed.length > 0 ? passed.join(", ") : "none recorded"}`]),
     ...workflowReviewLines(workflow, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED),
+    ...(context?.secondReviewLines ?? []),
     ...proofLines,
   ];
 }

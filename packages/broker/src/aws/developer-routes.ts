@@ -184,6 +184,8 @@ import { routeTestHealth } from "./developer-routes/test-health.js";
 import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKnownFailingMarks } from "./developer-routes/known-failing-marks.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
+import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
+import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
@@ -209,7 +211,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-ro
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
 import { listAppProjects, listProjects } from "./developer-routes/project-list.js";
-import { changeProjectArchive, egressDepsOf, getAppProject, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
+import { changeProjectArchive, egressDepsOf, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
 import {
   deleteProjectMember,
   deleteProjectSlackChannel,
@@ -218,7 +220,8 @@ import {
   putProjectMember,
   putProjectSlackChannel,
 } from "./developer-routes/project-members.js";
-import { listGithubRepositories, projectMetaConfigRoute, putProjectSettings } from "./developer-routes/project-settings.js";
+import { listGithubRepositories, projectMetaConfigRoute } from "./developer-routes/project-settings.js";
+import { getAppProjectWithProof, putProjectSettingsChecked, undoToProvenSetup } from "./developer-routes/settings-proof.js";
 import { listWorkspaces } from "./developer-routes/project-access.js";
 import {
   chainRouteDependenciesFor,
@@ -312,6 +315,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
+  if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
+  if (/\/tasks\/[^/]+\/second-review-acknowledge$/u.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_ACK_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
@@ -441,9 +446,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
-  if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
+  if (request.method === "GET" && appProject !== null) return getAppProjectWithProof(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
-  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettingsChecked(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  // TE-4: a maintainer in a browser, signed in within ten minutes, goes back to the last proved setup.
+  const projectSettingsUndo = /^\/v1\/app\/projects\/([^/]+)\/settings\/undo$/.exec(url.pathname);
+  if (request.method === "POST" && projectSettingsUndo !== null) return undoToProvenSetup(deps, caller, projectSettingsUndo[1]!, jsonBody(request));
   const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
   if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
@@ -531,6 +539,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testHealthReply !== undefined) return testHealthReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
+  // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
+  const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
+  if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
+  const secondReviewReply = await routeSecondReview(deps, caller, request, url);
+  if (secondReviewReply !== undefined) return secondReviewReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);
   if (trackerPeopleReply !== undefined) return trackerPeopleReply;
   const knownFailingMarksReply = await routeKnownFailingMarks(deps, caller, request, url);

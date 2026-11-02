@@ -15,7 +15,7 @@ import { inspectWorkspaceForClose } from "./close-workspace.js";
 import { advertisedInvocationFeatures, anotherOperationActive, createWorkerServerState, startWorkerServer } from "./server.js";
 import { consoleWorkerLog, logWorkerStarted } from "./worker-log.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
-import { modelFallbackReporter, resolveTaskSessionModel, taskMissingKeyAuthorizer } from "./task-model.js";
+import { modelFallbackReporter, resolveTaskSessionModel, secondReviewerRuntimes, taskMissingKeyAuthorizer } from "./task-model.js";
 import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
@@ -135,6 +135,8 @@ const state = createWorkerServerState(
         return runTaskInvocation(invocation, {
           rootPath,
           model: session.model,
+          // SR-1: the second reviewer's models, each with its own session (and proxy route).
+          ...(invocation.payload.workflowSecondReviewer === undefined ? {} : { secondReviewer: { candidates: secondReviewerRuntimes(invocation.payload, proxy, process.env) ?? [], ...(invocation.payload.workflowSecondReviewer.context === undefined ? {} : { context: invocation.payload.workflowSecondReviewer.context }) } }),
           // MODEL3: a missing provider key that sent the task to the chosen fallback model is told to the task page, once, as a progress event.
           piAdapter: session.piAdapter ?? createDefaultPiSessionAdapter({ onModelFallback: modelFallbackReporter(callbacks.eventSink),...(missingKeyAuthority===undefined?{}:{authorizeModelFallback:missingKeyAuthority}) }),
           ...callbacks,

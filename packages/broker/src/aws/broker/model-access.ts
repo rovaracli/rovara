@@ -254,8 +254,10 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
     if(companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
     if(companyPolicy.locked&&companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/how-we-work");
   }
-  const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+  const liveRoute = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
+  // SR-1: the key of a review that carries a second reviewer may also call the aliases the broker chose for it, and no others. An unscoped key (no route) stays unscoped.
+  const route = liveRoute === undefined || (operation.secondReviewPlan?.aliases ?? []).length === 0 ? liveRoute : { ...liveRoute, extraAliases: operation.secondReviewPlan!.aliases };
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     if (current.fence !== claims.fence || TERMINAL.has(current.status) || current.id !== claims.operationId || current.workspaceId !== claims.workspaceId

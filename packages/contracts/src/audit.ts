@@ -208,6 +208,13 @@ export const AUDIT_ACTIONS = [
   "company.known_failing_policy_proposed",
   "company.known_failing_policy_changed",
   "company.known_failing_policy_refused",
+  // Second review by another AI company (SR-1, switch `cr`): the company chose (or cleared) its reviewer models, and a project narrowed that choice. Counts and fixed words only: a model's name is not recorded.
+  "company.second_review_choice_changed",
+  "project.second_review_narrowed",
+  // What the second reviewer is shown besides the code change (`change_only` or `same_as_first`).
+  "company.second_review_context_changed",
+  // The task owner acknowledged that an `on` second review did not run (the merge gate).
+  "task.second_review_acknowledged",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -287,6 +294,8 @@ export const AUDIT_ACTIONS = [
   "company_domain.verified",
   "company_domain.lost",
   "company_domain.removed",
+  // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
+  "project.setup_restored",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -462,6 +471,13 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
   "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
   "company.known_failing_policy_refused": ["refusal"],
+  // `change` is `choose` or `clear`; `count` is how many models the choice now holds (0 to 2).
+  "company.second_review_choice_changed": ["change", "count"],
+  "project.second_review_narrowed": ["change", "count"],
+  // `to` is `change_only` or `same_as_first`; `widens` is true when more of the company's connected context now reaches the second reviewer.
+  "company.second_review_context_changed": ["to", "widens"],
+  // `cause` is one of the fixed words for why the second review did not run.
+  "task.second_review_acknowledged": ["cause"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],
@@ -543,6 +559,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_domain.verified": ["wasState", "tookOver"],
   "company_domain.lost": ["missingDays"],
   "company_domain.removed": ["wasState"],
+  // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
+  "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

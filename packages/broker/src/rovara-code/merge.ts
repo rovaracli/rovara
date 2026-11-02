@@ -51,6 +51,7 @@ import { personNameForText } from "../developer/requester-text.js";
 import { ownerDisplayName, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository } from "../github-app.js";
 import { readCodeSettings } from "./code-settings.js";
+import { secondReviewMergeWait } from "./second-review-store.js";
 import { codeOwnerVerdict, type CodeOwnerVerdict } from "./code-owners.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, nonWritersAmong, requesterGithubIds, type HumanApproval, type ApprovalRefusal, type RepositoryPermission } from "./approval.js";
 import { githubUserOfMember } from "./github-members.js";
@@ -101,6 +102,8 @@ export interface ReadinessInput {
   requesterName: string;
   /** Whether a code owner approved, by `repositoryId#number`, where the repository has a CODEOWNERS file that covers the changed paths (read fresh; absent where nothing was read). */
   codeOwners?: ReadonlyMap<string, CodeOwnerVerdict> | undefined;
+  /** SR-1: the words of the refusal while an `on` second review that did not run waits for the task owner to acknowledge it (`secondReviewMergeWait`). Absent: nothing waits. */
+  secondReviewWait?: string | undefined;
 }
 
 export type Readiness = { ready: true } | { ready: false; message: string };
@@ -146,6 +149,7 @@ export function mergeReadiness(input: ReadinessInput): Readiness {
   if (refusal !== undefined) return notReady(refusal);
   const open = input.pullRequests.filter((pr) => pr.state !== "merged");
   if (open.length === 0) return notReady(M.taskClosed);
+  if (input.secondReviewWait !== undefined) return notReady(input.secondReviewWait);
   const several = input.pullRequests.length > 1;
   for (const pr of open) {
     const key = pullRequestKey(pr);
@@ -261,7 +265,7 @@ async function readinessFromItems(
     if (base !== undefined) bases.set(key, base);
   }
   const readiness = mergeReadiness({
-    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task),
+    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task), secondReviewWait: secondReviewMergeWait(task),
   });
   return { readiness, items: [...items], settings, entries };
 }
@@ -468,7 +472,7 @@ async function mergeableNow(
   if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true, mergedBefore, entries };
   const presser = { githubUserId: await githubUserOfMember(deps, task.orgId, presserDeveloperId) };
   const readiness = mergeReadiness({
-    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task), codeOwners,
+    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task), codeOwners, secondReviewWait: secondReviewMergeWait(task),
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
   return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
