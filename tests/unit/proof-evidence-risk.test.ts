@@ -9,7 +9,7 @@ import { guardPack } from "../../packages/broker/src/rovara-code/evidence-guard.
 import { evidenceRiskSignal, kindOfRawCheck } from "../../packages/broker/src/rovara-code/evidence-risk.js";
 import { assessRisk, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
-import { evidenceRiskOfTask } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
+import { evidenceRiskOfTask, securityCheckExpected } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
 
 const DIGEST = "c".repeat(64);
 const OTHER = "e".repeat(64);
@@ -181,6 +181,37 @@ describe("the risk rule", () => {
     expect(asked).toEqual([code.digest]);
     expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest)).toBeUndefined();
     expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest)).toBeUndefined();
+  });
+
+  // EV-2 (Sonnet re-check of evidence-p3p4): a missing pack (the 6 s read timed out, the store was down, nothing was kept) used to read as "no signal", so a change whose policy has a security check looked Low.
+  describe("a missing pack where the policy has a security check", () => {
+    it("is evidenceUnavailable: no pack, a failed read, or a pack for other code; the risk is at least Medium, in a fixed sentence", async () => {
+      const unavailable = { highNewFindings: 0, evidenceUnavailable: true };
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, true)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest, true)).toEqual(unavailable);
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest, true)).toEqual(unavailable);
+      const risk = assessRisk(input({ evidence: unavailable }));
+      expect(risk.level).toBe("medium");
+      expect(risk.reasons).toContain("The proof evidence for this code was not available, so a security scan could not be checked, and it needs review.");
+    });
+
+    it("changes nothing when the policy has no security check, when there is no port or no candidate, or when the pack is there", async () => {
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, false)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest)).toBeUndefined();
+      expect(await evidenceRiskOfTask(undefined, TASK, code.digest, true)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, undefined, true)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { medium: 1 }) }, TASK, code.digest, true)).toBeUndefined();
+      expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 2 }) }, TASK, code.digest, true)).toEqual({ highNewFindings: 2 });
+      expect(assessRisk(input({ evidence: { highNewFindings: 0, evidenceUnavailable: false } }))).toEqual(assessRisk(input()));
+    });
+
+    it("a new high finding still wins over an unavailable pack in the same signal, and the policy's kinds decide whether a security check is expected", () => {
+      expect(assessRisk(input({ evidence: { highNewFindings: 1, evidenceUnavailable: true } })).level).toBe("high");
+      const policy = (kinds: Array<string | undefined>) => ({ required: kinds.map((kind, index) => ({ id: `readiness:${String(index)}`, label: `check ${String(index)}`, ...(kind === undefined ? {} : { kind }) })), optional: [], selectedOptionalIds: [] });
+      expect(securityCheckExpected(policy(["test", "security"]) as never)).toBe(true);
+      expect(securityCheckExpected(policy(["test", undefined]) as never)).toBe(false);
+      expect(securityCheckExpected(undefined)).toBe(false);
+    });
   });
 
   it("recomputeRisk gives the recorded level of the code with the signal, and is the same object-for-object without it", async () => {

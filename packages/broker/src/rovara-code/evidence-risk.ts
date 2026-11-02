@@ -8,6 +8,8 @@ export interface EvidenceRiskSignal {
   highNewFindings: number;
   /** High or critical findings of a security scan that could not be compared with the original code (no usable baseline): the change needs a look, it is never silently low. */
   unverifiedHighFindings?: number | undefined;
+  /** The approved check policy has a security check but no pack for exactly this code could be read (never kept, the read timed out, or the store failed): a scan could not be checked, so the change is at least medium, never silently low. */
+  evidenceUnavailable?: true | undefined;
 }
 
 /** Scanner names (SARIF `tool.driver.name`, case-insensitive prefix) treated as security scanners when the approved check policy gave the check no kind. */
