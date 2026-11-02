@@ -6,20 +6,32 @@ import { RecordEventSchema } from "@agentx/contracts";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { ORG_A, addSource, caller, githubDraft, world } from "../../support/team-record-core.js";
 
-describe("addedText: an editor is credited with the lines they added, never the author's", () => {
-  it("returns only the new lines, counting a repeated line once per time it was added", () => {
-    expect(addedText("a\nb", "a\nb\nc")).toBe("c");
-    expect(addedText("a", "a\na")).toBe("a");
-    expect(addedText("a\nb", "b\nnew\na")).toBe("new");
+describe("addedText: an editor is credited with the words they added, never the author's", () => {
+  it("returns only the inserted words, in order, whole lines or not", () => {
+    expect(addedText("a b", "a b c")).toBe("c");
+    expect(addedText("a", "a a")).toBe("a");
+    expect(addedText("hand.", "hand today.")).toBe("today.");
+    expect(addedText("one\ntwo", "one\ntwo\nthree four")).toBe("three four");
   });
-  it("fails closed: unknown earlier text, nothing added, or text that does not line up with the earlier text gives nothing", () => {
+  it("a one-word typo fix in a long line credits only that word (B2)", () => {
+    const line = "The nightly export job fails on Tuesday after the schema migration runs, so please rerun it by hand.";
+    expect(addedText(line, line.replace("Tuesday", "Tuesdays"))).toBe("Tuesdays");
+    expect(addedText("Fix cart total", "Fix the cart total")).toBe("the");
+    expect(addedText("Cart total wrong", "Cart total wrong on Tuesdays")).toBe("on Tuesdays");
+    // The author's words around the edit are not in the result.
+    expect(addedText(line, line.replace("by hand.", "by hand today."))).toBe("today.");
+  });
+  it("fails closed: unknown earlier text, nothing added, or texts too long to compare give nothing", () => {
     expect(addedText(undefined, "x")).toBeUndefined();
     expect(addedText("a", undefined)).toBeUndefined();
-    expect(addedText("a\nb", "a")).toBeUndefined();
-    expect(addedText("author words", "completely different markup")).toBeUndefined();
+    expect(addedText("a b", "a")).toBeUndefined();
+    expect(addedText("Tuesday run", "tuesday   run!")).toBeUndefined();
+    const long = Array.from({ length: 2_001 }, (_, i) => `w${String(i)}`).join(" ");
+    expect(addedText(long, `${long} more`)).toBeUndefined();
   });
-  it("an earlier text that was empty makes everything new", () => {
+  it("an earlier text that was empty makes everything new; an unrelated rewrite is all the editor's", () => {
     expect(addedText("", "first words")).toBe("first words");
+    expect(addedText("author words", "completely different")).toBe("completely different");
   });
 });
 

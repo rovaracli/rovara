@@ -2,7 +2,7 @@
 // ticket-shaped goes through `createTicketRecorder`, so audience, trust and retention are decided once.
 import { createHash } from "node:crypto";
 import { addedText, cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import { MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
+import { MAINTAINERS_GROUP, type ActorResolverPort, type PriorEditsPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
 
 export interface TicketAcl {
   principals?: readonly string[];
@@ -48,6 +48,8 @@ export interface TicketItem {
   changed?: { title?: boolean; body?: boolean; state?: boolean; labels?: boolean };
   /** The body (or comment text) as it was before this edit, when the source sent it: the editor is credited with the lines they added to it and nothing else. */
   previousBody?: string;
+  /** The title as it was before this edit, when the source sent it: a changed title credits the editor with the words they added to it and nothing else. Absent: no title words are kept. */
+  previousTitle?: string;
   /** The source marks the item as restricted inside its team or project (a Jira issue security level): maintainers only, whatever the admin widened. */
   restricted?: boolean;
   /**
@@ -76,6 +78,13 @@ export interface TicketRecorderDependencies extends GateDependencies {
   actors: ActorResolverPort;
   parents?: ParentLookupPort;
   log?: TapLog;
+  /** S2: lets a comment edited by its own author, with no earlier text, keep that author's whole text when nobody else edited it before. Absent: such an edit keeps no words. */
+  priorEdits?: PriorEditsPort;
+  /**
+   * The MCP poller sees an item as it is NOW (everyone's edits in it), not who changed what, so a change it reports cannot be put under one person's name. Until a poller says who changed what, its items are not
+   * stored (this stays false in production). Tests of the poller's own plumbing set it.
+   */
+  pollerChangesAttributed?: true;
 }
 
 export interface TicketContext {
@@ -122,6 +131,7 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
       try {
         const config = preloaded ?? await gate(deps, { workspaceId: context.workspaceId, ...(context.project === undefined ? {} : { project: context.project }), source: item.source, scope: item.scope });
         if (config === undefined) return "skipped";
+        if (item.source === "mcp" && deps.pollerChangesAttributed !== true) { log("record.mcp_change_unattributed", { source: item.source }); return "skipped"; }
         // Per-editor rows (owner, 2026-11-02): ONE row per change, under the person who made it. A creation is its author's; an edit (a description, a title, a status, a label, a comment) is its editor's,
         // and holds only that person's own words, so a person's erase takes exactly their rows and nothing else of the item. Nothing is frozen and nothing is replaced.
         const isEdit = item.edit === true;
@@ -147,11 +157,15 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         if (!isEdit) {
           for (const part of [item.title, item.body]) if (typeof part === "string" && part !== "") pieces.push(part);
         } else {
-          if (item.changed?.title === true && typeof item.title === "string" && item.title !== "") pieces.push(item.title);
+          if (item.changed?.title === true) { const added = addedText(item.previousTitle, item.title); if (added !== undefined) pieces.push(added); }
           if (isComment || item.changed?.body === true) {
             let added = addedText(item.previousBody, item.body);
             // Only a comment's own author edits it (an administrator's edit of someone else's comment always sends what it was, or keeps no words): with no earlier text, the editor's whole text is theirs.
-            if (added === undefined && isComment && item.previousBody === undefined && item.body !== undefined && item.authorId !== undefined && item.authorId === item.updaterId) added = item.body;
+            if (added === undefined && isComment && item.previousBody === undefined && item.body !== undefined && item.authorId !== undefined && item.authorId === item.updaterId) {
+              // S2: only when nobody else edited this comment before (their words may be in it). A lookup that fails, or no lookup, keeps no words.
+              const others = deps.priorEdits === undefined ? true : await deps.priorEdits.editedByOthers({ workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id, actorSourceId: item.authorId }).catch(() => true);
+              if (!others) added = item.body;
+            }
             if (added !== undefined) pieces.push(added);
           }
         }

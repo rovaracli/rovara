@@ -1270,8 +1270,23 @@ describe("per-editor rows: the editor of an item is erasable, and only their row
     const left = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
     expect(left).toHaveLength(3);
     expect(JSON.stringify(left)).toContain("ann's original");
-    expect(JSON.stringify(left)).toContain("ann's second title");
+    expect(JSON.stringify(left)).toContain("ann's second");
     expect(JSON.stringify(left)).toContain("maya's original");
+  });
+
+  it("S2: a comment its author edits with no earlier text from the host keeps her whole text only if nobody else edited it before", async () => {
+    const { db, runtime } = await world();
+    const mayaEdits = (text: string, id: number, at: string) => ({ eventName: "issue_comment", deliveryId: `d-${String(id)}`, payload: { action: "edited", sender: { id: 123, login: "maya", type: "User" }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" }, issue: { number: 12, pull_request: {} }, comment: { id, html_url: `https://github.com/acme/api/pull/12#issuecomment-${String(id)}`, body: text, user: { id: 123, login: "maya", type: "User" }, updated_at: at } } });
+    // Comment 7: Bob edited it, then Maya edits it with no earlier text sent: none of her text is kept.
+    await runtime.taps.github(delivery(55, 101, "maya's original"));
+    await runtime.taps.github(edited(`maya's original\n${BOB_WORDS}`));
+    await runtime.taps.github(mayaEdits(`maya's original\n${BOB_WORDS}\nMAYA-SECOND`, 7, "2026-10-30T10:09:00Z"));
+    // Comment 8: nobody else touched it, so her whole edited text is hers.
+    await runtime.taps.github(mayaEdits("maya alone EIGHT", 8, "2026-10-30T10:10:00Z"));
+    const texts = db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => String(row.text));
+    expect(texts.some((text) => text.includes("MAYA-SECOND"))).toBe(false);
+    expect(texts.filter((text) => text.includes(BOB_WORDS))).toHaveLength(1);
+    expect(texts).toContain("maya alone EIGHT");
   });
 
   it("an unlinked editor is not kept, and is counted", async () => {
@@ -1530,6 +1545,34 @@ describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to
     expect(rows.map((row) => (row.sourceRef as { order: number }).order)).toStrictEqual([Date.parse("2026-10-30T10:00:00.000Z"), Date.parse("2026-10-30T10:05:00.000Z"), Date.parse("2026-10-30T10:10:00.000Z")]);
     // No freeze mark and no item head: nothing is replaced and nothing stops later changes.
     expect(db.find((item) => String(item.sk).startsWith("EDITED#") || String(item.sk).startsWith("ITEM#"))).toStrictEqual([]);
+  });
+
+  it("B1: a Jira author's formatted description survives Sam's edit in HER row and leaves with her erase; Sam's row holds only the words he added", async () => {
+    const { db, runtime, clock } = await world();
+    await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, { workspaceId: ORG_A, project: "web", source: "jira", scope: "jira:project/WEB", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: "enterprise" });
+    expect(await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-priya", developerId: "dev-1", via: "connect" })).toBe(true);
+    expect(await runtime.links.link(ORG_A, { system: "jira:acme.atlassian.net", sourceId: "acc-sam", developerId: "dev-2", via: "connect" })).toBe(true);
+    const jiraHook = { source: "jira" as const, project: "web", tenant: { siteHost: "acme.atlassian.net", projectKey: "WEB" } };
+    const para = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+    const adf = (...lines: string[]) => ({ type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "Context" }] }, ...lines.map(para)] });
+    const issue = (kind: string, user: string, at: number, description: unknown, changelog?: unknown) => ({
+      webhookEvent: kind, timestamp: at, user: { accountId: user }, ...(changelog === undefined ? {} : { changelog }),
+      issue: { id: "7", key: "WEB-7", self: "https://acme.atlassian.net/rest/api/2/issue/7", fields: { summary: "Cart", description, project: { key: "WEB" }, creator: { accountId: "acc-priya" } } },
+    });
+    const wiki = "h2. Context\n* PRIYASECRET plan item\nplain line";
+    await runtime.taps.hook({ orgId: ORG_A, hook: jiraHook, body: issue("jira:issue_created", "acc-priya", 1_761_818_400_000, adf("PRIYASECRET plan item", "plain line")) });
+    await runtime.taps.hook({ orgId: ORG_A, hook: jiraHook, body: issue("jira:issue_updated", "acc-sam", 1_761_818_700_000, adf("PRIYASECRET plan item", "plain line", "SAMLINE added"), { items: [{ field: "description", fromString: wiki, toString: `${wiki}\nSAMLINE added` }] }) });
+    const rows = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rows).toHaveLength(2);
+    const byPerson = (id: string) => JSON.stringify(rows.filter((row) => (row.actor as { developerId: string }).developerId === id).map((row) => row.text));
+    expect(byPerson("dev-1")).toContain("PRIYASECRET");
+    expect(byPerson("dev-2")).toBe(JSON.stringify(["SAMLINE added"]));
+    await runtime.erase.person(ORG_A, "dev-1");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain("PRIYASECRET");
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => row.text)).toStrictEqual(["SAMLINE added"]);
   });
 
   it("a freeze mark left from before (EDITED#) is ignored: nothing reads it, and every change still lands", async () => {

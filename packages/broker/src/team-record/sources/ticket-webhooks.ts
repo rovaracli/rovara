@@ -61,7 +61,7 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
       title: str(data.title, 500) ?? str(data.identifier, 100) ?? id, ...(str(data.description, 70_000) === undefined ? {} : { body: str(data.description, 70_000)! }),
       ...(state === undefined ? {} : { state }), labels, ...(str(data.url ?? parsed.data.url) === undefined ? {} : { url: str(data.url ?? parsed.data.url)! }),
       ...(creator === undefined ? {} : { authorId: creator }), ...(actorId === undefined ? {} : { updaterId: actorId }), nativeId: id, ...(action === "update" ? { edit: true } : {}),
-      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(from !== undefined && "description" in from ? { previousBody: before(from.description) } : {}),
+      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(from !== undefined && "description" in from ? { previousBody: before(from.description) } : {}), ...(from !== undefined && "title" in from ? { previousTitle: before(from.title) } : {}),
       occurredAt: at, version: `${action}:${at}`, acl,
     }] };
   }
@@ -136,12 +136,18 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
     const changedField = (name: string): Record<string, unknown> | undefined => changes?.find((entry) => typeof entry.field === "string" && entry.field.toLowerCase() === name);
     const changedOf = changes === undefined ? undefined : { title: changedField("summary") !== undefined, body: changedField("description") !== undefined, state: changedField("status") !== undefined, labels: changedField("labels") !== undefined };
     const descriptionChange = changedField("description");
+    const summaryChange = changedField("summary");
+    // B1: an UPDATE's description and title come from the changelog item itself: its `fromString` and `toString` are in the SAME format (Jira's wiki markup), so the words the editor added are found by comparing
+    // the two. The description in `fields` is Atlassian Document Format flattened to plain text, a different format, and is never compared with `fromString`. With no `toString` there is no text to compare: no words are kept.
+    const isUpdate = webhookEvent === "jira:issue_updated";
+    const bodyOf = isUpdate ? str(descriptionChange?.toString, 70_000) : description;
+    const titleOf = isUpdate && summaryChange !== undefined ? str(summaryChange.toString, 500) : undefined;
     return { system, removed: [], changes: [{
       source: "jira", system, id: `issue:${issueId}`, kind: webhookEvent === "jira:issue_created" ? "ticket.created" : "ticket.updated", scope,
-      title: str(fields.summary, 500) ?? key ?? issueId, ...(description === undefined ? {} : { body: description }), ...(state === undefined ? {} : { state }),
+      title: titleOf ?? str(fields.summary, 500) ?? key ?? issueId, ...(bodyOf === undefined ? {} : { body: bodyOf }), ...(state === undefined ? {} : { state }),
       labels: Array.isArray(fields.labels) ? fields.labels.flatMap((label: unknown) => str(label, 100) ?? []) : [], ...(browse === undefined ? {} : { url: browse }),
       ...(creator === undefined ? {} : { authorId: creator }), ...(triggeredBy === undefined ? {} : { updaterId: triggeredBy }), nativeId: issueId, ...(webhookEvent === "jira:issue_updated" ? { edit: true } : {}),
-      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(descriptionChange === undefined ? {} : { previousBody: before(descriptionChange.fromString) }),
+      ...(changedOf === undefined ? {} : { changed: changedOf }), ...(descriptionChange === undefined ? {} : { previousBody: before(descriptionChange.fromString) }), ...(summaryChange === undefined ? {} : { previousTitle: before(summaryChange.fromString) }),
       ...(restricted ? { restricted: true } : {}), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
     }] };
   }

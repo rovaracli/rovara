@@ -45,6 +45,8 @@ import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, 
 import { syncIsDue, syncTrackerUsers, type ConnectedTrackersPort, type SyncResult } from "./tracker-directory.js";
 import { auditRecordTrackerPersonMapped, auditRecordTrackerPersonUnmapped } from "../audit/events.js";
 import { needsLinkedAuthor, unlinkedCounter } from "./unlinked.js";
+import { bySource } from "./store.js";
+import type { PriorEditsPort } from "./sources/ports.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
@@ -483,9 +485,16 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
     async byMergeCommit() { return undefined; },
   };
+  // S2: whether anyone else's edit of an item is stored (tombstoned rows count; a list too long to read counts).
+  const priorEdits: PriorEditsPort = {
+    async editedByOthers({ workspaceId, system, id, actorSourceId }) {
+      const found = await bySource(table, OrgIdSchema.parse(workspaceId), system, id, 100);
+      return found.truncated || found.items.some((item) => item.entityType === "TEAM_RECORD_EVENT" && (item.sourceRef as { order?: unknown } | undefined)?.order !== undefined && (item.actor as { sourceId?: string } | undefined)?.sourceId !== actorSourceId);
+    },
+  };
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now });
-  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog });
+  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits });
+  const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits });
   const hook = createHookRecordTap({ recorder });
   const emitter = createRovaraEmitter({ sink, actors, mode, config, log: tapLog });
 

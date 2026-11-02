@@ -111,26 +111,39 @@ export function withRetention(draft: RecordDraft, retention: Retention): RecordD
 /** Every tap's hard bound on what one delivery may write. */
 export const MAX_DRAFTS_PER_DELIVERY = 50;
 
+/** The most words either text may have for a word-by-word comparison (the table is words x words); more than this and the edit keeps no words. */
+const DIFF_WORDS_MAX = 2_000;
+
 /**
- * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after. Whole lines of `next` that were not in `previous` (as a multiset, so a repeated line counts
- * once per time it was added). It is how a person who edited someone else's description is credited with their own lines only, and never with the author's.
+ * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after, WORD BY WORD (a longest common subsequence of the words, so a one-word typo fix credits that one word and
+ * not the sentence, line or title around it). The inserted runs are returned in order, separated by a space. It is how a person who edited someone else's text is credited with their own words only,
+ * never with the author's.
  *
- * Fail closed: `previous` unknown gives nothing; and when `previous` has words but no line of it survives in `next` the two may not line up at all (a different markup for the same text), so
- * nothing is credited rather than the author's words credited to the editor.
+ * Fail closed: `previous` unknown gives nothing; nothing inserted gives nothing; and texts too long to compare word by word give nothing. The two texts must be in the SAME format (a source that sends the old
+ * and the new text in different markups must not be compared: Jira's changelog gives both, in wiki markup).
  */
 export function addedText(previous: string | undefined, next: string | undefined): string | undefined {
   if (previous === undefined || next === undefined) return undefined;
-  const lines = (text: string): string[] => text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
-  const before = lines(previous);
-  const after = lines(next);
-  const remaining = new Map<string, number>();
-  for (const line of before) remaining.set(line, (remaining.get(line) ?? 0) + 1);
-  const added: string[] = [];
-  let kept = 0;
-  for (const line of after) {
-    const left = remaining.get(line) ?? 0;
-    if (left > 0) { remaining.set(line, left - 1); kept += 1; } else added.push(line);
+  const words = (text: string): string[] => text.split(/\s+/u).filter((word) => word !== "");
+  // Words are compared without the punctuation around them and without case ("hand." is "hand"); what is returned is the word as the editor wrote it.
+  const key = (word: string): string => { const bare = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").toLowerCase(); return bare === "" ? word : bare; };
+  const original = words(next);
+  const before = words(previous).map(key);
+  const after = original.map(key);
+  if (before.length > DIFF_WORDS_MAX || after.length > DIFF_WORDS_MAX) return undefined;
+  // lcs[i][j]: the length of the longest common run of words in before[i..] and after[j..].
+  const width = after.length + 1;
+  const lcs = new Uint16Array((before.length + 1) * width);
+  for (let i = before.length - 1; i >= 0; i -= 1) {
+    for (let j = after.length - 1; j >= 0; j -= 1) {
+      lcs[i * width + j] = before[i] === after[j] ? lcs[(i + 1) * width + j + 1]! + 1 : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
+    }
   }
-  if (before.length > 0 && kept === 0) return undefined;
-  return added.length === 0 ? undefined : added.join("\n");
+  const inserted: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (j < after.length) {
+    if (i < before.length && before[i] === after[j]) { i += 1; j += 1; } else if (i < before.length && lcs[(i + 1) * width + j]! >= lcs[i * width + j + 1]!) { i += 1; } else { inserted.push(original[j]!); j += 1; }
+  }
+  return inserted.length === 0 ? undefined : inserted.join(" ");
 }

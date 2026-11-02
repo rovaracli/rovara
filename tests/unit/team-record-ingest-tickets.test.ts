@@ -12,10 +12,10 @@ const AWS_KEY = ["AK", "IA", "IOSFODNN7EXAMPLE"].join("");
 const NOW = Date.parse("2026-10-30T10:00:00.000Z");
 const daysAgo = (days: number): string => new Date(NOW - days * 86_400_000).toISOString();
 
-function recorderWorld() {
+function recorderWorld(options: { pollerChangesAttributed?: true } = {}) {
   const w = world();
   w.actors.members.set("acc-1", "dev-1");
-  const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config });
+  const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, ...options });
   return { w, recorder };
 }
 
@@ -101,30 +101,58 @@ describe("per-editor rows: every change is its own row under the person who made
     expect(new Set(w.sink.puts.map((draft) => draft.sourceRef.version)).size).toBe(3);
   });
 
-  it("nothing of the author's words is in the editor's row, nor the editor's in the author's; a title change is the editor's whole new title", async () => {
+  it("nothing of the author's words is in the editor's row, nor the editor's in the author's; a title change is the words the editor added to the earlier title", async () => {
     const { w, recorder } = twoMembers();
-    await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:2", title: "Cart total off by a cent", body: "line one by Priya", changed: { title: true, body: false } });
+    await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:2", title: "Cart total wrong off by a cent", previousTitle: "Cart total wrong", body: "line one by Priya", changed: { title: true, body: false } });
     expect(w.sink.puts).toHaveLength(1);
-    expect(w.sink.puts[0]!.text).toBe("Cart total off by a cent");
+    expect(w.sink.puts[0]!.text).toBe("off by a cent");
     expect(JSON.stringify(w.sink.puts)).not.toContain("line one by Priya");
   });
 
-  it("an edit whose earlier text is unknown keeps NO words (they may be someone else's), and an edit whose text does not line up with the earlier one keeps none either", async () => {
+  it("an edit whose earlier text is unknown keeps NO words (they may be someone else's); a rewrite with the earlier text known is the editor's own words", async () => {
     const { w, recorder } = twoMembers();
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:2", body: "line one by Priya\nline two by Sam", changed: { body: true } });
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:3", body: "h1. Wiki markup version", changed: { body: true }, previousBody: "line one by Priya" });
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:4", body: "all of it", occurredAt: "2026-10-30T09:40:00.000Z" });
-    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual([undefined, undefined, undefined]);
+    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual([undefined, "h1. Wiki markup version", undefined]);
     expect(w.sink.puts.map((draft) => draft.structured?.changed)).toStrictEqual(["body", "body", "unknown"]);
   });
 
-  it("a comment edited by its own author is that author's whole text; edited by someone else with no earlier text it keeps none", async () => {
+  it("B2: a one-word typo fix credits the editor with that word only, in the description and in the title; a title change with no earlier title keeps no words", async () => {
     const { w, recorder } = twoMembers();
+    const paragraph = "The nightly export fails on Tuesday after the schema migration runs, so please rerun it by hand.";
+    await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:2", title: "Cart total is wrong", previousTitle: "Cart total is wrnog", body: paragraph.replace("Tuesday", "Tuesdays"), previousBody: paragraph, changed: { title: true, body: true } });
+    await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:3", title: "Totally new title", changed: { title: true } });
+    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual(["wrong\n\nTuesdays", undefined]);
+    expect(JSON.stringify(w.sink.puts)).not.toContain("nightly export");
+  });
+
+  it("a comment edited by its own author is that author's whole text only when nobody else edited it before (S2); edited by someone else with no earlier text it keeps none", async () => {
+    const { w } = twoMembers();
+    const others = { value: false };
+    const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, priorEdits: { editedByOthers: async () => others.value } });
     const comment: TicketItem = { ...base, id: "comment:7", kind: "ticket.comment", edit: true, parentId: "issue:10001", body: "my comment, fixed", version: "comment_updated:1" };
     await recorder.record({ workspaceId: WS }, { ...comment, updaterId: "acc-1" });
     await recorder.record({ workspaceId: WS }, { ...comment, updaterId: "acc-2", version: "comment_updated:2" });
     await recorder.record({ workspaceId: WS }, { ...comment, updaterId: "acc-2", version: "comment_updated:3", previousBody: "my comment", body: "my comment\nSam added this" });
-    expect(w.sink.puts.map((draft) => [draft.actor?.sourceId, draft.text])).toStrictEqual([["acc-1", "my comment, fixed"], ["acc-2", undefined], ["acc-2", "Sam added this"]]);
+    others.value = true;
+    await recorder.record({ workspaceId: WS }, { ...comment, updaterId: "acc-1", version: "comment_updated:4" });
+    const failing = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, priorEdits: { editedByOthers: async () => { throw new Error("down"); } } });
+    await failing.record({ workspaceId: WS }, { ...comment, updaterId: "acc-1", version: "comment_updated:5" });
+    const none = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config });
+    await none.record({ workspaceId: WS }, { ...comment, updaterId: "acc-1", version: "comment_updated:6" });
+    expect(w.sink.puts.map((draft) => [draft.actor?.sourceId, draft.text])).toStrictEqual([["acc-1", "my comment, fixed"], ["acc-2", undefined], ["acc-2", "Sam added this"], ["acc-1", undefined], ["acc-1", undefined], ["acc-1", undefined]]);
+  });
+
+  it("the MCP poller's items are not stored until it can say who changed what", async () => {
+    const { w } = twoMembers();
+    w.config.set("mcp", "mcp:sim/abc", { retention: "C" });
+    const item: TicketItem = { ...base, source: "mcp", system: "sim", scope: "mcp:sim/abc", kind: "ticket.updated", edit: true, updaterId: "acc-1", changed: { state: true } };
+    const refusing = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config });
+    expect(await refusing.record({ workspaceId: WS }, item)).toBe("skipped");
+    expect(w.sink.puts).toStrictEqual([]);
+    const attributed = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, pollerChangesAttributed: true });
+    expect(await attributed.record({ workspaceId: WS }, item)).toBe("stored");
   });
 
   it("an unlinked editor's change is a draft with no developer (the sink refuses and counts it); an edit with no named editor has no actor at all", async () => {
@@ -179,6 +207,29 @@ describe("per-editor rows: every change is its own row under the person who made
     await sendJira(jiraEvent("acc-2", 1_761_800_100_000, "jira:issue_updated", { changelog: { items: [{ field: "description", fromString: "Priya line", toString: "Priya line\nSam line" }, { field: "status", fromString: "Open", toString: "In Progress" }] } }));
     const row = w.sink.puts.filter((draft) => draft.source === "jira").map((draft) => [draft.actor?.sourceId, draft.text, draft.structured?.state, draft.structured?.changed]);
     expect(row).toStrictEqual([["acc-2", "Sam line", "In Progress", "body,state"]]);
+  });
+
+  it("B1: a Jira description edit compares the changelog's old and new text (both wiki markup), so the author's formatted lines are never credited to the editor", async () => {
+    const { w, recorder } = twoMembers();
+    const tap = createTicketWebhookTap({ recorder });
+    const event = (user: string, at: number, kind: string, fields: Record<string, unknown>, changelog?: unknown) => ({
+      webhookEvent: kind, timestamp: at, user: { accountId: user }, ...(changelog === undefined ? {} : { changelog }),
+      issue: { id: "10001", key: "SHOP-1", self: "https://acme.atlassian.net/rest/api/3/issue/10001", fields: { summary: "Cart", project: { key: "SHOP" }, creator: { accountId: "acc-1" }, ...fields } },
+    });
+    const send = (body: unknown) => tap({ source: "jira", orgId: WS, project: "shop", tenant: { siteHost: "acme.atlassian.net", projectKey: "SHOP" }, body });
+    const wiki = "h2. Context\n* Priya secret plan item\nplain line";
+    // The fields carry Atlassian Document Format (flattened to plain text, no markup); the changelog carries wiki markup, both before and after.
+    const adf = { type: "doc", content: [{ type: "heading", content: [{ type: "text", text: "Context" }] }, { type: "paragraph", content: [{ type: "text", text: "Priya secret plan item" }] }, { type: "paragraph", content: [{ type: "text", text: "plain line" }] }, { type: "paragraph", content: [{ type: "text", text: "Sam line" }] }] };
+    await send(event("acc-2", 1_761_800_100_000, "jira:issue_updated", { description: adf }, { items: [{ field: "description", fromString: wiki, toString: `${wiki}\nSam line` }] }));
+    const row = w.sink.puts.filter((draft) => draft.source === "jira");
+    expect(row.map((draft) => draft.text)).toStrictEqual(["Sam line"]);
+    expect(JSON.stringify(row)).not.toContain("secret plan");
+    // No `toString` in the changelog item: nothing to compare, so no words are kept (the plain-text field is never compared with the wiki text).
+    await send(event("acc-2", 1_761_800_200_000, "jira:issue_updated", { description: adf }, { items: [{ field: "description", fromString: wiki }] }));
+    expect(w.sink.puts.filter((draft) => draft.source === "jira").map((draft) => draft.text)).toStrictEqual(["Sam line", undefined]);
+    // A summary change: the words added to the old summary, from the same changelog item.
+    await send(event("acc-2", 1_761_800_300_000, "jira:issue_updated", { summary: "Cart total" }, { items: [{ field: "summary", fromString: "Cart", toString: "Cart total" }] }));
+    expect(w.sink.puts.filter((draft) => draft.source === "jira").map((draft) => draft.text).at(-1)).toBe("total");
   });
 
   it("an MCP mapping credits the author field and the updater field", () => {
@@ -323,7 +374,9 @@ describe("Linear and Jira webhooks", () => {
   });
 
   it("reads Jira changes with ADF text, comments and deletions, for the hook's own site and project only", () => {
-    expect(ticketsOfWebhook({ source: "jira", tenant: jira, body: jiraIssue("jira:issue_updated") })).toMatchObject({ system: "jira:acme.atlassian.net", changes: [{ id: "issue:10001", kind: "ticket.updated", scope: "jira:project/SHOP", body: "Rounds badly", url: "https://acme.atlassian.net/browse/SHOP-1", authorId: "acc-creator", updaterId: "acc-1", nativeId: "10001" }] });
+    expect(ticketsOfWebhook({ source: "jira", tenant: jira, body: jiraIssue("jira:issue_updated") })).toMatchObject({ system: "jira:acme.atlassian.net", changes: [{ id: "issue:10001", kind: "ticket.updated", scope: "jira:project/SHOP", url: "https://acme.atlassian.net/browse/SHOP-1", authorId: "acc-creator", updaterId: "acc-1", nativeId: "10001" }] });
+    // An update keeps no description of its own unless the changelog gives the new text in the format of the old (B1).
+    expect((ticketsOfWebhook({ source: "jira", tenant: jira, body: jiraIssue("jira:issue_updated") }) as { changes: Array<{ body?: string }> }).changes[0]!.body).toBeUndefined();
     expect(ticketsOfWebhook({ source: "jira", tenant: jira, body: jiraIssue("jira:issue_deleted") })).toMatchObject({ removed: ["issue:10001"] });
     const comment = { ...jiraIssue("comment_created"), comment: { id: "55", body: "looks wrong", author: { accountId: "acc-2" }, updated: "2026-10-30T09:00:00.000Z", self: "https://acme.atlassian.net/rest/api/3/issue/10001/comment/55" } };
     expect(ticketsOfWebhook({ source: "jira", tenant: jira, body: comment })).toMatchObject({ changes: [{ id: "comment:55", kind: "ticket.comment", parentId: "issue:10001", authorId: "acc-2", body: "looks wrong" }] });
@@ -403,7 +456,8 @@ class FakeState {
 }
 
 function pollerWorld(over: { budget?: Partial<PollBudget> } = {}) {
-  const { w, recorder } = recorderWorld();
+  // The poller's plumbing is tested with a recorder that accepts its items; a production recorder does not (it cannot yet say who changed what).
+  const { w, recorder } = recorderWorld({ pollerChangesAttributed: true });
   w.config.set("mcp", "mcp:sim/abc", { retention: "C" });
   const server = new FakeServer();
   const state = new FakeState();

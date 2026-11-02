@@ -136,6 +136,14 @@ export interface RecordHistoryPort {
   lowestTrust(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<TrustClass | undefined>;
 }
 
+/**
+ * S2: whether anyone other than `actorSourceId` has an edit of this item stored (a comment an administrator rewrote earlier). A comment edited by its own author with no earlier text keeps the author's whole text
+ * only when this answers no; otherwise the text may hold someone else's words and none is kept. A lookup that fails THROWS (the caller keeps no words).
+ */
+export interface PriorEditsPort {
+  editedByOthers(input: { workspaceId: string; source: SourceSystem; system: string; id: string; actorSourceId: string }): Promise<boolean>;
+}
+
 /** One authenticated push to a branch: the minimum needed to say who put a range of commits on it. No content. Held for a short time (30 days). */
 export interface PushRecord {
   repo: string;

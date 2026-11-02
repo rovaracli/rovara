@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { addedText, cleanText, gate, isExcluded, linksOf, scalars, withRetention, MAX_DRAFTS_PER_DELIVERY, type GateDependencies } from "./common.js";
 import type {
   ActorResolverPort, Audience, OnceClaimPort, PushIndexPort, PushRecord, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
-  SourceSystem, TapLog, TrackRecordPort,
+  PriorEditsPort, SourceSystem, TapLog, TrackRecordPort,
 } from "./ports.js";
 
 export interface CodeHostPerson {
@@ -33,8 +33,8 @@ export interface CodeHostRepo {
 export type CodeHostEvent =
   | { type: "pr"; repo: CodeHostRepo; number: number; url: string; action: "opened" | "closed" | "reopened" | "edited"; merged: boolean; title: string; body?: string;
       author: CodeHostPerson; /** Who made this change (the delivery's sender): the person an edit, a close or a reopen is recorded under. Absent: the author. */ editor?: CodeHostPerson;
-      /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
-  | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; at: string; version: string }
+      /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; previousTitle?: string; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
+  | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; /** When the delivery was received, for an edit or dismissal that carries no time of its own: it orders the review's changes (it is not part of the row's identity). */ receivedAt?: string; at: string; version: string }
   | { type: "comment"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "created" | "edited" | "deleted"; surface: "review_comment" | "discussion";
       body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; path?: string; at: string; version: string }
   | { type: "ci"; repo: CodeHostRepo; id: string; name: string; conclusion: string; headSha: string; prNumbers: readonly number[]; url?: string; at: string }
@@ -114,6 +114,8 @@ export interface CodeHostTapDependencies extends GateDependencies {
   /** Where a human-edit read is queued so the compare and the extractor never run inside the webhook's answer. Absent: it runs inline. */
   humanEditJobs?: { enqueue(job: HumanEditJob): Promise<void> };
   log?: TapLog;
+  /** S2: lets a comment edited by its own author, with no earlier text from the host, keep that author's whole text when nobody else edited it before. Absent: such an edit keeps no words. */
+  priorEdits?: PriorEditsPort;
 }
 
 export interface TapResult {
@@ -190,7 +192,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           const row = rowOf({ person: doer, at: event.at, version: event.version });
           let text: string | undefined;
           if (event.action === "opened") text = cleanText([event.title, event.body].filter((part) => part !== undefined && part !== "").join("\n\n"));
-          else if (event.action === "edited") text = cleanText([event.changed?.title === true ? event.title : undefined, event.changed?.body === true ? addedText(event.previousBody, event.body) : undefined].filter((part) => part !== undefined && part !== "").join("\n\n"));
+          else if (event.action === "edited") text = cleanText([event.changed?.title === true ? addedText(event.previousTitle, event.title) : undefined, event.changed?.body === true ? addedText(event.previousBody, event.body) : undefined].filter((part) => part !== undefined && part !== "").join("\n\n"));
           drafts.push({
             ...base, kind: "github.pr", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: prId(event.repo, event.number), url: event.url, version: row.version, order: row.order },
@@ -204,7 +206,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           const doer = event.action === "submitted" ? event.author : event.editor ?? event.author;
           if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
           const who = await actor(doer);
-          const row = rowOf({ person: doer, at: event.at, version: event.version });
+          const row = rowOf({ person: doer, at: event.receivedAt ?? event.at, version: event.version });
           const text = event.action === "submitted" ? cleanText(event.body) : event.action === "edited" ? cleanText(addedText(event.previousBody, event.body)) : undefined;
           drafts.push({
             ...base, kind: "github.review", occurredAt: event.at,
@@ -225,7 +227,13 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           else if (event.action === "edited") {
             // Only the comment's own author edits it, apart from a repository administrator, whose edit always sends what it was.
             const added = addedText(event.previousBody, event.body);
-            text = cleanText(added ?? (event.previousBody === undefined && doer.id === event.author.id ? event.body : undefined));
+            let whole: string | undefined;
+            if (added === undefined && event.previousBody === undefined && doer.id === event.author.id) {
+              // S2: only when nobody else edited this comment before (their words may be in it). A lookup that fails, or no lookup, keeps no words.
+              const others = deps.priorEdits === undefined ? true : await deps.priorEdits.editedByOthers({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: commentId(event), actorSourceId: doer.id }).catch(() => true);
+              if (!others) whole = event.body;
+            }
+            text = cleanText(added ?? whole);
           }
           drafts.push({
             ...base, kind: "github.review_comment", occurredAt: event.at,

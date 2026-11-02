@@ -35,12 +35,12 @@ const editorOf = (action: string | undefined, sender: unknown): { editor?: CodeH
 
 /** What an `edited` delivery says it changed, and the text before (`changes.<field>.from`). */
 const ChangesOf = z.object({ changes: z.object({ title: z.object({ from: z.string().max(1000) }).passthrough().optional(), body: z.object({ from: z.string().max(70_000).nullish() }).passthrough().optional() }).passthrough().optional() }).passthrough();
-const changesOf = (action: string | undefined, payload: unknown): { changed?: { title?: boolean; body?: boolean }; previousBody?: string } => {
+const changesOf = (action: string | undefined, payload: unknown): { changed?: { title?: boolean; body?: boolean }; previousBody?: string; previousTitle?: string } => {
   if (action !== "edited") return {};
   const parsed = ChangesOf.safeParse(payload);
   const changes = parsed.success ? parsed.data.changes : undefined;
   if (changes === undefined) return {};
-  return { changed: { title: changes.title !== undefined, body: changes.body !== undefined }, ...(changes.body === undefined ? {} : { previousBody: changes.body.from ?? "" }) };
+  return { changed: { title: changes.title !== undefined, body: changes.body !== undefined }, ...(changes.body === undefined ? {} : { previousBody: changes.body.from ?? "" }), ...(changes.title === undefined ? {} : { previousTitle: changes.title.from }) };
 };
 
 export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencies, "diffs"> {
@@ -61,7 +61,7 @@ export type GithubGetJson = (path: string) => Promise<{ status: number; body: un
 export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verified: { eventName: string | undefined; deliveryId: string; payload: unknown }) => Promise<TapResult | undefined> {
   const tap = createCodeHostTap({ ...deps, ...(deps.getJson === undefined ? {} : { diffs: createGithubDiffReader(deps.getJson) }) });
   const now = deps.now ?? Date.now;
-  return async ({ eventName, payload }) => {
+  return async ({ eventName, deliveryId, payload }) => {
     try {
       if (eventName === undefined) return undefined;
       const envelope = Envelope.safeParse(payload);
@@ -74,7 +74,7 @@ export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verif
         ...(envelope.data.repository.default_branch === undefined ? {} : { defaultBranch: envelope.data.repository.default_branch }),
         workspaceId: scope.workspaceId, ...(scope.project === undefined ? {} : { project: scope.project }),
       };
-      const events = githubEventsOf(eventName, envelope.data.action, payload, repo, new Date(now()).toISOString());
+      const events = githubEventsOf(eventName, envelope.data.action, payload, repo, new Date(now()).toISOString(), deliveryId);
       let total: TapResult | undefined;
       for (const event of events) {
         const result = await tap.handle(event);
@@ -88,7 +88,7 @@ export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verif
 }
 
 /** The host-neutral events of one GitHub delivery. Unknown shapes and actions give none. */
-export function githubEventsOf(eventName: string, action: string | undefined, payload: unknown, repo: CodeHostRepo, fallbackAt: string): CodeHostEvent[] {
+export function githubEventsOf(eventName: string, action: string | undefined, payload: unknown, repo: CodeHostRepo, fallbackAt: string, deliveryId?: string): CodeHostEvent[] {
   const object = payload as Record<string, unknown>;
   switch (eventName) {
     case "pull_request": {
@@ -109,7 +109,10 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       const stamp = review.data.submitted_at ?? undefined;
       return [{
         type: "review", repo, prNumber: pr.data.number, id: String(review.data.id), url: review.data.html_url, action, state: review.data.state.toLowerCase(),
-        ...(review.data.body ? { body: review.data.body } : {}), author: personOf(review.data.user), ...editorOf(action, object.sender), ...(changesOf(action, payload).previousBody === undefined ? {} : { previousBody: changesOf(action, payload).previousBody! }), at: action === "submitted" ? isoOrUndefined(stamp) ?? fallbackAt : fallbackAt, version: action === "submitted" ? `${action}:${stamp ?? "none"}` : `${action}:${fallbackAt}`,
+        ...(review.data.body ? { body: review.data.body } : {}), author: personOf(review.data.user), ...editorOf(action, object.sender), ...(changesOf(action, payload).previousBody === undefined ? {} : { previousBody: changesOf(action, payload).previousBody! }), at: isoOrUndefined(stamp) ?? fallbackAt,
+        // S1: an edit or a dismissal of a review carries no time of its own (GitHub repeats `submitted_at`), so the delivery's id says which one it is: a delivery GitHub sends again is the same change (same row), and
+        // never a new one. `at` (part of the row's key) is the review's own time for the same reason; `receivedAt` only orders the review's changes among themselves.
+        ...(action === "submitted" ? {} : { receivedAt: fallbackAt }), version: action === "submitted" ? `${action}:${stamp ?? "none"}` : `${action}:${deliveryId ?? fallbackAt}`,
       }];
     }
     case "pull_request_review_comment":
