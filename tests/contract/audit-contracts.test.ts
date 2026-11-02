@@ -197,8 +197,8 @@ describe("the event catalog", () => {
       "rule.suggestions_set",
       // company domain verification
       "company_domain.added", "company_domain.verified", "company_domain.lost", "company_domain.removed",
-      // company setup recipes and locks (SH29)
-      "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed", "setup_locks.changed", "setup_locks.proposed", "setup_locks.approved",
+      // company setup recipes (SH29)
+      "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });

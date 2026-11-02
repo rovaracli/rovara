@@ -28,7 +28,7 @@ export const SETUP_RECIPES_MAX_PER_ORG = 200;
 export const SETUP_RECIPES_MAX_PROPOSED = 50;
 export const SETUP_RECIPE_SCOPE_MAX_PROJECTS = 100;
 
-const projectHash = (orgId: string, project: string): string => createHash("sha256").update(`${orgId}\n${project}`, "utf8").digest("hex").slice(0, 32);
+export const projectHash = (orgId: string, project: string): string => createHash("sha256").update(`${orgId}\n${project}`, "utf8").digest("hex").slice(0, 32);
 const DeveloperId = z.string().regex(/^[a-f0-9]{64}$/u);
 const ProjectName = z.string().min(1).max(200).regex(/^[^\p{Cc}\p{Cf}]+$/u);
 
@@ -90,7 +90,7 @@ export interface RecipeAuditEntry {
   membershipVersion?: number;
 }
 
-export interface SetupRecipeStore {
+export interface SetupRecipeRowStore {
   getRecipe(orgId: OrgId, recipeId: string): Promise<StoredRecipe | undefined>;
   /**
    * The company's recipes, at most `limit`, only those in `statuses` when given. The filter matters: revoked recipes are kept as history and must not hide the live ones from the cap.
@@ -101,6 +101,17 @@ export interface SetupRecipeStore {
   listRecipes(orgId: OrgId, limit: number, statuses?: readonly RecipeStatus[]): Promise<StoredRecipe[]>;
   /** Writes `next` and the audit entry together or neither, only while the stored revision is `expectedRevision` (null: no row yet). False when the row changed meanwhile. */
   commitRecipe(next: StoredRecipe, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
+  /** The ids of live rows that exist but do not read back (a damaged or unknown-shaped row). They are never offered or approved; an admin can still remove them (`revokeDamagedRecipe`), which frees their counter slot. */
+  unreadableIds?(orgId: OrgId): Promise<string[]>;
+  /** Revokes a live row that exists but does not read back, with its counter slot, dedupe marker and an audit entry in one transaction. False when there is no such row. */
+  revokeUnreadable?(orgId: OrgId, recipeId: string, audit: RecipeAuditEntry): Promise<boolean>;
+}
+
+/**
+ * The company locks' store. The company's setup locks are OWNED by lane su-musts (one row, one store, one admin route, the setup.locks_* audit actions); this lane has no adapter for it. The interface stays so the shared
+ * decider below (`setCompanyLocks`, `approveLocksChange`, `isLoosening`) can be driven by that store, and the in-memory test store implements it.
+ */
+export interface SetupLocksStore {
   getLocks(orgId: OrgId): Promise<StoredLocks | undefined>;
   /**
    * As `commitRecipe`. `conditions` are the DynamoDB ConditionChecks of the approval evidence (org membership version, both people's live records): the adapter puts them in the SAME transaction as the write, and
@@ -108,6 +119,13 @@ export interface SetupRecipeStore {
    */
   commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry, conditions: readonly TransactItem[]): Promise<boolean>;
 }
+export type SetupRecipeStore = SetupRecipeRowStore & SetupLocksStore;
+
+/**
+ * What the recipe code reads of the company's locks: only the dev container image list, through su-musts' store (`getCompanySetupLocks`). Absent (su-musts not merged): no lock. A store that throws makes the caller
+ * offer nothing (fail closed).
+ */
+export interface CompanyLocksReader { getCompanySetupLocks(orgId: OrgId): Promise<{ devcontainerImages?: readonly string[] | undefined } | undefined> }
 
 // ---- company locks (M8: stricter only)
 /** The setup agent's limits (design 3.2), each with the design's maximum. */
@@ -214,7 +232,9 @@ export interface RecipeCaller {
 }
 
 export interface SetupRecipeDeps {
-  store: SetupRecipeStore;
+  store: SetupRecipeRowStore;
+  /** The locks store (su-musts' store when merged; the in-memory one in tests). Only `setCompanyLocks` and `approveLocksChange` use it; without it they refuse. */
+  locksStore?: SetupLocksStore | undefined;
   /** Live company owner or admin, read now (wire `requireLiveCompanyAdmin`). Throws FORBIDDEN. */
   requireAdmin(caller: { orgId: OrgId; developerId: string }): Promise<void>;
   /**
@@ -394,6 +414,14 @@ export async function revokeRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, 
   return next;
 }
 
+/** Removes a row that exists but is damaged, so it stops holding a place in the company's caps. An admin with a fresh sign-in; the same audit as a revoke. NOT_FOUND when there is no such unreadable row. */
+export async function revokeDamagedRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, input: { recipeId: string }): Promise<void> {
+  await requireFreshAdmin(deps, caller);
+  if (!SetupRecipeIdSchema.safeParse(input.recipeId).success || deps.store.revokeUnreadable === undefined) throw agentXError("NOT_FOUND", "That recipe was not found.");
+  const entry: RecipeAuditEntry = { ...auditOf(deps, caller, "recipe_revoked", "fresh_sign_in"), recipeId: input.recipeId, revision: 1, bodyDigest: "0".repeat(64) };
+  if (!await deps.store.revokeUnreadable(caller.orgId, input.recipeId, entry)) throw agentXError("NOT_FOUND", "That recipe was not found.");
+}
+
 /** "Offer only to these projects" (or back to the whole company). The body is untouched. */
 export async function setRecipeScope(deps: SetupRecipeDeps, caller: RecipeCaller, input: { recipeId: string; expectedRevision: number; scope: RecipeScope }): Promise<StoredRecipe> {
   await requireFreshAdmin(deps, caller);
@@ -415,10 +443,10 @@ export interface OfferedRecipe { recipeId: string; revision: number; bodyDigest:
  * The approved recipes that fit a project: offered to it by scope, fingerprint equal to its repository's, and not against the company's locks (a recipe whose dev container image is not on the lock's list is not offered).
  * Server-side use only (the proposal builder, SH30). It is not a user route: a screen that lists recipes needs its own authority check. Newest first.
  */
-export async function offeredRecipes(deps: Pick<SetupRecipeDeps, "store">, input: { orgId: OrgId; project: string; repository: SetupFingerprintInput }): Promise<OfferedRecipe[]> {
+export async function offeredRecipes(deps: Pick<SetupRecipeDeps, "store"> & { locks?: CompanyLocksReader | undefined }, input: { orgId: OrgId; project: string; repository: SetupFingerprintInput }): Promise<OfferedRecipe[]> {
   if (!OrgIdSchema.safeParse(input.orgId).success) return [];
-  const [recipes, locks] = await Promise.all([deps.store.listRecipes(input.orgId, SETUP_RECIPES_MAX_PER_ORG, ["approved"]), deps.store.getLocks(input.orgId)]);
-  const images = locks?.orgId === input.orgId ? locks.locks.devcontainerImages : undefined;
+  const [recipes, locks] = await Promise.all([deps.store.listRecipes(input.orgId, SETUP_RECIPES_MAX_PER_ORG, ["approved"]), deps.locks?.getCompanySetupLocks(input.orgId)]);
+  const images = locks?.devcontainerImages;
   return recipes
     .filter((recipe) => recipe.orgId === input.orgId && recipe.status === "approved" && recipeOfferedTo(recipe, input.project) && recipeFits(recipe.body, input.repository)
       && (images === undefined || recipe.body.devcontainerBaseImage === undefined || images.includes(recipe.body.devcontainerBaseImage)))
@@ -434,11 +462,17 @@ export async function companyApprovedHosts(deps: Pick<SetupRecipeDeps, "store">,
 }
 
 /** The company's locks, or none. Server-side use. */
-export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "store">, orgId: OrgId): Promise<StoredLocks | undefined> {
+export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "locksStore">, orgId: OrgId): Promise<StoredLocks | undefined> {
   if (!OrgIdSchema.safeParse(orgId).success) return undefined;
-  const found = await deps.store.getLocks(orgId);
+  if (deps.locksStore === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Company setup locks are not available here.");
+  const found = await deps.locksStore.getLocks(orgId);
   return found?.orgId === orgId ? found : undefined;
 }
+
+const locksOf = (deps: Pick<SetupRecipeDeps, "locksStore">): SetupLocksStore => {
+  if (deps.locksStore === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Company setup locks are not available here.");
+  return deps.locksStore;
+};
 
 /** Said out loud where a locks write has nothing to fence: a pending proposal or a stricter change changes nothing about who approves. */
 const NO_CONDITIONS: readonly TransactItem[] = [];
@@ -463,11 +497,11 @@ export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCalle
   const loosened = isLoosening(current?.locks, parsed.data);
   if (loosened && current !== undefined) {
     const next: StoredLocks = { ...current, revision, updatedBy: caller.developerId, updatedAt: now, pending: { locks: parsed.data, digest: nextDigest, proposedBy: caller.developerId, proposedAt: now } };
-    if (!await deps.store.commitLocks(next, current.revision, { ...auditOf(deps, caller, "locks_change_proposed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: true }, NO_CONDITIONS)) throw stale();
+    if (!await locksOf(deps).commitLocks(next, current.revision, { ...auditOf(deps, caller, "locks_change_proposed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: true }, NO_CONDITIONS)) throw stale();
     return { status: "needs_second_admin", locks: next };
   }
   const next: StoredLocks = { orgId: caller.orgId, revision, locks: parsed.data, updatedBy: caller.developerId, updatedAt: now };
-  if (!await deps.store.commitLocks(next, current?.revision ?? null, { ...auditOf(deps, caller, "locks_changed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: false }, NO_CONDITIONS)) throw stale();
+  if (!await locksOf(deps).commitLocks(next, current?.revision ?? null, { ...auditOf(deps, caller, "locks_changed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: false }, NO_CONDITIONS)) throw stale();
   return { status: "applied", locks: next };
 }
 
@@ -493,7 +527,7 @@ export async function approveLocksChange(deps: SetupRecipeDeps, caller: RecipeCa
     approvalMode: decision.mode, membershipVersion: decision.membershipVersion,
   };
   // The evidence conditions commit with the write: a second admin added, or either person changed, since the read refuses it.
-  if (!await deps.store.commitLocks(next, current.revision, entry, evidence.conditions)) throw stale();
+  if (!await locksOf(deps).commitLocks(next, current.revision, entry, evidence.conditions)) throw stale();
   return next;
 }
 

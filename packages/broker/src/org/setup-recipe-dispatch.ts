@@ -5,6 +5,7 @@ import type { OrgId, SetupRecipeOffer } from "@agentx/contracts";
 import { logDeveloperEvent } from "../developer/log.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { recipeOffersForProject, type RecordedOffer } from "./setup-recipe-offers.js";
+import { companyLocksReaderFor } from "./setup-recipe-locks.js";
 import { dynamoSetupRecipeStore } from "./setup-recipe-store.js";
 
 export interface RecipeDispatchTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
@@ -13,7 +14,7 @@ export interface RecipeDispatchTable { documentClient: { send(command: unknown):
 export async function setupRecipeOffersFor(table: RecipeDispatchTable, orgId: OrgId, project: string, env: NodeJS.ProcessEnv = process.env): Promise<SetupRecipeOffer[]> {
   if (!setupRecipesEnabled(env)) return [];
   try {
-    return await recipeOffersForProject({ store: dynamoSetupRecipeStore({ documentClient: table.documentClient, tableName: table.tableName, now: Date.now }) }, { orgId, project });
+    return await recipeOffersForProject({ store: dynamoSetupRecipeStore({ documentClient: table.documentClient, tableName: table.tableName, now: Date.now }), locks: companyLocksReaderFor(table) }, { orgId, project });
   } catch (error) {
     logDeveloperEvent({ event: "developer.setup_recipe_offers_unreadable", orgId, project, error: error instanceof Error ? error.name : "unknown" });
     return [];

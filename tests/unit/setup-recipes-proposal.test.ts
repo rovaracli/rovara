@@ -211,6 +211,7 @@ function stored(id: string, over: Partial<StoredRecipe> = {}, bodyChanges: Recor
   const b = body(bodyChanges);
   return { orgId: ORG, recipeId: id, revision: 1, status: "approved", body: b, bodyDigest: setupRecipeDigest(b), fingerprint: setupFingerprint(b.match), scope: { kind: "company" }, createdBy: "a".repeat(64), createdAt: NOW, approvedBy: "a".repeat(64), approvedAt: NOW, updatedAt: NOW, ...over };
 }
+const lockReader = (store: ReturnType<typeof memorySetupRecipeStore>) => ({ getCompanySetupLocks: async (orgId: OrgId) => (await store.getLocks(orgId))?.locks });
 const put = (store: ReturnType<typeof memorySetupRecipeStore>, recipe: StoredRecipe) => { store.recipes.set(`${recipe.orgId}#${recipe.recipeId}`, recipe); };
 const locksOf = (locks: StoredLocks["locks"]): StoredLocks => ({ orgId: ORG, revision: 1, locks, updatedBy: "a".repeat(64), updatedAt: NOW });
 const putLocks = (store: ReturnType<typeof memorySetupRecipeStore>, locks: StoredLocks) => store.commitLocks(locks, null, { action: "locks_changed", orgId: ORG, actor: locks.updatedBy, at: NOW, proof: "fresh_sign_in" }, []);
@@ -222,7 +223,7 @@ describe("recipeOffersForProject", () => {
     put(store, stored(ID2, { status: "proposed" }, { match: { markerFiles: ["go.mod"], registryHosts: [] } }));
     put(store, stored(ID3, { status: "revoked" }, { match: { markerFiles: ["Cargo.toml"], registryHosts: [] } }));
     put(store, stored(`rcp_${"4".repeat(20)}`, { orgId: OTHER_ORG }, { match: { markerFiles: ["Gemfile"], registryHosts: [] } }));
-    const offers = await recipeOffersForProject({ store }, { orgId: ORG, project: "orders" });
+    const offers = await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders" });
     expect(offers.map((entry) => entry.recipeId)).toEqual([ID1]);
     expect(offers.every((entry) => SetupRecipeOfferSchema.safeParse(entry).success)).toBe(true);
   });
@@ -230,17 +231,17 @@ describe("recipeOffersForProject", () => {
   it("respects 'offer only to these projects'", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1, { scope: { kind: "projects", projects: ["billing"] } }));
-    expect(await recipeOffersForProject({ store }, { orgId: ORG, project: "orders" })).toEqual([]);
-    expect((await recipeOffersForProject({ store }, { orgId: ORG, project: "billing" })).map((entry) => entry.recipeId)).toEqual([ID1]);
+    expect(await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders" })).toEqual([]);
+    expect((await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "billing" })).map((entry) => entry.recipeId)).toEqual([ID1]);
   });
 
   it("does not offer a recipe whose dev container image the company's lock does not list", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1));
     await putLocks(store, locksOf({ devcontainerImages: ["mcr.microsoft.com/devcontainers/python:3.13"] }));
-    expect(await recipeOffersForProject({ store }, { orgId: ORG, project: "orders" })).toEqual([]);
+    expect(await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders" })).toEqual([]);
     await store.commitLocks({ ...locksOf({ devcontainerImages: ["mcr.microsoft.com/devcontainers/python:3.12"] }), revision: 2 }, 1, { action: "locks_changed", orgId: ORG, actor: "a".repeat(64), at: NOW, proof: "fresh_sign_in" }, []);
-    expect(await recipeOffersForProject({ store }, { orgId: ORG, project: "orders" })).toHaveLength(1);
+    expect(await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders" })).toHaveLength(1);
   });
 
   it("offers one recipe per fingerprint, the newest, newest first", async () => {
@@ -248,13 +249,13 @@ describe("recipeOffersForProject", () => {
     put(store, stored(ID1, { updatedAt: "2026-10-01T00:00:00.000Z" }));
     put(store, stored(ID2, { updatedAt: "2026-11-01T00:00:00.000Z" }));
     put(store, stored(ID3, { updatedAt: "2026-10-15T00:00:00.000Z" }, { match: { markerFiles: ["go.mod"], registryHosts: [] } }));
-    expect((await recipeOffersForProject({ store }, { orgId: ORG, project: "orders" })).map((entry) => entry.recipeId)).toEqual([ID2, ID3]);
+    expect((await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders" })).map((entry) => entry.recipeId)).toEqual([ID2, ID3]);
   });
 
   it("offers nothing for an invalid company id", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1));
-    expect(await recipeOffersForProject({ store }, { orgId: "nope", project: "orders" })).toEqual([]);
+    expect(await recipeOffersForProject({ store, locks: lockReader(store) }, { orgId: "nope", project: "orders" })).toEqual([]);
   });
 });
 
@@ -268,7 +269,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1, {}, { approvedHosts: ["pypi.internal.example.com", "npm.internal.example.com"] }));
     put(store, stored(ID2, {}, { match: { markerFiles: ["go.mod"], registryHosts: [] }, approvedHosts: ["goproxy.internal.example.com"] }));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     expect(hosts).toEqual([
       { host: "npm.internal.example.com", source: source(ID1, 1), staffApprovalRequired: false },
       { host: "pypi.internal.example.com", source: source(ID1, 1), staffApprovalRequired: false },
@@ -279,7 +280,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
   it("says Rovara staff are still needed on Cloud", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: true, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: true, isHostRefused: refuse });
     expect(hosts.every((entry) => entry.staffApprovalRequired)).toBe(true);
   });
 
@@ -288,7 +289,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
       const store = memorySetupRecipeStore();
       put(store, stored(ID1));
       await mutate(store);
-      return preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
+      return preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     };
     expect(await run((store) => put(store, stored(ID1, { status: "revoked" })))).toEqual([]);
     expect(await run((store) => put(store, stored(ID1, { revision: 2 })))).toEqual([]);
@@ -301,7 +302,7 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
   it("drops a host the refusal list refuses today, even one an admin once approved", async () => {
     const store = memorySetupRecipeStore();
     put(store, stored(ID1, {}, { approvedHosts: ["pypi.internal.example.com", "evil.example.net"] }));
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     expect(hosts.map((entry) => entry.host)).toEqual(["pypi.internal.example.com"]);
   });
 
@@ -315,11 +316,11 @@ describe("preApprovedRecipeHosts: a list, never a grant", () => {
     put(store, stored(ID2, {}, { match: { markerFiles: ["go.mod"], registryHosts: [] }, approvedHosts: ["goproxy.internal.example.com"] }));
     // The worker names ID2 (and an ID1 revision it was not sent), but the broker offered only ID1@1.
     const claimed = [source(ID2, 1), source(ID1, 7), "model" as const];
-    const hosts = await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources: claimed, recorded: RECORDED, cloud: false, isHostRefused: refuse });
+    const hosts = await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources: claimed, recorded: RECORDED, cloud: false, isHostRefused: refuse });
     expect(hosts).toEqual([]);
     // With the offer recorded, the same claim lists the host; with nothing recorded, nothing is listed.
-    expect((await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources: [source(ID2, 1)], recorded: [{ recipeId: ID2, revision: 1 }], cloud: false, isHostRefused: refuse })).map((entry) => entry.host)).toEqual(["goproxy.internal.example.com"]);
-    expect(await preApprovedRecipeHosts({ store }, { orgId: ORG, project: "orders", sources, recorded: [], cloud: false, isHostRefused: refuse })).toEqual([]);
+    expect((await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources: [source(ID2, 1)], recorded: [{ recipeId: ID2, revision: 1 }], cloud: false, isHostRefused: refuse })).map((entry) => entry.host)).toEqual(["goproxy.internal.example.com"]);
+    expect(await preApprovedRecipeHosts({ store, locks: lockReader(store) }, { orgId: ORG, project: "orders", sources, recorded: [], cloud: false, isHostRefused: refuse })).toEqual([]);
     expect(offeredRecipesNamedBy([source(ID1, 1), source(ID2, 1), source(ID1, 2)], [{ recipeId: ID1, revision: 1 }])).toEqual([{ recipeId: ID1, revision: 1 }]);
   });
 });

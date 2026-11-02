@@ -32,6 +32,8 @@ const body = (changes: Record<string, unknown> = {}): SetupRecipeBody => SetupRe
 });
 const FITS = { markerFiles: ["pyproject.toml"], registryHosts: ["pypi.internal.example.com"] };
 
+/** su-musts' reader, as the recipe code uses it: only the dev container image list, from the locks store. */
+const readerOf = (deps: SetupRecipeDeps) => ({ getCompanySetupLocks: async (orgId: OrgId) => (await deps.locksStore!.getLocks(orgId))?.locks });
 function harness(options: { admins?: string[]; maintainers?: Record<string, string[]>; refusedHosts?: string[]; repositoryNames?: Record<string, string[]> } = {}) {
   // The rows the evidence's conditions fence: the org META with its membership version, and the two admins' member records.
   const db = new FakeDynamoDb();
@@ -58,8 +60,8 @@ function harness(options: { admins?: string[]; maintainers?: Record<string, stri
       ...store,
       getRecipe: (...args) => { calls.push("store"); return store.getRecipe(...args); },
       listRecipes: (...args) => { calls.push("store"); return store.listRecipes(...args); },
-      getLocks: (...args) => { calls.push("store"); return store.getLocks(...args); },
     },
+    locksStore: { ...store, getLocks: (...args) => { calls.push("store"); return store.getLocks(...args); } },
     requireAdmin: (caller) => { calls.push("admin"); return admins.has(caller.developerId) ? Promise.resolve() : Promise.reject(new AgentXError("FORBIDDEN", "Live company owner or admin access is required.", 403)); },
     approvalEvidence: (scope) => {
       // As readSecondPersonApprovalEvidence does: read the version, fence it and both people's live records, and answer a decision input.
@@ -242,24 +244,24 @@ describe("who a recipe is offered to", () => {
   it("offers only approved recipes, to projects in scope, whose fingerprint fits", async () => {
     const { deps, admin, maintainer } = harness();
     const proposed = await proposeRecipe(deps, maintainer, { project: "orders", body: body() });
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     const approved = await approveRecipe(deps, admin, { recipeId: proposed.recipeId, expectedRevision: 1, expectedDigest: proposed.bodyDigest });
-    const offered = await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: FITS });
+    const offered = await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: FITS });
     expect(offered).toEqual([{ recipeId: approved.recipeId, revision: 2, bodyDigest: approved.bodyDigest, body: approved.body }]);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: { markerFiles: ["package.json"], registryHosts: [] } })).toEqual([]);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "anything", repository: { markerFiles: [], registryHosts: [] } })).toEqual([]);
-    expect(await offeredRecipes(deps, { orgId: OTHER_ORG, project: "anything", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: { markerFiles: ["package.json"], registryHosts: [] } })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "anything", repository: { markerFiles: [], registryHosts: [] } })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: OTHER_ORG, project: "anything", repository: FITS })).toEqual([]);
   });
 
   it("offers only to the listed projects when the admin says so, and back to all", async () => {
     const { deps, admin } = harness();
     const created = await createRecipeAsAdmin(deps, admin, { body: body(), scope: { kind: "projects", projects: ["orders", "billing"] } });
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "search", repository: FITS })).toEqual([]);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "search", repository: FITS })).toEqual([]);
     expect(await code(setRecipeScope(deps, admin, { recipeId: created.recipeId, expectedRevision: 9, scope: { kind: "company" } }))).toBe("CHANGE_STALE");
     const widened = await setRecipeScope(deps, admin, { recipeId: created.recipeId, expectedRevision: 1, scope: { kind: "company" } });
     expect(widened.revision).toBe(2);
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "search", repository: FITS })).length).toBe(1);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "search", repository: FITS })).length).toBe(1);
   });
 
   it("stops offering a revoked recipe, and keeps it", async () => {
@@ -268,7 +270,7 @@ describe("who a recipe is offered to", () => {
     expect(await code(revokeRecipe(deps, admin, { recipeId: created.recipeId, expectedRevision: 5 }))).toBe("CHANGE_STALE");
     const revoked = await revokeRecipe(deps, admin, { recipeId: created.recipeId, expectedRevision: 1 });
     expect(revoked.status).toBe("revoked");
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     expect(await companyApprovedHosts(deps, ORG)).toEqual([]);
     expect(store.recipes.size).toBe(1);
     expect(store.audit.map((entry) => entry.action)).toEqual(["recipe_created", "recipe_revoked"]);
@@ -278,13 +280,13 @@ describe("who a recipe is offered to", () => {
     const { deps, admin, admin2 } = harness();
     await createRecipeAsAdmin(deps, admin, { body: body() });
     await setCompanyLocks(deps, admin, { locks: { devcontainerImages: ["mcr.microsoft.com/devcontainers/go:1.23"] }, expectedRevision: null });
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     // Widening the list is a loosening: a second admin approves it.
     const waiting = await setCompanyLocks(deps, admin, { locks: { devcontainerImages: ["mcr.microsoft.com/devcontainers/python:3.12"] }, expectedRevision: 1 });
     expect(waiting.status).toBe("needs_second_admin");
-    expect(await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
+    expect(await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).toEqual([]);
     await approveLocksChange(deps, admin2, { expectedRevision: waiting.locks.revision, expectedDigest: waiting.locks.pending!.digest });
-    expect((await offeredRecipes(deps, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
+    expect((await offeredRecipes({ ...deps, locks: readerOf(deps) }, { orgId: ORG, project: "orders", repository: FITS })).length).toBe(1);
   });
 
   it("lists the hosts approved through recipes, once each, for approved recipes only", async () => {

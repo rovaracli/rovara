@@ -1,9 +1,8 @@
-// Company setup recipes (SH29 wiring): the DynamoDB adapter. Every write is one transaction with the row, the counters, the dedupe marker, the audit item and (for an approval) the evidence's conditions.
+// Company setup recipes (SH29 wiring): the DynamoDB adapter. Every write is one transaction with the row, the counters, the dedupe marker and the audit item. (The company locks are su-musts'.)
 import { describe, expect, it } from "vitest";
-import { orgMetaKey, orgPk, SetupRecipeBodySchema, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody } from "@agentx/contracts";
+import { orgPk, SetupRecipeBodySchema, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody } from "@agentx/contracts";
 import { dynamoSetupRecipeStore, recipeAuditEvent } from "../../packages/broker/src/org/setup-recipe-store.js";
-import { SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, type RecipeAuditEntry, type StoredLocks, type StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
-import { secondPersonMembershipCondition } from "../../packages/broker/src/org/second-person-approval.js";
+import { SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, type RecipeAuditEntry, type StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -83,7 +82,7 @@ describe("recipes", () => {
     const revoked: StoredRecipe = { ...last, status: "revoked", revision: 2 };
     expect(await store.commitRecipe(revoked, 1, entry(revoked, "recipe_revoked"))).toBe(true);
     expect(db.get(orgPk(ORG), "SETUP_RECIPE_COUNTS")).toMatchObject({ live: SETUP_RECIPES_MAX_PER_ORG - 1 });
-    expect(db.get(orgPk(ORG), `SETUP_RECIPE#${last.recipeId}`)?.indexExpiresAt).toBeGreaterThan(NOW / 1000 + 300 * 86_400);
+    expect(db.get(orgPk(ORG), `SETUP_RECIPE_REVOKED#${last.recipeId}`)?.indexExpiresAt).toBeGreaterThan(NOW / 1000 + 300 * 86_400);
     expect(await store.commitRecipe(over, null, entry(over, "recipe_created"))).toBe(true);
   });
 
@@ -117,38 +116,87 @@ describe("recipes", () => {
   });
 });
 
-describe("locks", () => {
-  const locks = (changes: Partial<StoredLocks> = {}): StoredLocks => ({ orgId: ORG, revision: 1, locks: { setupAgentOff: true }, updatedBy: ADMIN, updatedAt: AT, ...changes });
-  const lockEntry = (next: StoredLocks, action: RecipeAuditEntry["action"] = "locks_changed"): RecipeAuditEntry => ({ action, orgId: ORG, actor: ADMIN, at: AT, proof: "fresh_sign_in", revision: next.revision, previousDigest: "1".repeat(64), nextDigest: "2".repeat(64), loosened: false });
+describe("history (F3)", () => {
+  const live = (db: FakeDynamoDb) => db.find((item) => String(item.sk).startsWith("SETUP_RECIPE#"));
+  const history = (db: FakeDynamoDb) => db.find((item) => String(item.sk).startsWith("SETUP_RECIPE_REVOKED#"));
 
-  it("writes only against the revision read, and reads back a damaged row as an error, never as no locks", async () => {
+  it("moves a revoked or rejected recipe to its own partition in the same transaction: the live rows no longer hold it, and it is still readable by id", async () => {
     const { db, store } = bench();
-    expect(await store.getLocks(ORG)).toBeUndefined();
-    expect(await store.commitLocks(locks(), null, lockEntry(locks()), [])).toBe(true);
-    expect(await store.getLocks(ORG)).toEqual(locks());
-    expect(await store.commitLocks(locks({ revision: 2 }), null, lockEntry(locks({ revision: 2 })), [])).toBe(false);
-    expect(await store.commitLocks(locks({ revision: 2 }), 7, lockEntry(locks({ revision: 2 })), [])).toBe(false);
-    expect(await store.getLocks(OTHER)).toBeUndefined();
-    db.set({ ...db.get(orgPk(ORG), "SETUP_LOCKS")!, locks: { setupAgentOff: false } });
-    await expect(store.getLocks(ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    const keep = recipe({ status: "approved", approvedBy: ADMIN, approvedAt: AT });
+    const gone = recipe();
+    await store.commitRecipe(keep, null, entry(keep, "recipe_created"));
+    await store.commitRecipe(gone, null, entry(gone));
+    const revoked: StoredRecipe = { ...gone, status: "revoked", revision: 2 };
+    expect(await store.commitRecipe(revoked, 1, entry(revoked, "recipe_revoked"))).toBe(true);
+    expect(live(db).map((item) => item.recipeId)).toEqual([keep.recipeId]);
+    expect(history(db).map((item) => item.recipeId)).toEqual([gone.recipeId]);
+    expect(await store.getRecipe(ORG, gone.recipeId)).toEqual(revoked);
+    expect((await store.listRecipes(ORG, 10, ["proposed", "approved"])).map((item) => item.recipeId)).toEqual([keep.recipeId]);
+    expect((await store.listRecipes(ORG, 10, ["revoked"])).map((item) => item.recipeId)).toEqual([gone.recipeId]);
+    expect((await store.listRecipes(ORG, 10)).map((item) => item.recipeId).sort()).toEqual([keep.recipeId, gone.recipeId].sort());
+    // A later change to history stays in history, at the revision read; history never comes back to life.
+    const scoped: StoredRecipe = { ...revoked, revision: 3, scope: { kind: "projects", projects: ["orders"] } };
+    expect(await store.commitRecipe(scoped, 2, entry(scoped, "recipe_scope_changed"))).toBe(true);
+    expect(await store.commitRecipe({ ...revoked, status: "approved", revision: 4 }, 3, entry(scoped, "recipe_approved"))).toBe(false);
+    expect(live(db)).toHaveLength(1);
   });
 
-  it("puts the approval's conditions in the SAME transaction: a changed membership version writes nothing", async () => {
+  it("a live listing reads no history: a long history neither slows nor breaks it, and a history listing never throws on its size", async () => {
+    const { db, store } = bench();
+    const keep = recipe({ status: "approved" });
+    await store.commitRecipe(keep, null, entry(keep, "recipe_created"));
+    for (let index = 0; index < 450; index += 1) {
+      const old = recipe({ status: "revoked", revision: 2 });
+      db.set({ ...old, pk: orgPk(ORG), sk: `SETUP_RECIPE_REVOKED#${old.recipeId}`, entityType: "SETUP_RECIPE" });
+    }
+    const before = db.transactions().length;
+    expect((await store.listRecipes(ORG, 250, ["proposed", "approved"])).map((item) => item.recipeId)).toEqual([keep.recipeId]);
+    expect((await store.listRecipes(ORG, 1000, ["revoked"])).length).toBeGreaterThan(0);
+    expect((await store.listRecipes(ORG, 1000)).length).toBeGreaterThan(1);
+    expect(db.transactions().length).toBe(before);
+  });
+});
+
+describe("a damaged row (F9)", () => {
+  it("can be removed by its key: its counter slot, dedupe marker and place in the live partition are freed, and it is audited", async () => {
     const { db, capture, store } = bench();
-    db.set({ ...orgMetaKey(ORG), approvalMembershipVersion: 7 });
-    await store.commitLocks(locks(), null, lockEntry(locks()), []);
-    const fence = (version: number) => [{ ConditionCheck: { TableName: "state", Key: orgMetaKey(ORG), ...secondPersonMembershipCondition(version) } }];
-    const next = locks({ revision: 2, locks: {} });
-    const approval: RecipeAuditEntry = { ...lockEntry(next, "locks_change_approved"), loosened: true, approvalMode: "second_person", membershipVersion: 8 };
-    expect(await store.commitLocks(next, 1, approval, fence(8))).toBe(false);
-    expect(await store.getLocks(ORG)).toEqual(locks());
-    expect(capture.recordedBy("setup_locks.approved")).toEqual([]);
-    const sent = db.transactions().at(-1)!;
-    expect(sent.some((item) => "ConditionCheck" in item)).toBe(true);
-    const approved: RecipeAuditEntry = { ...approval, membershipVersion: 7 };
-    expect(await store.commitLocks(next, 1, approved, fence(7))).toBe(true);
-    expect(await store.getLocks(ORG)).toEqual(next);
-    expect(capture.recordedBy("setup_locks.approved")[0]).toMatchObject({ facts: { loosened: true, approvalMode: "second_person", membershipVersion: 7, revision: 2 } });
+    const waiting = recipe({ proposedFromProjectHash: "2".repeat(32) });
+    await store.commitRecipe(waiting, null, entry(waiting));
+    const other = recipe({ status: "approved" });
+    await store.commitRecipe(other, null, entry(other, "recipe_created"));
+    db.set({ ...db.get(orgPk(ORG), `SETUP_RECIPE#${waiting.recipeId}`)!, body: { not: "a recipe" } });
+    expect(await store.getRecipe(ORG, waiting.recipeId)).toBeUndefined();
+    expect(await store.unreadableIds?.(ORG)).toEqual([waiting.recipeId]);
+    expect(db.get(orgPk(ORG), "SETUP_RECIPE_COUNTS")).toMatchObject({ live: 2, proposed: 1 });
+    expect(await store.revokeUnreadable?.(ORG, waiting.recipeId, { ...entry(waiting, "recipe_revoked"), revision: 2 })).toBe(true);
+    expect(db.get(orgPk(ORG), `SETUP_RECIPE#${waiting.recipeId}`)).toBeUndefined();
+    expect(db.get(orgPk(ORG), `SETUP_RECIPE_REVOKED#${waiting.recipeId}`)).toMatchObject({ status: "revoked", unreadable: true });
+    expect(db.get(orgPk(ORG), "SETUP_RECIPE_COUNTS")).toMatchObject({ live: 1, proposed: 0 });
+    expect(await store.unreadableIds?.(ORG)).toEqual([]);
+    expect(capture.recordedBy("setup_recipe.revoked")).toHaveLength(1);
+    // Nothing to remove the second time, and a readable row is not this method's.
+    expect(await store.revokeUnreadable?.(ORG, waiting.recipeId, entry(waiting, "recipe_revoked"))).toBe(false);
+    expect(await store.revokeUnreadable?.(ORG, other.recipeId, entry(other, "recipe_revoked"))).toBe(false);
+    expect(await store.getRecipe(ORG, other.recipeId)).toEqual(other);
+  });
+
+  it("is removed even when the counter has drifted to zero (the row must not outlive a wrong counter)", async () => {
+    const { db, store } = bench();
+    const stuck = recipe();
+    await store.commitRecipe(stuck, null, entry(stuck));
+    db.set({ ...db.get(orgPk(ORG), `SETUP_RECIPE#${stuck.recipeId}`)!, body: 7 });
+    db.set({ pk: orgPk(ORG), sk: "SETUP_RECIPE_COUNTS", live: 0, proposed: 0 });
+    expect(await store.revokeUnreadable?.(ORG, stuck.recipeId, entry(stuck, "recipe_revoked"))).toBe(true);
+    expect(db.get(orgPk(ORG), "SETUP_RECIPE_COUNTS")).toMatchObject({ live: 0, proposed: 0 });
+  });
+
+  it("another company's key is not reachable", async () => {
+    const { db, store } = bench();
+    const stuck = recipe();
+    await store.commitRecipe(stuck, null, entry(stuck));
+    db.set({ ...db.get(orgPk(ORG), `SETUP_RECIPE#${stuck.recipeId}`)!, body: 7 });
+    expect(await store.revokeUnreadable?.(OTHER, stuck.recipeId, { ...entry(stuck, "recipe_revoked"), orgId: OTHER })).toBe(false);
+    expect(await store.unreadableIds?.(OTHER)).toEqual([]);
   });
 });
 
