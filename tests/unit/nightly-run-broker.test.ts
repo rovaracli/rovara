@@ -41,6 +41,7 @@ async function harness(options: { approve?: boolean } = {}) {
     await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-run-1", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: T0, approval: { approverId: "dev_b", signedInAtMs: T0, sessionRef: "5".repeat(64) } });
   }
   const head = { value: HEAD };
+  const defaultBranch: { value: string | undefined } = { value: "main" };
   const merged = new Map<string, string>();
   const started: Array<Record<string, any>> = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- the request shape is asserted field by field
   const admitted: unknown[] = [];
@@ -51,6 +52,7 @@ async function harness(options: { approve?: boolean } = {}) {
     ...deps,
     admitProject: (input) => { admitted.push(input); return Promise.resolve(); },
     resolveOwner: (_org, developerId) => Promise.resolve(merged.get(developerId) ?? developerId),
+    defaultBranchOf: () => Promise.resolve(defaultBranch.value),
     headOf: () => Promise.resolve(head.value),
     // The shared start, as the task start makes its records: a task of purpose nightly_run with what it was started to run, and the pointer of its workspace.
     startAgentRun: (request) => {
@@ -62,7 +64,7 @@ async function harness(options: { approve?: boolean } = {}) {
     },
   });
   const fire = (scheduledAt = SCHEDULED) => ({ source: "agentx.test-env-nightly", orgId: ORG, project: PROJECT, scheduledAt });
-  return { db, deps, clock, head, merged, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
+  return { db, deps, clock, head, defaultBranch, merged, started, admitted, startError, store, runs, fire, fireNow: (scheduledAt = SCHEDULED) => handleNightlyFire({ ...deps, runs }, fire(scheduledAt)) };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
@@ -134,6 +136,18 @@ describe("a fire starts the run", () => {
     expect(h.started).toHaveLength(2);
   });
 
+  it("main branch only (ED-1): a nightly whose branch is not the repository's default branch is skipped, with nothing charged or claimed; an unreadable default branch is a skipped night too", async () => {
+    const h = await harness();
+    h.defaultBranch.value = "develop";
+    expect(await h.fireNow()).toEqual({ outcome: "skipped", reason: "branch_not_default" });
+    h.defaultBranch.value = undefined;
+    expect(await h.fireNow()).toEqual({ outcome: "skipped", reason: "head_unreadable" });
+    expect(h.admitted).toEqual([]);
+    expect(h.started).toEqual([]);
+    h.defaultBranch.value = "main";
+    expect(await h.fireNow()).toMatchObject({ outcome: "started" });
+  });
+
   it("no approved environment means no run, no charge and no claim", async () => {
     const h = await harness({ approve: false });
     expect(await h.fireNow()).toEqual({ outcome: "skipped", reason: "environment_missing" });
@@ -164,7 +178,7 @@ describe("a fire starts the run", () => {
 
   it("an environment revision whose record names no approver is not run: nothing is started", async () => {
     const h = await harness();
-    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), resolveOwner: (_org, id) => Promise.resolve(id), headOf: () => Promise.resolve(HEAD), startAgentRun: () => Promise.reject(new Error("must not start")) })
+    const skipped = await nightlyRunPort({ ...h.deps, admitProject: () => Promise.resolve(), resolveOwner: (_org, id) => Promise.resolve(id), defaultBranchOf: () => Promise.resolve("main"), headOf: () => Promise.resolve(HEAD), startAgentRun: () => Promise.reject(new Error("must not start")) })
       .startRun({ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD, envRevision: 9, slotId: slotOf(), payer: { kind: "project", project: PROJECT }, source: "nightly_baseline" });
     expect(skipped).toEqual({ skipped: "owner_unavailable" });
   });

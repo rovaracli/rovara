@@ -24,6 +24,16 @@ export async function defaultBranchHeadOf(dependencies: AwsBrokerDependencies, o
   }
 }
 
+/** The default branch of the repository of a one-repository project (the project definition's own record of it), or undefined. */
+export async function repositoryDefaultBranchOf(dependencies: AwsBrokerDependencies, orgId: OrgId, project: string): Promise<string | undefined> {
+  try {
+    const repositories = (await requireLatestProject(dependencies, orgId, project)).definition.repositories;
+    return repositories.length === 1 ? repositories[0]!.defaultBranch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function nightlyHeadReaderOf(dependencies: AwsBrokerDependencies, env: NodeJS.ProcessEnv = process.env): NightlyHeadReader | undefined {
   if (!verifyResultsEnabled(env)) return undefined;
   return (orgId: OrgId, project: string) => (branch: string) => defaultBranchHeadOf(dependencies, orgId, project, branch);

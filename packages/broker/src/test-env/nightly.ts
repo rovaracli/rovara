@@ -144,6 +144,11 @@ export interface NightlyRunPort {
    * The run's key must then be minted with payer project and source `nightly_baseline` (see `startRun`).
    */
   admit(input: { orgId: OrgId; project: string; purpose: "nightly_baseline" }): Promise<void>;
+  /**
+   * The repository's own default branch (NH-1: ED-1, the main branch only). The preparation clones the default branch, so a nightly whose `nightly.branch` is any other would test one branch and report it as another:
+   * the fire is skipped (`branch_not_default`) unless the two are the same. Undefined when it cannot be read (the fire is then `head_unreadable`). Left out by a port that does not know (older tests).
+   */
+  defaultBranchOf?(input: { orgId: OrgId; project: string }): Promise<string | undefined>;
   /** The branch's head commit now, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
   /**
@@ -183,6 +188,11 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   if (env === undefined) return skip("environment_missing");
   if (!env.environment.nightly.enabled) return skip("nightly_off");
   const branch = env.environment.nightly.branch;
+  if (deps.runs.defaultBranchOf !== undefined) {
+    const defaultBranch = await deps.runs.defaultBranchOf({ orgId, project }).catch(() => undefined);
+    if (defaultBranch === undefined) return skip("head_unreadable");
+    if (defaultBranch !== branch) return skip("branch_not_default");
+  }
   const head = await deps.runs.headOf({ orgId: orgId, project, branch }).catch(() => undefined);
   if (head === undefined || !/^[a-f0-9]{40}$/u.test(head)) return skip("head_unreadable");
   const last = await readNightlyBaseline(deps, orgId, project);

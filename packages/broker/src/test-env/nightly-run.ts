@@ -33,6 +33,8 @@ export function nightlyRequestId(slotId: string): string {
 export interface NightlyRunDependencies extends TestEnvDeps {
   /** The `admitWork` of the install, with the project as payer. Throws the scope's own error when a budget has no room. */
   admitProject(input: { orgId: OrgId; project: string }): Promise<void>;
+  /** The project's repository's default branch, or undefined when it cannot be read. */
+  defaultBranchOf(input: { orgId: OrgId; project: string }): Promise<string | undefined>;
   /** The head commit of the branch, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
   /** The person an id names read as whoever they were merged into (`resolveSurvivor`): a merged duplicate approver would otherwise own the run. */
@@ -54,6 +56,7 @@ export function skipReasonOf(error: unknown): NightlySkipReason | undefined {
 export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
   return {
     admit: (input) => deps.admitProject({ orgId: input.orgId, project: input.project }),
+    defaultBranchOf: (input) => deps.defaultBranchOf(input),
     headOf: (input) => deps.headOf(input),
     async startRun(input) {
       const approver = await readApprovedBy(deps, input.orgId, input.project, input.envRevision);
