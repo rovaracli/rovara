@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
+  SetupValueSourceSchema,
   TestEnvProveReportSchema,
   TestEnvironmentBodySchema,
   TestEnvironmentSchema,
@@ -161,6 +162,8 @@ export type TestEnvChangeFlag = TestEnvLessSafeField;
 const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvChangeFlag[] => testEnvLessSafeChanges(previous, next);
 
 
+export type ProposalOrigin = "setup_run";
+
 export interface ProposedTestEnvironment { digest: string; risk: DecisionRisk; lessSafe: TestEnvChangeFlag[] }
 
 /**
@@ -169,7 +172,7 @@ export interface ProposedTestEnvironment { digest: string; risk: DecisionRisk; l
  */
 export async function proposeTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; proposedBy: string; role: ProjectRole | undefined; body: unknown; valueSources?: unknown },
+  input: { orgId: OrgId; project: string; proposedBy: string; role: ProjectRole | undefined; body: unknown; valueSources?: unknown; /** Where the proposal came from: `setup_run` marks it as a setup run's. The mark stays on the record (proposing the same body again does not take it away). */ origin?: ProposalOrigin },
 ): Promise<ProposedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can propose a test environment");
   const body = parseBody(input.body);
@@ -178,13 +181,15 @@ export async function proposeTestEnvironment(
   refuseRecordingOnShared(body);
   const digest = testEnvDigest(body);
   const now = deps.now();
+  // A mark that was set stays: a later proposal of the same body (the detectors', a repeat) cannot make a setup run's proposal look like an ordinary one.
+  const origin = input.origin ?? ((await read(deps, proposalKey(input.orgId, input.project, digest)))?.origin === "setup_run" ? "setup_run" as const : undefined);
   await deps.documentClient.send(new TransactWriteCommand({
     TransactItems: [{
       Put: {
         TableName: deps.tableName,
         Item: {
           ...proposalKey(input.orgId, input.project, digest), entityType: "TEST_ENV_PROPOSAL", orgId: input.orgId, project: input.project, digest, proposedBy: input.proposedBy,
-          proposedAt: new Date(now).toISOString(), environment: body, ...(input.valueSources === undefined ? {} : { valueSources: input.valueSources }),
+          proposedAt: new Date(now).toISOString(), environment: body, ...(input.valueSources === undefined ? {} : { valueSources: input.valueSources }), ...(origin === undefined ? {} : { origin }),
           [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TEST_ENV_PROPOSAL_TTL_MS) / 1000),
         },
       },
@@ -206,11 +211,25 @@ export async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: str
 }
 
 /** The value sources a proposal was stored with (where each value came from) and who proposed it. Empty for a proposal that has none (an edit by a person). Never throws on a damaged field: it reads as none. */
-export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined }> {
+export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<{ valueSources: Array<{ field: string; source: unknown }>; proposedBy: string | undefined; origin: ProposalOrigin | undefined }> {
   const item = await read(deps, proposalKey(orgId, project, digest));
   const sources = item?.valueSources;
   const valueSources = Array.isArray(sources) ? sources.filter((entry): entry is { field: string; source: unknown } => typeof entry === "object" && entry !== null && typeof (entry as { field?: unknown }).field === "string") : [];
-  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined };
+  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined, origin: item?.origin === "setup_run" ? "setup_run" : undefined };
+}
+
+/** Whether any value source is one a setup RUN adds (a worked command, a company recipe, a person's value in the run). A second signal beside the proposal's own mark. */
+export function isSetupRunProposal(valueSources: ReadonlyArray<{ source: unknown }>): boolean {
+  return valueSources.some((entry) => SetupValueSourceSchema.safeParse(entry.source).success);
+}
+
+/**
+ * Whether a proposal was made by a setup RUN: the proposal's own mark (written when "Use this setup" stores it; the real confirm path's values cite files and lines, so their sources cannot tell), or a value
+ * source only a run adds. Such a proposal is approved only by a person who signed in just now, in a browser. (A team build runner would add the second person of owner decision 10 here; there is none to ask yet.)
+ */
+export async function proposalIsSetupRun(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<boolean> {
+  const { origin, valueSources } = await readProposalSources(deps, orgId, project, digest);
+  return origin === "setup_run" || isSetupRunProposal(valueSources);
 }
 
 const editedKey = (orgId: OrgId, project: string) => keyOf(orgId, project, "TESTENV#EDITED");
@@ -310,7 +329,7 @@ export interface ApprovedTestEnvironment { revision: number; digest: string; les
  */
 export async function approveTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number },
+  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number; /** The caller knows the proposal is a setup run's from another record (the candidate check's mark): the fresh sign-in is asked for whatever the proposal item says now. */ setupRun?: boolean },
 ): Promise<ApprovedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can approve a test environment");
   if (!DIGEST.test(input.digest) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.requestId.length < 8 || input.requestId.length > 100) throw invalid("the approval is not well formed");
@@ -334,7 +353,9 @@ export async function approveTestEnvironment(
   const now = deps.now();
   const fresh = (at: number | undefined): boolean => at !== undefined && Number.isFinite(at) && at <= now && now - at <= TEST_ENV_FRESH_SIGN_IN_MS;
   // A high-risk card (anything less safe, or a tier above the sandbox) needs the person pressing approve to have signed in just now too.
-  if ((lessSafe.length > 0 || testEnvApprovalRisk(body) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+  // A proposal a setup RUN made counts the same: its commands were worked out by running things, so the approver signs in just now (defence in depth: the route asks for it too).
+  const setupRun = input.setupRun === true || await proposalIsSetupRun(deps, input.orgId, input.project, input.digest);
+  if ((lessSafe.length > 0 || setupRun || testEnvApprovalRisk(body) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
   let second: { check: SecondPersonCheck; approverId: string; signedInAtMs: number; sessionRef: string } | undefined;
   if (lessSafe.length > 0) {
     const approval = input.approval;

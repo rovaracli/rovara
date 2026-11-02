@@ -172,6 +172,9 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   // A security scan reported high findings that could not be compared with the original code (no baseline ran, or it could not be trusted): at least medium ("needs review"), never silently low.
   if (input.evidence !== undefined && (input.evidence.unverifiedHighFindings ?? 0) > 0) medium.push(`A security scan reported ${plural(input.evidence.unverifiedHighFindings!, "high or critical finding", "high or critical findings")} that could not be compared with the original code, so it needs review.`);
 
+  // A security check was expected but no pack for this code could be read (EV-2): a scan could not be checked, so never silently low. A fixed sentence.
+  if (input.evidence?.evidenceUnavailable === true) medium.push("The proof evidence for this code was not available, so a security scan could not be checked, and it needs review.");
+
   const level: RiskLevel = high.length > 0 ? "high" : medium.length > 0 ? "medium" : "low";
   const reasons = [...high, ...medium].map((reason) => reason.slice(0, REASON_MAX));
   if (reasons.length === 0) reasons.push("A small change with no sensitive paths, dependency changes or open concerns.");

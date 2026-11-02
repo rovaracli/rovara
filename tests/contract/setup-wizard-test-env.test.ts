@@ -156,63 +156,74 @@ describe("an edited proposal", () => {
   });
 });
 
-describe("applying the proposal's commands to the project's settings", () => {
+describe("applying the approved environment's commands to the project's settings", () => {
+  // TE-2: the approval writes them (after a candidate check ran them and the Prove read it); `apply-commands` is only for an environment that is already approved, and adds nothing the settings hold.
   const withNewCommands = () => draftOf(draftBody({
     repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["deps"], 900)], checks: [
       { id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" },
       { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" },
       { id: "lint", label: "Lint", command: command("ruff", ["check"], 600), kind: "lint" },
-      { id: "other-dir", label: "Other", command: command("make", ["other"], 600, "repo/other"), kind: "build" },
     ] }],
   }));
+  const settingsAt = (t: Bench, revision: number) => (t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === revision)[0] as { definition: { setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }>; origins?: Record<string, string> } } | undefined)?.definition;
 
-  it("adds what the setup check has not run after the commands already there, keeps a person's commands marked as the person's, starts the setup check, and a second press adds nothing", async () => {
+  it("is refused before approval; the approval then adds what the check ran after the commands already there, keeps a person's commands marked as the person's, starts the project's setup check, and a second press adds nothing", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", async () => {
       await t.drafted(withNewCommands());
       expect((await t.dev(OMAR, "POST", `${ENV}/propose`, {})).status).toBe(200);
       const digest = testEnvDigest(withNewCommands().environment);
-      expect((await t.state()).proposal!.commandsNotInSettings).toBe(3);
-      const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
-      expect(applied.status, JSON.stringify(applied.body)).toBe(200);
-      expect(applied.body).toMatchObject({ added: ["make deps", "make smoke"], settingsRevision: 2, setupCheck: "started" });
-      expect(applied.body.skipped).toEqual(expect.arrayContaining([{ reason: "different_directory", count: 1 }, { reason: "not_needed", count: 1 }]));
-      const definition = (t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }>; origins?: Record<string, string> } }).definition;
+      expect((await t.state()).proposal!.commandsNotInSettings).toBe(2);
+      const early = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
+      expect(early.status, JSON.stringify(early.body)).toBe(400);
+      expect(settingsAt(t, 2)).toBeUndefined();
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      const definition = settingsAt(t, 2)!;
       expect(definition.setup.map((entry) => entry.args[0])).toEqual(["old-setup", "deps"]);
       expect(definition.readiness.map((entry) => entry.args[0])).toEqual(["old-test", "smoke"]);
       // The lists held commands a person set, so they stay a person's: a later suggestion that would replace them is flagged as a conflict.
       expect(definition.origins).toBeUndefined();
+      // The project's own setup check followed the new settings.
+      expect((t.db.get(projectMetaKey(TEST_ORG, NAME)) as { setupCheck?: { revision: number } }).setupCheck).toMatchObject({ revision: 2 });
+      expect((await t.state()).proposal).toBeUndefined();
       const again = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 2 });
       expect(again.status, JSON.stringify(again.body)).toBe(200);
       expect(again.body).toMatchObject({ added: [], settingsRevision: 2, setupCheck: "not_needed" });
     });
   });
 
-  it("is refused for a stale settings revision, a proposal that is not stored, and anyone who may not edit settings", async () => {
+  it("is refused for a stale settings revision, a proposal that is not stored, and anyone who may not edit settings (after approval)", async () => {
     const t = await setupWizardBench();
     await t.person(MAYA, "member", "contributor");
     await withSwitch("1", async () => {
-      await t.drafted(withNewCommands());
-      await t.dev(OMAR, "POST", `${ENV}/propose`, {});
-      const digest = testEnvDigest(withNewCommands().environment);
+      const digest = await t.approveFirst();
       expect((await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 7 })).status).toBe(409);
       expect((await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest: "b".repeat(64), requestId: randomUUID(), expectedRevision: 1 })).status).toBe(409);
       expect((await t.dev(MAYA, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 })).status).toBe(403);
-      expect(t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)).toEqual([]);
+      expect(settingsAt(t, 2)).toBeUndefined();
     });
   });
 
-  it("will not move commands that run in another directory, and never applies a command that downloads and runs code", async () => {
+  it("the approval never moves commands that run in another directory or applies a command that downloads and runs code: the proposal that needs them cannot be proved", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", async () => {
       await t.approveFirst();
-      // An edited body (not the detectors') is checked when it is stored; one that slipped a bad command in is still not applied.
-      const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }] }] });
+      const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }, { id: "other", label: "Other", command: command("make", ["other"], 600, "repo/other"), kind: "build" }] }] });
       expect((await t.web(OMAR, "POST", `${ENV}/edit`, { environment: body })).status).toBe(200);
-      t.db.set({ ...(t.db.get(projectMetaKey(TEST_ORG, NAME)) as Record<string, unknown>) });
       const digest = testEnvDigest(body);
-      const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
-      expect(applied.body).toMatchObject({ added: ["make smoke"] });
+      // The check can only run what the settings save can hold; the build check in another directory is not among it, so nothing is proved and nothing is written.
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(400);
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).status).toBe(400);
+      expect(settingsAt(t, 2)).toBeUndefined();
+      // The one that only adds smoke is approved, and exactly smoke is written.
+      const fine = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }] }] });
+      expect((await t.web(OMAR, "POST", `${ENV}/edit`, { environment: fine })).status).toBe(200);
+      const fineDigest = testEnvDigest(fine);
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest: fineDigest })).status).toBe(200);
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: fineDigest, expectedRevision: 1 })).status).toBe(200);
+      expect(settingsAt(t, 2)!.readiness.map((entry) => entry.args[0])).toEqual(["old-test", "smoke"]);
     });
   });
 });
@@ -466,9 +477,12 @@ describe("applying commands where the project's commands run in more than one di
       // The project already has a command in another directory: a save would move it into the first repository.
       const revision = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: { setup: Array<Record<string, unknown>> } } & Record<string, unknown>;
       t.db.set({ ...revision, definition: { ...revision.definition, setup: [...revision.definition.setup, { cwd: "repo/other", executable: "make", args: ["other"], timeoutSeconds: 60 }] } });
-      const refused = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
+      // The check would run them in the first repository's directory: it is refused rather than moving them (and nothing is applied before approval anyway).
+      const refused = await t.dev(OMAR, "POST", `${ENV}/check`, { digest, requestId: randomUUID() });
       expect(refused.status).toBe(400);
       expect(errorOf(refused).message).toContain("more than one directory");
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK")).toEqual([]);
+      expect((await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 })).status).toBe(400);
     });
   });
 });
@@ -630,7 +644,9 @@ describe("who the applied commands are credited to", () => {
       t.db.set({ ...revision, definition: { ...revision.definition, origins: { setup: "agent", readiness: "agent" } } });
       const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }] }] });
       await t.web(OMAR, "POST", `${ENV}/edit`, { environment: body });
-      const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest: testEnvDigest(body), requestId: randomUUID(), expectedRevision: 1 });
+      // The approval writes the commands (TE-2).
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(body) })).status).toBe(200);
+      const applied = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: testEnvDigest(body), expectedRevision: 1 });
       expect(applied.status, JSON.stringify(applied.body)).toBe(200);
       const saved = t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { origins?: Record<string, string> } };
       expect(saved.definition.origins?.readiness).toBeUndefined();

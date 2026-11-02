@@ -17,11 +17,16 @@ const importersOf = (module: string): string[] => files(WORKER).filter((path) =>
 
 describe("the worker side is reachable only through the evidence hook", () => {
   it("only the evidence hook and its own modules use the new modules", () => {
-    expect(importersOf("cobertura-lcov-coverage")).toEqual(["verification/evidence-raw.ts", "verification/migration-check.ts", "verification/sarif.ts"]);
+    // (env-detect/propose.ts only asks coverageSpecsOf which test checks name no report, for the setup wizard's note: S-2.)
+    expect(importersOf("cobertura-lcov-coverage")).toEqual(["env-detect/propose.ts", "verification/evidence-raw.ts", "verification/line-coverage-join.ts", "verification/migration-check.ts", "verification/sarif.ts"]);
     expect(importersOf("sarif")).toEqual(["verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     expect(importersOf("sarif-baseline")).toEqual(["verification/evidence-raw.ts"]);
     expect(importersOf("migration-check")).toEqual(["verification/evidence-raw.ts"]);
     expect(importersOf("report-file")).toEqual(["verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
+    // EV-2 / S-2: the Go and JaCoCo readers take text (the file comes through readContainedReport in readChangedCoverage) and open no file; the join places their files and is reached only from the evidence hook.
+    expect(importersOf("line-coverage-join")).toEqual(["verification/evidence-raw.ts"]);
+    expect(readFileSync(join(WORKER, "verification/changed-coverage.ts"), "utf8")).not.toMatch(/from "node:fs|from "fs/u);
+    expect(readFileSync(join(WORKER, "verification/line-coverage-join.ts"), "utf8")).not.toMatch(/from "node:fs|from "fs/u);
     expect(importersOf("evidence-raw")).toEqual(["run-task.ts"]);
   });
 
@@ -58,11 +63,12 @@ describe("the broker judges the risk with the evidence where a pull request's ri
   it("the initial publication, a pushed fix and a description rewrite each read the evidence signal through the port (which exists only while the switch is on)", () => {
     const publication = readFileSync(join(BROKER, "developer-tasks/publication.ts"), "utf8");
     expect(publication).toContain("recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk)");
-    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest)");
-    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest)");
+    // The last argument says whether the approved check policy has a security check: with it, a pack that cannot be had is "evidence unavailable" and the risk is at least medium (EV-2).
+    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
+    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
     expect(publication).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
     const reconcile = readFileSync(join(BROKER, "broker/pull-request-reconcile.ts"), "utf8");
-    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest)");
+    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest, securityCheckIdsOf(workflow.checkPolicy))");
     expect(reconcile).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
   });
 });

@@ -9,10 +9,13 @@
 import { z } from "zod";
 import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
+import { RelativeWorkspacePathSchema } from "./project.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
 export const TEST_ENV_DETECT_FEATURE = "task.testEnvDetect.v1";
 export const TEST_ENV_PLAN_FEATURE = "task.testEnvironment.v1";
+/** A worker that lists this reads `checks[].coveragePath` of the plan (the approved report to read changed-line coverage from). A worker that does not is sent the plan without that field (informational only), because its strict parse would refuse it. */
+export const TEST_ENV_COVERAGE_PATH_FEATURE = "task.testEnvCoveragePath.v1";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -60,7 +63,7 @@ export const TestEnvTaskPlanSchema = z
       })
       .strict(),
     /** Readiness command `i` of the run is the environment's check `checks[i]`, for `i < checks.length`: the run's first commands are the environment's checks, in order. */
-    checks: z.array(z.object({ id: Id, kind: CheckKindSchema, selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict()
+    checks: z.array(z.object({ id: Id, kind: CheckKindSchema, coveragePath: RelativeWorkspacePathSchema.optional(), selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict()
       .superRefine((check, context) => {
         if (check.selectArgs !== undefined && check.selectArgs.filter((arg) => arg === TEST_ENV_SELECT_PLACEHOLDER).length !== 1) context.addIssue({ code: "custom", path: ["selectArgs"], message: "selectArgs holds {tests} exactly once" });
       })).min(1).max(32),
@@ -117,7 +120,12 @@ export type TestEnvRuns = z.infer<typeof TestEnvRunsSchema>;
 
 export const TestEnvironmentStateSchema = z
   .object({
-    approved: z.object({ revision: z.number().int().min(1), approvedAt: z.string().datetime(), digest: Sha256, summary: TestEnvSummarySchema }).strict().optional(),
+    approved: z.object({
+      revision: z.number().int().min(1), approvedAt: z.string().datetime(), digest: Sha256, summary: TestEnvSummarySchema,
+      /** S2: the approved environment's commands that the project's settings do not hold (the write after the approval did not land, or the settings changed since), and where the check of this digest stands at the current settings revision. */
+      commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
+      check: z.object({ status: z.enum(["unchecked", "checking", "ready", "failed", "outdated"]), failedStep: line(400).optional() }).strict().default({ status: "unchecked" }),
+    }).strict().optional(),
     /** What the latest setup run found, ready to propose. `stale`: the setup run is older than the project's settings or is not ready. */
     draft: z.object({ status: z.enum(["none", "ready", "stale"]), notes: z.array(line(400)).max(60), questions: z.array(line(400)).max(60), pendingServices: z.array(TestEnvPendingServiceSchema).max(32) }).strict(),
     proposal: z
@@ -143,8 +151,10 @@ export const TestEnvironmentStateSchema = z
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
         approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
-        /** The project's commands that the proposal's commands are not among, so the setup check has not run them. */
+        /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
         commandsNotInSettings: z.number().int().min(0).max(1000).default(0),
+        /** TE-2: the candidate check of THIS proposal (a fresh workspace prepared from the proposal's commands, never from the applied settings), at the settings revision as they stand now. */
+        check: z.object({ status: z.enum(["unchecked", "checking", "ready", "failed", "outdated"]), failedStep: line(400).optional() }).strict().default({ status: "unchecked" }),
       })
       .strict()
       .optional(),
@@ -154,6 +164,9 @@ export type TestEnvironmentState = z.infer<typeof TestEnvironmentStateSchema>;
 
 export const TestEnvProposeBodySchema = z.object({}).strict();
 export const TestEnvProveBodySchema = z.object({ digest: Sha256 }).strict();
+/** Run the candidate check of a proposal: a request id, so a retry is one check. */
+export const TestEnvCheckBodySchema = z.object({ digest: Sha256, requestId: z.string().uuid() }).strict();
+export type TestEnvCheckBody = z.infer<typeof TestEnvCheckBodySchema>;
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
 
 /** A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). */

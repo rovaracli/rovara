@@ -117,7 +117,7 @@ it("with no session there is no steer box, and the command box is only for a run
 });
 
 const READY = view({ status: "ready", stop: "proposed", summary: SUMMARY, proposal: PROPOSAL, verified: true, taskId: TASK, verification: { "setup-web": "verified", "tests-web": "unverified" } });
-const REPLY = { digest: "b".repeat(64), used: ["setup-web"], unchecked: [], left: [], proved: false, next: "apply_commands" };
+const REPLY = { digest: "b".repeat(64), used: ["setup-web"], unchecked: [], left: [], proved: false, next: "check" };
 
 it("Use this setup: an item that does not match the code cannot be ticked; the rest is proposed, nothing is applied, and the page says what must happen first", async () => {
   const f = setup({ read: { status: 200, body: READY }, answers: { "/confirm": { status: 200, body: REPLY } } });
@@ -126,7 +126,7 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   expect(within(card).getByText(/saves it as a proposal in the test environment below; it does not change the project's settings/u)).toBeTruthy();
   expect(within(card).queryByText(/Nothing is saved until/u)).toBeNull();
   expect(within(card).getByText("Does not match the code")).toBeTruthy();
-  const boxes = within(card).getAllByRole("checkbox") as HTMLInputElement[];
+  const boxes = within(card).getAllByRole<HTMLInputElement>("checkbox");
   expect(boxes).toHaveLength(2);
   expect(boxes[0]!.checked).toBe(true);
   expect(boxes[1]!.disabled).toBe(true);
@@ -134,7 +134,7 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
   await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));
   expect(posts(f, "/setup-agent/confirm")[0]!.body).toMatchObject({ expectedRevision: 2, itemIds: ["setup-web"] });
-  expect(await within(card).findByText(/Saved as a proposal\. Approve it in the test environment below, after a passing proof/u)).toBeTruthy();
+  expect(await within(card).findByText(/Saved as a proposal\. In the test environment below, run its check, prove it, then approve it with a fresh sign-in/u)).toBeTruthy();
   // Nothing was applied by it: no settings save, no setup check, no draft apply.
   expect(f.request.mock.calls.map(([r]) => r).filter((r) => r.method !== "GET" && !r.path.endsWith("/setup-agent/confirm"))).toEqual([]);
   await expectNoAxeViolations(section);
@@ -145,7 +145,7 @@ it("only what the code host confirmed is ticked to begin with: an item that coul
   const unchecked = { ...READY, verification: { "setup-web": "verified", "tests-web": "unchecked" } };
   const f = setup({ read: { status: 200, body: unchecked }, answers: { "/confirm": { status: 200, body: { ...REPLY, used: ["setup-web", "tests-web"] } } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
-  const boxes = within(card).getAllByRole("checkbox") as HTMLInputElement[];
+  const boxes = within(card).getAllByRole<HTMLInputElement>("checkbox");
   expect([boxes[0]!.checked, boxes[1]!.checked]).toEqual([true, false]);
   expect(boxes[1]!.disabled).toBe(false);
   fireEvent.click(boxes[1]!);
@@ -159,7 +159,7 @@ it("Use this setup waits for the re-read of the citations: it can't be pressed u
   const f = setup({ read: { status: 200, body: { ...READY, verified: false } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
   expect(within(card).getByText(/still checking where each suggestion came from/u)).toBeTruthy();
-  expect((within(card).getByRole("button", { name: "Use this setup" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(card).getByRole<HTMLButtonElement>("button", { name: "Use this setup" }).disabled).toBe(true);
   f.close();
 });
 

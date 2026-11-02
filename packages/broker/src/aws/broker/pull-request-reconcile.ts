@@ -13,7 +13,7 @@ import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { loadTestingView } from "../developer-tasks/testing-view.js";
 import { nightlyHeadReaderOf } from "./nightly-head.js";
-import { evidenceRiskOfTask } from "../developer-tasks/evidence-risk-input.js";
+import { evidenceRiskOfTask, securityCheckIdsOf } from "../developer-tasks/evidence-risk-input.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../../rovara-code/session-bindings.js";
@@ -185,7 +185,7 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
-    const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest) : undefined;
+    const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest, securityCheckIdsOf(workflow.checkPolicy)) : undefined;
     // Setup and test health SH18: the Testing view of the code now on the pull request (only while `vx` is on).
     const testing = pushedChecked && workflow.definitionVersion === "1.1.0"
       ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;

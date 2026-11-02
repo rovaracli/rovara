@@ -291,8 +291,12 @@ const LeaveBodySchema = z.object({ requestId: z.string().uuid().optional() }).st
  */
 export function clearOrgData(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "evidenceErase">): (orgId: OrgId) => Promise<void> {
   return async (orgId) => {
-    await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId);
+    // The two steps are independent: the close swallows what this throws, so a learning walk that failed must not stop the evidence erase from recording its pending erase. The learning failure is reported after.
+    let learningFailed = false;
+    let learningError: unknown;
+    try { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); } catch (error) { learningFailed = true; learningError = error; }
     await deps.evidenceErase?.workspace(orgId);
+    if (learningFailed) throw learningError;
   };
 }
 

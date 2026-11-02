@@ -492,6 +492,23 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("sends the test environment's plan to a worker that lists task.testEnvironment.v1 but not task.testEnvCoveragePath.v1 without the coveragePath (informational), and with it to one that lists both (S-2)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test", coveragePath: "reports/coverage.xml" }, { id: "lint", kind: "lint" }] };
+      const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }, { cwd: "repo/demo", executable: "npm", args: ["run", "lint"], timeoutSeconds: 30 }], testEnvironment: plan });
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1"];
+      const older = delivery({ workerFeatures: async () => base });
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      const sent = postedPayload(older.post).testEnvironment as { checks: Array<Record<string, unknown>>; digest: string };
+      expect(sent.checks).toEqual([{ id: "unit", kind: "test" }, { id: "lint", kind: "lint" }]);
+      expect(sent.digest).toBe("d".repeat(64));
+      expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.test_env_coverage_path_omitted"))).toBe(true);
+      log.mockRestore();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testEnvCoveragePath.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect((postedPayload(capable.post).testEnvironment as { checks: Array<Record<string, unknown>> }).checks[0]).toMatchObject({ coveragePath: "reports/coverage.xml" });
+    });
+
     it("sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1 WITHOUT the field, and logs that detection did not run (wire-testenv fix round 1)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });

@@ -1,10 +1,11 @@
-// Test environment (wire-testenv): the Prove report of a proposed environment, built from the project's SETUP CHECK.
+// Test environment (wire-testenv): the Prove report of a proposed environment, built from the proposal's CANDIDATE CHECK (TE-2).
 //
-// The setup check already exists and is the one place that runs a project's own commands on a fresh workspace: its setup commands, then its readiness commands (the build, smoke and test checks a task needs to
-// pass). It proves "these commands work on a clean checkout of the default branch" with no new thing to run. So the Prove report is DERIVED here, by the broker, from what that check recorded:
+// A candidate check runs on a fresh workspace prepared from the commands the settings WOULD hold once the proposal's are added (`test-env/candidate-commands.ts`), before any of them is applied: its setup commands,
+// then its readiness commands (the build, smoke and test checks a task needs to pass). It proves "these commands work on a clean checkout of the default branch" with no new thing to run. The caller passes the
+// check's own result (its status and the command lists it ran) here, and the Prove report is DERIVED by the broker from that, never from the project's applied settings or its own setup check:
 //   - the check must have passed (`ready`) at the project's latest settings revision, and be recent (a week, the life of a proposal);
-//   - every setup command and every build, smoke and test check of the proposal must be among the commands the project's settings had at that revision (the commands the check ran), compared by program, arguments
-//     and directory. A command the check did not run is not proved, and the proposal then says "apply these commands to the project's settings and run the setup check again";
+//   - every setup command and every build, smoke and test check of the proposal must be among the commands that check ran, compared by program, arguments and directory. A command the check did not run is not
+//     proved;
 //   - the report claims only what ran: each step it names passed, the rest are skipped. It does not claim the boot of a service, a timed full run, a coverage map or a mock (those need the full Prove run, which
 //     needs a worker run with no task: not built yet), and a proposal with services is never proved here.
 // A report is never read from a worker for this: the worker's word is not asked, so it cannot be forged.
@@ -119,12 +120,12 @@ export const TEST_ENV_REFUSAL_WORDS: Record<TestEnvRefusal, string> = {
   stale_draft: "The setup draft is older than the project's settings. Ask Rovara to draft the setup again.",
   no_proposal: "Propose the environment first.",
   not_provable: "This environment could not be checked from the setup check.",
-  outdated: "The project's settings changed since the last setup check. Run the setup check again.",
-  checking: "The setup check is still running.",
-  failed: "The setup check failed. Fix the setup, then run it again.",
-  no_setup_check: "Run the project's setup check first.",
-  commands_differ: "Some of the proposed commands are not among the commands the setup check ran. Apply the proposal's commands to the project's settings, then run the setup check again.",
+  outdated: "The project's settings changed since the check ran. Run the check of this test environment again.",
+  checking: "The check of this test environment is still running.",
+  failed: "The check of this test environment failed. Fix the commands, then run it again.",
+  no_setup_check: "Run the check of this test environment first: it runs the proposed commands on a fresh workspace, before any of them is added to the project's settings.",
+  commands_differ: "Some of the proposed commands are not among the commands the check ran. Run the check of this test environment again.",
   nothing_to_prove: "The proposal has no smoke or test command, so there is nothing to prove.",
   services_need_prove: "This environment calls services, which need the full Prove run. It is not available yet.",
-  setup_check_old: "The last setup check is more than a week old. Run it again.",
+  setup_check_old: "The last check of this test environment is more than a week old. Run it again.",
 };

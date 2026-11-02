@@ -4,7 +4,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/develop
 import { logDeveloperEvent } from "../developer/log.js";
 import { commitReviewedProjectArchive, readProjectArchivePreview } from "./reviewed-project-archive.js";
 import { setEgressOwnerActive, type EgressDomainsDependencies } from "./egress-domains.js";
-type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "audit" | "projectArchived"> & { egress: EgressDomainsDependencies; /** v1.2 learning loop: deletes the project's learning data once the archive has applied; best effort (a failure is never an archive failure). */ clearLearning?: (orgId: DeveloperCaller["orgId"], project: string) => Promise<void> };
+type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "audit" | "projectArchived"> & { egress: EgressDomainsDependencies; /** v1.2 learning loop: deletes the project's learning data once the archive has applied; best effort (a failure is never an archive failure). */ clearLearning?: (orgId: DeveloperCaller["orgId"], project: string, onEvidenceUnfinished?: () => void) => Promise<void> };
 const unknownOutcome = () => agentXError("AUDIT_UNAVAILABLE", "The archive outcome could not be confirmed. Refresh before trying again.");
 export async function readReviewedProjectArchiveAppPreview(deps: Pick<Deps,"documentClient"|"tableName"|"now"|"audit">, caller: DeveloperCaller, name: string) {
  const current = await readProjectArchivePreview(deps, caller, name);
@@ -17,7 +17,7 @@ export async function archiveProjectReviewedWithEffects(deps: Deps, caller: Deve
  const change = { requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, expectedProjectRevision: parsed.data.expectedProjectRevision };
  try {
   const outcome = await commitReviewedProjectArchive(deps, caller, name, change);
-  const effects: ReviewedProjectArchiveOutcome["effects"] = { egress: "not_attempted", archiveHook: "not_attempted" };
+  const effects: ReviewedProjectArchiveOutcome["effects"] = { egress: "not_attempted", archiveHook: "not_attempted", evidenceClean: "not_attempted" };
   if (!outcome.replayed) {
    logDeveloperEvent({ event: "developer.project_archived", orgId: caller.orgId, project: name });
    // Like the existing archive route, META commits first. The scheduled reconciler repairs a crash,
@@ -29,7 +29,13 @@ export async function archiveProjectReviewedWithEffects(deps: Deps, caller: Deve
     try { await deps.projectArchived(caller.orgId, name);effects.archiveHook = "completed"; }
     catch { effects.archiveHook = "pending";logDeveloperEvent({ event: "developer.project_archived_hook_failed", orgId: caller.orgId, project: name, error: "Unavailable" }); }
    }
-   if (deps.clearLearning !== undefined) { try { await deps.clearLearning(caller.orgId, name); } catch { logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId: caller.orgId, project: name, error: "Unavailable" }); } }
+   effects.evidenceClean = "not_configured";
+   if (deps.clearLearning !== undefined) {
+    // The project's stored proof evidence: "pending" when its erase did not finish in the request (a scheduled run finishes it), so the person is told instead of left to wonder.
+    let unfinished = false;
+    try { await deps.clearLearning(caller.orgId, name, () => { unfinished = true; });effects.evidenceClean = unfinished ? "pending" : "completed"; }
+    catch { effects.evidenceClean = "pending";logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId: caller.orgId, project: name, error: "Unavailable" }); }
+   }
   }
   // Freshly authorize and read even on replay, which may follow restore. Failure is an unknown
   // outcome, never an invitation to automatically repeat a consequential write with a new UUID.

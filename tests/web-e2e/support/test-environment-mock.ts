@@ -1,12 +1,12 @@
 // The test-environment routes of the onboarding scenario (setup wizard E4): the answer for each phase of one journey, the way the broker words it. State lives for one scenario.
-import { AppProjectDetailSchema, TestEnvironmentBodySchema, TestEnvironmentStateSchema, TestEnvApplyAnswerSchema, TestEnvApproveAnswerSchema } from "@agentx/contracts/web";
+import { AppProjectDetailSchema, TestEnvironmentBodySchema, TestEnvironmentStateSchema, TestEnvApproveAnswerSchema } from "@agentx/contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 type Project = ReturnType<typeof AppProjectDetailSchema.parse>;
 const DIGEST = "a".repeat(64);
 let phase: "ready" | "proposed" | "proved" | "approved" = "ready";
-let applied = false;
-export function resetTestEnvironment(): void { phase = "ready"; applied = false; }
+let checked = false;
+export function resetTestEnvironment(): void { phase = "ready"; checked = false; }
 
 const command = (executable: string, args: string[], timeoutSeconds: number) => ({ cwd: "repo/payments", executable, args, timeoutSeconds });
 const ENVIRONMENT = TestEnvironmentBodySchema.parse({
@@ -24,7 +24,7 @@ const state = () => TestEnvironmentStateSchema.parse({
     runs: [{ repositoryId: "payments", setup: ["npm ci"], checks: [{ id: "unit", label: "Unit tests", kind: "test", command: "npm test", selectArgs: ["{tests}"] }] }],
     valueSources: [{ field: "repos[0].setupCommands[0]", source: { path: "package.json", line: 4 } }, { field: "repos[0].checks[0]", source: "detector:node" }],
     proved: phase === "proved", proveSteps: phase === "proved" ? [{ step: "setup", status: "passed" }, { step: "full_suite", status: "passed" }] : [], needs: { freshSignIn: false, secondPerson: false },
-    approval: { status: "none" }, commandsNotInSettings: applied ? 0 : 2,
+    approval: { status: "none" }, commandsNotInSettings: 2, check: { status: checked ? "ready" : "unchecked" },
   } }),
 });
 
@@ -36,17 +36,18 @@ export async function testEnvironmentMock({ url, method, json, record }: MockExc
   if (action === "" && method === "GET") { json(200, state()); return true; }
   if (method !== "POST") return false;
   if (action === "/propose") { phase = "proposed"; json(200, state()); return true; }
-  if (action === "/apply-commands") {
-    const current = project.get();
-    applied = true;
-    const next = AppProjectDetailSchema.parse({ ...current, latestRevision: current.latestRevision + 1, setup: { status: "ready", checkedRevision: current.latestRevision + 1 }, settings: { ...current.settings, setupCommands: ["npm ci"], testCommands: ["npm test"] } });
-    project.set(next); record({ applied: true });
-    json(200, TestEnvApplyAnswerSchema.parse({ added: ["npm ci", "npm test"], skipped: [], settingsRevision: next.latestRevision, setupCheck: "started", state: state() })); return true;
-  }
+  // TE-2: the proposal's own check runs first, on a fresh workspace, with nothing added to the project's settings.
+  if (action === "/check") { checked = true; record({ checked: true }); json(202, state()); return true; }
   if (action === "/prove") {
-    if (!applied) { json(400, { error: { code: "CONFIG_INVALID", message: "Some of the proposed commands are not among the commands the setup check ran. Apply the proposal's commands to the project's settings, then run the setup check again." } }); return true; }
+    if (!checked) { json(400, { error: { code: "CONFIG_INVALID", message: "Run the check of this test environment first: it runs the proposed commands on a fresh workspace, before any of them is added to the project's settings." } }); return true; }
     phase = "proved"; json(200, state()); return true;
   }
-  if (action === "/approve") { phase = "approved"; json(200, TestEnvApproveAnswerSchema.parse({ revision: 1, digest: DIGEST, replayed: false, state: state() })); return true; }
+  if (action === "/approve") {
+    // The approval is what adds the commands to the project's settings.
+    const current = project.get();
+    const next = AppProjectDetailSchema.parse({ ...current, latestRevision: current.latestRevision + 1, setup: { status: "ready", checkedRevision: current.latestRevision + 1 }, settings: { ...current.settings, setupCommands: ["npm ci"], testCommands: ["npm test"] } });
+    project.set(next); record({ applied: true });
+    phase = "approved"; json(200, TestEnvApproveAnswerSchema.parse({ revision: 1, digest: DIGEST, replayed: false, state: state() })); return true;
+  }
   return false;
 }

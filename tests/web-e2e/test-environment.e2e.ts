@@ -1,5 +1,5 @@
 // Setup wizard (E4), one journey in a real browser: onboarding reaches the Setup step, the test environment section loads as its own chunk, and a maintainer proposes, sees what will run and where it came from,
-// is told the setup check has not run the commands, adds them to the project's settings, proves the environment and approves it.
+// runs the proposal's own check (nothing is added to the project's settings), proves the environment from it and approves it; the approval adds the commands.
 import { test, expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 test("a maintainer proposes, proves and approves the test environment from the Setup step",async({page,context,request,baseURL})=>{
@@ -16,12 +16,11 @@ test("a maintainer proposes, proves and approves the test environment from the S
  await expect(section.getByRole("list",{name:"Setup commands for payments"}).getByText(/package\.json, line 4/)).toBeVisible();
  await expect(section.getByRole("list",{name:"Checks for payments"}).getByText("{tests}")).toBeVisible();
  await expect(section.getByRole("button",{name:"Approve"})).toBeDisabled();
+ await expect(section.getByRole("button",{name:"Prove it"})).toBeDisabled();
+ await section.getByRole("button",{name:"Run the check"}).click();
+ await expect(section.getByText("The check passed; prove the environment from it.")).toBeVisible();
  await section.getByRole("button",{name:"Prove it"}).click();
- await expect(section.getByRole("alert")).toContainText("Apply the proposal's commands to the project's settings");
- await section.getByRole("button",{name:"Add these commands to the project's settings"}).click();
- await expect(section.getByText(/Added to the project's settings, and the setup check started/)).toBeVisible();
- await section.getByRole("button",{name:"Prove it"}).click();
- await expect(section.getByText(/Proved: the setup check ran these commands/)).toBeVisible();
+ await expect(section.getByText(/Proved: the check ran these commands/)).toBeVisible();
  for(const theme of ["light","dark"] as const)await checkA11y(page,{theme});
  await section.getByRole("button",{name:"Approve"}).click();
  await expect(section.getByText(/Approved: revision 1/)).toBeVisible();
