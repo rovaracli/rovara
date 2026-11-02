@@ -187,7 +187,7 @@ export interface SavedEnvBuildInput {
   /** Repository-relative folders the environment declares (build outputs it needs), kept even when untracked. */
   declaredFolders?: readonly string[];
   /** The interpreter folders a virtual environment's links may name (links.ts). Default: `/usr/bin`, `/usr/local/bin`. */
-  links?: Pick<LinkPolicy, "interpreterDirectories" | "interpreterTrees">;
+  links?: Pick<LinkPolicy, "interpreterDirectories" | "managedPythonRoots">;
   /** The BuildKit image of the throwaway builder, by digest (`repository@sha256:...`); the install's mirror of `moby/buildkit`. Absent: the builder driver's default. */
   builderImage?: string;
 }
@@ -285,7 +285,7 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
     await mkdir(seedRoot, { recursive: true });
     const keyRepositories: KeyRepository[] = [];
     const workspaceRoot = await defaultRealPath(fresh.rootPath);
-    const linkPolicy: LinkPolicy = { interpreterDirectories: input.links?.interpreterDirectories ?? DEFAULT_LINK_POLICY.interpreterDirectories, interpreterTrees: input.links?.interpreterTrees ?? DEFAULT_LINK_POLICY.interpreterTrees };
+    const linkPolicy: LinkPolicy = { interpreterDirectories: input.links?.interpreterDirectories ?? DEFAULT_LINK_POLICY.interpreterDirectories, managedPythonRoots: input.links?.managedPythonRoots ?? DEFAULT_LINK_POLICY.managedPythonRoots };
     const trackedLinks = new Set<string>();
     for (const repository of input.repositories) {
       const target = path.join(seedRoot, repository.directory);

@@ -14,8 +14,8 @@ Enterprise: Reached only when an admin connects that system (or registers a GitH
   `*.github.com`, `api.github.com`, `api.githubcopilot.com`, `github.com`
 - Slack: the Slack app, webhooks and links.
   `*.slack.com`, `api.slack.com`, `app.slack.com`, `hooks.slack.com`, `slack-gov.com`, `slack.com`
-- Trackers and work-management connectors (Linear, Jira, Asana).
-  `*.atlassian.net`, `api.linear.app`, `app.asana.com`, `linear.app`, `mcp.asana.com`, `mcp.atlassian.com`, `mcp.linear.app`
+- Trackers and work-management connectors (Linear, Jira, Asana), and Atlassian's organization admin API (api.atlassian.com), read with a key the company supplies to tell which Jira accounts it manages.
+  `*.atlassian.net`, `api.atlassian.com`, `api.linear.app`, `app.asana.com`, `linear.app`, `mcp.asana.com`, `mcp.atlassian.com`, `mcp.linear.app`
 - Observability and operations connectors (read-only): Sentry, Datadog (regional hosts), Grafana, PagerDuty, Vercel.
   `ap1.datadoghq.com`, `ap2.datadoghq.com`, `api.eu.pagerduty.com`, `api.pagerduty.com`, `api.vercel.com`, `datadoghq.com`, `datadoghq.eu`, `ddog-gov.com`, `sentry.io`, `uk1.datadoghq.com`, `us2.ddog-gov.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `vercel.com`
 
@@ -123,3 +123,11 @@ Enterprise: Names that cannot resolve (.invalid, .test, example domains) or that
   `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `mock.invalid`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `registry.corp.example.net`, `rovara.invalid`
 - XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched. (only in `packages/broker/src/developer/saml.ts`, `packages/broker/src/developer/providers.ts`)
   `schemas.xmlsoap.org`, `www.w3.org`
+
+## Names looked up in DNS
+
+Enterprise: Not hosts written in the code but names a customer gives it. Each lookup goes to the install's own DNS resolver, only when a person uses the feature (or, for a claimed domain, once a day), and nothing is sent to Rovara. If the install's network blocks the lookup, the feature reports it as unavailable and changes nothing.
+
+- Company domain verification: the CNAME and TXT records of `_rovara-verify.<domain>` for a domain a company owner claims on the Company domains page, and the daily re-check of it. The broker's own resolver (on AWS, the VPC resolver); nothing else is asked, a record behind an alias is not followed, and each lookup is cancelled after 6 seconds. (only in `packages/broker/src/org/company-domains/resolver.ts`)
+- Connector endpoints: the check that a company's MCP connector address resolves to public addresses only, before the broker saves it or calls it. (only in `packages/broker/src/connections/endpoint-check.ts`)
+- The gateway's endpoint check: the same public-address test for the address a connector call goes to. (only in `packages/gateway/src/endpoint.ts`)

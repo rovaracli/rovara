@@ -327,18 +327,19 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, saved-env-build (SH22 and its review fixes): the four named and foreign digests were retaken after the saved environment images were added to the named control plane (legacy did not move): the key,
     // the repository creation template, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the fixed-name role ECR assumes to create a repository) and their
     // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. SH25 added the SavedEnvEnabled parameter and its packed `sv` setting (the parameter is taken out of the remainder like the other switches). The lifecycle count backstop is keep + 3. Nothing else in the control plane moved.
+    // 2026-11-02, merge of cloud/next abde6ff3b into feat/saved-env-build: the four named and foreign digests were retaken again for the two sets of additions together (cloud/next's own and the saved environment images); legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "91232ac68a6cb0adddb520695fb53caaaa07ca77ddc0bafc4e984a23c6dacd7b",
-        withoutRoute: "bdb90886cdb1a0f7bf84d6eca687f2e13482e9aa7dc0e3ba8f69a9ac159a5798",
+        withRoute: "738c19158470217ce13059bedaaaa79f1bc8ca6379274209609008aea4cfbbf2",
+        withoutRoute: "79f7b03fc0684e503c864ee77b384d543feb85292eabab803f76a02fc5cb2ad4",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "1a5837e2f613267fe7071081cafc4c786569bd170973708aea3fe856dd6e8b70",
-        withoutRoute: "880b116f19294330a0642dae92d8601764be55a7a112e6cf889d68532886bb5c",
+        withRoute: "3afba55bf4cce928ce2729a4ade49916f546442d1afdb676957ab3afd80ac972",
+        withoutRoute: "1a12b4a3e27451676e792b0df224dcb0d0f617d7538fe94387b0b7b041a9fa75",
       },
       {
         label: "legacy",

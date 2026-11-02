@@ -1,20 +1,25 @@
 // Second review by another AI company (SH34): what the broker keeps on the TASK RECORD about it, and the writes that keep it. Nothing here touches the workflow snapshot: a second review is an ADDED opinion, so
 // its operation's result never reaches `submitWorkflowReview`, `reviewCleared`, the latest-review-for-candidate lookup, the pull request's Reviews section or `requireCrossCompanyReview`. It lives beside the workflow
 // (as `reviewSameModel` does), keyed by the candidate it is about.
-import { redactText, WorkflowReviewReportSchema, type AcceptedFindingRef, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
+import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
-import { secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
+import { mergeWaitsForSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
 
 type RunPlan = Extract<SecondReviewPlan, { run: true }>;
 
 /**
- * What the broker records on a second review's OPERATION when it starts one (`operation.secondReviewPlan`): the candidate it is about and the plan it runs under (the model, the mode, who it must differ from).
- * The operation's end reads it; nothing waits on it and nothing is held (the second review runs inside the REVIEW operation, so there is no pending record on the task).
+ * What the broker records on the REVIEW operation that carries a second reviewer (`operation.secondReviewPlan`): the candidate it is about and either the plan the worker was handed (models, mode, who it
+ * must differ from, why this model) or the fixed reason no second review could be started (`notRun`: no candidate, the chosen model no longer qualifies, budget). The one REVIEW end reads it and nothing waits on it;
+ * nothing is held (the second reviewer runs inside the operation, so there is no pending record on the task).
  */
 export interface SecondReviewOperationPlan {
   candidateDigest: string;
-  plan: Pick<RunPlan, "mode" | "company" | "model" | "against"> & { downgraded?: "replay-not-passed" };
+  plan?: Pick<RunPlan, "mode" | "company" | "model" | "candidates" | "against" | "choice"> & { downgraded?: "replay-not-passed"; defaultChanged?: true };
+  /** The proxy aliases the planned models are called by (the model proxy key may call these in addition to the review's own), and, for a routed model, the alias its report names as the model that ran (by model key). */
+  aliases?: string[];
+  routeAliases?: Record<string, string>;
+  notRun?: { mode: "shadow" | "on"; reason: SecondOpinionUnavailableReason; choice?: SecondReviewChoice | undefined };
 }
 
 /** The second opinion of one candidate, as the task keeps it. */
@@ -29,44 +34,42 @@ export function secondOpinionOfTask(task: { secondOpinion?: unknown }, candidate
   return parsed.success && parsed.data.candidateDigest === candidateDigest ? parsed.data.opinion : undefined;
 }
 
-type Item = { Update: { TableName: string; Key: Record<string, unknown>; UpdateExpression: string; ConditionExpression: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } };
-
-export interface SecondReviewEndInput {
-  tableName: string;
-  /** The task, with its workflow as read now (the candidate it holds and the findings the owner accepted as risks). */
-  task: { taskId: string; workflow?: { candidate?: { digest: string } | undefined; acceptedFindings?: readonly AcceptedFindingRef[] | undefined } | undefined };
-  /** The operation that ended, with the plan the broker recorded on it when it started. */
-  operation: { id: string; model?: ModelIdentifier | undefined; secondReviewPlan?: SecondReviewOperationPlan | undefined };
+export interface SecondOpinionFromResultInput {
+  /** `operation.secondReviewPlan`. */
+  recorded: SecondReviewOperationPlan | undefined;
+  operationId: string;
+  /** The result of the REVIEW operation that ended (any status). */
   terminalStatus: string;
   result: unknown;
+  /** The digest of the candidate the task holds now, and the findings the owner accepted as risks. */
+  currentCandidateDigest: string | undefined;
+  accepted?: readonly AcceptedFindingRef[] | undefined;
   now: string;
-  /** Builds the key of the task record (the caller's `taskKey`). */
-  taskKey: (taskId: string) => Record<string, unknown>;
 }
 
 /**
- * The write that ends a second review's operation. It changes ONLY the task's second opinion, never the workflow. An operation with no recorded plan writes nothing. An answer is accepted only when its report is
- * about the candidate the plan names (`report.candidateDigest === plan.candidateDigest`) AND the candidate the task holds now, is the code review's, and came from the planned model by the operation's record AND by
- * the report's own provider and version (`acceptSecondReport`); the findings the owner accepted as risks do not block. Anything else, an operation that did not succeed, or a missing or unreadable report, is
- * stored as unavailable. The write is idempotent for the same operation and never touches `workflow`.
+ * The task's second opinion from the end of the REVIEW operation that carried the second reviewer: undefined when none was planned (and cr off, always). Anything but a clean answer is stored as UNAVAILABLE with a
+ * fixed reason: a fixed `notRun` reason from the start; no `workflowSecondReview` key in a result that succeeded (the worker is older and never ran it: `older-worker`); an operation that did not succeed, a missing,
+ * unreadable or failed report (`no-answer`); a report for another candidate, role or model, or from the same company as the code (`acceptSecondReport`). The findings the owner accepted as risks do not block.
+ * It never touches the workflow: the caller stores it in the same single task Update as the workflow's own transition.
  */
-export function secondReviewEndItems(input: SecondReviewEndInput): Item[] {
-  const recorded = input.operation.secondReviewPlan;
-  if (recorded === undefined) return [];
-  const plan = { run: true as const, ...recorded.plan, operation: { tag: "second-review", modelFallback: "off" } } as unknown as RunPlan;
-  const reports = input.terminalStatus === "SUCCEEDED" && input.result !== null && typeof input.result === "object" ? (input.result as { workflowReviews?: unknown }).workflowReviews : undefined;
-  const parsed = Array.isArray(reports) && reports.length === 1 ? WorkflowReviewReportSchema.safeParse(reports[0]) : undefined;
-  const report: WorkflowReviewReport | undefined = parsed?.success === true ? parsed.data : undefined;
-  const opinion = report === undefined ? secondOpinionUnavailable(plan, "no-answer")
-    : report.candidateDigest !== recorded.candidateDigest ? secondOpinionUnavailable(plan, "wrong-candidate")
-    : secondOpinionOf({ plan, report, currentCandidateDigest: input.task.workflow?.candidate?.digest, ranModel: input.operation.model, accepted: input.task.workflow?.acceptedFindings });
-  const stored: StoredSecondOpinion = { candidateDigest: recorded.candidateDigest, opinion, recordedAt: input.now };
-  return [{ Update: {
-    TableName: input.tableName, Key: input.taskKey(input.task.taskId),
-    UpdateExpression: "SET secondOpinion = :opinion, updatedAt = :now",
-    ConditionExpression: "attribute_exists(pk)",
-    ExpressionAttributeValues: { ":opinion": stored, ":now": input.now },
-  } }];
+export function secondOpinionFromReviewResult(input: SecondOpinionFromResultInput): StoredSecondOpinion | undefined {
+  const recorded = input.recorded;
+  if (recorded === undefined) return undefined;
+  const store = (opinion: SecondOpinion): StoredSecondOpinion => ({ candidateDigest: recorded.candidateDigest, opinion, recordedAt: input.now });
+  if (recorded.notRun !== undefined) return store(secondOpinionUnavailable({ mode: recorded.notRun.mode, choice: recorded.notRun.choice }, recorded.notRun.reason));
+  const planned = recorded.plan;
+  if (planned === undefined) return undefined;
+  const plan = { run: true as const, ...planned, skipped: [] } as RunPlan;
+  const reported = input.result !== null && typeof input.result === "object" ? (input.result as Record<string, unknown>) : {};
+  if (input.terminalStatus !== "SUCCEEDED") return store(secondOpinionUnavailable(plan, "no-answer"));
+  // A succeeded review whose result has no second-review key came from a worker that did not run it (the field is dropped for an older worker at delivery).
+  if (!(SECOND_REVIEW_RESULT_KEY in reported)) return store(secondOpinionUnavailable(plan, "older-worker"));
+  const parsed = SecondReviewResultSchema.safeParse(reported[SECOND_REVIEW_RESULT_KEY]);
+  const report = parsed.success ? parsed.data.report : undefined;
+  if (report === undefined || report.operationId !== input.operationId) return store(secondOpinionUnavailable(plan, "no-answer"));
+  if (report.candidateDigest !== recorded.candidateDigest) return store(secondOpinionUnavailable(plan, "wrong-candidate"));
+  return store(secondOpinionOf({ plan, report, currentCandidateDigest: input.currentCandidateDigest, accepted: input.accepted, routeAliases: recorded.routeAliases }));
 }
 
 /**
@@ -77,6 +80,18 @@ export function secondReviewPullRequestLines(task: { secondOpinion?: unknown }, 
   if (!secondReviewEnabled(env)) return [];
   const opinion = secondOpinionOfTask(task, candidateDigest);
   return opinion === undefined ? [] : secondOpinionPrLines(opinion, accepted);
+}
+
+/**
+ * Why a merge must wait for the task owner: an `on` second review that did not run, for the code the task holds, that nobody has acknowledged (`mergeWaitsForSecondReview`). Rovara opens pull requests as drafts and never
+ * marks them ready, so this gate IS the merge card: Merge is refused with these words until the owner acknowledges on the task page. Undefined while `cr` is off, for a shadow review, once acknowledged, or for other code.
+ */
+export function secondReviewMergeWait(task: { secondOpinion?: unknown; secondReviewAcknowledged?: readonly string[] | undefined; workflow?: { candidate?: { digest: string } | undefined } | undefined }, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!secondReviewEnabled(env)) return undefined;
+  const digest = task.workflow?.candidate?.digest;
+  const opinion = secondOpinionOfTask(task, digest);
+  if (opinion === undefined || digest === undefined || !mergeWaitsForSecondReview(opinion, digest, task.secondReviewAcknowledged ?? [])) return undefined;
+  return `${secondReviewDidNotRunLine(opinion.unavailableReason ?? "no-answer")}. The task owner has to acknowledge it on the task page before this can be merged.`;
 }
 
 const plainLine = (text: string, max: number): string => Array.from(redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()).slice(0, max).join("");
@@ -103,7 +118,9 @@ export function secondReviewTaskView(task: { secondOpinion?: unknown; secondRevi
   const kind = opinion.mode === "on" ? "Second review" : "Second opinion (not blocking)";
   return {
     lines: [`${kind} (${name}): ${String(blocking.length)} ${blocking.length === 1 ? "finding" : "findings"}${opinion.downgraded === undefined ? "" : ", shown as an opinion only because this model has not yet passed the replay check"}`,
-      ...blocking.slice(0, 5).map((finding) => `- ${plainLine(finding.text, 300)}`)],
+      ...blocking.slice(0, 5).map((finding) => `- ${plainLine(finding.text, 300)}`),
+      // Which model reviewed and why (the default says how to change it).
+      plainLine(secondReviewedByLine({ provider: report.provider, modelId: report.version, choice: opinion.choice, defaultChanged: opinion.defaultChanged }), 160)],
     needsAcknowledgement: false, acknowledged: false,
   };
 }

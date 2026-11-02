@@ -16,7 +16,7 @@ function setup(extra: Partial<Parameters<typeof createCodeHostTap>[0]> = {}) {
   w.config.set("github", repoScope(repo()), { retention: "D" });
   w.actors.members.set("1001", "dev-alice");
   const logs: string[] = [];
-  const tap = createCodeHostTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, edited: w.edited, log: (event) => logs.push(event), ...extra });
+  const tap = createCodeHostTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, log: (event) => logs.push(event), ...extra });
   return { w, tap, logs };
 }
 
@@ -127,56 +127,125 @@ describe("code-host tap: what is recorded", () => {
   });
 });
 
-describe("an edit by someone other than the author is not stored, and the item is marked (TRW-4 fix round 1, B1)", () => {
+describe("per-editor rows: every change to a pull request, review or comment is its own row under the person who made it", () => {
   const bob = { id: "1002", login: "bob", isBot: false };
   const comment = (over: Partial<Extract<CodeHostEvent, { type: "comment" }>> = {}): CodeHostEvent => ({
     type: "comment", repo: repo(), prNumber: 5, id: "77", url: "https://github.com/acme/shop/pull/5#c77", action: "created", surface: "discussion", body: "alice's words", author: alice, at: AT, version: "created:1", ...over,
   });
 
-  function twoPeople(extra: Partial<Parameters<typeof createCodeHostTap>[0]> = {}) {
-    const s = setup(extra);
+  function twoPeople() {
+    const s = setup();
     s.w.actors.members.set("1002", "dev-bob");
     return s;
   }
 
-  it("a linked editor's edit of a comment, a review or a pull request is not stored; neither is the author's next edit of it", async () => {
+  it("bob's edit of alice's comment is BOB's row with the lines he added; alice's own words stay in her row; nothing is replaced", async () => {
     const { w, tap } = twoPeople();
     await tap.handle(comment());
-    await tap.handle(comment({ action: "edited", body: "bob rewrote this", editor: bob, version: "edited:2" }));
-    await tap.handle(comment({ action: "edited", body: "bob rewrote this", editor: alice, version: "edited:3" }));
-    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual(["alice's words"]);
+    await tap.handle(comment({ action: "edited", body: "alice's words\nbob added this", previousBody: "alice's words", editor: bob, at: "2026-10-30T10:05:00.000Z", version: "edited:2" }));
+    await tap.handle(comment({ action: "edited", body: "alice's words\nbob added this\nalice again", previousBody: "alice's words\nbob added this", editor: alice, at: "2026-10-30T10:06:00.000Z", version: "edited:3" }));
+    expect(w.sink.puts.map((draft) => [draft.actor?.developerId, draft.text])).toStrictEqual([["dev-alice", "alice's words"], ["dev-bob", "bob added this"], ["dev-alice", "alice again"]]);
+    expect(new Set(w.sink.puts.map((draft) => draft.sourceRef.id))).toStrictEqual(new Set(["acme/shop#pr5:comment77"].filter(() => true).concat([]).length === 0 ? [] : [w.sink.puts[0]!.sourceRef.id]));
+    expect(w.sink.puts.map((draft) => draft.sourceRef.order)).toStrictEqual([Date.parse(AT), Date.parse("2026-10-30T10:05:00.000Z"), Date.parse("2026-10-30T10:06:00.000Z")]);
+  });
+
+  it("an edit by someone else with no earlier text keeps no words; the author's edit with no earlier text is her whole comment only when nobody else edited it before (S2)", async () => {
+    const others = { value: false };
+    const { w, tap } = (() => { const s = setup({ priorEdits: { editedByOthers: async () => others.value } }); s.w.actors.members.set("1002", "dev-bob"); return s; })();
+    await tap.handle(comment({ id: "1", action: "edited", body: "rewritten", editor: bob, version: "edited:1" }));
+    await tap.handle(comment({ id: "2", action: "edited", body: "mine, fixed", editor: alice, version: "edited:1" }));
+    await tap.handle(comment({ id: "3", action: "edited", body: "no editor named", version: "edited:1" }));
+    others.value = true;
+    await tap.handle(comment({ id: "5", action: "edited", body: "mine again", editor: alice, version: "edited:1" }));
+    expect(w.sink.puts.map((draft) => [draft.actor?.developerId, draft.text])).toStrictEqual([["dev-bob", undefined], ["dev-alice", "mine, fixed"], ["dev-alice", "no editor named"], ["dev-alice", undefined]]);
+    const { w: bare, tap: bareTap } = twoPeople();
+    await bareTap.handle(comment({ id: "6", action: "edited", body: "no lookup wired", editor: alice, version: "edited:1" }));
+    expect(bare.sink.puts.map((draft) => draft.text)).toStrictEqual([undefined]);
+  });
+
+  it("a pull request: opened is the author's; an edit of the title and description is the editor's added words; closing is the closer's row with no words", async () => {
+    const { w, tap } = twoPeople();
     await tap.handle(pr({ number: 8 }));
-    await tap.handle(pr({ number: 8, action: "edited", body: "bob rewrote the description", editor: bob, version: "edited:2" }));
-    await tap.handle(pr({ number: 8, action: "closed", body: "bob rewrote the description", version: "closed:3" }));
-    await tap.handle({ type: "review", repo: repo(), prNumber: 8, id: "31", url: "https://github.com/acme/shop/pull/8#r31", action: "submitted", state: "approved", body: "alice reviews", author: alice, at: AT, version: "submitted:1" });
-    await tap.handle({ type: "review", repo: repo(), prNumber: 8, id: "31", url: "https://github.com/acme/shop/pull/8#r31", action: "edited", state: "approved", body: "bob rewrote the review", author: alice, editor: bob, at: AT, version: "edited:2" });
-    expect(JSON.stringify(w.sink.puts)).not.toContain("bob rewrote");
-    expect(w.sink.puts.map((draft) => draft.kind)).toStrictEqual(["github.review_comment", "github.pr", "github.review"]);
+    await tap.handle(pr({ number: 8, action: "edited", title: "Fix cart total, properly", body: "Rounds correctly now\nbob: also handles zero", editor: bob, changed: { title: true, body: true }, previousTitle: "Fix cart total", previousBody: "Rounds correctly now", at: "2026-10-30T10:01:00.000Z", version: "edited:2" }));
+    await tap.handle(pr({ number: 8, action: "closed", editor: bob, merged: true, at: "2026-10-30T10:02:00.000Z", version: "closed:3" }));
+    await tap.handle(pr({ number: 9, action: "edited", editor: bob, body: "unknown what changed", at: "2026-10-30T10:03:00.000Z", version: "edited:1" }));
+    expect(w.sink.puts.map((draft) => [draft.actor?.developerId, draft.text, draft.structured?.action])).toStrictEqual([
+      ["dev-alice", "Fix cart total\n\nRounds correctly now", "opened"],
+      ["dev-bob", "properly\n\nbob: also handles zero", "edited"],
+      ["dev-bob", undefined, "closed"],
+      ["dev-bob", undefined, "edited"],
+    ]);
   });
 
-  it("an unlinked editor is counted; the author's own edit and a bot's edit are stored; an edit with no known editor is stored", async () => {
-    const counted: string[] = [];
-    const { w, tap } = twoPeople({ onUnlinked: (_ws, _project, source) => counted.push(source) });
-    await tap.handle(comment({ id: "1", action: "edited", editor: mallory, version: "edited:1" }));
-    expect(counted).toStrictEqual(["github"]);
-    expect(w.sink.puts).toStrictEqual([]);
-    await tap.handle(comment({ id: "2", action: "edited", editor: alice, version: "edited:1" }));
+  it("a review: submitted is the author's; a dismissal or an edit is the sender's row", async () => {
+    const { w, tap } = twoPeople();
+    const review = (over: Record<string, unknown>): CodeHostEvent => ({ type: "review", repo: repo(), prNumber: 8, id: "31", url: "https://github.com/acme/shop/pull/8#r31", action: "submitted", state: "approved", body: "alice reviews", author: alice, at: AT, version: "submitted:1", ...over });
+    await tap.handle(review({}));
+    await tap.handle(review({ action: "edited", body: "alice reviews\nbob adds", previousBody: "alice reviews", editor: bob, at: "2026-10-30T10:07:00.000Z", version: "edited:2" }));
+    await tap.handle(review({ action: "dismissed", editor: bob, at: "2026-10-30T10:08:00.000Z", version: "dismissed:3" }));
+    expect(w.sink.puts.map((draft) => [draft.actor?.developerId, draft.text])).toStrictEqual([["dev-alice", "alice reviews"], ["dev-bob", "bob adds"], ["dev-bob", undefined]]);
+  });
+
+  it("an unlinked editor's change is a draft with no developer (the sink refuses and counts it); a bot's change needs no one", async () => {
+    const { w, tap } = twoPeople();
+    await tap.handle(comment({ id: "1", action: "edited", editor: mallory, version: "edited:1", previousBody: "alice's words", body: "alice's words\nmallory" }));
     await tap.handle(comment({ id: "3", action: "edited", editor: { id: "5", login: "dependabot[bot]", isBot: true }, version: "edited:1" }));
-    await tap.handle(comment({ id: "4", action: "edited", version: "edited:1" }));
-    expect(w.sink.puts).toHaveLength(3);
+    expect(w.sink.puts.map((draft) => [draft.actor?.developerId, draft.trust])).toStrictEqual([[undefined, "outsider"], [undefined, "system"]]);
   });
 
-  it("an item whose mark cannot be read is not stored on a later event; a first sight needs no read", async () => {
-    const { w, tap } = twoPeople({ edited: { mark: async () => undefined, isMarked: async () => { throw new Error("down"); } } });
-    await tap.handle(comment());
-    await tap.handle(comment({ action: "edited", editor: alice, version: "edited:2" }));
-    expect(w.sink.puts.map((draft) => draft.sourceRef.version)).toStrictEqual(["created:1"]);
-  });
-
-  it("the GitHub reader names the delivery's sender as the editor of an edit, and only of an edit", () => {
-    const payload = (action: string) => ({ action, sender: { id: 1002, login: "bob", type: "User" }, issue: { number: 5, pull_request: {} }, comment: { id: 77, html_url: "https://github.com/acme/shop/pull/5#c77", body: "x", user: { id: 1001, login: "alice", type: "User" }, updated_at: AT } });
-    expect(githubEventsOf("issue_comment", "edited", payload("edited"), repo(), AT)).toMatchObject([{ type: "comment", action: "edited", editor: { id: "1002", isBot: false }, author: { id: "1001" } }]);
+  it("the GitHub reader names the delivery's sender as the person behind an edit, a close or a dismissal (not a first sight), and reads what `changes` says was edited", () => {
+    const payload = (action: string, changes?: unknown) => ({ action, sender: { id: 1002, login: "bob", type: "User" }, issue: { number: 5, pull_request: {} }, ...(changes === undefined ? {} : { changes }), comment: { id: 77, html_url: "https://github.com/acme/shop/pull/5#c77", body: "x", user: { id: 1001, login: "alice", type: "User" }, updated_at: AT } });
+    expect(githubEventsOf("issue_comment", "edited", payload("edited", { body: { from: "before" } }), repo(), AT)).toMatchObject([{ type: "comment", action: "edited", editor: { id: "1002", isBot: false }, author: { id: "1001" }, previousBody: "before" }]);
     expect((githubEventsOf("issue_comment", "created", payload("created"), repo(), AT)[0] as { editor?: unknown }).editor).toBeUndefined();
+    const prPayload = (action: string, changes?: unknown) => ({ action, sender: { id: 1002, login: "bob", type: "User" }, ...(changes === undefined ? {} : { changes }), pull_request: { number: 5, html_url: "https://github.com/acme/shop/pull/5", title: "t", body: "b", user: { id: 1001, login: "alice", type: "User" }, head: { sha: sha(10) }, base: { ref: "main" }, updated_at: AT } });
+    expect(githubEventsOf("pull_request", "closed", prPayload("closed"), repo(), AT)).toMatchObject([{ type: "pr", action: "closed", editor: { id: "1002" } }]);
+    expect(githubEventsOf("pull_request", "edited", prPayload("edited", { title: { from: "old" }, body: { from: null } }), repo(), AT)).toMatchObject([{ type: "pr", editor: { id: "1002" }, changed: { title: true, body: true }, previousBody: "", previousTitle: "old" }]);
+    expect((githubEventsOf("pull_request", "edited", prPayload("edited"), repo(), AT)[0] as { changed?: unknown }).changed).toBeUndefined();
+  });
+});
+
+describe("S2: a comment edit skipped before anyone is looked at still marks the item", () => {
+  it("with no source row (or capture off) for the repository, an edited comment marks it; a created one does not", async () => {
+    const marked: string[] = [];
+    const { w, tap } = setup({ priorEdits: { editedByOthers: async () => false, noteUnstored: async (input) => { marked.push(input.id); } } });
+    w.config.set("github", repoScope(repo()), { enabled: false });
+    const comment = (action: "created" | "edited"): CodeHostEvent => ({ type: "comment", repo: repo(), prNumber: 5, id: "77", url: "https://github.com/acme/shop/pull/5#c77", action, surface: "discussion", body: "x", author: alice, at: AT, version: `${action}:1` });
+    await tap.handle(comment("created"));
+    expect(marked).toStrictEqual([]);
+    await tap.handle(comment("edited"));
+    expect(marked).toHaveLength(1);
+    expect(w.sink.puts).toStrictEqual([]);
+  });
+});
+
+describe("S1: a delivery GitHub sends again is the same change", () => {
+  const review = (action: string) => ({ action, sender: { id: 1002, login: "bob", type: "User" }, pull_request: { number: 8 }, review: { id: 31, html_url: "https://github.com/acme/shop/pull/8#r31", state: "approved", body: "alice reviews\nbob adds", user: { id: 1001, login: "alice", type: "User" }, submitted_at: "2026-10-30T10:00:00Z" }, changes: { body: { from: "alice reviews" } } });
+  it("an edit or dismissal is versioned by the delivery id and keyed by the review's own time; the same delivery at another moment is the same version and time, another delivery is another version", () => {
+    const first = githubEventsOf("pull_request_review", "edited", review("edited"), repo(), "2026-10-30T11:00:00.000Z", "delivery-1")[0] as Extract<CodeHostEvent, { type: "review" }>;
+    const again = githubEventsOf("pull_request_review", "edited", review("edited"), repo(), "2026-10-30T11:05:00.000Z", "delivery-1")[0] as Extract<CodeHostEvent, { type: "review" }>;
+    const other = githubEventsOf("pull_request_review", "edited", review("edited"), repo(), "2026-10-30T11:06:00.000Z", "delivery-2")[0] as Extract<CodeHostEvent, { type: "review" }>;
+    expect([again.version, again.at]).toStrictEqual([first.version, first.at]);
+    expect(other.version).not.toBe(first.version);
+    expect(first.at).toBe("2026-10-30T10:00:00.000Z");
+    expect(first.receivedAt).toBe("2026-10-30T11:00:00.000Z");
+    const submitted = githubEventsOf("pull_request_review", "submitted", review("submitted"), repo(), "2026-10-30T11:00:00.000Z", "delivery-1")[0] as Extract<CodeHostEvent, { type: "review" }>;
+    expect(submitted.version).toBe("submitted:2026-10-30T10:00:00Z");
+  });
+  it("through the tap, a retried delivery writes one row and a different edit writes another", async () => {
+    const { w, tap } = setup();
+    w.actors.members.set("1002", "dev-bob");
+    const now = { at: 0 };
+    const github = createGithubRecordTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, now: () => now.at, resolveRepo: async () => ({ workspaceId: WS, project: "shop" }) });
+    void tap;
+    const delivery = (id: string) => ({ eventName: "pull_request_review", deliveryId: id, payload: { ...review("edited"), installation: { id: 1 }, repository: { id: 77, full_name: "acme/shop", private: true, default_branch: "main" } } });
+    now.at = Date.parse("2026-10-30T11:00:00.000Z");
+    await github(delivery("delivery-1"));
+    now.at = Date.parse("2026-10-30T11:30:00.000Z");
+    await github(delivery("delivery-1"));
+    expect(w.sink.puts).toHaveLength(1);
+    await github(delivery("delivery-2"));
+    expect(w.sink.puts).toHaveLength(2);
+    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual(["bob adds", "bob adds"]);
   });
 });
 

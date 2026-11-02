@@ -11,6 +11,8 @@ import type { ApprovalDependencies } from "../agents/approvals.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { listRoster } from "../agents/roster.js";
 import { learningOverviewBlock } from "../learning/overview-block.js";
+import { readKnownFailingRow } from "../test-env/known-failing.js";
+import { verifyResultsEnabled } from "../verification/switch.js";
 import { effectiveLimits } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { batchGetItems, liveSessions } from "./live.js";
@@ -68,6 +70,13 @@ async function budgetOf(deps: ProjectOverviewDependencies, orgId: ProjectOvervie
 }
 type ProjectOverviewKeyOrg = SessionReadCaller["orgId"];
 
+/** KF-1: how many tests are marked as already failing, only while `vx` is on. A list that cannot be read leaves the block out and never fails the page. */
+async function knownFailingOf(deps: ProjectOverviewDependencies, orgId: ProjectOverviewKeyOrg, project: string): Promise<ProjectOverview["knownFailing"]> {
+  if (!verifyResultsEnabled()) return undefined;
+  const row = await readKnownFailingRow({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
+  return row === undefined ? undefined : { count: row.marks.length };
+}
+
 /** v1.2 learning loop: the maintainer's block. A learning problem leaves the block out and never fails the page; the error's name only is logged. */
 async function learningOf(deps: ProjectOverviewDependencies, orgId: ProjectOverviewKeyOrg, project: string): Promise<ProjectOverview["learning"]> {
   try {
@@ -119,6 +128,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
   const open = page.status !== "archived";
   const canViewSpend = projectAllows(role, "view_spend");
   const learning = projectAllows(role, "edit_settings") ? await learningOf(deps, orgId, name) : undefined;
+  const knownFailing = projectAllows(role, "edit_settings") ? await knownFailingOf(deps, orgId, name) : undefined;
   const answer = {
     orgId,
     project: {
@@ -135,6 +145,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
     agents,
     ...(canViewSpend ? { budget: await budgetOf(deps, orgId, name) } : {}),
     ...(learning === undefined ? {} : { learning }),
+    ...(knownFailing === undefined ? {} : { knownFailing }),
     running: wall.tiles,
   };
   const checked = ProjectOverviewSchema.safeParse(answer);

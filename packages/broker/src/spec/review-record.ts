@@ -17,10 +17,9 @@ export type StoredSpecReview = SpecReviewResult & { pk: string; sk: string; enti
 
 /** The item to write with a review operation's result, or none: not a review, no walk reported, a walk that is not valid, or one about another commit than the spec's recorded one. */
 export async function specReviewRecordItems(
-  env: SpecReviewRecordEnvironment, taskId: string, operation: { id: string; kind: string; workflowMode?: string | undefined; secondReview?: unknown }, outcome: { status: string; result: unknown },
+  env: SpecReviewRecordEnvironment, taskId: string, operation: { id: string; kind: string; workflowMode?: string | undefined }, outcome: { status: string; result: unknown },
 ): Promise<TransactItem[]> {
-  // A second review (SH34) is never given the spec to walk and never records a walk of it.
-  if (operation.kind !== "task" || operation.workflowMode !== "REVIEW" || operation.secondReview === true || outcome.status !== "SUCCEEDED") return [];
+  if (operation.kind !== "task" || operation.workflowMode !== "REVIEW" || outcome.status !== "SUCCEEDED") return [];
   const reported = outcome.result !== null && typeof outcome.result === "object" ? (outcome.result as { specReview?: unknown }).specReview : undefined;
   if (reported === undefined) return [];
   const parsed = SpecReviewResultSchema.safeParse(reported);

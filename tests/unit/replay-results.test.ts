@@ -1,10 +1,10 @@
 // Setup and test health SH20: the replay check. A code failure must never be labelled as environment (or shown as passing); an unreadable snapshot fails the run; the output names task ids and counts only.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "@agentx/contracts";
-import { hasCodeSignal, readSnapshotFolder, replayOne, replayResults, replayText, type ViewOf } from "../../scripts/replay-results.js";
+import { hasCodeSignal, hasUnconfirmedFailure, knownSetsOf, readSnapshotFolder, replayOne, replayResults, replayText, type RawKnown, type ViewOf } from "../../scripts/replay-results.js";
 
 const candidate = createCandidateManifest([{ repositoryId: "app", commitSha: "1".repeat(40), treeSha: "2".repeat(40), baseCommitSha: "3".repeat(40) }]);
 const NOW = "2026-11-02T12:00:00.000Z";
@@ -151,6 +151,90 @@ describe("replayResults", () => {
     const read = readSnapshotFolder(directory);
     expect(read).toHaveLength(2);
     expect(replayResults(read)).toMatchObject({ total: 2, ok: false, unreadable: ["b"] });
+  });
+});
+
+
+describe("the oracle judges 'already failing' from the raw data itself (VX-3)", () => {
+  const NOW_RAW = "2026-11-10T12:00:00.000Z", DAY = 86_400_000, at = (ms: number) => new Date(Date.parse(NOW_RAW) - ms).toISOString();
+  type RawOver = Omit<Partial<RawKnown>, "nightly"> & { nightly?: Partial<NonNullable<RawKnown["nightly"]>> | null };
+  const raw = (over: RawOver = {}): RawKnown => {
+    const { nightly, ...rest } = over;
+    return { now: NOW_RAW, branches: ["hmain"], marks: [], ...(nightly === null ? {} : { nightly: { branch: "hmain", finishedAt: at(DAY), failedCount: 1, failed: ["hY"], flaky: [], ...nightly } }), ...rest };
+  };
+  const task = (id: string, names: string[], list: Array<string | { name: string; checkId: string }>, known?: RawKnown) => snapshot(id, workflow(failedOld, "BLOCKED"), { evidence: oldFailing(names), alreadyFailing: list, facts: { checkOriginal: { unit: "failed" } }, ...(known === undefined ? {} : { known }) });
+
+  it("counts a nightly only when it is whole, not from the future, at most 7 days old and from exactly the branches the task is based on", () => {
+    expect([...knownSetsOf([], raw()).any]).toEqual(["hY"]);
+    expect([...knownSetsOf([], raw({ nightly: { finishedAt: at(7 * DAY) } })).any]).toEqual(["hY"]);
+    for (const [label, known] of [
+      ["8 days old", raw({ nightly: { finishedAt: at(8 * DAY) } })], ["from the future", raw({ nightly: { finishedAt: at(-2 * 3_600_000) } })], ["another branch", raw({ nightly: { branch: "hrelease" } })],
+      ["one branch of two", raw({ branches: ["hmain", "hrelease"] })], ["no branch known", raw({ branches: [] })], ["a truncated list", raw({ nightly: { failedCount: 3 } })], ["none", raw({ nightly: null })],
+    ] as const) expect([...knownSetsOf(["hY"], known).any], label).toEqual([]);
+  });
+
+  it("takes the marks from the raw data, each for its own check, whatever the snapshot's own list says", () => {
+    const sets = knownSetsOf(["hZ", { name: "hW", checkId: "unit" }], raw({ marks: [{ name: "hM", checkId: "lint" }] }));
+    expect([...sets.any]).toEqual(["hY"]);
+    expect([...sets.perCheck]).toEqual(["lint\u0000hM"]);
+    expect([...knownSetsOf(["hZ", { name: "hW", checkId: "unit" }], undefined).perCheck]).toEqual(["unit\u0000hW"]);
+  });
+
+  it("flags a code failure the rules excuse on a wrong 'already failing' list that the raw data does not support (a stale nightly counted)", () => {
+    const wrong = task("t-stale", ["hY", "hZ"], ["hY", "hZ"], raw({ nightly: { finishedAt: at(30 * DAY), failedCount: 2, failed: ["hY", "hZ"] } }));
+    const report = replayResults([wrong]);
+    expect(report.byVerdict).toMatchObject({ partially_verified: 1 });
+    expect(report.codeShownAsPassing).toEqual(["t-stale"]);
+    expect(report.suspect).toEqual(["t-stale"]);
+    expect(report.ok).toBe(false);
+    // Without the raw data the oracle can only believe the list, as before.
+    expect(replayResults([task("t-stale", ["hY", "hZ"], ["hY", "hZ"])]).ok).toBe(true);
+  });
+
+  it("flags a name excused in the wrong check, and one the nightly of another branch lists", () => {
+    const otherCheck = task("t-check", ["hY"], [{ name: "hY", checkId: "unit" }], raw({ nightly: null, marks: [{ name: "hY", checkId: "lint" }] }));
+    const otherBranch = task("t-branch", ["hY"], ["hY"], raw({ nightly: { branch: "hrelease" } }));
+    expect(replayResults([otherCheck, otherBranch]).codeShownAsPassing).toEqual(["t-check", "t-branch"]);
+  });
+
+  it("does not flag what the raw data confirms, even when the rules did not (a stricter rule is not a violation)", () => {
+    const confirmed = task("t-ok", ["hY"], ["hY"], raw());
+    const rulesForgot = task("t-forgot", ["hY"], [], raw());
+    const report = replayResults([confirmed, rulesForgot]);
+    expect(report.codeShownAsPassing).toEqual([]);
+    expect(report.byVerdict).toMatchObject({ partially_verified: 1, code_failed: 1 });
+    expect(report.ok).toBe(true);
+  });
+
+  it("is independent of the result rules' own helpers: the script imports none of them", () => {
+    const source = readFileSync(path.join(process.cwd(), "scripts/replay-results.ts"), "utf8");
+    for (const helper of ["hasUnconfirmedFailingTest", "readableFailingTests", "hasNoTestData", "testCheckFailedBeforeWithoutData", "workflowCheckKind", "newFailingCheckIds"]) expect(source, helper).not.toContain(helper);
+    expect(source).not.toMatch(/import (?!type)[^;]*verification\/result\.js/u);
+  });
+
+  describe("hasUnconfirmedFailure compares the failing tests with the known sets directly", () => {
+    const check = (over: Record<string, unknown>, kind = "test") => pack([{ before: "failed", after: "failed", class: "already_failing", kind, ...over }]).checks[0]!;
+    const tests = (names: Array<[string, "failed" | "errored" | "passed"]>, extra: Record<string, unknown> = {}) => {
+      const failed = names.filter(([, status]) => status === "failed").length, errored = names.filter(([, status]) => status === "errored").length;
+      return { tests: { total: names.length, passed: names.length - failed - errored, failed, skipped: 0, errored, newTests: [], names: names.map(([name, status]) => ({ name, status })), ...extra } };
+    };
+    const known = { any: new Set(["Y"]), perCheck: new Set(["unit\u0000M"]) };
+    it.each([
+      ["every failing test known (any check)", tests([["Y", "failed"], ["ok", "passed"]]), false],
+      ["a failing test known by a mark in this check", tests([["M", "failed"]]), false],
+      ["an errored test counts as failing, and is known by its mark", tests([["Y", "failed"], ["M", "errored"]]), false],
+      ["an errored test nobody knows", tests([["Y", "failed"], ["Q", "errored"]]), true],
+      ["a failing test nobody knows", tests([["Y", "failed"], ["Z", "failed"]]), true],
+      ["a test the change added, even when known", tests([["Y", "failed"]], { newTests: ["Y"] }), true],
+      ["fewer names than the count", { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, newTests: [], names: [{ name: "Y", status: "failed" }] } }, true],
+      ["a name twice", { tests: { total: 3, passed: 1, failed: 2, skipped: 0, errored: 0, newTests: [], names: [{ name: "Y", status: "failed" }, { name: "Y", status: "failed" }] } }, true],
+      ["a count of zero on a failed test check", tests([["a", "passed"]]), true],
+    ])("%s", (_label, body, unconfirmed) => { expect(hasUnconfirmedFailure(check(body), known)).toBe(unconfirmed); });
+    it("a mark for another check does not confirm, and a check with no test data is judged by its kind", () => {
+      expect(hasUnconfirmedFailure({ ...check(tests([["M", "failed"]])), checkId: "lint" }, known)).toBe(true);
+      expect(hasUnconfirmedFailure(check({}, "test"), known)).toBe(true);
+      expect(hasUnconfirmedFailure(check({}, "lint"), known)).toBe(false);
+    });
   });
 });
 

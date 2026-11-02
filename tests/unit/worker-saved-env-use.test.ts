@@ -113,7 +113,7 @@ async function run(f: Fixture, docker: Docker, over: Partial<SavedEnvUseOptions>
   const rootPath = await scratch();
   const fetched: string[] = [];
   const manifestOut = await prepareWorkspace({
-    rootPath, project: over.project ?? project(), readOnly: over.prepare?.readOnly ?? true, ...over.prepare,
+    rootPath, project: over.project ?? project(), readOnly: over.prepare?.readOnly ?? true, ...(over.links === undefined ? {} : { venvLinkPolicy: over.links }), ...over.prepare,
     credentialProvider: async () => ({ username: "x-access-token", password: "clone-credential-value" }),
     materializer: freshClone(f, log),
     savedEnv: {
@@ -346,7 +346,7 @@ describe("links in the seed are checked on the real tree (review A1, A3)", () =>
     await writeFile(join(g.image, "seed", "svc", ".venv", "pyvenv.cfg"), "home = /opt/py\n");
     await symlink("/opt/py/bin/python3.12", join(g.image, "seed", "svc", ".venv", "bin", "python"));
     expect((await run(g, fakeDocker(g))).fallbacks).toEqual(["links"]);
-    expect((await run(g, fakeDocker(g), { links: { interpreterDirectories: ["/opt/py/bin"], interpreterTrees: [] } })).fallbacks).toEqual([]);
+    expect((await run(g, fakeDocker(g), { links: { interpreterDirectories: ["/opt/py/bin"], managedPythonRoots: [] } })).fallbacks).toEqual([]);
   });
 
   it("a real `python -m venv` tree is used when its interpreter folder is allowed", async () => {
@@ -361,7 +361,7 @@ describe("links in the seed are checked on the real tree (review A1, A3)", () =>
     expect((await run(f, fakeDocker(f))).fallbacks).toEqual(refused);
     const g = await fixture();
     execFileSync("python3", ["-m", "venv", "--without-pip", join(g.image, "seed", "svc", ".venv")]);
-    const r = await run(g, fakeDocker(g), { links: { interpreterDirectories: [folder], interpreterTrees: [] } });
+    const r = await run(g, fakeDocker(g), { links: { interpreterDirectories: [folder], managedPythonRoots: [] } });
     expect(r.fallbacks).toEqual([]);
     expect(existsSync(join(r.rootPath, "svc", ".venv", "pyvenv.cfg"))).toBe(true);
   });

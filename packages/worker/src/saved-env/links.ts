@@ -7,46 +7,26 @@
 //     own turn;
 //   - an ABSOLUTE target is refused, with two exceptions that apply at build only to what the build can prove:
 //       1. a target that lies inside the workspace mount (where the sandbox had the workspace) is rewritten to the equivalent RELATIVE link (`rewriteWorkspaceLinks`), then checked as a relative link;
-//       2. a Python virtual environment's interpreter link: the link is in a folder named `bin` whose parent holds a `pyvenv.cfg`, is named `python`, `python3` or `python3.N`, and points at
-//          `python3`/`python3.N` in one of the interpreter folders of the pinned base image (`/usr/bin`, `/usr/local/bin`) or inside one of its interpreter trees (the folder uv keeps its Pythons in, when setup uses it);
+//       2. a Python virtual environment's interpreter link, decided by the ONE rule every preparation uses (`../workspace-links.ts`, `isVenvInterpreterLink`): a link in a `bin` folder beside a `pyvenv.cfg`,
+//          named python / python3 / python3.N, pointing at an interpreter in the base image's folders (`/usr/bin`, `/usr/local/bin`) or in uv's managed-Python roots;
 //   - NO link at all under a `.git` folder (a link there can redirect history).
 // Nothing here follows a link, runs a command or reads a file's content.
 import { lstat, readlink, readdir, rm, symlink } from "node:fs/promises";
 import path from "node:path";
+import { defaultVenvLinkPolicy, isVenvInterpreterLink, type VenvLinkPolicy } from "../workspace-links.js";
 
-export interface LinkPolicy {
-  /** Folders whose `python3[.N]` an environment's interpreter link may name exactly (the pinned base image's). */
-  interpreterDirectories: readonly string[];
-  /** Folders under which a `python3[.N]` at any depth may be named (the managed-Python folder when setup uses one). */
-  interpreterTrees: readonly string[];
+/** The shared virtual environment rule (`../workspace-links.ts`: interpreter folders and uv's managed-Python roots) plus, at build, where the sandbox had the workspace mounted. */
+export type LinkPolicy = VenvLinkPolicy & {
   /** Where the sandbox had the workspace mounted: an absolute target inside it is a relative link in disguise. Absent: no rewriting. */
   workspaceRoot?: string;
-}
+};
 
-export const DEFAULT_INTERPRETER_DIRECTORIES: readonly string[] = ["/usr/bin", "/usr/local/bin"];
-export const DEFAULT_LINK_POLICY: LinkPolicy = { interpreterDirectories: DEFAULT_INTERPRETER_DIRECTORIES, interpreterTrees: [] };
-
-const LINK_NAME = /^python(?:3(?:\.\d{1,2})?)?$/u;
-const INTERPRETER_NAME = /^python3(?:\.\d{1,2})?$/u;
+/** The worker's default policy (`defaultVenvLinkPolicy`): /usr/bin, /usr/local/bin and uv's managed Pythons. */
+export const DEFAULT_LINK_POLICY: LinkPolicy = defaultVenvLinkPolicy();
 
 export type LinkVerdict = { ok: true; rewriteTo?: string } | { ok: false };
 
 const exists = (file: string) => lstat(file).then((info) => info, () => undefined);
-
-/** Whether `target` is an allowed interpreter for a link at `relative` (POSIX, inside `root`): an absolute interpreter in the base image, or a sibling link of the same environment. */
-export async function isVenvInterpreterLink(root: string, relative: string, target: string, policy: LinkPolicy): Promise<boolean> {
-  const parts = relative.split("/");
-  const name = parts.at(-1) ?? "";
-  if (parts.at(-2) !== "bin" || !LINK_NAME.test(name)) return false;
-  const config = await exists(path.join(root, ...parts.slice(0, -2), "pyvenv.cfg"));
-  if (config === undefined || !config.isFile()) return false;
-  // A sibling link in the same bin folder (`python3 -> python`, `python -> python3.12`): resolved by the other link's own check.
-  if (!path.posix.isAbsolute(target)) return LINK_NAME.test(target) || INTERPRETER_NAME.test(target);
-  if (path.posix.normalize(target) !== target || target.includes("//") || !INTERPRETER_NAME.test(path.posix.basename(target))) return false;
-  const folder = path.posix.dirname(target);
-  if (policy.interpreterDirectories.includes(folder)) return true;
-  return policy.interpreterTrees.some((tree) => folder === tree || folder.startsWith(tree.endsWith("/") ? tree : `${tree}/`));
-}
 
 /**
  * Whether the link at `relative` (POSIX, inside `root`) with the text `target` is acceptable. The caller read `target` from the link and never follows it. For a link that is an absolute target inside the
@@ -65,7 +45,7 @@ export async function inspectLink(root: string, relative: string, target: string
       relativeTarget = path.posix.relative(path.posix.dirname(path.posix.join(mount, relative)), normalized) || ".";
       rewriteTo = relativeTarget;
     } else {
-      return (await isVenvInterpreterLink(root, relative, target, policy)) ? { ok: true } : { ok: false };
+      return (await isVenvInterpreterLink(path.join(root, relative), policy)) ? { ok: true } : { ok: false };
     }
   }
   // Walk the target from the link's own folder, on the real tree. Below a component that does not exist (or is not a folder) nothing can be a link, but the rest of the path is still normalised: a broken link

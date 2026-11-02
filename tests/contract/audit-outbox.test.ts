@@ -791,6 +791,7 @@ describe("I4: the builders", () => {
     // Nightly health (SH28): a project setting changed (fixed word and a flag). Missing at the base of this branch; added with the Fix setup rows.
     ["auditProjectTestHealthSettingChanged", (occurrence) => builders.auditProjectTestHealthSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", setting: "propose_fix_task", enabled: true })],
     ["auditProjectKnownFailingMarked", (occurrence) => builders.auditProjectKnownFailingMarked({ ...base, occurrence, details, projectName: "Secret Project", cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" })],
+    ["auditProjectKnownFailingRemoved", (occurrence) => builders.auditProjectKnownFailingRemoved({ ...base, occurrence, details, projectName: "Secret Project", removal: "nightly_passing", testCount: 2, markEpoch: 0, testSetSha256: "b".repeat(64), rowVersionAfter: 4, totalAfter: 1 })],
     // Company sign-in (Enterprise foundations I1): the rule ids a sign-in matched, and the owners on the emergency list, are details
     ["auditSsoSignIn", (occurrence) => builders.auditSsoSignIn({ ...base, occurrence, details, memberId: "dev_1", role: "member", matchedRuleIds: ["users"] })],
     ["auditSsoSignInRefused", (occurrence) => builders.auditSsoSignInRefused({ ...base, occurrence, details, memberId: "dev_1", reason: "no_group" })],
@@ -830,9 +831,19 @@ describe("I4: the builders", () => {
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
     ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
+    // Company domain verification
+    ["auditCompanyDomainAdded", (occurrence) => builders.auditCompanyDomainAdded({ ...base, occurrence, details, domain: "acme.example" })],
+    ["auditCompanyDomainVerified", (occurrence) => builders.auditCompanyDomainVerified({ ...base, occurrence, details, domain: "acme.example", wasState: "pending", tookOver: false })],
+    ["auditCompanyDomainLost", (occurrence) => builders.auditCompanyDomainLost({ ...base, occurrence, details, domain: "acme.example", missingDays: 3 })],
+    ["auditCompanyDomainRemoved", (occurrence) => builders.auditCompanyDomainRemoved({ ...base, occurrence, details, domain: "acme.example", wasState: "verified" })],
     // Setup agent website asks (SH12)
     ["auditSetupHostAsked", (occurrence) => builders.auditSetupHostAsked({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", taskId: "task_1", journalN: 4, host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" })],
     ["auditSetupHostRefused", (occurrence) => builders.auditSetupHostRefused({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", refusal: "person", host: "docs.corp.example" })],
+    // Tracker people (team record)
+    ["auditRecordTrackerPersonMapped", (occurrence) => builders.auditRecordTrackerPersonMapped({ ...base, occurrence, details, memberId: "dev_1", source: "jira" })],
+    ["auditRecordTrackerPersonUnmapped", (occurrence) => builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence, details, memberId: "dev_1", source: "linear" })],
+    ["auditRecordTrackerAutolinkChanged", (occurrence) => builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence, details, enabled: true })],
+    ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -905,6 +916,17 @@ describe("I4: the builders", () => {
     expect(refused.details).toContainEqual({ subject: "org", fields: { host: "docs.corp.example" } });
     for (const event of [asked, typed, refused]) expect(JSON.stringify({ ...event, details: undefined, target: undefined })).not.toContain("docs.corp.example");
     expect(asked.eventId).not.toBe(refused.eventId);
+  });
+
+  it("the tracker people events target the member (the switch targets the company), carry only the tool's name and the new state, and a map and an unmap of one request differ", () => {
+    const mapped = builders.auditRecordTrackerPersonMapped({ ...base, occurrence: "req_1", memberId: "dev_1", source: "jira" });
+    expect(mapped).toMatchObject({ action: "record.tracker_person_mapped", target: { kind: "member", id: "dev_1" }, facts: { source: "jira" } });
+    const unmapped = builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence: "req_1", memberId: "dev_1", source: "jira" });
+    expect(unmapped).toMatchObject({ action: "record.tracker_person_unmapped", target: { kind: "member", id: "dev_1" }, facts: { source: "jira" } });
+    expect(mapped.eventId).not.toBe(unmapped.eventId);
+    const on = builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence: "req_2", enabled: true });
+    expect(on).toMatchObject({ action: "record.tracker_autolink_changed", target: { kind: "org", id: base.orgId }, facts: { enabled: true } });
+    expect(builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence: "req_2", enabled: false }).facts).toStrictEqual({ enabled: false });
   });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {

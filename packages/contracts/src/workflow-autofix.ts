@@ -1,3 +1,4 @@
+import { SECOND_REVIEW_BLOCK_REASON } from "./second-review.js";
 import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import {
   E2E_APPLICATION_SEND_BACK_CODES, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX,
@@ -229,6 +230,8 @@ function reviewSignals(workflow: WorkflowSnapshot): Signal[] {
   // Programs that earlier work left running could not be stopped: the same workspace gives the same answer, so a retry is a person's choice, never automatic.
   if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses) signals.push(person("leftover-processes"));
   if (current === undefined) return signals;
+  // SR-1: the second review (another AI company, switch `cr`, `on`) blocked a review that passed: new code fixes it, so it is a code failure like the first review's findings, and counts in the same send-back limit.
+  if (workflow.blockReason === SECOND_REVIEW_BLOCK_REASON) signals.push(code("review-findings"));
   for (const review of (workflow.reviews ?? []).filter((entry) => entry.candidateDigest === current)) {
     if (blockingFindings(review, workflow.acceptedFindings).length > 0) signals.push(code("review-findings"));
     else if (review.status === "FAILED" || review.status === "INTERRUPTED" || review.status === "UNKNOWN") {

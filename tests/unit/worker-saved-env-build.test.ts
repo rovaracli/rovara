@@ -716,7 +716,7 @@ describe("links, on the real tree (review A1, A3)", () => {
     let target = "";
     let link_name = "";
     const w = await world({
-      links: { interpreterDirectories: [], interpreterTrees: [] },
+      links: { interpreterDirectories: [], managedPythonRoots: [] },
       during: async (dir) => { execFileSync("python3", ["-m", "venv", "--without-pip", join(dir, ".venv")]); for (const name of await readdir(join(dir, ".venv", "bin"))) { const link = await readlink(join(dir, ".venv", "bin", name)).catch(() => ""); if (path.isAbsolute(link)) { target = link; link_name = name; } } },
     });
     // With no interpreter folder allowed, the real environment is refused (its links are absolute outside the workspace) ...
@@ -725,7 +725,7 @@ describe("links, on the real tree (review A1, A3)", () => {
     expect(first).toMatchObject({ ok: false, reason: "unsafe_tree", step: "scan" });
     // ... and accepted when the base image's interpreter folder is the one the environment names.
     const again = await world({
-      links: { interpreterDirectories: [path.posix.dirname(target)], interpreterTrees: [] },
+      links: { interpreterDirectories: [path.posix.dirname(target)], managedPythonRoots: [] },
       during: async (dir) => { execFileSync("python3", ["-m", "venv", "--without-pip", join(dir, ".venv")]); },
     });
     expect((await proveAndBuildSavedImage(again.input, again.ports)).ok).toBe(true);

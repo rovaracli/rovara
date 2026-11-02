@@ -23,15 +23,19 @@ for (const theme of ["light", "dark"] as const) test("Rovara proposes the setup,
   await expect(page.getByRole("checkbox", { name: /^tests: In payments:/ })).not.toBeChecked();
   await checkA11y(page, { theme });
 
-  // The risky repository has its own card; pressing Apply selected never includes it.
+  // The risky repository has its own card; pressing Check and apply never includes it.
   await expect(page.getByRole("group", { name: /^Approval for repository:/ })).toBeVisible();
-  await page.getByRole("button", { name: "Apply selected" }).focus();
+  await page.getByRole("button", { name: "Check and apply" }).focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Applied.")).toBeVisible();
+  // The commands are checked on a fresh machine first: the page says so, saves nothing, and asks again until the check has finished.
+  await expect(page.getByText("Rovara is running these commands on a fresh machine. Nothing is saved until they pass.")).toBeVisible();
+  await expect(page.getByLabel("Setup commands")).toHaveValue("");
+  await expect(page.getByText("Applied.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByLabel("Setup commands")).toHaveValue("npm ci");
   await expect(page.getByLabel("Test commands")).toHaveValue("");
   const requests = await (await request.get("/__mock/requests")).json() as Array<{ path: string; body?: { items?: Array<{ id: string }> } }>;
   const applied = requests.filter((entry) => entry.path.endsWith("/setup-draft/apply"));
-  expect(applied).toHaveLength(1);
-  expect(applied[0]!.body?.items?.map((entry) => entry.id)).toEqual(["setup-payments"]);
+  // Two presses of one request: the check, then the save.
+  expect(applied).toHaveLength(2);
+  expect(applied.map((entry) => entry.body?.items?.map((item) => item.id))).toEqual([["setup-payments"], ["setup-payments"]]);
 });

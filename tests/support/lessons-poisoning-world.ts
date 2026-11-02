@@ -32,11 +32,13 @@ import { createCodeHostTap, type CodeHostEvent, type CodeHostRepo } from "../../
 import { createRovaraEmitter } from "../../packages/broker/src/team-record/sources/rovara.js";
 import { tableOutcomeRows } from "../../packages/broker/src/lessons/task-outcome-rows.js";
 import { minTrust } from "../../packages/broker/src/team-record/taint.js";
+import { needsLinkedAuthor, unlinkedCounter } from "../../packages/broker/src/team-record/unlinked.js";
 import type { AccessCheckPort } from "../../packages/broker/src/team-record/access-port.js";
+import type { RecordSinkPort } from "../../packages/broker/src/team-record/sources/ports.js";
 import {
   Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, defaultFacts, directory, embedder, memberSpan, settings, verifier,
 } from "../unit/lessons/lesson-helpers.js";
-import { FakeActors, FakeConfig, FakeDistiller, FakeEdited, FakeMode, FakePushIndex, FakeRovaraPrs } from "./team-record-ingest-fakes.js";
+import { FakeActors, FakeConfig, FakeDistiller, FakeMode, FakePushIndex, FakeRovaraPrs } from "./team-record-ingest-fakes.js";
 import { ORG_A, T0, addSource, world as recordWorld, type World as RecordWorld } from "./team-record-core.js";
 
 export { BASE, MERGED, PROJECT, WS };
@@ -71,8 +73,28 @@ export class Capture {
     [SLACK_PUBLIC]: { kind: "public", extShared: false },
     [SLACK_PRIVATE]: { kind: "private", extShared: false, memberIds: [MEMBER_SLACK] },
   };
+  /**
+   * With `linkedOnly` on, the sink applies the production gate (TRW-4, per-editor rows): a change whose person is not linked to a Rovara person is skipped and counted, never stored.
+   * Off by default, so the older cases keep an outsider's row to show it never reaches a model; the per-editor case turns it on.
+   */
+  linkedOnly = false;
+  private readonly skipCounter = unlinkedCounter(this.record.table, () => this.record.clock.ms);
   /** Pull request authors, commits and diffs are only ever claimed by what the test's fake host says. */
-  readonly sink = this.record.sink;
+  readonly sink: RecordSinkPort = {
+    put: async (draft) => {
+      if (this.linkedOnly && needsLinkedAuthor(draft)) {
+        await this.skipCounter.count(OrgIdSchema.parse(draft.workspaceId), draft.project, draft.source);
+        return { status: "refused", reason: "author_not_linked" } as never;
+      }
+      return this.record.sink.put(draft);
+    },
+    tombstone: (input) => this.record.sink.tombstone(input),
+    changePrincipals: (input) => this.record.sink.changePrincipals(input),
+    replaceScopeAudience: (input) => this.record.sink.replaceScopeAudience(input),
+    ensureAccessSeed: (input) => this.record.sink.ensureAccessSeed(input),
+  };
+  /** How many changes the gate skipped, per `project#source`. */
+  skippedUnlinked(): Promise<Record<string, number>> { return this.skipCounter.read(ORG_A, "web"); }
 
   readonly slack = createSlackRecordTap({
     edition: "enterprise", sink: this.sink, distiller: this.distiller, actors: this.actors, mode: this.mode, config: this.config,
@@ -80,9 +102,7 @@ export class Capture {
     notesOptIn: async () => false,
     directory: { channelInfo: async (_team, channel) => this.channels[channel] },
   });
-  /** TRW-4 (B1): production always passes the port that marks an item an editor other than its author touched. */
-  readonly edited = new FakeEdited();
-  readonly tickets = createTicketRecorder({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config, edited: this.edited });
+  readonly tickets = createTicketRecorder({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
   readonly rovara = createRovaraEmitter({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
   /** The real reader of the rows the emitter wrote (who sent a task back, their standing, their words). */
   get outcomeRows() { return tableOutcomeRows(this.record.table); }

@@ -202,16 +202,30 @@ export const AUDIT_ACTIONS = [
   "evidence.downloaded",
   // Setup and test health (SH17): a maintainer marked tests as already failing, so later results no longer count them against a change.
   "project.known_failing_marked",
+  // Setup and test health KF-1: a mark was taken off the list, by a maintainer (undo) or by the system (a usable nightly showed the test passing).
+  "project.known_failing_removed",
   // Setup and test health SH17 (F4): the company setting "always two people" for marking tests as already failing. Tightening applies at once; loosening is a proposal a different admin approves.
   "company.known_failing_policy_proposed",
   "company.known_failing_policy_changed",
   "company.known_failing_policy_refused",
+  // Second review by another AI company (SR-1, switch `cr`): the company chose (or cleared) its reviewer models, and a project narrowed that choice. Counts and fixed words only: a model's name is not recorded.
+  "company.second_review_choice_changed",
+  "project.second_review_narrowed",
+  // What the second reviewer is shown besides the code change (`change_only` or `same_as_first`).
+  "company.second_review_context_changed",
+  // The task owner acknowledged that an `on` second review did not run (the merge gate).
+  "task.second_review_acknowledged",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
   "record.source_removed",
   "record.tombstoned",
   "record.erased",
+  // Tracker people (lane team-record-links): an admin mapped a Linear or Jira person to a member of the company, or took the mapping away. The target is the member; the tool's id and name never go in.
+  "record.tracker_person_mapped",
+  "record.tracker_person_unmapped",
+  // The company switch for automatic tracker linking (off by default): who turned it on or off; the fact is the new state.
+  "record.tracker_autolink_changed",
   "lesson.mode_changed",
   "lesson.proposed",
   "lesson.activated",
@@ -275,6 +289,13 @@ export const AUDIT_ACTIONS = [
   "rule.correction_remembered",
   "project.learning_changed",
   "rule.suggestions_set",
+  // Company domain verification (owner decision 2026-11-02): a domain claimed, checked, lost or removed. The domain itself is in `details`, never a fact.
+  "company_domain.added",
+  "company_domain.verified",
+  "company_domain.lost",
+  "company_domain.removed",
+  // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
+  "project.setup_restored",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -445,9 +466,18 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.
   "project.known_failing_marked": ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"],
   // `fromAlwaysTwo` / `toAlwaysTwo` are booleans; `mode` is `direct`, `second_person`; `refusal` a fixed word.
+  // `removal` is `undo` or `nightly_passing`; `testCount` is how many marks left the list; `markEpoch` is the card the mark was made on (0: marks from several cards); `testSetSha256` is the sha256 of the sorted "check, test" lines removed; `rowVersionAfter` and `totalAfter` describe the list afterwards.
+  "project.known_failing_removed": ["removal", "testCount", "markEpoch", "testSetSha256", "rowVersionAfter", "totalAfter"],
   "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
   "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
   "company.known_failing_policy_refused": ["refusal"],
+  // `change` is `choose` or `clear`; `count` is how many models the choice now holds (0 to 2).
+  "company.second_review_choice_changed": ["change", "count"],
+  "project.second_review_narrowed": ["change", "count"],
+  // `to` is `change_only` or `same_as_first`; `widens` is true when more of the company's connected context now reaches the second reviewer.
+  "company.second_review_context_changed": ["to", "widens"],
+  // `cause` is one of the fixed words for why the second review did not run.
+  "task.second_review_acknowledged": ["cause"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],
@@ -455,6 +485,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "record.source_removed": ["source"],
   "record.tombstoned": ["source", "cause", "count"],
   "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],
+  // `source` is `linear` or `jira`.
+  "record.tracker_person_mapped": ["source"],
+  "record.tracker_person_unmapped": ["source"],
+  "record.tracker_autolink_changed": ["enabled"],
   "lesson.mode_changed": ["fromMode", "toMode", "locked"],
   "lesson.proposed": ["lessonType", "tier"],
   "lesson.activated": ["lessonType", "tier", "auto"],
@@ -520,6 +554,13 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
   "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
+  // Company domains: `tookOver` is true when the proof moved the domain from another company's lost claim; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
+  "company_domain.added": [],
+  "company_domain.verified": ["wasState", "tookOver"],
+  "company_domain.lost": ["missingDays"],
+  "company_domain.removed": ["wasState"],
+  // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
+  "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

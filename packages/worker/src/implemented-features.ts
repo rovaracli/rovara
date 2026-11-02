@@ -1,4 +1,4 @@
-import { SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
+import { SECOND_REVIEWER_FEATURE, SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, type WorkerInvocationFeature } from "@agentx/contracts";
 
 /**
  * The optional invocation fields this worker implements, listed by hand and advertised on /ping. WORKER_INVOCATION_FEATURES
@@ -74,4 +74,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "prepare.savedEnv.v1",
   // Enterprise foundations P8: the repository credential exchange takes an ssh key as well as a token or a password (repository-credentials.ts, git-auth.ts).
   "repository.credentialKinds.v1",
+  // SR-1 (switch `cr`): the second reviewer inside a review operation (verification/review.ts `secondReviewer`).
+  SECOND_REVIEWER_FEATURE,
 ] as const satisfies readonly WorkerInvocationFeature[];

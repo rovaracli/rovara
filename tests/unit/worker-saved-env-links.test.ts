@@ -8,7 +8,14 @@ import { DEFAULT_LINK_POLICY, inspectLink, rewriteWorkspaceLinks, type LinkPolic
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const scratch = async (): Promise<string> => { const dir = await mkdtemp(join(tmpdir(), "links-")); roots.push(dir); return dir; };
-const ok = async (root: string, relative: string, target: string, policy?: LinkPolicy) => (await inspectLink(root, relative, target, policy)).ok;
+/** The link is made on the disk first (the shared venv rule reads the link itself), then judged. */
+const ok = async (root: string, relative: string, target: string, policy?: LinkPolicy) => {
+  const full = join(root, relative);
+  await mkdir(join(full, ".."), { recursive: true });
+  await rm(full, { force: true });
+  await symlink(target === "" ? "x" : target, full);
+  return (await inspectLink(root, relative, target, policy)).ok;
+};
 
 describe("relative links, walked on the real tree", () => {
   it("accepts a link inside the tree, a dangling one, and one to a link as its LAST step (python -> python3 -> python3.12)", async () => {
@@ -45,12 +52,12 @@ describe("relative links, walked on the real tree", () => {
     const root = await scratch();
     await mkdir(join(root, "svc"), { recursive: true });
     await symlink(".", join(root, "svc", "dirlink"));
-    expect(await ok(root, "svc/a", "missing/../../../x")).toBe(false);
-    expect(await ok(root, "svc/a", "missing/x/y")).toBe(true);
-    expect(await ok(root, "svc/a", "missing/../b")).toBe(true);
-    expect(await ok(root, "svc/a", "missing/../dirlink/f")).toBe(false);
-    expect(await ok(root, "svc/a", "a/b/c/../../../../..")).toBe(false);
-    expect(await ok(root, "svc/a", "a/b/c/../../..")).toBe(true);
+    expect(await ok(root, "svc/l1", "missing/../../../x")).toBe(false);
+    expect(await ok(root, "svc/l2", "missing/x/y")).toBe(true);
+    expect(await ok(root, "svc/l3", "missing/../b")).toBe(true);
+    expect(await ok(root, "svc/l4", "missing/../dirlink/f")).toBe(false);
+    expect(await ok(root, "svc/l5", "a/b/c/../../../../..")).toBe(false);
+    expect(await ok(root, "svc/l6", "a/b/c/../../..")).toBe(true);
   });
 
   it("refuses any link under a .git folder", async () => {
@@ -96,14 +103,20 @@ describe("absolute links", () => {
     expect(await ok(root, "svc/odd/bin/python", "/usr/bin/python3")).toBe(false);
   });
 
-  it("an interpreter tree (the managed-Python folder) allows python3[.N] at any depth under it, and only there", async () => {
+  it("uv's managed-Python roots allow <root>/<folder>/bin/python3[.N] and only that", async () => {
     const root = await scratch();
     const bin = await venv(root);
-    const policy: LinkPolicy = { interpreterDirectories: [], interpreterTrees: ["/home/node/.local/share/uv/python"] };
+    const policy: LinkPolicy = { interpreterDirectories: [], managedPythonRoots: ["/home/node/.local/share/uv/python"] };
     expect(await ok(root, `${bin}/python`, "/home/node/.local/share/uv/python/cpython-3.12.4-linux-aarch64-gnu/bin/python3.12", policy)).toBe(true);
-    expect(await ok(root, `${bin}/python`, "/home/node/.local/share/uv/python-evil/bin/python3", policy)).toBe(false);
-    expect(await ok(root, `${bin}/python`, "/usr/bin/python3", policy)).toBe(false);
-    expect(DEFAULT_LINK_POLICY.interpreterTrees).toEqual([]);
+    expect(await ok(root, `${bin}/python3`, "/home/node/.local/share/uv/python/cpython-3.12.4-linux-aarch64-gnu/lib/python3.12", policy)).toBe(false);
+    expect(await ok(root, `${bin}/python3.9`, "/home/node/.local/share/uv/python-evil/x/bin/python3", policy)).toBe(false);
+    expect(await ok(root, `${bin}/python3.10`, "/home/node/.local/share/uv/python/a/b/bin/python3", policy)).toBe(false);
+    expect(await ok(root, `${bin}/python3.11`, "/usr/bin/python3", policy)).toBe(false);
+  });
+
+  it("the default policy is the shared worker one (workspace-links.ts): /usr/bin and /usr/local/bin, and uv's managed Pythons", () => {
+    expect(DEFAULT_LINK_POLICY.interpreterDirectories).toEqual(["/usr/bin", "/usr/local/bin"]);
+    expect(DEFAULT_LINK_POLICY.managedPythonRoots.every((entry) => entry.endsWith("/uv/python"))).toBe(true);
   });
 
   it("a link into the workspace mount is a relative link in disguise: the verdict carries the relative target, and a target above the seed is refused", async () => {

@@ -29,6 +29,7 @@ import { runProjectCommand, type PreparationCommandRunner, type PreparationManif
 import { storedCommandOutput } from "./command-failure.js";
 import { planChecks, publicationCheckEntries } from "./verification/checks.js";
 import type { CommandResult } from "./readiness.js";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { taskSandboxFor, taskShellSelection, type TaskShellSelection } from "./task-sandbox.js";
 import {
   createDevcontainerCli,
@@ -583,7 +584,7 @@ export async function runReadinessChecks(
     : undefined;
   let runner: PreparationCommandRunner = sandbox === undefined
     ? (command, index, root) => runProjectCommand(command, index, root, undefined, true)
-    : (command) => sandbox.runCommand(command);
+    : (command) => executionFor(SANDBOX_TARGET, { sandbox }).runCommand(command);
   try {
     if (target !== undefined && readiness.length > 0) {
       const cli = options.devcontainerCli ?? createDevcontainerCli();

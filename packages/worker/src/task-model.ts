@@ -1,6 +1,6 @@
 import {parseTaskModelFallbackAuthorization} from "./model-fallback-authority.js";
 export {parseTaskModelFallbackAuthorization} from "./model-fallback-authority.js";
-import { type TaskModelFallbackAuthorization,type TaskModelFallbackRequest,TaskModelFallbackRequestSchema,type TaskModelPolicyBinding,agentXError, type InvocationModelRoute, type ModelSelection } from "@agentx/contracts";
+import { type TaskModelFallbackAuthorization,type TaskModelFallbackRequest,TaskModelFallbackRequestSchema,type TaskModelPolicyBinding,agentXError, type InvocationModelRoute, type ModelSelection, type SecondReviewerPayload } from "@agentx/contracts";
 import { ROUTE_PROVIDER, routedThinkingLevel, type ChatGptFallbackReason, type ModelFallbackNotice, type ModelProxyOptions } from "@agentx/model-runtime";
 import type { EventBatchSink } from "./events.js";
 import { createChatGptPiSessionAdapter, createProxyPiSessionAdapter, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
@@ -27,6 +27,23 @@ function routedTaskModel(route: InvocationModelRoute, selected: ModelSelection |
     ...(level === undefined ? {} : { thinkingLevel: level }),
     cacheRetention: effectiveCacheRetention(environment.PI_CACHE_RETENTION),
   };
+}
+
+/**
+ * SR-1: the models and sessions the second reviewer may try, in order. Each is called the way the broker checked it: through its own proxy route when it has one (never the task's model, and the proxy's model
+ * fallback is not asked for). A routed candidate on a worker with no model proxy cannot be reached, so it is left out; with none left the second reviewer runs nothing and reports no answer.
+ */
+export function secondReviewerRuntimes(payload: { workflowSecondReviewer?: SecondReviewerPayload | undefined }, baseProxy: ModelProxyOptions | undefined, environment: NodeJS.ProcessEnv = process.env): Array<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }> | undefined {
+  if (payload.workflowSecondReviewer === undefined) return undefined;
+  const runtimes: Array<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }> = [];
+  for (const candidate of payload.workflowSecondReviewer.candidates) {
+    if (candidate.modelRoute === undefined) {
+      runtimes.push({ model: resolveTaskModel(candidate.model, environment), ...(baseProxy === undefined ? {} : { piAdapter: createProxyPiSessionAdapter(baseProxy) }) });
+    } else if (baseProxy !== undefined) {
+      runtimes.push({ model: routedTaskModel(candidate.modelRoute, candidate.model, environment), piAdapter: createProxyPiSessionAdapter({ ...baseProxy, route: candidate.modelRoute }) });
+    }
+  }
+  return runtimes;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {

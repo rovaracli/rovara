@@ -6,6 +6,8 @@ import { MERGE_NOT_READY_MESSAGES as M, MergeDoneReaderSchema, MergeViewSchema, 
 import { mergeReadiness, mergeViewOf, pressMerge, riskOfTask, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
+import { secondReviewMergeWait } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import { ARJUN, CELL, MAX, PRIYA } from "../support/agent-session-world.js";
 import { GH, HEAD_A, HEAD_B, LOGIN, mergeWorld, pullStatus, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
@@ -61,6 +63,31 @@ describe("one click from the web app", () => {
     const draft = await ready({}, { draft: true });
     expect(await codeOf(webPress(draft))).toEqual({ code: "MERGE_NOT_READY", message: M.draft });
     for (const w of [red, none, draft]) expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("waits for the owner's acknowledgement while an `on` second review that did not run is open, in the press and in the view; nothing is merged (SR-1)", async () => {
+    process.env.SECOND_REVIEW_ENABLED = "1";
+    try {
+      const w = await ready();
+      const opinion = secondOpinionUnavailable({ mode: "on", company: "openai" }, "no-answer");
+      const digest = DIGEST;
+      const row = () => w.db.get(taskKey(w.taskId))!;
+      w.db.set({ ...row(), workflow: { ...(row().workflow as object), candidate: { digest } } });
+      w.db.set({ ...row(), secondOpinion: { candidateDigest: digest, opinion, recordedAt: new Date(w.clock.now).toISOString() } });
+      const words = secondReviewMergeWait(row())!;
+      expect(words).toContain("Second review did not run");
+      expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: words });
+      expect(await codeOf(tokenPress(w))).toEqual({ code: "MERGE_NOT_READY", message: words });
+      expect(await mergeViewOf(w.deps, row() as never, [w.trackingOf({ repositoryId: "payments", number: 7 })!], PRIYA)).toMatchObject({ ready: false, message: words });
+      expect(w.github.mergeCalls).toEqual([]);
+      const ack = secondReviewAcknowledgement(opinion, digest);
+      if (!ack.required) throw new Error("expected an ask");
+      w.db.set({ ...row(), secondReviewAcknowledged: [ack.key] });
+      expect((await webPress(w)).status).toBe(200);
+      expect(mergedOf(w)).toHaveLength(1);
+    } finally {
+      delete process.env.SECOND_REVIEW_ENABLED;
+    }
   });
 
   it("re-reads GitHub: a head that moved after tracking last looked, or checks that went red since, stop the merge", async () => {

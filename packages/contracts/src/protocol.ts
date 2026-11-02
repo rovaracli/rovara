@@ -10,6 +10,7 @@ import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
 import { type ModelSelection } from "./models-node.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
+import { SECOND_REVIEW_CANDIDATES_MAX, SecondReviewContextSchema } from "./second-review.js";
 import { E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
 import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
@@ -40,7 +41,9 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, WORKER_CREDENTIAL_KINDS_FEATURE] as const;
+/** SR-1 (switch `cr`): the second reviewer inside a REVIEW operation. Sent only to a worker that lists it; an older worker gets the review without it (it runs as today) and its result has no second-review key. */
+export const SECOND_REVIEWER_FEATURE = "task.workflowSecondReviewer.v1" as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", SETUP_AGENT_FEATURE, SETUP_RECIPES_FEATURE, "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1", OWNER_REDIRECT_FEATURE, PEEK_FEATURE, "publish.attribution", DIAGNOSIS_WORKER_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_DETECT_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, WORKER_CREDENTIAL_KINDS_FEATURE, SECOND_REVIEWER_FEATURE] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -222,6 +225,16 @@ export const ModelRouteSchema = z.object({
   catalog: z.string().min(1).max(256),
 }).strict();
 export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
+/**
+ * SR-1: the second reviewer of a REVIEW operation: the models it may try, in order (each with the proxy route the broker chose for it, so it is called the way the broker checked), at most two names
+ * (`SECOND_REVIEW_CANDIDATES_MAX`; the worker makes at most 3 tries in all). The key may call only the aliases the broker chose for these models and no others, and the proxy is configured with no router fallbacks (`litellmConfig` writes none and the guard refuses fallback fields in a request; checked by a test for Rovara's own config, and a deferred check for company sources), so the model named is the model that answers.
+ */
+export const SecondReviewerSchema = z.object({
+  candidates: z.array(z.object({ model: ModelSelectionSchema, modelRoute: ModelRouteSchema.optional() }).strict()).min(1).max(SECOND_REVIEW_CANDIDATES_MAX),
+  /** What the second reviewer is shown besides the change: absent means `change_only` (no source tools, lessons, step instructions or skills). */
+  context: SecondReviewContextSchema.optional(),
+}).strict();
+export type SecondReviewerPayload = z.infer<typeof SecondReviewerSchema>;
 /** Broker-created task context, never a client choice or permission to fallback. */
 export const TaskModelPolicyBindingSchema=z.object({version:z.literal(1),stage:StageIdSchema,companyRevision:z.number().int().min(0),recipeDigest:z.string().regex(/^[a-f0-9]{64}$/u)}).strict();
 export type TaskModelPolicyBinding=z.infer<typeof TaskModelPolicyBindingSchema>;
@@ -368,6 +381,8 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * "task.workflowReviewRisk" is sent the review without it, and the risk level then comes from the paths, the size and the checks alone.
          */
         workflowReviewRisk: z.literal(true).optional(),
+        /** SR-1: the second reviewer (another AI company's model) that runs after the reviews above, inside this operation. Review operations only; a worker without "task.workflowSecondReviewer.v1" is sent the review without it. */
+        workflowSecondReviewer: SecondReviewerSchema.optional(),
         /**
          * Rovara Code (Plan 6 Task 15): this coding run fixes a pull request that is already open (failing CI, a conflict, comments), so it changes that code and leaves it alone when
          * nothing it can do helps. Implementation mode only. Sent only to a worker whose /ping lists "task.workflowFix"; never dropped, because an older worker would take the run for a first build.
@@ -506,6 +521,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowReviewers !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewers"], message: "the reviews to run require review mode" });
+        }
+        if (payload.workflowSecondReviewer !== undefined && (payload.workflowMode !== "REVIEW" || (payload.workflowReviewers !== undefined && !payload.workflowReviewers.includes("CRITIC")))) {
+          context.addIssue({ code: "custom", path: ["workflowSecondReviewer"], message: "the second reviewer requires review mode with the code review" });
         }
         if (payload.workflowReviewRisk !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewRisk"], message: "the review's risk level requires review mode" });

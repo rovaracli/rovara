@@ -32,6 +32,7 @@ import {
   type AppProjectDetail,
   type OrgId,
   type OrgRole,
+  type ProjectCommand,
   type ProjectDefinition,
   type ProjectRole,
   type ProjectSettingsBody,
@@ -82,6 +83,21 @@ export { githubNotConnectedMessage };
 
 const withoutCode = (error: AgentXError) => error.message.replace(new RegExp(`^${error.code}: `), "");
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+
+/**
+ * The commands a settings save stores for a list of command lines: each parsed to one program in the project's first repository's directory, with the list's own timeout and no env. The save uses this and
+ * so does the check of a setup draft's commands (rovara-code/setup-draft-check.ts), so what is checked is exactly what is stored.
+ */
+export function settingsCommands(field: "setupCommands" | "testCommands", lines: readonly string[], cwd: string, timeoutSeconds: number): ProjectCommand[] {
+  return lines.map((line, index) => {
+    try {
+      return parseCommandLine(line, cwd, timeoutSeconds);
+    } catch (error) {
+      if (error instanceof AgentXError) throw invalid(`${field}.${String(index)}: ${withoutCode(error)}`);
+      throw error;
+    }
+  });
+}
 
 /** What a project's repository is called to a person: GitHub's `owner/name`, from its URL. */
 function fullNameOf(repository: { name: string; url: string }): string {
@@ -155,7 +171,7 @@ export function parseProjectSettingsBody(body: unknown): ProjectSettingsBody {
 type Repository = StoredProjectDefinition["repositories"][number];
 
 /** The repository an entry means: its name in the project, or its GitHub `owner/name`, compared without regard to case. */
-function resolveRepository(repositories: readonly Repository[], entry: string): Repository | undefined {
+export function resolveRepository(repositories: readonly Repository[], entry: string): Repository | undefined {
   const wanted = entry.toLowerCase();
   return repositories.find((repository) => repository.name.toLowerCase() === wanted || fullNameOf(repository).toLowerCase() === wanted);
 }
@@ -223,7 +239,11 @@ async function changedRepositories(
  * proposal, applied by a maintainer, marks what it changes `agent`, so a later import or draft can tell Rovara's value from one a person typed. It is an option of the
  * function, never of the request body: no caller can claim it over HTTP.
  */
-export interface UpdateProjectSettingsOptions { origin?: "person" | "agent" }
+export interface UpdateProjectSettingsOptions {
+  origin?: "person" | "agent";
+  /** Conditions that commit with the revision (a ConditionCheck on a record the write depends on): when one fails nothing is written. Set by the settings proof for a held change, never by a request. */
+  guardItems?: TransactItem[];
+}
 
 /** A save that touched settings the meta repo's config file manages. A typed refusal, so callers need not read the words; it answers 403 FORBIDDEN as it always did. */
 export class ManagedByFileError extends AgentXError {
@@ -309,16 +329,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   }
   // Commands run in the project's first repository, the way the one repository of a created project is.
   const cwd = repositories[0]!.path;
-  const commands = (field: "setupCommands" | "testCommands", timeoutSeconds: number) => (body[field] ?? []).map((line, index) => {
-    try {
-      return parseCommandLine(line, cwd, timeoutSeconds);
-    } catch (error) {
-      if (error instanceof AgentXError) throw invalid(`${field}.${String(index)}: ${withoutCode(error)}`);
-      throw error;
-    }
-  });
-  if (body.setupCommands !== undefined) next.setup = commands("setupCommands", SETUP_TIMEOUT);
-  if (body.testCommands !== undefined) next.readiness = commands("testCommands", TEST_TIMEOUT);
+  if (body.setupCommands !== undefined) next.setup = settingsCommands("setupCommands", body.setupCommands, cwd, SETUP_TIMEOUT);
+  if (body.testCommands !== undefined) next.readiness = settingsCommands("testCommands", body.testCommands, cwd, TEST_TIMEOUT);
   // A command the save keeps still runs where it did; one whose repository is removed would run in a directory that is gone.
   for (const [index, entry] of (body.removeRepositories ?? []).entries()) {
     const path = resolveRepository(current.repositories, entry)!.path;
@@ -364,7 +376,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const egressWarnings = domainPlan === undefined ? await recordEgress(deps.egress, caller, name, afterDomains) : [];
   if (changed) {
     try {
-      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, domainPlan?.items);
+      const extraItems = [...(domainPlan?.items ?? []), ...(options.guardItems ?? [])];
+      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, extraItems.length === 0 ? undefined : extraItems);
     } catch (error) {
       // Another save took this revision number first (its content differs), or the catalog moved under this one.
       if (domainPlan === undefined || !await recoverOwnedDomainReceipt()) {

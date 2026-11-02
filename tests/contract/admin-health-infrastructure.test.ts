@@ -269,6 +269,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
       "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
       "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
+      // 2026-11-02, team-record-links (S2): the prior-edit mark (`PRIOREDIT#<hash of the item>`, a hash and a time, no words) left when a change to an item was not stored expires after 400 days; only prior-edits.ts writes it.
+      "packages/broker/src/team-record/prior-edits.ts",
+      // 2026-11-02, team-record-links: the admin tracker-people request receipt (`TEAM_RECORD_TRACKER_REQUEST`, a digest of the change and its outcome, no names) expires after 90 days; runtime.ts writes it when it remembers a request.
+      "packages/broker/src/team-record/runtime.ts",
       // Track record (v1.2 slice 1): a pending outcome sample lasts a year, a scored one and its scored copy 180 days after the score; only outcomes.ts writes and reads them.
       "packages/broker/src/rovara-code/outcomes.ts",
       // Track record hooks: the small pointer item that says where a candidate's samples are (a task's `OUTCOME_KEYS#<round>` item) expires with the pending samples, a year after it is made.
