@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
@@ -22,6 +22,9 @@ import { KnownFailingPolicyRow } from "./KnownFailingPolicyRow.js";
 import { SetupRecipesLink } from "./SetupRecipesScreen.js";
 import "./how-we-work.css";
 
+// SU-1: the company's setup locks. Its own chunk; it shows nothing while the setup agent is off.
+const SetupLocksRow = lazy(() => import("./SetupLocksRow.js"));
+
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
 type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwnerConfirmation | undefined };
 type Review = { state: "loading" } | { state: "failed"; text: string } | { state: "ready"; projects: CompanyPreview["projects"]; next: string | undefined };
@@ -29,13 +32,14 @@ type Review = { state: "loading" } | { state: "failed"; text: string } | { state
 export function HowWeWorkCompanyScreen() {
  // A window refocus or reconnect never re-reads this page: it would reset unsaved edits, close an open review or drop a save result. The save result lives here, in the parent, so a re-read (after a save or Reload) cannot lose it.
  const read = useAdminRead("company-how-we-work", COMPANY_POLICY_PATH, CompanyPolicyReader, { stable: true });
- const [notice, setNotice] = useState<Notice>();
+ const [notice, setNotice] = useState<Notice>(), { role } = useAdminContext();
  const reread = async (): Promise<boolean> => !(await read.refetch()).isError;
  return <section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} />
   <p><Link to="/app/admin/models/steps">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   <KnownFailingPolicyRow />
   <SetupRecipesLink />
+  {(role === "owner" || role === "admin") && <Suspense fallback={null}><SetupLocksRow /></Suspense>}
   {notice?.kind === "saved" && <p role="status">{T.SAVED}</p>}
   {notice?.kind === "saved_reload_failed" && <p role="alert">{T.SAVED_RELOAD_FAILED} <Button onClick={() => { setNotice(undefined);void read.refetch(); }}>Reload</Button></p>}
   <ReadSection read={read} label="Company model defaults">{policy => <Editor key={read.dataUpdatedAt} policy={policy} notice={notice} setNotice={setNotice} reread={reread} reload={() => { setNotice(undefined);void read.refetch(); }} />}</ReadSection>
