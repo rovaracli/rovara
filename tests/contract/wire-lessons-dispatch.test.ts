@@ -116,7 +116,7 @@ describe("delivery: the stage's lessons are built from the lesson store at the m
   async function deliver(features: readonly string[] | undefined, over: { payload?: Record<string, unknown>; learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"] } = {}) {
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
     const deliverEc2 = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-11-01T12:00:00.000Z"),
       ...(features === undefined ? {} : { workerFeatures: async () => features }), ...(over.learnedFromRefs === undefined ? {} : { learnedFromRefs: over.learnedFromRefs }),

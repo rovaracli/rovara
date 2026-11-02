@@ -428,6 +428,8 @@ export async function setRecipeScope(deps: SetupRecipeDeps, caller: RecipeCaller
   const scope = RecipeScopeSchema.safeParse(input.scope);
   if (!scope.success) throw invalid("That project list is not valid.");
   const current = await load(deps, caller, input.recipeId);
+  // Only a live recipe has a scope to change; a revoked row is history and is never rewritten.
+  if (current.status !== "proposed" && current.status !== "approved") throw agentXError("CHANGE_STALE", "Only a recipe that is waiting or offered can be scoped.");
   if (current.revision !== input.expectedRevision) throw stale();
   const next: StoredRecipe = { ...current, scope: scope.data, revision: current.revision + 1, updatedAt: iso(deps) };
   if (!await deps.store.commitRecipe(next, current.revision, auditOf(deps, caller, "recipe_scope_changed", "fresh_sign_in", next))) throw stale();

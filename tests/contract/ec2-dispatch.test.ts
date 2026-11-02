@@ -40,6 +40,7 @@ function delivery(overrides: Partial<Ec2DeliveryDependencies> = {}, without: Rea
   const progress = vi.fn<Ec2DeliveryDependencies["progress"]>(async () => undefined);
   const applicationPlanNotNegotiated = vi.fn<NonNullable<Ec2DeliveryDependencies["applicationPlanNotNegotiated"]>>(async () => undefined);
   const planQualityNotNegotiated = vi.fn<NonNullable<Ec2DeliveryDependencies["planQualityNotNegotiated"]>>(async () => undefined);
+  const setupRecipesNotNegotiated = vi.fn<Ec2DeliveryDependencies["setupRecipesNotNegotiated"]>(async () => undefined);
   const dependencies: Ec2DeliveryDependencies = {
     sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
     binding: async () => binding,
@@ -48,12 +49,13 @@ function delivery(overrides: Partial<Ec2DeliveryDependencies> = {}, without: Rea
     progress,
     applicationPlanNotNegotiated,
     planQualityNotNegotiated,
+    setupRecipesNotNegotiated,
     now: () => NOW,
     ...overrides,
   };
   for (const key of without) delete dependencies[key];
   const deliver = createEc2Delivery(dependencies);
-  return { deliver, post, progress, applicationPlanNotNegotiated, planQualityNotNegotiated };
+  return { deliver, post, progress, applicationPlanNotNegotiated, planQualityNotNegotiated, setupRecipesNotNegotiated };
 }
 
 function readinessFixture() {
@@ -216,7 +218,7 @@ describe("ec2-ebs delivery", () => {
     const complete = createWorkflowE2EReadinessCompleter({ documentClient: documentClient as never, tableName: "state" });
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{}" }));
     const deliver = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => NOW,
       validateWorkflowE2EReadiness: validate,
@@ -549,10 +551,11 @@ describe("ec2-ebs delivery", () => {
       expect(await noDetect.deliver(record, record.invocation)).toBe("DELIVERED");
       expect(postedPayload(noDetect.post)).not.toHaveProperty("testEnvRecipes");
       expect(postedPayload(noDetect.post)).not.toHaveProperty("testEnvDetect");
-      // An unwired recorder never fails the draft.
-      const unwired = delivery({ workerFeatures: async () => base });
-      expect(await unwired.deliver(record, record.invocation)).toBe("DELIVERED");
       log.mockRestore();
+      // An unwired recorder is a wiring error: the draft does not go out with the record still saying recipes were offered.
+      const unwired = delivery({ workerFeatures: async () => base }, ["setupRecipesNotNegotiated"]);
+      await expect(unwired.deliver(record, record.invocation)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(unwired.post).not.toHaveBeenCalled();
       // A worker that lists them is sent them, and nothing is forgotten.
       forget.mockClear();
       const capable = delivery({ workerFeatures: async () => [...base, "task.setupRecipes.v1"], setupRecipesNotNegotiated: forget });
@@ -2018,7 +2021,7 @@ describe("ec2-ebs delivery through the real session manager", () => {
     db.set({ pk: `OUTBOX#${record.id}`, sk: "OUTBOX", ...record });
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{}" }));
     const deliver = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
       sessions,
       binding: (workspaceId) => workspaceBinding(db, "state", TEST_ORG, workspaceId),
       sign: kmsSign,
@@ -2060,7 +2063,7 @@ describe("ec2-ebs delivery through the real session manager", () => {
     const markFailed = vi.fn(async () => undefined);
     const markDelivered = vi.fn(async () => undefined);
     const deliver = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
       sessions,
       binding: (workspaceId) => workspaceBinding(fixture.db, "state", TEST_ORG, workspaceId),
       sign: kmsSign,

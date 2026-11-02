@@ -46,7 +46,7 @@ function Line({ text, source }: { text: string; source: Source | undefined }) {
  * the project's settings yet), proves it from that check, and approves it; the approval adds the commands to the project's settings. A change that is less safe than the sandbox needs a second person's confirmation and the approver's own fresh sign-in; this page only asks, and the server decides. With the feature off
  * the server answers "not found" and this section shows nothing.
  */
-export function TestEnvironmentSection({ project, setupStatus, settingsRevision, onSettingsChanged }: { project: string; setupStatus: string; settingsRevision: number; onSettingsChanged: () => Promise<void> }) {
+export function TestEnvironmentSection({ project, canEditSettings, setupStatus, settingsRevision, onSettingsChanged }: { project: string; /** The page knows the viewer may edit the project's settings (a maintainer): only then is the company-recipe share panel mounted, so a viewer's page never asks and logs a refusal. */ canEditSettings: boolean; setupStatus: string; settingsRevision: number; onSettingsChanged: () => Promise<void> }) {
   const api = useTestEnvironmentApi();
   const host = useAppHost();
   // The setup check finishing (or the settings changing) changes what can be proved: the status is part of the key, so a change reads again.
@@ -83,7 +83,7 @@ export function TestEnvironmentSection({ project, setupStatus, settingsRevision,
     <h3>Test environment</h3>
     <p>How tests run for this project. Rovara proposes it from your default branch; nothing is used until a maintainer proves and approves it.</p>
     {shown.approved && <p role="status">Approved: revision {shown.approved.revision}, {shown.approved.summary.repositories.reduce((sum, repository) => sum + repository.checks.length, 0)} checks, tier {shown.approved.summary.tier}.</p>}
-    {shown.approved && shown.approved.commandsNotInSettings === 0 && <ShareRecipePanel project={project} />}
+    {canEditSettings && shown.approved && shown.approved.commandsNotInSettings === 0 && <ShareRecipePanel project={project} />}
     {shown.approved && shown.approved.commandsNotInSettings > 0 && <ApprovedGap
       approved={shown.approved} busy={busy}
       onCheck={() => { void act("check", () => api.startCheck(project, shown.approved!.digest, crypto.randomUUID()), take); }}

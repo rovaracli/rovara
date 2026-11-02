@@ -93,9 +93,9 @@ export interface Ec2DeliveryDependencies {
   planQualityNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
   /**
    * Called, before the invocation is posted, when the company recipes offered to a setup draft were dropped for a worker that does not list them: the operation record then stops saying which recipes were offered (the
-   * run cannot have used any). Optional on purpose: a missing recorder never fails the draft (a leftover record only widens what a report could claim, and the draft's stored sources are filtered against it).
+   * run cannot have used any). Required like its siblings: a missing recorder is a wiring error (`CONFIG_INVALID`), not a draft that goes out with the record still saying recipes were offered.
    */
-  setupRecipesNotNegotiated?: (record: Ec2OutboxRecord) => Promise<void>;
+  setupRecipesNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
   /**
    * The schemaVersion of the admission a CHECKS invocation's reference names, read from the stored object and held to the reference's content address; undefined when it
    * cannot be read. With it, the dispatcher does not trust the reference's `kind` alone: a reference whose kind disagrees with its admission is refused before delivery.
@@ -212,7 +212,10 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       await dependencies.applicationPlanNotNegotiated(record);
     }
     if (invocation.kind === "task" && invocation.payload.testEnvRecipes !== undefined && !(sent.kind === "task" && sent.payload.testEnvRecipes !== undefined)) {
-      await dependencies.setupRecipesNotNegotiated?.(record);
+      if (dependencies.setupRecipesNotNegotiated === undefined) {
+        throw agentXError("CONFIG_INVALID", "the company recipes were dropped for this worker but no setupRecipesNotNegotiated recorder is configured");
+      }
+      await dependencies.setupRecipesNotNegotiated(record);
     }
     if (invocation.kind === "task" && asksForPlanQuality(invocation.payload.prompt)
       && !(sent.kind === "task" && asksForPlanQuality(sent.payload.prompt))) {

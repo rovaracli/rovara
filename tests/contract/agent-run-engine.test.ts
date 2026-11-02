@@ -1311,7 +1311,7 @@ describe("a run that looks at a pull request: an old worker", () => {
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
     const deliverEc2 = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined,
-      planQualityNotNegotiated: async () => undefined,
+      planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-10-21T12:00:00.000Z"),
       workerFeatures: async () => features,

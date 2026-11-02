@@ -127,6 +127,10 @@ describe("an admin writes, scopes and revokes a recipe", () => {
     // Revoked is history: out of the live list, kept by id in its own partition.
     expect((await list(t)).recipes).toEqual([]);
     expect(await dynamoSetupRecipeStore({ documentClient: t.db, tableName: "state", now: Date.now }).getRecipe(TEST_ORG, created!.recipeId)).toMatchObject({ status: "revoked", revision: 4 });
+    // A revoked recipe is history: its scope is never rewritten.
+    const again = await post(t, { action: "scope", recipeId: created!.recipeId, expectedRevision: 4, scope: { kind: "company" } });
+    expect(again.status).toBe(409);
+    expect(await dynamoSetupRecipeStore({ documentClient: t.db, tableName: "state", now: Date.now }).getRecipe(TEST_ORG, created!.recipeId)).toMatchObject({ status: "revoked", revision: 4, scope: { kind: "projects", projects: [NAME] } });
     expect(events(audit, "setup_recipe.").map((event) => `${event.action}@${String(event.facts?.revision)}`)).toEqual(["setup_recipe.created@1", "setup_recipe.scope_changed@2", "setup_recipe.scope_changed@3", "setup_recipe.revoked@4"]);
   });
 });
