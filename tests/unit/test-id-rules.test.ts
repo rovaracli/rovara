@@ -8,7 +8,7 @@ describe("a valid test id", () => {
     for (const id of ["src/cart.test.ts::cart adds an item", "tests/test_cart.py::test_label[a b]", "tests/test.py::t(1, 2)", "pkg::it 'quotes' and \"double\"", "tests/测试.py::café ☕", "a  b", "-x", "@file"]) expect(isValidTestId(id), id).toBe(true);
   });
   it("refuses control and format characters: a newline, a tab, a NUL, an escape, a zero-width space, a bidirectional override", () => {
-    for (const id of ["a\nb", "a\tb", "a\u0000b", "a\u001bb", "a​b", "a‮b", "a­b", "a﻿b"]) expect(isValidTestId(id), JSON.stringify(id)).toBe(false);
+    for (const id of ["a\nb", "a\tb", "a\u0000b", "a\u001bb", "a\u200Bb", "a\u202Eb", "a\u00ADb", "a\uFEFFb"]) expect(isValidTestId(id), JSON.stringify(id)).toBe(false);
   });
   it("refuses invisible look-alikes (F6): Hangul fillers, the braille blank, variation selectors, the grapheme joiner, Khmer vowels, a replacement character, and every space that is not the plain one", () => {
     for (const code of [0x3164, 0x115f, 0x1160, 0xffa0, 0x2800, 0xfe0f, 0xfe00, 0x180b, 0x034f, 0x17b4, 0x17b5, 0xfffc, 0xfffd, 0x00a0, 0x2003, 0x3000, 0x2028, 0x2029, 0x202f, 0xe0100]) {
@@ -23,14 +23,14 @@ describe("a valid test id", () => {
   });
   it("is the schema's rule too", () => {
     expect(TestIdSchema.safeParse("src/a.test.ts::a b").success).toBe(true);
-    expect(TestIdSchema.safeParse("src/a.test.ts::aㅤb").success).toBe(false);
+    expect(TestIdSchema.safeParse("src/a.test.ts::a\u3164b").success).toBe(false);
   });
 });
 
 describe("a rerunnable test id", () => {
   it("is a valid id that is not an option or an argument file", () => {
     expect(isRerunnableTestId("tests/a.py::t[a b]")).toBe(true);
-    for (const id of ["-x", "--maxfail=1", "@args.txt", "aㅤb", " x"]) expect(isRerunnableTestId(id), id).toBe(false);
+    for (const id of ["-x", "--maxfail=1", "@args.txt", "a\u3164b", " x"]) expect(isRerunnableTestId(id), id).toBe(false);
   });
   it("an id is file::name, or the name alone", () => {
     expect(testIdOf({ file: "src/a.test.ts", name: "a b" })).toBe("src/a.test.ts::a b");
