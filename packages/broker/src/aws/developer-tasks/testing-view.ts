@@ -29,7 +29,7 @@ const autofixOn = (env: NodeJS.ProcessEnv): boolean => env.AUTOFIX_ENABLED?.trim
  * The follow-up full run as the classifier takes it. Undefined for a follow-up that FAILED: a failed full run is neither "code failed" nor "partially verified" in the classifier, so no result is shown
  * (the merge card already treats it as high risk).
  */
-async function fullSuiteOf(deps: TestingViewDeps, task: DeveloperTaskRecord, pack: EvidencePack | undefined, digest: string): Promise<FullSuiteState | "failed"> {
+export async function fullSuiteOf(deps: TestingViewDeps, task: DeveloperTaskRecord, pack: EvidencePack | undefined, digest: string): Promise<FullSuiteState | "failed"> {
   if (pack === undefined || task.orgId === undefined) return "not_needed";
   const needed = needsFullSuiteFollowup({ selection: pack.selection, testChecks: pack.checks.filter((check) => check.kind === "test") });
   if (!needed) return "not_needed";
