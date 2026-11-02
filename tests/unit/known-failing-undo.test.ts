@@ -32,7 +32,7 @@ function harness(marks: KnownFailingMark[] = [mark("t/a.py::one"), mark("t/a.py:
     const finished = new Date(NOW - (over.ageMs ?? DAY)).toISOString();
     const passed = over.passed ?? 90;
     const baseline = NightlyBaselineSchema.parse({ recordedAt: finished, envRevision: 1, branch: over.branch ?? options.branch ?? "main", headSha: "a".repeat(40), finishedAt: finished, tests: { total: passed + failed.length, passed, failed: failed.length, skipped: 0 }, failed, flaky });
-    return { orgId: ORG, project: PROJECT, slotId: "s".repeat(64), baseline, health: "health" in over ? over.health : undefined };
+    return { orgId: ORG, project: PROJECT, slotId: "s".repeat(64), baseline, health: "health" in over ? over.health : ({ class: "passed", ranFrom: "fresh" }) };
   };
   const names = async () => (await readKnownFailingRow(store, ORG, PROJECT))!.marks.map((m) => m.name);
   return { db, audit, clock, store, can, ports, night, names };
@@ -53,6 +53,16 @@ describe("undo", () => {
     // No test name in the event; the write and the event are one transaction.
     expect(JSON.stringify(events[0])).not.toContain("t/a.py");
     expect(h.db.transactions().at(-1)!.length).toBe(2);
+  });
+
+  it("two undos that carry the same request id are two audit events (the id is the client's, so it cannot name the event alone)", async () => {
+    const h = harness([mark("t/a.py::one"), mark("t/a.py::two", { checkId: "lint", epoch: 4 })]);
+    expect(await undoKnownFailing(h.ports, BROWSER, PROJECT, ref(mark("t/a.py::one")), "request-same")).toBe("done");
+    expect(await undoKnownFailing(h.ports, BROWSER, PROJECT, ref(mark("t/a.py::two", { checkId: "lint", epoch: 4 })), "request-same")).toBe("done");
+    const events = h.audit.recordedBy("project.known_failing_removed");
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(2);
+    expect(await h.names()).toEqual([]);
   });
 
   it("asks for no second person: the maintainer who undoes may be the one who marked it", async () => {
@@ -172,7 +182,14 @@ describe("expiry by a nightly", () => {
     expect(await h.names()).toEqual(["t/a.py::one", "t/a.py::two"]);
     expect(nightShowsPassing({ baseline: h.night().baseline, health: { class: "passed", ranFrom: "fresh" } })).toBe(true);
     expect(nightShowsPassing({ baseline: h.night().baseline, health: { class: "tests", setupProved: true, ranFrom: "saved_image" } })).toBe(true);
-    expect(nightShowsPassing({ baseline: h.night().baseline, health: undefined })).toBe(true);
+    expect(nightShowsPassing({ baseline: h.night().baseline, health: undefined })).toBe(false);
+  });
+
+  it("a night that carries no step words never takes a mark off", async () => {
+    const h = harness();
+    expect(await expireKnownFailing(h.store, h.night({ health: undefined }), {}, ON)).toBe(0);
+    expect(await h.names()).toEqual(["t/a.py::one", "t/a.py::two"]);
+    expect(h.audit.recordedBy("project.known_failing_removed")).toEqual([]);
   });
 
   it("a failing set that did not fit excuses nothing and so removes nothing", async () => {

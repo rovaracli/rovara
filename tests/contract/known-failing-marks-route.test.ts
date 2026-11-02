@@ -94,6 +94,21 @@ describe("Undo", () => {
     expect(audit.recordedBy("project.known_failing_removed")).toEqual([]);
   });
 
+  it("a token is refused for the list too (before any project lookup, so it learns nothing); with vx off it is not found, as today", async () => {
+    const { t } = await bench();
+    expect((await t.dev(OMAR, "GET", PATH)).status).toBe(404);
+    expect((await t.dev(OMAR, "POST", PATH, body(mark("tests/a.py::one")))).status).toBe(404);
+    on();
+    for (const method of ["GET", "POST"]) {
+      const reply = await t.dev(OMAR, method, PATH, method === "POST" ? body(mark("tests/a.py::one")) : undefined);
+      expect(reply.status, method).toBe(403);
+      expect(JSON.stringify(reply.body), method).toContain("Use a live browser session");
+      expect(JSON.stringify(reply.body)).not.toContain("tests/a.py");
+    }
+    // A token for a project that does not exist is refused the same way, so it cannot tell.
+    expect((await t.dev(OMAR, "GET", "/v1/app/projects/nope/known-failing")).status).toBe(403);
+  });
+
   it("a mark changed or already removed answers CHANGE_STALE and removes nothing", async () => {
     const { t, audit } = await bench();
     on();

@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, type NightlyBaseline, type OrgId } from "@agentx/contracts";
-import { auditProjectKnownFailingRemoved } from "../audit/events.js";
+import { auditOccurrence, auditProjectKnownFailingRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
@@ -59,7 +59,7 @@ export async function undoKnownFailing(ports: UndoPorts, caller: { orgId: OrgId;
   const marks = before.marks.filter((mark) => mark !== found);
   const nowIso = new Date(ports.store.now()).toISOString();
   const event = await tryAuditEvent(ports.store, () => auditProjectKnownFailingRemoved({
-    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: requestId, projectName: project, removal: "undo", testCount: 1, markEpoch: found.epoch,
+    orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: auditOccurrence(project, requestId, found.checkId, found.name, found.markedAt), projectName: project, removal: "undo", testCount: 1, markEpoch: found.epoch,
     testSetSha256: hashOf([lineOf(found)]), rowVersionAfter: before.version + 1, totalAfter: marks.length,
   }));
   const done = await send(ports.store, [knownFailingWrite(ports.store, orgId, project, before, marks, nowIso), ...(event === undefined ? [] : auditPending(ports.store, event))]);
@@ -72,7 +72,8 @@ export async function undoKnownFailing(ports: UndoPorts, caller: { orgId: OrgId;
 export function nightShowsPassing(night: Pick<NightlyRecorded, "baseline" | "health">): boolean {
   if (night.baseline.tests.passed < 1) return false;
   const health = night.health;
-  if (health === undefined) return true;
+  // A night without step words cannot say the setup worked, so it never expires a mark.
+  if (health === undefined) return false;
   return health.class === "passed" || (health.class === "tests" && health.setupProved === true);
 }
 

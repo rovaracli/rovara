@@ -50,7 +50,7 @@ export async function routeKnownFailingMarks(deps: DeveloperRouteDependencies, c
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "Only a project maintainer can see or change the known-failing tests.");
   if (request.method === "GET") return new StatusReply(200, await listOf(deps, caller, name));
-  // Defence in depth: the entry file refuses a token before this, and so does the undo itself.
+  // Defence in depth: the entry file refuses a token for both methods before this, and so does the undo itself.
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
   const parsed = BodySchema.safeParse(jsonBody(request));
   if (!parsed.success) {

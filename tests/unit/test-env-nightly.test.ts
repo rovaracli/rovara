@@ -478,13 +478,15 @@ describe("SH28: recording a night drives the project health, only while nh is on
 
 describe("a recorded night and the known-failing marks (KF-1)", () => {
   const markOf = (name: string) => ({ name, checkId: "unit", markedBy: "dev_a", markedAt: "2026-11-01T00:00:00.000Z", epoch: 1 });
-  async function recorded(env: NodeJS.ProcessEnv) {
+  // The step words of a healthy night (every setup step passed; the result fixture is 10 tests: 7 passed, 2 failed, 1 skipped).
+  const stepWords = { steps: NIGHTLY_STEP_WORDS.map((step) => ({ step, status: "passed" })), checks: [{ runsTests: true, started: true, timedOut: false, reportApproved: true, reportWritten: true, testsCollected: 10 }], tests: { total: 10, passed: 7, failures: 2, errors: 0, skipped: 1 } };
+  async function recorded(env: NodeJS.ProcessEnv, over: Record<string, unknown> = { health: stepWords }) {
     const h = await harness();
     h.db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", definition: { name: PROJECT, revision: 1, repositories: [{ name: "svc", url: "https://github.com/acme/svc.git", path: "repo/svc", defaultBranch: "main" }] } });
     h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", orgId: ORG, project: PROJECT, version: 2, updatedAt: "2026-11-01T00:00:00.000Z", marks: [markOf("tests/test_x.py::bad1"), markOf("tests/test_y.py::flaky1"), markOf("tests/test_a.py::t1")] });
     const started = await handleNightlyFire(h.deps, h.fire());
     if (started.outcome !== "started") throw new Error("not started");
-    const data = result(started.slotId);
+    const data = result(started.slotId, over);
     await recordNightlyResultWithHealth(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap }, env);
     return (await readKnownFailingRow(h.deps, ORG, PROJECT))!;
   }
@@ -492,6 +494,11 @@ describe("a recorded night and the known-failing marks (KF-1)", () => {
     const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" });
     expect(row.marks.map((m) => m.name)).toEqual(["tests/test_x.py::bad1", "tests/test_y.py::flaky1"]);
     expect(row.version).toBe(3);
+  });
+  it("a night that carries no step words never takes a mark off, even with vx on", async () => {
+    const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" }, {});
+    expect(row.marks).toHaveLength(3);
+    expect(row.version).toBe(2);
   });
   it("with vx off the same night leaves the list exactly as it was", async () => {
     for (const env of [{}, { VERIFY_RESULTS_ENABLED: "true" }]) {
