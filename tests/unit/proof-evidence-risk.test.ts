@@ -186,7 +186,7 @@ describe("the risk rule", () => {
   // EV-2 (Sonnet re-check of evidence-p3p4): a missing pack (the 6 s read timed out, the store was down, nothing was kept) used to read as "no signal", so a change whose policy has a security check looked Low.
   describe("a missing pack where the policy has a security check", () => {
     it("is evidenceUnavailable: no pack, a failed read, or a pack for other code; the risk is at least Medium, in a fixed sentence", async () => {
-      const unavailable = { highNewFindings: 0, evidenceUnavailable: true };
+      const unavailable = { highNewFindings: 0, evidenceUnavailable: true as const };
       expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, true)).toEqual(unavailable);
       expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest, true)).toEqual(unavailable);
       expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest, true)).toEqual(unavailable);
@@ -202,7 +202,7 @@ describe("the risk rule", () => {
       expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, undefined, true)).toBeUndefined();
       expect(await evidenceRiskOfTask({ pack: async () => pack("security", { medium: 1 }) }, TASK, code.digest, true)).toBeUndefined();
       expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 2 }) }, TASK, code.digest, true)).toEqual({ highNewFindings: 2 });
-      expect(assessRisk(input({ evidence: { highNewFindings: 0, evidenceUnavailable: false } }))).toEqual(assessRisk(input()));
+      expect(assessRisk(input({ evidence: { highNewFindings: 0, evidenceUnavailable: undefined } }))).toEqual(assessRisk(input()));
     });
 
     it("a new high finding still wins over an unavailable pack in the same signal, and the policy's kinds decide whether a security check is expected", () => {

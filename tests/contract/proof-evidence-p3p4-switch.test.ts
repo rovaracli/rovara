@@ -21,7 +21,9 @@ describe("the worker side is reachable only through the evidence hook", () => {
     expect(importersOf("sarif")).toEqual(["verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     expect(importersOf("sarif-baseline")).toEqual(["verification/evidence-raw.ts"]);
     expect(importersOf("migration-check")).toEqual(["verification/evidence-raw.ts"]);
-    expect(importersOf("report-file")).toEqual(["verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
+    expect(importersOf("report-file")).toEqual(["verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/line-coverage-report.ts", "verification/sarif-baseline.ts"]);
+    // EV-2: the Go and JaCoCo readers take text; the file read for them goes through line-coverage-report (readContainedReport). Nothing calls it yet, so nothing reads such a file.
+    expect(importersOf("line-coverage-report")).toEqual([]);
     expect(importersOf("evidence-raw")).toEqual(["run-task.ts"]);
   });
 
@@ -58,11 +60,12 @@ describe("the broker judges the risk with the evidence where a pull request's ri
   it("the initial publication, a pushed fix and a description rewrite each read the evidence signal through the port (which exists only while the switch is on)", () => {
     const publication = readFileSync(join(BROKER, "developer-tasks/publication.ts"), "utf8");
     expect(publication).toContain("recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk)");
-    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest)");
-    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest)");
+    // The last argument says whether the approved check policy has a security check: with it, a pack that cannot be had is "evidence unavailable" and the risk is at least medium (EV-2).
+    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest, securityCheckExpected(workflow.checkPolicy))");
+    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest, securityCheckExpected(workflow.checkPolicy))");
     expect(publication).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
     const reconcile = readFileSync(join(BROKER, "broker/pull-request-reconcile.ts"), "utf8");
-    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest)");
+    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest, securityCheckExpected(workflow.checkPolicy))");
     expect(reconcile).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
   });
 });

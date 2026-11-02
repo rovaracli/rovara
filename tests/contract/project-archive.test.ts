@@ -423,7 +423,7 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
       h.s3.send = (async (command: { constructor: { name: string } }) => {
         if (command.constructor.name === "ListObjectsV2Command") { if (bucketDown) throw new Error("bucket unavailable"); return { Contents: [] }; }
         return original(command as never);
-      }) as typeof h.s3.send;
+      }) as unknown as typeof h.s3.send;
       return h;
     };
     const down = await world(true, true);
