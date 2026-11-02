@@ -1289,6 +1289,33 @@ describe("per-editor rows: the editor of an item is erasable, and only their row
     expect(texts).toContain("maya alone EIGHT");
   });
 
+  it("S2: an earlier edit by someone whose change was NOT stored (an unlinked person, an excluded one, an erased one) also stops the author's whole-comment credit", async () => {
+    const { db, runtime, clock } = await world();
+    const comment = (action: "create" | "update", actor: string, text: string, at: string) => ({ type: "Comment", action, organizationId: "lin-org", actor: { id: actor }, data: { id: "c1", issueId: "i1", teamId: "t1", userId: "lin-ann", body: text, updatedAt: at } });
+    const later = comment("update", "lin-ann", "ann again\nSTRANGERWORDS", "2026-10-30T10:09:00.000Z");
+    // A comment nobody else touched: Ann's edit with no earlier text is hers whole.
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: { ...comment("create", "lin-ann", "ann original", "2026-10-30T10:00:00.000Z"), data: { id: "c0", issueId: "i1", teamId: "t1", userId: "lin-ann", body: "ann original", updatedAt: "2026-10-30T10:00:00.000Z" } } });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: { ...comment("update", "lin-ann", "ann fixed", "2026-10-30T10:01:00.000Z"), data: { id: "c0", issueId: "i1", teamId: "t1", userId: "lin-ann", body: "ann fixed", updatedAt: "2026-10-30T10:01:00.000Z" } } });
+    // Comment c1: an unlinked person edits it (refused, counted), then Ann edits it with no earlier text.
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: comment("create", "lin-ann", "ann original", "2026-10-30T10:00:00.000Z") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: comment("update", "lin-stranger", "ann original\nSTRANGERWORDS", "2026-10-30T10:05:00.000Z") });
+    await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: later });
+    const texts = () => db.find((item) => item.entityType === "TEAM_RECORD_EVENT").map((row) => String(row.text));
+    expect(texts()).toContain("ann fixed");
+    expect(texts().some((text) => text.includes("STRANGERWORDS"))).toBe(false);
+    // An erased person's edit: Bob edits GitHub comment 7 (stored, with the earlier text), is erased, and Maya's later edit with no earlier text keeps nothing.
+    await runtime.taps.github(delivery(55, 101, "maya's original"));
+    await runtime.taps.github(edited(`maya's original\n${BOB_WORDS}`));
+    await runtime.erase.person(ORG_A, "dev-2");
+    await runtime.jobs.run("hourly");
+    clock.at += ERASE_SWEEP_DELAY_MS + 1;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain(BOB_WORDS);
+    const mayaAgain = { eventName: "issue_comment", deliveryId: "d-9", payload: { action: "edited", sender: { id: 123, login: "maya", type: "User" }, installation: { id: 55 }, repository: { id: 101, full_name: "acme/api", private: false, default_branch: "main" }, issue: { number: 12, pull_request: {} }, comment: { id: 7, html_url: "https://github.com/acme/api/pull/12#issuecomment-7", body: `maya's original\n${BOB_WORDS}\nMAYA-LATER`, user: { id: 123, login: "maya", type: "User" }, updated_at: "2026-10-30T10:20:00Z" } } };
+    await runtime.taps.github(mayaAgain);
+    expect(everything(db)).not.toContain("MAYA-LATER");
+  });
+
   it("an unlinked editor is not kept, and is counted", async () => {
     const { db, runtime } = await world();
     await runtime.taps.hook({ orgId: ORG_A, hook: linearHook, body: linearBody("create", "lin-ann", "ann's original") });

@@ -142,6 +142,11 @@ export interface RecordHistoryPort {
  */
 export interface PriorEditsPort {
   editedByOthers(input: { workspaceId: string; source: SourceSystem; system: string; id: string; actorSourceId: string }): Promise<boolean>;
+  /**
+   * A change to this item was NOT stored (its person is not linked, is excluded, or was erased): its words may be in the item's text and no row says so. From now on `editedByOthers` answers yes for the item, whoever
+   * asks. Keeps a hash of the item and nothing else.
+   */
+  noteUnstored?(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<void>;
 }
 
 /** One authenticated push to a branch: the minimum needed to say who put a range of commits on it. No content. Held for a short time (30 days). */

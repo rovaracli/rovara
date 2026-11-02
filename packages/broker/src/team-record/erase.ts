@@ -2,6 +2,7 @@
 // walks call (`learning/cleanup.ts`, which is not on this branch's base: see the lane report, "Wiring pending"). Each is bounded and resumable: a call does what its
 // budget allows and says whether it is complete, and the walk calls again until it is. Hot rows, vectors, facts, lessons and the lake queue follow the same
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
+import { markUnstoredChange } from "./prior-edits.js";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
@@ -88,8 +89,10 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // and those reached through their rows' source items.
   const links: Item[] = found.items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION");
   for (const row of rows) {
+    const source = row.sourceRef as { system?: unknown; id?: unknown; order?: unknown } | undefined;
+    // S2: the person's change rows are about to go; the item's text may still hold their words, so the item is marked first (a hash of it and nothing else).
+    if (source?.order !== undefined && typeof source.system === "string" && typeof source.id === "string" && typeof row.source === "string") await markUnstoredChange(deps.table, orgId, { source: row.source, system: source.system, id: source.id }, now());
     if (typeof row.pk === "string" && typeof row.sk === "string") await tombstoneItem(deps.table, { pk: row.pk, sk: row.sk }, { at, cause: "person_erased" });
-    const source = row.sourceRef as { system?: unknown; id?: unknown } | undefined;
     if (typeof source?.system !== "string" || typeof source.id !== "string") continue;
     const sourceItems = await bySource(deps.table, orgId, source.system, source.id, 500);
     links.push(...sourceItems.items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION"));
@@ -312,7 +315,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "SKIPPED#", "EDITED#"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "SKIPPED#", "EDITED#"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

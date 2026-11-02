@@ -136,7 +136,11 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         // and holds only that person's own words, so a person's erase takes exactly their rows and nothing else of the item. Nothing is frozen and nothing is replaced.
         const isEdit = item.edit === true;
         const actorId = isEdit ? item.updaterId : item.authorId;
-        if (isExcluded(config, item.authorId, actorId, ...(item.labels ?? []))) return "skipped";
+        if (isExcluded(config, item.authorId, actorId, ...(item.labels ?? []))) {
+          // S2: an excluded person's edit is not kept, but its words may be in the item's text.
+          if (isEdit) await deps.priorEdits?.noteUnstored?.({ workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id }).catch(() => undefined);
+          return "skipped";
+        }
         const project = context.project ?? config.project;
         if (item.needsParentProof === true) {
           const proven = item.parentId !== undefined && deps.parents !== undefined

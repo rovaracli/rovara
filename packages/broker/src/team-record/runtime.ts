@@ -370,11 +370,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (needsLinkedAuthor(draft)) {
         log("record.unlinked_skipped", { source: draft.source });
         await skipped.count(orgId, draft.project, draft.source).catch(() => log("record.unlinked_count_failed", {}));
+        // S2: this change is not kept, but its words may be in the item's text: later edits by the author keep no whole text.
+        if (draft.sourceRef.order !== undefined) await priorEdits.noteUnstored?.({ workspaceId: draft.workspaceId, source: draft.source as never, system: draft.sourceRef.system, id: draft.sourceRef.id }).catch(() => log("record.prior_edit_mark_failed", {}));
         // The org joins the scheduled jobs' directory now: the hourly job is what reads its connected tools' people and links them, so an org whose first changes were all refused must be reached by it.
         await listOrg(orgId).catch(() => log("record.list_org_failed", {}));
         return { status: "refused", reason: "author_not_linked" } as never;
       }
-      try { return await directSink.put(draft); } catch (error) {
+      try {
+        const outcome = await directSink.put(draft);
+        // An erased person's late change, or an excluded one, is refused too: same reason.
+        if (outcome.status === "refused" && draft.sourceRef.order !== undefined && (outcome.reason === "actor_erased" || outcome.reason === "excluded")) await priorEdits.noteUnstored?.({ workspaceId: draft.workspaceId, source: draft.source as never, system: draft.sourceRef.system, id: draft.sourceRef.id }).catch(() => log("record.prior_edit_mark_failed", {}));
+        return outcome;
+      } catch (error) {
         if (queue === undefined || !keepsText(draft)) throw error;
         await queue.send({ v: 1, op: "put", draft, queuedAt: new Date(now()).toISOString() } as never);
         log("record.put_queued", {});
@@ -486,7 +493,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
     async byMergeCommit() { return undefined; },
   };
-  const priorEdits = priorEditsPort(table);
+  const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
   const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits });
   const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits });

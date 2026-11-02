@@ -187,7 +187,11 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       switch (event.type) {
         case "pr": {
           const doer = event.action === "opened" ? event.author : event.editor ?? event.author;
-          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) {
+            // S2: an excluded person's change is not kept, but its words may be in the item's text.
+            if (event.action !== "opened") await deps.priorEdits?.noteUnstored?.({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: prId(event.repo, event.number) }).catch(() => undefined);
+            return result;
+          }
           const who = await actor(doer);
           const row = rowOf({ person: doer, at: event.at, version: event.version });
           let text: string | undefined;
@@ -204,7 +208,11 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         }
         case "review": {
           const doer = event.action === "submitted" ? event.author : event.editor ?? event.author;
-          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) {
+            // S2: an excluded person's change is not kept, but its words may be in the item's text.
+            if (event.action !== "submitted") await deps.priorEdits?.noteUnstored?.({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: `${prId(event.repo, event.prNumber)}:review${event.id}` }).catch(() => undefined);
+            return result;
+          }
           const who = await actor(doer);
           const row = rowOf({ person: doer, at: event.receivedAt ?? event.at, version: event.version });
           const text = event.action === "submitted" ? cleanText(event.body) : event.action === "edited" ? cleanText(addedText(event.previousBody, event.body)) : undefined;
@@ -219,7 +227,11 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         }
         case "comment": {
           const doer = event.action === "created" ? event.author : event.editor ?? event.author;
-          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) return result;
+          if (isExcluded(config, event.author.id, event.author.login, doer.id, doer.login)) {
+            // S2: an excluded person's change is not kept, but its words may be in the item's text.
+            if (event.action !== "created") await deps.priorEdits?.noteUnstored?.({ workspaceId: event.repo.workspaceId, source: sourceOf(event.repo), system: event.repo.host, id: commentId(event) }).catch(() => undefined);
+            return result;
+          }
           const who = await actor(doer);
           const row = rowOf({ person: doer, at: event.at, version: event.version });
           let text: string | undefined;
