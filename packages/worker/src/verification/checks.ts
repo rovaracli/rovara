@@ -19,6 +19,7 @@ import { MAX_COMMAND_OUTPUT_BYTES, redactedTail, tailCollector } from "../collec
 import { devcontainerBashOperations, runDevcontainerCommand, type DevcontainerCli, type DevcontainerTarget } from "../devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../git.js";
 import { runProjectCommand } from "../prepare.js";
+import { SANDBOX_TARGET, executionFor } from "../execution-target.js";
 import { localBashOperations, type TaskSandbox } from "../task-sandbox.js";
 import { projectBefore, type CheckHistory } from "./check-history.js";
 import type { CommandRecorder, RecordedCommand } from "./recorder.js";
@@ -304,11 +305,11 @@ export interface CheckRunnerOptions {
 export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
   const devcontainer = options.devcontainer;
   // Ruling K: a devcontainer session's replays run in the devcontainer, never on the host.
-  const sandbox = options.sandbox;
+  const sandboxCommands = options.sandbox === undefined ? undefined : executionFor(SANDBOX_TARGET, { sandbox: options.sandbox });
   const operations = options.bashOperations
     ?? (devcontainer !== undefined ? devcontainerBashOperations(devcontainer.cli, devcontainer.target)
-      : sandbox !== undefined ? sandbox.bashOperations() : localBashOperations({ explicit: options.local === true }));
-  const inContainer = devcontainer !== undefined || sandbox !== undefined || options.bashOperations !== undefined;
+      : sandboxCommands !== undefined ? sandboxCommands.bashOperations() : localBashOperations({ explicit: options.local === true }));
+  const inContainer = devcontainer !== undefined || sandboxCommands !== undefined || options.bashOperations !== undefined;
   const canonicalRoot = realpath(resolve(options.rootPath));
   canonicalRoot.catch(() => undefined);
   return {
@@ -318,8 +319,8 @@ export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
       try {
         const result = devcontainer !== undefined
           ? await runDevcontainerCommand(devcontainer.cli, devcontainer.target, command, signal)
-          : sandbox !== undefined
-            ? await sandbox.runCommand(command, signal)
+          : sandboxCommands !== undefined
+            ? await sandboxCommands.runCommand(command, signal)
             : await runProjectCommand(command, 0, root, signal, options.local === true);
         if (signal.aborted) throw new Error("aborted");
         return { exitCode: result.exitCode, timedOut: result.timedOut === true, stdout: result.stdout, stderr: result.stderr };

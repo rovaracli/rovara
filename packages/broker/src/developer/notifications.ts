@@ -9,7 +9,7 @@ export interface StreamRecord {
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold" | "settings_proof";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -31,6 +31,11 @@ export interface Notice {
   /** Workflow snapshot revision to resume when verification failed before a manifest existed. */
   expectedWorkflowRevision?: number;
   peopleRequestId?: string;
+  /** TE-4: the project's settings-proof item whose saved commands failed their check, and the check it is about. The notifier reads the item; the notice holds no text. */
+  proofItem?: { pk: string; sk: string };
+  proofCheckId?: string;
+  /** Which part of the item the notice is about: a browser save that failed, or a change an API key sent that was not saved. */
+  proofPart?: "saved" | "held";
   /** A workflow notice's revision: delivered only while the task is still at it, so a stale step is never said. */
   workflowRevision?: number;
   /** A workflow notice for the step a closed required pull request's reopening started: AgentX follows it again. */
@@ -170,6 +175,20 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       if (edit?.status === "open" && typeof edit.headSha === "string" && earlier?.headSha !== edit.headSha) return [{ id: `${taskId}:spec_changed:${edit.headSha}`, kind: "spec_changed", taskId, at }];
       if (next.status === "failed" && previous?.status !== "failed") return [{ id: `${taskId}:spec_hold:${String(next.revision)}`, kind: "spec_hold", taskId, at }];
       return [];
+    }
+    // TE-4: commands a person saved in a browser failed their check, or a change they sent with an API key ended without being saved; the person hears once, per check.
+    case "PROJECT_SETTINGS_PROOF": {
+      const notices: Notice[] = [];
+      for (const part of ["saved", "held"] as const) {
+        const now = record(next[part]);
+        const earlier = record(previous?.[part]);
+        const checkId = text(now?.checkRequestId);
+        const ended = part === "saved" ? now?.status === "failed" : now?.status === "failed" || now?.status === "stale" || now?.status === "refused" || now?.status === "not_started";
+        if (!ended || checkId === "" || typeof now?.noticeAt !== "string" || typeof now.slackUserId !== "string") continue;
+        if (earlier?.checkRequestId === checkId && typeof earlier.noticeAt === "string") continue;
+        notices.push({ id: `${text(next.pk)}:settings_proof:${part}:${checkId}`, kind: "settings_proof", proofItem: { pk: text(next.pk), sk: text(next.sk) }, proofCheckId: checkId, proofPart: part, at });
+      }
+      return notices;
     }
     case "ADMIN_CHANGE": {
       // Spec 025 E13: the Slack step started, or a change with a message ended. Only stored

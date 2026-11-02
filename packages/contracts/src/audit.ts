@@ -303,6 +303,8 @@ export const AUDIT_ACTIONS = [
   "company_domain.verified",
   "company_domain.lost",
   "company_domain.removed",
+  // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
+  "project.setup_restored",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -576,6 +578,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_domain.verified": ["wasState", "tookOver"],
   "company_domain.lost": ["missingDays"],
   "company_domain.removed": ["wasState"],
+  // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
+  "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
