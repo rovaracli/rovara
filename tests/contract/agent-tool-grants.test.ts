@@ -9,6 +9,7 @@ import { CatalogCache, connectMcp, type McpConnection } from "@agentx/gateway";
 import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe-node.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { validateRecipeForOrg } from "../../packages/broker/src/agents/guardrails.js";
+import { runGivesAgentTools } from "../../packages/broker/src/aws/broker/task-operations.js";
 import { applyAgentStep, givesAgentTools } from "../../packages/broker/src/agents/dispatch.js";
 import { DEFAULT_AGENT_GUARDRAILS as GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { nonTextFactProblems } from "../../packages/broker/src/agents/write-class.js";
@@ -184,7 +185,13 @@ describe("resolveToolGrants", () => {
 
 describe("grants and the capability", () => {
   it("the broker gives the capability exactly when the dispatch says so", async () => {
-    expect(readBrokerSource()).toContain("agentTools: givesAgentTools(applied),");
+    // The broker asks `runGivesAgentTools`, which is `givesAgentTools` for every mode but a setup run (it has a shell and no connector).
+    expect(readBrokerSource()).toContain("agentTools: runGivesAgentTools(input.workflowMode, applied),");
+    const agentStep = { kind: "agent" as const, agentId: AGENT.agentId, version: 1, stepId: "triage", instructions: "x", workspace: "none" as const, inputs: "y" };
+    const applied = { agentStep, toolGrants: true as const };
+    expect(runGivesAgentTools("ASK", applied)).toBe(givesAgentTools(applied));
+    expect(runGivesAgentTools(undefined, applied)).toBe(true);
+    expect(runGivesAgentTools("SETUP_AGENT", applied)).toBe(false);
   });
 
   it("an agent step of a recipe with tool grants is given the agent-tools capability, and nothing else is", () => {

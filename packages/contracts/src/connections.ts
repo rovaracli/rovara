@@ -51,6 +51,9 @@ const SecretText = ConnectionSecretText;
  */
 const AtlassianEmail = z.string().max(254).regex(/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/, "must be the Atlassian account email, such as name@company.com");
 
+/** The id of an Atlassian organization (admin.atlassian.com), as it appears in the admin API's path. */
+const AtlassianOrgId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "must be the Atlassian organization id");
+
 /**
  * What a secret holds, by connection type: a Linear API key, a Jira account email and API token, an MCP bearer token, and (Plan 4) a Sentry
  * auth token, a Datadog API and application key, a Grafana service account token, a Vercel token and a PagerDuty API key. Write-only: nothing
@@ -58,7 +61,12 @@ const AtlassianEmail = z.string().max(254).regex(/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/
  */
 export const ConnectionSecretSchemas = {
   linear: z.object({ apiKey: SecretText }).strict(),
-  jira: z.object({ email: AtlassianEmail, apiToken: SecretText }).strict(),
+  // `orgAdminKey` and `atlassianOrgId` are optional and go TOGETHER (both or neither): a READ-ONLY Atlassian organization admin API key (scope read:accounts:admin) and the organization's id, so Rovara can read which
+  // accounts the company manages (tracker linking, opt-in). Like the token they are write-only: nothing returns them. A save that leaves them out keeps the stored pair; `clearOrgAdmin: true` removes it.
+  // Without them no Jira person is linked automatically.
+  jira: z.object({ email: AtlassianEmail, apiToken: SecretText, orgAdminKey: SecretText.optional(), atlassianOrgId: AtlassianOrgId.optional(), clearOrgAdmin: z.literal(true).optional() }).strict()
+    .refine((secret) => (secret.orgAdminKey === undefined) === (secret.atlassianOrgId === undefined), { message: "orgAdminKey and atlassianOrgId go together" })
+    .refine((secret) => secret.clearOrgAdmin !== true || secret.orgAdminKey === undefined, { message: "clearOrgAdmin cannot come with a key" }),
   mcp: z.object({ token: SecretText }).strict(),
   ...ObservabilitySecretSchemas,
 } as const;

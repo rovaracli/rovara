@@ -2,7 +2,7 @@
 // Linear or Jira and has a saved secret, in THIS org; its secret is read when a page is read and goes nowhere but the tool's own address (Linear's fixed GraphQL address, the Jira site the connection names).
 import type { OrgId } from "@agentx/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
-import { jiraUsersReader, linearUsersReader, type ConnectedTracker, type ConnectedTrackersPort } from "./tracker-directory.js";
+import { atlassianManagedAccountsReader, jiraUsersReader, linearUsersReader, type ConnectedTracker, type ConnectedTrackersPort, type ManagedAccounts } from "./tracker-directory.js";
 
 export function connectedTrackersOf(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): ConnectedTrackersPort {
   const fetchImplementation = input.fetch ?? fetch;
@@ -21,12 +21,18 @@ export function connectedTrackersOf(input: { deps: OrgConnectionDeps; fetch?: ty
     }
     if (record.type === "jira") {
       const siteUrl = record.siteUrl;
+      // The managed accounts are read once per tracker object (one run), and only when the connection holds an organization admin key; the key is read with the rest of the secret and goes to Atlassian's admin host only.
+      let managed: Promise<ManagedAccounts | undefined> | undefined;
       return {
         connectionId: record.connectionId, system: `jira:${new URL(siteUrl).hostname}`, kind: "jira",
         async readUsers(page) {
           const secret = await readConnectionSecret(input.deps, orgId, ref);
           if (secret === undefined || !("apiToken" in secret) || !("email" in secret)) throw new Error("the saved secret could not be read");
-          return jiraUsersReader({ fetch: fetchImplementation, siteUrl, email: secret.email, apiToken: secret.apiToken })(page);
+          const adminKey = "orgAdminKey" in secret && "atlassianOrgId" in secret && typeof secret.orgAdminKey === "string" && typeof secret.atlassianOrgId === "string" ? { apiKey: secret.orgAdminKey, atlassianOrgId: secret.atlassianOrgId } : undefined;
+          return jiraUsersReader({
+            fetch: fetchImplementation, siteUrl, email: secret.email, apiToken: secret.apiToken,
+            ...(adminKey === undefined ? {} : { managed: () => (managed ??= atlassianManagedAccountsReader({ fetch: fetchImplementation, ...adminKey })()) }),
+          })(page);
         },
       };
     }

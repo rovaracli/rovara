@@ -188,7 +188,7 @@ describe("the second reviewer takes no extra wall time (M1)", () => {
     const track = (id: string) => {
       const m = model(id, [PASS], seen);
       const inner = m.piAdapter.create.bind(m.piAdapter);
-      m.piAdapter.create = async (input) => { seen.push(`${id}:tools=${String((input as { contextTools?: unknown[] }).contextTools?.length ?? 0)}`); const session = await inner(input); const prompt = session.prompt.bind(session); session.prompt = async (text) => { seen.push(`${id}:lessons=${String(text.includes("LESSON-BLOCK"))}`); return prompt(text); }; return session; };
+      m.piAdapter.create = async (input) => { seen.push(`${id}:tools=${String((input as unknown as { contextTools?: unknown[] }).contextTools?.length ?? 0)}`); const session = await inner(input); const prompt = session.prompt.bind(session); session.prompt = async (text) => { seen.push(`${id}:lessons=${String(text.includes("LESSON-BLOCK"))}`); return prompt(text); }; return session; };
       return m;
     };
     await run({ first: track("first-v1"), candidates: [track("second-a")], sources, learnedBlock: "LESSON-BLOCK" });
