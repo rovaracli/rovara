@@ -310,6 +310,13 @@ describe("a preparation with registries", () => {
       expect(await tainted(rootPath)).toBe(true);
     });
 
+    it("once a leak is found no later command runs (it could read the copy)", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      await expect(attempt(f, rootPath, fakeToken("z"), [], ['cp "$NPM_CONFIG_USERCONFIG" .npmrc', "echo ran > second-check.txt"])).rejects.toThrow(/left a package registry token/);
+      await expect(stat(join(rootPath, "repo/api/second-check.txt"))).rejects.toThrow();
+    });
+
     it("does not read Rovara's own config folder or private state: a clean run passes", async () => {
       const f = await fixture();
       const rootPath = await f.workspace();
