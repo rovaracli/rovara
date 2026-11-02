@@ -510,7 +510,8 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
   });
 
   // RP-4 (2026-11-02, "make Slack obey it"): the assistant model, the model the Slack service is configured with (`model` in the body, sent every turn; no person names a model in Slack today) and the classifier are
-  // held to the company's forbidden models, like any other model choice. A replacement is the cheapest allowed model by the catalog's list prices.
+  // held to the company's forbidden models, like any other model choice. A replacement for the assistant or the configured model is the configured model, else the install's default, when allowed and routable, else the cheapest allowed
+  // model by the catalog's list prices; a classifier's is the cheapest allowed.
   describe("the company's forbidden models (RP-4)", () => {
     const bedrock = (modelId: string) => ({ provider: "amazon-bedrock", modelId });
     const OPUS_46 = { provider: "anthropic", modelId: "claude-opus-4-6" };
@@ -523,15 +524,15 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
     const ALPHABETICALLY_FIRST = ROVARA_IDS[0]!;
     const THE_CONFIGURED_MODEL = bedrock(DEFAULT_ID);
 
-    it("replaces a forbidden configured model (the body's `model`) in any spelling of its name with the cheapest allowed one, and still answers the turn", async () => {
+    it("replaces a forbidden configured model (the body's `model`) in any spelling of its name with the install's default, and still answers the turn", async () => {
       for (const configured of [bedrock("us.anthropic.claude-opus-4-6-v1"), bedrock("jp.anthropic.claude-opus-4-6-v1"), bedrock("anthropic.claude-opus-4-6-v1:0"), { provider: "openrouter", modelId: "anthropic/claude-opus-4.6:batch" }, OPUS_46]) {
         const h = await install();
         await h.seed({ order: ["rovara"] });
         forbid(h.db, [OPUS_46]);
         const reply = await h.turn({ model: configured });
         expect(reply.status, `${configured.modelId}: ${JSON.stringify(reply.body)}`).toBe(200);
-        expect(reply.body.route, configured.modelId).toEqual({ alias: CHEAPEST[0], api: "anthropic-messages", catalog: CHEAPEST[0] });
-        expect(h.access.mintKey.mock.calls[0]![0].models, configured.modelId).toEqual([CHEAPEST[0], CLASSIFIER_ID]);
+        expect(reply.body.route, configured.modelId).toEqual({ alias: DEFAULT_ID, api: "anthropic-messages", catalog: DEFAULT_ID });
+        expect(h.access.mintKey.mock.calls[0]![0].models, configured.modelId).toEqual([DEFAULT_ID, CLASSIFIER_ID]);
       }
     });
 
@@ -574,11 +575,11 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
       expect(other.body).not.toHaveProperty("classifierModel");
     });
 
-    it("replaces a forbidden assistant model with the cheapest allowed one and sends it whole, so the service does not answer with the model it was configured with", async () => {
+    it("replaces a forbidden assistant model with the cheapest allowed one, once the configured model and the install's default are forbidden too, and sends it whole", async () => {
       const h = await install();
       await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"], assistantModel: SONNET });
       // The assistant model is forbidden under another spelling than the one it was set with (Rovara's default is the same model).
-      forbid(h.db, [bedrock("eu.anthropic.claude-sonnet-4-6")]);
+      forbid(h.db, [bedrock("eu.anthropic.claude-sonnet-4-6"), OPUS_46]);
       const reply = await h.turn({ model: bedrock("us.anthropic.claude-opus-4-6-v1") });
       const landed = CHEAPEST[0]!;
       expect(reply.status, JSON.stringify(reply.body)).toBe(200);
@@ -588,14 +589,25 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
       expect(h.access.mintKey.mock.calls[0]![0].models).not.toContain(sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET));
     });
 
-    it("replaces a forbidden assistant model with the cheapest allowed one, not with the install's default even when that is allowed", async () => {
-      const h = await install();
-      await h.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: GPT });
-      forbid(h.db, [GPT]);
-      const reply = await h.turn({ model: THE_CONFIGURED_MODEL });
-      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-      expect(reply.body.route).toEqual({ alias: CHEAPEST[0], api: "anthropic-messages", catalog: CHEAPEST[0] });
+    it("replaces a forbidden assistant model with the model the service is configured with when that is allowed, else with the install's default, never with the cheaper models first", async () => {
+      const configured = await install();
+      await configured.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: GPT });
+      forbid(configured.db, [GPT]);
+      const first = await configured.turn({ model: bedrock("us.anthropic.claude-opus-4-6-v1") });
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(first.body.route).toEqual({ alias: "us.anthropic.claude-opus-4-6-v1", api: "anthropic-messages", catalog: "us.anthropic.claude-opus-4-6-v1" });
+      // No configured model of its own to offer: the install's default, which is dearer than the cheapest.
+      const fallback = await install();
+      await fallback.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: GPT });
+      forbid(fallback.db, [GPT]);
+      const second = await fallback.turn();
+      expect(second.body.route).toEqual({ alias: DEFAULT_ID, api: "anthropic-messages", catalog: DEFAULT_ID });
       expect(CHEAPEST[0]).not.toBe(DEFAULT_ID);
+      // Both forbidden: the cheapest.
+      const neither = await install();
+      await neither.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: GPT });
+      forbid(neither.db, [GPT, THE_CONFIGURED_MODEL, OPUS_46]);
+      expect((await neither.turn({ model: bedrock("us.anthropic.claude-opus-4-6-v1") })).body.route).toEqual({ alias: CHEAPEST[0], api: "anthropic-messages", catalog: CHEAPEST[0] });
     });
 
     it("walks the catalog from the cheapest up as each choice is forbidden, the same price in the order of the names", async () => {

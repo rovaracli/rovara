@@ -656,10 +656,10 @@ async function firstAllowed<T>(candidates: readonly ModelIdentifier[], forbidden
  * default (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
  * turn's route, and the gate classifier's and router's model when it is one of Rovara's catalog and Rovara is in the org's order (they share the turn's key).
  *
- * RP-4 (replaces the old "Slack turn models are not checked"): none of them may be a model the company forbids (`forbidden`). A forbidden assistant model or configured model is replaced by the cheapest
- * model the company allows and a source serves (the web chat lists models without a default, so there is no default rule to follow); with none, the turn is refused. The replacement always travels on the
+ * RP-4 (replaces the old "Slack turn models are not checked"): none of them may be a model the company forbids (`forbidden`). A forbidden assistant model or configured model is replaced by the model the service is configured with when that is
+ * allowed and routable, else the install's default, else the cheapest model the company allows and a source serves (the web chat lists models without a default, so there is no default rule to follow); with none, the turn is refused. The replacement always travels on the
  * wire (`wire`), also when the assistant model stands but the service's configured one is forbidden, because the service would otherwise answer with the model it was configured with. A forbidden
- * classifier is replaced the same way from Rovara's catalog (`classifierModel` names the one to use) or, with none allowed, skipped (`classifierModel: null`): the service then has no classifier, which it
+ * classifier is replaced by the cheapest allowed model of Rovara's catalog (`classifierModel` names the one to use) or, with none allowed, skipped (`classifierModel: null`): the service then has no classifier, which it
  * treats as "ask a person" for the gate and as "show the three-choice card" for routing, never as "allow".
  */
 async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined }, forbidden: (model: ModelIdentifier) => boolean): Promise<{ route: ModelRoute; models: string[]; wire?: InvocationModelRoute; classifierModel?: ModelIdentifier | null }> {
@@ -677,7 +677,8 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   // The service answers with its own configured model unless a route is sent, so when that model is forbidden the route is sent whatever model stands.
   let sendRoute = body.model !== undefined && forbidden(body.model);
   if (forbidden(model)) {
-    const next = await firstAllowed(cheapestFirst(await servableModels(routing, orgId, project)), forbidden, async (candidate) => (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.alias !== undefined));
+    // The model the service is configured with, then the install's default, keep Slack's answers at the expected quality; only when neither is allowed and routable does the cheapest allowed model answer.
+    const next = await firstAllowed([...(body.model === undefined ? [] : [body.model]), defaultOrchestrator, ...cheapestFirst(await servableModels(routing, orgId, project))], forbidden, async (candidate) => (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.alias !== undefined));
     if (next === undefined) throw agentXError("MODEL_NOT_ALLOWED", TURN_NO_MODEL_ALLOWED);
     model = next.model;
     route = next.served;
