@@ -19,7 +19,7 @@ async function world() {
   const other = lessonRecord({ id: "les_other0001", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "Other rule" });
   const committed = await store.commit(KEY, await store.setVersion(KEY), [mallory, other], NOW);
   expect(committed.ok).toBe(true);
-  const deliver = createLessonDelivery({ documentClient: db, stateTable: "state", recordTable: "record", now: () => NOW })!;
+  const deliver = createLessonDelivery({ documentClient: db, stateTable: "state", recordTable: "record", enabled: () => true, now: () => NOW })!;
   return { db, store, deliver };
 }
 
@@ -50,5 +50,20 @@ describe("createLessonDelivery", () => {
     const context = await deliver(refs(["les_mallory01", "les_other0001"]));
     expect(context?.lessons.map((l) => l.id)).toEqual(["les_other0001"]);
     expect(JSON.stringify(context)).not.toContain("secret path");
+  });
+
+  it("S1: the install switch is asked at every delivery: with it off (or no switch given) a stage that was queued while it was on gets no lessons, and the store is not read", async () => {
+    const { db, store } = await world();
+    let on = true;
+    const reads: string[] = [];
+    const spy = { send: (command: unknown): Promise<unknown> => { reads.push("read"); return db.send(command); } };
+    const deliver = createLessonDelivery({ documentClient: spy, stateTable: "state", recordTable: "record", enabled: () => on, now: () => NOW })!;
+    expect((await deliver(refs(["les_other0001"])))?.lessons).toHaveLength(1);
+    on = false;
+    reads.length = 0;
+    expect(await deliver(refs(["les_other0001"]))).toBeUndefined();
+    expect(reads).toEqual([]);
+    expect(await createLessonDelivery({ documentClient: db, stateTable: "state", recordTable: "record", now: () => NOW })!(refs(["les_other0001"]))).toBeUndefined();
+    void store;
   });
 });

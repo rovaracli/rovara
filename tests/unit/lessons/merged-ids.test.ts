@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { approveLesson, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Audit, Clock, KEY, directory, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
+import { loadLessonsForStage, approvedForUse, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
+import { DEFAULT_APPROVAL_POLICY } from "../../../packages/broker/src/lessons/policy.js";
+import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, directory, embedder, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
 
 /** ann-old and bob-old were merged away: they now read as ann and bob. */
 const MERGES: Record<string, string> = { "ann-old": "ann", "bob-old": "bob" };
@@ -78,5 +80,54 @@ describe("tier 2: two approvers who are the lesson's authors after the merge are
     await store.commit(KEY, await store.setVersion(KEY), [{ ...v1, version: 2, status: "stale" }], 2);
     await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, expectedSetVersion: 2, actorId: "owner" });
     expect((await store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+  });
+});
+
+describe("S3: the people a tier needs are counted as members", () => {
+  const two = [{ approvalId: "a1", by: "ann-old", at: 1, mode: "second_person" as const }, { approvalId: "a2", by: "ann", at: 1, mode: "second_person" as const }];
+
+  it("a restored tier-2 lesson approved by A and by B, where A was merged into B before the restore, has one approver and waits for a person; the same restore with no merge goes live", async () => {
+    for (const [resolve, expected] of [[follow, "pending"], [undefined, "active"]] as const) {
+      const { deps, store, dir } = setup(resolve);
+      dir.value.eligibleIds = ["owner", "ann", "ann-old", "bob"];
+      await seed(store, tier2(["carl"], { status: "active", approvals: two, expiresAt: 9e15 }));
+      const v1 = (await store.get(KEY, "les_pend0001"))!;
+      await store.commit(KEY, await store.setVersion(KEY), [{ ...v1, version: 2, status: "stale" }], 2);
+      await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, expectedSetVersion: 2, actorId: "owner" });
+      expect((await store.get(KEY, "les_pend0001"))!.status).toBe(expected);
+    }
+  });
+
+  it("approvedForUse: two approvals by one member are one person for tier 2", () => {
+    const lesson = tier2(["carl"], { status: "active", approvals: two });
+    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY)).toBe(true);
+    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY, (id) => MERGES[id] ?? id)).toBe(false);
+  });
+
+  describe("the loader", () => {
+    const review = (over: Parameters<typeof lessonRecord>[0] = {}) => tier2(["carl"], { status: "active", type: "review_check", stages: ["REVIEW"], approvals: two, expiresAt: 9e15, scope: {}, ...over });
+    function loaderWorld(resolveMember?: LoadDeps["resolveMember"]) {
+      const store = new InMemoryLessonStore();
+      const deps: LoadDeps = { access: allowAllAccess, store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: new Clock().now, ...(resolveMember === undefined ? {} : { resolveMember }) };
+      return { store, deps };
+    }
+    const request = { workspaceId: WS, project: PROJECT, taskId: "t1", stage: "REVIEW" as const, round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" as const } };
+
+    it("a tier-2 review check approved by A and B (A merged into B) is not loaded; with no merge record it is", async () => {
+      const merged = loaderWorld(follow);
+      await seed(merged.store, review());
+      expect((await loadLessonsForStage(merged.deps, request)).context?.lessons ?? []).toEqual([]);
+      const plain = loaderWorld();
+      await seed(plain.store, review());
+      expect((await loadLessonsForStage(plain.deps, request)).context?.lessons.map((l) => l.id)).toEqual(["les_pend0001"]);
+    });
+
+    it("a merge record that cannot be read loads nothing (fail closed)", async () => {
+      const down = loaderWorld(async () => { throw new Error("down"); });
+      await seed(down.store, review());
+      const result = await loadLessonsForStage(down.deps, request);
+      expect(result).toMatchObject({ skipped: "members_unavailable" });
+      expect(result.context).toBeUndefined();
+    });
   });
 });

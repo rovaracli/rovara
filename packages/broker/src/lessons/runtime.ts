@@ -79,7 +79,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const base = { now: input.now, audit, ...(input.log === undefined ? {} : { log: input.log }) };
   const facts = createCodeFacts({ reader: input.reader, repositoriesOf: async (workspaceId, project) => input.repositoriesOf(workspaceId, project) });
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
-  const load: LoadDeps = { ...base, store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings, access };
+  const load: LoadDeps = { ...base, store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },

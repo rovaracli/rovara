@@ -17,6 +17,7 @@ import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
+import { memberView, type MemberOf } from "./members.js";
 import { distinctIds, idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps {
@@ -134,7 +135,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { dropped: gone.length, reason: "approver_not_eligible" } });
     }
     // The author rules compare MEMBERS: a developer merged into another reads as that other (an author recorded under the old id is the member now, and two approvers who are one member are one person).
-    const member = await memberView(deps.directory, key.workspaceId, [...working.provenance.authors, input.approverId, ...approvals.map((a) => a.by)]);
+    const member = await memberViewOf(deps.directory, key.workspaceId, [...working.provenance.authors, input.approverId, ...approvals.map((a) => a.by)]);
     if (member === undefined) return { ok: false, code: "eligibility_unavailable" };
     if (approvals.some((a) => member(a.by) === member(input.approverId))) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
@@ -203,21 +204,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   return { ok: false, code: "conflict" };
 }
 
-/** Resolves each id to the member it stands for. */
-type MemberOf = (id: string) => string;
-/**
- * The member each of these ids stands for (a merged-away developer is the member they were merged into), as one function. Without a resolver on the directory the ids are compared as they are
- * (normalised). `undefined` when the resolver could not answer: the caller refuses (fail closed), never falls back to raw ids.
- */
-async function memberView(directory: ApproverDirectory, workspaceId: string, ids: readonly string[]): Promise<MemberOf | undefined> {
-  const resolve = directory.resolveMember?.bind(directory);
-  if (resolve === undefined) return normId;
-  try {
-    const found = new Map<string, string>();
-    for (const id of distinctIds(ids)) found.set(normId(id), normId(await resolve(workspaceId, id)));
-    return (id) => found.get(normId(id)) ?? normId(id);
-  } catch { return undefined; }
-}
+/** The members behind these ids (see members.ts), asked of the directory. `undefined`: the merge record could not be read. */
+const memberViewOf = (directory: ApproverDirectory, workspaceId: string, ids: readonly string[]): Promise<MemberOf | undefined> =>
+  memberView(directory.resolveMember?.bind(directory), workspaceId, ids);
 /** True when this person is one of the lesson's authors, as members. */
 const isAuthorOf = (member: MemberOf, authors: readonly string[], person: string): boolean => authors.some((author) => member(author) === member(person));
 /** True when at least one of these people is not among the lesson's authors, as members. */
@@ -324,7 +313,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   // The author rule applies to a restored approval as it does to a new one: an author\'s own approval does not count while someone else could give it.
   const authors = lesson.provenance.authors;
   // Members, not raw ids (a merged developer is the member they became); a merge record that cannot be read leaves the lesson pending for a person.
-  const member = await memberView(deps.directory, key.workspaceId, [...authors, ...valid.map((a) => a.by)]);
+  const member = await memberViewOf(deps.directory, key.workspaceId, [...authors, ...valid.map((a) => a.by)]);
   if (member === undefined) return;
   const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !isAuthorOf(member, authors, a.by) || a.mode === "second_person") : valid;
   if (countable.length !== valid.length) {
@@ -338,7 +327,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && isAuthorOf(member, authors, a.by);
   const standing = countable.filter((a) => !soloAuthored(a) || trySecondPerson(group, a.by, a.by, deps.now()).ok);
   // A tier-2 lesson that two of its own authors approved before the rule existed does not go live on a restore either.
-  const enough = sole || (new Set(standing.map((a) => normId(a.by))).size >= required && (required < 2 || hasNonAuthor(member, standing.map((a) => a.by), authors)));
+  const enough = sole || (new Set(standing.map((a) => member(a.by))).size >= required && (required < 2 || hasNonAuthor(member, standing.map((a) => a.by), authors)));
   const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
   if (standing.length === 0 || !enough || !groupsOk) return;
   // Pinned to the version these approvals were judged on (the one this function read or wrote last) and the set version that goes with it.

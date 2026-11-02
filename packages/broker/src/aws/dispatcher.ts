@@ -13,6 +13,7 @@ import { failOutboxOperation } from "./outbox-failure.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { createEc2Delivery } from "./ec2-delivery.js";
 import { createLessonDelivery } from "../lessons/delivery-wiring.js";
+import { learnedLessonsEnabled } from "../lessons/switch.js";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionModelChoiceReader, createWorkflowE2EAdmissionNeedsModelFreeLimitsReader, createWorkflowE2EAdmissionSchemaReader } from "./workflow-e2e-admission-schema.js";
 import { appendOperationEvent } from "./operation-events.js";
 import { ProjectSetupSessionManager, SessionManager, workspaceBinding } from "./sessions.js";
@@ -672,7 +673,7 @@ const deliverEc2 = createEc2Delivery({
   guardTaskDispatch: taskDispatchGuard,
   // WL-6: a stage is queued with lesson ids and versions only; the lessons' text is built from the lesson store here, as it is at delivery (none where the Team record's table is not set).
   ...((): { learnedFromRefs?: NonNullable<ReturnType<typeof createLessonDelivery>> } => {
-    const learnedFromRefs = createLessonDelivery({ documentClient, stateTable: tableName ?? process.env.STATE_TABLE_NAME ?? "", recordTable: process.env.TEAM_RECORD_TABLE_NAME, log: (event, fields) => console.log(JSON.stringify({ component: "dispatcher", event, ...fields })) });
+    const learnedFromRefs = createLessonDelivery({ documentClient, stateTable: tableName ?? process.env.STATE_TABLE_NAME ?? "", recordTable: process.env.TEAM_RECORD_TABLE_NAME, enabled: () => learnedLessonsEnabled(process.env), log: (event, fields) => console.log(JSON.stringify({ component: "dispatcher", event, ...fields })) });
     return learnedFromRefs === undefined ? {} : { learnedFromRefs };
   })(),
   applicationPlanNotNegotiated: createApplicationPlanNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),

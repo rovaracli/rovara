@@ -747,15 +747,18 @@ async function forWorkerFeatures(
 /**
  * The stage a worker is sent, with its lessons built NOW from the lesson store (WL-6). The stored copy holds `learnedRefs` (ids and versions); the worker never sees them. A worker that lists
  * "task.learnedContext.v1" gets the `learnedContext` the refs resolve to, from the lessons as they are at this moment (erased, retired, expired or edited ones left out); anything else gets the stage
- * without lessons, which is safe. A lookup that fails sends no lessons: the stage still runs, as without memory. A stage queued before this change may still carry a stored `learnedContext`; that
- * keeps the old rule (removed for a worker that does not list the feature).
+ * without lessons, which is safe. A lookup that fails sends no lessons: the stage still runs, as without memory. A stage queued before this change may still carry a stored `learnedContext` (lesson text in the queue):
+ * it is dropped, never delivered unchecked.
  */
 export async function withLearnedContext(invocation: WorkerInvocation, features: readonly string[], resolve?: Ec2DeliveryDependencies["learnedFromRefs"]): Promise<{ invocation: WorkerInvocation; omitted: boolean; reason: string }> {
   if (invocation.kind !== "task") return { invocation, omitted: false, reason: "" };
   const { learnedRefs: refs, ...payload } = invocation.payload;
   if (refs === undefined) {
-    const stripped = withoutLearnedContext(invocation, features);
-    return { invocation: stripped, omitted: stripped !== invocation, reason: "worker_lacks_feature" };
+    // Lesson text stored in the queue is never delivered unchecked: a stage queued by an older build with a stored `learnedContext` is sent without it (it runs as without memory, which is always allowed).
+    if (payload.learnedContext === undefined) return { invocation, omitted: false, reason: "" };
+    const { learnedContext: _legacy, ...bare } = payload;
+    void _legacy;
+    return { invocation: { ...invocation, payload: bare }, omitted: true, reason: "stored_text_dropped" };
   }
   // The refs never go to a worker, and nothing the refs replace is kept: the lessons are the resolved ones or none.
   const { learnedContext: _stored, ...rest } = payload;

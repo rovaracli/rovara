@@ -97,7 +97,9 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   // WL-6: the dispatcher reads the lesson rows at delivery (no write), and the customer's key where there is one.
   if (props.dispatcher !== undefined) {
     for (const statement of table.dispatcherStatements()) props.dispatcher.addToRolePolicy(statement);
-    if (typeof props.context.kmsKeyArn === "string") props.dispatcher.addToRolePolicy(new iam.PolicyStatement({ sid: "TeamRecordLessonReadsKms", actions: ["kms:Decrypt", "kms:DescribeKey"], resources: [props.context.kmsKeyArn] }));
+    if (typeof props.context.kmsKeyArn === "string") props.dispatcher.addToRolePolicy(new iam.PolicyStatement({ sid: "TeamRecordLessonReadsKms", actions: ["kms:Decrypt", "kms:DescribeKey"], resources: [props.context.kmsKeyArn],
+      // Only through DynamoDB: the dispatcher cannot decrypt anything else that is sealed under the customer's key.
+      conditions: { StringEquals: { "kms:ViaService": `dynamodb.${stack.region}.amazonaws.com` } } }));
     props.dispatcher.addEnvironment("TEAM_RECORD_TABLE_NAME", teamRecordTableName(props.env));
   }
 

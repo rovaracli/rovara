@@ -5,6 +5,7 @@
 import { LearnedContextSchema, type LearnedContext, type LearnedLesson, type LearnedRefs } from "@agentx/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { hasStaleCitation, approvedForUse, stageAllows, toLearned, LOAD_MAX_BYTES } from "./load.js";
+import { memberView, type MemberResolver } from "./members.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Clock } from "./ports.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
@@ -15,6 +16,8 @@ export interface DeliveryDeps {
   store: LessonStore; settings: LearningSettingsReader; access: AccessCheckPort;
   /** The reader's identity for the access check (the accounts a developer linked). May throw: nothing is delivered. */
   identity(workspaceId: string, developerId: string): Promise<IdentitySet>;
+  /** Counts approvers as members (a merged developer is the member they became). The dispatcher has no sign-in read, so it leaves this out and the loader's member-aware check (at queue time) stands; where given, a failed lookup delivers nothing. */
+  resolveMember?: MemberResolver;
   now: Clock;
   log?: LessonLog;
 }
@@ -36,11 +39,17 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     // The reader the load was for: a private task's owner (their linked accounts), or nobody in particular for a shared task.
     const viewer = refs.audience.kind === "shared" ? undefined : await deps.identity(key.workspaceId, refs.audience.developerId);
 
-    const live: Lesson[] = [];
+    const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {
       const lesson = await deps.store.get(key, ref.id);
       if (lesson === undefined || lesson.status !== "active" || lesson.version !== ref.version || lesson.expiresAt <= now) continue;
-      if (!approvedForUse(lesson, resolved.approval) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage)) continue;
+      fetched.push(lesson);
+    }
+    const member = await memberView(deps.resolveMember, key.workspaceId, fetched.flatMap((l) => l.approvals.filter((a) => a.mode !== "auto").map((a) => a.by)));
+    if (member === undefined) return undefined;
+    const live: Lesson[] = [];
+    for (const lesson of fetched) {
+      if (!approvedForUse(lesson, resolved.approval, member) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }

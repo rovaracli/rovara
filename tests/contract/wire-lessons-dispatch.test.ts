@@ -175,11 +175,14 @@ describe("delivery: the stage's lessons are built from the lesson store at the m
     expect(JSON.stringify(noReader.post.mock.calls[0])).not.toMatch(/learnedContext|learnedRefs/u);
   });
 
-  it("a stage queued by an earlier build (stored learnedContext, no refs) keeps the old rule: sent to a worker that lists the feature, removed for one that does not", async () => {
-    const legacy = { learnedContext: { v: 1, setVersion: 1, stage: "IMPLEMENT", lessons: [] } };
-    const current = await deliver([LEARNED_CONTEXT_FEATURE], { payload: legacy });
-    expect(current.sent?.payload).toHaveProperty("learnedContext");
-    const old = await deliver(["task.workflowMode"], { payload: legacy });
-    expect(old.sent?.payload).not.toHaveProperty("learnedContext");
+  it("S2: a stage queued by an earlier build with stored lesson text is sent WITHOUT it, to every worker, with or without a lesson reader: stored text is never delivered unchecked", async () => {
+    const legacy = { learnedContext: built };
+    for (const features of [[LEARNED_CONTEXT_FEATURE], ["task.workflowMode"]]) {
+      const run = await deliver(features, { payload: legacy, learnedFromRefs: async () => built as never });
+      expect(run.markFailed).not.toHaveBeenCalled();
+      expect(run.markDelivered).toHaveBeenCalledTimes(1);
+      expect(run.sent?.payload).not.toHaveProperty("learnedContext");
+      expect(JSON.stringify(run.post.mock.calls[0])).not.toContain("secret path");
+    }
   });
 });

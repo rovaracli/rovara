@@ -120,6 +120,8 @@ describe("the switch on: Public cloud", () => {
   it("WL-6: the dispatcher builds a stage's lessons at delivery, so it is told the record's table and may only READ the lesson rows (no write, no scan)", () => {
     expect(functionVariables(on, /^Dispatcher[0-9A-F]{8}$/)).toMatchObject({ TEAM_RECORD_TABLE_NAME: teamRecordTableName("staging") });
     expect(functionVariables(controlPlane(PUBLIC), /^Dispatcher[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_TABLE_NAME");
+    // S1: the dispatcher honours the install switch for lessons reaching an agent (the same stack parameter the broker's packed setting takes), so turning it off stops lessons for queued stages too.
+    expect(functionVariables(on, /^Dispatcher[0-9A-F]{8}$/)).toMatchObject({ [BROKER_SETTINGS.learnedLessons.variable]: { Ref: "LearnedLessonsEnabled" } });
     type Statement = { Sid?: string; Action: string | string[]; Resource: unknown };
     const statements = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^Dispatcher/.test(id))
       .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
@@ -195,6 +197,9 @@ describe("the switch on: Enterprise", () => {
     expect(kms).toHaveLength(1);
     expect([kms[0]!.Action].flat().sort()).toStrictEqual(["kms:DescribeKey", "kms:Decrypt"].sort());
     expect(kms[0]!.Resource).toBe(KMS);
+    // N1: only through DynamoDB, so the dispatcher cannot decrypt anything else sealed under the customer's key.
+    expect((kms[0] as unknown as { Condition: unknown }).Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() as unknown } });
+    expect(JSON.stringify((kms[0] as unknown as { Condition: unknown }).Condition)).toMatch(/dynamodb\..*\.amazonaws\.com/);
   }, 240_000);
 });
 

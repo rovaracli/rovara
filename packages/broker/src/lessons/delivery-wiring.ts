@@ -15,6 +15,11 @@ export interface LessonDeliveryInput {
   stateTable: string;
   /** The Team record's table name (`TEAM_RECORD_TABLE_NAME`), or undefined where the record is off. */
   recordTable: string | undefined;
+  /**
+   * The install switch for lessons reaching an agent (`LEARNED_LESSONS_ENABLED`), asked at every delivery. Off: nothing is built, so a stage that was queued, parked or retried while the switch was on
+   * still gets no lessons once an owner turns it off. Absent: treated as off (fail closed).
+   */
+  enabled?: () => boolean;
   now?: () => number;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
@@ -38,5 +43,6 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
       return { principals: typeof item?.githubUserId === "string" ? [item.githubUserId] : [], groups: [] as string[] };
     },
   };
-  return (refs) => learnedContextFromRefs(deps, refs);
+  const enabled = input.enabled;
+  return async (refs) => (enabled?.() === true ? learnedContextFromRefs(deps, refs) : undefined);
 }
