@@ -560,7 +560,7 @@ describe("the classifier model the control plane names (RP-4)", () => {
   it("has no classifier and no router when the control plane names none: the gate asks a person and a request gets the three-choice card, and no model is called", async () => {
     const h = proxied({ classifierModel: null });
     const { classifier } = await h.models.turnModels(message);
-    await expect(classifier({} as never, undefined as never)).rejects.toBeInstanceOf(ClassifierError);
+    await expect(classifier({} as never)).rejects.toBeInstanceOf(ClassifierError);
     expect(await h.models.routerFor(message)("fix it")).toEqual({ kind: "unclear", outcome: "unavailable" });
     expect(h.createClassifier).not.toHaveBeenCalled();
     expect(h.createRouter).not.toHaveBeenCalled();
