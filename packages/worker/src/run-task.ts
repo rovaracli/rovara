@@ -41,7 +41,7 @@ import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
-import { LEARNED_LOAD_REPORT_FIELD } from "@agentx/contracts";
+import { LEARNED_LOAD_REPORT_FIELD, type NightlyResultCallbackBody } from "@agentx/contracts";
 import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
@@ -145,7 +145,7 @@ export interface TaskInvocationDependencies {
   /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
   setupAgent?: (body: unknown) => Promise<unknown>;
   /** NH-1: the broker's nightly action with this invocation's own capability (callback-client.ts `nightlyResult`). A nightly run does not run without it. */
-  nightlyResult?: (body: { result: unknown; coverageMap?: unknown }) => Promise<unknown>;
+  nightlyResult?: (body: NightlyResultCallbackBody) => Promise<unknown>;
   devcontainerCli?: DevcontainerCli;
   /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
   checkRunners?: CheckRunners;

@@ -9,6 +9,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { dismissProposedFixTask, listProposedFixTasks } from "../../test-env/proposed-tasks.js";
 import { readProjectHealth, readProposeFixTask, setProposeFixTask } from "../../test-env/health.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
+import { readLatestNight } from "../../test-env/night-status.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { jsonBody } from "./organization.js";
@@ -29,6 +30,9 @@ async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
   const health = await readProjectHealth(store, orgId, name).catch(() => undefined);
   return {
     health: health === undefined ? { state: "unknown" as const } : { state: health.state, ...(health.cause === undefined ? {} : { cause: health.cause }), since: health.since },
+    // The latest night that left no result, in fixed words: it did not finish (branch moved, out of time, the machine could not run it, Rovara's side) or cannot run at all today (services, private registries, a
+    // branch that is not the default). Never "needs repair": none of these is a fault of the project's setup.
+    ...await readLatestNight(store, orgId, name).then((night) => (night === undefined ? {} : { lastNight: { status: night.status, reason: night.reason, at: night.at, words: night.words } }), () => ({})),
     proposeFixTask: await readProposeFixTask(store, orgId, name),
     proposedTasks: await listProposedFixTasks(store, orgId, name).catch(() => []),
   };

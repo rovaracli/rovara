@@ -169,7 +169,7 @@ describe("a night that is not the tests' fault, and one that never finishes", ()
     const f = fakes({ reports: { "pytest -q": report(t("a")) } });
     const base = f.ports.runCommand;
     f.ports.runCommand = (command, signal) => new Promise((resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); void base(command, signal).then((r) => command.executable === "make" ? undefined : resolve(r)); });
-    await expect(night(f.ports, env(), { deadlineMs: 20 })).rejects.toThrow(/stopped/);
+    await expect(night(f.ports, env(), { deadlineMs: 20 })).rejects.toThrow(/ran out of its time/);
   });
 });
 

@@ -33,6 +33,7 @@ import {
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import type { ScheduleSettings, SchedulerPort } from "../triggers/schedules.js";
 import { classifyNightlyHealth } from "./nightly-health.js";
+import { recordNightUnavailable, sameDayRetryOf } from "./night-status.js";
 
 const HOUR_MS = 3_600_000;
 /** A fire older than this is not run: the scheduler retries for an hour at most. */
@@ -170,6 +171,11 @@ export type NightlyFireOutcome = { outcome: "started"; slotId: string } | { outc
 
 const skip = (reason: NightlySkipReason): NightlyFireOutcome => ({ outcome: "skipped", reason });
 const dbError = (error: unknown, name: string): boolean => errorName(error) === name;
+/** A night that cannot run at all today: a note the project's health page and Home read (night-status.ts), and a skip. The note is best effort. */
+async function unavailable(deps: TestEnvDeps, orgId: OrgId, project: string, scheduledAt: string, reason: "services_unsupported" | "registries_unsupported" | "branch_not_default"): Promise<NightlyFireOutcome> {
+  await recordNightUnavailable(deps, { orgId, project, slotId: nightlySlotId(orgId, project, scheduledAt), reason }).catch(() => undefined);
+  return skip(reason);
+}
 
 /** The last recorded baseline, or undefined. A stored item that does not read back is an error: a damaged baseline is never "no baseline". */
 export async function readNightlyBaseline(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<NightlyBaseline | undefined> {
@@ -194,17 +200,17 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   if (env === undefined) return skip("environment_missing");
   if (!env.environment.nightly.enabled) return skip("nightly_off");
   // Services (mocks, pre-prod probes) cannot be started by a nightly run yet: no preparation, no task, and a neutral reason (never "needs repair").
-  if (env.environment.services.length > 0) return skip("services_unsupported");
+  if (env.environment.services.length > 0) return unavailable(deps, orgId, project, scheduledAt, "services_unsupported");
   const branch = env.environment.nightly.branch;
   if (deps.runs.defaultBranchOf !== undefined) {
     const defaultBranch = await deps.runs.defaultBranchOf({ orgId, project }).catch(() => undefined);
     if (defaultBranch === undefined) return skip("head_unreadable");
-    if (defaultBranch !== branch) return skip("branch_not_default");
+    if (defaultBranch !== branch) return unavailable(deps, orgId, project, scheduledAt, "branch_not_default");
   }
   if (deps.runs.usesRegistries !== undefined) {
     const registries = await deps.runs.usesRegistries({ orgId, project }).catch(() => undefined);
     if (registries === undefined) return skip("head_unreadable");
-    if (registries) return skip("registries_unsupported");
+    if (registries) return unavailable(deps, orgId, project, scheduledAt, "registries_unsupported");
   }
   const head = await deps.runs.headOf({ orgId: orgId, project, branch }).catch(() => undefined);
   if (head === undefined || !/^[a-f0-9]{40}$/u.test(head)) return skip("head_unreadable");
@@ -222,6 +228,10 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
     if (typeof code === "string" && BUDGET_CODES.has(code)) return skip("budget");
     throw error;
   }
+
+  // At most one retry the same UTC day, only after an infrastructure-class failure: the failed night's claims are given back so this fire may take the day (night-status.ts `sameDayRetryOf`).
+  const retrying = await sameDayRetryOf(deps, orgId, project).catch(() => undefined);
+  if (retrying !== undefined) await releaseNightly(deps, orgId, project, retrying, true);
 
   const slotId = nightlySlotId(orgId, project, scheduledAt);
   const dayClaim = keyOf(orgId, project, `TESTENV#NIGHTLY#DAY#${new Date(now).toISOString().slice(0, 10)}`);
@@ -283,7 +293,7 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   return { outcome: "started", slotId };
 }
 
-async function releaseNightly(deps: TestEnvDeps, orgId: OrgId, project: string, slotId: string, alsoSlot: boolean): Promise<void> {
+export async function releaseNightly(deps: TestEnvDeps, orgId: OrgId, project: string, slotId: string, alsoSlot: boolean): Promise<void> {
   const send = (command: unknown) => deps.documentClient.send(command).catch(() => undefined);
   await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, "TESTENV#NIGHTLY#ACTIVE"), ConditionExpression: "slotId = :slot", ExpressionAttributeValues: { ":slot": slotId } }));
   if (alsoSlot) {

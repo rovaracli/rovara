@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
 import { NIGHTLY_SERVICES_UNAVAILABLE, runNightlyInvocation, type NightlyInvocationDependencies } from "../../packages/worker/src/nightly-invocation.js";
-import type { NightlyPorts } from "../../packages/worker/src/nightly-run.js";
+import { NIGHTLY_WALL_CLOCK_MESSAGE, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
 import { counted } from "../../packages/worker/src/verification/test-report.js";
 
 const HEAD = "a".repeat(40);
@@ -50,20 +50,32 @@ describe("the nightly invocation", () => {
     expect(sent.result).toMatchObject({ slotId: sha("c"), envRevision: 2, headSha: HEAD, tests: { total: 2, failed: 1 } });
   });
 
-  it("ED-1: a workspace at another commit, with a pull request head, or with more than one repository is refused and nothing is posted", async () => {
-    for (const [name, m] of [["commit", manifest({ resolvedCommit: OTHER })], ["pull request head", manifest({ checkedOut: { number: 4 } })], ["two repositories", { repositories: [{ name: "a", path: "a", resolvedCommit: HEAD }, { name: "b", path: "b", resolvedCommit: HEAD }] } as never]] as const) {
+  it("ED-1: a workspace at another commit, with a pull request head, or with more than one repository is refused: no result, and the word for why is sent (branch_moved for the commit, worker_refused for the others)", async () => {
+    for (const [name, m, reason] of [["commit", manifest({ resolvedCommit: OTHER }), "branch_moved"], ["pull request head", manifest({ checkedOut: { number: 4 } }), "worker_refused"], ["two repositories", { repositories: [{ name: "a", path: "a", resolvedCommit: HEAD }, { name: "b", path: "b", resolvedCommit: HEAD }] } as never, "worker_refused"]] as const) {
       const d = deps();
       await expect(runNightlyInvocation(invocation(), d.all, m), name).rejects.toThrow();
-      expect(d.posted, name).toEqual([]);
-      expect(d.events, name).toEqual([]);
+      expect(d.posted, name).toEqual([{ failed: { reason } }]);
+      expect(d.events[0], name).toMatchObject({ type: "lifecycle", payload: { status: "RUNNING" } });
     }
   });
 
-  it("refuses an environment with services (a false 'boot failed' would send the project to repair) and posts nothing", async () => {
+  it("refuses an environment with services (a false 'boot failed' would send the project to repair): worker_refused, no result", async () => {
     const services = [{ name: "scorer", kind: "sagemaker_runtime", match: { endpointName: "scorer" }, mode: "mock", mock: { fixtureSetRef: sha("a"), schemaRef: sha("b"), unmatched: "fail" } }];
     const d = deps();
     await expect(runNightlyInvocation(invocation(payload({ environment: body({ services }) })), d.all, manifest())).rejects.toThrow(NIGHTLY_SERVICES_UNAVAILABLE);
-    expect(d.posted).toEqual([]);
+    expect(d.posted).toEqual([{ failed: { reason: "worker_refused" } }]);
+  });
+
+  it("a night that ran out of its wall clock says wall_clock; any other fault of the run says infra", async () => {
+    const a = deps();
+    a.all.wallClockMs = 20;
+    a.all.ports!.runCommand = (_command, signal) => new Promise((_resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); });
+    await expect(runNightlyInvocation(invocation(), a.all, manifest())).rejects.toThrow(NIGHTLY_WALL_CLOCK_MESSAGE);
+    expect(a.posted).toEqual([{ failed: { reason: "wall_clock" } }]);
+    const b = deps();
+    b.all.ports!.now = () => Number.NaN;
+    await expect(runNightlyInvocation(invocation(), b.all, manifest())).rejects.toThrow();
+    expect(b.posted).toEqual([{ failed: { reason: "infra" } }]);
   });
 
   it("needs the broker's nightly action, and an invocation that names its run", async () => {
@@ -77,6 +89,8 @@ describe("the nightly invocation", () => {
     await expect(runNightlyInvocation(invocation(), d.all, manifest())).rejects.toThrow(/403/);
     expect(d.events.some((event) => event.type === "error")).toBe(true);
     expect(d.events.some((event) => event.type === "result")).toBe(false);
+    // The broker's refusal is not answered with another report: the one post was the result.
+    expect(d.posted).toEqual([]);
   });
 
   it("a night stopped before it finished posts nothing", async () => {
@@ -87,6 +101,7 @@ describe("the nightly invocation", () => {
     // The cancel controller aborts the run's own signal through the registered handler.
     d.all.cancellationController = { register: (_id: string, handlers: { abort(): Promise<void> }) => { const abort = () => void handlers.abort(); stopAll.signal.addEventListener("abort", abort); return () => undefined; } } as never;
     await expect(runNightlyInvocation(invocation(), d.all, manifest())).rejects.toThrow(/stopped/);
+    // A stop by a person says nothing.
     expect(d.posted).toEqual([]);
   });
 });

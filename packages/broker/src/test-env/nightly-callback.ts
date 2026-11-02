@@ -9,12 +9,13 @@
 //     from a worker that holds a valid capability for its own run, is refused and changes nothing.
 // Everything else (the lock the slot holds, the clock, the coverage map's digest, the classification and the project's health) is `recordNightlyResultWithHealth`'s own. With `nh` or the test environment
 // off, the route answers CALLBACK_FORBIDDEN and nothing is read.
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_RUN_PURPOSE, NightlyResultCallbackBodySchema, NightlyResultSchema, agentXError, type OrgId } from "@agentx/contracts";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { NIGHTLY_RUN_PURPOSE, NightlyResultCallbackBodySchema, NightlyResultSchema, agentXError, type NightFailedReason, type OrgId } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { healthWiringOn, recordNightlyResultWithHealth } from "./health-wiring.js";
-import type { MapStore } from "./nightly.js";
+import { releaseNightly, type MapStore } from "./nightly.js";
+import { nightFailedItem } from "./night-status.js";
 
 /** The authenticated operation, as the callback route read it. */
 export interface NightlyOperation { kind: string; workflowMode?: string | undefined; status: string; workspaceId: string; orgId?: string | undefined }
@@ -37,12 +38,21 @@ export async function handleNightlyResultCallback(
   operation: NightlyOperation,
   rawBody: unknown,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ recorded: true; flakyCount: number; failingCount: number }> {
+): Promise<{ recorded: true; flakyCount: number; failingCount: number } | { recorded: false; failed: NightFailedReason }> {
   if (!healthWiringOn(env)) throw agentXError("CALLBACK_FORBIDDEN", "nightly runs are not on");
   const run = await nightlyRunOfOperation(deps, operation);
   if (run === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the nightly callback is limited to a running nightly run");
   const body = NightlyResultCallbackBodySchema.safeParse(rawBody);
   if (!body.success) throw agentXError("CONFIG_INVALID", "the nightly callback body is not the shape");
+  if ("failed" in body.data) {
+    // The worker says why the night did not finish. It names no slot: the run's own slot, from its task. The row is the same one the operation's end would write (`infra`), and the first word stands. The lock is
+    // given back (the day's claim stays: the same-day retry rule decides about a second run). Nothing about the project's health changes.
+    const reason = body.data.failed.reason;
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [nightFailedItem(deps.tableName, { orgId: run.orgId, project: run.project, slotId: run.started.slotId, reason, nowIso: new Date(deps.now()).toISOString() })] }));
+    await releaseNightly(deps, run.orgId, run.project, run.started.slotId, false);
+    return { recorded: false, failed: reason };
+  }
+  if (!("result" in body.data)) throw agentXError("CONFIG_INVALID", "the nightly callback body is not the shape");
   const result = NightlyResultSchema.safeParse(body.data.result);
   if (!result.success) throw agentXError("CONFIG_INVALID", "the nightly result could not be read");
   const { slotId, envRevision, branch, headSha } = result.data;

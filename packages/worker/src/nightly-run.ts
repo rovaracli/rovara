@@ -26,6 +26,13 @@ import type { ParsedTestReport } from "./verification/test-report.js";
 const LISTED_MAX = 500;
 const SLOWEST_MAX = 20;
 
+/** The message of the error a night ends with when it ran out of its wall clock (`nightly-invocation.ts` reports it as `wall_clock`). */
+export const NIGHTLY_WALL_CLOCK_MESSAGE = "the nightly run ran out of its time";
+/** The error a night ends with when it ran out of its wall clock (as opposed to a stop). */
+export class NightlyWallClockError extends Error {
+  constructor() { super(NIGHTLY_WALL_CLOCK_MESSAGE); this.name = "NightlyWallClockError"; }
+}
+
 export interface NightlyPorts extends Omit<ProvePorts, "buildCoverageMap" | "suiteTestCount"> {
   /** The test report the check wrote (at its approved `reportPath`), parsed; undefined when none was written, it was refused or it cannot be read. Called right after the check's command ended. */
   readReport(check: TestEnvCheck, command: TestEnvCheck["command"]): Promise<ParsedTestReport | undefined>;
@@ -86,8 +93,10 @@ export async function runNightly(input: NightlyRunInput): Promise<NightlyRunOutp
   const controller = new AbortController();
   const stop = (): void => controller.abort();
   if (input.signal.aborted) stop(); else input.signal.addEventListener("abort", stop, { once: true });
-  const wallClock = setTimeout(stop, Math.max(0, input.deadlineMs));
-  const abortedRun = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", "the nightly run was stopped before it finished"); };
+  let timedOut = false;
+  const wallClock = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, input.deadlineMs));
+  // The wall clock and a stop are different ends: the first is reported as a night that ran out of time, the second sends nothing.
+  const abortedRun = (): never => { throw timedOut ? new NightlyWallClockError() : agentXError("RUNTIME_UNAVAILABLE", "the nightly run was stopped before it finished"); };
   try {
     const checks = environment.repos.flatMap((repo) => repo.checks).filter((check) => RUN_KINDS.includes(check.kind));
     const runs = new Map<string, CheckRun>(checks.map((check) => [check.id, { check, started: false, timedOut: false, exitCode: null, report: undefined, states: new Map(), durations: new Map() }]));

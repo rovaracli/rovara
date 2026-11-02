@@ -156,6 +156,39 @@ describe("with nh and the test environment on", () => {
   });
 });
 
+describe("nights that did not run, as the health page reads them", () => {
+  const health = async (t: Bench) => (await t.dev(OMAR, "GET", `/v1/app/projects/${NAME}/test-health`)).body as { health: { state: string }; lastNight?: { status: string; reason: string; words: string } };
+  it("an environment with services: the fire skips before any task or preparation, and the health page says so in neutral words (not 'needs repair')", async () => {
+    const t = await bench();
+    process.env.NIGHTLY_HEALTH_ENABLED = "1";
+    const revision = t.db.find((item) => item.entityType === "TEST_ENV_REVISION" && item.pk === projectPk(TEST_ORG, NAME))[0]!;
+    const withServices = draftBody({ nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" }, services: [{ name: "scorer", kind: "sagemaker_runtime", match: { endpointName: "scorer" }, mode: "mock", mock: { fixtureSetRef: "a".repeat(64), schemaRef: "b".repeat(64), unmatched: "fail" } }] });
+    t.db.set({ ...revision, environment: withServices, digest: testEnvDigest(withServices) });
+    expect(await fire(t)).toMatchObject({ outcome: "skipped", reason: "services_unsupported" });
+    expect(nightlyTasks(t)).toEqual([]);
+    const seen = await health(t);
+    expect(seen.lastNight).toMatchObject({ status: "unavailable", reason: "services_unsupported", words: "Nightly not available: this setup's services can't be started by nightly runs yet." });
+    expect(seen.health.state).not.toBe("needs_repair");
+  });
+  it("an operation that ends in failure with no word from the worker leaves an infra row that the health page reads; the project's health does not move", async () => {
+    const t = await bench();
+    process.env.NIGHTLY_HEALTH_ENABLED = "1";
+    const { task, own } = await started(t);
+    await t.finish(task.workspaceId, own.id, "FAILED", { error: "the machine went away" });
+    const seen = await health(t);
+    expect(seen.lastNight).toMatchObject({ status: "failed", reason: "infra" });
+    expect(seen.health.state).not.toBe("needs_repair");
+  });
+  it("the worker's own failure word goes through the real route and wins over the end's", async () => {
+    const t = await bench();
+    process.env.NIGHTLY_HEALTH_ENABLED = "1";
+    const { task, own } = await started(t);
+    expect(await t.callback(task.workspaceId, own.id, "nightly-result", { failed: { reason: "branch_moved" } })).toMatchObject({ recorded: false, failed: "branch_moved" });
+    await t.finish(task.workspaceId, own.id, "FAILED", { error: "worker exited" });
+    expect((await health(t)).lastNight).toMatchObject({ status: "failed", reason: "branch_moved" });
+  });
+});
+
 describe("delivery and the contract", () => {
   const delivery = (features: string[]) => {
     const post = vi.fn(async () => ({ status: 200, body: "{\"accepted\":true}" }));

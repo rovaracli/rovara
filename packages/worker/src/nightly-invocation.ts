@@ -11,11 +11,11 @@
 //
 // NOT here (deferred to the staging real-run checks, listed in the lane report): starting service mocks and probing pre-prod from a worker (they need the verifier's mock host, which needs Docker), the saved image
 // (`update`, `ranFrom: saved_image`), and a coverage map for anything but coverage.py contexts.
-import { NIGHTLY_CALLBACK_BODY_MAX_BYTES, NIGHTLY_RUN_WALL_CLOCK_MS, NightlyResultSchema, agentXError, type NightlyResultCallbackBody, type NightlyRunPayload, type WorkerInvocation, type TestEnvCheck } from "@agentx/contracts";
+import { NIGHTLY_CALLBACK_BODY_MAX_BYTES, NIGHTLY_RUN_WALL_CLOCK_MS, NightlyResultSchema, agentXError, type NightFailedReason, type NightlyResultCallbackBody, type NightlyRunPayload, type WorkerInvocation, type TestEnvCheck } from "@agentx/contracts";
 import { EventBatcher, type EventBatchSink } from "./events.js";
 import type { WorkerCancellationController } from "./cancel.js";
 import type { PreparationManifest } from "./prepare.js";
-import { coverageMapFromContexts, reportLocation, runNightly, type NightlyPorts } from "./nightly-run.js";
+import { NightlyWallClockError, coverageMapFromContexts, reportLocation, runNightly, type NightlyPorts } from "./nightly-run.js";
 import { setupRepositoriesOf } from "./setup-agent-run.js";
 import type { CheckRunners } from "./verification/checks.js";
 import { readContainedReport } from "./verification/report-file.js";
@@ -36,6 +36,8 @@ export interface NightlyInvocationDependencies {
   /** The runners the project's commands go through: the task sandbox (or the dev container), as a task's checks do. */
   runners: CheckRunners;
   now?: (() => number) | undefined;
+  /** Test seam: the night's wall clock in milliseconds (default `NIGHTLY_RUN_WALL_CLOCK_MS`). */
+  wallClockMs?: number | undefined;
   /** Test seam: the ports a night uses instead of the real ones. */
   ports?: NightlyPorts | undefined;
 }
@@ -73,6 +75,11 @@ function productionPorts(deps: NightlyInvocationDependencies, startedAtMs: numbe
   };
 }
 
+/** A night this worker will not run, with the word the broker keeps for it. */
+class NightlyRefused extends Error {
+  constructor(readonly reason: NightFailedReason, message: string) { super(message); }
+}
+
 export async function runNightlyInvocation(
   invocation: Extract<WorkerInvocation, { kind: "task" }>,
   deps: NightlyInvocationDependencies,
@@ -81,11 +88,6 @@ export async function runNightlyInvocation(
   const run: NightlyRunPayload | undefined = invocation.payload.nightlyRun;
   if (run === undefined) throw agentXError("CONFIG_INVALID", "a nightly run carries what it was started to run");
   if (deps.nightlyResult === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach the control plane's nightly callback");
-  // ED-1: the broker's commit for the default branch, in the workspace the broker prepared, and nothing else.
-  if (manifest.repositories.length !== 1) throw agentXError("CONFIG_INVALID", "a nightly run needs exactly one prepared repository");
-  const [repository] = setupRepositoriesOf(deps.rootPath, manifest.repositories);
-  if (repository!.resolvedCommit !== run.headSha) throw agentXError("WORKSPACE_NOT_READY", "the workspace is not at the commit this nightly run was started for");
-  if (run.environment.services.length > 0) throw agentXError("RUNTIME_UNAVAILABLE", NIGHTLY_SERVICES_UNAVAILABLE);
 
   const now = deps.now ?? Date.now;
   const startedAt = now();
@@ -95,18 +97,27 @@ export async function runNightlyInvocation(
   const unregister = deps.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
   // The check whose coverage data the map is built from: the first test check that approves a coverage report.
   const coverageCheck = run.environment.repos.flatMap((repo) => repo.checks).find((check) => check.kind === "test" && check.coveragePath !== undefined);
+  let posting = false;
   try {
-    // The broker reads the operation as RUNNING from this event, and its nightly action is accepted only then.
+    // The broker reads the operation as RUNNING from this event, and its nightly action (a result, or the word for why there is none) is accepted only then.
     await events.append("lifecycle", { status: "RUNNING", conversationId });
     await events.flush();
+    // ED-1: the broker's commit for the default branch, in the workspace the broker prepared, and nothing else.
+    if (manifest.repositories.length !== 1) throw new NightlyRefused("worker_refused", "a nightly run needs exactly one prepared repository");
+    let repository;
+    try { [repository] = setupRepositoriesOf(deps.rootPath, manifest.repositories); } catch { throw new NightlyRefused("worker_refused", "the workspace is not the default branch of one repository"); }
+    // The branch moved between the broker's read of its head and the clone: the night is for the commit the broker named, so it is not run (and nothing is recorded for code it did not test).
+    if (repository!.resolvedCommit !== run.headSha) throw new NightlyRefused("branch_moved", "the workspace is not at the commit this nightly run was started for");
+    if (run.environment.services.length > 0) throw new NightlyRefused("worker_refused", NIGHTLY_SERVICES_UNAVAILABLE);
     await events.append("progress", { message: "Rovara is running the project's whole test suite on the default branch for the nightly baseline. It makes no code changes." });
     const { result, coverageMap } = await runNightly({
       environment: run.environment, run: { slotId: run.slotId, envRevision: run.envRevision, branch: run.branch, headSha: run.headSha },
-      ports: deps.ports ?? productionPorts(deps, startedAt, now, coverageCheck), signal: stop.signal, deadlineMs: NIGHTLY_RUN_WALL_CLOCK_MS, startedAtMs: startedAt,
+      ports: deps.ports ?? productionPorts(deps, startedAt, now, coverageCheck), signal: stop.signal, deadlineMs: deps.wallClockMs ?? NIGHTLY_RUN_WALL_CLOCK_MS, startedAtMs: startedAt,
     });
     // The body must fit the control plane's request limit. A map that would not fit is not sent, and the result says so (it names no map then): the night is recorded, the selection falls back to the full suite
     // until a map arrives. The follow-up is to upload the map to a presigned address instead of in the body.
     const whole: NightlyResultCallbackBody = { result, ...(coverageMap === undefined ? {} : { coverageMap }) };
+    posting = true;
     if (coverageMap !== undefined && Buffer.byteLength(JSON.stringify(whole), "utf8") > NIGHTLY_CALLBACK_BODY_MAX_BYTES) {
       const { coverageMapRef: _named, ...rest } = result; // eslint-disable-line @typescript-eslint/no-unused-vars -- the reference goes with the map
       await events.append("progress", { message: "Rovara built a coverage map for this night but it is too large to send, so this night is recorded without it." });
@@ -114,11 +125,19 @@ export async function runNightlyInvocation(
     } else {
       await deps.nightlyResult(whole);
     }
+    posting = false;
     await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "CHECKS" });
     await events.flush();
     return { conversationId, reopened: false, workflowMode: "CHECKS" };
   } catch (error) {
     await events.append("error", { message: error instanceof Error ? error.message.slice(0, 300) : "the nightly run failed" }).catch(() => undefined);
+    // Why the night did not finish, in a fixed word, for the project's health page and Home. A stop by a person says nothing; a broker that refused the result is not asked again; the broker also writes `infra` itself
+    // if the operation ends with no word.
+    const stopped = stop.signal.aborted;
+    if (!stopped && !posting) {
+      const reason: NightFailedReason = error instanceof NightlyRefused ? error.reason : error instanceof NightlyWallClockError ? "wall_clock" : "infra";
+      await deps.nightlyResult({ failed: { reason } }).catch(() => undefined);
+    }
     await events.flush().catch(() => undefined);
     throw error;
   } finally {

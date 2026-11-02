@@ -1,5 +1,6 @@
 // NH-1: the nightly run on the broker's side. The fire starts a run (the project pays, as the person who approved the environment), the worker's result is accepted only for the run it was started for, and with the
 // switches off nothing runs and nothing is read.
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { resolvePayer } from "../../packages/broker/src/spend/payer.js";
@@ -8,6 +9,7 @@ import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveRepor
 import { handleNightlyFire, readNightlyBaseline, coverageMapDigest, nightlySlotId, type MapStore } from "../../packages/broker/src/test-env/nightly.js";
 import { handleNightlyResultCallback, nightlyRunOfOperation, type NightlyOperation } from "../../packages/broker/src/test-env/nightly-callback.js";
 import { nightlyEndItems, nightlyRequestId, nightlyRunPayloadOf, nightlyRunPort, skipReasonOf } from "../../packages/broker/src/test-env/nightly-run.js";
+import { NIGHT_WORDS, readLatestNight, readNightRows } from "../../packages/broker/src/test-env/night-status.js";
 import { fireTestEnvNightly } from "../../packages/broker/src/test-env/nightly-wiring.js";
 import { nightlyRunsOf, s3CoverageMapStore } from "../../packages/broker/src/aws/broker/nightly-run-wiring.js";
 import { readProjectHealth } from "../../packages/broker/src/test-env/health.js";
@@ -24,19 +26,20 @@ const ON = { TEST_ENVIRONMENT_ENABLED: "1", NIGHTLY_HEALTH_ENABLED: "1" } as Nod
 const WORKSPACE = "33333333-3333-4333-8333-333333333333";
 const TASK = "44444444-4444-4444-8444-444444444444";
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "service", executable, args, timeoutSeconds: 600 });
-const body = (): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
+const SERVICE = { name: "scorer", kind: "sagemaker_runtime", match: { endpointName: "scorer" }, mode: "mock", mock: { fixtureSetRef: "a".repeat(64), schemaRef: "b".repeat(64), unmatched: "fail" } };
+const body = (withServices = false): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
   tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [{ id: "unit", label: "Unit", command: cmd("pytest"), kind: "test" }] }],
   roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" },
-  services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
+  services: withServices ? [SERVICE] : [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
 });
 
-async function harness(options: { approve?: boolean } = {}) {
+async function harness(options: { approve?: boolean; services?: boolean } = {}) {
   const db = new FakeDynamoDb();
   db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
   const clock = { now: T0 };
   const deps: TestEnvDeps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capturingAuditDeps({ db }).audit, secondPerson: () => Promise.resolve({ mode: "second_person" as const, membershipVersion: 1, conditions: [] }) };
   if (options.approve !== false) {
-    const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body() });
+    const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body(options.services === true) });
     await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "smoke", status: "passed", durationMs: 1 }], services: [], finishedAt: "2026-11-05T00:00:00.000Z" } });
     await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-run-1", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: T0, approval: { approverId: "dev_b", signedInAtMs: T0, sessionRef: "5".repeat(64) } });
   }
@@ -360,5 +363,104 @@ describe("the end of the task and the coverage map store", () => {
     expect(await store.get(OTHER_ORG, PROJECT, digest)).toBeUndefined();
     expect(await store.get(ORG, "elsewhere", digest)).toBeUndefined();
     expect([...objects.keys()][0]).toMatch(/^nightly-maps\/[0-9a-f]{40}\/[0-9a-f]{64}\.json$/u);
+  });
+});
+
+describe("nights that did not finish, and nights that cannot run", () => {
+  const failedBody = (reason: string) => ({ failed: { reason } });
+  const rowsOf = (h: Harness) => readNightRows(h.deps, ORG, PROJECT);
+
+  it("a failure reported by the worker is a row the health page and Home read, in fixed words; the lock is given back, the day's claim stays, and the project's health does not move", async () => {
+    const h = await harness();
+    await h.fireNow();
+    expect(await record(h, failedBody("wall_clock") as never)).toEqual({ recorded: false, failed: "wall_clock" });
+    const latest = await readLatestNight(h.deps, ORG, PROJECT);
+    expect(latest).toMatchObject({ status: "failed", reason: "wall_clock", slotId: slotOf(), words: NIGHT_WORDS.wall_clock });
+    expect(latest?.words).not.toMatch(/repair/iu);
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
+    expect(await baselineOf(h)).toBeUndefined();
+    expect(h.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#NIGHTLY#ACTIVE" })).toBeUndefined();
+    expect(h.db.find((item) => item.entityType === "TEST_ENV_NIGHTLY_DAY")).toHaveLength(1);
+  });
+
+  it("a failure report is held to the same rules as a result: switches, a running nightly operation of the task, and a known word", async () => {
+    const h = await harness();
+    await h.fireNow();
+    expect(await codeOf(record(h, failedBody("infra") as never, OPERATION, {}))).toBe("CALLBACK_FORBIDDEN");
+    expect(await codeOf(record(h, failedBody("infra") as never, { ...OPERATION, status: "SUCCEEDED" }))).toBe("CALLBACK_FORBIDDEN");
+    expect(await codeOf(record(h, failedBody("infra") as never, { ...OPERATION, orgId: OTHER_ORG }))).toBe("CALLBACK_FORBIDDEN");
+    expect(await codeOf(record(h, failedBody("my own words") as never))).toBe("CONFIG_INVALID");
+    expect(await rowsOf(h)).toEqual([]);
+  });
+
+  it("an operation that ends in failure with no word from the worker leaves an infra row; the worker's own word stands; a stop and a success leave none", async () => {
+    const task = { taskId: TASK, purpose: "nightly_run" as const, project: PROJECT, orgId: ORG, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD } };
+    const h = await harness();
+    const apply = async (items: ReturnType<typeof nightlyEndItems>) => { for (const item of items) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h.db.send(new UpdateCommand(item.Update as never)); };
+    await apply(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "CANCELLED" }, new Date(T0).toISOString()));
+    await apply(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, new Date(T0).toISOString()));
+    expect(await rowsOf(h)).toEqual([]);
+    await apply(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "FAILED" }, new Date(T0).toISOString()));
+    expect((await rowsOf(h))[0]).toMatchObject({ status: "failed", reason: "infra", slotId: slotOf() });
+    // The first word stands.
+    await apply(nightlyEndItems("T", task, { kind: "prepare" }, { status: "FAILED" }, new Date(T0 + 1000).toISOString()));
+    expect(await rowsOf(h)).toHaveLength(1);
+    const h2 = await harness();
+    await h2.fireNow();
+    await record(h2, failedBody("branch_moved") as never);
+    for (const item of nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "FAILED" }, new Date(T0).toISOString())) if (item.Update.Key.sk.startsWith("TESTENV#NIGHT#")) await h2.db.send(new UpdateCommand(item.Update as never));
+    expect((await rowsOf(h2))[0]).toMatchObject({ reason: "branch_moved" });
+  });
+
+  it("at most ONE same-day retry, and only after an infrastructure failure", async () => {
+    const h = await harness();
+    await h.fireNow();
+    await record(h, failedBody("infra") as never);
+    h.clock.now = T0 + 3_600_000;
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "started" });
+    expect(h.started).toHaveLength(2);
+    // The retry fails too: the day is done.
+    await handleNightlyResultCallback({ ...h.deps, maps: h.store }, OPERATION, failedBody("infra"), ON);
+    h.clock.now = T0 + 2 * 3_600_000;
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "skipped" });
+    expect(h.started).toHaveLength(2);
+    // The next day is a new day.
+    h.clock.now = T0 + 24 * 3_600_000;
+    expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString())).toMatchObject({ outcome: "started" });
+  });
+
+  it("a failure that is not the infrastructure's (branch moved, wall clock, worker refused) is not retried the same day", async () => {
+    for (const reason of ["branch_moved", "wall_clock", "worker_refused"]) {
+      const h = await harness();
+      await h.fireNow();
+      await record(h, failedBody(reason) as never);
+      h.clock.now = T0 + 3_600_000;
+      expect(await h.fireNow(new Date(h.clock.now - 5_000).toISOString()), reason).toMatchObject({ outcome: "skipped" });
+      expect(h.started, reason).toHaveLength(1);
+    }
+  });
+
+  it("services: the fire skips with services_unsupported before any charge, preparation or task, and leaves a neutral note that is never 'needs repair'", async () => {
+    const h = await harness({ services: true });
+    expect(await h.fireNow()).toEqual({ outcome: "skipped", reason: "services_unsupported" });
+    expect(h.admitted).toEqual([]);
+    expect(h.started).toEqual([]);
+    const latest = await readLatestNight(h.deps, ORG, PROJECT);
+    expect(latest).toMatchObject({ status: "unavailable", reason: "services_unsupported", words: "Nightly not available: this setup's services can't be started by nightly runs yet." });
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toBeUndefined();
+  });
+
+  it("the other reasons that a night cannot run leave a note too; an ordinary skip (no merges) leaves none", async () => {
+    const h = await harness();
+    h.registries.value = true;
+    await h.fireNow();
+    expect((await readLatestNight(h.deps, ORG, PROJECT))?.reason).toBe("registries_unsupported");
+    const g = await harness();
+    g.defaultBranch.value = "develop";
+    await g.fireNow();
+    expect((await readLatestNight(g.deps, ORG, PROJECT))?.reason).toBe("branch_not_default");
+    const k = await harness({ approve: false });
+    await k.fireNow();
+    expect(await readLatestNight(k.deps, ORG, PROJECT)).toBeUndefined();
   });
 });

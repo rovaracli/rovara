@@ -16,6 +16,7 @@ import { NIGHTLY_RUN_ORIGIN, NIGHTLY_RUN_PURPOSE, ROVARA_CODE_AGENT_ID, agentXEr
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { readApprovedBy, readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
+import { nightFailedItem } from "./night-status.js";
 import { BUDGET_CODES, type NightlyRunPort } from "./nightly.js";
 
 /** The words of the task's request, which are also its title in every list and notification: it says plainly that it is the nightly run, and names the project; nothing from a repository. */
@@ -105,17 +106,20 @@ export async function nightlyRunPayloadOf(deps: TestEnvDeps, orgId: OrgId, proje
  */
 export function nightlyEndItems(
   tableName: string,
-  task: Pick<DeveloperTaskRecord, "taskId" | "purpose">,
+  task: Pick<DeveloperTaskRecord, "taskId" | "purpose" | "project" | "nightlyRun"> & { orgId?: OrgId | undefined },
   operation: { kind: string; workflowMode?: string | undefined },
   outcome: { status: string },
   now: string,
-): Array<{ Update: { TableName: string; Key: { pk: string; sk: string }; UpdateExpression: string; ConditionExpression: string; ExpressionAttributeValues: Record<string, unknown> } }> {
+): Array<{ Update: { TableName: string; Key: { pk: string; sk: string }; UpdateExpression: string; ConditionExpression?: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } }> {
   if (task.purpose !== NIGHTLY_RUN_PURPOSE) return [];
   const own = operation.kind === "task" && operation.workflowMode === "CHECKS";
   const prepareFailed = operation.kind === "prepare" && outcome.status !== "SUCCEEDED";
   if (!own && !prepareFailed) return [];
   const state = outcome.status === "SUCCEEDED" ? "COMPLETE" : outcome.status === "CANCELLED" ? "CANCELLED" : "FAILED";
-  return [{ Update: {
+  // An operation that ends in failure with no word from the worker (a crash, a lost machine) is an infrastructure failure of the night: the row says so unless the worker already said something else. A person's stop writes none.
+  const failedNight = state === "FAILED" && task.orgId !== undefined && task.nightlyRun !== undefined
+    ? [nightFailedItem(tableName, { orgId: task.orgId, project: task.project, slotId: task.nightlyRun.slotId, reason: "infra", nowIso: now })] : [];
+  return [...failedNight, { Update: {
     TableName: tableName,
     Key: taskKey(task.taskId),
     UpdateExpression: "SET agentRunEnd = if_not_exists(agentRunEnd, :end), updatedAt = :now",
