@@ -117,6 +117,21 @@ describe("the switch on: Public cloud", () => {
     expect(statementsOf(off).every((existing) => statementsOf(on).includes(existing))).toBe(true);
   }, 180_000);
 
+  it("WL-6: the dispatcher builds a stage's lessons at delivery, so it is told the record's table and may only READ the lesson rows (no write, no scan)", () => {
+    expect(functionVariables(on, /^Dispatcher[0-9A-F]{8}$/)).toMatchObject({ TEAM_RECORD_TABLE_NAME: teamRecordTableName("staging") });
+    expect(functionVariables(controlPlane(PUBLIC), /^Dispatcher[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_TABLE_NAME");
+    type Statement = { Sid?: string; Action: string | string[]; Resource: unknown };
+    const statements = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^Dispatcher/.test(id))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+    const reads = statements.filter((statement) => statement.Sid === "TeamRecordLessonReads");
+    expect(reads).toHaveLength(1);
+    expect([reads[0]!.Action].flat().sort()).toStrictEqual(["dynamodb:BatchGetItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    expect(JSON.stringify(reads[0]!.Resource)).toMatch(/TeamRecordTable/);
+    // Nothing else of the record is the dispatcher's: no write action on the record table, and no vector, lake or queue right.
+    const recordRelated = statements.filter((statement) => /TeamRecord/.test(JSON.stringify(statement.Resource)));
+    expect(recordRelated.map((statement) => statement.Sid)).toStrictEqual(["TeamRecordLessonReads"]);
+  }, 180_000);
+
   it("creates the durable queue with a dead-letter queue (five tries), a visibility timeout above the broker's, and drains it with partial-batch answers", () => {
     const queues = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::SQS::Queue" && /^TeamRecordOps/.test(String(Object.keys(resources).find((id) => resources[id] === resource))));
     const ops = queues.find(([id]) => /^TeamRecordOps[0-9A-F]{8}$/.test(id))![1].Properties;
@@ -174,6 +189,12 @@ describe("the switch on: Enterprise", () => {
     const table = Object.values(resourcesOf(on)).find((resource) => resource.Type === "AWS::DynamoDB::Table" && resource.Properties.TableName === teamRecordTableName("ent"));
     expect(table?.Properties.SSESpecification).toMatchObject({ SSEEnabled: true, SSEType: "KMS", KMSMasterKeyId: KMS });
     expect(brokerSettingsIn(functionVariables(on, /^Broker[0-9A-F]{8}$/)).teamRecordLake).toBe("0");
+    // WL-6: the dispatcher's lesson reads include the customer's key (decrypt only).
+    const kms = Object.entries(resourcesOf(on)).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^Dispatcher/.test(id))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement).filter((statement) => statement.Sid === "TeamRecordLessonReadsKms");
+    expect(kms).toHaveLength(1);
+    expect([kms[0]!.Action].flat().sort()).toStrictEqual(["kms:DescribeKey", "kms:Decrypt"].sort());
+    expect(kms[0]!.Resource).toBe(KMS);
   }, 240_000);
 });
 

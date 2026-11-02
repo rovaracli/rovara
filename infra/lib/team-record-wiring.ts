@@ -14,7 +14,7 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
-import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, type aws_iam as iam } from "aws-cdk-lib";
+import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
@@ -58,6 +58,11 @@ export interface TeamRecordWiringProps {
   readonly context: TeamRecordContext;
   readonly broker: lambda.Function;
   readonly slackIngress: lambda.Function;
+  /**
+   * The dispatcher (WL-6): a stage is queued with lesson ids and versions only, and the dispatcher builds the lessons' text from the record's table at delivery. It gets read access to the lesson
+   * rows and the table's name (`TEAM_RECORD_TABLE_NAME`); without that name it delivers no lessons. Optional so a caller without a dispatcher still synthesises.
+   */
+  readonly dispatcher?: lambda.Function;
   /** The role the other recovery schedules use to invoke the broker. */
   readonly scheduleRole: iam.IRole;
 }
@@ -88,6 +93,13 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   // The broker's rights: the table and its indexes (no scan, no table-level delete), the vector data role (assume only; the data rights sit on the role and each session is narrowed to one
   // workspace), Bedrock InvokeModel for the embedding model only, and the lake (Athena, S3 Tables, Glue) where the lake exists.
   for (const statement of [...table.brokerStatements(), ...storage.brokerStatements()]) broker.addToRolePolicy(statement);
+
+  // WL-6: the dispatcher reads the lesson rows at delivery (no write), and the customer's key where there is one.
+  if (props.dispatcher !== undefined) {
+    for (const statement of table.dispatcherStatements()) props.dispatcher.addToRolePolicy(statement);
+    if (typeof props.context.kmsKeyArn === "string") props.dispatcher.addToRolePolicy(new iam.PolicyStatement({ sid: "TeamRecordLessonReadsKms", actions: ["kms:Decrypt", "kms:DescribeKey"], resources: [props.context.kmsKeyArn] }));
+    props.dispatcher.addEnvironment("TEAM_RECORD_TABLE_NAME", teamRecordTableName(props.env));
+  }
 
   // The switch and the two install parameters the broker cannot derive from the environment's name. The names of the resources are derived (derived-names.ts).
   const settings = BrokerSettings.of(broker);

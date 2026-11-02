@@ -55,6 +55,19 @@ export class TeamRecordTable extends Construct {
     });
   }
 
+  /**
+   * What the dispatcher's role needs to build a stage's lessons from the lesson store at delivery (WL-6): reads only (item reads and queries on the table and its indexes). No write, no scan.
+   */
+  dispatcherStatements(): iam.PolicyStatement[] {
+    return [
+      new iam.PolicyStatement({
+        sid: "TeamRecordLessonReads",
+        actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query"],
+        resources: [this.table.tableArn, `${this.table.tableArn}/index/*`],
+      }),
+    ];
+  }
+
   /** What the broker's role needs: every item action the record code uses, on the table and its indexes. No scan, no table-level delete. */
   brokerStatements(): iam.PolicyStatement[] {
     return [
