@@ -14,9 +14,12 @@
 // and re-tried when two events meet. The Fix setup card and the proposed task are PORTS: SH17 (the Fix setup card, lane sh-results-wire) and the proposed-task store are wired to them by the controller. Each port
 // call is repeatable (it is keyed by the cause or by the set), because a failed write is retried from the start.
 import { createHash } from "node:crypto";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_FAILED_MAX, agentXError, canonicalJson, projectAllows, projectPk, type OrgId, type ProjectRole, type StoredNightlyHealth, type TestingBlockedReason } from "@agentx/contracts";
+import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, canonicalJson, projectAllows, projectPk, type OrgId, type ProjectRole, type StoredNightlyHealth, type TestingBlockedReason } from "@agentx/contracts";
 import { z } from "zod";
+import { auditOccurrence, auditProjectTestHealthSettingChanged } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { nightlyHealthEnabled } from "./health-switch.js";
 import type { NightlyRecorded } from "./nightly.js";
@@ -35,6 +38,8 @@ const BLOCKED_KEPT_MAX = 20;
 const PROPOSED_KEYS_KEPT = 5;
 const PROPOSED_TEST_IDS_MAX = 20;
 const WRITE_ATTEMPTS = 4;
+/** The health item expires this long after it was last written, so a project nobody checks any more does not keep a repair state for ever. A nightly run writes it at least every few days. */
+const HEALTH_TTL_MS = 60 * 24 * HOUR_MS;
 
 /**
  * Whether a "Blocked by environment" reason counts toward "3 tasks, same cause" (design 6.2). Only reasons that point at the project's setup count. A busy runner, a provider outage, a renewed or expired test
@@ -84,6 +89,12 @@ export interface FixSetupCardPort {
   resolve(input: { orgId: OrgId; project: string; reason: "nightly_passed" | "nightly_setup_ok" | "setup_proved" }): Promise<void>;
 }
 
+/**
+ * The Fix setup card is SH17's (lane sh-results-wire). Until it is merged and hooked up, this port does nothing: the health state and the start banner work, and no card appears. Replace it with the real
+ * port at the one place the ports are built (`healthPortsOf` in health-wiring.ts).
+ */
+export const FIX_SETUP_CARDS_PENDING_SH17: FixSetupCardPort = { openOrJoin: () => Promise.resolve(), resolve: () => Promise.resolve() };
+
 export interface ProposedFixTaskPort {
   /** Makes one PROPOSED task (never started on its own). `key` names the set of failing tests: the same key is the same proposal, so repeating the call makes no second one. */
   propose(input: { orgId: OrgId; project: string; key: string; title: string; failingCount: number; testIds: readonly string[] }): Promise<void>;
@@ -93,6 +104,9 @@ export interface HealthPorts { cards: FixSetupCardPort; proposals: ProposedFixTa
 
 // ---- storage
 
+/** What a read needs: the table and the clock (no audit). */
+export type ReadDeps = Pick<TestEnvDeps, "documentClient" | "tableName" | "now">;
+
 const keyOf = (orgId: OrgId, project: string, sk: string) => ({ pk: projectPk(orgId, project), sk });
 const HEALTH_SK = "TESTENV#HEALTH";
 const SETTINGS_SK = "TESTENV#HEALTH#SETTINGS";
@@ -100,7 +114,7 @@ const errorName = (error: unknown): string => (error instanceof Error ? error.na
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 /** The project's stored health, or undefined when none was ever recorded. A stored item that does not read back is an error: damaged health is never "no health" and never "healthy". */
-export async function readProjectHealth(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<ProjectHealth | undefined> {
+export async function readProjectHealth(deps: ReadDeps, orgId: OrgId, project: string): Promise<ProjectHealth | undefined> {
   const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, HEALTH_SK), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   if (item === undefined) return undefined;
   const parsed = ProjectHealthSchema.safeParse(item.health);
@@ -123,7 +137,7 @@ async function applyPlan(deps: TestEnvDeps, orgId: OrgId, project: string, plan:
     try {
       await deps.documentClient.send(new PutCommand({
         TableName: deps.tableName,
-        Item: { ...keyOf(orgId, project, HEALTH_SK), entityType: "TEST_ENV_HEALTH", orgId, project, version: next.version, health: next },
+        Item: { ...keyOf(orgId, project, HEALTH_SK), entityType: "TEST_ENV_HEALTH", orgId, project, version: next.version, health: next, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + HEALTH_TTL_MS) / 1000) },
         ConditionExpression: previous === undefined ? "attribute_not_exists(pk)" : "version = :version",
         ...(previous === undefined ? {} : { ExpressionAttributeValues: { ":version": previous.version } }),
       }));
@@ -140,7 +154,7 @@ const blank = (now: number, over: Partial<ProjectHealth> & Pick<ProjectHealth, "
 // ---- the project's setting: proposed fix tasks (off by default)
 
 /** `nightly.proposeFixTask`: whether a night with failing tests makes one proposed task. Off unless a maintainer turned it on; an unreadable setting is off. */
-export async function readProposeFixTask(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<boolean> {
+export async function readProposeFixTask(deps: ReadDeps, orgId: OrgId, project: string): Promise<boolean> {
   try {
     const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, SETTINGS_SK), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
     return item?.proposeFixTask === true;
@@ -149,14 +163,31 @@ export async function readProposeFixTask(deps: TestEnvDeps, orgId: OrgId, projec
   }
 }
 
-/** Turns `nightly.proposeFixTask` on or off. Needs `edit_settings` (a project maintainer). */
-export async function setProposeFixTask(deps: TestEnvDeps, input: { orgId: OrgId; project: string; role: ProjectRole | undefined; changedBy: string; enabled: boolean }): Promise<{ proposeFixTask: boolean }> {
+/**
+ * Turns `nightly.proposeFixTask` on or off. Needs `edit_settings` (a project maintainer). The change and its audit event commit together; the same `requestId` again changes nothing more (the event is deduplicated
+ * by it). The event names the setting and whether it is on: no ids, no text.
+ */
+export async function setProposeFixTask(deps: TestEnvDeps, input: { orgId: OrgId; project: string; role: ProjectRole | undefined; changedBy: string; enabled: boolean; requestId: string }): Promise<{ proposeFixTask: boolean }> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change whether failing tests propose a fix task");
-  await deps.documentClient.send(new PutCommand({
-    TableName: deps.tableName,
-    Item: { ...keyOf(input.orgId, input.project, SETTINGS_SK), entityType: "TEST_ENV_HEALTH_SETTINGS", orgId: input.orgId, project: input.project, proposeFixTask: input.enabled === true, changedBy: input.changedBy, changedAt: iso(deps.now()) },
+  if (!/^[A-Za-z0-9_-]{8,64}$/u.test(input.requestId)) throw agentXError("CONFIG_INVALID", "requestId: a request id of 8 to 64 letters, digits, - or _");
+  const at = iso(deps.now());
+  const enabled = input.enabled === true;
+  const event = await tryAuditEvent(deps, () => auditProjectTestHealthSettingChanged({
+    orgId: input.orgId, actor: { kind: "member", id: input.changedBy }, occurredAt: at, occurrence: auditOccurrence(input.requestId, String(enabled)), projectName: input.project, setting: "propose_fix_task", enabled,
   }));
-  return { proposeFixTask: input.enabled === true };
+  await deps.documentClient.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        Put: {
+          TableName: deps.tableName,
+          Item: { ...keyOf(input.orgId, input.project, SETTINGS_SK), entityType: "TEST_ENV_HEALTH_SETTINGS", orgId: input.orgId, project: input.project, proposeFixTask: enabled, changedBy: input.changedBy, changedAt: at },
+        },
+      },
+      ...(event === undefined ? [] : auditPending(deps, event)),
+    ],
+  }));
+  if (event !== undefined) await flushAuditEvents(deps, [event]);
+  return { proposeFixTask: enabled };
 }
 
 // ---- events
@@ -229,7 +260,7 @@ export async function noteBlockedTask(deps: TestEnvDeps, ports: HealthPorts, inp
   const { orgId, project } = input;
   const cause = input.reason;
   return applyPlan(deps, orgId, project, (previous, now) => {
-    const recent = (previous?.blocked ?? []).filter((entry) => now - Date.parse(entry.at) < BLOCKED_WINDOW_MS && entry.taskId !== taskId.data);
+    const recent = (previous?.blocked ?? []).filter((entry) => now - Date.parse(entry.at) < BLOCKED_WINDOW_MS && !(entry.taskId === taskId.data && entry.cause === cause));
     const blocked = [...recent, { taskId: taskId.data, cause, at: iso(now) }].slice(-BLOCKED_KEPT_MAX);
     const same = blocked.filter((entry) => entry.cause === cause);
     if (same.length >= BLOCKED_TASKS_FOR_REPAIR) {
@@ -281,7 +312,7 @@ export const TESTING_MAY_BE_BLOCKED_TEXT = "Testing may be blocked: this project
 /**
  * What a new task start shows for the project's health. It never refuses: the answer is always `allowed`, with a banner while the project needs repair. Off (`nh`), unreadable or no health: no banner.
  */
-export async function taskStartNotice(deps: TestEnvDeps, orgId: OrgId, project: string, env: NodeJS.ProcessEnv = process.env): Promise<TaskStartNotice> {
+export async function taskStartNotice(deps: ReadDeps, orgId: OrgId, project: string, env: NodeJS.ProcessEnv = process.env): Promise<TaskStartNotice> {
   if (!nightlyHealthEnabled(env) || !testEnvironmentEnabled(env)) return { allowed: true };
   const health = await readProjectHealth(deps, orgId, project).catch(() => undefined);
   return health?.state === "needs_repair" ? { allowed: true, banner: { text: TESTING_MAY_BE_BLOCKED_TEXT, state: "needs_repair" } } : { allowed: true };

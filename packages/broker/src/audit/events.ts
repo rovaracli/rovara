@@ -548,6 +548,11 @@ export function auditProjectTestEnvChanged(input: AuditBuilderBase & { projectNa
   return build("project.test_env_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, tier: input.tier, lessSafeCount: input.lessSafeCount });
 }
 
+/** `occurrence`: the request id of the change. `setting` is the fixed word `propose_fix_task` (the nightly setting `nightly.proposeFixTask`); `enabled` says whether it is on after the change. */
+export function auditProjectTestHealthSettingChanged(input: AuditBuilderBase & { projectName: string; setting: "propose_fix_task"; enabled: boolean }): AuditEventInput {
+  return build("project.test_health_setting_changed", input, { kind: "project", name: input.projectName }, { setting: input.setting, enabled: input.enabled });
+}
+
 /** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */
 export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: string; artifactKind: string; retentionClass: string }): AuditEventInput {
   return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });

@@ -19,6 +19,7 @@ import { loadOwnedTask } from "./access.js";
 import { type WorkspaceReads, taskView, workspaceReads } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { resumeClose } from "./close.js";
+import { withTestingNotice } from "./health-notice.js";
 
 const whole = (value: string | null, fallback: number, min: number, max: number, name: string): number => {
   if (value === null) return fallback;
@@ -41,7 +42,7 @@ export async function readTask(deps: DeveloperTaskRouteDependencies, caller: Dev
   // `loadOwnedTask` has just proved the caller is the task's owner, so this view is built for the owner.
   const view = await taskView(deps, task, { events, details: true, actor: "owner", ...(loaded === undefined ? {} : { loaded }) });
   await syncIndex(deps, task, view.status, view.updatedAt);
-  return { task: view };
+  return { task: await withTestingNotice(deps, task, view) };
 }
 
 /** PLANFULLDOC: one stored version of the task's plan, whole; only the task's owner reads it (as `get_task`). */

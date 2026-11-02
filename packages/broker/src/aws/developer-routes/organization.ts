@@ -52,6 +52,7 @@ import { REVISION_READS_AT_ONCE, mapLimit, projectMembersOf } from "./project-li
 import { archiveDepsOf, egressDepsOf } from "./project-archive-setup.js";
 import { sessionReadDependencies } from "./dependencies.js";
 import { clearOrgLearning } from "../../learning/cleanup.js";
+import { eraseOrgHealth } from "../../test-env/health-erase.js";
 
 /**
  * `POST /v1/app/projects` (and its alias `POST /v1/dev/projects`): an owner or admin of a cloud org creates a project from a repository its
@@ -291,6 +292,8 @@ const LeaveBodySchema = z.object({ requestId: z.string().uuid().optional() }).st
  */
 export function clearOrgData(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "evidenceErase">): (orgId: OrgId) => Promise<void> {
   return async (orgId) => {
+    // Setup and test health (SH28): best effort, so a failure here never skips the learning and evidence erases.
+    try { await eraseOrgHealth({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); } catch (error) { console.log(JSON.stringify({ component: "broker", level: "warn", event: "org_close.clear_health_failed", orgId, error: error instanceof Error ? error.name : "unknown" })); }
     await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId);
     await deps.evidenceErase?.workspace(orgId);
   };

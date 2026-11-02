@@ -22,7 +22,8 @@ function harness() {
   const db = new FakeDynamoDb();
   db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
   const clock = { now: T0 };
-  const deps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capturingAuditDeps({ db }).audit };
+  const capture = capturingAuditDeps({ db });
+  const deps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capture.audit };
   const calls = { open: [] as Array<Record<string, unknown>>, resolve: [] as Array<Record<string, unknown>>, propose: [] as Array<Record<string, unknown>> };
   const fail = { open: false, propose: false };
   const ports: HealthPorts = {
@@ -32,10 +33,11 @@ function harness() {
     },
     proposals: { propose: (input) => { if (fail.propose) return Promise.reject(new Error("tasks down")); calls.propose.push({ ...input }); return Promise.resolve(); } },
   };
-  return { db, clock, deps, ports, calls, fail };
+  return { db, clock, deps, ports, calls, fail, capture };
 }
 
 let slot = 0;
+let requestCounter = 0;
 function baseline(over: { failed?: string[]; finishedAt?: string; branch?: string; failedCount?: number } = {}): NightlyBaseline {
   const failed = over.failed ?? [];
   return NightlyBaselineSchema.parse({
@@ -187,6 +189,17 @@ describe("three tasks blocked by the same cause", () => {
     await block(h, "task_3", "check_command_broken");
     expect(await state(h)).toBe("unknown");
     expect(h.calls.open).toHaveLength(0);
+  });
+
+  it("count a task once for each cause it was blocked by", async () => {
+    const h = harness();
+    await block(h, "task_1", "host_blocked");
+    await block(h, "task_1", "login_failed");
+    await block(h, "task_2", "host_blocked");
+    await block(h, "task_2", "login_failed");
+    expect(await state(h)).toBe("unknown");
+    await block(h, "task_3", "login_failed");
+    expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "login_failed" });
   });
 
   it("do not count a task older than 24 hours", async () => {
@@ -371,7 +384,7 @@ describe("a proposed fix task from failing tests (off by default per project)", 
 
   it("is a maintainer's setting; anyone else is refused, and an unreadable setting is off", async () => {
     const h = harness();
-    const change = (role: Parameters<typeof setProposeFixTask>[1]["role"], enabled = true) => setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role, changedBy: "dev_a", enabled });
+    const change = (role: Parameters<typeof setProposeFixTask>[1]["role"], enabled = true) => setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role, changedBy: "dev_a", enabled, requestId: `request-${(requestCounter += 1)}` });
     await expect(change(undefined)).rejects.toThrow(/maintainer/);
     await expect(change("viewer")).rejects.toThrow(/maintainer/);
     expect(await readProposeFixTask(h.deps, ORG, PROJECT)).toBe(false);
@@ -380,6 +393,11 @@ describe("a proposed fix task from failing tests (off by default per project)", 
     expect(await readProposeFixTask(h.deps, OTHER_ORG, PROJECT)).toBe(false);
     await change("maintainer", false);
     expect(await readProposeFixTask(h.deps, ORG, PROJECT)).toBe(false);
+    // Each change is audited with the setting and its new value, and nothing else.
+    const events = h.capture.recordedBy("project.test_health_setting_changed");
+    expect(events.map((event) => event.facts)).toEqual([{ setting: "propose_fix_task", enabled: true }, { setting: "propose_fix_task", enabled: false }]);
+    expect(events[0]).toMatchObject({ actor: { kind: "member", id: "dev_a" }, target: { kind: "project", name: PROJECT } });
+    await expect(setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled: true, requestId: "no" })).rejects.toThrow(/request id/);
     const item = h.db.find((entry) => entry.sk === "TESTENV#HEALTH#SETTINGS")[0]!;
     h.db.set({ ...item, proposeFixTask: "yes" });
     expect(await readProposeFixTask(h.deps, ORG, PROJECT)).toBe(false);
@@ -406,7 +424,7 @@ describe("the nh switch and the listener", () => {
     const listener = nightlyHealthListener(h.deps, h.ports, ON)!;
     await listener(night(tests, { failed: ["t1"] }));
     expect(h.calls.propose).toHaveLength(0);
-    await setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled: true });
+    await setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled: true, requestId: "request-listener" });
     await listener(night(tests, { failed: ["t2"], finishedAt: new Date(T0 + DAY).toISOString() }));
     expect(h.calls.propose).toHaveLength(1);
   });

@@ -23,6 +23,7 @@ import type { EndTold } from "../developer-tasks.js";
 import { startTaskWorkflowPlanRevisionFromSystem, finishedReleaseMarkItem, noteTaskEnded, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, workflowEndOutcome, taskPageUrl } from "../developer-tasks.js";
 import { AUTOFIX_ROUND_ESTIMATE_USD, autofixDayBudgetNeed, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixDependencies } from "../workflow-autofix-runner.js";
 import { taskAutonomy } from "../../rovara-code/ci-fix.js";
+import { blockedByEnvironmentHook } from "../../test-env/health-wiring.js";
 import { autofixBlockCauseOf, autofixRowHeld } from "../workflow-autofix-dispatch-exhaust.js";
 import { cancelRunningTask } from "./acceptance.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
@@ -494,6 +495,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       validateWorkflowE2EApplicationPlan: workflowApplicationRouteDependencies(dependencies).validateWorkflowE2EApplicationPlan,
       ...specSeamsOf(dependencies),
     }, caller, undefined, null);
+    const blockedByEnvironment = blockedByEnvironmentHook({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },
       taskSpendUsd: (current) => autofixTaskSpendUsd(dependencies, current),
@@ -515,6 +517,8 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       },
       readArtifactText: async (key) => { const bytes = await readStoredBytes(dependencies, key, 64 * 1024 + 1); return bytes?.toString("utf8"); },
       recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
+      // Setup and test health (SH28): undefined while the `nh` switch is off.
+      ...(blockedByEnvironment === undefined ? {} : { blockedByEnvironment }),
       now: Date.now,
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     };

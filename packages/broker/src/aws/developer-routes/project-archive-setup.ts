@@ -29,6 +29,7 @@ import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckD
 import { projectRoleForRoute } from "./project-members.js";
 import { type OrgId } from "@agentx/contracts";
 import { clearArchivedProjectLearning as clearArchivedProject } from "../../learning/cleanup.js";
+import { eraseProjectHealth } from "../../test-env/health-erase.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 
 const ArchiveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
@@ -105,6 +106,12 @@ export async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDepe
     await deps.evidenceErase?.project(orgId, project);
   } catch (error) {
     logDeveloperEvent({ event: "developer.project_archived_evidence_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+  // Setup and test health (SH28): the project's health, its proposed-fix-task setting and its proposed tasks go with it. Not behind the `nh` switch. Best effort like the lines above.
+  try {
+    await eraseProjectHealth({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_archived_health_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
