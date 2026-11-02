@@ -42,9 +42,40 @@ const citing = (...recipes: Array<{ recipeId: string; revision: number }>): Test
   ...draftOf(draftBody()), valueSources: recipes.map((recipe, index) => ({ field: `repos[0].setupCommands[${String(index)}]`, source: `recipe:${recipe.recipeId}@${String(recipe.revision)}` as never })),
 });
 const lastTask = (t: Bench) => t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_draft").at(-1) as { taskId: string; workspaceId: string };
-const marks = (t: Bench) => companyApprovedHostMarks({ documentClient: t.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG, project: NAME, cloud: true });
+const marks = (t: Bench, prodDeny?: (orgId: never, project: string) => Promise<{ accountIds: string[]; hosts: string[]; arnPrefixes: string[] } | undefined>) => companyApprovedHostMarks({ documentClient: t.db, tableName: "state", now: () => Date.now(), ...(prodDeny === undefined ? {} : { prodDeny }) }, { orgId: TEST_ORG, project: NAME, cloud: true });
+
+describe("the draft keeps only the recipe citations the broker offered (F6)", () => {
+  it("drops a citation of a recipe or revision that was not offered to this run, and leaves other sources alone", async () => {
+    const t = await bench();
+    const offered = await createRecipe(t, "Python services", ["pypi.internal.example.com"]);
+    let late: { recipeId: string; revision: number } | undefined;
+    const draft = citing(offered, { recipeId: offered.recipeId, revision: offered.revision + 1 }, { recipeId: "rcp_" + "9".repeat(20), revision: 1 });
+    await t.drafted({ ...draft, valueSources: [...draft.valueSources, { field: "repos[0].checks[0]", source: "detector:node" }, { field: "repos[0].setupCommands[5]", source: { path: "Makefile", line: 3 } }] }, { whileRunning: async () => { late = await createRecipe(t, "Added after dispatch", [HOST]); } });
+    const stored = t.db.get({ pk: projectPk(TEST_ORG, NAME), sk: `TESTENV#DRAFT#${lastTask(t).taskId}` })!.draft as TestEnvDraft;
+    expect(stored.valueSources.map((entry) => entry.source)).toEqual([`recipe:${offered.recipeId}@${String(offered.revision)}`, "detector:node", { path: "Makefile", line: 3 }]);
+    expect(late).toBeDefined();
+  });
+  it("drops every recipe citation when the run was offered none", async () => {
+    const t = await bench();
+    const one = await createRecipe(t, "Python services", [HOST]);
+    delete process.env.SETUP_RECIPES_ENABLED;
+    await t.drafted(citing(one));
+    const stored = t.db.get({ pk: projectPk(TEST_ORG, NAME), sk: `TESTENV#DRAFT#${lastTask(t).taskId}` })!.draft as TestEnvDraft;
+    expect(stored.valueSources).toEqual([]);
+  });
+});
 
 describe("host marks: a list, never a grant", () => {
+  it("drops a host the company's production deny list matches (F5), and marks nothing when that list cannot be read", async () => {
+    const t = await bench();
+    const one = await createRecipe(t, "Python services", [HOST, "files.internal-build.io"]);
+    await t.drafted(citing(one));
+    expect([...(await marks(t)).keys()].sort()).toEqual([HOST, "files.internal-build.io"].sort());
+    const deny = async () => ({ accountIds: [], hosts: [HOST], arnPrefixes: [] });
+    expect([...(await marks(t, deny)).keys()]).toEqual(["files.internal-build.io"]);
+    expect([...(await marks(t, async () => { throw new Error("unreadable"); })).keys()]).toEqual([]);
+  });
+
   it("marks the hosts of a recipe the run was offered AND reported using, read again now", async () => {
     const t = await bench();
     const one = await createRecipe(t, "Python services", [HOST]);

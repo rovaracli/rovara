@@ -1,6 +1,7 @@
 // Company setup recipes in the setup flow (SH30 + SR-3, switch `sp`), through the whole broker: the offered recipes are sent with the setup draft and RECORDED on its operation (id and revision).
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestEnvDraft } from "@agentx/contracts";
+import { createSetupRecipesNegotiationRecorder } from "../../packages/broker/src/aws/dispatcher.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { draftBody, draftOf, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
@@ -38,6 +39,21 @@ const citing = (...recipes: Array<{ recipeId: string; revision: number }>): Test
 const lastTask = (t: Bench) => t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_draft").at(-1) as { taskId: string; workspaceId: string };
 const setupOperation = (t: Bench) => t.operations(lastTask(t).workspaceId).find((operation) => operation.kind === "task") as unknown as { id: string; setupRecipeOffers?: unknown };
 const payloadOf = (t: Bench, operationId: string) => (t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { payload: { testEnvDetect?: boolean; testEnvRecipes?: Array<{ recipeId: string; revision: number; body: { label: string } }> } }).payload;
+
+describe("an older worker (F7)", () => {
+  it("the recorder forgets the operation's offered recipes and only those", async () => {
+    const t = await bench();
+    const one = await createRecipe(t, "Python services", [HOST]);
+    await t.drafted(citing(one));
+    const operation = setupOperation(t);
+    expect(operation.setupRecipeOffers).toEqual([one]);
+    const record = { workspaceId: lastTask(t).workspaceId, operationId: operation.id } as never;
+    await createSetupRecipesNegotiationRecorder({ documentClient: t.db as never, tableName: "state" })(record);
+    expect(setupOperation(t)).not.toHaveProperty("setupRecipeOffers");
+    expect(setupOperation(t)).toMatchObject({ id: operation.id, workflowMode: "SETUP_DRAFT" });
+    await createSetupRecipesNegotiationRecorder({ documentClient: t.db as never, tableName: "state" })(record);
+  });
+});
 
 describe("dispatch (SR-3)", () => {
   it("offers the company's approved recipes with the setup draft and records which ones (id and revision) on the operation", async () => {

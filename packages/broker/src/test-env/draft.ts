@@ -13,6 +13,7 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   SETUP_RECIPE_OFFERS_MAX,
   SetupRecipeIdSchema,
+  parseSetupRecipeSource,
   TEST_ENV_DRAFT_MAX_BYTES,
   TEST_ENV_DRAFT_RESULT_KEY,
   TEST_ENV_ROUND_BUDGET_MIN,
@@ -93,6 +94,18 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
 }
 
 /**
+ * SR-3: a value source that cites a company recipe (`recipe:<id>@<revision>`) stays only if the BROKER offered exactly that recipe and revision to this run (the operation's record at dispatch). A worker's report is a claim:
+ * a citation of a recipe it was not offered (another recipe of the company, another revision, an id it made up) is dropped before the draft is stored, so no later reader, card or host mark can rely on it. Other sources are untouched.
+ */
+export function onlyOfferedRecipeSources<T extends { source: unknown }>(valueSources: readonly T[], offers: ReadonlyArray<{ recipeId: string; revision: number }> | undefined): T[] {
+  return valueSources.filter(({ source }) => {
+    if (typeof source !== "string" || !source.startsWith("recipe:")) return true;
+    const cited = parseSetupRecipeSource(source);
+    return cited !== undefined && (offers ?? []).some((offer) => offer.recipeId === cited.id && offer.revision === cited.revision);
+  });
+}
+
+/**
  * The item that keeps a setup draft's environment draft, for the transaction of the setup draft's terminal result. Nothing while the switch is off, for a task that is not a setup draft, for a run that did not
  * succeed, or for a report that is not a safe draft: the setup draft's own result is never touched by this.
  */
@@ -108,7 +121,8 @@ export function testEnvDraftEndItems(
   if (operation.kind !== "task" || operation.workflowMode !== "SETUP_DRAFT" || outcome.status !== "SUCCEEDED") return [];
   const reported = typeof outcome.result === "object" && outcome.result !== null ? (outcome.result as Record<string, unknown>)[TEST_ENV_DRAFT_RESULT_KEY] : undefined;
   if (reported === undefined) return [];
-  const draft = sanitizeTestEnvDraft(reported);
+  const sanitized = sanitizeTestEnvDraft(reported);
+  const draft = sanitized === undefined ? undefined : { ...sanitized, valueSources: onlyOfferedRecipeSources(sanitized.valueSources, operation.setupRecipeOffers) };
   if (draft === undefined) {
     // Too large to keep: a small marker says so (the setup draft's own write is never put at risk by a big item), and the state shows the fixed note. Any other refusal leaves nothing.
     const size = Buffer.byteLength(JSON.stringify(reported) ?? "", "utf8");
