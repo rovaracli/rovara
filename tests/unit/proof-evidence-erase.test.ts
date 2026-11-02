@@ -72,7 +72,7 @@ function table(options: { marked?: boolean; extraTasks?: number; failGets?: { ma
       }
       if (values[":pk"] === orgProjectCatalogPk(ORG)) return { Items: [{ sk: "PROJECT#web" }, { sk: "PROJECT#api" }] };
       if (values[":pk"] === `DEVELOPER#${DEV}`) return page(personRows, input);
-      if (values[":pk"] === "EVIDENCE_ERASE_PENDING") return { Items: [...items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING") };
+      if (values[":pk"] === "EVIDENCE_ERASE_PENDING") return page([...items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING"), input);
       return { Items: [] };
     }
     if (command instanceof GetCommand) {
@@ -353,6 +353,33 @@ describe("a close or an archive that does not finish is not left behind", () => 
       failing.items.set("EVIDENCE_ERASE_PENDING|org-a|project|web", { pk: "EVIDENCE_ERASE_PENDING", sk: "org-a|project|web", orgId: ORG, kind: "project", scopeKey: "web", cursor: { i: 1 } });
       await expect(createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...failing }).project(ORG, "web")).rejects.toThrow("table unavailable");
       expect(pendingOf(failing)).toEqual([expect.objectContaining({ cursor: { i: 1 } })]);
+    });
+  });
+
+  // S-3 (Opus review): the scheduled run read only the first 20 pending records, so 20 that keep failing starved every later one. It pages through all of them within its budget, and one record cannot take it all.
+  describe("the scheduled resume", () => {
+    const pendingItem = (index: number) => ({ pk: "EVIDENCE_ERASE_PENDING", sk: `org-a|project|p${String(index).padStart(2, "0")}`, orgId: ORG, kind: "project", scopeKey: `p${String(index).padStart(2, "0")}` });
+
+    it("goes past a first page of records that keep failing and finishes the later ones", async () => {
+      const t = table();
+      for (let index = 0; index < 25; index += 1) t.items.set(`EVIDENCE_ERASE_PENDING|org-a|project|p${String(index).padStart(2, "0")}`, pendingItem(index));
+      const tried: string[] = [];
+      const resume = async (pending: { scopeKey: string }) => { tried.push(pending.scopeKey); if (Number(pending.scopeKey.slice(1)) < 20) throw new Error("poisoned"); return true; };
+      const report = await resumeEvidenceErase({ s3: bucket().s3, artifactBucketName: "bucket", ...t, now: () => 0 }, { resume }, { millis: 60_000 });
+      expect(report).toEqual({ pending: 25, finished: 5 });
+      expect(tried).toHaveLength(25);
+    });
+
+    it("gives each record at most half of what is left, so one slow record cannot take the whole run", async () => {
+      const t = table();
+      for (let index = 0; index < 3; index += 1) t.items.set(`EVIDENCE_ERASE_PENDING|org-a|project|p0${String(index)}`, pendingItem(index));
+      const budgets: number[] = [];
+      let clock = 0;
+      const resume = async (_pending: unknown, budgetMs: number) => { budgets.push(budgetMs); clock += budgetMs; return false; };
+      await resumeEvidenceErase({ s3: bucket().s3, artifactBucketName: "bucket", ...t, now: () => clock }, { resume }, { millis: 10_000 });
+      expect(budgets[0]).toBe(5_000);
+      expect(budgets.length).toBeGreaterThan(1);
+      expect(budgets.every((budget) => budget <= 5_000)).toBe(true);
     });
   });
 

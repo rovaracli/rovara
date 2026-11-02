@@ -6,8 +6,7 @@
 //
 // Cost and resumption (fix round 2). An install that never kept evidence pays one read: the first pack an org keeps writes a marker (`markEvidenceStored`) BEFORE anything is stored, and an erase for an org with no
 // marker is complete at once. When there is something to erase the walk goes a page of the scope at a time, a few scopes in parallel, and keeps a CURSOR in the State table after each page, so a pass that runs out
-// of time (or hits a failed delete) is continued by the next call from where it stopped, never from the start. That item is also the PENDING record: the scheduled run (`resumeEvidenceErase`, in the
-// settlement tick) finishes any erase a caller did not, so a company close or a project archive, which cannot wait or be repeated, never leaves evidence behind. A caller that CAN be repeated (the person
+// of time (or hits a failed delete) is continued by the next call from where it stopped, never from the start. That item is also the PENDING record: the scheduled run (`resumeEvidenceErase`, in the broker's every-minute recovery run, which every install has and which gives it a budget of its own) finishes any erase a caller did not, so a company close or a project archive, which cannot wait or be repeated, never leaves evidence behind. A caller that CAN be repeated (the person
 // erase) throws when the pass did not finish, and its request is repeated.
 // Only keys under the exact prefixes above are ever listed or deleted; an owner or workspace id that is not a plain id is refused, so no id can widen a prefix.
 import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
@@ -208,18 +207,28 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
   };
 }
 
-/** The erases a caller left unfinished, finished within `millis` (the scheduled run). Each is continued from its cursor. */
+/**
+ * The erases a caller left unfinished, finished within `millis` (the scheduled run). Each is continued from its cursor. All pending records are paged through, not only the first page: records that keep failing cannot
+ * starve the later ones, and each record gets at most half of the time that is left, so one slow erase cannot take the whole run either.
+ */
 export async function resumeEvidenceErase(ports: EvidenceErasePorts, erase: Pick<EvidenceErase, "resume">, limits: { millis: number; max?: number }): Promise<{ pending: number; finished: number }> {
   const now = ports.now ?? Date.now;
   const stop = now() + limits.millis;
-  const read = await ports.documentClient.send(new QueryCommand({ TableName: ports.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": PENDING_PK }, Limit: limits.max ?? 20 })) as { Items?: Array<Record<string, unknown>> };
+  let seen = 0;
   let finished = 0;
-  const items = read.Items ?? [];
-  for (const item of items) {
-    const left = stop - now();
-    if (left < 500) break;
-    if (typeof item.orgId !== "string" || typeof item.scopeKey !== "string" || (item.kind !== "person" && item.kind !== "project" && item.kind !== "workspace")) continue;
-    try { if (await erase.resume({ orgId: item.orgId, kind: item.kind, scopeKey: item.scopeKey }, left)) finished += 1; } catch { /* the next run goes on from the cursor */ }
+  let start: Key | undefined;
+  for (let pages = 0; pages < 50; pages += 1) {
+    const read = await ports.documentClient.send(new QueryCommand({ TableName: ports.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": PENDING_PK }, Limit: limits.max ?? 20, ...(start === undefined ? {} : { ExclusiveStartKey: start }) })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Key };
+    const items = read.Items ?? [];
+    seen += items.length;
+    for (const item of items) {
+      const left = stop - now();
+      if (left < 500) return { pending: seen, finished };
+      if (typeof item.orgId !== "string" || typeof item.scopeKey !== "string" || (item.kind !== "person" && item.kind !== "project" && item.kind !== "workspace")) continue;
+      try { if (await erase.resume({ orgId: item.orgId, kind: item.kind, scopeKey: item.scopeKey }, Math.max(500, Math.floor(left / 2)))) finished += 1; } catch { /* the next run goes on from the cursor */ }
+    }
+    start = read.LastEvaluatedKey;
+    if (start === undefined) break;
   }
-  return { pending: items.length, finished };
+  return { pending: seen, finished };
 }

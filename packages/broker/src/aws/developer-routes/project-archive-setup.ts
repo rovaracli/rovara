@@ -105,13 +105,13 @@ export async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDepe
     await deps.evidenceErase?.project(orgId, project);
   } catch (error) {
     logDeveloperEvent({ event: "developer.project_archived_evidence_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
-    // The erase left its pending record, and the settlement schedule finishes it; an install with no schedule (a private install) has nothing that does, so the caller may tell the person.
+    // The erase left its pending record, which the broker's every-minute recovery run finishes (it runs on every install); the caller tells the person.
     onEvidenceUnfinished?.();
   }
 }
 
-/** The archive answer's warning when the project's stored proof evidence could not all be removed in the request. Archiving the project again continues the erase from where it stopped. */
-export const EVIDENCE_ERASE_PENDING_WARNING = "Some of this project's stored proof evidence could not be removed yet. Archive the project again to finish removing it.";
+/** The archive answer's warning when the project's stored proof evidence could not all be removed in the request. The erase is finished by the broker's every-minute recovery run on every install, and archiving again continues it from where it stopped. */
+export const EVIDENCE_ERASE_PENDING_WARNING = "Some of this project's stored proof evidence is still being removed. It finishes on its own within a few minutes; archiving the project again also continues it.";
 
 /**
  * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the

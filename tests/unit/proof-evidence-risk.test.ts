@@ -187,7 +187,7 @@ describe("the risk rule", () => {
   describe("a security check whose scan could not be checked", () => {
     const SEC = ["readiness:0"];
     const unavailable = { highNewFindings: 0, evidenceUnavailable: true as const };
-    const withoutFindings = () => { const base = pack("security", {}); return { ...base, checks: base.checks.map(({ findings: _dropped, ...rest }) => rest) } as unknown as EvidencePack; };
+    const withoutFindings = () => { const base = pack("security", {}); return { ...base, checks: base.checks.map((check) => Object.fromEntries(Object.entries(check).filter(([name]) => name !== "findings"))) } as unknown as EvidencePack; };
 
     it("is evidenceUnavailable when there is no pack, the read fails, or the pack is for other code; the risk is at least Medium, in a fixed sentence", async () => {
       expect(await evidenceRiskOfTask({ pack: async () => undefined }, TASK, code.digest, SEC)).toEqual(unavailable);
@@ -202,7 +202,7 @@ describe("the risk rule", () => {
       expect(await evidenceRiskOfTask({ pack: async () => withoutFindings() }, TASK, code.digest, SEC)).toEqual(unavailable);
       expect(await evidenceRiskOfTask({ pack: async () => pack("security", {}) }, TASK, code.digest, ["readiness:3"])).toEqual(unavailable);
       // A new high finding in one security check still counts when another one is unavailable.
-      const two = { ...pack("security", { high: 1 }), checks: [...pack("security", { high: 1 }).checks, { ...withoutFindings().checks[0]!, checkId: "readiness:1" }] } as unknown as EvidencePack;
+      const two = { ...pack("security", { high: 1 }), checks: [...pack("security", { high: 1 }).checks, { ...withoutFindings().checks[0]!, checkId: "readiness:1" }] } as EvidencePack;
       expect(await evidenceRiskOfTask({ pack: async () => two }, TASK, code.digest, ["readiness:0", "readiness:1"])).toEqual({ highNewFindings: 1, evidenceUnavailable: true });
       expect(assessRisk(input({ evidence: { highNewFindings: 1, evidenceUnavailable: true } })).level).toBe("high");
     });

@@ -993,7 +993,7 @@ function withoutUnparsedFields(invocation: WorkerInvocation, features: readonly 
 function withoutCoveragePath(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
   if (!drop || invocation.kind !== "task" || invocation.payload.testEnvironment === undefined) return invocation;
   const plan = invocation.payload.testEnvironment;
-  return { ...invocation, payload: { ...invocation.payload, testEnvironment: { ...plan, checks: plan.checks.map(({ coveragePath: _dropped, ...rest }) => rest) } } };
+  return { ...invocation, payload: { ...invocation.payload, testEnvironment: { ...plan, checks: plan.checks.map(({ id, kind, selectArgs }) => ({ id, kind, ...(selectArgs === undefined ? {} : { selectArgs }) })) } } };
 }
 
 /** The invocation without the evidence request when `drop` (and the very object back otherwise). */
