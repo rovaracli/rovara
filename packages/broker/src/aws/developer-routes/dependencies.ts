@@ -86,6 +86,7 @@ import { putCodeSettings, readCodeSettings } from "../../rovara-code/code-settin
 import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
 import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
 import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
+import { putProjectSettingsChecked } from "./settings-proof.js";
 
 /** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
 export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
@@ -147,7 +148,8 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
       },
       codeSettings: (orgId, project) => readCodeSettings(table, orgId, project),
       putCodeSettings: (who, project, body) => putCodeSettings({ ...table, now: deps.now, projectFor: (person, rawName) => projectRoleForRoute(deps, person, rawName) }, who, project, body, deps.agents),
-      updateSettings: (who, project, body, options) => putProjectSettings(deps, who, encodeURIComponent(project), body, options),
+      // TE-4: "Apply this change" saves commands through the same proof as the settings route (a browser saves at once and is checked; a token is held).
+      updateSettings: (who, project, body, options) => putProjectSettingsChecked(deps, who, encodeURIComponent(project), body, options),
       ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
       ...(deps.defaultBranchFileReader === undefined ? {} : { readDefaultBranchFile: deps.defaultBranchFileReader }),
     },

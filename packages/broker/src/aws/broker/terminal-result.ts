@@ -9,6 +9,7 @@ import { TEST_ENV_DRAFT_RESULT_KEY, checksForSection, StandingFailuresSchema, ne
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
+import { settleAfterCheckReported } from "../developer-routes/settings-proof-hook.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
 import { noteDurationAtPullRequest } from "../../rovara-code/duration.js";
@@ -170,6 +171,8 @@ async function closeCheckAfterPrepare(dependencies: AwsBrokerDependencies, works
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.setup_check_close_failed", workspaceId, error: error instanceof Error ? error.name : "unknown" }));
   }
+  // TE-4: a project's saved or held commands wait on this result: act on it now.
+  await settleAfterCheckReported(workspaceId);
 }
 
 /**

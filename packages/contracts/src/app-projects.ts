@@ -60,6 +60,43 @@ export type AppProjectSummary = z.infer<typeof AppProjectSummarySchema>;
 
 export const AppProjectDomainStatusSchema = z.enum(["approved", "pending", "rejected"]);
 
+/**
+ * TE-4 (owner decision 2026-11-02): whether the setup and test commands and the dev container now in a project's settings have been PROVED by a check on a fresh machine.
+ *   `proven`   these exact commands passed a check (or are the setup restored to one that did)
+ *   `checking` a check of them is running
+ *   `unproven` they were saved and not (yet) proved: the check failed, did not start, or was never run
+ * `held` is the change an API key asked for: it is NOT in the settings. It is written only if its own check passes at the settings revision it was made against.
+ * Fixed words and short reasons only: never a command.
+ */
+export const SettingsHeldFieldSchema = z.enum(["setupCommands", "testCommands", "devcontainer"]);
+export const SettingsHeldSchema = z.object({
+  status: z.enum(["checking", "failed", "stale", "refused", "not_started"]),
+  fields: z.array(SettingsHeldFieldSchema),
+  heldAt: z.string(),
+  /** Why it did not go in (a failed check's redacted one-liner, or a fixed sentence). */
+  reason: z.string().optional(),
+}).strict();
+export type SettingsHeld = z.infer<typeof SettingsHeldSchema>;
+export const SettingsProofSchema = z.object({
+  status: z.enum(["proven", "checking", "unproven"]),
+  /** When the commands in the settings were proved, if they were. */
+  provenAt: z.string().optional(),
+  /** Why they are unproven: the check's failing step, or a fixed sentence. */
+  reason: z.string().optional(),
+  /** When the last setup that was proved was proved; absent when none ever was (then there is nothing to go back to). */
+  lastProvenAt: z.string().optional(),
+  /** True when the settings differ from the last proved setup, so a maintainer in a browser may undo to it. */
+  canUndo: z.boolean(),
+  /** A banner for the person who saved commands that then failed their check. */
+  notice: z.object({ message: z.string(), at: z.string(), savedBy: z.string().optional() }).strict().optional(),
+  held: SettingsHeldSchema.optional(),
+}).strict();
+export type SettingsProof = z.infer<typeof SettingsProofSchema>;
+
+/** `POST /v1/app/projects/{name}/settings/undo`: write the last proved setup back as a new revision. A maintainer, in a browser session, signed in within the last 10 minutes. */
+export const ProjectSettingsUndoBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().positive() }).strict();
+export type ProjectSettingsUndoBody = z.infer<typeof ProjectSettingsUndoBodySchema>;
+
 export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
   savedWorkingBranches: z.array(z.object({repository:z.string(),fullName:z.string(),branch:z.string(),commit:z.string().regex(/^[a-f0-9]{40}$/)})).max(32).optional(),
   settings: z.object({
@@ -71,6 +108,8 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
   }),
   createdAt: z.string(),
   createdBy: z.object({ developerId: z.string(), name: z.string() }),
+  /** TE-4: whether the commands in the settings are proved. Absent where setup checks are not set up. */
+  settingsProof: SettingsProofSchema.optional(),
 });
 export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 
@@ -220,5 +259,6 @@ export const ProjectSettingsBodySchema = z.object({
 }).strict();
 export type ProjectSettingsBody = z.infer<typeof ProjectSettingsBodySchema>;
 
-export const ProjectSettingsResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()) });
+/** `held` (TE-4): present when an API key asked to change commands or the dev container: they are not in the settings yet, and are written only if their check passes. */
+export const ProjectSettingsResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()), held: SettingsHeldSchema.optional() });
 export type ProjectSettingsResponse = z.infer<typeof ProjectSettingsResponseSchema>;

@@ -211,7 +211,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-ro
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
 import { listAppProjects, listProjects } from "./developer-routes/project-list.js";
-import { changeProjectArchive, egressDepsOf, getAppProject, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
+import { changeProjectArchive, egressDepsOf, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
 import {
   deleteProjectMember,
   deleteProjectSlackChannel,
@@ -220,7 +220,8 @@ import {
   putProjectMember,
   putProjectSlackChannel,
 } from "./developer-routes/project-members.js";
-import { listGithubRepositories, projectMetaConfigRoute, putProjectSettings } from "./developer-routes/project-settings.js";
+import { listGithubRepositories, projectMetaConfigRoute } from "./developer-routes/project-settings.js";
+import { getAppProjectWithProof, putProjectSettingsChecked, undoToProvenSetup } from "./developer-routes/settings-proof.js";
 import { listWorkspaces } from "./developer-routes/project-access.js";
 import {
   chainRouteDependenciesFor,
@@ -445,9 +446,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
-  if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
+  if (request.method === "GET" && appProject !== null) return getAppProjectWithProof(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
-  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettingsChecked(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  // TE-4: a maintainer in a browser, signed in within ten minutes, goes back to the last proved setup.
+  const projectSettingsUndo = /^\/v1\/app\/projects\/([^/]+)\/settings\/undo$/.exec(url.pathname);
+  if (request.method === "POST" && projectSettingsUndo !== null) return undoToProvenSetup(deps, caller, projectSettingsUndo[1]!, jsonBody(request));
   const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
   if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
