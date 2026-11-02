@@ -62,7 +62,7 @@ import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { testEnvPlanFor } from "../../test-env/task-plan.js";
-import { nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
+import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
 import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
@@ -506,8 +506,8 @@ export async function taskOperationParts(
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
     ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }) : undefined;
-  const nightlyRun = task?.purpose === "nightly_run" && task.nightlyRun !== undefined && input.workflowMode === "CHECKS"
-    ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task.nightlyRun) : undefined;
+  const nightlyRun = isNightlyOperation(task, input.workflowMode) && task?.nightlyRun !== undefined
+    ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task!.nightlyRun!) : undefined;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "task",
@@ -528,7 +528,7 @@ export async function taskOperationParts(
       contextTools: contextToolsOn,
       setupAgent: input.workflowMode === "SETUP_AGENT",
       // NH-1: the nightly run's one action, granted only to the verification operation of a nightly task.
-      nightlyResult: task?.purpose === "nightly_run" && input.workflowMode === "CHECKS",
+      nightlyResult: isNightlyOperation(task, input.workflowMode),
     }),
     payload: {
       conversationId: input.conversationId,

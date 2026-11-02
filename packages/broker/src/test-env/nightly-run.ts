@@ -86,6 +86,11 @@ export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
   };
 }
 
+// ---- who gets the nightly action
+
+/** Whether an operation is granted the nightly action (and sent `nightlyRun`): the verification operation of a nightly task, and no other operation of any task. One place, so the capability and the payload cannot differ. */
+export const isNightlyOperation = (task: Pick<DeveloperTaskRecord, "purpose"> | undefined, workflowMode: string | undefined): boolean => task?.purpose === NIGHTLY_RUN_PURPOSE && workflowMode === "CHECKS";
+
 // ---- what the worker is sent
 
 /**

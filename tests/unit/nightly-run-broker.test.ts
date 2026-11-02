@@ -8,7 +8,7 @@ import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/tas
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { handleNightlyFire, readNightlyBaseline, coverageMapDigest, nightlySlotId, type MapStore } from "../../packages/broker/src/test-env/nightly.js";
 import { handleNightlyResultCallback, nightlyRunOfOperation, type NightlyOperation } from "../../packages/broker/src/test-env/nightly-callback.js";
-import { nightlyEndItems, nightlyRequestId, nightlyRunPayloadOf, nightlyRunPort, skipReasonOf } from "../../packages/broker/src/test-env/nightly-run.js";
+import { isNightlyOperation, nightlyEndItems, nightlyRequestId, nightlyRunPayloadOf, nightlyRunPort, skipReasonOf } from "../../packages/broker/src/test-env/nightly-run.js";
 import { NIGHT_WORDS, readLatestNight, readNightRows } from "../../packages/broker/src/test-env/night-status.js";
 import { fireTestEnvNightly } from "../../packages/broker/src/test-env/nightly-wiring.js";
 import { nightlyRunsOf, s3CoverageMapStore } from "../../packages/broker/src/aws/broker/nightly-run-wiring.js";
@@ -462,5 +462,14 @@ describe("nights that did not finish, and nights that cannot run", () => {
     const k = await harness({ approve: false });
     await k.fireNow();
     expect(await readLatestNight(k.deps, ORG, PROJECT)).toBeUndefined();
+  });
+});
+
+describe("who is granted the nightly action", () => {
+  it("only the verification operation of a nightly task: not another mode of it, not any operation of another task, not a task with no purpose", () => {
+    expect(isNightlyOperation({ purpose: "nightly_run" }, "CHECKS")).toBe(true);
+    for (const mode of ["PLAN", "IMPLEMENT", "REVIEW", "SETUP_AGENT", "SETUP_DRAFT", undefined]) expect(isNightlyOperation({ purpose: "nightly_run" }, mode), String(mode)).toBe(false);
+    for (const purpose of ["setup_agent", "setup_draft", "diagnosis", undefined] as const) expect(isNightlyOperation({ purpose }, "CHECKS"), String(purpose)).toBe(false);
+    expect(isNightlyOperation(undefined, "CHECKS")).toBe(false);
   });
 });

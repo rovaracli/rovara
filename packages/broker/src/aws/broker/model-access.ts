@@ -748,6 +748,9 @@ export async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, wo
 
 export async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
-  return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
+  if (pointer === undefined) return false;
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  // A workflow task is gated, and so is a task with a PURPOSE (a setup draft or run, a diagnosis, a nightly run): no follow-up model turn may run in its workspace.
+  return task !== undefined && (task.workflow !== undefined || task.purpose !== undefined);
 }
 
