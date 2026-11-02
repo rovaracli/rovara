@@ -255,14 +255,23 @@ const told = async (deps: McpServerDependencies, event: McpServerAuditEvent): Pr
 };
 
 /**
+ * The description as it is hashed (stdio fixes lane, SR-7 H3): Unicode NFC, every run of whitespace as one space, and no space at either end. A server may re-wrap or re-encode a description
+ * between two probes without anyone changing what it says; that must not fail an approval or pause a server. Anything else is a change: other words, other case, punctuation, a lookalike
+ * letter, and an invisible character that is not whitespace (a zero-width space stays in, so hidden text is seen). The same function hashes the descriptions of every kind of server.
+ */
+export function normaliseDescription(description: string): string {
+  return description.normalize("NFC").replace(/\s+/gu, " ").trim();
+}
+
+/**
  * What the admin is shown, and what an approval is bound to. Fix round 2 (review N2, tool poisoning): the hash covers each tool's name, its schema and hints (`schemaHash`: the input schema and the
- * four standard hints) AND the whole description as the server gave it, so a changed description pauses the server like any other tool change. Replaces: a hash of names and schemas only
+ * four standard hints) AND the whole description as the server gave it, normalised (`normaliseDescription`), so a changed description pauses the server like any other tool change while a re-wrap or re-encoding does not. Replaces: a hash of names and schemas only
  * (still computed by `legacyToolsHash`, for approvals made before this).
  */
 export function summariseProbe(tools: readonly DiscoveredTool[], now: number): McpServerProbe {
   const shown = [...tools].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100).map((tool) => ({
     name: tool.name.slice(0, 64), description: inertSentence(tool.description ?? "", 300), annotation: annotationVerdict(tool), schemaHash: toolSchemaHash(tool),
-    descriptionHash: createHash("sha256").update(tool.description ?? "").digest("hex"),
+    descriptionHash: createHash("sha256").update(normaliseDescription(tool.description ?? "")).digest("hex"),
   }));
   return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash, tool.descriptionHash]))).digest("hex"), hashVersion: 2, tools: shown };
 }
