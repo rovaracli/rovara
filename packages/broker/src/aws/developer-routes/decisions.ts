@@ -61,7 +61,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     },
   };
   // Setup agent (SH12): the host-ask cards and their handler exist only while `su` is on; with it off nothing here reads or writes anything.
-  const hostsOn = setupAgentEnabled(env);
+  // Cloud only (F5): the website change the card runs is Cloud's (proposal, second person, staff step). On a private install a person adds a website the way they do today (an administrator runs
+  // `agentx project add`), so no card exists and no handler is registered there.
+  const hostsOn = setupAgentEnabled(env) && deps.cloud === true;
   const hostDeps: HostDecisionDeps = {
     documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     prodDeny: async (orgId, project) => (await readApprovedTestEnvironment(store, orgId, project))?.environment.prodDeny,
@@ -80,7 +82,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
           specChoiceItemsFor(taskDeps(who), who),
           approveTestEnvItemsFor(testEnvCards, who),
           envChangeItemsFor({ store, task: loadTask }, who),
-          hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: true }, who) : Promise.resolve([]),
+          hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true }, who) : Promise.resolve([]),
         ]);
         return [...merges, ...specs, ...testEnv, ...envChanges, ...hosts];
       },
@@ -94,7 +96,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
         await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
       }),
       confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer)),
-      ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps) } : {}),
+      ...(hostsOn ? { setup_host: setupHostHandler<DeveloperCaller>(hostDeps, { webOrigin: deps.developer.webOrigin ?? new URL(deps.developer.issuer).origin }) } : {}),
     }),
     store: dynamoDecisionStore({ ...table, now: deps.now }),
     now: deps.now,

@@ -72,7 +72,7 @@ export type DecisionItem =
    * SH12: a website the setup run needs, one card per host per project. `host` is a plain DNS name the broker checked; `from` is the repository file and line that led to it and `journalN` the setup command
    * that hit it: both are shown quoted and marked "from the repository", never read as instructions. `staffStep` is true where Rovara staff also approve the website (Cloud).
    */
-  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean });
+  | (ItemBase & { kind: "setup_host"; host: string; from?: { path: string; line: number } | undefined; journalN?: number | undefined; staffStep: boolean; /** The name has a punycode (`xn--`) label: it may look like another name. */ international?: boolean | undefined });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -190,6 +190,7 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
         next: item.staffStep ? "The website is added to this project's list; Rovara staff then approve it before it works." : "The website is added to this project's list, and setup tries again.",
         evidence: [
           chip("environment", "Website", item.host, "warning"),
+          ...(item.international === true ? [chip("risk", "Name", "international name", "warning")] : []),
           ...(item.from === undefined ? [] : [chip("other", "From the repository", `${item.from.path}:${String(item.from.line)}`, "unknown")]),
           ...(item.journalN === undefined ? [] : [chip("checks", "Setup command", `#${String(item.journalN)} was blocked`, "unknown")]),
         ],

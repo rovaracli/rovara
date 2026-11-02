@@ -32,13 +32,13 @@ const SETUP_PROPOSAL = { setup: [{ repo: "web", commands: ["npm ci"], confidence
 /** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`agentx-<env>-team-record`). A read of the wrong table finds nothing. */
 export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
 
-export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture } = {}) {
+export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; cloud?: boolean } = {}) {
   const teamDb = new FakeDynamoDb();
   const h = await createDeveloperTaskBroker({
     register: false,
     ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
-      cloud: true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
+      cloud: options.cloud ?? true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async () => undefined), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       // The Team record is on (its table is separate from the State table) unless the test says otherwise. Only its table is used by the test-environment code; the rest is what other callers would find missing.
