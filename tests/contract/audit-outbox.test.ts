@@ -831,6 +831,11 @@ describe("I4: the builders", () => {
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
     ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
+    // Company domain verification
+    ["auditCompanyDomainAdded", (occurrence) => builders.auditCompanyDomainAdded({ ...base, occurrence, details, domain: "acme.example" })],
+    ["auditCompanyDomainVerified", (occurrence) => builders.auditCompanyDomainVerified({ ...base, occurrence, details, domain: "acme.example", wasState: "pending", tookOver: false })],
+    ["auditCompanyDomainLost", (occurrence) => builders.auditCompanyDomainLost({ ...base, occurrence, details, domain: "acme.example", missingDays: 3 })],
+    ["auditCompanyDomainRemoved", (occurrence) => builders.auditCompanyDomainRemoved({ ...base, occurrence, details, domain: "acme.example", wasState: "verified" })],
     // Setup agent website asks (SH12)
     ["auditSetupHostAsked", (occurrence) => builders.auditSetupHostAsked({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", taskId: "task_1", journalN: 4, host: "docs.corp.example", onBehalfOf: "dev_1", typedBy: "dev_2" })],
     ["auditSetupHostRefused", (occurrence) => builders.auditSetupHostRefused({ ...base, occurrence, details, projectName: "Secret Project", askId: "ask_1", refusal: "person", host: "docs.corp.example" })],

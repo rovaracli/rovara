@@ -289,6 +289,11 @@ export const AUDIT_ACTIONS = [
   "rule.correction_remembered",
   "project.learning_changed",
   "rule.suggestions_set",
+  // Company domain verification (owner decision 2026-11-02): a domain claimed, checked, lost or removed. The domain itself is in `details`, never a fact.
+  "company_domain.added",
+  "company_domain.verified",
+  "company_domain.lost",
+  "company_domain.removed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -547,6 +552,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
   "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
+  // Company domains: `tookOver` is true when the proof moved the domain from another company's lost claim; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
+  "company_domain.added": [],
+  "company_domain.verified": ["wasState", "tookOver"],
+  "company_domain.lost": ["missingDays"],
+  "company_domain.removed": ["wasState"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

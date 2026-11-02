@@ -8,6 +8,7 @@
 // an admin unmaps them.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { normalizeEmailDomain } from "../org/company-domains/normalize.js";
 import type { TeamRecordTable } from "./types.js";
 
 /** The domains a company has verified for its Rovara sign-in. `undefined`: the company has none recorded (nothing is guessed). */
@@ -19,7 +20,7 @@ export type CompanyControl = "yes" | "no" | "unavailable";
 
 /** The fixed codes for why a person was or was not linked automatically. The admin page turns each into words. */
 export const AUTOLINK_REASONS = [
-  "switch_off", "no_email", "no_verified_domains", "domain_not_verified", "guest", "company_control_unavailable", "not_company_controlled", "unmapped_by_admin", "no_matching_member",
+  "switch_off", "no_email", "no_verified_domains", "domain_not_verified", "email_not_exact", "guest", "company_control_unavailable", "not_company_controlled", "unmapped_by_admin", "no_matching_member",
 ] as const;
 export type AutoLinkReason = (typeof AUTOLINK_REASONS)[number];
 /** The code a linked person carries. */
@@ -35,11 +36,24 @@ export interface AutoLinkFacts {
   suppressed: boolean;
 }
 
-export const emailDomain = (email: string): string | undefined => {
-  const at = email.trim().lastIndexOf("@");
-  const domain = at < 0 ? "" : email.trim().slice(at + 1).toLowerCase();
-  return /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/u.test(domain) && domain.includes(".") ? domain : undefined;
-};
+/** The domain of an email in the stored form of a company domain (lower-case, punycode), or undefined when it is none, or is an IP address, a public suffix or a lookalike. */
+export const emailDomain = (email: string): string | undefined => email.includes("@") ? normalizeEmailDomain(email.trim()) : undefined;
+
+/**
+ * The email in the one form automatic linking compares: PLAIN ASCII only, lower-cased by ASCII rules alone, with a domain that is already in its stored (punycode) form. An address with any other character
+ * anywhere (an accented or full-width letter, the Kelvin sign, which Unicode case folding and even NFC turn into the ASCII `K`) is not "exactly" anyone's, so nobody is linked by it. The check is made on the
+ * address as the tool gave it, before any normalising, so no normal form can turn it into an ASCII one.
+ */
+export function exactAutoLinkEmail(raw: string): string | undefined {
+  const text = raw.trim();
+  if (!/^[\x21-\x7e]+$/u.test(text)) return undefined;
+  const at = text.lastIndexOf("@");
+  if (at < 1 || text.indexOf("@") !== at) return undefined;
+  const asciiLower = (value: string) => value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+  const domain = asciiLower(text.slice(at + 1));
+  if (normalizeEmailDomain(domain) !== domain) return undefined;
+  return `${asciiLower(text.slice(0, at))}@${domain}`;
+}
 
 /** Conditions 1 and 2, and the switch, in order; the first that fails is the reason. `undefined` means conditions 1 and 2 hold: the exact-member match (3) is the next step. */
 export function autoLinkRefusal(facts: AutoLinkFacts): AutoLinkReason | undefined {
@@ -48,6 +62,7 @@ export function autoLinkRefusal(facts: AutoLinkFacts): AutoLinkReason | undefine
   if (facts.domains === undefined || facts.domains.size === 0) return "no_verified_domains";
   const domain = emailDomain(facts.email);
   if (domain === undefined || !facts.domains.has(domain)) return "domain_not_verified";
+  if (exactAutoLinkEmail(facts.email) === undefined) return "email_not_exact";
   if (facts.guest) return "guest";
   if (facts.control === "unavailable") return "company_control_unavailable";
   if (facts.control === "no") return "not_company_controlled";
