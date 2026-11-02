@@ -555,11 +555,11 @@ export function auditProjectTestHealthSettingChanged(input: AuditBuilderBase & {
 
 /**
  * `occurrence`: the request id of the card press. Facts are fixed words, counts and hashes, never a test name: `cause` (the auto-fix code word), `testCount` (marks added), `recordEpoch` (which card), `taskCount` and
- * `taskIdsSha256` (the tasks that were waiting), `testSetSha256` (sha256 of the sorted "check, test" lines marked, so the exact set can be checked later), `rowVersionAfter` and `totalAfter` (the project's list afterwards).
+ * `taskIdsSha256` (the tasks that were waiting), `testSetSha256` (sha256 of the sorted "check, test" lines marked, so the exact set can be checked later), `rowVersionAfter` and `totalAfter` (the project's list afterwards), `approvalMode` (`single`, `second_person` or `sole_owner_exception`) and `secondPersonWhy` (a fixed word: why a second person was or was not needed).
  */
-export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { projectName: string; cause: string; testCount: number; recordEpoch: number; taskCount: number; taskIdsSha256: string; testSetSha256: string; rowVersionAfter: number; totalAfter: number }): AuditEventInput {
+export function auditProjectKnownFailingMarked(input: AuditBuilderBase & { projectName: string; cause: string; testCount: number; recordEpoch: number; taskCount: number; taskIdsSha256: string; testSetSha256: string; rowVersionAfter: number; totalAfter: number; approvalMode: "single" | "second_person" | "sole_owner_exception"; secondPersonWhy: string }): AuditEventInput {
   return build("project.known_failing_marked", input, { kind: "project", name: input.projectName }, {
-    cause: input.cause, testCount: input.testCount, recordEpoch: input.recordEpoch, taskCount: input.taskCount, taskIdsSha256: input.taskIdsSha256, testSetSha256: input.testSetSha256, rowVersionAfter: input.rowVersionAfter, totalAfter: input.totalAfter,
+    cause: input.cause, testCount: input.testCount, recordEpoch: input.recordEpoch, taskCount: input.taskCount, taskIdsSha256: input.taskIdsSha256, testSetSha256: input.testSetSha256, rowVersionAfter: input.rowVersionAfter, totalAfter: input.totalAfter, approvalMode: input.approvalMode, secondPersonWhy: input.secondPersonWhy,
   });
 }
 

@@ -120,7 +120,8 @@ describe("a press from a live browser session", () => {
     const db = new FakeDynamoDb();
     const clock = { now: Date.UTC(2026, 10, 2, 10, 0, 0) };
     const base = { documentClient: db, tableName: "state", now: () => clock.now };
-    const ports = { store: base, mayEditSettings: async () => true };
+    const policy = { task: async (id: string) => ({ taskId: id, orgId: TEST_ORG, project: NAME, developerId: "someone_else", developerName: "Else", provider: "github" }) as never, alwaysTwoPeople: async () => false };
+    const ports = { store: base, mayEditSettings: async () => true, policy };
     const deps: DecisionRouteDependencies<typeof BROWSER> = {
       sources: { list: (who) => fixSetupItemsFor({ store: base, maintainedProjects: async () => [NAME], task: async () => undefined }, who, { VERIFY_RESULTS_ENABLED: "1" }), locks: async () => ({}) },
       performer: createDecisionPerformer<typeof BROWSER>({ fix_setup: fixSetupHandler({ markKnownFailing: (who, item, requestId) => markKnownFailing(ports, who, item, requestId), dismiss: (who, item) => dismissFixSetup(ports, who, item) }) }),

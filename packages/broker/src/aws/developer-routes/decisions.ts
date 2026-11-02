@@ -23,7 +23,8 @@ import { answerEnvChange, approveTestEnvItemsFor, envChangeItemsFor } from "../.
 import { liveTestEnvCard } from "../../org/test-env-approval.js";
 import { mayDecideApproval } from "../../agents/approvals.js";
 import { nightlyHooks } from "../../test-env/nightly-wiring.js";
-import { approveChecked, testEnvStoreOf } from "./test-environment.js";
+import { approveChecked, testEnvApprovalStoreOf, testEnvStoreOf } from "./test-environment.js";
+import { alwaysTwoPeople } from "../../org/known-failing-policy.js";
 import { visibleProjectRoles } from "./project-list.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
 import { mergeItemsFor } from "../../decisions/merge-source.js";
@@ -63,7 +64,13 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     const role = (await visibleProjectRoles(deps, who as DeveloperCaller)).get(project);
     return role !== undefined && projectAllows(role, "edit_settings");
   };
-  const fixSetupPorts = { store, mayEditSettings };
+  // The second person for a mark (owner decision F4): who owns the affected tasks, the company's "always two people" setting, and the approval cards and company-records check the test-environment approvals use.
+  const secondPerson = testEnvApprovalStoreOf(deps).secondPerson;
+  const fixSetupPorts = {
+    store, mayEditSettings,
+    policy: { task: loadTask, alwaysTwoPeople: (orgId: string) => alwaysTwoPeople(table, orgId) },
+    ...(secondPerson === undefined ? {} : { approvals: { deps: agents, secondPerson } }),
+  };
   return {
     sources: {
       async list(who) {

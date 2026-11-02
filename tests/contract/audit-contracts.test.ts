@@ -177,7 +177,7 @@ describe("the event catalog", () => {
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // Proof and evidence
-      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked",
+      "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -231,7 +231,10 @@ describe("the event catalog", () => {
     "playbook.default_process_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "processKind"], sample: { revision: 4, processKind: "builtin" } },
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
-    "project.known_failing_marked": { target: { kind: "project", name: "web" }, keys: ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter"], sample: { cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3 } },
+    "project.known_failing_marked": { target: { kind: "project", name: "web" }, keys: ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"], sample: { cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" } },
+    "company.known_failing_policy_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["fromAlwaysTwo", "toAlwaysTwo"], sample: { fromAlwaysTwo: true, toAlwaysTwo: false } },
+    "company.known_failing_policy_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["fromAlwaysTwo", "toAlwaysTwo", "mode"], sample: { fromAlwaysTwo: false, toAlwaysTwo: true, mode: "direct" } },
+    "company.known_failing_policy_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
     // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.
     "rule.suggested": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"], sample: { suggestionId: "sug_1", stage: "build", sourceCount: 2, sourceKinds: "comment,send_back", lessSafe: false, fromOnePerson: false } },

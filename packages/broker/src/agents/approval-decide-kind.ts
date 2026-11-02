@@ -73,6 +73,7 @@ const TITLES: Record<string, string> = {
   playbook_default_process: "Switch a project back to the built-in way of working",
   setup_item: "Approve a setup suggestion from Rovara",
   test_env: "Confirm a less-safe test environment",
+  known_failing: "Confirm marking tests as already failing",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -194,7 +195,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env" && subject.kind !== "known_failing") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -221,6 +222,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
   if (subject.kind === "setup_item") facts.push(fact("Project", subject.project), fact("Suggestion", subject.itemKind.replace("_", " ")), fact("Suggestion id", subject.itemId));
   if (subject.kind === "test_env") facts.push(fact("Project", subject.project), fact("Test environment", `digest ${prefix(subject.digest)}`), fact("Revision it replaces", subject.expectedRevision === 0 ? "none (the first)" : String(subject.expectedRevision)));
+  if (subject.kind === "known_failing") facts.push(fact("Project", subject.project), fact("What failed", subject.cause.replace(/-/gu, " ")), fact("Tests to mark as already failing", `set ${prefix(subject.testSetSha256)}`));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };

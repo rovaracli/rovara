@@ -24,12 +24,15 @@ import type { TestEnvDeps } from "../org/test-environment.js";
 import type { DecisionItem } from "../decisions/project.js";
 import { FIX_SETUP_BROWSER_MESSAGE, type FixSetupAnswer } from "../decisions/performer.js";
 import { KnownFailingTestId, knownFailingWrite, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "./known-failing.js";
+import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
+import { confirmedKnownFailingApproval, requestKnownFailingCard, type KnownFailingScope } from "../org/known-failing-approval.js";
+import type { SecondPersonPort } from "../org/test-environment.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 
 type FixSetupItem = Extract<DecisionItem, { kind: "fix_setup" }>;
 interface Who { orgId: string; developerId: string }
 /** A press that came from a live browser session (the web boundary vouched for the cookie and the CSRF token); a token or an AI tool never has it. */
-interface Presser extends Who { browserSession?: true | undefined }
+interface Presser extends Who { browserSession?: true | undefined; orgRole?: ApprovalCaller["orgRole"] | undefined }
 
 /** A test a card could mark, with the check it failed in (a mark is for that test in that check). */
 export interface MarkableTest { name: string; checkId: string }
@@ -243,8 +246,12 @@ export interface FixSetupDecisionPorts {
   store: TestEnvDeps;
   /** Whether the caller may edit the project's settings now (a live check of their role, never a claim). */
   mayEditSettings(caller: Who, project: string): Promise<boolean>;
-  /** Whether a second person must confirm a mark (default `fixSetupNeedsSecondPerson`: no one). */
-  secondPersonNeed?: typeof fixSetupNeedsSecondPerson;
+  /** Who owns the affected tasks and the company's "always two people" setting (absent: a second person is always needed). */
+  policy?: SecondPersonPolicyPorts | undefined;
+  /** The second person's confirmation: the approval cards and the check over the company's records (absent: a mark that needs a second person is refused). */
+  approvals?: { deps: ApprovalDependencies; secondPerson: SecondPersonPort } | undefined;
+  /** For tests: replaces `fixSetupNeedsSecondPerson`. */
+  secondPersonNeed?: (input: Parameters<typeof fixSetupNeedsSecondPerson>[0]) => Promise<SecondPersonNeed>;
 }
 
 /** The record a card was built from, still open and unchanged, or the answer to give instead. */
@@ -275,11 +282,38 @@ async function send(store: FixSetupStore, items: TransactItem[]): Promise<boolea
   }
 }
 
-/** Whether a second person must confirm a mark. The seam for the owner's decision on a presser who owns one of the affected tasks (a person could mark the tests their own change broke): for now no one is needed. */
-export type SecondPersonNeed = "needed" | "not_needed";
-export function fixSetupNeedsSecondPerson(input: { caller: Who; record: Pick<FixSetupRecord, "taskIds" | "cause" | "epoch">; project: string }): Promise<SecondPersonNeed> {
-  void input;
-  return Promise.resolve("not_needed");
+/**
+ * Why a second person is or is not needed for a mark (owner decision F4, option D). By default ONE maintainer may mark. A second, different maintainer or admin must confirm when the presser is the effective owner of any
+ * task that was waiting on the card (they could otherwise excuse the tests their own change broke), when an owner cannot be told (a task that cannot be read, or the card is full at 25 tasks and not every owner is
+ * known), and always when the company turned on "always two people". Fixed words; they go into the audit event.
+ */
+export type SecondPersonWhy = "not_needed" | "owner_of_affected_task" | "owner_unknown" | "record_full" | "always_two";
+export interface SecondPersonNeed { need: "needed" | "not_needed"; why: SecondPersonWhy }
+
+export interface SecondPersonPolicyPorts {
+  task(taskId: string): Promise<DeveloperTaskRecord | undefined>;
+  /** The company's "always two people" setting (`org/known-failing-policy.ts`); unreadable must answer true. */
+  alwaysTwoPeople(orgId: string): Promise<boolean>;
+}
+
+export async function fixSetupNeedsSecondPerson(input: { caller: Who; record: Pick<FixSetupRecord, "taskIds" | "taskCount" | "cause" | "epoch">; project: string; policy: SecondPersonPolicyPorts | undefined }): Promise<SecondPersonNeed> {
+  const { caller, record, policy } = input;
+  // Without the ports to tell, a second person is needed (fail closed).
+  if (policy === undefined) return { need: "needed", why: "owner_unknown" };
+  let always: boolean;
+  try { always = await policy.alwaysTwoPeople(caller.orgId); } catch { always = true; }
+  if (always) return { need: "needed", why: "always_two" };
+  if (record.taskCount >= FIX_SETUP_TASKS_MAX) return { need: "needed", why: "record_full" };
+  for (const taskId of record.taskIds) {
+    let owner: string | undefined;
+    try {
+      const task = await policy.task(taskId);
+      owner = task === undefined || task.orgId !== caller.orgId ? undefined : tryEffectiveTaskOwner(task)?.developerId;
+    } catch { owner = undefined; }
+    if (owner === undefined) return { need: "needed", why: "owner_unknown" };
+    if (owner === caller.developerId) return { need: "needed", why: "owner_of_affected_task" };
+  }
+  return { need: "not_needed", why: "not_needed" };
 }
 
 const hashOf = (parts: readonly string[]): string => createHash("sha256").update(parts.join("\n")).digest("hex");
@@ -295,8 +329,24 @@ export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Pre
   const record = await currentRecord(ports, caller, item);
   if (record === "stale") return "stale";
   if (record.cause !== FIX_SETUP_MARKABLE_CAUSE || record.testsTruncated || record.tests.length === 0) return "not_ready";
-  if ((await (ports.secondPersonNeed ?? fixSetupNeedsSecondPerson)({ caller, record, project: item.project })) === "needed") return "second_person";
   const orgId = caller.orgId;
+  const needed = await (ports.secondPersonNeed ?? fixSetupNeedsSecondPerson)({ caller, record, project: item.project, policy: ports.policy });
+  const testSetSha256 = hashOf(record.tests.map((test) => `${test.checkId}\t${test.name}`).sort());
+  // The second person (owner decision F4): their confirmation card is bound to this Fix setup card version and this exact set of tests. Without a standing confirmation, the card is asked for (once) and the press is
+  // answered "someone else has to decide this". With one, both people's live authority and the company's sole-owner switch are read again, and the check's commit conditions go into the same transaction.
+  let second: { approverId: string; signedInAtMs: number; sessionRef: string; mode: "second_person" | "sole_owner_exception"; conditions: TransactItem[] } | undefined;
+  if (needed.need === "needed") {
+    if (ports.approvals === undefined || caller.orgRole === undefined) throw agentXError("FORBIDDEN", "A second person has to confirm this, and confirmations are not set up here.");
+    const scope: KnownFailingScope = { orgId, project: item.project, cause: record.cause, epoch: record.epoch, recordVersion: record.version, testSetSha256, askedBy: caller.developerId };
+    const confirmation = await confirmedKnownFailingApproval(ports.approvals.deps, scope);
+    if (confirmation === undefined) {
+      await requestKnownFailingCard(ports.approvals.deps, { orgId, developerId: caller.developerId, orgRole: caller.orgRole }, { project: item.project, cause: record.cause, epoch: record.epoch, recordVersion: record.version, testSetSha256, testCount: record.tests.length });
+      return "second_person";
+    }
+    // Throws FORBIDDEN when the approver is no longer eligible, when it is the same person and they are not the company's only owner, and when the company turned the sole-owner exception off.
+    const check = await ports.approvals.secondPerson({ orgId, project: item.project, proposerId: caller.developerId, approverId: confirmation.approverId });
+    second = { approverId: confirmation.approverId, signedInAtMs: confirmation.signedInAtMs, sessionRef: confirmation.sessionRef, mode: check.mode, conditions: check.conditions };
+  }
   const before = await readKnownFailingRow(ports.store, orgId, item.project);
   if (before === undefined) return "not_ready";
   const nowIso = new Date(ports.store.now()).toISOString();
@@ -306,11 +356,16 @@ export async function markKnownFailing(ports: FixSetupDecisionPorts, caller: Pre
   const event = await tryAuditEvent(ports.store, () => auditProjectKnownFailingMarked({
     orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: nowIso, occurrence: requestId, projectName: item.project, cause: record.cause, testCount: next.length - before.marks.length,
     recordEpoch: record.epoch, taskCount: record.taskCount, taskIdsSha256: hashOf([...record.taskIds].sort()),
-    testSetSha256: hashOf(record.tests.map((test) => `${test.checkId}\t${test.name}`).sort()), rowVersionAfter: before.version + 1, totalAfter: next.length,
+    testSetSha256, rowVersionAfter: before.version + 1, totalAfter: next.length,
+    approvalMode: second === undefined ? "single" : second.mode, secondPersonWhy: needed.why,
+    // Who the second person was and how they proved it: their id and the fresh sign-in proof (their session, hashed).
+    ...(second === undefined ? {} : { related: [second.approverId], proof: { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date(second.signedInAtMs).toISOString(), sessionRef: second.sessionRef } }),
   }));
   const done = await send(ports.store, [
     knownFailingWrite(ports.store, orgId, item.project, before, next, nowIso),
     closeItem(ports.store, orgId, item.project, record, "known_failing", caller.developerId, nowIso),
+    // Both people's live authority, pinned to the moment of commit.
+    ...(second === undefined ? [] : second.conditions),
     ...(event === undefined ? [] : auditPending(ports.store, event)),
   ]);
   if (!done) return "stale";

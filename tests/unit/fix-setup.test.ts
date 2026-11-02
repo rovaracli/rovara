@@ -5,7 +5,7 @@ import { AUTO_FIX_ENVIRONMENT_CODES, type EvidencePack } from "@agentx/contracts
 import { projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { fixSetupHandler } from "../../packages/broker/src/decisions/performer.js";
 import {
-  FIX_SETUP_TASKS_MAX, FIX_SETUP_TESTS_MAX, dismissFixSetup, failingOnOriginalTests, fixSetupCauseOf, fixSetupItemsFor, fixSetupNeedsSecondPerson, markKnownFailing, recordFixSetup, type FixSetupDecisionPorts,
+  FIX_SETUP_TASKS_MAX, FIX_SETUP_TESTS_MAX, dismissFixSetup, failingOnOriginalTests, fixSetupCauseOf, fixSetupItemsFor, fixSetupNeedsSecondPerson, markKnownFailing, recordFixSetup, type SecondPersonPolicyPorts, type FixSetupDecisionPorts,
 } from "../../packages/broker/src/test-env/fix-setup.js";
 import { KNOWN_FAILING_MAX, alreadyFailingForResults, knownFailingKey, readKnownFailingRow } from "../../packages/broker/src/test-env/known-failing.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
@@ -26,7 +26,14 @@ function harness() {
   const clock = { now: Date.UTC(2026, 10, 2, 10, 0, 0) };
   const store = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit };
   const can = { value: true };
-  const ports: FixSetupDecisionPorts = { store, mayEditSettings: async () => can.value };
+  // Who owns the tasks that waited on the card (default: someone else, so one maintainer may mark) and the company's "always two people" setting (default off).
+  const owners = new Map<string, string>();
+  const always = { value: false };
+  const policy: SecondPersonPolicyPorts = {
+    task: async (id) => ({ taskId: id, orgId: ORG, project: PROJECT, developerId: owners.get(id) ?? "dev_other", developerName: "Other", provider: "github" }) as never,
+    alwaysTwoPeople: async () => always.value,
+  };
+  const ports: FixSetupDecisionPorts = { store, mayEditSettings: async () => can.value, policy };
   const tasks = new Map<string, Record<string, unknown>>();
   const cardPorts = { store, maintainedProjects: async () => [PROJECT], task: async (id: string) => tasks.get(id) as never };
   const items = async (env: NodeJS.ProcessEnv = { VERIFY_RESULTS_ENABLED: "1" }) => fixSetupItemsFor(cardPorts, WHO, env);
@@ -35,7 +42,7 @@ function harness() {
     expect(found).toHaveLength(1);
     return found[0] as FixItem;
   };
-  return { db, audit, clock, store, can, ports, tasks, items, only };
+  return { db, audit, clock, store, can, ports, tasks, items, only, owners, always, policy };
 }
 
 describe("the cause of an ask", () => {
@@ -284,15 +291,56 @@ describe("Mark as known failing", () => {
     expect(await alreadyFailingForResults(h.store, ORG, PROJECT)).toEqual([]);
   });
 
-  it("asks the second-person seam before writing; it answers 'not needed' for now, and 'needed' stops the mark", async () => {
-    expect(await fixSetupNeedsSecondPerson({ caller: WHO, record: { taskIds: [task(1)], cause: CAUSE, epoch: 1 }, project: PROJECT })).toBe("not_needed");
+  it("asks the second-person seam before writing; 'needed' stops the mark until a confirmation stands, and nothing is written", async () => {
     const { h, item } = await opened();
     const asked: string[] = [];
-    const stop = { ...h.ports, secondPersonNeed: async (input: { project: string }) => { asked.push(input.project); return "needed" as const; } };
-    expect(await markKnownFailing(stop, BROWSER, item, "r")).toBe("second_person");
+    const stop = { ...h.ports, secondPersonNeed: async (input: { project: string }) => { asked.push(input.project); return { need: "needed" as const, why: "owner_of_affected_task" as const }; } };
+    await expect(markKnownFailing(stop, { ...BROWSER, orgRole: "owner" }, item, "r")).rejects.toThrow("A second person has to confirm this");
     expect(asked).toEqual([PROJECT]);
     expect((await readKnownFailingRow(h.store, ORG, PROJECT))!.marks).toEqual([]);
     expect(await h.items()).toHaveLength(1);
+  });
+});
+
+describe("when a second person is needed (owner decision F4)", () => {
+  const record = (taskIds: string[], taskCount = taskIds.length) => ({ taskIds, taskCount, cause: CAUSE, epoch: 1 });
+  const need = (h: ReturnType<typeof harness>, r: ReturnType<typeof record>) => fixSetupNeedsSecondPerson({ caller: WHO, record: r, project: PROJECT, policy: h.policy });
+
+  it("is not needed for a presser who owns none of the affected tasks: one maintainer may mark", async () => {
+    const h = harness();
+    expect(await need(h, record([task(1), task(2)]))).toEqual({ need: "not_needed", why: "not_needed" });
+  });
+
+  it("is needed when the presser is the effective owner of any affected task", async () => {
+    const h = harness();
+    h.owners.set(task(2), "dev_a");
+    expect(await need(h, record([task(1), task(2), task(3)]))).toEqual({ need: "needed", why: "owner_of_affected_task" });
+  });
+
+  it("is needed when an owner cannot be told: a task that cannot be read, one from another company, or no ports at all", async () => {
+    const h = harness();
+    const broken = { ...h.policy, task: async (id: string) => { if (id === task(2)) throw new Error("unreadable"); return h.policy.task(id); } };
+    expect(await fixSetupNeedsSecondPerson({ caller: WHO, record: record([task(1), task(2)]), project: PROJECT, policy: broken })).toEqual({ need: "needed", why: "owner_unknown" });
+    const missing = { ...h.policy, task: async () => undefined };
+    expect((await fixSetupNeedsSecondPerson({ caller: WHO, record: record([task(1)]), project: PROJECT, policy: missing })).why).toBe("owner_unknown");
+    const foreign = { ...h.policy, task: async (id: string) => ({ ...(await h.policy.task(id))!, orgId: "org_zzzzzzzzzzzzzzzzzzzz" }) as never };
+    expect((await fixSetupNeedsSecondPerson({ caller: WHO, record: record([task(1)]), project: PROJECT, policy: foreign })).why).toBe("owner_unknown");
+    expect(await fixSetupNeedsSecondPerson({ caller: WHO, record: record([task(1)]), project: PROJECT, policy: undefined })).toEqual({ need: "needed", why: "owner_unknown" });
+  });
+
+  it("is needed when the record is full (25 tasks): not every owner is known", async () => {
+    const h = harness();
+    const ids = Array.from({ length: FIX_SETUP_TASKS_MAX }, (_, n) => task(n + 1));
+    expect(await need(h, record(ids, FIX_SETUP_TASKS_MAX))).toEqual({ need: "needed", why: "record_full" });
+    expect(await need(h, record(ids.slice(0, 3), 3))).toEqual({ need: "not_needed", why: "not_needed" });
+  });
+
+  it("is needed for everyone when the company turned on always two people, and when that setting cannot be read", async () => {
+    const h = harness();
+    h.always.value = true;
+    expect(await need(h, record([task(1)]))).toEqual({ need: "needed", why: "always_two" });
+    const unreadable = { ...h.policy, alwaysTwoPeople: async () => { throw new Error("unreadable"); } };
+    expect(await fixSetupNeedsSecondPerson({ caller: WHO, record: record([task(1)]), project: PROJECT, policy: unreadable })).toEqual({ need: "needed", why: "always_two" });
   });
 });
 

@@ -155,6 +155,13 @@ export interface SessionOwnerSubject { kind: "session_owner"; sessionId: Session
  */
 export interface TestEnvSubject { kind: "test_env"; project: string; digest: string; expectedRevision: number }
 
+/**
+ * Setup and test health (SH17, owner decision F4): a SECOND person's confirmation of "Mark as known failing" for a Fix setup card, bound to the card it was made for (project, cause, record epoch and version) and to the
+ * exact set of tests the card marks (`testSetSha256`, the sha256 of the sorted "check, test" lines). Approving it (on the confirmation page, with a fresh sign-in) records consent and changes nothing; the maintainer who
+ * pressed Mark then presses it again, and the broker reads this record, both people's live authority and the sign-in proof again before it marks anything.
+ */
+export interface KnownFailingSubject { kind: "known_failing"; project: string; cause: string; epoch: number; recordVersion: number; testSetSha256: string }
+
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5). */
 /**
  * Plan 6 Task 19: turns self-approval on for a project's code settings, while they are still at `settingsRevision`. An organization owner or admin decides it; nothing else about the
@@ -178,7 +185,7 @@ export interface PlaybookDefaultProcessSubject { kind: "playbook_default_process
 export interface SetupItemSubject { kind: "setup_item"; project: string; draftTaskId: string; itemId: string; itemKind: "repository" | "devcontainer" | "source" | "intake" | "secret"; digest: string }
 
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work), a setup suggestion (meta repo lane B). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject;
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -193,7 +200,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject | TestEnvSubject | KnownFailingSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -433,6 +440,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     itemKind: z.enum(["repository", "devcontainer", "source", "intake", "secret"]), digest: Hex64,
   }).strict(),
   z.object({ kind: z.literal("test_env"), project: z.string().min(1).max(63), digest: Hex64, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("known_failing"), project: z.string().min(1).max(63), cause: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), epoch: z.number().int().min(1), recordVersion: z.number().int().min(1), testSetSha256: Hex64 }).strict(),
   z.object({ kind: z.literal("playbook_default_process"), project: z.string().min(1).max(63), agentId: AgentIdSchema, layerVersion: z.number().int().min(1), expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
