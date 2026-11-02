@@ -152,7 +152,16 @@ export async function withIsolatedGit<T>(
    * parallel part's): Git then sees the project repository's objects and the files of `directory`, and nothing from the part's own `.git/objects`. `"write"` still exports to the
    * candidate's layout, so use it with `"read"` and export the throwaway repository's objects where they belong.
    */
-  options: { objectsDirectory?: string } = {},
+  options: {
+    objectsDirectory?: string;
+    /**
+     * Settings applied AFTER the candidate's own plain-value ones, so they win: for a caller that must not let the agent's config decide what a file is (the setup run's tracked-file check
+     * forces `core.filemode=true` and switches line-ending conversion off).
+     */
+    config?: ReadonlyArray<readonly [string, string]>;
+    /** Leave out the candidate's `.git/info/attributes` (the agent's own, untracked): only the attributes committed in the repository apply. */
+    ignoreInfoAttributes?: boolean;
+  } = {},
 ): Promise<T> {
   const layout = await candidateLayout(directory);
   const scratch = await mkdtemp(join(tmpdir(), "agentx-candidate-git-"));
@@ -173,7 +182,7 @@ export async function withIsolatedGit<T>(
       // Ignore patterns and attributes are plain text: the files carry no command, and the agent's own exclusions and attributes keep deciding what `add` stages.
       const infoHeld = await gitHeld.subdirectory("info", false).catch(() => undefined);
       try {
-        for (const name of ["exclude", "attributes"]) {
+        for (const name of options.ignoreInfoAttributes === true ? ["exclude"] : ["exclude", "attributes"]) {
           const bytes = infoHeld === undefined ? undefined : await readFileIn(infoHeld, name, SMALL_FILE_BYTES).catch(() => undefined);
           if (bytes !== undefined) await writeFile(join(gitDir, "info", name), bytes, { mode: 0o600 });
         }
@@ -190,7 +199,7 @@ export async function withIsolatedGit<T>(
     // Git reads `core.bare` from the repository's own config file while it sets itself up (a setting from the environment comes too late), so the throwaway
     // repository, whose config is the worker's, is made non-bare for it to take its working directory as the work tree.
     if (workTreeHeld !== undefined) await execFile("git", [`--git-dir=${gitDir}`, "config", "core.bare", "false"], { cwd: scratch, env: initEnv });
-    const config = await candidateConfigValues(layout, scratch, gitDir, configBytes);
+    const config = [...await candidateConfigValues(layout, scratch, gitDir, configBytes), ...(options.config ?? [])];
     const temporaryIndex = join(scratch, "index");
     const workIndex = join(scratch, "work-index");
     const realIndex = join(layout.gitDirectory, "index");

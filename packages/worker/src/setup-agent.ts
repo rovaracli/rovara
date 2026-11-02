@@ -194,6 +194,13 @@ export interface SetupGit {
   indexTags(directory: string): Promise<string[]>;
 }
 
+/**
+ * What decides which bytes `git add` stages, set by the check and not by the agent's own `.git/config` or `.git/info/attributes`: file modes are always compared (`core.fileMode=false` would hide a
+ * `chmod`), and no line-ending conversion happens (`core.autocrlf`, `core.eol`, `core.safecrlf`), so the work tree is compared byte for byte with what the clone checked out. Attributes committed in the
+ * repository still apply; the agent's untracked `.git/info/attributes` (an `eol` or `working-tree-encoding` rule that would normalize an edit away) is left out.
+ */
+const TRACKED_CHECK_CONFIG: ReadonlyArray<readonly [string, string]> = [["core.filemode", "true"], ["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"]];
+
 export const defaultSetupGit: SetupGit = {
   head: async (directory) => (await runIsolatedGit(directory, ["rev-parse", "--verify", "HEAD"], { timeout: 120_000 })).trim(),
   changedTracked: (directory, head) => withIsolatedGit(directory, "read", async (git) => {
@@ -202,7 +209,7 @@ export const defaultSetupGit: SetupGit = {
     // Compared with HEAD's own tree. A path that exists only in the work tree (status `A`: an untracked file, setup's own output) is not a change to a tracked file; every other difference is.
     const diff = await git.text(["diff-tree", "-r", "--name-status", "--no-renames", "-z", head, tree], { index: "none", maxBuffer: 16 * 1024 * 1024, timeout: 120_000 });
     return diff.split("\0").some((field, position) => position % 2 === 0 && field !== "" && !field.startsWith("A"));
-  }),
+  }, { config: TRACKED_CHECK_CONFIG, ignoreInfoAttributes: true }),
   indexTags: async (directory) => (await runIsolatedGit(directory, ["ls-files", "-v", "-z"], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 })).split("\0").filter((entry) => entry !== "").map((entry) => entry.slice(0, 1)),
 };
 

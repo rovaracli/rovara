@@ -367,6 +367,38 @@ describe("tracked files (a real repository, through the worker's isolated git)",
       expect(await checkTrackedFiles(r.repos, contentOnly)).toEqual({ ok: true });
     });
   });
+  describe("fix round 2: the agent's own git settings do not decide what is compared", () => {
+    it("a chmod is seen although the agent set core.fileMode=false (the mode check is forced on)", async () => {
+      const r = await repository();
+      await r.git("config", "core.fileMode", "false");
+      await chmod(join(r.directory, "a.txt"), 0o755);
+      // Positive control: with the agent's setting, git itself sees no change.
+      expect((await run("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: r.directory })).stdout.trim()).toBe("");
+      expect(await checkTrackedFiles(r.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
+    });
+    it("a line-ending rewrite is seen although the agent set core.autocrlf, core.eol or an info/attributes eol rule", async () => {
+      for (const setup of [
+        async (r: Awaited<ReturnType<typeof repository>>) => { await r.git("config", "core.autocrlf", "true"); },
+        async (r: Awaited<ReturnType<typeof repository>>) => { await r.git("config", "core.autocrlf", "input"); },
+        async (r: Awaited<ReturnType<typeof repository>>) => { await r.git("config", "core.eol", "crlf"); await r.git("config", "core.safecrlf", "false"); },
+        async (r: Awaited<ReturnType<typeof repository>>) => { await mkdir(join(r.directory, ".git/info"), { recursive: true }); await writeFile(join(r.directory, ".git/info/attributes"), "* text eol=crlf\n"); },
+        async (r: Awaited<ReturnType<typeof repository>>) => { await mkdir(join(r.directory, ".git/info"), { recursive: true }); await writeFile(join(r.directory, ".git/info/attributes"), "*.txt text eol=lf\n"); },
+      ]) {
+        const r = await repository();
+        await setup(r);
+        await writeFile(join(r.directory, "a.txt"), "one\r\n");
+        expect(await checkTrackedFiles(r.repos)).toEqual({ ok: false, reason: "tracked_files_changed" });
+      }
+    });
+    it("an untouched checkout is still clean under those settings (no false alarm)", async () => {
+      const r = await repository();
+      await r.git("config", "core.autocrlf", "true");
+      await r.git("config", "core.fileMode", "false");
+      await mkdir(join(r.directory, ".git/info"), { recursive: true });
+      await writeFile(join(r.directory, ".git/info/attributes"), "* text eol=crlf\n");
+      expect(await checkTrackedFiles(r.repos)).toEqual({ ok: true });
+    });
+  });
   it("is unreadable for a folder that is not a repository", async () => {
     const { repos } = await repository();
     const empty = await temp("setup-agent-empty-");
