@@ -4,7 +4,7 @@
 //   POST    an owner or admin, from a live browser session only (a token, the CLI or Slack never change it):
 //             { action: "set", alwaysTwoPeople: true }     applies at once (the stricter side), audited;
 //             { action: "set", alwaysTwoPeople: false }    opens a proposal (202 needs_approval) that a DIFFERENT eligible admin approves; audited;
-//             { action: "approve", changeId }              a different admin approves turning it off. The company's sole-owner exception does NOT apply: a company of one that turned it on keeps it on until a second admin joins.
+//             { action: "approve", changeId }              a different admin approves turning it off, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise). The company's sole-owner exception does NOT apply: a company of one that turned it on keeps it on until a second admin joins.
 // The rules are the shared sole-owner switch's (lessons/tier0-setting.ts), through `org/known-failing-policy.ts`: every write is conditional on the value it was made against and fenced on the membership the decision
 // rested on; an unreadable setting counts as "always two people". Answers are fixed words, booleans and ids.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
@@ -18,6 +18,7 @@ import { verifyResultsEnabled } from "../../verification/switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { jsonBody } from "./organization.js";
+import { requireFreshSignIn } from "./test-environment-wizard.js";
 import type { Tier0Failure } from "../../lessons/tier0-setting.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -97,6 +98,8 @@ export async function routeKnownFailingPolicy(deps: DeveloperRouteDependencies, 
     if (result.status === "needs_approval") return new StatusReply(202, { status: "needs_approval", changeId: result.changeId, ...(await stateOf(deps, caller)) });
     return new StatusReply(200, { status: "applied", ...(await stateOf(deps, caller)) });
   }
+  // Loosening needs the approving admin to have signed in within the last 10 minutes (the same rule as approving a less-safe test environment): a left-open browser cannot turn the safeguard off.
+  await requireFreshSignIn(deps, caller);
   const result = await approveAlwaysTwoPeopleOff(policy, { orgId, changeId: parsed.data.changeId, approverId: caller.developerId });
   if (!result.ok) throw refusal(result.code);
   logDeveloperEvent({ event: "developer.known_failing_policy_approved", orgId });

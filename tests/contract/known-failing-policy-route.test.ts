@@ -99,6 +99,23 @@ describe("turning it off", () => {
     expect(events.at(-1)).toMatchObject({ actor: { id: MAYA.developerId }, facts: { fromAlwaysTwo: true, toAlwaysTwo: false, mode: "second_person" } });
   });
 
+  it("needs the approving admin to have signed in within the last 10 minutes; an older sign-in is asked to sign in again and nothing changes", async () => {
+    const { t, audit } = await withOn();
+    const asked = await t.web(OMAR, "POST", PATH, { action: "set", alwaysTwoPeople: false });
+    const changeId = (asked.body as { changeId: string }).changeId;
+    t.ageSignIn(MAYA, 11);
+    const stale = await t.web(MAYA, "POST", PATH, { action: "approve", changeId });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(403);
+    expect(JSON.stringify(stale.body)).toContain("REAUTH_REQUIRED");
+    t.ageSignIn(MAYA, undefined);
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve", changeId })).status).toBe(403);
+    expect(await get(t)).toMatchObject({ body: { alwaysTwoPeople: true, pendingLoosening: true } });
+    expect(policyEvents(audit).map((event) => event.action)).toEqual(["company.known_failing_policy_changed", "company.known_failing_policy_proposed"]);
+    t.ageSignIn(MAYA, 9);
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve", changeId })).status).toBe(200);
+    expect(await get(t)).toMatchObject({ body: { alwaysTwoPeople: false } });
+  });
+
   it("a member cannot approve, and a second proposal while one waits is refused", async () => {
     const { t } = await withOn();
     await t.person(MAYA, "member");
