@@ -269,6 +269,8 @@ export class SetupAgentGovernor implements SetupAgentHooks {
   /** Nothing else is left to do and a host ask is open: the run parks. The wall clock stops while it is parked; 24 hours parked ends the run `hosts_waiting`. */
   parkOnHosts(): void {
     if (this.stopped !== undefined || this.parkedAt !== undefined) return;
+    // The 24 hours are the run's TOTAL wait, not one wait's: once they are used up the run does not park again, it ends.
+    if (this.parkedTotalMs >= SETUP_HOST_WAIT_MAX_HOURS * 3_600_000) { this.stop("hosts_waiting"); return; }
     this.parkedAt = this.now();
     this.armDeadline();
   }
@@ -281,8 +283,13 @@ export class SetupAgentGovernor implements SetupAgentHooks {
     this.armDeadline();
   }
 
+  /** The time spent parked so far, in all the waits of the run. */
+  private parkedSoFarMs(): number {
+    return this.parkedTotalMs + (this.parkedAt === undefined ? 0 : this.now() - this.parkedAt);
+  }
+
   private waitedOnHostsTooLong(): boolean {
-    return this.parkedAt !== undefined && this.now() - this.parkedAt >= SETUP_HOST_WAIT_MAX_HOURS * 3_600_000;
+    return this.parkedAt !== undefined && this.parkedSoFarMs() >= SETUP_HOST_WAIT_MAX_HOURS * 3_600_000;
   }
 
   // ---- the deadline
@@ -293,7 +300,7 @@ export class SetupAgentGovernor implements SetupAgentHooks {
     if (this.stopped !== undefined) return;
     const ms = this.parkedAt === undefined
       ? this.limits.wallClockMin * MINUTE_MS - this.elapsedMs()
-      : SETUP_HOST_WAIT_MAX_HOURS * 3_600_000 - (this.now() - this.parkedAt);
+      : SETUP_HOST_WAIT_MAX_HOURS * 3_600_000 - this.parkedSoFarMs();
     const set = this.input.setTimer ?? ((callback, wait) => { const handle = setTimeout(callback, wait); handle.unref(); return { cancel: () => { clearTimeout(handle); } }; });
     this.timer = set(() => {
       // A timer that fires early (the clock moved) checks again rather than ending the run on its word.

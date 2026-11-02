@@ -1342,7 +1342,7 @@ describe("ec2-ebs delivery", () => {
 
       it("sends a preparation that carries a saved environment to a worker that lacks prepare.savedEnv.v1 WITHOUT the field (it sets up fresh), logs the omission, and sends it unchanged to one that has it (SH25)", async () => {
         const repository = savedEnvRepositoryName({ env: "test", orgId: "org-1", projectId: "payments" });
-        const savedEnv = { use: { repository, digest: `sha256:${"d".repeat(64)}`, testEnvRevision: 4, environmentKey: "a".repeat(64), auth: { registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", repository, username: "AWS", password: "p".repeat(32), expiresAt: "2026-11-02T13:00:00.000Z" } }, taskTestEnvRevision: 4 };
+        const savedEnv = { repository, digest: `sha256:${"d".repeat(64)}`, testEnvRevision: 4, environmentKey: "a".repeat(64), taskTestEnvRevision: 4 };
         const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", savedEnv } } as unknown as WorkerInvocation };
         const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
         for (const features of [undefined, [], ["task.agentRun", "prepare.registries.v1"]]) {
@@ -1350,7 +1350,6 @@ describe("ec2-ebs delivery", () => {
           await expect(older.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
           expect(postedPayload(older.post)).not.toHaveProperty("savedEnv");
           expect(postedPayload(older.post)).toMatchObject({ repositoryGrant: "signed-grant" });
-          expect(JSON.stringify(older.post.mock.calls[0]![1].body)).not.toContain("p".repeat(32));
         }
         expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.saved_env_omitted"))).toBe(true);
         log.mockRestore();
@@ -1360,6 +1359,20 @@ describe("ec2-ebs delivery", () => {
         // a preparation that carries none is delivered to either, unchanged
         const plain = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant" } } as unknown as WorkerInvocation };
         await expect(delivery({ workerFeatures: async () => [] }).deliver(plain, plain.invocation)).resolves.toBe("DELIVERED");
+      });
+
+      it("refuses a setup run's preparation that carries pins on a worker that lacks prepare.pins.v1, and sends them unchanged to one that has it (P1)", async () => {
+        const pins = [{ repository: "web", commit: "c".repeat(40) }];
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", pins } } as unknown as WorkerInvocation };
+        for (const features of [undefined, [], ["task.agentRun", "prepare.metaRepo", "prepare.registries.v1"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string });
+          expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["prepare.pins.v1"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).pins).toEqual(pins);
       });
 
       it("refuses a run whose repository grant names a credential kind beyond token and password on a worker that lacks repository.credentialKinds.v1, and sends it unchanged to one that has it (P8)", async () => {

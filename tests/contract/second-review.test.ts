@@ -41,7 +41,7 @@ const replayCases = (spec: { known: number; planted: number; both: number; basel
 const PASSING_CASES = replayCases({ known: 30, planted: 20, both: 32, baselineOnly: 8, extra: 5, neither: 5 });
 const runFor = (model: ModelIdentifier, over: Partial<SecondReviewReplayRun> = {}): SecondReviewReplayRun => ({ runId: "run-1", ranAt: "2026-11-01T00:00:00.000Z", candidate: model, baseline: OPUS, cases: PASSING_CASES, ...over });
 const verdictFor = (model: ModelIdentifier, over: Partial<SecondReviewVerdict> = {}): SecondReviewVerdict => ({
-  model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4 },
+  model: secondReviewModelKey(model), replayRunId: "run-1", baseline: OPUS, shadow: { startedAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-16T00:00:00.000Z", findings: 10, agreed: 4, reviews: 10 },
   createdAt: "2026-11-20T00:00:00.000Z", createdBy: "staff:alice", ...over,
 });
 /** Evidence that holds for a model: a passing replay run and a verdict on it. */
@@ -279,11 +279,15 @@ describe("the replay check (section 9.2)", () => {
     expect(SecondReviewReplayRunSchema.safeParse({ ...run, cases: [{ ...entry, text: "model output" }] }).success).toBe(false);
   });
 
-  it("the shadow phase needs two weeks and more than 30% of findings agreed with or fixed", () => {
-    expect(secondReviewShadowPassed({ days: 14, findings: 10, agreed: 4 })).toBe(true);
-    expect(secondReviewShadowPassed({ days: 14, findings: 10, agreed: 3 })).toBe(false); // exactly 30% is not above 30%
-    expect(secondReviewShadowPassed({ days: 13, findings: 10, agreed: 10 })).toBe(false);
-    expect(secondReviewShadowPassed({ days: 30, findings: 0, agreed: 0 })).toBe(false);
+  it("the shadow phase needs two weeks, at least 10 counted reviews, and more than 30% of findings agreed with or fixed", () => {
+    expect(secondReviewShadowPassed({ days: 14, reviews: 10, findings: 10, agreed: 4 })).toBe(true);
+    expect(secondReviewShadowPassed({ days: 14, reviews: 10, findings: 10, agreed: 3 })).toBe(false); // exactly 30% is not above 30%
+    expect(secondReviewShadowPassed({ days: 13, reviews: 10, findings: 10, agreed: 10 })).toBe(false);
+    expect(secondReviewShadowPassed({ days: 30, reviews: 10, findings: 0, agreed: 0 })).toBe(false);
+    expect(secondReviewShadowPassed({ days: 14, reviews: 9, findings: 10, agreed: 10 })).toBe(false);
+    // A count that was never recorded is none.
+    expect(secondReviewShadowPassed({ days: 14, findings: 10, agreed: 10 })).toBe(false);
+    expect(SECOND_REVIEW_BAR.shadowMinReviews).toBe(10);
     expect(SECOND_REVIEW_BAR.shadowDays).toBe(14);
   });
 });

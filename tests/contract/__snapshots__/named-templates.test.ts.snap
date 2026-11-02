@@ -9218,6 +9218,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               ],
             },
+            "SECOND_REVIEW_ENABLED": {
+              "Ref": "SecondReviewEnabled",
+            },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
             },

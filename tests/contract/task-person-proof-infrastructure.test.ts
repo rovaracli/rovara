@@ -333,18 +333,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
     // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
     // 2026-11-02, merge of cloud/next 3488a7a48 into feat/saved-env-build: the four named and foreign digests were retaken for the nightly run's artifact bucket rule and the saved environment images together. Legacy did not move.
+    // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
+    // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
+    // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "182406bd94745e79ca5179741dcf42c7ed4dd521dd38f0f2c4709938a83a98af",
-        withoutRoute: "5bed94a0a753a950ee0959e52f9322308ece5b91c0a613188e09a82362db9e70",
+        withRoute: "91137fb21d371db9072a27e664164d322540b4a4d6fb1d859666bee35a4965dd",
+        withoutRoute: "a851a74ff7daec9325285f7108477e4ce144c3af285b9c7c102158f8c45325ca",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "4b7255c587bde5f287808b5da631bf25bcf8c5a60f0ee16563c8539369b298a6",
-        withoutRoute: "7f0800c8e8ccfc5bc68261d59431f6d77f88edf60ea40e09d414fe303c906aa7",
+        withRoute: "77dae9bfb7465567aa293a692d57cefd1069e3ac5122136428250595082d462b",
+        withoutRoute: "e8ce2f951acfbcd5e3658e17530a3bdd66bbd663c969da6f47b955441506d192",
       },
       {
         label: "legacy",

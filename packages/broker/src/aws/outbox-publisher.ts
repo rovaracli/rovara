@@ -5,6 +5,8 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import type { StreamRecord } from "../developer/notifications.js";
 import { projectSessions } from "../agent-sessions/projector.js";
+import { indexSecondReviewTrack, trackStoreOf } from "../rovara-code/second-review-track.js";
+import { secondReviewEnabled } from "../rovara-code/second-review-switch.js";
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { INDEX_DEFAULT_BUDGET_MS, byDeadline, indexActivity, putCountedUsage } from "./activity-index.js";
 import { requiredEnvironment, type DurableOutboxRecord } from "./lambda.js";
@@ -27,12 +29,13 @@ type IndexRun = (records: readonly StreamRecord[], options?: { deadline: number 
  * Runs the activity index and the session projector together under the same deadline. Either failing is logged by name and never fails the batch, and one
  * never waits on or hides the other (Plan 5 Task 7a).
  */
-export function indexTogether(indexes: { activity: IndexRun; sessions: IndexRun }): IndexRun {
+export function indexTogether(indexes: { activity: IndexRun; sessions: IndexRun; /** The second review's track record (lane cr-settings): a task whose second opinion changed. Best effort like the others. */ track?: IndexRun }): IndexRun {
   return async (records, options) => {
-    const [activity, sessions] = await Promise.allSettled([indexes.activity(records, options), indexes.sessions(records, options)]);
+    const [activity, sessions, track] = await Promise.allSettled([indexes.activity(records, options), indexes.sessions(records, options), indexes.track?.(records, options)]);
     const name = (reason: unknown) => (reason instanceof Error ? reason.name : "unknown");
     if (activity.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "activity_index.write_failed", error: name(activity.reason) }));
     if (sessions.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "session_projector.failed", error: name(sessions.reason) }));
+    if (track.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "second_review_track.failed", error: name(track.reason) }));
   };
 }
 
@@ -81,6 +84,16 @@ const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientC
 // A chain session's followers can't be judged here (Plan 4's readers are the broker's), so none is told from this function until Plan 4 supplies them.
 installRealtimeSink({ realtime: realtimeConfigFromEnvironment() });
 
+/**
+ * The second review's track-record index, behind the install switch `cr` (the same packed setting, given to this function as a plain variable like the dispatcher's): with it off nothing is read or written.
+ * Only a task record carrying a second opinion reaches any write. The switch is read on every batch, so turning it on or off needs no new deploy of this function.
+ */
+export const secondReviewTrackIndex = (table: () => { documentClient: Parameters<typeof trackStoreOf>[0]["documentClient"]; tableName: string }, org: () => Parameters<typeof indexSecondReviewTrack>[3], env: NodeJS.ProcessEnv = process.env): IndexRun =>
+  async (records) => {
+    if (!secondReviewEnabled(env)) return { created: 0, moved: 0, failed: 0 };
+    return indexSecondReviewTrack(records, trackStoreOf(table()), (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), org());
+  };
+
 export const handler = createOutboxPublisherHandler({
   async send(record) {
     await sqs.send(new SendMessageCommand({ QueueUrl: required(queueUrl, "DISPATCH_QUEUE_URL"), MessageBody: JSON.stringify(record) }));
@@ -118,6 +131,7 @@ export const handler = createOutboxPublisherHandler({
     putCounting: (item, counter, requestOptions) => putCountedUsage(documentClient, required(tableName, "STATE_TABLE_NAME"), item, counter, abortOptions(requestOptions?.signal)),
   }, (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS, installOrgIdFromEnvironment()),
   sessions: (records, options) => projectSessions(records, { documentClient, tableName: required(tableName, "STATE_TABLE_NAME"), now: Date.now }, { deadline: options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS }),
+  track: secondReviewTrackIndex(() => ({ documentClient, tableName: required(tableName, "STATE_TABLE_NAME") }), () => installOrgIdFromEnvironment()),
   }),
 });
 

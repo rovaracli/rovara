@@ -3,10 +3,12 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey,
+  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, sanitizeSetupProposal, setupDraftKey,
 } from "../../packages/contracts/src/index.js";
 import * as runs from "../../packages/broker/src/agents/runs.js";
 import { runGivesAgentTools, setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
+import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";
+import { operationBelongsToTask } from "../../packages/broker/src/aws/broker/setup-stopped-result.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { recordRunCost } from "../../packages/broker/src/spend/estimate.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -35,12 +37,14 @@ const ops = (t: Bench, workspaceId: string) => t.db.find((item) => item.entityTy
 const outbox = (t: Bench, operationId: string) => WorkerInvocationSchema.parse((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0] as { invocation: unknown }).invocation);
 
 /** Starts a run and finishes its preparation, so the setup operation exists. */
-async function started(t: Bench) {
+/** The head the bench's code host answers when the broker pins the run (setup-wizard-testenv.ts getDefaultBranchHead). */
+const PINNED = [{ repositoryId: "web", baseCommitSha: "c".repeat(40) }];
+async function started(t: Bench, preparedBase: Array<{ repositoryId: string; baseCommitSha: string }> | null = PINNED) {
   const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
   expect(reply.status, JSON.stringify(reply.body)).toBe(202);
   const [task] = tasks(t);
   const prepare = ops(t, task!.workspaceId).find((operation) => operation.kind === "prepare")!;
-  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase: undefined } });
+  await t.finish(task!.workspaceId, prepare.id, "SUCCEEDED", { result: { preparedBase: preparedBase ?? undefined } });
   const own = ops(t, task!.workspaceId).find((operation) => operation.kind === "task")!;
   // The worker's first event moves the operation to RUNNING, as it does for every task.
   await t.events(task!.workspaceId, own.id, [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
@@ -83,6 +87,67 @@ describe("with the switch on", () => {
     expect(claims.actions).toContain("setup-agent");
     // The run's limit is the setup budget ($4), not the planning limit.
     expect(task["budgetUsd"] === undefined || task["budgetUsd"] === SETUP_AGENT_LIMITS_DEFAULT.budgetCents / 100).toBe(true);
+  });
+
+  it("P1: the broker pins each repository's head in the prepare invocation, keeps the worker's report only when it equals the pin, and sends those commits in the run's payload", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own } = await started(t);
+    const prepare = ops(t, task.workspaceId).find((operation) => operation.kind === "prepare")!;
+    const sentPrepare = outbox(t, prepare.id);
+    if (sentPrepare.kind !== "prepare") throw new Error("not a prepare");
+    expect(sentPrepare.payload.pins).toEqual([{ repository: "web", commit: "c".repeat(40) }]);
+    expect(t.db.find((item) => item.id === prepare.id)[0]).toMatchObject({ preparePins: [{ repository: "web", commit: "c".repeat(40) }] });
+    expect(t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]).toMatchObject({ preparedBase: PINNED });
+    const invocation = outbox(t, own.id);
+    if (invocation.kind !== "task") throw new Error("not a task");
+    expect(invocation.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT, commits: [{ repository: "web", commit: "c".repeat(40) }] });
+  });
+
+  it("P1: a report that is not the pinned head, or none at all, leaves the run with no commits (the worker then refuses it)", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    for (const report of [[{ repositoryId: "web", baseCommitSha: "a".repeat(40) }], null]) {
+      const t = await bench();
+      const { task, own } = await started(t, report);
+      expect(t.db.find((item) => item.taskId === task.taskId && item.purpose === "setup_agent")[0]?.preparedBase).toBeUndefined();
+      const sent = outbox(t, own.id);
+      if (sent.kind !== "task") throw new Error("not a task");
+      expect(sent.payload.setupAgent).toEqual({ limits: SETUP_AGENT_LIMITS_DEFAULT });
+    }
+  });
+
+  it("P1: a setup run that was paused for its budget is pinned again when it is dispatched, with the head read then, and the operation keeps the new pins", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(reply.status).toBe(202);
+    const task = tasks(t)[0]!;
+    const prepare = ops(t, task.workspaceId).find((operation) => operation.kind === "prepare")!;
+    // What a paused start's dispatch is told (continue.ts) and does (workspace-preparation.ts).
+    const options = heldPreparationOptions({ purpose: "setup_agent" }, { operationId: prepare.id, readOnly: true });
+    expect(options).toMatchObject({ pinHeads: true, setupDraft: true, readOnly: true });
+    for (const purpose of ["setup_draft", "diagnosis", "nightly_run", "plan"] as const) expect(heldPreparationOptions({ purpose } as never, { operationId: prepare.id }), purpose).not.toHaveProperty("pinHeads");
+    t.githubHead.mockResolvedValueOnce("e".repeat(40));
+    const project = await t.actions.projectRevision(TEST_ORG, NAME, 1);
+    const { items } = await t.actions.preparationDispatch(project!, task.workspaceId, prepare.id, String(task["ownerKey"]), options);
+    const outboxItem = items.find((item) => item.Put?.Item?.entityType === "OUTBOX")!.Put!.Item as { invocation: { payload: { pins?: unknown } } };
+    expect(outboxItem.invocation.payload.pins).toEqual([{ repository: "web", commit: "e".repeat(40) }]);
+    expect(items.find((item) => item.Update?.UpdateExpression === "SET preparePins = :pins")!.Update!.ExpressionAttributeValues).toEqual({ ":pins": [{ repository: "web", commit: "e".repeat(40) }] });
+    // A head that cannot be read refuses the dispatch; nothing is sent without a pin.
+    t.githubHead.mockRejectedValueOnce(new Error("GitHub is down"));
+    await expect(t.actions.preparationDispatch(project!, task.workspaceId, prepare.id, String(task["ownerKey"]), options)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // A dispatch for any other kind of run carries no pins.
+    const plain = await t.actions.preparationDispatch(project!, task.workspaceId, prepare.id, String(task["ownerKey"]), { readOnly: true, setupDraft: true });
+    expect((plain.items.find((item) => item.Put?.Item?.entityType === "OUTBOX")!.Put!.Item as { invocation: { payload: { pins?: unknown } } }).invocation.payload.pins).toBeUndefined();
+  });
+
+  it("P1: a head the broker cannot read refuses the start, and nothing is started", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    t.githubHead.mockRejectedValueOnce(new Error("GitHub is down"));
+    const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect(tasks(t)).toEqual([]);
   });
 
   it("holds the start to the payer the route resolved once (payerFromRules), so a setting that changes in between is a retryable busy answer and never a charge to another", async () => {
@@ -218,6 +283,83 @@ describe("the end", () => {
     const stopped = await t.dev(MAYA, "POST", `${ROUTE}/stop`, { requestId: randomUUID() });
     expect(stopped.status, JSON.stringify(stopped.body)).toBe(202);
     expect(t.db.get(taskKey(task.taskId))).toMatchObject({ setupAgentStop: { by: MAYA.developerId } });
+  });
+});
+
+describe("F5: a person's Stop keeps the partial proposal", () => {
+  const partialFor = (task: Record<string, unknown>) => {
+    const read = sanitizeSetupProposal({ setup: [{ repo: "web", commands: ["npm ci"], confidence: "medium", from: [{ kind: "inferred", repo: "web", note: "worked when run" }] }], tests: [], notes: "stopped" }, { basedOnRevision: Number(task.startingRevision), repositories: [{ name: "web", url: "https://github.com/acme/web.git" }] });
+    if (!read.ok) throw new Error("fixture");
+    return read.proposal;
+  };
+  const summary = { stop: "stopped_by_person", commandsRun: 3, spendCents: 20, elapsedMs: 9000, hostAsks: 0, partial: true };
+  const stopIt = async (t: Bench) => {
+    await t.person(MAYA, "member", "maintainer");
+    const run = await started(t);
+    const stopped = await t.dev(MAYA, "POST", `${ROUTE}/stop`, { requestId: randomUUID() });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(202);
+    const cancel = ops(t, run.task.workspaceId).find((operation) => operation.kind === "cancel")!;
+    return { ...run, cancel };
+  };
+  const report = (task: Record<string, unknown>) => ({ conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_AGENT", setupProposal: partialFor(task), setupRunSummary: { ...summary, stop: "infrastructure" } });
+
+  it("the cancel ends the run at once as the person's stop; the worker's own report, a moment later, adds the partial proposal and who stopped it", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    const early = await t.dev(MAYA, "GET", ROUTE);
+    expect(early.body).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+    expect(early.body).not.toHaveProperty("proposal");
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    const late = await t.dev(MAYA, "GET", ROUTE);
+    expect(late.body).toMatchObject({ status: "failed", stop: "stopped_by_person", summary: { stop: "stopped_by_person", partial: true, commandsRun: 3 }, stoppedBy: { name: expect.any(String) as string } });
+    expect(JSON.stringify((late.body as { proposal?: unknown }).proposal)).toContain("npm ci");
+    // The run is over and nothing was applied: no settings revision, no test-environment proposal.
+    expect(t.db.find((item) => item.entityType === "TESTENV" || String(item.pk).includes("TESTENV#"))).toEqual([]);
+  });
+
+  it("a report that arrives with a status other than the cancelled one is accepted too, never a conflict, and a second report changes nothing", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: report(task) });
+    const first = (await t.dev(MAYA, "GET", ROUTE)).body as { proposal?: unknown };
+    expect(JSON.stringify(first.proposal)).toContain("npm ci");
+    const changed = report(task);
+    (changed.setupProposal as { notes?: string }).notes = "another";
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: changed });
+    expect(((await t.dev(MAYA, "GET", ROUTE)).body as { proposal?: unknown }).proposal).toEqual(first.proposal);
+  });
+
+  it("when the worker's report beats the cancel's, the same stopped run with the partial proposal is stored", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    const state = (await t.dev(MAYA, "GET", ROUTE)).body as { status: string; stop: string; proposal?: unknown };
+    expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+    expect(JSON.stringify(state.proposal)).toContain("npm ci");
+  });
+
+  it("L10: a late report is trusted only for the task's own workspace and company", () => {
+    const task = { workspaceId: "w1", orgId: TEST_ORG } as never;
+    expect(operationBelongsToTask(task, { workspaceId: "w1", orgId: TEST_ORG })).toBe(true);
+    expect(operationBelongsToTask(task, { workspaceId: "w1" })).toBe(true);
+    expect(operationBelongsToTask(task, { workspaceId: "w2", orgId: TEST_ORG })).toBe(false);
+    expect(operationBelongsToTask(task, { workspaceId: "w1", orgId: "org_bbbbbbbbbbbbbbbbbbbb" })).toBe(false);
+  });
+
+  it("a report for a run nobody stopped adds nothing (a sweep's cancel is not a person's stop)", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own } = await started(t);
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    const state = (await t.dev(OMAR, "GET", ROUTE)).body;
+    expect(state).toMatchObject({ status: "failed", stop: "infrastructure" });
+    expect(state).not.toHaveProperty("proposal");
   });
 });
 

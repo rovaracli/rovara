@@ -59,6 +59,13 @@ export const projectSecondReviewLoweringNeedsSecondPerson = (from: SecondReviewM
 export const lockSecondReviewLoweringNeedsSecondPerson = (from: SecondReviewMode | undefined, to: SecondReviewMode | undefined): boolean => modeRank(to ?? "off") < modeRank(from ?? "off");
 
 /**
+ * The mode writer's rule (owner decision 2026-11-02, lane cr-settings): ANY lowering of `review.otherCompany`, for the company or for a project, needs a second admin (the one-admin rule): `on` to `shadow` or `off`, and
+ * `shadow` to `off`. Raising, and setting the same mode again, applies at once. A project override can only be as strict as the company's mode or stricter, so a project's lowering is judged on the mode it
+ * effectively has before and after (clearing an override can lower it to the company's mode).
+ */
+export const secondReviewModeLoweringNeedsSecondPerson = (from: SecondReviewMode, to: SecondReviewMode): boolean => modeRank(to) < modeRank(from);
+
+/**
  * The mode a project is configured for: its own choice, else the company's default, else `off`; never below the company's lock. A lock never loosens a project, and a project's own choice never
  * goes under the lock. This is the CONFIGURED mode: `on` still needs a model that earned it (`SecondReviewVerdict`), and the install switch `cr` still has to be on.
  */
@@ -149,6 +156,8 @@ export const SECOND_REVIEW_BAR = {
   /** Dismissed blocking findings must stay UNDER one per this many tasks. */
   dismissedUnderOnePerTasks: 5,
   shadowDays: 14,
+  /** The shadow phase needs at least this many answered second opinions counted (a few findings over two weeks is not a track record). */
+  shadowMinReviews: 10,
   /** Agreed findings must be MORE than this many in 10 (3 is 30%). */
   shadowAgreedOverTenths: 3,
 } as const;
@@ -221,11 +230,13 @@ export const SecondReviewShadowResultSchema = z.object({
   days: z.number().int().min(0).max(3650),
   findings: z.number().int().min(0).max(1_000_000),
   agreed: z.number().int().min(0).max(1_000_000),
+  /** Answered second opinions counted. Absent (a verdict written before it existed) is none, so it cannot pass the bar. */
+  reviews: z.number().int().min(0).max(1_000_000).optional(),
 }).strict().refine((result) => result.agreed <= result.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] });
 export type SecondReviewShadowResult = z.infer<typeof SecondReviewShadowResultSchema>;
 
 export function secondReviewShadowPassed(result: SecondReviewShadowResult): boolean {
-  return result.days >= SECOND_REVIEW_BAR.shadowDays && result.findings > 0 && result.agreed * 10 > result.findings * SECOND_REVIEW_BAR.shadowAgreedOverTenths;
+  return result.days >= SECOND_REVIEW_BAR.shadowDays && (result.reviews ?? 0) >= SECOND_REVIEW_BAR.shadowMinReviews && result.findings > 0 && result.agreed * 10 > result.findings * SECOND_REVIEW_BAR.shadowAgreedOverTenths;
 }
 
 /**
@@ -240,7 +251,7 @@ export const SecondReviewVerdictSchema = z.object({
   replayRunId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
   baseline: z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict(),
   /** The shadow window (it must start after the replay run) and what it counted. */
-  shadow: z.object({ startedAt: z.string().datetime(), endedAt: z.string().datetime(), findings: z.number().int().min(0).max(1_000_000), agreed: z.number().int().min(0).max(1_000_000) }).strict()
+  shadow: z.object({ startedAt: z.string().datetime(), endedAt: z.string().datetime(), findings: z.number().int().min(0).max(1_000_000), agreed: z.number().int().min(0).max(1_000_000), reviews: z.number().int().min(0).max(1_000_000).optional() }).strict()
     .refine((window) => window.agreed <= window.findings, { message: "agreed findings are a part of the findings", path: ["agreed"] }),
   createdAt: z.string().datetime(),
   /** Who recorded it: a Rovara staff member (Public) or the install (Enterprise); never a project member. */
@@ -265,7 +276,69 @@ export function secondReviewVerdictHolds(verdict: SecondReviewVerdict, run: Seco
   const ended = Date.parse(verdict.shadow.endedAt);
   const replayed = Date.parse(run.ranAt);
   if ([started, ended, replayed].some(Number.isNaN) || started <= replayed || ended < started) return false;
-  return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed });
+  return secondReviewShadowPassed({ days: Math.floor((ended - started) / DAY_MS), findings: verdict.shadow.findings, agreed: verdict.shadow.agreed, ...(verdict.shadow.reviews === undefined ? {} : { reviews: verdict.shadow.reviews }) });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// The track record (lane cr-settings): what a model's second opinions came to on this company's own tasks, shown on the settings page for the admin's "turn on" decision, and counted into the verdict's shadow window
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** What became of one finding the second reviewer raised: nobody has acted yet (`open`), the next round no longer had it (`fixed`: agreed with), or the owner accepted it as a risk / the task merged with it standing (`wrong`). */
+export const SECOND_REVIEW_FINDING_OUTCOMES = ["open", "fixed", "wrong"] as const;
+export type SecondReviewFindingOutcome = (typeof SECOND_REVIEW_FINDING_OUTCOMES)[number];
+
+/** One answered second opinion of a task, for one candidate, as the track record keeps it. The findings are fingerprints only (`workflowFindingFingerprint`), never text. */
+export const SecondReviewTrackRowSchema = z.object({
+  model: z.string().min(1).max(256),
+  mode: z.enum(["shadow", "on"]),
+  taskId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/u),
+  project: z.string().min(1).max(100),
+  candidateDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  recordedAt: z.string().datetime(),
+  /** The first review had already cleared this code when the second opinion came in: a finding that is then fixed is one the first review missed. */
+  firstCleared: z.boolean(),
+  /**
+   * `fp` is the finding's exact fingerprint (it moves with the line number). `key` is its STABLE key (a hash of the cited file and the normalised text, never the line), and `file` a hash of the cited file's path: two
+   * rounds that word or place the same finding alike share a `key`. Both are absent on a row written before they existed, and on a finding that cites no file (`file`).
+   */
+  findings: z.array(z.object({ fp: z.string().regex(/^[a-f0-9]{64}$/u), outcome: z.enum(SECOND_REVIEW_FINDING_OUTCOMES), key: z.string().regex(/^[a-f0-9]{64}$/u).optional(), file: z.string().regex(/^[a-f0-9]{64}$/u).optional() }).strict()).max(20),
+  /** Bumped by every outcome write, so two writers cannot overwrite each other. */
+  rev: z.number().int().min(0),
+}).strict();
+export type SecondReviewTrackRow = z.infer<typeof SecondReviewTrackRowSchema>;
+
+/** The numbers the settings page shows for a model on a company. All counts, no text. */
+export interface SecondReviewTrackRecord {
+  model: string;
+  /** Whole days from the first to the last answered opinion on record (0 with none). */
+  days: number;
+  firstAt?: string;
+  lastAt?: string;
+  /** Answered second opinions (a review that gave no answer is not counted). */
+  reviews: number;
+  /** Blocking findings raised. */
+  findings: number;
+  /** Agreed with or fixed: the next round no longer had the finding. */
+  agreed: number;
+  /** Wrong: the owner accepted it as a risk, or the task merged with it still standing. */
+  wrong: number;
+  /** Nobody has acted yet. */
+  open: number;
+  /** Agreed findings on code the first review had already cleared: what the second opinion caught and the first missed. */
+  caughtMissedByFirst: number;
+}
+
+/** Counts a model's rows. The same function feeds the settings page and the verdict's shadow window, so the page and the evidence cannot disagree. */
+export function summarizeSecondReviewTrack(model: string, rows: readonly SecondReviewTrackRow[], window?: { from: string; to: string }): SecondReviewTrackRecord {
+  const inWindow = rows.filter((row) => row.model === model && (window === undefined || (row.recordedAt >= window.from && row.recordedAt <= window.to)))
+    .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
+  const count = (outcome: SecondReviewFindingOutcome, only?: (row: SecondReviewTrackRow) => boolean) => inWindow.reduce((total, row) => total + (only === undefined || only(row) ? row.findings.filter((finding) => finding.outcome === outcome).length : 0), 0);
+  const firstAt = inWindow[0]?.recordedAt, lastAt = inWindow.at(-1)?.recordedAt;
+  return {
+    model, days: firstAt === undefined || lastAt === undefined ? 0 : Math.floor((Date.parse(lastAt) - Date.parse(firstAt)) / DAY_MS), ...(firstAt === undefined ? {} : { firstAt }), ...(lastAt === undefined ? {} : { lastAt }),
+    reviews: inWindow.length, findings: inWindow.reduce((total, row) => total + row.findings.length, 0),
+    agreed: count("fixed"), wrong: count("wrong"), open: count("open"), caughtMissedByFirst: count("fixed", (row) => row.firstCleared),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------

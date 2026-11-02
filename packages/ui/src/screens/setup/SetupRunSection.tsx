@@ -5,6 +5,7 @@ import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { ConfirmCard } from "./ConfirmCard.js";
+import { PartialProposal } from "./PartialProposal.js";
 import { CommandBox, SteerBox } from "./RunControls.js";
 import { RunJournal } from "./RunJournal.js";
 import { STOP_WORDS } from "./words.js";
@@ -40,6 +41,7 @@ export default function SetupRunSection({ project, settingsRevision }: { project
     {running && view.sessionId !== undefined && <SteerBox sessionId={view.sessionId} />}
     {running && <CommandBox project={project} onRan={() => { void client.invalidateQueries({ queryKey: ["onboard", "setup-journal", project] }); }} />}
     {view.status !== "none" && <RunJournal project={project} running={running} />}
+    {view.status === "failed" && view.stop === "stopped_by_person" && view.proposal !== undefined && view.stoppedBy !== undefined && <PartialProposal view={{ ...view, proposal: view.proposal, stoppedBy: view.stoppedBy }} />}
     {view.status === "ready" && view.proposal !== undefined && <ConfirmCard project={project} view={{ ...view, proposal: view.proposal }} settingsRevision={settingsRevision} onProposed={() => { void client.invalidateQueries({ queryKey: ["onboard", "test-environment", project] }); }} />}
   </section>;
 }

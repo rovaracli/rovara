@@ -5,7 +5,7 @@ import type { WorkerInvocation } from "@agentx/contracts";
 import { EventBatcher, type EventBatchSink } from "./events.js";
 import { createWorkspacePiSession, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
 import type { PreparationManifest } from "./prepare.js";
-import type { WorkerCancellationController } from "./cancel.js";
+import { WorkerOperationCancelledError, type WorkerCancellationController } from "./cancel.js";
 import { runSetupAgent, type SetupRunResult } from "./setup-agent-run.js";
 import { createSetupSandbox } from "./setup-agent.js";
 import { setupWorkspaceKey, startRunNetwork } from "./setup-network.js";
@@ -24,6 +24,14 @@ export interface SetupInvocationDependencies {
   docker?: DockerCli | undefined;
   taskShell?: TaskShellSelection | undefined;
   environment?: NodeJS.ProcessEnv | undefined;
+}
+
+/**
+ * F5: a run that was stopped (the cancel aborted it) has finished and holds its partial proposal. It ends as cancelled and carries that report, because the cancel has already made this operation's journal
+ * CANCELLED (a success could not be recorded). Undefined for a run nobody cancelled.
+ */
+export function cancelledWithReport(controller: WorkerCancellationController | undefined, operationId: string, result: SetupRunResult): WorkerOperationCancelledError | undefined {
+  return controller?.isCancelled(operationId) === true ? new WorkerOperationCancelledError(operationId, result) : undefined;
 }
 
 /** The result a setup run reports (read again by the broker: the proposal by `sanitizeSetupProposal`, the summary by its schema). */
@@ -52,7 +60,7 @@ export async function runSetupAgentInvocation(
   const conversationId = invocation.payload.conversationId;
   const result = await runSetupAgent({
     rootPath: canonicalRoot, operationId: invocation.operationId, basedOnRevision: invocation.projectRevision, limits: setup.limits, price,
-    repositories: manifest.repositories,
+    repositories: manifest.repositories, commits: setup.commits,
     ...(manifest.meta === undefined ? {} : { metaRepo: manifest.meta.name }),
     ports: {
       startNetwork: async () => startRunNetwork(docker, { taskId: invocation.operationId, image, workspace: await setupWorkspaceKey(canonicalRoot) }),
@@ -73,6 +81,8 @@ export async function runSetupAgentInvocation(
       },
     },
   });
+  const stopped = cancelledWithReport(dependencies.cancellationController, invocation.operationId, result);
+  if (stopped !== undefined) { await events.flush(); throw stopped; }
   await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_AGENT" });
   await events.flush();
   return { conversationId, reopened: false, ...result };

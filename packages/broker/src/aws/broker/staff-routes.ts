@@ -27,6 +27,8 @@ export const INSTALL_OPERATOR_ROUTES: readonly RegExp[] = [
   /^\/v1\/admin\/runtime-installation\/(?:challenges|registrations|status)$/,
   new RegExp(`^/v1/admin/e2e/model-checks(?:/${UUID})?$`),
   /^\/v1\/admin\/org\/budget$/,
+  // Second review (switch `cr`): the evidence that lets a model block is written by the install's administrator here, by Rovara staff on the hosted cloud.
+  /^\/v1\/admin\/org\/second-review\/(?:replay|verdict)$/,
   /^\/v1\/admin\/egress\/(?:pending|approve|reject)$/,
   /^\/v1\/admin\/tasks\/[^/]+\/(?:e2e-replay|share-mode)$/,
   new RegExp(`^/v1/admin/github/webhook-deliveries/${UUID}/retry$`),

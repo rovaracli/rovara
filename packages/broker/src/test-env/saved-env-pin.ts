@@ -16,12 +16,12 @@ export function pinOfStoredPin(pin: TestEnvPin | undefined): SavedEnvPin | undef
 }
 
 /**
- * What a task start asks its preparation for: a setup draft reads only (and names no pin); an agent-step run reads only with its checkouts (and names none); any other task names its pin, when it has one.
+ * What a task start asks its preparation for: a setup draft reads only (and names no pin; a setup agent's run also asks for pins); an agent-step run reads only with its checkouts (and names none); any other task names its pin, when it has one.
  * Undefined: the ordinary preparation.
  */
-export function startPreparationOptions<Checkout>(input: { settingUpDraft: boolean; agentSteps: { checkout: readonly Checkout[] } | undefined; testEnvPin: SavedEnvPin | undefined }):
-  { readOnly: true; setupDraft: true } | { checkout?: readonly Checkout[]; readOnly: true } | { testEnvPin: SavedEnvPin } | undefined {
-  if (input.settingUpDraft) return { readOnly: true, setupDraft: true };
+export function startPreparationOptions<Checkout>(input: { settingUpDraft: boolean; pinHeads?: boolean; agentSteps: { checkout: readonly Checkout[] } | undefined; testEnvPin: SavedEnvPin | undefined }):
+  { readOnly: true; setupDraft: true; pinHeads?: true } | { checkout?: readonly Checkout[]; readOnly: true } | { testEnvPin: SavedEnvPin } | undefined {
+  if (input.settingUpDraft) return { readOnly: true, setupDraft: true, ...(input.pinHeads === true ? { pinHeads: true as const } : {}) };
   if (input.agentSteps !== undefined) return { ...(input.agentSteps.checkout.length === 0 ? {} : { checkout: input.agentSteps.checkout }), readOnly: true };
   return input.testEnvPin === undefined ? undefined : { testEnvPin: input.testEnvPin };
 }

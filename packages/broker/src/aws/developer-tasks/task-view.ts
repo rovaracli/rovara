@@ -333,7 +333,9 @@ export async function taskView(
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   // SH34: the second review by another AI company (switch `cr`), from the task record beside the workflow; full reads only. Silent for shadow that did not run.
-  const secondReview = options.details && task.workflow !== undefined ? secondReviewTaskView(task, task.workflow.candidate?.digest) : undefined;
+  const secondReviewBase = options.details && task.workflow !== undefined ? secondReviewTaskView(task, task.workflow.candidate?.digest) : undefined;
+  // The owner (and only the owner) is offered "I've seen it" while an acknowledgement is asked for; the route behind it checks the same thing again.
+  const secondReview = secondReviewBase === undefined ? undefined : { ...secondReviewBase, ...(secondReviewBase.needsAcknowledgement && !secondReviewBase.acknowledged && options.actor === "owner" ? { canAcknowledge: true } : {}) };
   // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
   // full read, and only when this task's pull request was published with risk low.
   const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;

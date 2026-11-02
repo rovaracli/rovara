@@ -36,7 +36,7 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { canonicalModelName, effectiveSetupAgentLimits, metaRepositoryOf } from "@agentx/contracts";
+import { canonicalModelName, metaRepositoryOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
@@ -61,6 +61,7 @@ import { planQualityContextOf } from "../../developer/plan-self-check.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
+import { setupAgentWireOf } from "../../rovara-code/setup-agent.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { testEnvPlanFor } from "../../test-env/task-plan.js";
 import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
@@ -543,7 +544,7 @@ export async function taskOperationParts(
       // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
       // SH14: the limits the setup run started with, read again through the contract (a damaged value is held to the defaults). A worker without "task.setupAgent.v1" is refused the run at delivery, never sent it without the field.
-      ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: { limits: effectiveSetupAgentLimits(task?.setupAgentLimits) } } : {}),
+      ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: setupAgentWireOf(task) } : {}),
       // NH-1: what the nightly run was started to run (the broker fixed it at the fire). A worker without "task.nightlyRun.v1" is refused the run at delivery, never sent it without the field.
       ...(nightlyRun === undefined ? {} : { nightlyRun }),
       // Live interaction F3: the marker that makes the worker's read-only look a diagnosis. A worker without "task.diagnosis.v1" is refused the run at delivery, never sent it without the field.

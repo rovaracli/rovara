@@ -111,6 +111,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
           // Meta repo lane A3: the project's meta repository, read-only and sparse.
           ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
+          // P1: the heads the broker pinned for a setup run.
+          ...(invocation.payload.pins === undefined ? {} : { pins: invocation.payload.pins }),
           // N9 (INTG2): the project's private package registries, for the setup and readiness commands.
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation })) }),

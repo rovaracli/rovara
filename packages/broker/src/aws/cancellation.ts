@@ -67,6 +67,8 @@ export interface OperationRecord extends Operation {
   savedEnvDigest?: string;
   /** How many pull logins this preparation was given (at most 3). */
   savedEnvLoginCount?: number;
+  /** P1: the default-branch head the BROKER read for each repository when it built a setup run's prepare invocation (sent as `pins`). The task keeps the worker's report only when it equals these. */
+  preparePins?: Array<{ repository: string; commit: string }>;
   /** The model proxy keys minted for this operation's worker by key id (a hash), when no task record keeps them (Slack work, ruling R31). */
   modelKeyIds?: string[];
   /** The project revision whose non-disk settings applied, which may be newer than the workspace's. */

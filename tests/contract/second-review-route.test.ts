@@ -62,10 +62,17 @@ describe("the preview", () => {
     expect(body.current).toMatchObject({ source: "none", models: [], reason: "no-candidate" });
   });
 
-  it("needs to know the model that writes the code", async () => {
+  it("does not need to know the model that writes the code", async () => {
     const { t } = await bench();
     on();
-    expect((await t.web(OMAR, "GET", PATH)).status).toBe(400);
+    // Not any more: the company's page does not know which model writes the code (it differs per task), so the list is shown with fit unknown, and a task checks the real fit.
+    const unknown = await t.web(OMAR, "GET", PATH);
+    expect(unknown.status).toBe(200);
+    const body = bodyOf(unknown) as ReturnType<typeof bodyOf> & { fitKnown: boolean };
+    expect(body.fitKnown).toBe(false);
+    expect(body.models.every((entry) => entry.eligible)).toBe(true);
+    expect(body.current).toMatchObject({ source: "default" });
+    expect(body.current.line).toMatch(/^Using default: .+ \(change\)$/u);
   });
 });
 

@@ -32,6 +32,8 @@ describe("the pin a preparation names", () => {
     expect(startPreparationOptions({ settingUpDraft: false, agentSteps: undefined, testEnvPin: pin })).toEqual({ testEnvPin: pin });
     expect(startPreparationOptions({ settingUpDraft: false, agentSteps: undefined, testEnvPin: undefined })).toBeUndefined();
     expect(startPreparationOptions({ settingUpDraft: true, agentSteps: undefined, testEnvPin: pin })).toEqual({ readOnly: true, setupDraft: true });
+    // a setup agent's run also asks for pins (P1), and still names no pin
+    expect(startPreparationOptions({ settingUpDraft: true, pinHeads: true, agentSteps: undefined, testEnvPin: pin })).toEqual({ readOnly: true, setupDraft: true, pinHeads: true });
     expect(startPreparationOptions({ settingUpDraft: false, agentSteps: { checkout: [] }, testEnvPin: pin })).toEqual({ readOnly: true });
     expect(startPreparationOptions({ settingUpDraft: false, agentSteps: { checkout: ["pr"] }, testEnvPin: pin })).toEqual({ checkout: ["pr"], readOnly: true });
   });

@@ -489,8 +489,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const testEnv = asWorkflow ? await testEnvironmentForStart({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, { orgId: deps.orgId, project: request.project, taskId }) : {};
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
   // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
-  // Saved environments (SH25): only a task that USES the approved environment names its pin, so only its preparation may be told a saved image (never a setup draft, a thread or a registration).
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, startPreparationOptions({ settingUpDraft, agentSteps: prepared?.runner === "agent_steps" ? prepared : undefined, testEnvPin: pinOfUsedEnvironment(testEnv.used) }));
+  // Saved environments (SH25): only a task that USES the approved environment names its pin, so only its preparation may be told a saved image (never a setup draft, a thread or a registration). A setup agent's run asks for pins (P1) and never a saved image.
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, startPreparationOptions({ settingUpDraft, pinHeads: run?.setupAgent !== undefined, agentSteps: prepared?.runner === "agent_steps" ? prepared : undefined, testEnvPin: pinOfUsedEnvironment(testEnv.used) }));
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;

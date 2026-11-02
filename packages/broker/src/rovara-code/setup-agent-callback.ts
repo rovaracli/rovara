@@ -23,7 +23,11 @@ import { setupAgentEnabled } from "./setup-agent-switch.js";
 import { SETUP_AGENT_WORKFLOW_MODE } from "./setup-agent.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
-export interface SetupAgentCallbackDependencies { documentClient: Client; tableName: string; now: () => number; audit?: AuditRuntime; signInTableName?: string }
+export interface SetupAgentCallbackDependencies {
+  documentClient: Client; tableName: string; now: () => number; audit?: AuditRuntime; signInTableName?: string;
+  /** L12: whether a company admin has turned setup runs off (or the locks cannot be read). A run that is going is told to stop at its next look, and its website asks are refused. */
+  companySetupOff?: (orgId: OrgId) => Promise<boolean>;
+}
 /** The authenticated operation, as the callback route read it. */
 export interface SetupAgentOperation { kind: string; workflowMode?: string | undefined; status: string; workspaceId: string; orgId?: string | undefined }
 
@@ -71,6 +75,8 @@ export async function handleSetupAgentCallback(deps: SetupAgentCallbackDependenc
     case "journal":
       return appendSetupJournal(table, run, body.entries);
     case "host": {
+      // L12: a run of a company that has turned setup runs off asks for nothing.
+      if (await deps.companySetupOff?.(run.orgId) === true) return { outcome: "no_run" };
       const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, run.orgId, run.project);
       const projectDomains = latest?.definition.network?.allowedDomains ?? [];
       const prodDeny = await prodDenyOf(deps, run.orgId, run.project);
@@ -82,13 +88,15 @@ export async function handleSetupAgentCallback(deps: SetupAgentCallbackDependenc
       return { outcome: outcome.outcome, ...(outcome.outcome === "refused" ? { reason: outcome.reason } : {}) };
     }
     case "poll": {
-      const command = await takeSetupCommand(table, run, async (by) => {
+      // L12: a company that turned setup runs off tells a run that is going to stop, and hands it no more of a person's commands.
+      const companyOff = await deps.companySetupOff?.(run.orgId) === true;
+      const command = companyOff ? undefined : await takeSetupCommand(table, run, async (by) => {
         // The typist must still be able to change this project (read live now): a demoted or removed person's command is dropped, not run.
         if (deps.signInTableName === undefined) return false;
         try { await readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: deps.now }, { orgId: run.orgId, project: run.project, actorId: by }); return true; } catch { return false; }
       });
       const asks = (await listHostAsks(table, run.orgId, run.project, ["open", "approved", "refused"])).filter((ask) => ask.taskId === run.taskId).slice(0, 20);
-      return { ...(command === undefined ? {} : { command: { seq: command.seq, command: command.command } }), hosts: asks.map((ask) => ({ host: ask.host, state: ask.state })) };
+      return { ...(command === undefined ? {} : { command: { seq: command.seq, command: command.command } }), hosts: asks.map((ask) => ({ host: ask.host, state: ask.state })), ...(companyOff ? { companyOff: true } : {}) };
     }
     case "command_done":
       return { finished: await finishSetupCommand(table, run, { seq: body.seq, journalN: body.journalN }) };

@@ -7,6 +7,7 @@ import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { diagnosisDefaultBranchFileRoute, handleDiagnosisServiceRoute, installDiagnosisService } from "./diagnosis-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
+import { routeSecondReviewEvidence } from "./second-review-evidence-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
@@ -1091,6 +1092,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!dependencies.chatgpt) throw agentXError("NOT_FOUND", "Sign in with ChatGPT is not set up in this deployment");
         return json(await dependencies.chatgpt.health(), request.requestId);
       }
+      // Second review (switch `cr`): the writers of the evidence that lets a model block. Rovara staff on the hosted cloud, the install's administrator on Enterprise; never a company's member or project.
+      const secondReviewEvidence = await routeSecondReviewEvidence(dependencies, identity, request, url, body);
+      if (secondReviewEvidence !== undefined) return json(secondReviewEvidence.body, request.requestId, secondReviewEvidence.status);
       // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
         return json(await putInstallBudget(dependencies, identity, body), request.requestId);
