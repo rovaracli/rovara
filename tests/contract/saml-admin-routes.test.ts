@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { editionPolicy } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { SAML_ENTITY_ID_LOCKED_MESSAGE } from "../../packages/broker/src/aws/developer-routes/sso.js";
+import { dynamoSamlConfigStore } from "../../packages/broker/src/developer/saml.js";
 import { ssoStoresFor } from "../../packages/broker/src/developer/sso-sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -156,9 +157,13 @@ describe("the SAML settings routes", () => {
     expect((await legacy.h.dev(MAYA, "PUT", SAML, save(0))).status).toBe(404);
   });
 
-  it("the store itself refuses to save for the Public edition", async () => {
-    const store = ssoStoresFor({ documentClient: new FakeDynamoDb(), tableName: "state", policy: editionPolicy("public") });
-    expect(store).toBeUndefined();
+  it("the store itself refuses to read or save for the Public edition, even if built by mistake", async () => {
+    expect(ssoStoresFor({ documentClient: new FakeDynamoDb(), tableName: "state", policy: editionPolicy("public") })).toBeUndefined();
+    const db = new FakeDynamoDb();
+    const store = dynamoSamlConfigStore({ documentClient: db, tableName: "state", policy: editionPolicy("public") });
+    await expect(store.get(TEST_ORG)).rejects.toThrow();
+    await expect(store.put(TEST_ORG, SETTINGS, MAYA.developerId, 0, Date.now())).rejects.toThrow();
+    expect(db.get(`ORG#${TEST_ORG}`, "SSO_SAML_IDP")).toBeUndefined();
   });
 });
 

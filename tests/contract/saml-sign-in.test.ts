@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, SAML_SIGN_IN_REFUSED_MESSAGE, editionPolicy, orgMetaKey } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { methodAllowedByEdition } from "../../packages/broker/src/developer/edition-methods.js";
-import { enabledMethods } from "../../packages/broker/src/developer/server.js";
+import { createDeveloperIdentityHandler, enabledMethods } from "../../packages/broker/src/developer/server.js";
 import { REMOVED_FROM_ORG_MESSAGE } from "../../packages/broker/src/org/sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { CLI_REDIRECT, ISSUER, T0, authorizeQuery, httpEvent, identityHarness } from "../support/developer-fakes.js";
@@ -292,6 +292,10 @@ describe("the edition and the switch", () => {
     const wired = identityHarness({ editionPolicy: editionPolicy("enterprise"), sso: true, saml: true });
     const mistaken = { ...wired.deps, editionPolicy: editionPolicy("public") };
     expect(enabledMethods(mistaken)).not.toContain("saml");
+    const handler = createDeveloperIdentityHandler(mistaken);
+    for (const event of [httpEvent("POST", "/v1/auth/callback/saml", { SAMLResponse: "x", RelayState: "R".repeat(43) }), httpEvent("GET", "/v1/auth/saml/metadata")]) {
+      expect(((await handler(event)) as { statusCode: number }).statusCode).toBe(404);
+    }
   });
 
   it("publishes our service provider metadata, with the consumer address and entity id, when SAML is available", async () => {
