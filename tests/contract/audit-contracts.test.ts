@@ -201,6 +201,8 @@ describe("the event catalog", () => {
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored",
+      // saved project images
+      "saved_env.changed", "saved_env.setting_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -265,6 +267,8 @@ describe("the event catalog", () => {
     "project.test_health_setting_changed": { target: { kind: "project", name: "web" }, keys: ["setting", "enabled"], sample: { setting: "propose_fix_task", enabled: true } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
+    "saved_env.changed": { target: { kind: "project", name: "web" }, keys: ["change", "cause", "digest", "count"], sample: { change: "images_deleted", cause: "walk", count: 2 } },
+    "saved_env.setting_changed": { target: { kind: "project", name: "web" }, keys: ["enabled"], sample: { enabled: true } },
     "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
     "company_domain.added": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: [], sample: {} },
     "company_domain.verified": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState", "tookOver"], sample: { wasState: "pending", tookOver: false } },

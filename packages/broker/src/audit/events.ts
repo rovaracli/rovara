@@ -937,3 +937,15 @@ export type SetupRecipeAuditAction = "setup_recipe.proposed" | "setup_recipe.cre
 export function auditSetupRecipeChange(input: AuditBuilderBase & { action: SetupRecipeAuditAction; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
 }
+
+// Saved project images (SV wiring) ---------------------------------------------------------------------------
+
+/** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */
+export function auditSavedEnvChanged(input: AuditBuilderBase & { projectName: string; change: string; cause?: string; digest?: string; count?: number }): AuditEventInput {
+  return build("saved_env.changed", input, { kind: "project", name: input.projectName }, { change: input.change, cause: input.cause, digest: input.digest, count: input.count });
+}
+
+/** `occurrence`: `auditOccurrence(project, the time of the change)`. A maintainer turned the project's saved environment images on or off. */
+export function auditSavedEnvSettingChanged(input: AuditBuilderBase & { projectName: string; enabled: boolean }): AuditEventInput {
+  return build("saved_env.setting_changed", input, { kind: "project", name: input.projectName }, { enabled: input.enabled });
+}

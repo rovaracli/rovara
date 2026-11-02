@@ -316,6 +316,9 @@ export const AUDIT_ACTIONS = [
   "setup_recipe.scope_changed",
   // TE-4: a maintainer went back to the last proved setup after a saved change failed its check. Revisions only: never a command.
   "project.setup_restored",
+  // Saved project images (SV wiring): ids, digests, counts and fixed words only.
+  "saved_env.changed",
+  "saved_env.setting_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -601,6 +604,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "setup_recipe.scope_changed": ["recipeId", "revision", "bodyDigest", "authority"],
   // `revision` is the new revision, `fromRevision` the one that failed its check, `provenRevision` the revision the restored setup was proved at.
   "project.setup_restored": ["revision", "fromRevision", "provenRevision"],
+  // `change` is a fixed word of the saved environment registry's ledger (queued, recorded, refused, failed, marked stale, reset, images deleted, archived, deleted, registered, walk, scan, lease refused); `cause` a fixed word; `digest` an image digest.
+  "saved_env.changed": ["change", "cause", "digest", "count"],
+  // `enabled` is the project's savedEnv.enabled setting after the change.
+  "saved_env.setting_changed": ["enabled"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
