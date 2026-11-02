@@ -382,7 +382,7 @@ describe("the end of the task and the coverage map store", () => {
     expect(await store.get(ORG, PROJECT, digest)).toEqual(map);
     expect(await store.get(OTHER_ORG, PROJECT, digest)).toBeUndefined();
     expect(await store.get(ORG, "elsewhere", digest)).toBeUndefined();
-    expect([...objects.keys()][0]).toMatch(/^nightly-maps\/[0-9a-f]{40}\/[0-9a-f]{64}\.json$/u);
+    expect([...objects.keys()][0]).toMatch(/^nightly-maps\/[0-9a-f]{40}\/[0-9a-f]{40}\/[0-9a-f]{64}\.json$/u);
   });
 });
 

@@ -220,10 +220,12 @@ describe("an install that never kept evidence, and a walk that continues", () =>
     expect(t.calls.taskGets).toBe(0);
     expect(t.calls.queries).toEqual([]);
     expect(sent).not.toHaveBeenCalled();
-    // The same for a project and a company.
+    // The same for a project and a company, except for one list call each: the project's or the company's nightly coverage maps (NH-1), which are deleted whether or not evidence was ever kept. No evidence prefix is listed.
     await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).project(ORG, "web");
     await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).workspace(ORG);
-    expect(sent).not.toHaveBeenCalled();
+    expect(sent).toHaveBeenCalledTimes(2);
+    for (const call of sent.mock.calls) expect((call[0] as ListObjectsV2Command).input.Prefix).toMatch(/^nightly-maps\//u);
+    expect(t.calls.queries).toEqual([]);
   });
 
   it("the first pack an org keeps marks the org, and the marker is there before anything is stored; an org with the marker is walked", async () => {

@@ -12,17 +12,15 @@ import { startAgentRun } from "../../agents/runs.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
 import type { MapStore, NightlyRunPort } from "../../test-env/nightly.js";
+import { nightlyMapKey } from "../../test-env/map-keys.js";
 import { nightlyRunPort } from "../../test-env/nightly-run.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { agentRunStarterFrom } from "./dependency-wiring.js";
 import { defaultBranchHeadOf, projectUsesRegistries, repositoryDefaultBranchOf } from "./nightly-head.js";
 
-const sha = (value: unknown): string => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const MAP_READ_MAX_BYTES = 8 * 1_048_576 + 4_096;
-
-/** One object per company, project and digest; the key holds no project name (a name could carry a character a key must not). */
-const mapKey = (orgId: OrgId, project: string, digest: string): string => `nightly-maps/${sha([orgId, project]).slice(0, 40)}/${digest}.json`;
+const mapKey = nightlyMapKey;
 
 export function s3CoverageMapStore(s3: { send(command: never): Promise<unknown> }, bucket: string): MapStore {
   return {
