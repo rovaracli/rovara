@@ -1,6 +1,8 @@
 // Second review (lane cr-settings, switch `cr`): the evidence that lets a model block, and the writers of it. Owner decision 2026-11-02:
 //   - The replay run (what the quality suite measured) and the verdict (which run a model rests on, and the shadow window) are written ONLY by Rovara staff in Public and by the install's administrator in
 //     Enterprise (the admin pool; `aws/broker/second-review-evidence-routes.ts`). Never by a project, a member or a company admin.
+//   - The shadow window a verdict stores is the SPAN OF THE ROWS ACTUALLY COUNTED (the first and the last answered opinion in the window the writer named), not the window the writer typed: a typed window of 14 days over
+//     rows from one day is a one-day shadow, and fails the bar.
 //   - A verdict stores EVIDENCE, never a pass: `holds` is recomputed on every read from the stored replay run (`summarizeSecondReviewReplay`) and the shadow window (`secondReviewShadowPassed`), by
 //     `secondReviewVerdictHolds`. The shadow counts are not typed in by the writer: the broker counts them itself from the company's own track record (`second-review-track.ts`) for the window the writer names,
 //     so the evidence cannot say more than the company's tasks showed.
@@ -67,14 +69,15 @@ export async function recordVerdict(deps: EvidenceDeps, input: { orgId: string; 
   if (secondReviewModelKey(run.candidate) !== key) return { ok: false, code: "model_mismatch" };
   if (started <= Date.parse(run.ranAt)) return { ok: false, code: "window_invalid" };
   const counted = await readTrackRecord(deps.table, input.orgId, key, { from: new Date(started).toISOString(), to: new Date(ended).toISOString() });
-  if (counted.reviews === 0) return { ok: false, code: "no_shadow_evidence" };
+  if (counted.reviews === 0 || counted.firstAt === undefined || counted.lastAt === undefined) return { ok: false, code: "no_shadow_evidence" };
+  // The window the evidence rests on is what was counted: from the first to the last row, never the span the writer typed.
   const verdict = SecondReviewVerdictSchema.safeParse({
     model: key, replayRunId: run.runId, baseline: run.baseline,
-    shadow: { startedAt: new Date(started).toISOString(), endedAt: new Date(ended).toISOString(), findings: counted.findings, agreed: counted.agreed },
+    shadow: { startedAt: counted.firstAt, endedAt: counted.lastAt, findings: counted.findings, agreed: counted.agreed },
     createdAt: new Date(at).toISOString(), createdBy: input.by,
   });
   if (!verdict.success) return { ok: false, code: "invalid" };
-  const shadow = { days: Math.floor((ended - started) / 86_400_000), findings: counted.findings, agreed: counted.agreed };
+  const shadow = { days: counted.days, findings: counted.findings, agreed: counted.agreed };
   const audit = deps.audit.pending({ action: "company.second_review_verdict_recorded", target: orgTarget(input.orgId), facts: { model: key.slice(0, 128), runId: run.runId, days: shadow.days, findings: shadow.findings, agreed: shadow.agreed } }, input.by, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
   const result = await commit(deps, [{ Put: { TableName: deps.table.tableName, Item: { ...secondReviewVerdictKey(input.orgId, key), entityType: "SECOND_REVIEW_VERDICT", verdict: verdict.data } } }], audit);

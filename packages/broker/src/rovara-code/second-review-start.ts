@@ -15,7 +15,7 @@ import { routeOnWire, servableModels, servingRoutes, type RoutingDependencies } 
 import { admitWork } from "../spend/admission.js";
 import { againstModels, admitSecondReview, planSecondReview, type SecondReviewPlan } from "./second-review.js";
 import { estimateSecondReviewUsd, SECOND_REVIEW_TYPICAL_REVIEW_TOKENS } from "./second-review-picker.js";
-import { noteQualification, problemOf } from "./second-review-notice.js";
+import { noteQualification, observationOf } from "./second-review-notice.js";
 import { secondReviewEnabled } from "./second-review-switch.js";
 import type { SecondReviewOperationPlan } from "./second-review-store.js";
 
@@ -89,7 +89,7 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
       price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }; },
     });
     // The admins are told once when the reviewer stops qualifying (and again if it comes back and breaks later); best effort, never in the way of the review.
-    await noteQualification(table, input.orgId, problemOf(plan), (input.now ?? Date.now)());
+    await noteQualification(table, input.orgId, observationOf(plan), (input.now ?? Date.now)());
     if (!plan.run) {
       const reason = REASON_OF[plan.reason];
       return reason === undefined ? {} : notRun(reason);

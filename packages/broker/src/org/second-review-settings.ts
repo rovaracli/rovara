@@ -26,7 +26,10 @@ export const secondReviewProjectKey = (orgId: string, project: string) => {
 export interface SecondReviewSettings {
   companyDefault?: SecondReviewMode | undefined;
   companyLock?: SecondReviewMode | undefined;
+  /** The project's mode as it counts NOW. A project pinned `on` stops counting once the company has been LOWERED since the pin was written (the lowering reaches the project too); it counts again only when an admin pins it afresh. */
   projectMode?: SecondReviewMode | undefined;
+  /** The project's stored mode, whether or not it still counts. The writer guards its transaction with this one. */
+  projectModeStored?: SecondReviewMode | undefined;
   /** The company's choice (primary, then backup). Undefined: nobody chose. An empty list: a choice that could not be read. */
   /** What the second reviewer sees besides the change. Anything unreadable is `change_only`, the narrower. */
   context: SecondReviewContext;
@@ -64,8 +67,12 @@ export async function readSecondReviewSettings(table: SettingsTable, orgId: stri
     const parsed = SecondReviewReplayRunSchema.safeParse((await get(table, secondReviewReplayKey(orgId, runId)))?.run);
     if (parsed.success) replayRuns.push(parsed.data);
   }
+  const stored = modeOf(projectItem?.mode);
+  const loweredAt = typeof company?.loweredAt === "number" ? company.loweredAt : undefined;
+  const pinnedAt = typeof projectItem?.modeAt === "number" ? projectItem.modeAt : 0;
+  const lapsed = stored === "on" && loweredAt !== undefined && pinnedAt <= loweredAt;
   return {
-    companyDefault: modeOf(company?.default), companyLock: modeOf(company?.lock), projectMode: modeOf(projectItem?.mode),
+    companyDefault: modeOf(company?.default), companyLock: modeOf(company?.lock), projectMode: lapsed ? undefined : stored, projectModeStored: stored,
     context: SecondReviewContextSchema.safeParse(company?.context).data ?? "change_only", companyModels: modelsOf(company), projectModels: modelsOf(projectItem), verdicts, replayRuns,
   };
 }

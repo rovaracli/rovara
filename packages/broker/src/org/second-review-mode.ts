@@ -4,12 +4,17 @@
 //   - LOWERING (`on` to `shadow` or `off`, `shadow` to `off`, a company mode or a project's, and clearing a project's override when that lowers it) is a proposal that a DIFFERENT eligible person approves, with the
 //     membership the decision rested on fenced into the same transaction. It is the shared sole-owner switch's shape (lessons/tier0-setting.ts, org/known-failing-policy.ts), and like that switch it has NO sole-owner exception:
 //     a company of one that turned `on` keeps it on until a second admin joins (the one-admin rule). The proposer can never approve their own proposal.
+//   - A project can be pinned to `on` ONLY by an admin (the project's maintainer may pin `shadow`, or `off` where that is not below the company). `on` needs the evidence for the model whenever the project is not already
+//     pinned `on`, even when the company itself is `on` and the project would follow it anyway. A project pinned `on` follows the company down: when the company is LOWERED (two admins), the lowering stamps the company
+//     setting (`loweredAt`) and a pin written before that stamp stops counting (`readSecondReviewSettings`), so the project is back to the company's mode and an admin must pin it again. Atomic and race-free: nothing
+//     has to find and rewrite the pinned projects inside the approval.
+//   - A waiting proposal whose `from` is no longer what the scope effectively has is cancelled by the next proposal for that scope, in the same transaction (audited). Cancelling one is audited in its own transaction.
 //   - Stored in the State table beside the company's other second-review settings (org/second-review-settings.ts): the company's mode is written as BOTH its `default` and its `lock` (the floor a project cannot go
 //     below); a project's override is its `mode`. A proposal is `SECONDREVIEW#MODECHANGE#<id>`. Nothing new in the broker's environment.
 //   - Every write is conditional on the values it was made against, and an approval commits the claim on the proposal, the setting, the fence and the audit event in ONE transaction, so a setting never changes
 //     without its event and an event never names a change that was not made. A refusal by the fence alone leaves the proposal open ("membership_changed_retry").
 import { randomUUID } from "node:crypto";
-import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   configuredSecondReviewMode, orgMetaKey, secondReviewModeLoweringNeedsSecondPerson, stricterSecondReviewMode, SecondReviewModeSchema,
   type AuditEventInput, type SecondReviewMode,
@@ -81,22 +86,25 @@ function sameAsRead(fields: ReadonlyArray<[name: string, value: unknown]>, prefi
 }
 
 /** The setting write for a mode change, conditional on what was read. A project change with `clear` removes the override. */
-function settingUpdate(deps: ModeDeps, input: { orgId: string; scope: ModeScope; to: SecondReviewMode; clear?: boolean; seen: SecondReviewSettings; by: string; at: number }): TransactItem {
+function settingUpdate(deps: ModeDeps, input: { orgId: string; scope: ModeScope; to: SecondReviewMode; clear?: boolean; lowering?: boolean; seen: SecondReviewSettings; by: string; at: number }): TransactItem {
   const company = input.scope.kind === "company";
   const key = company ? { pk: orgPk(input.orgId), sk: SECOND_REVIEW_SETTINGS_SK } : secondReviewProjectKey(input.orgId, (input.scope as { project: string }).project);
-  const guard = company ? sameAsRead([["default", input.seen.companyDefault], ["lock", input.seen.companyLock]], "g") : sameAsRead([["mode", input.seen.projectMode]], "g");
+  // The project's guard is its STORED mode (a pin that has lapsed is still what is stored).
+  const guard = company ? sameAsRead([["default", input.seen.companyDefault], ["lock", input.seen.companyLock]], "g") : sameAsRead([["mode", input.seen.projectModeStored]], "g");
   const names: Record<string, string> = { ...guard.names, "#t": "updatedAt", "#b": "updatedBy", "#e": "entityType" };
   const values: Record<string, unknown> = { ...guard.values, ":t": input.at, ":b": input.by, ":e": company ? "SECOND_REVIEW_SETTINGS" : "SECOND_REVIEW_PROJECT" };
   let expression: string;
   if (company) {
     names["#d"] = "default"; names["#l"] = "lock"; values[":m"] = input.to;
-    expression = "SET #d = :m, #l = :m, #t = :t, #b = :b, #e = :e";
+    // A lowering stamps the company, so a project pinned `on` before it stops counting.
+    if (input.lowering === true) names["#la"] = "loweredAt";
+    expression = `SET #d = :m, #l = :m, #t = :t, #b = :b, #e = :e${input.lowering === true ? ", #la = :t" : ""}`;
   } else if (input.clear === true) {
-    names["#m"] = "mode";
-    expression = "SET #t = :t, #b = :b, #e = :e REMOVE #m";
+    names["#m"] = "mode"; names["#ma"] = "modeAt";
+    expression = "SET #t = :t, #b = :b, #e = :e REMOVE #m, #ma";
   } else {
-    names["#m"] = "mode"; values[":m"] = input.to;
-    expression = "SET #m = :m, #t = :t, #b = :b, #e = :e";
+    names["#m"] = "mode"; names["#ma"] = "modeAt"; values[":m"] = input.to;
+    expression = "SET #m = :m, #ma = :t, #t = :t, #b = :b, #e = :e";
   }
   return { Update: { TableName: deps.table.tableName, Key: key, UpdateExpression: expression, ConditionExpression: guard.expression, ExpressionAttributeNames: names, ExpressionAttributeValues: values } };
 }
@@ -121,9 +129,11 @@ export type ModeRequest = { ok: true; status: "applied"; mode: SecondReviewMode 
  * Asks to set the mode. The caller has checked the person's role for the scope (an admin; for a project also its maintainer) and that this is a live browser session; `onAllowed` is whether the evidence for the
  * chosen model holds (asked when `to` is `on`). A project value below the company's mode is refused. Equal or higher applies now; lower opens a proposal.
  */
-export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: string; scope: ModeScope; to: SecondReviewMode | "inherit"; requestedBy: string; onAllowed: boolean }): Promise<ModeRequest> {
+export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: string; scope: ModeScope; to: SecondReviewMode | "inherit"; requestedBy: string; onAllowed: boolean; /** The caller's role: a company owner or admin. A project is pinned `on` only by one. */ requesterIsAdmin: boolean }): Promise<ModeRequest> {
   const { orgId, scope } = input;
   if (input.to === "inherit" ? scope.kind !== "project" : !SecondReviewModeSchema.safeParse(input.to).success) return { ok: false, code: "conflict" };
+  // Blocking for a project is an admin's decision (owner decision 2026-11-02), not the maintainer's.
+  if (scope.kind === "project" && input.to === "on" && !input.requesterIsAdmin) return { ok: false, code: "not_eligible" };
   const seen = await read(deps, orgId, scope);
   if (seen === undefined) return { ok: false, code: "settings_unreadable" };
   const before = effectiveMode(seen, scope);
@@ -134,8 +144,9 @@ export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: st
   const at = deps.now();
   const facts = { scope: scope.kind, from: before, to };
   if (!secondReviewModeLoweringNeedsSecondPerson(before, to)) {
-    // Equal or stricter: applied now. `on` only for a model whose evidence holds.
-    if (to === "on" && before !== "on" && !input.onAllowed) return { ok: false, code: "verdict_missing" };
+    // Equal or stricter: applied now. `on` only for a model whose evidence holds, and that is asked whenever the scope is not already SET to `on` (a project that merely follows an `on` company is not pinned to it).
+    const alreadyOn = scope.kind === "project" ? seen.projectMode === "on" : before === "on";
+    if (to === "on" && !alreadyOn && !input.onAllowed) return { ok: false, code: "verdict_missing" };
     const audit = auditFor(deps, { action: "company.second_review_mode_changed", target: eventTarget(orgId, scope), facts: { ...facts, mode: "direct" } }, input.requestedBy, at);
     if (audit === undefined) return { ok: false, code: "audit_unavailable" };
     const result = await sendTransaction(deps, [settingUpdate(deps, { orgId, scope, to, clear, seen, by: input.requestedBy, at }), audit.put]);
@@ -146,16 +157,28 @@ export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: st
   // Lowering: a proposal for a different eligible person.
   const open = await openModeChange(deps.table, orgId, scope, at).catch(() => "unreadable" as const);
   if (open === "unreadable") return { ok: false, code: "settings_unreadable" };
-  if (open !== undefined) return { ok: false, code: "already_open" };
+  // A waiting proposal that was made against a mode the scope no longer has can never be approved (it would be stale): the new proposal replaces it, in the same transaction.
+  if (open !== undefined && open.from === before) return { ok: false, code: "already_open" };
   const id = (deps.newId ?? (() => randomUUID()))();
   const audit = auditFor(deps, { action: "company.second_review_mode_proposed", target: eventTarget(orgId, scope), facts }, input.requestedBy, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
+  const replaced = open === undefined ? undefined : auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(orgId, scope), facts: { scope: scope.kind, from: open.from, to: open.to, reason: "stale" } }, input.requestedBy, at);
+  if (open !== undefined && replaced === undefined) return { ok: false, code: "audit_unavailable" };
   const change: ModeChange = { id, orgId, scope, from: before, to, ...(clear ? { clear: true as const } : {}), proposedBy: input.requestedBy, at, expiresAt: at + SECOND_REVIEW_MODE_CHANGE_TTL_MS, state: "pending" };
-  const result = await sendTransaction(deps, [{ Put: { TableName: deps.table.tableName, Item: { ...changeKey(orgId, id), entityType: "SECOND_REVIEW_MODE_CHANGE", ...structuredClone(change) }, ConditionExpression: "attribute_not_exists(pk)" } }, audit.put]);
+  const result = await sendTransaction(deps, [
+    ...(open === undefined ? [] : [cancelUpdate(deps, orgId, open.id), replaced!.put]),
+    { Put: { TableName: deps.table.tableName, Item: { ...changeKey(orgId, id), entityType: "SECOND_REVIEW_MODE_CHANGE", ...structuredClone(change) }, ConditionExpression: "attribute_not_exists(pk)" } }, audit.put,
+  ]);
   if (result === "cancelled") return { ok: false, code: "conflict" };
   await audit.flush();
+  if (replaced !== undefined) await replaced.flush();
   return { ok: true, status: "needs_approval", changeId: id };
 }
+
+/** Marks a pending proposal cancelled (only while it is pending). */
+const cancelUpdate = (deps: ModeDeps, orgId: string, id: string): TransactItem => ({
+  Update: { TableName: deps.table.tableName, Key: changeKey(orgId, id), UpdateExpression: "SET #s = :cancelled", ConditionExpression: "#s = :pending", ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":cancelled": "cancelled", ":pending": "pending" } },
+});
 
 function parseChange(item: Record<string, unknown> | undefined): ModeChange | undefined {
   if (item?.entityType !== "SECOND_REVIEW_MODE_CHANGE" || typeof item.id !== "string" || typeof item.orgId !== "string") return undefined;
@@ -179,20 +202,29 @@ async function getChange(deps: ModeDeps, orgId: string, id: string): Promise<Mod
   return parseChange(found.Item);
 }
 
+/** Every proposal item of the company, paged through to the end. */
+async function allModeChanges(table: SettingsTable, orgId: string): Promise<ModeChange[]> {
+  const found: ModeChange[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const response = await table.documentClient.send(new QueryCommand({
+      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": CHANGE_PREFIX },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of response.Items ?? []) { const change = parseChange(item); if (change !== undefined) found.push(change); }
+    start = response.LastEvaluatedKey;
+  } while (start !== undefined);
+  return found;
+}
+
 /** The scope's pending proposal that has not expired. */
 export async function openModeChange(table: SettingsTable, orgId: string, scope: ModeScope, now: number): Promise<ModeChange | undefined> {
-  const response = await table.documentClient.send(new QueryCommand({
-    TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": CHANGE_PREFIX },
-  })) as { Items?: Array<Record<string, unknown>> };
-  return (response.Items ?? []).map(parseChange).find((change) => change !== undefined && change.state === "pending" && change.expiresAt > now && scopeKey(change.scope) === scopeKey(scope));
+  return (await allModeChanges(table, orgId)).find((change) => change.state === "pending" && change.expiresAt > now && scopeKey(change.scope) === scopeKey(scope));
 }
 
 /** Every pending, unexpired proposal of the company (the settings page lists them for admins). */
 export async function openModeChanges(table: SettingsTable, orgId: string, now: number): Promise<ModeChange[]> {
-  const response = await table.documentClient.send(new QueryCommand({
-    TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": CHANGE_PREFIX },
-  })) as { Items?: Array<Record<string, unknown>> };
-  return (response.Items ?? []).map(parseChange).filter((change): change is ModeChange => change !== undefined && change.state === "pending" && change.expiresAt > now);
+  return (await allModeChanges(table, orgId)).filter((change) => change.state === "pending" && change.expiresAt > now);
 }
 
 const groupOf = async (deps: ModeDeps, scope: ModeScope, orgId: string, who: { proposerId: string; approverId: string }): Promise<Tier0Group | undefined> => {
@@ -222,15 +254,17 @@ export async function approveSecondReviewModeChange(deps: ModeDeps, input: { org
   if (seen === undefined) return { ok: false, code: "settings_unreadable" };
   // The world moved since the proposal: what the scope effectively has is no longer what the proposal was made against.
   if (effectiveMode(seen, change.scope) !== change.from) return { ok: false, code: "stale" };
-  const audit = auditFor(deps, { action: "company.second_review_mode_changed", target: eventTarget(orgId, change.scope), facts: { scope: change.scope.kind, from: change.from, to: change.to, mode: "second_person" } }, input.approverId, at);
+  // Clearing a project's override lands on the COMPANY's mode as it is now, which may differ from what it was when the proposal was made: the event and the answer say what the setting becomes.
+  const to: SecondReviewMode = change.clear === true ? companyModeOf(seen) : change.to;
+  const audit = auditFor(deps, { action: "company.second_review_mode_changed", target: eventTarget(orgId, change.scope), facts: { scope: change.scope.kind, from: change.from, to, mode: "second_person" } }, input.approverId, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
   const claim: TransactItem = {
     Update: { TableName: deps.table.tableName, Key: changeKey(orgId, change.id), UpdateExpression: "SET #s = :applied", ConditionExpression: "#s = :pending AND proposedBy = :by AND expiresAt = :expires",
       ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":applied": "applied", ":pending": "pending", ":by": change.proposedBy, ":expires": change.expiresAt } },
   };
-  const write = settingUpdate(deps, { orgId, scope: change.scope, to: change.to, clear: change.clear === true, seen, by: input.approverId, at });
+  const write = settingUpdate(deps, { orgId, scope: change.scope, to, clear: change.clear === true, lowering: change.scope.kind === "company", seen, by: input.approverId, at });
   const result = await sendTransaction(deps, [...((group.fence ?? []) as TransactItem[]), claim, write, audit.put]);
-  if (result === "ok") { await audit.flush(); return { ok: true, mode: change.to }; }
+  if (result === "ok") { await audit.flush(); return { ok: true, mode: to }; }
   // Refused: when the setting and the proposal are as they were, only the membership fence failed, and the proposal stays open for another try (every check runs again).
   const again = await read(deps, orgId, change.scope);
   const still = await getChange(deps, orgId, change.id).catch(() => undefined);
@@ -249,11 +283,12 @@ export async function cancelSecondReviewModeChange(deps: ModeDeps, input: { orgI
   const group = await groupOf(deps, change.scope, input.orgId, { proposerId: input.actorId, approverId: input.actorId });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
-  try {
-    await send(deps, new UpdateCommand({ TableName: deps.table.tableName, Key: changeKey(input.orgId, change.id), UpdateExpression: "SET #s = :cancelled", ConditionExpression: "#s = :pending", ExpressionAttributeNames: { "#s": "state" }, ExpressionAttributeValues: { ":cancelled": "cancelled", ":pending": "pending" } }));
-    return { ok: true };
-  } catch (error) {
-    if (errorName(error) === "ConditionalCheckFailedException") return { ok: false, code: "not_pending" };
-    throw error;
-  }
+  const at = deps.now();
+  const audit = auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(input.orgId, change.scope), facts: { scope: change.scope.kind, from: change.from, to: change.to, reason: "withdrawn" } }, input.actorId, at);
+  if (audit === undefined) return { ok: false, code: "audit_unavailable" };
+  // The cancellation and its audit event commit together.
+  const result = await sendTransaction(deps, [cancelUpdate(deps, input.orgId, change.id), audit.put]);
+  if (result === "cancelled") return { ok: false, code: "not_pending" };
+  await audit.flush();
+  return { ok: true };
 }

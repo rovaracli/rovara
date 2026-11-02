@@ -99,7 +99,7 @@ it("raises the mode with one request, and cannot pick On without evidence that h
 
 it("On can be picked once the evidence holds; lowering is asked for and says it waits for a different admin", async () => {
   const evidence = { model: GPT, holds: true, verdict: { recordedAt: "2026-10-21T00:00:00.000Z", withdrawn: false, shadowDays: 18, shadowFindings: 10, shadowAgreed: 5, shadowPassed: true }, replay: { tasks: 50, knownDefects: 30, plantedBugs: 20, baselineCaught: 20, bothCaught: 20, extraCatches: 6, dismissedBlocking: 0, passed: true, failures: [] } };
-  const f = mount({ state: { mode: "on", modes: { company: "on", project: null, effective: "on" }, evidence }, respond: async request => (request.method === "POST" ? { status: 202, body: { status: "needs_approval", changeId: "chg_1" } } : undefined) });
+  const f = mount({ state: { mode: "on", modes: { company: "on", project: null, effective: "on" }, evidence, choice: { models: [GPT] } }, respond: async request => (request.method === "POST" ? { status: 202, body: { status: "needs_approval", changeId: "chg_1" } } : undefined) });
   await screen.findByRole("heading", { name: "Mode" });
   const select = asSelect(screen.getByLabelText("Second opinion mode"));
   expect(asOption(within(select).getByRole("option", { name: "On (can block)" })).disabled).toBe(false);
@@ -108,6 +108,25 @@ it("On can be picked once the evidence holds; lowering is asked for and says it 
   await screen.findByText(/needs a different admin to approve it/u);
   expect(posts(f)[0]!.body).toMatchObject({ action: "mode", scope: "company", mode: "shadow" });
   f.close();
+});
+
+it("On is offered only when the evidence is for the reviewer the company CHOSE: not with nobody having chosen, and not with another primary", async () => {
+  const evidence = { model: GPT, holds: true, verdict: { recordedAt: "2026-10-21T00:00:00.000Z", withdrawn: false, shadowDays: 18, shadowFindings: 10, shadowAgreed: 5, shadowPassed: true }, replay: { tasks: 50, knownDefects: 30, plantedBugs: 20, baselineCaught: 20, bothCaught: 20, extraCatches: 6, dismissedBlocking: 0, passed: true, failures: [] } };
+  const onOption = () => asOption(within(asSelect(screen.getByLabelText("Second opinion mode"))).getByRole("option", { name: "On (can block)" }));
+  const offModes = { mode: "shadow", modes: { company: "shadow", project: null, effective: "shadow" } };
+  const none = mount({ state: { ...offModes, evidence, choice: null } });
+  await screen.findByRole("heading", { name: "Mode" });
+  expect(onOption().disabled).toBe(true);
+  expect(screen.getByText(/On needs a model with a trial record that holds/u)).toBeTruthy();
+  none.close();
+  const other = mount({ state: { ...offModes, evidence, choice: { models: [GEMINI, GPT] } } });
+  await screen.findByRole("heading", { name: "Mode" });
+  expect(onOption().disabled).toBe(true);
+  other.close();
+  const same = mount({ state: { ...offModes, evidence, choice: { models: [GPT, GEMINI] } } });
+  await screen.findByRole("heading", { name: "Mode" });
+  expect(onOption().disabled).toBe(false);
+  same.close();
 });
 
 it("a request to lower that another admin made can be approved, and one of your own can only be withdrawn", async () => {
@@ -228,6 +247,9 @@ it("tells the admin when the model stopped qualifying, with the server's fixed w
 it("is absent while the switch is off, and a failed load can be retried", async () => {
   const off = mount({ respond: async request => (request.path === PATH ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : undefined) });
   await screen.findByText("The second opinion is not switched on for your company yet.");
+  // The page does not exist, so the nav does not offer it (the other admin links stay).
+  expect(screen.queryByRole("link", { name: "Second opinion" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Audit" })).toBeTruthy();
   off.close();
   let calls = 0;
   const failing = mount({ respond: async request => (request.path === PATH ? (++calls === 1 ? { status: 400, body: { error: { code: "CONFIG_INVALID", message: "x" } } } : { status: 200, body: base() }) : undefined) });

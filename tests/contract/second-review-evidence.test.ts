@@ -91,11 +91,12 @@ describe("the verdict", () => {
     expect((await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window, shadow: { findings: 99, agreed: 99 } })).status).toBe(400);
     expect((await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window, holds: true })).status).toBe(400);
     const stored = await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window });
-    expect(stored, JSON.stringify(stored.body)).toMatchObject({ status: 201, body: { holds: true, replay: { passed: true }, shadow: { days: 18, findings: 10, agreed: 5, passed: true } } });
+    expect(stored, JSON.stringify(stored.body)).toMatchObject({ status: 201, body: { holds: true, replay: { passed: true }, shadow: { days: 16, findings: 10, agreed: 5, passed: true } } });
     const row = t.db.get(secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model))) as { verdict: Record<string, unknown> };
-    expect(row.verdict).toMatchObject({ model: secondReviewModelKey(model), replayRunId: "run-1", shadow: { findings: 10, agreed: 5 }, createdBy: expect.stringMatching(/./u) as string });
+    // The window stored is the span of the rows counted (first to last), not the typed one.
+    expect(row.verdict).toMatchObject({ model: secondReviewModelKey(model), replayRunId: "run-1", shadow: { startedAt: "2026-10-02T12:00:00.000Z", endedAt: "2026-10-18T12:00:00.000Z", findings: 10, agreed: 5 }, createdBy: expect.stringMatching(/./u) as string });
     expect(JSON.stringify(row)).not.toMatch(/"passed"|"holds"/u);
-    expect(evidenceEvents(audit).at(-1)).toMatchObject({ action: "company.second_review_verdict_recorded", facts: { runId: "run-1", days: 18, findings: 10, agreed: 5 } });
+    expect(evidenceEvents(audit).at(-1)).toMatchObject({ action: "company.second_review_verdict_recorded", facts: { runId: "run-1", days: 16, findings: 10, agreed: 5 } });
     expect(await settingsOf(t)).toMatchObject({ evidence: { holds: true, verdict: { withdrawn: false, shadowFindings: 10, shadowAgreed: 5 } } });
   });
 
@@ -124,6 +125,19 @@ describe("the verdict", () => {
     expect((await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", startedAt: "2026-10-02T00:00:00.000Z", endedAt: "2099-01-01T00:00:00.000Z" })).status).toBe(400);
     expect((await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", startedAt: "2026-10-19T00:00:00.000Z", endedAt: "2026-10-20T00:00:00.000Z" })).status).toBe(400);
     expect(t.db.get(secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model)))).toBeUndefined();
+  });
+
+  it("the shadow days are the span of the rows counted: rows from one day under a typed 14-day (or longer) window fail the bar", async () => {
+    const { t, model } = await bench();
+    await staff(t, REPLAY, { orgId: TEST_ORG, run: replayRun(model) });
+    // Plenty of findings and agreement, all on one day.
+    for (let n = 0; n < 6; n += 1) seedTrackRow(t.db, model, { at: `2026-10-10T${String(8 + n).padStart(2, "0")}:00:00.000Z`, task: `d${String(n)}`, fixed: 2, wrong: 1 });
+    const stored = await staff(t, VERDICT, { orgId: TEST_ORG, model, replayRunId: "run-1", ...window });
+    expect(stored.status).toBe(201);
+    expect(stored.body).toMatchObject({ holds: false, shadow: { days: 0, findings: 18, agreed: 12, passed: false } });
+    const row = t.db.get(secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model))) as { verdict: { shadow: { startedAt: string; endedAt: string } } };
+    expect(row.verdict.shadow).toMatchObject({ startedAt: "2026-10-10T08:00:00.000Z", endedAt: "2026-10-10T13:00:00.000Z" });
+    expect((await settingsOf(t)).evidence).toMatchObject({ holds: false, verdict: { shadowDays: 0, shadowPassed: false } });
   });
 
   it("a short or disagreeing window is stored as it is and does NOT hold (the bar decides, not the writer)", async () => {

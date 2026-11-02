@@ -9,6 +9,7 @@
 //           { action: "narrow", project, models | null }   an owner, admin or the project's maintainer. A subset of the company's choice, never wider (anything outside it is refused).
 //           { action: "mode", scope: "company", mode }      an owner or admin. `review.otherCompany`: off, shadow or on. Raising applies at once; `on` is refused unless the evidence for the chosen model holds.
 //           { action: "mode", scope: "project", project, mode | "inherit" }   an owner, admin or the project's maintainer: a project override that can only be as strict as the company's mode or stricter ("inherit" clears it).
+//                                                           Pinning a project to `on` is an ADMIN's decision (a maintainer may pin shadow), needs the evidence for the model even when the company is `on`, and lapses when the company is lowered.
 //                                                           LOWERING either (on to shadow or off, shadow to off) is a proposal (202 needs_approval) that a DIFFERENT eligible person approves (the one-admin rule: no sole-owner exception).
 //           { action: "approve-mode", changeId }            a different eligible person approves a lowering, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise).
 //           { action: "cancel-mode", changeId }             an eligible person withdraws a waiting proposal.
@@ -250,11 +251,13 @@ async function modeAction(deps: DeveloperRouteDependencies, caller: DeveloperCal
   const modeDeps: ModeDeps = { table, evidence: { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName, now: deps.now }, audit, now: () => at };
   if (body.action === "mode") {
     const scope = body.scope === "company" ? { kind: "company" as const } : { kind: "project" as const, project: body.project ?? "" };
+    // Blocking for a project is an admin's decision, not the project maintainer's (owner decision 2026-11-02).
+    if (scope.kind === "project" && body.mode === "on" && !isAdmin(caller)) throw agentXError("FORBIDDEN", "Only a company owner or admin can turn blocking on for a project.");
     // `on` needs the evidence for the model the company (or the project's narrowed list) chose first; with nobody having chosen there is no model for the evidence to be about.
     const settings = await readSecondReviewSettings(table, caller.orgId, scope.kind === "project" ? scope.project : "");
     const chosen = scope.kind === "company" ? settings.companyModels : narrowedSecondReviewModels({ company: settings.companyModels, project: settings.projectModels }).models;
     const onAllowed = chosen?.[0] !== undefined && verdictHoldsFor(settings, chosen[0]);
-    const result = await requestSecondReviewMode(modeDeps, { orgId: caller.orgId, scope, to: body.mode, requestedBy: caller.developerId, onAllowed });
+    const result = await requestSecondReviewMode(modeDeps, { orgId: caller.orgId, scope, to: body.mode, requestedBy: caller.developerId, onAllowed, requesterIsAdmin: isAdmin(caller) });
     if (!result.ok) throw modeRefusal(result.code);
     logDeveloperEvent({ event: "developer.second_review_mode_set", orgId: caller.orgId, status: result.status });
     if (result.status === "needs_approval") return new StatusReply(202, { status: "needs_approval", changeId: result.changeId });

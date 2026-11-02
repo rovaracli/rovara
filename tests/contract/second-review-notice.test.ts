@@ -6,7 +6,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { noteQualification, noticeLines, problemOf, readNotice, secondReviewNoticeItemsFor, SECOND_REVIEW_NOTICE_SK, markNoticeSeen } from "../../packages/broker/src/rovara-code/second-review-notice.js";
+import { noteQualification, noticeLines, NOTICE_CLOSE_AFTER_MS, NOTICE_RESEEN_QUIET_MS, observationOf, problemOf, readNotice, secondReviewNoticeItemsFor, SECOND_REVIEW_NOTICE_SK, markNoticeSeen } from "../../packages/broker/src/rovara-code/second-review-notice.js";
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
 import { projectDecisionCards } from "../../packages/broker/src/decisions/project.js";
 import type { SecondReviewPlan } from "../../packages/broker/src/rovara-code/second-review.js";
@@ -17,13 +17,13 @@ const PATH = "/v1/app/org/second-review";
 const GONE = { provider: "openrouter", modelId: "mistral/large-9" };
 const OTHER = { provider: "openrouter", modelId: "x/other-9" };
 const table = () => ({ documentClient: new FakeDynamoDb(), tableName: "state" });
-const notRunning = (models: Array<{ model: { provider: string; modelId: string }; why: "same-company" | "not-routable" }>): SecondReviewPlan => ({ run: false, reason: "choice-not-qualifying", skipped: models });
+const notRunning = (models: Array<{ model: { provider: string; modelId: string }; why: "same-company" | "not-routable" | "not-allowed" }>): SecondReviewPlan => ({ run: false, reason: "choice-not-qualifying", skipped: models });
 const choiceLost = problemOf(notRunning([{ model: GONE, why: "not-routable" }]))!;
 
 describe("what is a problem", () => {
   it("the choice not qualifying, a model of it dropped, the default moved on, nothing qualifying; and nothing else", () => {
     expect(choiceLost).toMatchObject({ code: "choice-not-qualifying", models: [{ model: GONE, why: "not-routable" }] });
-    const dropped = problemOf({ run: true, mode: "shadow", model: GONE, candidates: [GONE], company: "openai", against: [], choice: "company", skipped: [{ model: OTHER, why: "same-company" }] });
+    const dropped = problemOf({ run: true, mode: "shadow", model: GONE, candidates: [GONE], company: "openai", against: [], choice: "company", skipped: [{ model: OTHER, why: "not-routable" }] });
     expect(dropped).toMatchObject({ code: "model-dropped" });
     const moved = problemOf({ run: true, mode: "shadow", model: GONE, candidates: [GONE], company: "openai", against: [], choice: "default", defaultChanged: true, skipped: [] });
     expect(moved).toMatchObject({ code: "default-changed", models: [{ model: GONE }] });
@@ -34,9 +34,24 @@ describe("what is a problem", () => {
     for (const reason of ["switch-off", "mode-off", "no-reference-model"] as const) expect(problemOf({ run: false, reason }), reason).toBeUndefined();
   });
 
+  it("a skip that is only about THIS task's builder (same AI company) is not a problem; one that is about the company's choice still is, listed without the task-specific ones", () => {
+    const base = { run: true as const, mode: "shadow" as const, model: GONE, candidates: [GONE], company: "openai" as const, against: [], choice: "company" as const };
+    expect(problemOf(notRunning([{ model: GONE, why: "same-company" }]))).toBeUndefined();
+    expect(problemOf({ ...base, skipped: [{ model: OTHER, why: "same-company" }] })).toBeUndefined();
+    expect(problemOf({ run: false, reason: "no-candidate", skipped: [{ model: GONE, why: "same-company" }] })).toBeUndefined();
+    expect(problemOf(notRunning([{ model: GONE, why: "same-company" }, { model: OTHER, why: "not-routable" }]))).toMatchObject({ code: "choice-not-qualifying", models: [{ model: OTHER, why: "not-routable" }] });
+    expect(problemOf({ ...base, skipped: [{ model: GONE, why: "same-company" }, { model: OTHER, why: "not-allowed" }] })).toMatchObject({ code: "model-dropped", models: [{ model: OTHER, why: "not-allowed" }] });
+    // A start with only task-specific skips says nothing either way: it is neutral, not "the reviewer qualifies".
+    expect(observationOf(notRunning([{ model: GONE, why: "same-company" }]))).toBe("neutral");
+    expect(observationOf({ ...base, skipped: [{ model: OTHER, why: "same-company" }] })).toBe("neutral");
+    expect(observationOf({ run: false, reason: "no-reference-model" })).toBe("neutral");
+    expect(observationOf({ run: false, reason: "mode-off" })).toBe("neutral");
+    expect(observationOf({ ...base, skipped: [] })).toBeUndefined();
+  });
+
   it("the same situation has the same key, a different model or reason a different one", () => {
     expect(problemOf(notRunning([{ model: GONE, why: "not-routable" }]))!.key).toBe(choiceLost.key);
-    expect(problemOf(notRunning([{ model: GONE, why: "same-company" }]))!.key).not.toBe(choiceLost.key);
+    expect(problemOf(notRunning([{ model: GONE, why: "not-allowed" }]))!.key).not.toBe(choiceLost.key);
     expect(problemOf(notRunning([{ model: OTHER, why: "not-routable" }]))!.key).not.toBe(choiceLost.key);
   });
 });
@@ -47,7 +62,7 @@ describe("told once per change", () => {
     expect(await noteQualification(t, TEST_ORG, choiceLost, 1_000)).toBe("written");
     expect(await noteQualification(t, TEST_ORG, choiceLost, 2_000)).toBe("same");
     expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "open", code: "choice-not-qualifying", createdAt: new Date(1_000).toISOString() });
-    const next = problemOf(notRunning([{ model: OTHER, why: "same-company" }]))!;
+    const next = problemOf(notRunning([{ model: OTHER, why: "not-routable" }]))!;
     expect(await noteQualification(t, TEST_ORG, next, 3_000)).toBe("written");
     expect((await readNotice(t, TEST_ORG))!.key).toBe(next.key);
   });
@@ -58,14 +73,60 @@ describe("told once per change", () => {
     expect(results.filter((result) => result === "written")).toHaveLength(1);
   });
 
-  it("a start that finds it qualifying again closes the notice, so the same problem coming back is told again", async () => {
+  it("a start that finds it qualifying does NOT close the notice at once: it closes after 3 starts in a row, or once 24 hours have passed since the first, and then the same problem coming back is told again", async () => {
     const t = table();
     await noteQualification(t, TEST_ORG, choiceLost, 1_000);
-    expect(await noteQualification(t, TEST_ORG, undefined, 2_000)).toBe("closed");
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_000)).toBe("recovering");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key });
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_100)).toBe("recovering");
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_200)).toBe("closed");
     expect(await readNotice(t, TEST_ORG)).toBeUndefined();
     expect(await noteQualification(t, TEST_ORG, undefined, 2_500)).toBe("none");
     expect(await noteQualification(t, TEST_ORG, choiceLost, 3_000)).toBe("written");
     expect(await readNotice(t, TEST_ORG)).toMatchObject({ status: "open", createdAt: new Date(3_000).toISOString() });
+    // Two starts spread over more than a day close it as well.
+    const slow = table();
+    await noteQualification(slow, TEST_ORG, choiceLost, 1_000);
+    expect(await noteQualification(slow, TEST_ORG, undefined, 2_000)).toBe("recovering");
+    expect(await noteQualification(slow, TEST_ORG, undefined, 2_000 + NOTICE_CLOSE_AFTER_MS)).toBe("closed");
+  });
+
+  it("the problem seen again in between starts the count over; a start that says nothing either way counts for nothing", async () => {
+    const t = table();
+    await noteQualification(t, TEST_ORG, choiceLost, 1_000);
+    await noteQualification(t, TEST_ORG, undefined, 2_000);
+    await noteQualification(t, TEST_ORG, undefined, 2_100);
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 2_200)).toBe("same");
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_300)).toBe("recovering");
+    expect(await noteQualification(t, TEST_ORG, "neutral", 2_400)).toBe("none");
+    expect(await noteQualification(t, TEST_ORG, "neutral", 2_500)).toBe("none");
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_600)).toBe("recovering");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key });
+    expect(await noteQualification(t, TEST_ORG, undefined, 2_700)).toBe("closed");
+    // Neutral never closes a notice, however long it has gone on.
+    const stuck = table();
+    await noteQualification(stuck, TEST_ORG, choiceLost, 1_000);
+    expect(await noteQualification(stuck, TEST_ORG, "neutral", 1_000 + 10 * NOTICE_CLOSE_AFTER_MS)).toBe("none");
+    expect(await readNotice(stuck, TEST_ORG)).toBeDefined();
+  });
+
+  it("remembers the last key marked seen: the same problem coming back within a week is written already seen, a different one is told at once, a later recurrence is told again", async () => {
+    const t = table();
+    await noteQualification(t, TEST_ORG, choiceLost, 1_000);
+    expect(await markNoticeSeen(t, TEST_ORG, choiceLost.key, 1_500)).toBe(true);
+    for (const at of [2_000, 2_100, 2_200]) await noteQualification(t, TEST_ORG, undefined, at);
+    expect(await readNotice(t, TEST_ORG)).toBeUndefined();
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 3_000)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "seen" });
+    const different = problemOf(notRunning([{ model: OTHER, why: "not-routable" }]))!;
+    expect(await noteQualification(t, TEST_ORG, different, 4_000)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: different.key, status: "open" });
+    // The earlier key is still the one remembered as seen, and it is quiet only for a week.
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 5_000)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "seen" });
+    await noteQualification(t, TEST_ORG, undefined, 6_000); await noteQualification(t, TEST_ORG, undefined, 6_100); await noteQualification(t, TEST_ORG, undefined, 6_200);
+    expect(await noteQualification(t, TEST_ORG, choiceLost, 1_500 + NOTICE_RESEEN_QUIET_MS + 1)).toBe("written");
+    expect(await readNotice(t, TEST_ORG)).toMatchObject({ key: choiceLost.key, status: "open" });
   });
 
   it("'seen' puts it away without closing the problem, and the same problem is not told again; only the notice with that key", async () => {
@@ -119,7 +180,10 @@ describe("a review start tells the admins", () => {
     await start(w);
     expect(await notice(w)).toBeDefined();
     w.db.set({ ...(w.db.get(orgMetaKey(TEST_ORG).pk, "SECONDREVIEW#SETTINGS") as Record<string, unknown>), models: undefined });
+    // One start where the reviewer qualifies is not enough; three in a row close it.
     await start(w);
+    expect(await notice(w)).toBeDefined();
+    await start(w); await start(w);
     expect(await notice(w)).toBeUndefined();
     const off = world({ default: "off", models: [GONE] });
     await start(off);

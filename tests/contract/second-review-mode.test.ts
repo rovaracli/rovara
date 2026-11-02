@@ -8,6 +8,9 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { seedHoldingEvidence, seedTrackRow, replayRun, verdictFor, BASELINE } from "../support/second-review-evidence.js";
 import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
+import { openModeChange, openModeChanges } from "../../packages/broker/src/org/second-review-mode.js";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { orgMetaKey } from "../../packages/contracts/src/index.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 afterEach(() => { delete process.env.SECOND_REVIEW_ENABLED; });
@@ -269,6 +272,140 @@ describe("what the settings screen reads", () => {
     seedTrackRow(t.db, model, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 1 });
     for (const who of [OMAR, MAYA]) { const parsed = parse(await t.web(who, "GET", QUERY)); expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues)).toBe(true); }
     expect(parse(await t.web(OMAR, "GET", QUERY)).data).toMatchObject({ pendingLowering: true, evidence: { holds: true }, trackRecord: { reviews: 1, agreed: 1 } });
+  });
+});
+
+const pause = () => new Promise<void>((resolve) => { setTimeout(resolve, 5); });
+const withdrawn = (t: Bench, model: Ref) => t.db.set({ ...secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(model, { withdrawnAt: "2026-10-22T00:00:00.000Z", withdrawnBy: "d" }) });
+const restored = (t: Bench, model: Ref) => t.db.set({ ...secondReviewVerdictKey(TEST_ORG, secondReviewModelKey(model)), entityType: "SECOND_REVIEW_VERDICT", verdict: verdictFor(model) });
+
+describe("a project pinned to `on`", () => {
+  it("is an admin's decision: the project's maintainer may pin shadow but is refused `on`, and nothing is written or audited", async () => {
+    const { t, audit } = await withEvidence({ maya: "member", grant: "maintainer" });
+    await setMode(t, OMAR, "shadow");
+    const before = modeEvents(audit).length;
+    const refused = await setProject(t, MAYA, "on");
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("Only a company owner or admin can turn blocking on for a project");
+    expect(modeEvents(audit)).toHaveLength(before);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes.project).toBeNull();
+    expect((await setProject(t, MAYA, "shadow")).status).toBe(200);
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ project: "on", effective: "on" });
+  });
+
+  it("needs the evidence for the model even when the company is already `on` and the project would follow it anyway", async () => {
+    const { t, model } = await withEvidence();
+    await setMode(t, OMAR, "on");
+    withdrawn(t, model);
+    const refused = await setProject(t, OMAR, "on");
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("Choose the model first");
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes.project).toBeNull();
+    restored(t, model);
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes.project).toBe("on");
+    // Already pinned `on`: saying it again is no new decision.
+    withdrawn(t, model);
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+  });
+
+  it("follows the company down: when two admins lower the company, the pin stops counting, and an admin has to pin the project afresh", async () => {
+    const { t } = await withEvidence();
+    await setMode(t, OMAR, "shadow");
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ company: "shadow", project: "on", effective: "on" });
+    await pause();
+    const changeId = ((await setMode(t, OMAR, "off")).body as { changeId: string }).changeId;
+    // Proposing changes nothing: the project still blocks until the second admin approves.
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes.effective).toBe("on");
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve-mode", changeId })).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ company: "off", project: null, effective: "off" });
+    // A shadow pin is only stricter than the company and is not touched by the lowering.
+    await pause();
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ company: "off", project: "on", effective: "on" });
+  });
+});
+
+describe("a waiting proposal that the mode has moved away from", () => {
+  it("is cancelled by the next proposal for that scope, in the same transaction and audited; one that still matches blocks a second proposal", async () => {
+    const { t, audit } = await withEvidence();
+    await setMode(t, OMAR, "shadow");
+    const old = ((await setMode(t, OMAR, "off")).body as { changeId: string }).changeId;
+    await setMode(t, OMAR, "on");
+    const sent: Array<{ input?: { TransactItems?: Array<{ Update?: { ExpressionAttributeValues?: Record<string, unknown> }; Put?: { Item?: { pk?: string; entityType?: string } } }> } }> = [];
+    const original = t.db.send.bind(t.db);
+    t.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
+    const fresh = await setMode(t, OMAR, "shadow");
+    t.db.send = original;
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(202);
+    const changeId = (fresh.body as { changeId: string }).changeId;
+    expect(changeId).not.toBe(old);
+    const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "SECOND_REVIEW_MODE_CHANGE"))!;
+    expect(write.input!.TransactItems!.some((item) => item.Update?.ExpressionAttributeValues?.[":cancelled"] === "cancelled")).toBe(true);
+    expect(write.input!.TransactItems!.filter((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toHaveLength(2);
+    expect((await view(t)).pending).toMatchObject([{ changeId, from: "on", to: "shadow" }]);
+    expect(modeEvents(audit).find((event) => event.action === "company.second_review_mode_cancelled")).toMatchObject({ facts: { scope: "company", from: "shadow", to: "off", reason: "stale" } });
+    // The old one can no longer be approved.
+    expect((await t.web(MAYA, "POST", PATH, { action: "approve-mode", changeId: old })).status).toBe(409);
+    // Still matching: a second proposal is refused as before.
+    expect((await setMode(t, OMAR, "off")).status).toBe(409);
+  });
+});
+
+describe("withdrawing a proposal", () => {
+  it("is audited in the same transaction as the cancellation", async () => {
+    const { t, audit } = await withEvidence();
+    await setMode(t, OMAR, "on");
+    const changeId = ((await setMode(t, OMAR, "shadow")).body as { changeId: string }).changeId;
+    const sent: Array<{ input?: { TransactItems?: Array<{ Update?: unknown; Put?: { Item?: { pk?: string } } }> } }> = [];
+    const original = t.db.send.bind(t.db);
+    t.db.send = (async (command: never) => { sent.push(command); return original(command); }) as never;
+    expect((await t.web(OMAR, "POST", PATH, { action: "cancel-mode", changeId })).status).toBe(200);
+    t.db.send = original;
+    const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update !== undefined))!;
+    expect(write.input!.TransactItems!.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
+    expect(modeEvents(audit).at(-1)).toMatchObject({ action: "company.second_review_mode_cancelled", actor: { id: OMAR.developerId }, facts: { scope: "company", from: "on", to: "shadow", reason: "withdrawn" } });
+    // Withdrawing it twice is refused and audits nothing more.
+    const events = modeEvents(audit).length;
+    expect((await t.web(OMAR, "POST", PATH, { action: "cancel-mode", changeId })).status).toBe(409);
+    expect(modeEvents(audit)).toHaveLength(events);
+  });
+});
+
+describe("approving a project's clear", () => {
+  it("lands on the company's mode as it is NOW: the audit event and the answer say what the setting becomes, not what it was when asked", async () => {
+    const { t, audit } = await withEvidence();
+    await setMode(t, OMAR, "shadow");
+    expect((await setProject(t, OMAR, "on")).status).toBe(200);
+    const asked = await setProject(t, OMAR, "inherit");
+    expect(asked.status).toBe(202);
+    const changeId = (asked.body as { changeId: string }).changeId;
+    expect((await view(t)).pending).toMatchObject([{ scope: "project", from: "on", to: "shadow" }]);
+    // Meanwhile the company went up to `on`: clearing the project now means following `on`.
+    expect((await setMode(t, OMAR, "on")).status).toBe(200);
+    const approved = await t.web(MAYA, "POST", PATH, { action: "approve-mode", changeId });
+    expect(approved, JSON.stringify(approved.body)).toMatchObject({ status: 200, body: { status: "applied", mode: "on" } });
+    expect(modeEvents(audit).at(-1)).toMatchObject({ actor: { id: MAYA.developerId }, facts: { scope: "project", from: "on", to: "on", mode: "second_person" } });
+    expect((await view(t, OMAR, `${QUERY}&project=${NAME}`)).modes).toMatchObject({ project: null, effective: "on" });
+  });
+});
+
+describe("reading the waiting proposals", () => {
+  it("pages through all of them, so a proposal past the first page is still found", async () => {
+    const { t } = await bench();
+    const pk = orgMetaKey(TEST_ORG).pk;
+    const far = Date.now() + 86_400_000;
+    for (let n = 0; n < 7; n += 1) {
+      t.db.set({ pk, sk: `SECONDREVIEW#MODECHANGE#c${String(n)}`, entityType: "SECOND_REVIEW_MODE_CHANGE", id: `c${String(n)}`, orgId: TEST_ORG, scope: { kind: "project", project: `p${String(n)}` }, from: "on", to: "shadow", proposedBy: "d", at: 1, expiresAt: far, state: n === 5 ? "cancelled" : "pending" });
+    }
+    const real = t.db;
+    const small = { send: (command: unknown) => real.send(command instanceof QueryCommand ? new QueryCommand({ ...command.input, Limit: 2 }) : command as never) };
+    const table = { documentClient: small, tableName: "state" };
+    expect((await openModeChanges(table, TEST_ORG, Date.now())).map((change) => change.id).sort()).toEqual(["c0", "c1", "c2", "c3", "c4", "c6"]);
+    expect((await openModeChange(table, TEST_ORG, { kind: "project", project: "p6" }, Date.now()))?.id).toBe("c6");
+    expect(await openModeChange(table, TEST_ORG, { kind: "project", project: "p5" }, Date.now())).toBeUndefined();
   });
 });
 

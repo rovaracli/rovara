@@ -2,8 +2,11 @@
 // qualifying, the admin is told"). One notice per CHANGE:
 //   - A problem is derived from the plan a review start made (`problemOf`): the company's choice no longer qualifies (all of it, or a model of it), the default moved on, or nothing qualifies at all. Its `key` is a hash of
 //     the code word and the models with their reasons, so the same situation has the same key.
-//   - `noteQualification` keeps ONE current row per company (`SECONDREVIEW#NOTICE`): a new key writes a new open notice (conditionally, so two review starts racing write it once), the same key writes nothing, and a
-//     start that finds the reviewer qualifying again closes the notice, so the same problem coming back later is a new change and is told again.
+//     A skip that only says THIS task's builder is from the same AI company as the model (`same-company`) is about the task, not the company's choice, and is never a problem (a start that has only those is
+//     neutral: it neither raises, resets nor counts toward closing).
+//   - `noteQualification` keeps ONE current row per company (`SECONDREVIEW#NOTICE`): a new key writes a new open notice (conditionally, so two review starts racing write it once), the same key writes nothing.
+//     The notice CLOSES only once the reviewer has qualified for 24 hours or 3 starts in a row (a problem seen again in between starts the count over), so a model that flaps does not close and reopen it at every start.
+//     The last key an admin marked seen is remembered: the same problem coming back within a week is written already seen (no new card), a different one is told at once.
 //   - The notice is shown as a decision card to the company's owners and admins (`secondReviewNoticeItemsFor`, in the existing cards list) and as a banner on the settings page. An admin's "I've seen it" puts the card
 //     away; it does not close the problem. Fixed words only: the notice holds model names and reason words, never a model's output.
 import { createHash } from "node:crypto";
@@ -11,7 +14,7 @@ import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMetaKey, secondReviewModelKey, type SecondReviewModelRef } from "@agentx/contracts";
 import type { SettingsTable } from "../org/second-review-settings.js";
 import type { DecisionItem } from "../decisions/project.js";
-import type { SecondReviewPlan, SecondReviewSkippedWhy } from "./second-review.js";
+import type { SecondReviewPlan, SecondReviewSkipped, SecondReviewSkippedWhy } from "./second-review.js";
 
 export const SECOND_REVIEW_NOTICE_SK = "SECONDREVIEW#NOTICE";
 export const NOTICE_CODES = ["choice-not-qualifying", "model-dropped", "default-changed", "no-candidate"] as const;
@@ -31,18 +34,47 @@ export const noticeWhyText = (why: SecondReviewSkippedWhy): string => WHY_TEXT[w
 const keyOf = (code: NoticeCode, models: ReadonlyArray<{ model: SecondReviewModelRef; why?: string | undefined }>): string =>
   createHash("sha256").update(`${code}\n${models.map((entry) => `${secondReviewModelKey(entry.model)}=${entry.why ?? ""}`).sort().join("\n")}`, "utf8").digest("hex").slice(0, 32);
 
-/** The problem a plan shows, or none when the reviewer qualifies (`mode` off: nothing is expected to run, so nothing is wrong). */
+/** A skip because of THIS task's builder: the same AI company as the model that wrote the code. It says nothing about whether the company's choice qualifies. */
+const taskSpecific = (entry: { why: SecondReviewSkippedWhy }): boolean => entry.why === "same-company";
+
+/**
+ * The problem a plan shows, or none when the reviewer qualifies (`mode` off: nothing is expected to run, so nothing is wrong). Skips that only concern this task's builder (`same-company`) are left out: when nothing
+ * else remains there is no company-wide problem to tell an admin about.
+ */
 export function problemOf(plan: SecondReviewPlan): QualificationProblem | undefined {
   const make = (code: NoticeCode, models: QualificationProblem["models"]): QualificationProblem => ({ code, key: keyOf(code, models), models });
+  const general = (skipped: readonly SecondReviewSkipped[]) => skipped.filter((entry) => !taskSpecific(entry));
   if (!plan.run) {
-    if (plan.reason === "choice-not-qualifying") return make("choice-not-qualifying", (plan.skipped ?? []).map((entry) => ({ model: entry.model, why: entry.why })));
-    if (plan.reason === "no-candidate") return make("no-candidate", []);
+    const skipped = plan.skipped ?? [];
+    if (plan.reason === "choice-not-qualifying") {
+      const left = general(skipped);
+      // Every model of the choice was left out only because of this task's builder: the choice is fine.
+      if (skipped.length > 0 && left.length === 0) return undefined;
+      return make("choice-not-qualifying", left.map((entry) => ({ model: entry.model, why: entry.why })));
+    }
+    if (plan.reason === "no-candidate") return skipped.length > 0 && general(skipped).length === 0 ? undefined : make("no-candidate", []);
     return undefined;
   }
-  if (plan.choice === "company" && plan.skipped.length > 0) return make("model-dropped", plan.skipped.map((entry) => ({ model: entry.model, why: entry.why })));
+  if (plan.choice === "company" && general(plan.skipped).length > 0) return make("model-dropped", general(plan.skipped).map((entry) => ({ model: entry.model, why: entry.why })));
   if (plan.choice === "default" && plan.defaultChanged === true) return make("default-changed", [{ model: { provider: plan.model.provider, modelId: plan.model.modelId } }]);
   return undefined;
 }
+
+/**
+ * What a review start tells the notice: the company-wide problem it found, `undefined` when the reviewer plainly qualifies (it ran, with nothing of the company's choice left out), or `"neutral"` when the start
+ * says nothing either way (the mode is off, no builder model is known, or the only skips are about this task's builder).
+ */
+export function observationOf(plan: SecondReviewPlan): QualificationProblem | undefined | "neutral" {
+  const problem = problemOf(plan);
+  if (problem !== undefined) return problem;
+  return plan.run && plan.skipped.length === 0 ? undefined : "neutral";
+}
+
+/** The notice closes after this many starts in a row in which the reviewer qualified, or after this long since the first of them, whichever comes first. */
+export const NOTICE_CLOSE_AFTER_STARTS = 3;
+export const NOTICE_CLOSE_AFTER_MS = 24 * 3_600_000;
+/** A problem that comes back with the key an admin last marked seen is written already seen if that was within this long. */
+export const NOTICE_RESEEN_QUIET_MS = 7 * 86_400_000;
 
 export interface StoredNotice { key: string; code: NoticeCode; models: QualificationProblem["models"]; createdAt: string; status: "open" | "seen"; seenAt?: string }
 const orgPk = (orgId: string): string => orgMetaKey(orgId).pk;
@@ -61,22 +93,45 @@ export async function readNotice(table: SettingsTable, orgId: string): Promise<S
 }
 
 /**
- * Records what a review start found. A new problem (a key that is not the current one) writes an open notice, once; the same problem writes nothing; no problem closes the current notice so the same problem coming
- * back is told again. Best effort: it never throws (a notice that cannot be written is logged by error name, and the review goes on).
+ * Records what a review start found. A new problem (a key that is not the current one) writes an open notice, once; the same problem writes nothing (and starts the closing count over); a start where the reviewer
+ * qualifies counts toward closing the notice (3 in a row or 24 hours), and a neutral start changes nothing. Best effort: it never throws (a notice that cannot be written is logged by error name, and the review goes on).
  */
-export async function noteQualification(table: SettingsTable, orgId: string, problem: QualificationProblem | undefined, at: number): Promise<"written" | "same" | "closed" | "none" | "failed"> {
+export async function noteQualification(table: SettingsTable, orgId: string, observation: QualificationProblem | undefined | "neutral", at: number): Promise<"written" | "same" | "closed" | "recovering" | "none" | "failed"> {
   try {
+    if (observation === "neutral") return "none";
+    const problem = observation;
     const current = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: keyFor(orgId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    const item = current.Item;
     if (problem === undefined) {
-      if (current.Item === undefined || current.Item.status === "closed") return "none";
-      await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: keyFor(orgId), UpdateExpression: "SET #s = :closed", ConditionExpression: "#k = :key AND #s <> :closed", ExpressionAttributeNames: { "#s": "status", "#k": "key" }, ExpressionAttributeValues: { ":closed": "closed", ":key": current.Item.key } })).catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
-      return "closed";
+      if (item === undefined || item.status === "closed") return "none";
+      const starts = (typeof item.okStarts === "number" ? item.okStarts : 0) + 1;
+      const since = typeof item.okSince === "string" && !Number.isNaN(Date.parse(item.okSince)) ? item.okSince : new Date(at).toISOString();
+      const enough = starts >= NOTICE_CLOSE_AFTER_STARTS || at - Date.parse(since) >= NOTICE_CLOSE_AFTER_MS;
+      const names = { "#s": "status", "#k": "key" };
+      const guard = { ConditionExpression: "#k = :key AND #s <> :closed", ExpressionAttributeNames: enough ? names : { ...names, "#o": "okStarts", "#os": "okSince" } };
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: keyFor(orgId), ...guard,
+        UpdateExpression: enough ? "SET #s = :closed" : "SET #o = :starts, #os = :since",
+        ExpressionAttributeValues: enough ? { ":closed": "closed", ":key": item.key } : { ":closed": "closed", ":key": item.key, ":starts": starts, ":since": since },
+      })).catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      return enough ? "closed" : "recovering";
     }
-    if (current.Item !== undefined && current.Item.status !== "closed" && current.Item.key === problem.key) return "same";
-    // A key that is not the current one, or a closed row: write it, unless another start just wrote this very key.
+    if (item !== undefined && item.status !== "closed" && item.key === problem.key) {
+      // The problem is still there: whatever count toward closing was started is over.
+      if (item.okStarts !== undefined || item.okSince !== undefined) {
+        await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: keyFor(orgId), UpdateExpression: "REMOVE #o, #os", ConditionExpression: "#k = :key", ExpressionAttributeNames: { "#o": "okStarts", "#os": "okSince", "#k": "key" }, ExpressionAttributeValues: { ":key": problem.key } }))
+          .catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      }
+      return "same";
+    }
+    // A key that is not the current one, or a closed row: write it, unless another start just wrote this very key. The last key an admin marked seen is carried along; the same problem within the quiet time is written seen.
+    const lastSeenKey = typeof item?.lastSeenKey === "string" ? item.lastSeenKey : undefined;
+    const lastSeenAt = typeof item?.lastSeenAt === "string" ? item.lastSeenAt : undefined;
+    const quiet = lastSeenKey === problem.key && lastSeenAt !== undefined && at - Date.parse(lastSeenAt) < NOTICE_RESEEN_QUIET_MS;
     await table.documentClient.send(new PutCommand({
       TableName: table.tableName,
-      Item: { ...keyFor(orgId), entityType: "SECOND_REVIEW_NOTICE", key: problem.key, code: problem.code, models: problem.models, createdAt: new Date(at).toISOString(), status: "open" },
+      Item: { ...keyFor(orgId), entityType: "SECOND_REVIEW_NOTICE", key: problem.key, code: problem.code, models: problem.models, createdAt: new Date(at).toISOString(), status: quiet ? "seen" : "open",
+        ...(quiet ? { seenAt: lastSeenAt } : {}), ...(lastSeenKey === undefined || lastSeenAt === undefined ? {} : { lastSeenKey, lastSeenAt }) },
       ConditionExpression: "attribute_not_exists(pk) OR #s = :closed OR #k <> :key", ExpressionAttributeNames: { "#s": "status", "#k": "key" }, ExpressionAttributeValues: { ":closed": "closed", ":key": problem.key },
     }));
     return "written";
@@ -87,10 +142,10 @@ export async function noteQualification(table: SettingsTable, orgId: string, pro
   }
 }
 
-/** An admin's "I've seen it": the card goes away. Only the notice with this key (a newer change is a new notice). */
+/** An admin's "I've seen it": the card goes away, and the key is remembered as the last one seen. Only the notice with this key (a newer change is a new notice). */
 export async function markNoticeSeen(table: SettingsTable, orgId: string, key: string, at: number): Promise<boolean> {
   try {
-    await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: keyFor(orgId), UpdateExpression: "SET #s = :seen, seenAt = :at", ConditionExpression: "#k = :key AND #s = :open", ExpressionAttributeNames: { "#s": "status", "#k": "key" }, ExpressionAttributeValues: { ":seen": "seen", ":open": "open", ":key": key, ":at": new Date(at).toISOString() } }));
+    await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: keyFor(orgId), UpdateExpression: "SET #s = :seen, seenAt = :at, lastSeenKey = :key, lastSeenAt = :at", ConditionExpression: "#k = :key AND #s = :open", ExpressionAttributeNames: { "#s": "status", "#k": "key" }, ExpressionAttributeValues: { ":seen": "seen", ":open": "open", ":key": key, ":at": new Date(at).toISOString() } }));
     return true;
   } catch (error) {
     if (errorName(error) === "ConditionalCheckFailedException") return false;

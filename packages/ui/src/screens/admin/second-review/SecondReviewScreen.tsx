@@ -54,7 +54,9 @@ function ModeSection({ state }: { state: SecondReviewState }) {
  const api = useSecondReviewApi(), write = useWrite(), mine = state.modes.company;
  const [choice, setChoice] = useState<"off" | "shadow" | "on">();
  const picked = choice ?? mine;
- const canOn = state.evidence?.holds === true;
+ // Blocking can be turned on only for the model the evidence is about, and that has to be the reviewer the company CHOSE (a default or another primary is not what the record covers).
+ const chosenPrimary = state.choice?.models[0], proof = state.evidence;
+ const canOn = proof?.holds === true && chosenPrimary !== undefined && proof.model.provider === chosenPrimary.provider && proof.model.modelId === chosenPrimary.modelId;
  const pending = state.pending?.filter(item => item.scope === "company") ?? [];
  const options = [{ value: "off", label: T.MODE_OFF }, { value: "shadow", label: T.MODE_SHADOW }, { value: "on", label: T.MODE_ON, disabled: !canOn && mine !== "on" }];
  return <section aria-label={T.MODE_HEADING} className="rv-hww-company-card" aria-busy={write.busy}><h2>{T.MODE_HEADING}</h2>

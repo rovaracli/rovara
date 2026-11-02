@@ -293,7 +293,11 @@ export const SecondReviewTrackRowSchema = z.object({
   recordedAt: z.string().datetime(),
   /** The first review had already cleared this code when the second opinion came in: a finding that is then fixed is one the first review missed. */
   firstCleared: z.boolean(),
-  findings: z.array(z.object({ fp: z.string().regex(/^[a-f0-9]{64}$/u), outcome: z.enum(SECOND_REVIEW_FINDING_OUTCOMES) }).strict()).max(20),
+  /**
+   * `fp` is the finding's exact fingerprint (it moves with the line number). `key` is its STABLE key (a hash of the cited file and the normalised text, never the line), and `file` a hash of the cited file's path: two
+   * rounds that word or place the same finding alike share a `key`. Both are absent on a row written before they existed, and on a finding that cites no file (`file`).
+   */
+  findings: z.array(z.object({ fp: z.string().regex(/^[a-f0-9]{64}$/u), outcome: z.enum(SECOND_REVIEW_FINDING_OUTCOMES), key: z.string().regex(/^[a-f0-9]{64}$/u).optional(), file: z.string().regex(/^[a-f0-9]{64}$/u).optional() }).strict()).max(20),
   /** Bumped by every outcome write, so two writers cannot overwrite each other. */
   rev: z.number().int().min(0),
 }).strict();

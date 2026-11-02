@@ -2,13 +2,18 @@
 // (`SECONDREVIEW#TRACK#<model>#<recordedAt>#<task>#<candidate>` in the company's partition of the State table), written from the table's stream and nowhere else: no REVIEW-end, workflow or dispatch code is touched.
 //   - A row is created when a task's stored second opinion changes to a new answered one: the model (from the report, which the broker normalised to the planned model), the mode it ran in, and the blocking
 //     findings as fingerprints (`workflowFindingFingerprint`, never text), plus whether the first review had already cleared that code.
-//   - Outcomes move only from `open`: a finding the NEXT round's second opinion no longer raises is `fixed` (agreed with); one the owner accepted as a risk, or one still standing when the task merged, is `wrong`.
+//   - Outcomes move only from `open`. A finding is `fixed` (agreed with) only when ALL of these hold: the next round was reviewed by the SAME model; that round no longer raises it, matched on a STABLE key (the cited
+//     file and the normalised text, never the line number, so a line shift or a change of case and punctuation is the same finding); and the new candidate CHANGED the cited file (a finding that cites no file, or a change
+//     the broker cannot see, stays open). One the owner accepted as a risk, or one still standing when the task merged, is `wrong`.
+//   - A second opinion run again on the same code REPLACES the earlier row (outcomes already decided are carried over), so one candidate is never counted twice.
+//   - Rows expire (`TRACK_RETENTION_DAYS`) and are read by their time window, page by page, so history cannot grow the read without bound.
 //   - The views are `summarizeSecondReviewTrack` (contracts), so the settings page and the verdict's shadow window count the same rows.
 // Everything fails closed: a record that does not parse writes nothing; a row that cannot be read is left alone. Logs carry event names and error names only.
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import {
-  OrgIdSchema, SecondOpinionSchema, SecondReviewTrackRowSchema, blockingFindings, orgMetaKey, reviewCleared, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint,
+  INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SecondOpinionSchema, SecondReviewTrackRowSchema, blockingFindings, orgMetaKey, reviewCleared, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint,
   type OrgId, type SecondReviewTrackRecord, type SecondReviewTrackRow,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -31,8 +36,22 @@ const opinionOf = (image: Record<string, unknown> | undefined): StoredOpinion | 
 };
 const answered = (stored: StoredOpinion | undefined): stored is StoredOpinion => stored !== undefined && !stored.opinion.unavailable && stored.opinion.report !== undefined;
 const modelOf = (stored: StoredOpinion): string => secondReviewModelKey({ provider: stored.opinion.report!.provider, modelId: stored.opinion.report!.version });
-const fingerprintsOf = (stored: StoredOpinion): string[] => blockingFindings(stored.opinion.report!).map((finding) => workflowFindingFingerprint("CRITIC", finding));
-const allFingerprintsOf = (stored: StoredOpinion): Set<string> => new Set(stored.opinion.report!.findings.map((finding) => workflowFindingFingerprint("CRITIC", finding)));
+
+/** Rows are kept this long, then the table's TTL (named environments) removes them. A model's record is read by window, so older history only costs storage. */
+export const TRACK_RETENTION_DAYS = 400;
+const sha = (...parts: string[]): string => createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex");
+/** A cited file as the rounds compare it: slashes forward, no leading `./`, `a/` or `b/`, lower case. */
+const normalFile = (file: string): string => file.trim().replace(/\\/gu, "/").replace(/^(?:\.\/|[ab]\/)+/u, "").toLowerCase();
+/** A finding's words as the rounds compare them: lower case, letters and digits only, numbers dropped (they are line numbers and counts), one space between words. */
+const normalText = (text: string): string => text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter((word) => word !== "" && !/^\p{N}+$/u.test(word)).join(" ");
+/** The stable key of a finding: the file it cites and its normalised text, never the line. */
+export const findingKey = (finding: { text: string; file?: string | undefined }): string => sha("finding", finding.file === undefined ? "" : normalFile(finding.file), normalText(finding.text));
+/** The hash of a cited file's path, as a row keeps it and as the changed-files port's answer is compared. */
+export const fileHash = (file: string): string => sha("file", normalFile(file));
+const trackedFindingsOf = (stored: StoredOpinion): SecondReviewTrackRow["findings"] =>
+  blockingFindings(stored.opinion.report!).map((finding) => ({ fp: workflowFindingFingerprint("CRITIC", finding), outcome: "open" as const, key: findingKey(finding), ...(finding.file === undefined ? {} : { file: fileHash(finding.file) }) }));
+/** Everything the round raises, blocking or not, by exact fingerprint and by stable key: what a finding of the round before must be absent from to count as fixed. */
+const raisedBy = (stored: StoredOpinion): Set<string> => new Set(stored.opinion.report!.findings.flatMap((finding) => [workflowFindingFingerprint("CRITIC", finding), findingKey(finding)]));
 
 interface RowRef { model: string; recordedAt: string; taskId: string; candidateDigest: string }
 const refOf = (taskId: string, stored: StoredOpinion): RowRef => ({ model: modelOf(stored), recordedAt: stored.recordedAt, taskId, candidateDigest: stored.candidateDigest });
@@ -40,7 +59,17 @@ const refOf = (taskId: string, stored: StoredOpinion): RowRef => ({ model: model
 /** What one change of a task record means for the track record: a row to create, and outcome moves on rows that exist. */
 export interface TrackChange {
   create?: SecondReviewTrackRow;
-  moves: Array<{ ref: RowRef; to: "fixed" | "wrong"; /** Only these findings (all of the row's open findings when absent). */ only?: ReadonlySet<string>; /** Only the findings NOT in this set (the ones the next round no longer raised). */ except?: ReadonlySet<string> }>;
+  /** The earlier row of the SAME code by the SAME model (a second opinion run again): `create` replaces it, and the outcomes already decided on it are carried over. */
+  replaces?: RowRef;
+  moves: Array<{
+    ref: RowRef; to: "fixed" | "wrong";
+    /** Only these findings (all of the row's open findings when absent). */
+    only?: ReadonlySet<string>;
+    /** Not these findings: the ones the next round still raises, by stable key (or by fingerprint on a row written before keys). */
+    except?: ReadonlySet<string>;
+    /** `fixed` only: the hashes of the files the new candidate changed. A finding is fixed only if the file it cites is among them; unknown (absent) fixes nothing. */
+    changed?: ReadonlySet<string>;
+  }>;
 }
 
 const acceptedKeys = (image: Record<string, unknown> | undefined): Set<string> => {
@@ -64,11 +93,14 @@ export function trackChangeOf(previous: Record<string, unknown> | undefined, nex
       && (() => { try { return reviewCleared(review as never, accepted); } catch { return false; } })());
     const row = SecondReviewTrackRowSchema.safeParse({
       model: modelOf(now), mode: now.opinion.mode, taskId, project: typeof next.project === "string" ? next.project : "", candidateDigest: now.candidateDigest, recordedAt: now.recordedAt, firstCleared,
-      findings: fingerprintsOf(now).map((fp) => ({ fp, outcome: "open" as const })), rev: 0,
+      findings: trackedFindingsOf(now), rev: 0,
     });
     if (row.success) change.create = row.data;
-    // A new round: the findings of the earlier code that this round no longer raises were fixed.
-    if (answered(was) && was.candidateDigest !== now.candidateDigest) change.moves.push({ ref: refOf(taskId, was), to: "fixed", except: allFingerprintsOf(now) });
+    const sameModel = answered(was) && modelOf(was) === modelOf(now);
+    // The same code reviewed again by the same model: one candidate is one row.
+    if (row.success && answered(was) && sameModel && was.candidateDigest === now.candidateDigest) change.replaces = refOf(taskId, was);
+    // A new round by the SAME model: the findings of the earlier code that this round no longer raises (by stable key) were fixed, if the new code changed the file they cite. Another model's silence says nothing.
+    if (answered(was) && sameModel && was.candidateDigest !== now.candidateDigest) change.moves.push({ ref: refOf(taskId, was), to: "fixed", except: raisedBy(now) });
   }
   // Findings the owner accepted as risks since the last update, for the code the task holds: not agreed with.
   if (answered(now)) {
@@ -86,6 +118,8 @@ export interface TrackStore {
   get(key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined>;
   /** Created only if absent (a replayed record writes nothing twice). */
   create(item: Record<string, unknown>): Promise<void>;
+  /** Deletes a row (the earlier row a re-run replaced). Deleting a missing row is not an error. */
+  remove(key: { pk: string; sk: string }): Promise<void>;
   /** Replaces the findings only if the row is still at `rev`; false: it moved, and nothing was written. */
   move(key: { pk: string; sk: string }, findings: SecondReviewTrackRow["findings"], rev: number): Promise<boolean>;
 }
@@ -97,6 +131,7 @@ export function trackStoreOf(table: SettingsTable): TrackStore {
     async create(item) {
       try { await send(new PutCommand({ TableName: table.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" })); } catch (error) { if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error; }
     },
+    async remove(key) { await send(new DeleteCommand({ TableName: table.tableName, Key: key })); },
     async move(key, findings, rev) {
       try {
         await send(new UpdateCommand({ TableName: table.tableName, Key: key, UpdateExpression: "SET findings = :f, rev = :next", ConditionExpression: "rev = :rev", ExpressionAttributeValues: { ":f": findings, ":rev": rev, ":next": rev + 1 } }));
@@ -108,22 +143,44 @@ export function trackStoreOf(table: SettingsTable): TrackStore {
 
 const rowOf = (item: Record<string, unknown> | undefined): SecondReviewTrackRow | undefined => {
   if (item === undefined) return undefined;
-  const { pk: _pk, sk: _sk, entityType: _entityType, orgId: _orgId, ...rest } = item;
-  void _pk; void _sk; void _entityType; void _orgId;
+  const { pk: _pk, sk: _sk, entityType: _entityType, orgId: _orgId, [INDEX_EXPIRY_ATTRIBUTE]: _expires, ...rest } = item;
+  void _pk; void _sk; void _entityType; void _orgId; void _expires;
   const parsed = SecondReviewTrackRowSchema.safeParse(rest);
   return parsed.success ? parsed.data : undefined;
 };
 
+const expiryOf = (recordedAt: string): number => Math.floor(Date.parse(recordedAt) / 1000) + TRACK_RETENTION_DAYS * 86_400;
+const raisedAgain = (finding: SecondReviewTrackRow["findings"][number], except: ReadonlySet<string> | undefined): boolean =>
+  except !== undefined && except.has(finding.key ?? finding.fp);
+
 /** Applies the change to the store. A move is retried once if the row moved under it; a missing or unreadable row is left alone. */
 export async function applyTrackChange(store: TrackStore, orgId: string, change: TrackChange): Promise<{ created: number; moved: number }> {
   let created = 0, moved = 0;
-  if (change.create !== undefined) { await store.create({ ...trackRowKey(orgId, change.create), entityType: "SECOND_REVIEW_TRACK", orgId, ...change.create }); created += 1; }
+  if (change.create !== undefined) {
+    let row = change.create;
+    const replaced = change.replaces === undefined ? undefined : trackRowKey(orgId, change.replaces);
+    const newKey = trackRowKey(orgId, row);
+    if (replaced !== undefined && replaced.sk !== newKey.sk) {
+      // The same code reviewed again: what was already decided about a finding stays decided.
+      const earlier = rowOf(await store.get(replaced));
+      if (earlier !== undefined) row = { ...row, findings: row.findings.map((finding) => {
+        const decided = earlier.findings.find((old) => old.outcome !== "open" && (old.key !== undefined && finding.key !== undefined ? old.key === finding.key : old.fp === finding.fp));
+        return decided === undefined ? finding : { ...finding, outcome: decided.outcome };
+      }) };
+    }
+    await store.create({ ...newKey, entityType: "SECOND_REVIEW_TRACK", orgId, [INDEX_EXPIRY_ATTRIBUTE]: expiryOf(row.recordedAt), ...row }); created += 1;
+    if (replaced !== undefined && replaced.sk !== newKey.sk) await store.remove(replaced);
+  }
   for (const move of change.moves) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const key = trackRowKey(orgId, move.ref);
       const row = rowOf(await store.get(key));
       if (row === undefined) break;
-      const findings = row.findings.map((finding) => (finding.outcome === "open" && (move.only === undefined || move.only.has(finding.fp)) && (move.except === undefined || !move.except.has(finding.fp)) ? { ...finding, outcome: move.to } : finding));
+      const movable = (finding: SecondReviewTrackRow["findings"][number]): boolean => finding.outcome === "open"
+        && (move.only === undefined || move.only.has(finding.fp)) && !raisedAgain(finding, move.except)
+        // Agreed with only when the new code touched the file the finding cites.
+        && (move.to !== "fixed" || (finding.file !== undefined && move.changed?.has(finding.file) === true));
+      const findings = row.findings.map((finding) => (movable(finding) ? { ...finding, outcome: move.to } : finding));
       if (findings.every((finding, index) => finding.outcome === row.findings[index]!.outcome)) break;
       if (await store.move(key, findings, row.rev)) { moved += 1; break; }
     }
@@ -131,8 +188,14 @@ export async function applyTrackChange(store: TrackStore, orgId: string, change:
   return { created, moved };
 }
 
+/**
+ * The files (paths) the new candidate changed since the earlier one, for a task record, or undefined when that cannot be known. The track record cannot see a candidate's diff by itself (it lives with the task's
+ * operations, not on the task record), so whoever wires the indexer supplies this; without it no finding is ever counted as fixed.
+ */
+export type ChangedFilesPort = (task: Record<string, unknown>, fromCandidateDigest: string, toCandidateDigest: string) => Promise<readonly string[] | undefined>;
+
 /** The stream handler: every task record that changes a second opinion's story. Best effort and bounded; it never fails the batch. */
-export async function indexSecondReviewTrack(records: readonly StreamRecord[], store: TrackStore, log: (entry: Record<string, unknown>) => void, fallbackOrg: OrgId): Promise<{ created: number; moved: number; failed: number }> {
+export async function indexSecondReviewTrack(records: readonly StreamRecord[], store: TrackStore, log: (entry: Record<string, unknown>) => void, fallbackOrg: OrgId, changedFiles?: ChangedFilesPort): Promise<{ created: number; moved: number; failed: number }> {
   const total = { created: 0, moved: 0, failed: 0 };
   for (const entry of records) {
     const image = entry.dynamodb?.NewImage;
@@ -143,6 +206,14 @@ export async function indexSecondReviewTrack(records: readonly StreamRecord[], s
       const previous = entry.dynamodb?.OldImage === undefined ? undefined : unmarshall(entry.dynamodb.OldImage) as Record<string, unknown>;
       const change = trackChangeOf(previous, next);
       if (change.create === undefined && change.moves.length === 0) continue;
+      // Which files the new code changed, asked only when a finding could be fixed. With no port, or no answer, nothing is counted as fixed.
+      const toDigest = opinionOf(next)?.candidateDigest;
+      for (const move of change.moves) {
+        if (move.to !== "fixed" || changedFiles === undefined || toDigest === undefined) continue;
+        try { const files = await changedFiles(next, move.ref.candidateDigest, toDigest); if (files !== undefined) move.changed = new Set(files.map(fileHash)); } catch (error) {
+          log({ event: "second_review_track.changed_files_failed", error: error instanceof Error ? error.name : "unknown" });
+        }
+      }
       const org = OrgIdSchema.safeParse(next.orgId);
       const result = await applyTrackChange(store, org.success ? org.data : fallbackOrg, change);
       total.created += result.created; total.moved += result.moved;
@@ -154,23 +225,29 @@ export async function indexSecondReviewTrack(records: readonly StreamRecord[], s
   return total;
 }
 
-/** Every row of one model on a company (bounded: at most 20 pages of 100). A page that cannot be read fails the read, never a partial count. */
-export async function readTrackRows(table: SettingsTable, orgId: string, model: string): Promise<SecondReviewTrackRow[]> {
+const TRACK_PAGE_SIZE = 500;
+/**
+ * Every row of one model on a company, optionally for a window of recording times, read by sort key range and paged through to the end (the window, not a page count, bounds the read; rows also expire after
+ * `TRACK_RETENTION_DAYS`). A page that cannot be read fails the read, never a partial count.
+ */
+export async function readTrackRows(table: SettingsTable, orgId: string, model: string, window?: { from: string; to: string }): Promise<SecondReviewTrackRow[]> {
+  const prefix = trackPrefix(model);
+  // Times start with a digit and the key goes on with `#`, both before `~`: the range holds every row recorded from `from` to `to`, inclusive.
+  const low = `${prefix}${window?.from ?? ""}`, high = `${prefix}${window?.to ?? ""}~`;
   const rows: SecondReviewTrackRow[] = [];
   let start: Record<string, unknown> | undefined;
-  for (let page = 0; page < 20; page += 1) {
+  do {
     const response = await table.documentClient.send(new QueryCommand({
-      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, Limit: 100, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": trackPrefix(model) },
+      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high", ConsistentRead: true, Limit: TRACK_PAGE_SIZE, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":low": low, ":high": high },
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of response.Items ?? []) { const row = rowOf(item); if (row !== undefined && row.model === model) rows.push(row); }
-    if (response.LastEvaluatedKey === undefined) return rows;
     start = response.LastEvaluatedKey;
-  }
-  throw new Error("too many track rows to read");
+  } while (start !== undefined);
+  return rows;
 }
 
 /** The track record of a model on a company, optionally for a window of dates. */
 export async function readTrackRecord(table: SettingsTable, orgId: string, model: string, window?: { from: string; to: string }): Promise<SecondReviewTrackRecord> {
-  return summarizeSecondReviewTrack(model, await readTrackRows(table, orgId, model), window);
+  return summarizeSecondReviewTrack(model, await readTrackRows(table, orgId, model, window), window);
 }
