@@ -352,6 +352,10 @@ What the admin accepts, plainly:
 - A token lasts one hour (IAM refuses a longer one on this role: `sts:DurationSeconds` 900 to 3600) and exists only during a project's preparation. It is readable by that project's own
   setup and readiness commands, which need it to install. A command that copies it somewhere the agent can read stops the preparation and sets the workspace aside (it is set up again from
   a fresh clone), but a command that sends it over the network to a host the project may reach is not stopped.
+- After every setup or readiness command Rovara searches the workspace for the token, and checks that no repository gained a commit, branch, tag, stash or object (a committed token sits in
+  compressed objects). Either finding, or a search that cannot finish, sets the workspace aside and it is cloned again. **A very large tree (over 600,000 files, 6 GiB or 3 minutes of
+  search) will keep being cloned again**: the worker log says `registry.scan_unfinished` with the reason (`files`, `bytes`, `time` or `unreadable`). Not covered: archives (a token packed
+  into a tarball), and a repository created under `node_modules`. A setup step that itself commits, tags, stashes or runs `git gc` in a repository cannot be used with registries.
 - A read through a repository that has an upstream or external connection can make CodeArtifact fetch and keep new package versions from upstream. That is how CodeArtifact reads work.
 - **Cutting off outstanding tokens.** A token made with an assumed role's credentials stops working when that role's policy denies it (CodeArtifact docs, "Revoking CodeArtifact
   authorization tokens"). In an incident, remove the three registry statements from the broker role (redeploy without `rovaraCodeArtifactDomains`, or add an explicit deny): every

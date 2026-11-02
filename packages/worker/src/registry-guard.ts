@@ -86,6 +86,8 @@ export interface ScanInput {
   issued: readonly IssuedTokenRecord[];
   /** Only files whose inode changed at or after this time (ms) are read; 0 reads everything. */
   changedSinceMs: number;
+  /** Where an unfinished scan says why (a fixed code). Default: the worker's log. */
+  log?: (event: Record<string, unknown>) => void;
 }
 
 /** True when a token is anywhere the agent can read; throws RegistryTokenLeakError when the search cannot finish (an unfinished search is not a clean one). */
@@ -98,21 +100,26 @@ export async function workspaceHoldsToken(input: ScanInput): Promise<boolean> {
   const started = Date.now();
   let files = 0;
   let bytes = 0;
-  const unfinished = (): never => { throw new RegistryTokenLeakError("Rovara could not finish checking that no package registry token was left in the workspace, so the preparation was stopped and the workspace will be set up again from a fresh clone"); };
+  // The reason is a fixed code (never a path): it is logged so an admin can see why a very large tree keeps being cloned again.
+  const unfinished = (reason: "files" | "bytes" | "time" | "unreadable"): never => {
+    (input.log ?? ((event) => { console.log(JSON.stringify({ component: "worker", ...event })); }))({ event: "registry.scan_unfinished", reason });
+    throw new RegistryTokenLeakError("Rovara could not finish checking that no package registry token was left in the workspace, so the preparation was stopped and the workspace will be set up again from a fresh clone");
+  };
 
   const chunkHolds = (chunk: Buffer): boolean => forms.some((form) => chunk.includes(form)) || (input.issued.length > 0 && hasRecordedToken(chunk.toString("latin1"), input.issued));
 
   const fileHolds = async (path: string, size: number): Promise<boolean> => {
     if (size === 0) return false;
     bytes += size;
-    if (bytes > SCAN_LIMITS.bytes) unfinished();
-    const handle = await open(path, "r").catch(() => undefined);
+    if (bytes > SCAN_LIMITS.bytes) unfinished("bytes");
+    // A file that cannot be opened (a mode of 000, a read error) could hold the token: an unread file is an unfinished scan. Only a file that vanished meanwhile is skipped.
+    const handle = await open(path, "r").catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : unfinished("unreadable"));
     if (handle === undefined) return false;
     try {
       let carry: Buffer = Buffer.alloc(0);
       for (let position = 0; position < size;) {
         const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, size - position));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position).catch(() => unfinished("unreadable"));
         if (bytesRead === 0) break;
         position += bytesRead;
         const chunk = Buffer.concat([carry, buffer.subarray(0, bytesRead)]);
@@ -126,26 +133,26 @@ export async function workspaceHoldsToken(input: ScanInput): Promise<boolean> {
   };
 
   const walk = async (directory: string): Promise<boolean> => {
-    if (Date.now() - started > SCAN_LIMITS.milliseconds) unfinished();
+    if (Date.now() - started > SCAN_LIMITS.milliseconds) unfinished("time");
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-      return unfinished();
+      return unfinished("unreadable");
     }
     for (const entry of entries) {
       const path = join(directory, entry.name);
       if (skipped.has(path)) continue;
       // `.git/objects` holds compressed objects; a copy of a token appears in the working tree first.
       if (entry.name === "objects" && directory.endsWith(`${"/"}.git`)) continue;
-      const info = await lstat(path).catch(() => undefined);
+      const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : unfinished("unreadable"));
       if (info === undefined) continue;
       if (info.isDirectory()) {
         if (await walk(path)) return true;
       } else if (info.isFile()) {
         files += 1;
-        if (files > SCAN_LIMITS.files) unfinished();
+        if (files > SCAN_LIMITS.files) unfinished("files");
         if (info.ctimeMs >= input.changedSinceMs && await fileHolds(path, info.size)) return true;
       }
       // A link is not followed (what it points at is read where it lives, or is outside the workspace).
@@ -182,3 +189,63 @@ export async function removeTree(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
   if (!(await lstat(path).then(() => false, () => true))) throw new Error("a folder could not be removed");
 }
+
+// ---- .git (the objects are compressed, so a committed, stashed or hashed token is not found by the walk above)
+
+/**
+ * A digest of each `.git` folder's history and objects: HEAD, packed-refs, every file under refs/ (branches, tags, the stash), the loose object ids and the pack names. Index and worktree
+ * files are not part of it (the walk reads those). A `.git` that is a file (a worktree or submodule link) is its text. Folders named `node_modules` and the worker's private ones are not entered.
+ * After a setup or readiness command, any difference from the digests taken before the first command (a new commit, ref, stash or object, a new or removed repository) taints the workspace:
+ * a token committed or stashed would otherwise ride into a pull request inside compressed objects. Not covered: a repository created under `node_modules`, and archives (documented).
+ */
+export async function gitStates(rootPath: string): Promise<Map<string, string>> {
+  const root = resolve(rootPath);
+  const states = new Map<string, string>();
+  const skip = new Set(PRIVATE_ROOT_FOLDERS.map((name) => join(root, name)));
+  const digestOf = async (gitDir: string): Promise<string> => {
+    const hash = createHash("sha256");
+    const read = async (path: string): Promise<string> => readFile(path, "utf8").catch(() => "");
+    hash.update(`HEAD\0${await read(join(gitDir, "HEAD"))}\0packed\0${await read(join(gitDir, "packed-refs"))}\0`);
+    const refs: string[] = [];
+    const walkRefs = async (directory: string): Promise<void> => {
+      for (const entry of (await readdir(directory, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) await walkRefs(path);
+        else if (entry.isFile()) refs.push(`${path.slice(gitDir.length)}=${await read(path)}`);
+      }
+    };
+    await walkRefs(join(gitDir, "refs"));
+    hash.update(`${refs.join("\n")}\0objects\0`);
+    const objects: string[] = [];
+    for (const entry of await readdir(join(gitDir, "objects"), { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory() && /^[0-9a-f]{2}$/.test(entry.name)) objects.push(...(await readdir(join(gitDir, "objects", entry.name)).catch(() => [])).map((id) => `${entry.name}${id}`));
+      else if (entry.isDirectory() && entry.name === "pack") objects.push(...(await readdir(join(gitDir, "objects", "pack")).catch(() => [])).map((name) => `pack/${name}`));
+    }
+    hash.update(objects.sort().join("\n"));
+    return hash.digest("hex");
+  };
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (skip.has(path) || entry.name === "node_modules") continue;
+      if (entry.name === ".git") {
+        const relative = path.slice(root.length);
+        if (entry.isDirectory()) states.set(relative, await digestOf(path));
+        else if (entry.isFile()) states.set(relative, `file:${createHash("sha256").update(await readFile(path, "utf8").catch(() => "")).digest("hex")}`);
+        continue;
+      }
+      if (entry.isDirectory()) await walk(path);
+    }
+  };
+  await walk(root);
+  return states;
+}
+
+/** True when the repositories' history or objects differ from `before`: a changed digest, a new `.git`, or a removed one. */
+export function gitStatesDiffer(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): boolean {
+  if (before.size !== after.size) return true;
+  for (const [path, digest] of before) if (after.get(path) !== digest) return true;
+  return false;
+}
+
+export const GIT_CHANGED_MESSAGE = "A setup step changed a repository's history or objects (a commit, branch, tag, stash or object), where a package registry token could ride into a pull request, so the preparation was stopped and the workspace will be set up again from a fresh clone";

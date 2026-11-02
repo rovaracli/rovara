@@ -331,6 +331,50 @@ describe("a preparation with registries", () => {
       }
     });
 
+    it.skipIf(process.getuid?.() === 0)("a file the scan cannot open is an unfinished scan, not a clean one: it taints the workspace and logs why", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const logged: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logged.push(String(line)); });
+      try {
+        const failure = await attempt(f, rootPath, fakeToken("y"), ['echo data > ../../sealed.txt && chmod 000 ../../sealed.txt']).then(() => undefined, (error: Error) => error);
+        expect(failure?.message).toMatch(/could not finish checking/);
+        expect(await tainted(rootPath)).toBe(true);
+      } finally {
+        spy.mockRestore();
+        await chmod(join(rootPath, "sealed.txt"), 0o600).catch(() => undefined);
+      }
+      const reason = logged.map((line) => { try { return JSON.parse(line) as { event?: string; reason?: string }; } catch { return {}; } }).find((entry) => entry.event === "registry.scan_unfinished");
+      expect(reason?.reason).toBe("unreadable");
+      expect(logged.join("\n")).not.toContain("sealed.txt");
+    });
+
+    describe("a token committed, stashed or written into .git (the objects are compressed)", () => {
+      const gitSteps: Array<[string, string]> = [
+        ["a commit", 'cp "$NPM_CONFIG_USERCONFIG" k.txt && git add k.txt && git -c user.name=t -c user.email=t@e.x commit -qm leak && git reset -q --hard HEAD~1'],
+        ["a stash", 'cp "$NPM_CONFIG_USERCONFIG" k.txt && git add k.txt && git -c user.name=t -c user.email=t@e.x stash -q'],
+        ["a loose object written by hash-object", 'git hash-object -w "$NPM_CONFIG_USERCONFIG" >/dev/null'],
+        ["a new branch", "git branch sneaky"],
+        ["a tag", "git tag sneaky"],
+        ["a repository made by git init", "mkdir ../fresh && git -C ../fresh init -q"],
+      ];
+      it.each(gitSteps)("stops the preparation on %s and taints the workspace", async (_name, script) => {
+        const f = await fixture();
+        const rootPath = await f.workspace();
+        const failure = await attempt(f, rootPath, fakeToken("g"), [script]).then(() => undefined, (error: Error) => error);
+        expect(failure?.message).toMatch(/changed a repository's history or objects/);
+        expect(await tainted(rootPath)).toBe(true);
+        // The retry starts from a fresh clone.
+        await expect(attempt(f, rootPath, fakeToken("h"), ["git branch --list sneaky | wc -l | grep -q '^ *0$'"])).resolves.toMatchObject({ complete: true });
+      });
+
+      it("ordinary work in the repository is not a change of history: files, the index and git status", async () => {
+        const f = await fixture();
+        const rootPath = await f.workspace();
+        await expect(attempt(f, rootPath, fakeToken("w"), ["echo x > a.txt && git status --short >/dev/null && git diff --stat >/dev/null"], ["git status --short >/dev/null"])).resolves.toMatchObject({ complete: true });
+      });
+    });
+
     it("once a leak is found no later command runs (it could read the copy)", async () => {
       const f = await fixture();
       const rootPath = await f.workspace();

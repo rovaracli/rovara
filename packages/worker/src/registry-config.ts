@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 import { REGISTRY_TOKEN_MIN_LENGTH, agentXError, scrubRegistrySecrets, type PrepareRegistry, type ProjectCommand, type RegistryCredential } from "@agentx/contracts";
 import type { CommandResult } from "./readiness.js";
 import type { RegistryCredentialProvider } from "./registry-credentials.js";
-import { RegistryTokenLeakError, readIssuedTokens, recordIssuedTokens, removeTree, workspaceHoldsToken } from "./registry-guard.js";
+import { GIT_CHANGED_MESSAGE, RegistryTokenLeakError, gitStates, gitStatesDiffer, readIssuedTokens, recordIssuedTokens, removeTree, workspaceHoldsToken } from "./registry-guard.js";
 
 export const REGISTRY_CONFIG_PREFIX = ".agentx-registry-";
 /** What a token may be made of for the config files to carry it without quoting or expansion (every CodeArtifact token is). */
@@ -114,8 +114,10 @@ export async function openRegistrySession(input: {
   const openedAt = Date.now();
   let changedSince = openedAt - 2_000;
   let leaked: RegistryTokenLeakError | undefined;
+  let gitBaseline: Map<string, string> | undefined;
   const scan = async (sinceMs: number, onlyPrevious = false): Promise<void> => {
     try {
+      if (gitBaseline !== undefined && gitStatesDiffer(gitBaseline, await gitStates(root))) throw new RegistryTokenLeakError(GIT_CHANGED_MESSAGE);
       if (await workspaceHoldsToken({ rootPath: root, skip: [directory], secrets: onlyPrevious ? [] : secrets, issued: previous, changedSinceMs: sinceMs })) throw new RegistryTokenLeakError();
     } catch (error) {
       leaked ??= error instanceof RegistryTokenLeakError ? error : new RegistryTokenLeakError();
@@ -151,6 +153,8 @@ export async function openRegistrySession(input: {
         // The project's own `env` wins, as it does over every default of the sandbox.
         // Once a leak is found, no later command runs: it could read the copy.
         if (leaked !== undefined) throw leaked;
+        // The repositories' history and objects before the first command (the clone is done by now): the baseline every later command is held to.
+        gitBaseline ??= await gitStates(root);
         const withEnvironment: ProjectCommand = { ...command, env: { ...environment, ...command.env } };
         let outcome: { result: CommandResult } | { error: unknown };
         try {
