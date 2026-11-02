@@ -18,7 +18,9 @@ export const TEST_ID_MAX = 500;
 // Control and format characters, line and paragraph separators, any space that is not U+0020, and characters that draw as nothing or as a space: Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the Khmer inherent
 // vowels (U+17B4, U+17B5), the braille blank (U+2800), the combining grapheme joiner (U+034F), the Mongolian vowel separator and free variation selectors (U+180B to U+180F), variation selectors (U+FE00 to U+FE0F and
 // U+E0100 to U+E01EF) and the object replacement and replacement characters (U+FFFC, U+FFFD).
-const INVALID_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}   -   　ᅟᅠㅤﾠ឴឵⠀͏᠋-᠏︀-️\u{E0100}-\u{E01EF}￼�]/u;
+// The class lists combining and variation characters on purpose (they are the invisible look-alikes this rule exists to refuse), so the "misleading class" rule is off for this line.
+// eslint-disable-next-line no-misleading-character-class
+const INVALID_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\u115F\u1160\u3164\uFFA0\u17B4\u17B5\u2800\u034F\u180B-\u180F\uFE00-\uFE0F\u{E0100}-\u{E01EF}\uFFFC\uFFFD]/u;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 
 /** Whether an id may be listed, compared and marked (see the top of the file). */
