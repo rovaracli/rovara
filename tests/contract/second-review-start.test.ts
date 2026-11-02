@@ -12,12 +12,15 @@ import {
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, openReviewFindings, resolveWorkflowReviewFindings, returnWorkflowToImplementationAutomatically, sendBackProblems, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { planSecondReview, secondOpinionUnavailable, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
+import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
 import { defaultModelLine, secondReviewPicker, secondReviewTrackRecord } from "../../packages/broker/src/rovara-code/second-review-picker.js";
 import { secondOpinionFromReviewResult, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { orgMetaKey, TaskUsageTelemetrySchema, createTaskUsageTelemetry } from "@agentx/contracts";
+import { reviewUsageArtifactName } from "../../packages/worker/src/usage.js";
+import { acceptSecondReport } from "../../packages/broker/src/rovara-code/second-review.js";
 
 const NOW = "2026-11-02T12:00:00.000Z";
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
@@ -455,7 +458,7 @@ describe("key rule 4: unavailable is flagged and never blocks", () => {
   it("a routed model's report names its route alias; it is accepted by that alias and shown as the planned model", () => {
     const plan = operationPlan("on", { routeAliases: { [secondReviewModelKey(GPT)]: "org-route-1" } });
     const id = randomUUID();
-    const result = (version: string) => ({ [SECOND_REVIEW_RESULT_KEY]: { tries: 1, report: second(id, "PASS", [], { provider: "route", version }) } });
+    const result = (version: string) => ({ [SECOND_REVIEW_RESULT_KEY]: { tries: 1, report: second(id, "PASS", [], { provider: "rovara-route", version }) } });
     const stored = secondOpinionFromReviewResult({ recorded: plan, operationId: id, terminalStatus: "SUCCEEDED", result: result("org-route-1"), currentCandidateDigest: code.digest, now: NOW });
     expect(stored!.opinion).toMatchObject({ unavailable: false, report: { provider: GPT.provider, version: GPT.modelId } });
     const wrong = secondOpinionFromReviewResult({ recorded: plan, operationId: id, terminalStatus: "SUCCEEDED", result: result("org-route-2"), currentCandidateDigest: code.digest, now: NOW });
@@ -534,5 +537,85 @@ describe("key rule 6: with cr off, today's flow exactly", () => {
     for (const over of [{ workflowMode: "IMPLEMENT" }, { workflowReviewers: ["SECURITY" as const] }, { agentRun: {} }]) {
       expect(await prepareSecondReview({ dependencies: poisoned, orgId: "org", project: "p", workspaceId: "w", conversationId: "c", task, workflowMode: "REVIEW", agentRun: undefined, workflowReviewers: undefined, firstReviewerModel: OPUS, approved: undefined, routing: undefined, ...over })).toEqual({});
     }
+  });
+});
+
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// The start, with the stores behind it
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("the start, with a database behind it", () => {
+  const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
+  const GPT_ID: ModelIdentifier = { provider: "openai", modelId: "gpt-5.5" };
+  function world(settings: Record<string, unknown>, options: { failOperations?: boolean; opinion?: unknown } = {}) {
+    const db = new FakeDynamoDb();
+    db.set({ ...orgMetaKey(ORG as never), pk: orgMetaKey(ORG as never).pk, sk: "SECONDREVIEW#SETTINGS", entityType: "SECOND_REVIEW_SETTINGS", ...settings });
+    db.set({ pk: "WORKSPACE#w", sk: "OPERATION#b1", entityType: "OPERATION", kind: "task", conversationId: "c", workflowMode: "IMPLEMENT", status: "SUCCEEDED", model: GPT_ID });
+    const client = options.failOperations !== true ? db : { send: async (command: { input?: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+      if (command.input?.ExpressionAttributeValues?.[":prefix"] === "OPERATION#") throw new Error("the table is not answering");
+      return db.send(command as never);
+    } };
+    const task = { taskId, workflow: workflow(), developerId: ownerId, ...(options.opinion === undefined ? {} : { secondOpinion: options.opinion }) } as never;
+    return { dependencies: { documentClient: client, tableName: "state" } as unknown as AwsBrokerDependencies, task };
+  }
+  const start = (w: ReturnType<typeof world>, over: Record<string, unknown> = {}) => prepareSecondReview({ dependencies: w.dependencies, orgId: ORG, project: "web", workspaceId: "w", conversationId: "c", task: w.task, workflowMode: "REVIEW",
+    agentRun: undefined, workflowReviewers: undefined, firstReviewerModel: GPT_ID, approved: undefined, routing: {}, ...over });
+
+  it("plans a second reviewer from the company's own models and records it on the operation", async () => {
+    const out = await start(world({ default: "shadow" }));
+    expect(out.field!.candidates.length).toBeGreaterThan(0);
+    expect(out.field!.candidates[0]!.model.provider).toBe("amazon-bedrock");
+    expect(out.record).toMatchObject({ candidateDigest: code.digest, plan: { mode: "shadow", choice: "default" } });
+  });
+
+  it("M2: an error while planning never fails the dispatch: `on` flags it, shadow stays silent", async () => {
+    const on = await start(world({ default: "on" }, { failOperations: true }));
+    expect(on).toEqual({ record: { candidateDigest: code.digest, notRun: { mode: "on", reason: "no-candidate" } } });
+    expect(await start(world({ default: "shadow" }, { failOperations: true }))).toEqual({});
+    // A settings read that fails runs nothing at all.
+    const broken = world({ default: "on" });
+    (broken.dependencies as unknown as { documentClient: unknown }).documentClient = { send: async () => { throw new Error("down"); } };
+    expect(await start(broken)).toEqual({});
+  });
+
+  it("L7: by default the payload has no context (the second reviewer sees only the change); same_as_first says so on the wire; cr off is unchanged", async () => {
+    const byDefault = await start(world({ default: "shadow" }));
+    expect(byDefault.field).not.toHaveProperty("context");
+    expect(byDefault.field!).toEqual({ candidates: expect.any(Array) });
+    const shared = await start(world({ default: "shadow", context: "same_as_first" }));
+    expect(shared.field).toMatchObject({ context: "same_as_first" });
+    // A stored value that is not one of the two words reads as the narrower.
+    expect((await start(world({ default: "shadow", context: "everything" }))).field).not.toHaveProperty("context");
+    delete process.env.SECOND_REVIEW_ENABLED;
+    expect(await start(world({ default: "on", context: "same_as_first" }))).toEqual({});
+  });
+
+  it("L3: the default the task used last time is taken from an opinion that ANSWERED, not from a failed one", async () => {
+    const failed = secondOpinionUnavailable({ mode: "shadow", company: "openai", choice: "default" }, "no-answer", second(randomUUID(), "UNKNOWN", [], { provider: "openrouter", version: "x/some-other-model" }));
+        const stored = (opinion: SecondOpinion) => ({ candidateDigest: code.digest, opinion, recordedAt: NOW });
+    expect((await start(world({ default: "shadow" }, { opinion: stored(failed) }))).record!.plan!.defaultChanged).toBeUndefined();
+    // The answered one names a model no longer served: the default moved on, and the plan says so.
+    const gone = secondOpinionOf({ plan: planned(), report: second(randomUUID(), "PASS", [], { provider: "openrouter", version: "openai/gpt-5.5" }), currentCandidateDigest: code.digest });
+    expect(gone).toMatchObject({ unavailable: false });
+    expect((await start(world({ default: "shadow" }, { opinion: stored(gone) }))).record!.plan!.defaultChanged).toBe(true);
+  });
+});
+
+describe("L2: a routed model's report must also come from the route provider", () => {
+  it("an alias on another provider is not the route", () => {
+    const plan = planned();
+    const aliases = { [secondReviewModelKey(plan.model)]: "org-route-1" };
+    const check = (provider: string) => acceptSecondReport({ plan, report: second(randomUUID(), "PASS", [], { provider, version: "org-route-1" }), currentCandidateDigest: code.digest, routeAliases: aliases });
+    expect(check("rovara-route")).toEqual({ accepted: true });
+    expect(check("openai")).toEqual({ accepted: false, reason: "wrong-model" });
+  });
+});
+
+describe("M3: the usage event stays the telemetry the activity index reads", () => {
+  it("is exactly the telemetry shape for the second reviewer's tries too, which are told apart by their artifact names", () => {
+    const usage = createTaskUsageTelemetry({ tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01 } as never, { provider: "openrouter", modelId: "openai/gpt-5.5" }, "SUCCEEDED");
+    expect(TaskUsageTelemetrySchema.safeParse(usage).success).toBe(true);
+    expect(reviewUsageArtifactName("CRITIC", undefined)).toBe("workflow-review-critic-usage.json");
+    expect(reviewUsageArtifactName("CRITIC", 2)).toBe("workflow-second-review-2-usage.json");
   });
 });

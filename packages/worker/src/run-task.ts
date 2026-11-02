@@ -40,7 +40,7 @@ import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
-import { LEARNED_LOAD_REPORT_FIELD, SECOND_REVIEW_OPERATION_TAG, type SecondReviewResult } from "@agentx/contracts";
+import { LEARNED_LOAD_REPORT_FIELD, type SecondReviewContext, type SecondReviewResult } from "@agentx/contracts";
 import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
@@ -70,7 +70,7 @@ import { saveEvidenceRaw } from "./verification/evidence-raw.js";
 import { CommandRecorder } from "./verification/recorder.js";
 import {
   createTaskUsageTelemetry,
-  usageForControlPlane,
+  usageForControlPlane, reviewUsageArtifactName,
   type TaskUsageOutcome,
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies, type ExecuteSerialWorkflowDependenciesInput, type ExecuteSerialWorkflowDependenciesResult } from "./workflow-dependencies.js";
@@ -143,7 +143,7 @@ export interface TaskInvocationDependencies {
   authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
   piAdapter?: PiSessionAdapter;
   /** SR-1: the models (each with its session) the second reviewer may try; absent when the invocation names none. */
-  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }> };
+  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; context?: SecondReviewContext };
   cancellationController?: WorkerCancellationController;
   /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
   setupAgent?: (body: unknown) => Promise<unknown>;
@@ -1511,9 +1511,9 @@ async function runTask(
           onUsage: async ({ role, stats, model, outcome, secondReviewTry }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
-            // SR-1: the second reviewer's calls are tagged `second-review` and kept in their own artifacts, so they are never taken for the first review's.
-            await events.append("usage", usageForControlPlane(secondReviewTry === undefined ? redactedUsage : { ...(redactedUsage as object), purpose: SECOND_REVIEW_OPERATION_TAG }, dependencies.model));
-            await artifactSink({ name: secondReviewTry === undefined ? `workflow-review-${role.toLowerCase()}-usage.json` : `workflow-second-review-${String(secondReviewTry)}-usage.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
+            // SR-1: the usage event stays exactly the telemetry shape the activity index reads (an extra field would make it unreadable and it would be dropped); the second reviewer's calls are told apart by their own artifact names.
+            await events.append("usage", usageForControlPlane(redactedUsage, dependencies.model));
+            await artifactSink({ name: reviewUsageArtifactName(role, secondReviewTry), mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
           },
         });
         try {

@@ -8,10 +8,10 @@ import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-test
 afterEach(() => { delete process.env.SECOND_REVIEW_ENABLED; });
 const PATH = "/v1/app/org/second-review";
 const on = () => { process.env.SECOND_REVIEW_ENABLED = "1"; };
-async function bench(options: { maya?: "admin" | "member" } = {}) {
+async function bench(options: { maya?: "admin" | "member"; grant?: "viewer" | "contributor" | "maintainer" } = {}) {
   const audit = capturingAuditDeps();
   const t = await setupWizardBench({ audit });
-  if (options.maya !== undefined) await t.person(MAYA, options.maya);
+  if (options.maya !== undefined) await t.person(MAYA, options.maya, options.grant);
   return { t, audit };
 }
 const events = (audit: ReturnType<typeof capturingAuditDeps>) => audit.recorded().filter((event) => event.action.includes("second_review"));
@@ -117,7 +117,7 @@ describe("the company's choice", () => {
 
 describe("a project narrowing", () => {
   it("is a subset of the company's choice and never wider; refused for a contributor; audited", async () => {
-    const { t, audit } = await bench({ maya: "member" });
+    const { t, audit } = await bench({ maya: "member", grant: "contributor" });
     on();
     const models = bodyOf(await get(t, GPT_BUILDER)).models.map((entry) => entry.model);
     await t.web(OMAR, "POST", PATH, { action: "choose", primary: models[0], backup: models[1] });
@@ -130,5 +130,75 @@ describe("a project narrowing", () => {
     const body = bodyOf(await t.web(OMAR, "GET", `${PATH}?project=${NAME}&${GPT_BUILDER}`));
     expect(body.projectNarrowing).toEqual({ models: [models[1]] });
     expect(body.current.models).toEqual([models[1]]);
+  });
+});
+
+describe("who may name a project (M4)", () => {
+  it("a person who is not in the project, and a project the company does not have, are told it is not there", async () => {
+    const { t } = await bench({ maya: "member" });
+    on();
+    expect((await t.web(MAYA, "GET", `${PATH}?project=${NAME}&${GPT_BUILDER}`)).status).toBe(404);
+    expect((await t.web(OMAR, "GET", `${PATH}?project=nope&${GPT_BUILDER}`)).status).toBe(404);
+    expect((await t.web(OMAR, "GET", `${PATH}?project=${NAME}&${GPT_BUILDER}`)).status).toBe(200);
+    // Narrowing names the project too: an unknown name is not found for an admin as well, and a person outside the project is refused.
+    expect((await t.web(OMAR, "POST", PATH, { action: "narrow", project: "nope", models: null })).status).toBe(404);
+    expect((await t.web(MAYA, "POST", PATH, { action: "narrow", project: NAME, models: null })).status).toBe(404);
+  });
+});
+
+describe("a change and its audit are one write (L6)", () => {
+  it("with no audit ledger the change is refused and nothing is stored", async () => {
+    const t = await setupWizardBench({});
+    on();
+    const model = bodyOf(await get(t, GPT_BUILDER)).models[0]!.model;
+    const refused = await t.web(OMAR, "POST", PATH, { action: "choose", primary: model });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(bodyOf(await get(t, GPT_BUILDER)).choice).toBeNull();
+  });
+
+  it("a choice and a context change touch only their own field", async () => {
+    const { t } = await bench();
+    on();
+    const model = bodyOf(await get(t, GPT_BUILDER)).models[0]!.model;
+    await t.web(OMAR, "POST", PATH, { action: "context", context: "same_as_first" });
+    await t.web(OMAR, "POST", PATH, { action: "choose", primary: model });
+    const body = (await get(t, GPT_BUILDER)).body as { context: string; choice: { models: unknown[] } };
+    expect(body.context).toBe("same_as_first");
+    expect(body.choice.models).toEqual([model]);
+    await t.web(OMAR, "POST", PATH, { action: "clear" });
+    expect(((await get(t, GPT_BUILDER)).body as { context: string }).context).toBe("same_as_first");
+  });
+});
+
+describe("what the second reviewer sees (L7, option C)", () => {
+  it("is the change only by default, shown in the preview", async () => {
+    const { t } = await bench();
+    on();
+    expect((await get(t, GPT_BUILDER)).body).toMatchObject({ context: "change_only", alsoSees: null });
+  });
+
+  it("is changed by an admin from a browser only, audited, and says clearly when it widens what is shared", async () => {
+    const { t, audit } = await bench({ maya: "member" });
+    on();
+    expect((await t.dev(OMAR, "POST", PATH, { action: "context", context: "same_as_first" })).status).toBe(403);
+    expect((await t.web(MAYA, "POST", PATH, { action: "context", context: "same_as_first" })).status).toBe(403);
+    expect((await t.web(OMAR, "POST", PATH, { action: "context", context: "everything" })).status).toBe(400);
+    expect(events(audit)).toEqual([]);
+    expect(await t.web(OMAR, "POST", PATH, { action: "context", context: "same_as_first" })).toMatchObject({ status: 200, body: { status: "applied", context: "same_as_first" } });
+    expect(events(audit)[0]).toMatchObject({ action: "company.second_review_context_changed", actor: { id: OMAR.developerId }, facts: { to: "same_as_first", widens: true } });
+    expect((await get(t, GPT_BUILDER)).body).toMatchObject({ context: "same_as_first", alsoSees: expect.stringMatching(/also sees what the first reviewer sees/u) });
+    await t.web(OMAR, "POST", PATH, { action: "context", context: "change_only" });
+    expect(events(audit)[1]).toMatchObject({ facts: { to: "change_only", widens: false } });
+  });
+});
+
+describe("a project's maintainer", () => {
+  it("may narrow the company's choice for the project, but may not choose for the company or change what is shared", async () => {
+    const { t } = await bench({ maya: "member", grant: "maintainer" });
+    on();
+    const models = bodyOf(await get(t, GPT_BUILDER)).models.map((entry) => entry.model);
+    expect((await t.web(MAYA, "POST", PATH, { action: "narrow", project: NAME, models: [models[0]] })).status).toBe(200);
+    expect((await t.web(MAYA, "POST", PATH, { action: "choose", primary: models[0] })).status).toBe(403);
+    expect((await t.web(MAYA, "POST", PATH, { action: "context", context: "same_as_first" })).status).toBe(403);
   });
 });

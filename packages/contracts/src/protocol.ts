@@ -10,7 +10,7 @@ import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
 import { type ModelSelection } from "./models-node.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
-import { SECOND_REVIEW_CANDIDATES_MAX } from "./second-review.js";
+import { SECOND_REVIEW_CANDIDATES_MAX, SecondReviewContextSchema } from "./second-review.js";
 import { E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
 import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
@@ -230,6 +230,8 @@ export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
  */
 export const SecondReviewerSchema = z.object({
   candidates: z.array(z.object({ model: ModelSelectionSchema, modelRoute: ModelRouteSchema.optional() }).strict()).min(1).max(SECOND_REVIEW_CANDIDATES_MAX),
+  /** What the second reviewer is shown besides the change: absent means `change_only` (no source tools, lessons, step instructions or skills). */
+  context: SecondReviewContextSchema.optional(),
 }).strict();
 export type SecondReviewerPayload = z.infer<typeof SecondReviewerSchema>;
 /** Broker-created task context, never a client choice or permission to fallback. */

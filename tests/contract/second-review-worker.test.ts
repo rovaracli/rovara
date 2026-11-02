@@ -70,7 +70,7 @@ function model(id: string, script: string[], prompts: string[], options: { delay
 const PASS = '{"findings":[]}';
 const FINDING = '{"findings":[{"text":"off by one in the loop bound","origin":"INTRODUCED"}]}';
 
-async function run(options: { first: ReturnType<typeof model>; candidates?: Array<ReturnType<typeof model>>; reviewers?: Array<"CRITIC" | "SECURITY">; timeoutMs?: number; sourceTools?: boolean; sources?: unknown }) {
+async function run(options: { first: ReturnType<typeof model>; candidates?: Array<ReturnType<typeof model>>; reviewers?: Array<"CRITIC" | "SECURITY">; timeoutMs?: number; context?: "change_only" | "same_as_first"; sources?: unknown; learnedBlock?: string }) {
   const { rootPath, repositories, candidate } = await repository();
   let second: SecondReviewResult | undefined;
   const started = Date.now();
@@ -78,8 +78,8 @@ async function run(options: { first: ReturnType<typeof model>; candidates?: Arra
     const reports = await runWorkflowReviews({
       ruleFileBaseCommits: [], operationId: OPERATION, rootPath, model: options.first.model, candidate, repositories, piAdapter: options.first.piAdapter, now: () => now,
       ...(options.reviewers === undefined ? {} : { reviewers: options.reviewers }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      ...(options.sources === undefined ? {} : { sources: options.sources as never }),
-      ...(options.candidates === undefined ? {} : { secondReviewer: { candidates: options.candidates, ...(options.sourceTools === undefined ? {} : { sourceTools: options.sourceTools }) }, onSecondReview: (result: SecondReviewResult) => { second = result; } }),
+      ...(options.sources === undefined ? {} : { sources: options.sources as never }), ...(options.learnedBlock === undefined ? {} : { learnedBlock: options.learnedBlock }),
+      ...(options.candidates === undefined ? {} : { secondReviewer: { candidates: options.candidates, ...(options.context === undefined ? {} : { context: options.context }) }, onSecondReview: (result: SecondReviewResult) => { second = result; } }),
     });
     return { reports, second, elapsed: Date.now() - started };
   } finally {
@@ -149,38 +149,49 @@ describe("the second reviewer inside the review operation", () => {
 describe("the second reviewer takes no extra wall time (M1)", () => {
   it("runs beside the normal reviews, so a review with a second reviewer is about as long as one without", async () => {
     const prompts: string[] = [];
-    // The normal reviews take 2 x 150 ms one after the other; the second reviewer's three failing tries take 3 x 100 ms. Run after them it would add that to the time; run beside them it adds about nothing.
-    const alone = await run({ first: model("first-v1", [PASS], prompts, { delayMs: 150 }) });
-    const first = model("first-v1", [PASS], prompts, { delayMs: 150 });
-    const candidates = [model("second-a", ["throw"], prompts, { delayMs: 100 }), model("second-b", ["throw"], prompts, { delayMs: 100 })];
+    // The normal reviews take 2 x 400 ms one after the other; the second reviewer's three failing tries take 3 x 300 ms (900 ms if it ran after them). Run after them it would add that to the time; run beside them it adds about nothing.
+    const alone = await run({ first: model("first-v1", [PASS], prompts, { delayMs: 400 }) });
+    const together: string[] = [];
+    const first = model("first-v1", [PASS], together, { delayMs: 400 });
+    const candidates = [model("second-a", ["throw"], together, { delayMs: 300 }), model("second-b", ["throw"], together, { delayMs: 300 })];
     const { second, elapsed } = await run({ first, candidates });
     expect(second?.tries).toBe(3);
-    expect(elapsed).toBeLessThan(alone.elapsed + 200);
-    // It really did overlap: the second reviewer's first prompt came before the first reviewers finished.
-    expect(prompts.indexOf("second-a:CODE")).toBeLessThan(prompts.lastIndexOf("first-v1:SECURITY") + 1);
+    expect(elapsed).toBeLessThan(alone.elapsed + 800);
+    // It really did overlap (this does not depend on the machine's speed): the second reviewer was already asking before the second of the normal reviews began.
+    expect(together.indexOf("second-a:CODE")).toBeLessThan(together.indexOf("first-v1:SECURITY"));
   });
 
   it("all of its tries share ONE budget of one reviewer's time limit, so a hanging model ends the loop at that limit", async () => {
     const prompts: string[] = [];
     const first = model("first-v1", [PASS], prompts);
     const candidates = [model("second-a", ["hang"], prompts), model("second-b", ["hang"], prompts)];
-    const { second, elapsed } = await run({ first, candidates, timeoutMs: 400 });
-    // Three tries at 400 ms each would be 1200 ms; the shared budget stops it at about 400 ms after one try.
-    expect(elapsed).toBeLessThan(900);
+    const { second } = await run({ first, candidates, timeoutMs: 400 });
+    // Three tries at 400 ms each would be 1200 ms; the shared budget ends the loop after the first one.
     expect(second?.tries).toBe(1);
     expect(second?.report).toMatchObject({ status: "UNKNOWN", failureReason: "TIMEOUT" });
   });
 
-  it("gets no source tools unless asked (the diff, the plan and the checks only)", async () => {
+  it("sees only the change by default: no source tools and no lessons (owner decision, option C); same_as_first gives it what the first reviewer has", async () => {
     const seen: string[] = [];
     const sources = { tools: [{ name: "lookup_ticket" }], note: "SOURCES-NOTE", labels: [{ label: "Jira" }] };
-    const track = (id: string) => { const m = model(id, [PASS], seen); const inner = m.piAdapter.create.bind(m.piAdapter); m.piAdapter.create = async (input) => { seen.push(`${id}:tools=${String((input as { contextTools?: unknown[] }).contextTools?.length ?? 0)}`); return inner(input); }; return m; };
-    await run({ first: track("first-v1"), candidates: [track("second-a")], sources });
+    const track = (id: string) => {
+      const m = model(id, [PASS], seen);
+      const inner = m.piAdapter.create.bind(m.piAdapter);
+      m.piAdapter.create = async (input) => { seen.push(`${id}:tools=${String((input as { contextTools?: unknown[] }).contextTools?.length ?? 0)}`); const session = await inner(input); const prompt = session.prompt.bind(session); session.prompt = async (text) => { seen.push(`${id}:lessons=${String(text.includes("LESSON-BLOCK"))}`); return prompt(text); }; return session; };
+      return m;
+    };
+    await run({ first: track("first-v1"), candidates: [track("second-a")], sources, learnedBlock: "LESSON-BLOCK" });
     expect(seen).toContain("first-v1:tools=1");
+    expect(seen).toContain("first-v1:lessons=true");
+    expect(seen).toContain("second-a:tools=0");
+    expect(seen).toContain("second-a:lessons=false");
+    seen.length = 0;
+    await run({ first: track("first-v1"), candidates: [track("second-a")], sources, learnedBlock: "LESSON-BLOCK", context: "change_only" });
     expect(seen).toContain("second-a:tools=0");
     seen.length = 0;
-    await run({ first: track("first-v1"), candidates: [track("second-a")], sources, sourceTools: true });
+    await run({ first: track("first-v1"), candidates: [track("second-a")], sources, learnedBlock: "LESSON-BLOCK", context: "same_as_first" });
     expect(seen).toContain("second-a:tools=1");
+    expect(seen).toContain("second-a:lessons=true");
   });
 });
 

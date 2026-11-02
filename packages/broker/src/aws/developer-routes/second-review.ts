@@ -9,16 +9,16 @@
 //           { action: "narrow", project, models | null }   an owner, admin or the project's maintainer. A subset of the company's choice, never wider (anything outside it is refused).
 // The mode (off, shadow, on) and the evidence that lets a model block are not set here; this route changes which model reviews, never whether it blocks.
 import { z } from "zod";
-import { SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewModelRef } from "@agentx/contracts";
+import { SecondReviewContextSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewModelRef } from "@agentx/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";
 import { auditEventId } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { servableModels } from "../../model-sources/routing.js";
-import { readSecondReviewSettings, writeCompanyChoice, writeProjectNarrowing } from "../../org/second-review-settings.js";
+import { companyChoiceUpdate, companyContextUpdate, projectNarrowingUpdate, readSecondReviewSettings, type SettingsUpdate } from "../../org/second-review-settings.js";
 import { defaultModelLine, secondReviewPicker, SECOND_REVIEW_TYPICAL_REVIEW_TOKENS } from "../../rovara-code/second-review-picker.js";
 import { planSecondReview } from "../../rovara-code/second-review.js";
 import { secondReviewEnabled } from "../../rovara-code/second-review-switch.js";
@@ -34,6 +34,7 @@ const Ref = z.object({ provider: z.string().min(1).max(128), modelId: z.string()
 const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("choose"), primary: Ref, backup: Ref.optional() }).strict(),
   z.object({ action: z.literal("clear") }).strict(),
+  z.object({ action: z.literal("context"), context: SecondReviewContextSchema }).strict(),
   z.object({ action: z.literal("narrow"), project: z.string().min(1).max(64), models: z.array(Ref).max(2).nullable() }).strict(),
 ]);
 
@@ -60,6 +61,8 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
   if (request.method === "GET") {
     const project = url.searchParams.get("project") ?? undefined;
+    // A project is named only by someone who is in it (and only a project the company has): anyone else is told it is not there, as the models list does.
+    if (project !== undefined && await deps.agents?.projectMembers.roleOf(caller.orgId, project, { developerId: caller.developerId, orgRole: caller.orgRole }) === undefined) throw agentXError("NOT_FOUND", "Not found.");
     const against = builderOf(url);
     if (against.length === 0) throw agentXError("CONFIG_INVALID", "Name the model that writes the code (builder=provider:model) so each model's fit can be shown.");
     const { picker, settings, sources, forbidden, price } = await listOf(deps, caller, project, against);
@@ -69,6 +72,8 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
     const chosen = narrowedSecondReviewModels({ company: settings.companyModels, project: settings.projectModels });
     return new StatusReply(200, {
       mode,
+      context: settings.context,
+      alsoSees: settings.context === "same_as_first" ? "Second reviewer also sees what the first reviewer sees: the connected sources, lessons and step instructions." : null,
       models: picker.entries,
       suggested: picker.suggested.map((entry) => ({ provider: entry.model.provider, modelId: entry.model.modelId })),
       typicalReview: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS,
@@ -90,29 +95,38 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
   }
   const body = parsed.data;
   if (body.action !== "narrow" && !isAdmin(caller)) throw agentXError("FORBIDDEN", "Only a company owner or admin can change this.");
-  if (body.action === "narrow" && !isAdmin(caller)) {
+  if (body.action === "narrow") {
+    // The project must be one the company has (an unknown name is not found, for an admin too), and the caller its maintainer (an owner or admin counts as one).
     const role = await deps.agents?.projectMembers.roleOf(caller.orgId, body.project, { developerId: caller.developerId, orgRole: caller.orgRole });
+    if (role === undefined) throw agentXError("NOT_FOUND", "Not found.");
     if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a company owner or admin, or the project's maintainer, can change this.");
   }
   const at = deps.now();
-  // The audit event is written to the pending outbox and sent; with no ledger the write throws and nothing is changed (a change of who reviews code is never silent).
   const auditDeps = { ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
-  const record = async (action: "company.second_review_choice_changed" | "project.second_review_narrowed", change: "choose" | "clear", count: number, project?: string): Promise<void> => {
+  /**
+   * The change and its audit event in ONE transaction: a change is never unaudited, and an audit event never names a change that was not made. With no ledger the change is refused. The event is sent on after it commits.
+   */
+  const commit = async (change: SettingsUpdate, event: Omit<AuditEventInput, "eventId" | "orgId" | "actor" | "occurredAt">): Promise<void> => {
     const when = new Date(at).toISOString();
-    const event: AuditEventInput = {
-      eventId: auditEventId(action, caller.orgId, when, caller.developerId), orgId: caller.orgId, action, actor: { kind: "member", id: caller.developerId },
-      target: project === undefined ? { kind: "org", id: caller.orgId.slice(0, 100) } : { kind: "project", name: project }, occurredAt: when, facts: { change, count },
-    };
-    const put = auditPending(auditDeps, event)[0]?.Put;
+    const full: AuditEventInput = { ...event, eventId: auditEventId(event.action, caller.orgId, when, caller.developerId), orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: when } as AuditEventInput;
+    const put = auditPending(auditDeps, full)[0]?.Put;
     if (put === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");
-    await deps.documentClient.send(new PutCommand(put));
-    await flushAuditEvents(auditDeps, [event]);
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change, { Put: put }] }));
+    await flushAuditEvents(auditDeps, [full]);
   };
+  const orgTarget = { kind: "org" as const, id: caller.orgId.slice(0, 100) };
   if (body.action === "clear") {
-    await record("company.second_review_choice_changed", "clear", 0);
-    await writeCompanyChoice(table, { orgId: caller.orgId, models: undefined, by: caller.developerId, at });
+    await commit(companyChoiceUpdate(table, { orgId: caller.orgId, models: undefined, by: caller.developerId, at }), { action: "company.second_review_choice_changed", target: orgTarget, facts: { change: "clear", count: 0 } });
     logDeveloperEvent({ event: "developer.second_review_choice_cleared", orgId: caller.orgId });
     return new StatusReply(200, { status: "applied", choice: null });
+  }
+  if (body.action === "context") {
+    // Not a loosening that needs a second person, but it widens what is shared with the second reviewer's company when it goes to `same_as_first`, so the audit event says so.
+    const current = (await readSecondReviewSettings(table, caller.orgId, "")).context;
+    await commit(companyContextUpdate(table, { orgId: caller.orgId, context: body.context, by: caller.developerId, at }),
+      { action: "company.second_review_context_changed", target: orgTarget, facts: { to: body.context, widens: current === "change_only" && body.context === "same_as_first" } });
+    logDeveloperEvent({ event: "developer.second_review_context_set", orgId: caller.orgId, to: body.context });
+    return new StatusReply(200, { status: "applied", context: body.context });
   }
   // A model must be one the company can use today (its sources plus Rovara's, allowed, not forbidden); fit against a particular builder is checked when a review starts, not here.
   const { picker, settings } = await listOf(deps, caller, body.action === "narrow" ? body.project : undefined, []);
@@ -122,8 +136,7 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
   if (!valid.success) throw agentXError("CONFIG_INVALID", "models: a model appears twice");
   if (requested.some((model) => !usable.has(secondReviewModelKey(model)))) throw agentXError("MODEL_NOT_ALLOWED", "That model is not one your company can use.");
   if (body.action === "choose") {
-    await record("company.second_review_choice_changed", "choose", requested.length);
-    await writeCompanyChoice(table, { orgId: caller.orgId, models: requested, by: caller.developerId, at });
+    await commit(companyChoiceUpdate(table, { orgId: caller.orgId, models: requested, by: caller.developerId, at }), { action: "company.second_review_choice_changed", target: orgTarget, facts: { change: "choose", count: requested.length } });
     logDeveloperEvent({ event: "developer.second_review_choice_set", orgId: caller.orgId, count: String(requested.length) });
     return new StatusReply(200, { status: "applied", choice: { models: requested } });
   }
@@ -132,8 +145,8 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
     const allowed = new Set(settings.companyModels.map(secondReviewModelKey));
     if (requested.some((model) => !allowed.has(secondReviewModelKey(model)))) throw agentXError("FORBIDDEN", "A project can narrow the company's choice but never widen it.");
   }
-  await record("project.second_review_narrowed", body.models === null ? "clear" : "choose", requested.length, body.project);
-  await writeProjectNarrowing(table, { orgId: caller.orgId, project: body.project, models: body.models === null ? undefined : requested, by: caller.developerId, at });
+  await commit(projectNarrowingUpdate(table, { orgId: caller.orgId, project: body.project, models: body.models === null ? undefined : requested, by: caller.developerId, at }),
+    { action: "project.second_review_narrowed", target: { kind: "project", name: body.project }, facts: { change: body.models === null ? "clear" : "choose", count: requested.length } });
   logDeveloperEvent({ event: "developer.second_review_narrowed", orgId: caller.orgId, count: String(requested.length) });
   return new StatusReply(200, { status: "applied", projectNarrowing: body.models === null ? null : { models: requested } });
 }

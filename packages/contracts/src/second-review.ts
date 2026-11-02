@@ -283,6 +283,14 @@ export const SECOND_REVIEW_TRIES_MAX = 3;
 /** The most models the broker names for one second review. With 3 tries, a third name could never be reached after the first model's retry. */
 export const SECOND_REVIEW_CANDIDATES_MAX = 2;
 
+/**
+ * What the second reviewer is shown besides the code change and the task description (owner decision, 2026-11-02, option C): by default NOTHING from connected sources (no Slack, Jira or other source tools, no
+ * learned lessons, no step instructions or skills). A company can choose `same_as_first`, which gives it what the first reviewer has. Widening what is shared is an admin's browser-session change, audited.
+ */
+export const SECOND_REVIEW_CONTEXTS = ["change_only", "same_as_first"] as const;
+export const SecondReviewContextSchema = z.enum(SECOND_REVIEW_CONTEXTS);
+export type SecondReviewContext = z.infer<typeof SecondReviewContextSchema>;
+
 /** A model a company may name for its second reviewer (`review.otherCompanyModels`): provider and model id, nothing else. */
 export const SecondReviewModelRefSchema = z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict();
 export type SecondReviewModelRef = z.infer<typeof SecondReviewModelRefSchema>;

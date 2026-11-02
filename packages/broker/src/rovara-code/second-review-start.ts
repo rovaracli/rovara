@@ -71,6 +71,7 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
   // Everything below only ADDS an opinion to the review: an error while planning (a source that cannot be read, a model-source lookup, an admission read) must never fail the first review's dispatch. It is logged
   // (the error's name only), and `on` flags that the second review did not run while shadow stays silent.
   try {
+    // (An agent-step run is a planning session with at most read-only file tools, so it cannot write candidate code and is not a builder.)
     // Every build the task ran in every round, and the first reviewer's model: the second reviewer must differ in company from all of them. One that recorded nothing can never be shown to differ.
     const operations = (await queryAllItems(dependencies, `WORKSPACE#${input.workspaceId}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.conversationId === input.conversationId);
     const builds = operations.filter((item) => item.workflowMode === "IMPLEMENT" && item.status === "SUCCEEDED").map((item) => item.model as ModelIdentifier | undefined);
@@ -79,7 +80,8 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
     const forbidden = (await readGuardrails(dependencies, input.orgId)).forbiddenModels ?? [];
     const sources = input.routing === undefined ? [] : await servableModels(input.routing, input.orgId, input.project);
     const previous = settings.companyModels === undefined && settings.projectModels === undefined ? input.task?.secondOpinion : undefined;
-    const previousModel = previous?.opinion.choice === "default" && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
+    // Only an opinion that ANSWERED names the model that ran (a failed one keeps a report too, of whatever model failed).
+    const previousModel = previous?.opinion.choice === "default" && previous.opinion.unavailable === false && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
     const plan = planSecondReview({
       switchOn: true, mode, against, project: { approved: input.approved }, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
       companyModels: settings.companyModels, projectModels: settings.projectModels, previousDefault: previousModel,
@@ -112,16 +114,17 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
     const routeAliases: Record<string, string> = {};
     for (const model of plan.candidates) {
       if (input.routing === undefined) { candidates.push({ model }); continue; }
-      const [route] = (await servingRoutes(input.routing, { orgId: input.orgId, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt" && entry.alias !== undefined);
+      const [route] = (await servingRoutes(input.routing, { orgId: input.orgId, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt");
       if (route === undefined) continue;
       const wire = routeOnWire(route, model);
       candidates.push({ model, ...(wire === undefined ? {} : { modelRoute: wire }) });
-      aliases.push(route.alias!);
+      if (route.alias !== undefined) aliases.push(route.alias);
       if (wire !== undefined) routeAliases[secondReviewModelKey(model)] = wire.alias;
     }
     if (candidates.length === 0) return notRun("no-candidate");
     const kept = plan.candidates.filter((model) => candidates.some((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model)));
-    const field: SecondReviewerPayload = { candidates };
+    // What the second reviewer sees besides the change: nothing from connected sources unless the company chose `same_as_first` (absent on the wire means `change_only`).
+    const field: SecondReviewerPayload = { candidates, ...(settings.context === "same_as_first" ? { context: settings.context } : {}) };
     return {
       field,
       record: { candidateDigest, plan: { mode: plan.mode, company: plan.company, model: kept[0]!, candidates: kept, against: plan.against, choice: plan.choice,

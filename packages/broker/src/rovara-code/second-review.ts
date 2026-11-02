@@ -13,6 +13,7 @@ import {
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { createHash } from "node:crypto";
+import { ROUTE_PROVIDER } from "@agentx/model-runtime";
 import { inertLine } from "./inert-text.js";
 import { type CriticModelLimits } from "./critic.js";
 import { estimateSecondReviewUsd, secondReviewPicker, type PickerInput, type SecondReviewPrice } from "./second-review-picker.js";
@@ -145,6 +146,10 @@ export { secondReviewModelUnusable } from "@agentx/contracts";
 // The opinion: what a finished second review means
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+/** Whether the report names the proxy route the broker gave `candidate`: the route provider AND that route's alias (an alias on any other provider is not it). */
+const routedAs = (input: { routeAliases?: Readonly<Record<string, string>> | undefined; report: Pick<WorkflowReviewReport, "provider" | "version"> }, candidate: ModelIdentifier): boolean =>
+  input.report.provider === ROUTE_PROVIDER && input.routeAliases?.[secondReviewModelKey(candidate)] === input.report.version;
+
 /** What the broker knows about the report it received, to decide whether to accept it. */
 export interface SecondReportCheck {
   plan: Extract<SecondReviewPlan, { run: true }>;
@@ -166,7 +171,7 @@ export function acceptSecondReport(input: SecondReportCheck): { accepted: true }
   if (input.currentCandidateDigest === undefined || input.report.candidateDigest !== input.currentCandidateDigest) return { accepted: false, reason: "wrong-candidate" };
   const ran: ModelIdentifier = { provider: input.report.provider, modelId: input.report.version };
   // The model that answered is the planned one by its exact name, or (a routed model) by the alias the broker gave its route. The company is the PLANNED model's: an alias says nothing of its maker.
-  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey(ran) || input.routeAliases?.[secondReviewModelKey(candidate)] === input.report.version);
+  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey(ran) || routedAs(input, candidate));
   if (planned === undefined) return { accepted: false, reason: "wrong-model" };
   if (!input.plan.against.every((other) => differentCompany(planned, other))) return { accepted: false, reason: "same-company" };
   return { accepted: true };
@@ -188,7 +193,7 @@ export function secondOpinionOf(input: SecondOpinionInput): SecondOpinion {
   if (input.report.status !== "PASS" && input.report.status !== "FINDINGS") return secondOpinionUnavailable(input.plan, "no-answer", input.report);
   const blocking = blockingFindings(input.report, input.accepted);
   const wouldHaveBlocked = blocking.length > 0;
-  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey({ provider: input.report.provider, modelId: input.report.version }) || input.routeAliases?.[secondReviewModelKey(candidate)] === input.report.version)!;
+  const planned = input.plan.candidates.find((candidate) => secondReviewModelKey(candidate) === secondReviewModelKey({ provider: input.report.provider, modelId: input.report.version }) || routedAs(input, candidate))!;
   const answered = modelCompany(planned) as Exclude<ModelCompany, "other">;
   const reportedModel = { provider: planned.provider, modelId: planned.modelId };
   return SecondOpinionSchema.parse({

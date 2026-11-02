@@ -4,8 +4,8 @@
 //   SECONDREVIEW#VERDICT#<key>       the evidence that lets a model run in `on` (written by Rovara staff / the install, never by a route here) and SECONDREVIEW#REPLAY#<runId> the replay run it names.
 // Every read fails closed: a stored value that cannot be read never turns into a looser setting. An unreadable mode is `off`, an unreadable choice is a choice that holds nothing (nothing runs, and it is flagged;
 // it never falls back to the default), an unreadable verdict or replay run is absent (so `on` is never reached on bad evidence).
-import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, SecondReviewModeSchema, SecondReviewModelListSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict } from "@agentx/contracts";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { orgMetaKey, SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, type SecondReviewContext, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict } from "@agentx/contracts";
 
 export interface SettingsTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 type Item = Record<string, unknown>;
@@ -15,13 +15,19 @@ const PROJECT_PREFIX = "SECONDREVIEW#PROJECT#";
 const VERDICT_PREFIX = "SECONDREVIEW#VERDICT#";
 const REPLAY_PREFIX = "SECONDREVIEW#REPLAY#";
 const orgPk = (orgId: string): string => orgMetaKey(orgId).pk;
-export const secondReviewProjectKey = (orgId: string, project: string) => ({ pk: orgPk(orgId), sk: `${PROJECT_PREFIX}${project.replace(/#/gu, "_")}` });
+export const secondReviewProjectKey = (orgId: string, project: string) => {
+  // A project name never holds the separator (project names are validated names); two names must never share a key.
+  if (project.includes("#")) throw new Error("a project name cannot hold #");
+  return { pk: orgPk(orgId), sk: `${PROJECT_PREFIX}${project}` };
+};
 
 export interface SecondReviewSettings {
   companyDefault?: SecondReviewMode | undefined;
   companyLock?: SecondReviewMode | undefined;
   projectMode?: SecondReviewMode | undefined;
   /** The company's choice (primary, then backup). Undefined: nobody chose. An empty list: a choice that could not be read. */
+  /** What the second reviewer sees besides the change. Anything unreadable is `change_only`, the narrower. */
+  context: SecondReviewContext;
   companyModels?: SecondReviewModelRef[] | undefined;
   /** The project's narrowing. Same meaning as above. */
   projectModels?: SecondReviewModelRef[] | undefined;
@@ -55,30 +61,32 @@ export async function readSecondReviewSettings(table: SettingsTable, orgId: stri
   for (const row of replayRows.Items ?? []) { const parsed = SecondReviewReplayRunSchema.safeParse(row.run); if (parsed.success) replayRuns.push(parsed.data); }
   return {
     companyDefault: modeOf(company?.default), companyLock: modeOf(company?.lock), projectMode: modeOf(projectItem?.mode),
-    companyModels: modelsOf(company), projectModels: modelsOf(projectItem), verdicts, replayRuns,
+    context: SecondReviewContextSchema.safeParse(company?.context).data ?? "change_only", companyModels: modelsOf(company), projectModels: modelsOf(projectItem), verdicts, replayRuns,
   };
 }
 
-export interface ChoiceChange { orgId: string; models: SecondReviewModelRef[] | undefined; by: string; at: number }
+/** One write for a transaction: it changes ONLY the fields it names (never a read-modify-write of the whole item), so two admins changing different settings cannot undo each other. */
+export type SettingsUpdate = { Update: { TableName: string; Key: { pk: string; sk: string }; UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } };
 
-/** Sets the company's choice (primary, optional backup), or clears it (`models` undefined: nobody has chosen, the default stands). Keeps the company's modes as they are. */
-export async function writeCompanyChoice(table: SettingsTable, change: ChoiceChange): Promise<void> {
-  const current = await get(table, { pk: orgPk(change.orgId), sk: SECOND_REVIEW_SETTINGS_SK });
-  const { models: _old, ...rest } = current ?? {};
-  void _old;
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: {
-    ...rest, pk: orgPk(change.orgId), sk: SECOND_REVIEW_SETTINGS_SK, entityType: "SECOND_REVIEW_SETTINGS",
-    ...(change.models === undefined ? {} : { models: change.models }), updatedAt: change.at, updatedBy: change.by,
-  } }));
+function update(table: SettingsTable, key: { pk: string; sk: string }, entityType: string, field: "models" | "context", value: unknown, by: string, at: number): SettingsUpdate {
+  const names = { "#f": field, "#t": "updatedAt", "#b": "updatedBy", "#e": "entityType" };
+  const values = { ":t": at, ":b": by, ":e": entityType };
+  return { Update: {
+    TableName: table.tableName, Key: key, ExpressionAttributeNames: names,
+    ...(value === undefined
+      ? { UpdateExpression: "SET #t = :t, #b = :b, #e = :e REMOVE #f", ExpressionAttributeValues: values }
+      : { UpdateExpression: "SET #f = :v, #t = :t, #b = :b, #e = :e", ExpressionAttributeValues: { ...values, ":v": value } }),
+  } };
 }
 
-/** Sets a project's narrowing of the company's choice, or clears it. Keeps the project's mode as it is. */
-export async function writeProjectNarrowing(table: SettingsTable, change: { orgId: string; project: string; models: SecondReviewModelRef[] | undefined; by: string; at: number }): Promise<void> {
-  const key = secondReviewProjectKey(change.orgId, change.project);
-  const current = await get(table, key);
-  const { models: _old, ...rest } = current ?? {};
-  void _old;
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: {
-    ...rest, ...key, entityType: "SECOND_REVIEW_PROJECT", ...(change.models === undefined ? {} : { models: change.models }), updatedAt: change.at, updatedBy: change.by,
-  } }));
-}
+/** Sets the company's choice (primary, optional backup), or clears it (`models` undefined: nobody has chosen, the default stands). Touches only `models`. */
+export const companyChoiceUpdate = (table: SettingsTable, change: { orgId: string; models: SecondReviewModelRef[] | undefined; by: string; at: number }): SettingsUpdate =>
+  update(table, { pk: orgPk(change.orgId), sk: SECOND_REVIEW_SETTINGS_SK }, "SECOND_REVIEW_SETTINGS", "models", change.models, change.by, change.at);
+
+/** Sets what the second reviewer sees besides the change (`change_only` or `same_as_first`). Touches only `context`. */
+export const companyContextUpdate = (table: SettingsTable, change: { orgId: string; context: SecondReviewContext; by: string; at: number }): SettingsUpdate =>
+  update(table, { pk: orgPk(change.orgId), sk: SECOND_REVIEW_SETTINGS_SK }, "SECOND_REVIEW_SETTINGS", "context", change.context, change.by, change.at);
+
+/** Sets a project's narrowing of the company's choice, or clears it. Touches only `models`. The project name is one the company has (the caller checked it exists) and cannot hold the key separator. */
+export const projectNarrowingUpdate = (table: SettingsTable, change: { orgId: string; project: string; models: SecondReviewModelRef[] | undefined; by: string; at: number }): SettingsUpdate =>
+  update(table, secondReviewProjectKey(change.orgId, change.project), "SECOND_REVIEW_PROJECT", "models", change.models, change.by, change.at);

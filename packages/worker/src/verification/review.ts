@@ -32,7 +32,7 @@ import {
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewContext, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
@@ -736,7 +736,7 @@ export async function runWorkflowReviews(input: {
    * SR-1: the second reviewer (another AI company's model), run CONCURRENTLY with the reviews above in this same operation, as an extra code review with its own model: a bounded loop of at most 3 tries in all (the same model
    * once more, then the next candidate; a context-length rejection is no answer, never an unusable model). Its report is handed to `onSecondReview` only, never added to the reports returned here.
    */
-  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; /** L7 seam: give the second reviewer the project's source tools too. Default NO (the owner has not decided). */ sourceTools?: boolean };
+  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; /** What the second reviewer sees besides the change and the plan: absent or `change_only` is nothing from connected sources; `same_as_first` is what the first reviewer has (owner decision, option C). */ context?: SecondReviewContext };
   onSecondReview?: (result: SecondReviewResult) => void;
   /** Internal: this call is one try of the second reviewer (its number, from 1). */
   secondReviewTry?: number;
@@ -760,10 +760,10 @@ export async function runWorkflowReviews(input: {
   const repositories = withCandidateBase(input.repositories, manifest.repositories);
   const timeoutMs = input.timeoutMs ?? 5 * 60 * 1000;
   // SR-1: the second reviewer (another AI company's model) runs CONCURRENTLY with the reviews below, started now that the diff is built, in a bounded loop: at most 3 tries in all (the same model once more, then
-  // the next candidate), and all of them together share ONE budget of one reviewer's time limit, so the review operation takes no longer than it did without it. It gets no source tools unless the caller opts in
-  // (`secondReviewer.sourceTools`, default no: the diff, the approved plan and the checks only).
+  // the next candidate), and all of them together share ONE budget of one reviewer's time limit, so the review operation takes no longer than it did without it. It gets nothing from connected sources unless the company chose `same_as_first`
+  // (the default `change_only`: the diff, the approved plan and the checks; no source tools, lessons, step instructions or skills).
   const secondRun: Promise<{ result: SecondReviewResult; fatal?: unknown }> | undefined = input.secondReviewer === undefined || !roles.includes("CRITIC") ? undefined : (async () => {
-    const { secondReviewer, onSecondReview: _onSecond, reviewSpec: _spec, onSpecReview: _onSpec, reviewers: _reviewers, model: _model, piAdapter: _adapter, onUsage, sources, ...rest } = input;
+    const { secondReviewer, onSecondReview: _onSecond, reviewSpec: _spec, onSpecReview: _onSpec, reviewers: _reviewers, model: _model, piAdapter: _adapter, onUsage, sources, learnedBlock, promptSection, skills, tools, ...rest } = input;
     void _onSecond; void _spec; void _onSpec; void _reviewers; void _model; void _adapter;
     const deadline = Date.now() + timeoutMs;
     const tries: SecondReviewTry[] = [];
@@ -774,7 +774,7 @@ export async function runWorkflowReviews(input: {
       const number = tries.length + 1;
       let report: (typeof reports)[number] | undefined;
       try {
-        [report] = await runWorkflowReviews({ ...rest, ...(secondReviewer!.sourceTools === true && sources !== undefined ? { sources } : {}), model: chosen.model, ...(chosen.piAdapter === undefined ? {} : { piAdapter: chosen.piAdapter }),
+        [report] = await runWorkflowReviews({ ...rest, ...(secondReviewer!.context === "same_as_first" ? { ...(sources === undefined ? {} : { sources }), ...(learnedBlock === undefined ? {} : { learnedBlock }), ...(promptSection === undefined ? {} : { promptSection }), ...(skills === undefined ? {} : { skills }), ...(tools === undefined ? {} : { tools }) } : {}), model: chosen.model, ...(chosen.piAdapter === undefined ? {} : { piAdapter: chosen.piAdapter }),
           reviewers: ["CRITIC"], secondReviewTry: number, timeoutMs: Math.max(1, deadline - Date.now()),
           ...(onUsage === undefined ? {} : { onUsage: (usage) => onUsage({ ...usage, secondReviewTry: number }) }) });
       } catch (error) {

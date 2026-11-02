@@ -136,7 +136,7 @@ const state = createWorkerServerState(
           rootPath,
           model: session.model,
           // SR-1: the second reviewer's models, each with its own session (and proxy route).
-          ...(invocation.payload.workflowSecondReviewer === undefined ? {} : { secondReviewer: { candidates: secondReviewerRuntimes(invocation.payload, proxy, process.env) ?? [] } }),
+          ...(invocation.payload.workflowSecondReviewer === undefined ? {} : { secondReviewer: { candidates: secondReviewerRuntimes(invocation.payload, proxy, process.env) ?? [], ...(invocation.payload.workflowSecondReviewer.context === undefined ? {} : { context: invocation.payload.workflowSecondReviewer.context }) } }),
           // MODEL3: a missing provider key that sent the task to the chosen fallback model is told to the task page, once, as a progress event.
           piAdapter: session.piAdapter ?? createDefaultPiSessionAdapter({ onModelFallback: modelFallbackReporter(callbacks.eventSink),...(missingKeyAuthority===undefined?{}:{authorizeModelFallback:missingKeyAuthority}) }),
           ...callbacks,
