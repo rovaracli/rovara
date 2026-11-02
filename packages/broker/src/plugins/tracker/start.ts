@@ -8,7 +8,7 @@
 //   - the item has an https link without credentials (a ticket is bound by its link);
 //   - Jira and GitHub Issues are not started through this door: they have channels and sources of their own, and the intent schema refuses a `tracker` intent that names them;
 //   - the tracker must be able to start tasks (its capability), and the text of the item is outsider text that the engine frames, redacts and cuts.
-import { IntakeExternalRefSchema, type OrgId, type RawDelivery, type Tracker, type TrackerEvent, type TrackerItem, type HostScope } from "@agentx/contracts";
+import { IntakeExternalRefSchema, agentXError, type OrgId, type RawDelivery, type Tracker, type TrackerEvent, type TrackerItem, type HostScope } from "@agentx/contracts";
 import { ingestIntake, type IntakeCandidate, type IntakeOutcome, type IntakePorts } from "../../intake/engine.js";
 
 /** The systems that have an intake channel of their own, and so never start through the neutral `tracker` channel. */
@@ -46,6 +46,9 @@ export type TrackerStartResult = { event: TrackerEvent; outcome: IntakeOutcome }
 export async function startFromTrackerDelivery(input: { ports: IntakePorts; orgId: OrgId; project: string; tracker: Tracker; scope: HostScope; delivery: RawDelivery }): Promise<TrackerStartResult[]> {
   const { tracker } = input;
   if (tracker.events?.normalise === undefined) return [];
+  // The hook that verifies a delivery belongs to one project, and the delivery may start work in that project only. A tracker that cannot say which project its hook is for starts nothing.
+  const bound = await tracker.events.projectOf?.(input.scope);
+  if (bound === undefined || bound !== input.project) throw agentXError("CALLBACK_FORBIDDEN", "the tracker's hook is not for this project");
   const events = await tracker.events.normalise(input.delivery, input.scope);
   const results: TrackerStartResult[] = [];
   for (const event of events) {

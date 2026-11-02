@@ -93,6 +93,7 @@ const labelEventId = (eventKey: string, label: string): string => `${eventKey.sl
 function linearEvents(access: LinearTrackerAccess): TrackerEvents {
   return {
     mode: "webhook",
+    projectOf: async (scope: HostScope): Promise<string | undefined> => (await access.hook?.(checkedScope(scope)))?.hook.project,
     normalise: async (delivery: RawDelivery, scope: HostScope): Promise<TrackerEvent[]> => {
       const checked = checkedScope(scope);
       const configured = await access.hook?.(checked);

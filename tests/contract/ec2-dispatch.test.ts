@@ -1319,11 +1319,9 @@ describe("ec2-ebs delivery", () => {
           await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
           expect(postedPayload(capable.post).repositoryGrant).toBe((record.invocation.payload as { repositoryGrant: string }).repositoryGrant);
         }
-        // A kind no worker takes (a helper) is refused even by a worker that lists the feature.
+        // A kind no worker is ever sent (a helper) is not asked of the worker: a grant that names only it is dispatched to an old worker, and the exchange refuses the kind itself.
         const helper = recordOf("prepare", grantOf(["helper"]));
-        const listing = delivery({ workerFeatures: async () => ["repository.credentialKinds.v1"] });
-        await expect(listing.deliver(helper, helper.invocation)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-        expect(listing.post).not.toHaveBeenCalled();
+        await expect(delivery({ workerFeatures: async () => [] }).deliver(helper, helper.invocation)).resolves.toBe("DELIVERED");
         // A grant that names only the legacy kinds, or none (every GitHub grant), needs no probe at all and is sent as before.
         for (const grant of [grantOf(), grantOf(["token", "basic"]), "signed-grant"]) {
           const record = recordOf("prepare", grant);

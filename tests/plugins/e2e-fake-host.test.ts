@@ -57,7 +57,7 @@ async function world(without?: string) {
   const model = new FakeHostModel({ url: REPO, id: "42", fullName: "acme/demo", webBase: "https://git.example.test" });
   const fakeHost = new FakeCodeHost(model);
   const runner = new FakeCheckRunner(model);
-  const tracker = new FakeTracker();
+  const tracker = new FakeTracker({ project: "payments" });
   const calls = new Set<string>();
   const github = githubMustNotBeAsked();
   const registry = createPluginRegistry({

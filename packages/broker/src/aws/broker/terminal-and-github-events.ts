@@ -431,9 +431,21 @@ export async function processGithubWorkflowEvent(
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
-    getCurrentFeedback: async (url, number, orgId) => neutral !== undefined && options !== undefined
-      ? { pullRequest: mergeObservationFacts(await neutral.host.mergeObservation!(changeRequestRef(url, number), githubScope(dependencies, orgId), options.budget)), comments: [], threads: [] }
-      : options === undefined
+    // P10: each repository's own host decides how its pull request is read: GitHub's below, another host's merge observation here (merge mode only; nothing else is read from such a host).
+    hostOfRepository: async (project, revision, repositoryId, orgId) => {
+      if (orgId === undefined) return undefined;
+      const home = await consumerRepositoryResolver(dependencies)(project, revision, repositoryId, orgId).catch(() => undefined);
+      if (home === undefined || home.codeHost.kind === GITHUB_HOST_KIND) return undefined;
+      const host = home.codeHost;
+      return {
+        kind: host.kind,
+        observe: async (repositoryUrl, number, scopeOrg) => {
+          if (options === undefined || host.mergeObservation === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the code host cannot show a merge");
+          return mergeObservationFacts(await host.mergeObservation(changeRequestRef(repositoryUrl, number), githubScope(dependencies, scopeOrg), options.budget));
+        },
+      };
+    },
+    getCurrentFeedback: async (url, number, orgId) => options === undefined
       ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId))
       : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget, githubScope(dependencies, orgId)), comments: [], threads: [] },
     ...(options === undefined ? {} : { observationMode: options.observationMode }),

@@ -176,6 +176,13 @@ describe("the exchange sends a kind only to a worker that takes it", () => {
     expect(withSsh.service.inspect(withSsh.grant).repositories[0]).toMatchObject({ hostKind: "customer-host", credentialKinds: ["basic", "ssh-key"] });
     expect(nonLegacyCredentialKindsOfGrant(withSsh.grant)).toEqual(["ssh-key"]);
 
+    // A host that also lists a helper (which is never sent) is not made undispatchable by it: only kinds the exchange can send are named, and a helper alone names nothing.
+    const withHelper = await setup({}, () => ["basic", "ssh-key", "helper"]);
+    expect(withHelper.service.inspect(withHelper.grant).repositories[0]).toMatchObject({ credentialKinds: ["basic", "ssh-key"] });
+    const helperOnly = await setup({}, () => ["basic", "helper"]);
+    expect(helperOnly.service.inspect(helperOnly.grant).repositories[0]).not.toHaveProperty("credentialKinds");
+    expect(nonLegacyCredentialKindsOfGrant(helperOnly.grant)).toEqual([]);
+
     // A lookup that throws (an unknown host) leaves the grant as it was: the exchange, which verifies the grant, decides.
     const throwing = await setup({}, () => { throw new Error("unknown host"); });
     expect(nonLegacyCredentialKindsOfGrant(throwing.grant)).toEqual([]);

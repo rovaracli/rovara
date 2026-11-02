@@ -1,4 +1,4 @@
-import { WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
+import { SshCredentialMaterialSchema, WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
 
 /**
  * The credential kinds this worker takes beyond a token and a password (P8), listed by hand: the broker is told in a header and sends only these. `helper` is not here: no worker runs a
@@ -83,17 +83,9 @@ function parseCredential(value: unknown, repositoryUrl: string): RepositoryClone
   return result;
 }
 
+/** The ssh key material, held to the contract's own rules (the same key, address and host-key checks the broker applies, and the address's host named by every host-key line). */
 function parseSsh(value: unknown): { privateKey: string; url: string; knownHosts: string } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw agentXError("RUNTIME_UNAVAILABLE", "repository credential is invalid");
-  const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !["privateKey", "url", "knownHosts"].includes(key))) {
-    throw agentXError("RUNTIME_UNAVAILABLE", "repository credential contains unsupported fields");
-  }
-  const { privateKey, url, knownHosts } = input;
-  if (typeof privateKey !== "string" || !/^-----BEGIN [A-Z ]*PRIVATE KEY-----/u.test(privateKey) || privateKey.length > 16_384
-    || typeof url !== "string" || !/^ssh:\/\/[A-Za-z0-9._@:/~+-]{1,512}$/u.test(url)
-    || typeof knownHosts !== "string" || knownHosts.trim() === "" || knownHosts.length > 8_192) {
-    throw agentXError("RUNTIME_UNAVAILABLE", "repository credential contains an invalid value");
-  }
-  return { privateKey, url, knownHosts };
+  const parsed = SshCredentialMaterialSchema.safeParse(value);
+  if (!parsed.success) throw agentXError("RUNTIME_UNAVAILABLE", "repository credential contains an invalid value");
+  return parsed.data;
 }

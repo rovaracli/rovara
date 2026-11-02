@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { LEGACY_WORKER_CREDENTIAL_KINDS, agentXError, credentialKindNeedsWorkerFeature, type HostScope } from "@agentx/contracts";
+import { LEGACY_WORKER_CREDENTIAL_KINDS, agentXError, credentialKindIsSendable, credentialKindNeedsWorkerFeature, type HostScope } from "@agentx/contracts";
 
 interface RepositoryGrantClaims {
   version: 3;
@@ -63,7 +63,7 @@ export function nonLegacyCredentialKindsOfGrant(grant: string): string[] {
     for (const repository of claims.repositories) {
       const named = (repository as { credentialKinds?: unknown } | null)?.credentialKinds;
       if (!Array.isArray(named)) continue;
-      for (const kind of named) if (typeof kind === "string" && credentialKindNeedsWorkerFeature(kind)) kinds.add(kind);
+      for (const kind of named) if (typeof kind === "string" && credentialKindIsSendable(kind) && credentialKindNeedsWorkerFeature(kind)) kinds.add(kind);
     }
     return [...kinds].sort();
   } catch {
@@ -154,8 +154,9 @@ export class RepositoryGrantService {
     } catch {
       return scope;
     }
-    const extra = (kinds ?? []).filter(credentialKindNeedsWorkerFeature);
-    return extra.length === 0 ? scope : { ...scope, credentialKinds: [...new Set(kinds)].sort() };
+    // Only kinds the exchange can send count: a `helper` has no wire shape and is never sent, so a host that lists one is not made undispatchable by it.
+    const sendable = [...new Set(kinds ?? [])].filter(credentialKindIsSendable);
+    return sendable.some(credentialKindNeedsWorkerFeature) ? { ...scope, credentialKinds: sendable.sort() } : scope;
   }
 
   inspect(grant: string): Omit<RepositoryGrantClaims, "nonce"> {
