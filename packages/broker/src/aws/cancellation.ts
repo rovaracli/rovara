@@ -78,6 +78,8 @@ export interface OperationRecord extends Operation {
   criticSameModel?: true;
   /** Trust fix A2: the reviews ran on the same model that wrote the code, because it was the only one usable; their reports say so (absent: another model reviewed). */
   reviewSameModel?: true;
+  /** SH34: this REVIEW-mode operation is a SECOND review by another AI company (switch `cr`). Every lookup of reviews, and the workflow's completion handling, leaves it out; its result goes to the task's `secondOpinion`, never to the workflow. */
+  secondReview?: true;
   /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */
   planRevision?: true;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */

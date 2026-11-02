@@ -22,6 +22,7 @@ import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type Develope
 import { hashJson, isConditional } from "../broker-shared.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
+import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
 import { candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines } from "../developer-tasks.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import { taskAccessFence } from "../../developer/task-people.js";
@@ -175,14 +176,16 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
     const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
     const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
+    // SH34: the second review's lines (switch `cr`), rewritten with the rest of the block.
+    const secondReviewLines = workflow.definitionVersion === "1.1.0" ? secondReviewPullRequestLines(task, candidateDigest) : [];
     // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow and the description had a Proof section, that section's body becomes a one-line marker (its old table describes the code before this fix).
     const proofResult = proofRead === undefined ? undefined : await proofRead;
     const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
     const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && evidenceRisk === undefined ? undefined : {
-      ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined ? undefined : {
+      ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(secondReviewLines.length === 0 ? {} : { secondReviewLines }), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }),
     };
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;

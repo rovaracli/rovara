@@ -13,6 +13,7 @@ import { readObjectText as readStoredText } from "../../developer/plan-artifacts
 import { codeMilestoneItems } from "../../rovara-code/milestones.js";
 import { answeredMilestoneItems } from "../../rovara-code/answered.js";
 import { assessmentForTask } from "../../rovara-code/explicit-path.js";
+import { secondReviewEndItems } from "../../rovara-code/second-review-store.js";
 import { questionsMilestoneItems } from "../../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../../rovara-code/merged.js";
 import { mergedStateItems } from "../../rovara-code/merged-state.js";
@@ -480,6 +481,9 @@ export async function completedWorkflowItems(
   // Live interaction F3: a deep diagnosis's result is its diagnosis (or none), written with the result and unable to fail it.
   if (task?.purpose === "diagnosis") return diagnosisEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError }, now);
   if (task?.workflow === undefined) return [];
+  // SH34: a SECOND review (another AI company, switch `cr`) is an added opinion kept beside the workflow: its end writes the task's second opinion and nothing else. It must come before every branch below, so its
+  // report can never be taken for the first review's (submitWorkflowReview, reviewCleared, the pull request's Reviews, requireCrossCompanyReview all read the workflow, which this never touches).
+  if (operation.secondReview === true) return secondReviewEndItems({ tableName: dependencies.tableName, task, operation, terminalStatus, result, now, taskKey });
   // Meta repo lane D: a spec write's or a spec publication's end settles the task's spec state; neither is a step of the workflow, so nothing below applies to it.
   if (isSpecOperation(operation)) return specOperationEndItems(specEndEnvironmentOf(dependencies), task.taskId, operation, { status: terminalStatus, result });
   if (operation.kind === "prepare") {

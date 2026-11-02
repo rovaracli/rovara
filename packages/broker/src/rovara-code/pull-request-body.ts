@@ -46,6 +46,8 @@ export interface PullRequestBodyContext {
   proofLines?: readonly string[] | undefined;
   /** The reviews of this code ran on the build's own model (`reviewSameModelOf`): the Reviews section says so. */
   reviewSameModel?: boolean | undefined;
+  /** SH34: the second review's lines (`secondReviewPullRequestLines`: already inert, none for a shadow opinion), listed at the end of the Reviews section. */
+  secondReviewLines?: readonly string[] | undefined;
   /** The approved plan, the browser/API rows and the test proof for the Proof section (Playbook P1). Absent, or without a plan with claims: the description has no Proof section. */
   proof?: ProofContext | undefined;
   /** Proof and evidence P4: a security scan's new high findings on this code (the evidence pack, only while the proof switch is on). It can only raise the risk shown. */
@@ -192,7 +194,7 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
       ...(proof === undefined ? [] : [...proof(proofLevel), ""]),
-      "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow, context.reviewSameModel === true).map((line) => inertLine(line, ITEM_MAX)), "",
+      "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow, context.reviewSameModel === true).map((line) => inertLine(line, ITEM_MAX)), ...(context.secondReviewLines ?? []), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
       ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
     ], linearKey);
