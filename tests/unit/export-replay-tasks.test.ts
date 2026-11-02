@@ -6,7 +6,7 @@ import path from "node:path";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { afterEach, describe, expect, it } from "vitest";
 import { EvidencePackSchema, NightlyBaselineSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, projectPk, projectRevisionKey } from "@agentx/contracts";
-import { SKIP_REASONS, exportReplayTasks, exportText, nameHash, readInputFile, redactPack, scrubWorkflow, unsafeStrings, writeSnapshots, type ExportInput } from "../../scripts/export-replay-tasks.js";
+import { CONTENT_KEYS, SKIP_REASONS, exportReplayTasks, exportText, nameHash, readInputFile, redactPack, scrubWorkflow, unsafeStrings, writeSnapshots, type ExportInput } from "../../scripts/export-replay-tasks.js";
 import { ReplaySnapshotSchema, readSnapshotFolder, replayResults } from "../../scripts/replay-results.js";
 
 const ORG = `org_${"a".repeat(20)}` as const;
@@ -132,6 +132,24 @@ describe("scrubbing a stored workflow", () => {
     expect(unsafeStrings(scrubbed)).toBe(0);
   });
 
+  it("upper-case words are content under every content key (PAYMENTS, LEDGER, PYTEST); only a workflow path of QUICK or FULL stays", () => {
+    for (const key of CONTENT_KEYS) {
+      for (const word of ["PAYMENTS", "LEDGER", "PYTEST", "QUICK_X", "FULLY"]) {
+        const out = scrubWorkflow({ [key]: word, nested: [{ [key]: word }] }, SALT);
+        expect(JSON.stringify(out), `${key}: ${word}`).not.toContain(word);
+      }
+      for (const word of ["QUICK", "FULL"]) expect(JSON.stringify(scrubWorkflow({ [key]: word }, SALT)).includes(word), `${key}: ${word}`).toBe(key === "path");
+    }
+  });
+
+  it("a whole export holds none of those words when they sit in a label, folder, executable or branch", async () => {
+    const flow = workflow(TASKS.code, { checkPolicy: { ...policy, required: [{ ...policy.required[0]!, label: "PAYMENTS", command: { cwd: "LEDGER", executable: "PYTEST", args: ["PAYMENTS"], timeoutSeconds: 600 } }] } });
+    const result = await exportReplayTasks({ items: [...projectItems(), task(TASKS.code, flow)] }, options);
+    const text = JSON.stringify(result);
+    expect(result.snapshots).toHaveLength(1);
+    for (const word of ["PAYMENTS", "LEDGER", "PYTEST"]) expect(text, word).not.toContain(word);
+  });
+
   it("the shape check names anything else as unsafe: sentences, paths, file names, addresses and mixed text", () => {
     expect(unsafeStrings({ a: "A sentence with spaces", b: "services/payments", c: "file.py", d: "https://github.com/x", e: ["ok", "fine"] })).toBe(4);
     expect(unsafeStrings({ keyWith: "a path/inside", ok: "unit", id: "00000000-0000-4000-8000-000000000001", time: NOW_ISO, empty: "" })).toBe(1);
@@ -239,10 +257,33 @@ describe("tasks that cannot be exported are counted with a reason, never written
 });
 
 describe("the facts", () => {
-  it("keeps only the facts a replay reads", async () => {
+  const withFacts = (facts: unknown) => exportReplayTasks({ ...fixture(), facts: { [TASKS.code]: facts } }, options);
+  const factsOf = async (facts: unknown) => (await withFacts(facts)).snapshots.find((s) => s.taskId === TASKS.code)?.facts;
+  it("keeps only the facts a replay reads, whatever else is in the file", async () => {
     const result = await exportReplayTasks(fixture(), options);
     expect(result.snapshots.find((s) => s.taskId === TASKS.code)!.facts).toEqual({ checkOriginal: { unit: "failed" } });
     expect(result.snapshots.find((s) => s.taskId === TASKS.verified)!.facts).toBeUndefined();
+  });
+
+  it("keeps every auto-fix fact, each in its own type, and hashes group names", async () => {
+    const all = {
+      checkOriginal: { unit: "cannot-run" }, checkExpectsPass: ["lint"], e2eUnknownGroups: { "checkout group": "skipped", other: "pending" }, newFailingChecks: ["unit"],
+      providerOutage: true, runnerBusy: false, setupFailedInTask: true, hostBlocked: false, buildHostOffline: true, ownerCancelled: true, blockCause: "run-lost",
+    };
+    const kept = await factsOf(all);
+    expect(kept).toEqual({ ...all, e2eUnknownGroups: { [nameHash(SALT, "checkout group")]: "skipped", [nameHash(SALT, "other")]: "pending" } });
+    expect(JSON.stringify(kept)).not.toContain("checkout group");
+  });
+
+  it.each([
+    ["a boolean fact that is a word", { providerOutage: "yes" }], ["a boolean fact that is a number", { runnerBusy: 1 }], ["setupFailedInTask as text", { setupFailedInTask: "true" }], ["hostBlocked null", { hostBlocked: null }],
+    ["buildHostOffline as a list", { buildHostOffline: [true] }], ["ownerCancelled as text", { ownerCancelled: "1" }], ["a block cause that is not one", { blockCause: "tired" }], ["an original result that is not one", { checkOriginal: { unit: "maybe" } }],
+    ["an original result with free text for an id", { checkOriginal: { "a long sentence of text": "failed" } }], ["a group result that is not one", { e2eUnknownGroups: { g: "mostly" } }],
+    ["checkExpectsPass that is not a list", { checkExpectsPass: "unit" }], ["checkExpectsPass with free text", { checkExpectsPass: ["has spaces in it"] }], ["newFailingChecks with a number", { newFailingChecks: [3] }], ["facts that are not an object", ["x"]],
+  ])("skips the task for %s", async (_label, facts) => {
+    const result = await withFacts(facts);
+    expect(result.skipped).toEqual([{ taskId: TASKS.code, reason: "facts_invalid" }]);
+    expect(result.snapshots.some((s) => s.taskId === TASKS.code)).toBe(false);
   });
 });
 

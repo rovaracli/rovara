@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import {
-  EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, workflowApplicationEvidenceCodes,
+  AUTO_FIX_BLOCK_CAUSES, EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, workflowApplicationEvidenceCodes,
   type EvidencePack, type OrgId,
 } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../packages/broker/src/developer/task-records.js";
@@ -43,7 +43,7 @@ import { readNightlyBaseline } from "../packages/broker/src/test-env/nightly.js"
 import { ReplaySnapshotSchema, type ReplaySnapshot } from "./replay-results.js";
 
 type Item = Record<string, unknown>;
-export const SKIP_REASONS = ["no_workflow", "not_version_1_1", "no_candidate", "unreadable_workflow", "unreadable_evidence", "no_company_or_project", "full_run_failed", "block_reason_unknown", "content_left", "unreadable_snapshot"] as const;
+export const SKIP_REASONS = ["no_workflow", "not_version_1_1", "no_candidate", "unreadable_workflow", "unreadable_evidence", "no_company_or_project", "full_run_failed", "block_reason_unknown", "facts_invalid", "content_left", "unreadable_snapshot"] as const;
 export type SkipReason = (typeof SKIP_REASONS)[number];
 export interface ExportInput { items: readonly unknown[]; evidencePacks?: Readonly<Record<string, unknown>> | undefined; facts?: Readonly<Record<string, unknown>> | undefined }
 export interface ExportOptions {
@@ -85,7 +85,7 @@ function tableOver(items: readonly Item[]) {
 export const nameHash = (salt: string, value: string): string => `h${createHash("sha256").update(`${salt}\u0000${value}`).digest("hex").slice(0, 31)}`;
 
 /** Keys whose string (or list of strings) is repository, person or project content in a stored workflow. */
-const CONTENT_KEYS: ReadonlySet<string> = new Set([
+export const CONTENT_KEYS: ReadonlySet<string> = new Set([
   "label", "title", "text", "permalink", "author", "summary", "message", "body", "description", "path", "file", "url", "uri", "href", "key", "name", "cwd", "executable", "args", "note", "notes", "comment", "comments", "rationale", "detail", "details",
   "diff", "patch", "output", "error", "content", "question", "answer", "prompt", "heading", "branch", "repository", "command", "stdout", "stderr", "reply", "feedback", "instruction", "instructions", "scenario", "claim",
 ]);
@@ -110,6 +110,8 @@ export function unsafeStrings(value: unknown, allowed: ReadonlySet<string> = new
   return 0;
 }
 
+/** The only values of `path` that are product words. */
+const WORKFLOW_PATH_WORDS: ReadonlySet<string> = new Set(["QUICK", "FULL"]);
 /** Keys whose string is an address; the workflow schema wants each to stay a URL. */
 const URL_KEYS: ReadonlySet<string> = new Set(["url", "uri", "href", "permalink"]);
 /** A pull request's address, which the workflow schema wants to be a URL: a placeholder that is one and names nothing. */
@@ -118,9 +120,9 @@ const redactedUrl = (salt: string, value: string): string => `https://redacted.i
 /** The stored workflow with every content field replaced; the structure the rules read (state, stage, revision, candidate, verification results, the check list's ids and kinds, reviews, pull requests) stays. */
 export function scrubWorkflow(value: unknown, salt: string, key?: string): unknown {
   if (key !== undefined && CONTENT_KEYS.has(key)) {
-    // A fixed upper-case word (a workflow path is QUICK or FULL) is a product word under a key that happens to share a content name.
     if (typeof value === "string" && URL_KEYS.has(key)) return redactedUrl(salt, value);
-    if (typeof value === "string") return /^[A-Z][A-Z0-9_]{0,31}$/u.test(value) ? value : nameHash(salt, value);
+    // The one fixed-word exemption: a workflow `path` is QUICK or FULL. Any other upper-case word (a repository's PAYMENTS, LEDGER, PYTEST) is content.
+    if (typeof value === "string") return key === "path" && WORKFLOW_PATH_WORDS.has(value) ? value : nameHash(salt, value);
     if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) return [];
     if (value === null || typeof value !== "object") return value;
     // A nested object under a content key (a command): its own content keys are replaced below.
@@ -163,14 +165,44 @@ export function redactPack(pack: EvidencePack, salt: string): EvidencePack {
   });
 }
 
-const FACT_KEYS = ["checkOriginal", "e2eUnknownGroups", "blockCause", "ownerCancelled", "newFailingChecks"] as const;
-/** The auto-fix facts a replay reads, keys kept only from the list and group names hashed. */
-function redactFacts(facts: unknown, salt: string): Record<string, unknown> | undefined {
-  if (facts === null || typeof facts !== "object" || Array.isArray(facts)) return undefined;
-  const source = facts as Record<string, unknown>, out: Record<string, unknown> = {};
-  for (const key of FACT_KEYS) if (source[key] !== undefined) out[key] = source[key];
-  if (out["e2eUnknownGroups"] !== null && typeof out["e2eUnknownGroups"] === "object") out["e2eUnknownGroups"] = Object.fromEntries(Object.entries(out["e2eUnknownGroups"] as Record<string, unknown>).map(([group, result]) => [nameHash(salt, group), result]));
-  return Object.keys(out).length === 0 ? undefined : out;
+const ORIGINAL_RESULTS: readonly unknown[] = ["passed", "failed", "cannot-run"];
+const GROUP_RESULTS: readonly unknown[] = [...ORIGINAL_RESULTS, "skipped", "pending", "not-run"];
+const BOOLEAN_FACTS = ["providerOutage", "runnerBusy", "setupFailedInTask", "hostBlocked", "buildHostOffline", "ownerCancelled"] as const;
+const ID_LIST_FACTS = ["checkExpectsPass", "newFailingChecks"] as const;
+const isIdList = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 64 && value.every((entry) => typeof entry === "string" && isSafeString(entry));
+/**
+ * The auto-fix facts a replay reads (`AutoFixFacts`), each checked against its type: booleans are booleans, the block cause and each result are one of their words, and lists hold check ids. Any other key is dropped; a
+ * value of the wrong type makes the whole set invalid (the task is skipped), never a guess. Group names are hashed.
+ */
+function redactFacts(facts: unknown, salt: string): { ok: true; value: Record<string, unknown> | undefined } | { ok: false } {
+  if (facts === undefined) return { ok: true, value: undefined };
+  if (!isRecord(facts)) return { ok: false };
+  const out: Record<string, unknown> = {};
+  for (const key of BOOLEAN_FACTS) {
+    if (facts[key] === undefined) continue;
+    if (typeof facts[key] !== "boolean") return { ok: false };
+    out[key] = facts[key];
+  }
+  for (const key of ID_LIST_FACTS) {
+    if (facts[key] === undefined) continue;
+    if (!isIdList(facts[key])) return { ok: false };
+    out[key] = facts[key];
+  }
+  if (facts["blockCause"] !== undefined) {
+    if (!(AUTO_FIX_BLOCK_CAUSES as readonly unknown[]).includes(facts["blockCause"])) return { ok: false };
+    out["blockCause"] = facts["blockCause"];
+  }
+  const original = facts["checkOriginal"];
+  if (original !== undefined) {
+    if (!isRecord(original) || !Object.entries(original).every(([id, result]) => isSafeString(id) && ORIGINAL_RESULTS.includes(result))) return { ok: false };
+    out["checkOriginal"] = original;
+  }
+  const groups = facts["e2eUnknownGroups"];
+  if (groups !== undefined) {
+    if (!isRecord(groups) || !Object.values(groups).every((result) => GROUP_RESULTS.includes(result))) return { ok: false };
+    out["e2eUnknownGroups"] = Object.fromEntries(Object.entries(groups).map(([group, result]) => [nameHash(salt, group), result]));
+  }
+  return { ok: true, value: Object.keys(out).length === 0 ? undefined : out };
 }
 
 // ---- the export
@@ -217,7 +249,9 @@ export async function exportReplayTasks(input: ExportInput, options: ExportOptio
 
     const scrubbed = scrubWorkflow(workflow.data, options.salt) as Record<string, unknown>;
     if (reason.value === undefined) delete scrubbed["blockReason"]; else scrubbed["blockReason"] = reason.value;
-    const facts = redactFacts(input.facts?.[taskId], options.salt);
+    const factsOut = redactFacts(input.facts?.[taskId], options.salt);
+    if (!factsOut.ok) { skip(taskId, "facts_invalid"); continue; }
+    const facts = factsOut.value;
     const snapshot = {
       taskId, workflow: scrubbed, ...(facts === undefined ? {} : { facts }), ...(evidence === undefined ? {} : { evidence: redactPack(evidence, options.salt) }),
       alreadyFailing: alreadyFailing.map((entry) => (typeof entry === "string" ? hash(entry) : { name: hash(entry.name), checkId: entry.checkId })),
