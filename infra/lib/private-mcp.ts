@@ -73,7 +73,7 @@ const SECRET_ARN = /^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z]{2}(?:-[a-z]+)+-\d:
 const isSet = (value: unknown): boolean => value !== undefined;
 
 /** Whether two IPv4 ranges share an address (ranges nest, so: one contains the other's first address). A range that does not parse overlaps everything. */
-function ipv4RangesOverlap(a: string, b: string): boolean {
+export function ipv4RangesOverlap(a: string, b: string): boolean {
   const parse = (cidr: string): { first: number; mask: number } | undefined => {
     const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(cidr);
     if (match === null) return undefined;
@@ -266,7 +266,7 @@ export function assertStdioHostStackBuilt(install: PrivateMcpInstall, built: boo
 }
 
 /** The only variables an install's settings may add to the broker's environment. Anything else (a reserved variable such as the callback signing key) is refused, never overwritten. */
-export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS"] as const;
+export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "ROVARA_CUSTOM_MODEL_ENDPOINTS", "ROVARA_MODEL_ENDPOINT_CIDRS"] as const;
 /** The two more a package-run install adds, allowed only past the release flag. */
 export const STDIO_BROKER_ENVIRONMENT_KEYS = ["ROVARA_STDIO_MCP_SERVERS", "MCP_HOST_URL"] as const;
 

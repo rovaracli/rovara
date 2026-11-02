@@ -2,7 +2,8 @@
 // the model by its canonical name; a source that cannot be proved usable is skipped, a record that cannot be read refuses (never falls back to Rovara's AI).
 // The broker side (the operation's route, the key's `models`, the live re-check, Slack turns) is tests/contract/model-routing-broker.test.ts.
 import { describe, expect, it } from "vitest";
-import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, modelSourcesKey, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { ModelSourceSchema, defaultModelSourceOrder, editionPolicy, egressDomainsKey, modelSourcesKey, sourceAlias, type Edition, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptServing, modelNotAllowedText, routeModel, routeOnWire, servableModels, servingRoutes, type RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
@@ -28,15 +29,24 @@ const openai = (sourceId = SRC_OPENAI): ModelSource => ModelSourceSchema.parse({
 const bedrock = (tested: boolean, sourceId = SRC_BEDROCK): ModelSource => ModelSourceSchema.parse({
   kind: "bedrock", sourceId, label: "Our AWS", roleArn: ROLE, region: "us-east-1", externalId: `rovara-${TEST_ORG}`, models: [{ catalog: DEFAULT_MODEL }], tested,
 });
-const endpoint = (api = "openai-completions", sourceId = SRC_ENDPOINT): ModelSource => ModelSourceSchema.parse({
-  kind: "endpoint", sourceId, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: SONNET }],
-});
+/** N8: an endpoint source as the server stores it after a check passed (`qualified`, the default) or before one has (`false`). */
+const endpoint = (api = "openai-completions", sourceId = SRC_ENDPOINT, qualified = true, extra: Record<string, unknown> = {}): ModelSource => {
+  const base = { kind: "endpoint", sourceId, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: SONNET }], ...extra };
+  const unqualified = ModelSourceSchema.parse(base);
+  return qualified && unqualified.kind === "endpoint" ? ModelSourceSchema.parse({ ...base, qualifiedDigest: endpointQualificationDigest(unqualified) }) : unqualified;
+};
 
-function install(options: { chatgpt?: RoutingDependencies["chatgpt"]; launch?: RoutingDependencies["launch"]; projectOrder?: RoutingDependencies["projectSourceOrder"] } = {}) {
+function install(options: {
+  chatgpt?: RoutingDependencies["chatgpt"]; launch?: RoutingDependencies["launch"]; projectOrder?: RoutingDependencies["projectSourceOrder"];
+  /** N8: the install's edition (default enterprise) and the company's forbidden models (default none). `none` leaves the dependency out. */
+  edition?: Edition | "none"; forbidden?: ModelIdentifier[] | "none";
+} = {}) {
   const db = new FakeDynamoDb();
   const store = new ModelSourceStore({ documentClient: db, tableName: "state", now: Date.now, chatgptSwitch: async () => options.chatgpt !== undefined });
   const deps: RoutingDependencies = {
     sources: store, egress: { documentClient: db, tableName: "state" }, launch: options.launch ?? ALL_KINDS,
+    ...(options.edition === "none" ? {} : { edition: editionPolicy(options.edition ?? "enterprise") }),
+    ...(options.forbidden === "none" ? {} : { forbiddenModels: async (): Promise<ModelIdentifier[]> => (options.forbidden === undefined ? [] : options.forbidden === "none" ? [] : options.forbidden) }),
     ...(options.chatgpt === undefined ? {} : { chatgpt: options.chatgpt }),
     ...(options.projectOrder === undefined ? {} : { projectSourceOrder: options.projectOrder }),
   };
@@ -403,5 +413,99 @@ describe("routeStep: the operation's model, the plan and the install's geography
     expect(await routeModel(eu, { orgId: TEST_ORG, project: "web", model: SONNET })).toMatchObject({ sourceId: "rovara", alias: "eu.anthropic.claude-sonnet-4-6" });
     // A model that names its own geography keeps it.
     expect(await routeModel(eu, { orgId: TEST_ORG, project: "web", model: DEFAULT_MODEL })).toMatchObject({ alias: "us.anthropic.claude-sonnet-4-6" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8: a company's own model endpoint (Enterprise only). Usable only while ALL hold at the moment of the call: the edition has the feature, a check passed for exactly
+// these settings, its host is approved in its own egress item, and none of its models is forbidden.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("routeModel: a company's own model endpoint (N8)", () => {
+  async function ready(options: Parameters<typeof install>[0] = {}, source: ModelSource = endpoint()) {
+    const t = install(options);
+    await t.add(source);
+    t.egress(SRC_ENDPOINT, "approved");
+    await t.order([SRC_ENDPOINT, "rovara"]);
+    return t;
+  }
+
+  it("routes a qualified endpoint on Enterprise whose host is approved, with its alias and its own wire format", async () => {
+    const t = await ready();
+    expect(await t.route(SONNET)).toEqual({ sourceId: SRC_ENDPOINT, alias: sourceAlias(TEST_ORG, SRC_ENDPOINT, SONNET), api: "openai-completions", catalog: "claude-sonnet-4-6" });
+    expect((await servableModels(t.deps, TEST_ORG)).map((model) => model.modelId)).toContain("claude-sonnet-4-6");
+  });
+
+  it("never routes an endpoint on Public, or on an install with no edition, even with everything else in place", async () => {
+    for (const edition of ["public", "none"] as const) {
+      const t = await ready({ edition });
+      expect((await t.route(SONNET)).sourceId, edition).toBe("rovara");
+      expect((await servableModels(t.deps, TEST_ORG)).some((model) => model.provider === "anthropic"), edition).toBe(false);
+      await t.order([SRC_ENDPOINT]);
+      expect((await failure(t.route(SONNET))).code, edition).toBe("MODEL_NOT_ALLOWED");
+    }
+  });
+
+  it("never routes an endpoint no check has qualified, or one whose settings changed since its check", async () => {
+    const unchecked = await ready({}, endpoint("openai-completions", SRC_ENDPOINT, false));
+    expect((await unchecked.route(SONNET)).sourceId).toBe("rovara");
+    // Every setting the digest covers: the address, the wire format, the secret reference, the model's served name and the catalog model it stands for.
+    const qualified = endpoint();
+    if (qualified.kind !== "endpoint") throw new Error("expected an endpoint");
+    const changes: Array<Record<string, unknown>> = [
+      { baseUrl: "https://other.example.com/v1" }, { api: "anthropic-messages" }, { keyRef: "rovara/model-endpoints/other" },
+      { models: [{ name: "other-model", catalog: SONNET }] }, { models: [{ name: "our-model", catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } }] },
+    ];
+    for (const change of changes) {
+      const stale = await ready({}, ModelSourceSchema.parse({ ...qualified, ...change }));
+      expect((await stale.route(change.models === undefined ? SONNET : (change.models as Array<{ catalog: ModelIdentifier }>)[0]!.catalog)).sourceId, JSON.stringify(change)).toBe("rovara");
+    }
+    // A label is not part of what was checked.
+    const renamed = await ready({}, ModelSourceSchema.parse({ ...qualified, label: "Renamed" }));
+    expect((await renamed.route(SONNET)).sourceId).toBe(SRC_ENDPOINT);
+  });
+
+  it("never routes an endpoint whose digest is not the digest of its settings (a copied or hand-written value)", async () => {
+    const t = await ready({}, ModelSourceSchema.parse({ ...endpoint("openai-completions", SRC_ENDPOINT, false), qualifiedDigest: "a".repeat(64) }));
+    expect((await t.route(SONNET)).sourceId).toBe("rovara");
+  });
+
+  it("stops routing an endpoint when its host approval is withdrawn after it was qualified", async () => {
+    const t = await ready();
+    expect((await t.route(SONNET)).sourceId).toBe(SRC_ENDPOINT);
+    t.db.delete(egressDomainsKey(TEST_ORG, { kind: "model-source", sourceId: SRC_ENDPOINT }));
+    t.egress(SRC_ENDPOINT, "rejected");
+    expect((await t.route(SONNET)).sourceId).toBe("rovara");
+  });
+
+  it("stops routing an endpoint that lists a forbidden model: by its catalog model, and by the name it serves, whatever region prefix the name carries", async () => {
+    const forbidden: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-1-20250805-v1:0" };
+    // The catalog model is forbidden.
+    const byCatalog = await ready({ forbidden: [SONNET] });
+    expect((await byCatalog.route(SONNET)).sourceId).toBe("rovara");
+    // The catalog model is allowed, but the name the endpoint serves it under is a forbidden model in another region's profile.
+    const served = endpoint("openai-completions", SRC_ENDPOINT, true, { models: [{ name: "eu.anthropic.claude-opus-4-1-20250805-v1:0", catalog: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" } }] });
+    const byName = await ready({ forbidden: [forbidden] }, served);
+    expect((await byName.route(DEFAULT_MODEL)).sourceId).toBe("rovara");
+    // Positive control: with nothing forbidden the same endpoint routes.
+    const control = await ready({}, served);
+    expect((await control.route(DEFAULT_MODEL)).sourceId).toBe(SRC_ENDPOINT);
+  });
+
+  it("never routes an endpoint when the forbidden models cannot be shown, or cannot be read", async () => {
+    const unknown = await ready({ forbidden: "none" });
+    expect((await unknown.route(SONNET)).sourceId).toBe("rovara");
+    const unreadable = await ready();
+    unreadable.deps.forbiddenModels = async () => { throw new Error("table down"); };
+    expect((await failure(unreadable.route(SONNET))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
+  it("answers the same through routeStep, which governed stages use", async () => {
+    const step = (model: ModelIdentifier) => ({ orgId: TEST_ORG, project: "web", agent: "Rovara Code", step: "Build", model });
+    const t = await ready();
+    const routed = await routeStep(t.deps, step(SONNET));
+    expect(routed.route).toMatchObject({ sourceId: SRC_ENDPOINT });
+    expect(routed.wire).toEqual({ alias: sourceAlias(TEST_ORG, SRC_ENDPOINT, SONNET), api: "openai-completions", catalog: "claude-sonnet-4-6" });
+    const publicInstall = await ready({ edition: "public" });
+    expect((await routeStep(publicInstall.deps, step(SONNET))).route).toMatchObject({ sourceId: "rovara" });
   });
 });

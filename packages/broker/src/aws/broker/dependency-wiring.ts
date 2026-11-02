@@ -81,7 +81,7 @@ import { agentRunHostOf, writeGateRuntime } from "./model-access.js";
 import { ensureProjectCatalogPointer, parseRegistrationInput, registerProject, registerProjectFor, registrationChecks } from "./project-registration.js";
 import { rewriteOpenLinearCloseLines } from "./pull-request-reconcile.js";
 import { requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
-import { brokerEnvironmentName, decideRequestContext, egressDepsOf, githubScope, installOrgId, modelSourceStoreOf, orgConnectionStoreOf, orgOfRecord, orgResolverOf, routingOf } from "./scope-helpers.js";
+import { brokerEnvironmentName, decideRequestContext, egressDepsOf, githubScope, installOrgId, modelSourceStoreOf, orgConnectionStoreOf, orgOfRecord, orgResolverOf, routingOf, modelEndpointRouteOptions } from "./scope-helpers.js";
 import { codeMergeHostOf, operationEventsNewestFirst } from "./terminal-and-github-events.js";
 import { deleteWorkspaceCompute, requesterOf, startTaskClose } from "./thread-workspaces.js";
 import { deleteSlackBinding, heldPreparationDispatch, newWorkspacePreparation, spendRequestHostOf } from "./workspace-preparation.js";
@@ -154,7 +154,7 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
     ...(dependencies.modelAccess === undefined ? {} : {
-      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), ...agents.modelSources },
+      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), ...modelEndpointRouteOptions(dependencies), ...agents.modelSources },
     }),
     // A run that names a pull request of a project repository reads its head through the GitHub App, with an agent token (pull requests and contents,
     // read only) for the run's org (Task 15, PF16; Task 14b). Where the provider has no such read, nothing is read and the run fails closed.

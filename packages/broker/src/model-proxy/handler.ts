@@ -4,7 +4,7 @@
 // Manager and kept in memory. Nothing here logs a key, the master key, or request arguments.
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AgentXError, agentXError } from "@agentx/contracts";
+import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@agentx/contracts";
 import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import type { ModelAccess } from "./access.js";
 import { ModelProxyClient, type RoleAssumer } from "./client.js";
@@ -38,6 +38,28 @@ export function stsRoleAssumer(sts: { send(command: AssumeRoleCommand): Promise<
         throw error;
       }
     },
+  };
+}
+
+/**
+ * N8: reads the secret behind a company model endpoint's reference. Only a name under `rovara/model-endpoints/` is ever asked for (the function's IAM role is limited to the
+ * same prefix, so this is the second fence, not the only one). Missing, not readable and empty are fixed refusals; any other failure is left to the caller as a read that
+ * may work later. The value is returned to the proxy client alone and never logged.
+ */
+export function endpointSecretReader(secrets: { send(command: GetSecretValueCommand): Promise<{ SecretString?: string | undefined }> }): (reference: string) => Promise<string> {
+  return async (reference) => {
+    if (!isModelEndpointSecretRef(reference) || !reference.startsWith(MODEL_ENDPOINT_SECRET_PREFIX)) throw agentXError("CONFIG_INVALID", "the endpoint's secret reference is not valid");
+    let found: { SecretString?: string | undefined };
+    try {
+      found = await secrets.send(new GetSecretValueCommand({ SecretId: reference }));
+    } catch (error) {
+      const name = typeof error === "object" && error !== null && "name" in error ? String((error).name) : "";
+      if (name === "ResourceNotFoundException" || name === "AccessDeniedException") throw agentXError("CONFIG_INVALID", "the endpoint's secret could not be read; check that it exists under rovara/model-endpoints/ and that Rovara may read it");
+      throw error;
+    }
+    const value = found.SecretString?.trim();
+    if (value === undefined || value === "") throw agentXError("CONFIG_INVALID", "the endpoint's secret is empty or not a plain key");
+    return value;
   };
 }
 
@@ -114,6 +136,7 @@ function wire() {
       // The models the proxy's own config serves for this region (the control plane builds the config from the same list).
       catalog: bedrockClaudeModelIds(proxyGeographyForRegion(requiredEnvironment("AWS_REGION"))),
       roles: stsRoleAssumer(new STSClient({})),
+      resolveSecret: endpointSecretReader(secrets),
     }),
   });
 }

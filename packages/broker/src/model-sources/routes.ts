@@ -34,9 +34,13 @@ import {
   customSourceLimitProblem,
   egressPendingWarning,
   egressRejectedWarning,
+  endpointForbiddenModelProblem,
+  featureEnabled,
   isAllowedDomain,
   modelSourceInputSchema,
+  requireFeature,
   sourceKindProblem,
+  type EditionPolicy,
   type EgressDomainsItem,
   type ModelIdentifier,
   type ModelSource,
@@ -50,8 +54,10 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { RequestMark } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { readGuardrails } from "../agents/guardrails.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { endpointQualificationDigest, endpointQualified } from "./endpoint-qualification.js";
 import { ReviewedSourceOrderBodySchema } from "./reviewed-order.js";
 import { finishRemovals, releaseSource, viaProxy } from "./release.js";
 import type { ModelSourceStore, StoredModelSources } from "./store.js";
@@ -70,6 +76,11 @@ export interface ModelSourceRouteDependencies {
    * name now resolves to an address Rovara must not reach. Absent: an endpoint source cannot be saved.
    */
   checkEndpoint?: (url: string) => Promise<void>;
+  /**
+   * N8: the install's edition. A company's own model endpoint is an Enterprise feature (`customModelEndpoint`): on Public the routes refuse the kind and its `keyRef`
+   * with the fixed Enterprise-only sentence, and the schema leaves it out. Absent (an install deployed before editions): endpoint sources are not available.
+   */
+  edition?: EditionPolicy;
   /** Rovara's roles that assume a Bedrock source's role (the model proxy's task role, the function that probes the trust policy), for the policy an admin pastes. */
   bedrockTrustPrincipals?: readonly string[];
   /** Whether Pi's catalog knows a model. Default: `catalogModel(model) !== undefined`. */
@@ -98,6 +109,9 @@ export function requireReviewedModelSourceWebWrite(request: AdaptedHttpRequest, 
 const MISSING = "no AI source has that ID";
 const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sources.";
 const CHECK_RACED = "this source changed while it was being tested; run the check again";
+const ENDPOINT_NOT_CONFIRMED = "this endpoint did not confirm every model it lists; check the model names and the secret, then check again";
+const SECRET_SHARED = "source.keyRef: another source already uses this secret; each source names its own";
+const SECRET_MOVES_HOST = "source.baseUrl: the secret would be sent to a different host; name another secret for the new host";
 
 // ---- bodies
 
@@ -196,12 +210,14 @@ async function requestHost(deps: Deps, caller: AgentCaller, sourceId: string, ho
 }
 
 const hostOf = (source: Source): string | undefined => (source.kind === "endpoint" ? new URL(source.baseUrl).hostname : undefined);
+/** Whether the proxy holds a key it resolved from the source's secret reference (so the record's `credentials` lists the source, as for a pasted key). */
+const holdsReferencedKey = (source: Source): boolean => source.kind === "endpoint" && source.keyRef !== undefined;
 
 // ---- what the routes show
 
 function viewOf(deps: Deps, orgId: OrgId, stored: StoredModelSources, source: Source, hostStatus: HostStatus | undefined): Record<string, unknown> {
   const common = { sourceId: source.sourceId, kind: source.kind, label: source.label, models: source.models, hasCredential: stored.credentials.includes(source.sourceId), inOrder: stored.order.includes(source.sourceId) };
-  if (source.kind === "endpoint") return { ...common, baseUrl: source.baseUrl, api: source.api, hostStatus: hostStatus ?? "not_requested" };
+  if (source.kind === "endpoint") return { ...common, baseUrl: source.baseUrl, api: source.api, hostStatus: hostStatus ?? "not_requested", qualified: endpointQualified(source), ...(source.keyRef === undefined ? {} : { keyRef: source.keyRef }) };
   if (source.kind !== "bedrock") return common;
   const principals = deps.modelSources.bedrockTrustPrincipals;
   return {
@@ -247,25 +263,46 @@ function claimedKind(source: unknown): { kind: z.infer<typeof ModelSourceKindSch
 
 /** Refuses a kind that is not on, and a kind that is not a company source at all. */
 function requireAvailable(deps: Deps, kind: z.infer<typeof ModelSourceKindSchema>, api: string | undefined): void {
+  requireEndpointEdition(deps, kind);
   const problem = sourceKindProblem(kind, api, deps.modelSources.launch ?? {});
   if (problem !== undefined) throw agentXError("CONFIG_INVALID", problem);
   if (kind === "rovara" || kind === "personal-chatgpt") throw agentXError("CONFIG_INVALID", `source.kind: ${kind} is always there; add a source of another kind`);
   if (kind === "endpoint" && deps.modelSources.checkEndpoint === undefined) throw agentXError("CONFIG_INVALID", "endpoint sources aren't available yet");
 }
 
+/** N8: the edition gate for a company's own model endpoint, before anything else about it is read. Public refuses with the fixed sentence; no edition is "not available yet". */
+function requireEndpointEdition(deps: Deps, kind: z.infer<typeof ModelSourceKindSchema>): void {
+  if (kind !== "endpoint") return;
+  const edition = deps.modelSources.edition;
+  if (edition === undefined) throw agentXError("CONFIG_INVALID", "endpoint sources aren't available yet");
+  requireFeature(edition, "customModelEndpoint");
+}
+
 /** The input checked against the schema, with Pi's catalog, and the key against the kind. */
 function checkInput(deps: Deps, source: unknown, apiKey: string | undefined): ModelSourceInput {
-  const schema = modelSourceInputSchema({ isKnownCatalog: deps.modelSources.isKnownCatalog ?? ((model) => catalogModel(model) !== undefined) });
+  const schema = modelSourceInputSchema({
+    isKnownCatalog: deps.modelSources.isKnownCatalog ?? ((model) => catalogModel(model) !== undefined),
+    customModelEndpoint: deps.modelSources.edition !== undefined && featureEnabled(deps.modelSources.edition, "customModelEndpoint"),
+  });
   const parsed = schema.safeParse(source);
   if (!parsed.success) throw bodyProblem(parsed.error, "source");
   const input = parsed.data;
   if (apiKey !== undefined && !API_KEY.test(apiKey)) throw agentXError("CONFIG_INVALID", "apiKey: is not a valid API key");
   if (input.kind === "bedrock" && apiKey !== undefined) throw agentXError("CONFIG_INVALID", "apiKey: a bedrock source uses a role, not an API key");
+  // N8: an endpoint's secret is a reference (`source.keyRef`), resolved where it is used. A pasted key would be held by the proxy with no reference to rotate or audit.
+  if (input.kind === "endpoint" && apiKey !== undefined) throw agentXError("CONFIG_INVALID", "apiKey: an endpoint source names its secret with source.keyRef; it takes no pasted key");
   return input;
 }
 
 /** The source as the server stores it: the input, its id, and for Bedrock the external id and whether its role has been tested. */
 function stored(caller: AgentCaller, input: ModelSourceInput, sourceId: string, previous: Source | undefined): ModelSource {
+  // N8: a change keeps the qualification only when it left every setting the check covered as it was. Any other change drops the digest, so changing a setting and
+  // changing it back does not bring the old qualification back without a new check.
+  if (input.kind === "endpoint") {
+    const next = { ...input, sourceId };
+    const kept = previous?.kind === "endpoint" && previous.qualifiedDigest !== undefined && previous.qualifiedDigest === endpointQualificationDigest(next) ? previous.qualifiedDigest : undefined;
+    return { ...next, ...(kept === undefined ? {} : { qualifiedDigest: kept }) };
+  }
   if (input.kind !== "bedrock") return { ...input, sourceId };
   // A role or region the probe has not seen is untested again.
   const tested = previous?.kind === "bedrock" && previous.roleArn === input.roleArn && previous.region === input.region && previous.tested;
@@ -273,10 +310,15 @@ function stored(caller: AgentCaller, input: ModelSourceInput, sourceId: string, 
 }
 
 /** Where an endpoint's host stands now, after the checks that must pass before anything is written. */
-async function checkEndpointInput(deps: Deps, input: ModelSourceInput): Promise<string | undefined> {
+async function checkEndpointInput(deps: Deps, caller: AgentCaller, input: ModelSourceInput, others: readonly Source[]): Promise<string | undefined> {
   if (input.kind !== "endpoint") return undefined;
   const found = endpointHost(input.baseUrl);
   if ("problem" in found) throw agentXError("CONFIG_INVALID", found.problem);
+  // A secret goes to one source and so to one host: another source that names it would send it to a host this source's approval never covered.
+  if (input.keyRef !== undefined && others.some((other) => other.kind === "endpoint" && other.keyRef === input.keyRef)) throw agentXError("CONFIG_INVALID", SECRET_SHARED);
+  // The shared matcher judges both the catalog model and the name the endpoint serves it under.
+  const forbidden = endpointForbiddenModelProblem(input.models, (await readGuardrails(deps, caller.orgId)).forbiddenModels);
+  if (forbidden !== undefined) throw agentXError("CONFIG_INVALID", `source.${forbidden}`);
   // Each call is made before this one writes anything, and the checker resolves the name now.
   await deps.modelSources.checkEndpoint!(input.baseUrl);
   return found.host;
@@ -342,11 +384,11 @@ async function addSource(deps: Deps, caller: AgentCaller, body: unknown): Promis
   const current = await deps.modelSources.store.read(caller.orgId);
   const tooMany = customSourceLimitProblem(current.sources.length);
   if (tooMany !== undefined) throw agentXError("CONFIG_INVALID", tooMany);
-  const host = await checkEndpointInput(deps, input);
+  const host = await checkEndpointInput(deps, caller, input, current.sources);
   const source = stored(caller, input, sourceId, undefined);
   await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source, ...(apiKey === undefined ? {} : { apiKey }) }));
   try {
-    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "create", keyStored: apiKey !== undefined, by: caller.developerId, request: mark });
+    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "create", keyStored: apiKey !== undefined || holdsReferencedKey(source), by: caller.developerId, request: mark });
   } catch (error) {
     await reconcileRegistration(deps, caller, sourceId);
     throw error;
@@ -367,19 +409,24 @@ async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body
   requireAvailable(deps, claim.kind, claim.api);
   const input = checkInput(deps, raw, apiKey);
   if (input.kind !== previous.kind) throw agentXError("CONFIG_INVALID", "source.kind: a source's kind can't change; remove it and add a new one");
-  const host = await checkEndpointInput(deps, input);
+  const host = await checkEndpointInput(deps, caller, input, before.sources.filter((candidate) => candidate.sourceId !== previous.sourceId));
   const hostChanged = host !== undefined && hostOf(previous) !== host;
-  // A saved key goes only to the host it was saved for. This is checked on `before`, and the save below holds only while the record is still at `before`.
-  if (host !== undefined && apiKey === undefined && before.credentials.includes(previous.sourceId) && hostChanged) {
-    throw agentXError("CONFIG_INVALID", "source.baseUrl: the saved key would be sent to a different host; send the new key with it");
-  }
+  // A saved secret goes only to the host it was saved for. This is checked on `before`, and the save below holds only while the record is still at `before`.
+  // N8: a referenced secret stays with the host it was named for; a new host needs a different secret.
+  if (input.kind === "endpoint" && previous.kind === "endpoint" && hostChanged && input.keyRef !== undefined && input.keyRef === previous.keyRef) throw agentXError("CONFIG_INVALID", SECRET_MOVES_HOST);
+  // A key pasted before secret references existed has no reference to rename: it cannot follow the source to a new host.
+  if (previous.kind === "endpoint" && hostChanged && previous.keyRef === undefined && before.credentials.includes(previous.sourceId)) throw agentXError("CONFIG_INVALID", "source.baseUrl: this source holds a key saved for its old host; remove it and add a new source");
   const source = stored(caller, input, previous.sourceId, previous);
   await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source, ...(apiKey === undefined ? {} : { apiKey }) }));
   try {
-    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "update", keyStored: apiKey !== undefined, by: caller.developerId, request: mark, expect: { revision: before.revision } });
+    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "update", keyStored: apiKey !== undefined || holdsReferencedKey(source), by: caller.developerId, request: mark, expect: { revision: before.revision } });
   } catch (error) {
     await reconcileRegistration(deps, caller, previous.sourceId, { dropKey: apiKey !== undefined });
     throw error;
+  }
+  // N8: a source that no longer names a secret holds none (the proxy removes the credential it resolved from the old reference when it registers the source).
+  if (previous.kind === "endpoint" && previous.keyRef !== undefined && input.kind === "endpoint" && input.keyRef === undefined) {
+    await deps.modelSources.store.dropCredential({ orgId: caller.orgId, sourceId: previous.sourceId, by: caller.developerId });
   }
   return host === undefined ? { sourceId: previous.sourceId } : { sourceId: previous.sourceId, ...await requestHost(deps, caller, previous.sourceId, host) };
 }
@@ -444,9 +491,32 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
       return { ok: false, message: egressRejectedWarning(host, entry?.reason) };
     }
     if (await firewallApplying(deps)) return { ok: false, message: MODEL_SOURCE_STILL_APPLYING };
+    // N8: the forbidden models may have changed since the source was saved; a source that lists one is not tested, let alone qualified.
+    const forbidden = endpointForbiddenModelProblem(source.models, (await readGuardrails(deps, caller.orgId)).forbiddenModels);
+    if (forbidden !== undefined) return { ok: false, message: forbidden };
+    // N8: the proxy is told the record's settings again before the probe, so what is probed is exactly what the digest covers, and a rotated secret is read afresh.
+    await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source }));
   }
   const answer = await viaProxy(() => deps.modelSources.access.checkSource(caller.orgId, source.sourceId));
   if (!answer.ok) return { ok: false, message: answer.message };
+  if (source.kind === "endpoint") {
+    // Qualified only when every model it lists answered a probe call; "unknown" (some model neither passed nor failed) is not a pass.
+    if (answer.health !== "healthy") return { ok: false, message: ENDPOINT_NOT_CONFIRMED };
+    // It is the settings that were probed that are marked, and registered: if the source is no longer the one that was read, nothing is saved or registered.
+    const qualified = { ...source, qualifiedDigest: endpointQualificationDigest(source) };
+    try {
+      if (!endpointQualified(source)) {
+        await deps.modelSources.store.save({ orgId: caller.orgId, source: qualified, mode: "update", by: caller.developerId, expect: { source } });
+      } else if (canonicalJson((await deps.modelSources.store.read(caller.orgId)).sources.find((candidate) => candidate.sourceId === source.sourceId)) !== canonicalJson(source)) {
+        return { ok: false, message: CHECK_RACED };
+      }
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "IDEMPOTENCY_CONFLICT") return { ok: false, message: CHECK_RACED };
+      throw error;
+    }
+    // The proxy serves the models to the org's team from now on. Repeating the check finishes this step if it failed.
+    await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: qualified }));
+  }
   if (source.kind === "bedrock") {
     // The probe passed: the role is tested, and the proxy serves its models from now on. Both steps can be repeated, so a check also finishes a failed earlier one.
     // It is the role that was probed that is marked, and registered: if the source is no longer the one that was read, nothing is saved or registered.

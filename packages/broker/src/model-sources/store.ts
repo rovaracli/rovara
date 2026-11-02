@@ -217,7 +217,7 @@ export class ModelSourceStore {
       }
       const sources = existing === undefined ? [...current.sources, source] : current.sources.map((candidate) => (candidate.sourceId === source.sourceId ? source : candidate));
       const credentials = input.keyStored === true && !current.credentials.includes(source.sourceId) ? [...current.credentials, source.sourceId] : current.credentials;
-      const change = existing === undefined ? "created" : existing.kind === "bedrock" && source.kind === "bedrock" && !existing.tested && source.tested && sameBedrockSettings(existing, source) ? "tested" : "updated";
+      const change = existing === undefined ? "created" : existing.kind === "bedrock" && source.kind === "bedrock" && !existing.tested && source.tested && sameBedrockSettings(existing, source) ? "tested" : existing.kind === "endpoint" && source.kind === "endpoint" && existing.qualifiedDigest !== source.qualifiedDigest && source.qualifiedDigest !== undefined && sameEndpointSettings(existing, source) ? "tested" : "updated";
       return {
         next: { ...kept(current), sources, credentials },
         events: (revision, at) => [auditModelSourceSaved({
@@ -360,6 +360,10 @@ function kept(current: StoredModelSources): Omit<StoredModelSources, "revision">
 
 function sameBedrockSettings(left: ModelSource, right: ModelSource): boolean {
   return left.kind === "bedrock" && right.kind === "bedrock" && left.roleArn === right.roleArn && left.region === right.region && JSON.stringify(left.models) === JSON.stringify(right.models);
+}
+
+function sameEndpointSettings(left: ModelSource, right: ModelSource): boolean {
+  return left.kind === "endpoint" && right.kind === "endpoint" && left.baseUrl === right.baseUrl && left.api === right.api && left.keyRef === right.keyRef && JSON.stringify(left.models) === JSON.stringify(right.models);
 }
 
 /** The item as written: JSON round-tripped so no `undefined` reaches DynamoDB. */

@@ -150,10 +150,11 @@ export async function sweepModelSources(deps: ModelSourceSweepDependencies, opti
           const fresh = (await deps.store.readIfAny(orgId))?.sources.find((candidate) => candidate.sourceId === sourceId);
           const freshHost = fresh === undefined ? undefined : hostOf(fresh);
           if (fresh === undefined || freshHost === undefined || !pointsElsewhere(entry.hosts, freshHost)) { await forget(key); return; }
-          // Removing the source deletes its credential, so the key goes; it is registered again without one, and the record says it has none.
+          // Removing the source deletes its credential, so the key goes; it is registered again without one (a secret reference is read again), and the record says it has none.
           await viaProxy(() => deps.access.removeSource(orgId, sourceId));
           await viaProxy(() => deps.access.upsertSource({ orgId, source: fresh }));
-          await deps.store.dropCredential({ orgId, sourceId, by: "system" });
+          // N8: an endpoint that names a secret gets it back from the reference when it is registered again, so the record still says it has one.
+          if (!(fresh.kind === "endpoint" && fresh.keyRef !== undefined)) await deps.store.dropCredential({ orgId, sourceId, by: "system" });
           await forget(key);
           report.rebound += 1;
         });

@@ -34,7 +34,8 @@ export async function captureTaskFundingProof(deps: FundingDependencies, input: 
  for (const row of rows) for (const candidate of row.candidates) {
   if (!stageCandidateVerified({ orgId: input.orgId, stage: "build", sourcesRevision: row.sourcesRevision, candidates: row.candidates, forbidden: [], payerDeveloperId: input.payerDeveloperId, connectionRevision: row.connectionRevision }, candidate)) continue;
   const proof = candidate.evidence;
-  if (proof === undefined || proof.kind === "rovara_catalog") return undefined;
+  // N8: a company's own model endpoint can serve a task, but it never exempts the task from Rovara's spending stop: no proof is captured, so the usual stop rules apply.
+  if (proof === undefined || proof.kind === "rovara_catalog" || proof.kind === "qualified_endpoint") return undefined;
   evidence.set(candidate.sourceId, Evidence.parse({ sourceId: candidate.sourceId, kind: proof.kind, ...(proof.payerDeveloperId === undefined ? {} : { payerDeveloperId: proof.payerDeveloperId }), ...(proof.connectionRevision === undefined ? {} : { connectionRevision: proof.connectionRevision }) }));
  }
  if (evidence.size === 0) return undefined;

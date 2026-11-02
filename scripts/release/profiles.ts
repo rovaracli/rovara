@@ -60,6 +60,9 @@ function everythingOn(): Record<string, string> {
     rovaraMcpControllerTlsSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/mcp-controller-tls-AbCdEf",
     rovaraMcpControllerDnsNamespace: "runners.example.internal",
     rovaraMcpControllerCa: sampleControllerCa(),
+    // N8: a company's own model endpoint (the broker's switch and its private ranges, and the model access function's secret-prefix grant). The range is outside the install's VPC.
+    rovaraCustomModelEndpoints: "true",
+    rovaraModelEndpointCidrs: "192.168.50.0/24",
     agentxReservedConcurrency: "true",
     agentxRovaraOrgId: "o-abcdef1234",
     // (Text, as every recorded setting is; the infrastructure parses it as JSON.)

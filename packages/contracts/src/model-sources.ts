@@ -83,7 +83,32 @@ const CATALOG_PROVIDER = {
   bedrock: "amazon-bedrock",
 } as const;
 
+/**
+ * N8: where the secret behind a custom model endpoint lives. A source holds only this reference; the model access function (the one piece of code inside the
+ * VPC that already reads the proxy's own secrets) resolves it when it registers or checks the source, and the value is never in a record, a response, a log or a
+ * model's context. The prefix is the whole fence: the function may read secrets under it and nothing else, so a reference cannot name the proxy's master key,
+ * the database or another customer secret. A secret is named by a name, never an ARN, so it cannot point into another account or region.
+ */
+export const MODEL_ENDPOINT_SECRET_PREFIX = "rovara/model-endpoints/";
+// Each segment is Secrets Manager name characters and not only dots ("." and ".." are never a segment: a name is flat, but a reference that looks like a path climb is refused anyway).
+const MODEL_ENDPOINT_SECRET_REF = /^rovara\/model-endpoints\/(?!\.+(?:\/|$))[A-Za-z0-9_+=.@-]+(?:\/(?!\.+(?:\/|$))[A-Za-z0-9_+=.@-]+)*$/;
+export const MODEL_ENDPOINT_SECRET_REF_MAX = 200;
+
+/** Whether a string is a model endpoint secret reference (the pattern and the length). */
+export function isModelEndpointSecretRef(value: string): boolean {
+  return value.length <= MODEL_ENDPOINT_SECRET_REF_MAX && MODEL_ENDPOINT_SECRET_REF.test(value);
+}
+
+/** The hex digest shape of an endpoint's qualification (`endpointQualificationDigest` in the broker). */
+const QUALIFICATION_DIGEST = /^[0-9a-f]{64}$/;
+
 export interface ModelSourceOptions {
+  /**
+   * N8: whether the `endpoint` kind (a company's own model endpoint, Enterprise only) is part of the schema at all. The broker passes the install's `customModelEndpoint`
+   * edition feature, so on Public the kind (and its `keyRef`) is refused by the schema itself. Default true: the pure schema has no edition; the routes and routing gates
+   * read the edition and fail closed when they have none.
+   */
+  customModelEndpoint?: boolean;
   /**
    * Whether Pi's catalog knows a model. Pi's catalogs live in model-runtime, which contracts cannot import, so
    * the broker supplies this (`catalogModel(model) !== undefined`). Without it only the shape is checked.
@@ -140,6 +165,8 @@ function inputShapes(options: ModelSourceOptions) {
     baseUrl: z.url({ protocol: /^https?$/ }).max(2048),
     // The wire format; sourceKindProblem decides which are available, so an unavailable one refuses with its text.
     api: z.string().trim().min(1).max(64),
+    // N8: the secret the endpoint's calls carry, as a reference only (see MODEL_ENDPOINT_SECRET_PREFIX). Absent: the endpoint needs no secret.
+    keyRef: z.string().max(MODEL_ENDPOINT_SECRET_REF_MAX).regex(MODEL_ENDPOINT_SECRET_REF, { message: `must be a secret name that starts with ${MODEL_ENDPOINT_SECRET_PREFIX}` }).optional(),
     // `name` is what the endpoint calls the model; `catalog` is the Pi model it behaves like, for prices and limits.
     models: modelsSchema(
       z.object({ name: displayName(256), catalog: catalogSchema(undefined, options) }).strict(),
@@ -150,25 +177,35 @@ function inputShapes(options: ModelSourceOptions) {
   return [keyed("anthropic"), keyed("openai"), keyed("openrouter"), bedrock, endpoint] as const;
 }
 
+/** The input shapes an edition may use: without `customModelEndpoint` the endpoint kind is not in the union, so a client-sent endpoint is refused as an unknown kind. */
+function allowedInputShapes(options: ModelSourceOptions) {
+  const all = inputShapes(options);
+  return options.customModelEndpoint === false ? all.slice(0, 4) as unknown as typeof all : all;
+}
+
 /**
  * What a client may send to add or change a source. Strict, so a client-sent `sourceId`, `externalId` or
  * `tested` is refused rather than ignored.
  */
 export function modelSourceInputSchema(options: ModelSourceOptions = {}) {
-  return z.discriminatedUnion("kind", inputShapes(options));
+  return z.discriminatedUnion("kind", allowedInputShapes(options));
 }
 
 /** What the server stores: the input plus its generated `sourceId` and, for Bedrock, the server-set `externalId` and `tested`. */
 export function modelSourceSchema(options: ModelSourceOptions = {}) {
   const [anthropic, openai, openrouter, bedrock, endpoint] = inputShapes(options);
   const sourceId = z.string().regex(SOURCE_ID_PATTERN);
-  return z.discriminatedUnion("kind", [
+  const shapes = [
     anthropic.extend({ sourceId }).strict(),
     openai.extend({ sourceId }).strict(),
     openrouter.extend({ sourceId }).strict(),
     bedrock.extend({ sourceId, externalId: z.string().regex(EXTERNAL_ID_PATTERN), tested: z.boolean().default(false) }).strict(),
-    endpoint.extend({ sourceId }).strict(),
-  ]);
+    // N8: `qualifiedDigest` is set by the server alone, when a check passes (never by a client: the input shape lacks it). It is the digest of the exact settings
+    // that passed (`endpointQualificationDigest`), so any later change to the address, the secret reference, the wire format or the model list leaves it stale and the
+    // source unusable until a new check passes.
+    endpoint.extend({ sourceId, qualifiedDigest: z.string().regex(QUALIFICATION_DIGEST).optional() }).strict(),
+  ] as const;
+  return z.discriminatedUnion("kind", options.customModelEndpoint === false ? shapes.slice(0, 4) as unknown as typeof shapes : shapes);
 }
 
 /** The shape-only schemas; a caller with Pi's catalog uses `modelSourceInputSchema({ isKnownCatalog })`. */
@@ -177,6 +214,20 @@ export const ModelSourceSchema = modelSourceSchema();
 /** The refusal when a stored source is not this org's: a Bedrock source's external id must be `rovara-<orgId>`. */
 export function modelSourceOrgProblem(orgId: OrgId, source: ModelSource): string | undefined {
   if (source.kind === "bedrock" && source.externalId !== bedrockExternalId(orgId)) return "the external id does not belong to this organization";
+  return undefined;
+}
+
+/**
+ * N8: why an endpoint source may not list a model the company forbids, or undefined. Every model is checked twice with the shared matcher (`canonicalModelName`, which
+ * strips the Bedrock region and geography prefixes): once as the catalog model it stands for, and once as the name the endpoint serves it under, read as a model of the
+ * same provider as its catalog entry. So `eu.anthropic.<forbidden model>` served by a gateway is still the forbidden model. No second matcher lives here.
+ */
+export function endpointForbiddenModelProblem(models: ReadonlyArray<{ name: string; catalog: ModelIdentifier }>, forbidden: readonly ModelIdentifier[]): string | undefined {
+  const forbiddenNames = new Set(forbidden.map(canonicalModelName));
+  for (const [index, entry] of models.entries()) {
+    const served: ModelIdentifier = { provider: entry.catalog.provider, modelId: entry.name };
+    if (forbiddenNames.has(canonicalModelName(entry.catalog)) || forbiddenNames.has(canonicalModelName(served))) return `models.${String(index)}: this model is forbidden in your company`;
+  }
   return undefined;
 }
 

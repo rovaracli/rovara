@@ -90,6 +90,8 @@ export interface ControlPlaneStackProps extends StackProps {
   reservedConcurrency?: boolean;
   /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
   privateEgressCidrs?: readonly string[];
+  /** Enterprise installs that turned company model endpoints on (N8): the model access function may read secrets named under `rovara/model-endpoints/`. Absent: it may not. */
+  customModelEndpoints?: boolean;
   /** Enterprise installs: the model proxy runs LiteLLM from the install's own ECR (loaded from the signed release bundle). Absent: the public image, as before. */
   bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
@@ -1457,6 +1459,7 @@ export class ControlPlaneStack extends Stack {
         proxy: modelProxy,
         handler: modelAccessFunction,
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
+        ...(props?.customModelEndpoints === true ? { customModelEndpoints: true } : {}),
       });
       modelAccessFunction.grantInvoke(broker);
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
