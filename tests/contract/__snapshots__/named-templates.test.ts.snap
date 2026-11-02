@@ -3002,6 +3002,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)",
       "Type": "String",
     },
+    "SecondReviewEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: an added second review by a model of a different AI company is on (a project or company chooses shadow or on; only after the worker image that runs the second review is deployed); 0: no second review is planned, run or shown (agentx config set secondReview.enabled 1)",
+      "Type": "String",
+    },
     "SessionManagerSecurityGroupId": {
       "Description": "The foundation's session manager security group",
       "Type": "String",
@@ -3473,6 +3482,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "ak=",
                   {
                     "Ref": "LiveAskEnabled",
+                  },
+                  ",cr=",
+                  {
+                    "Ref": "SecondReviewEnabled",
                   },
                   ",dk=",
                   {

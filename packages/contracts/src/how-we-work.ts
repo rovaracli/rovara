@@ -54,6 +54,8 @@ export const HowWeWorkStageSchema = z
         model: marked(LineSchema.nullable()),
         thinking: marked(LineSchema.nullable()),
         differentCompanyFrom: marked(z.array(StepIdSchema).max(HOW_WE_WORK_STAGES_MAX)),
+        /** SH34, a review stage only and only where the install switch `cr` is on: the project's `review.otherCompany` (off, shadow or on; the same three words as `SECOND_REVIEW_MODES` in second-review.ts, which is not part of the browser entry, so they are written out here), a company lock marked locked. Absent otherwise. */
+        secondOpinion: marked(z.enum(["off", "shadow", "on"])).optional(),
       })
       .strict(),
     knows: z
