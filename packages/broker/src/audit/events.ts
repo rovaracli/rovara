@@ -889,6 +889,19 @@ export function auditSetupHostRefused(input: AuditBuilderBase & { projectName: s
   return build("setup.host_refused", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { host: input.host } }] }, { kind: "project", name: input.projectName }, { askId: input.askId, refusal: input.refusal });
 }
 
+/** `occurrence`: the maintainer's request id. A project's own setup-run limits changed; the five values are the new ones. */
+export function auditSetupLimitsChanged(input: AuditBuilderBase & { projectName: string; revision: number; previousDigest: string; nextDigest: string; limits: { commands?: number | undefined; sameStepTries?: number | undefined; wallClockMin?: number | undefined; budgetCents?: number | undefined; hostAsks?: number | undefined } }): AuditEventInput {
+  return build("setup.limits_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, previousDigest: input.previousDigest, nextDigest: input.nextDigest, ...input.limits });
+}
+
+/** `occurrence`: the company locks' new revision (a locks row is never deleted and recreated, so the revision never repeats). The three events of a locks change: applied, proposed (a loosening waiting for a second admin) and approved. */
+export function auditSetupLocksChange(input: AuditBuilderBase & { action: "setup.locks_changed" | "setup.locks_change_proposed" | "setup.locks_change_approved"; revision: number; previousDigest: string; nextDigest: string; loosened: boolean; approvalMode?: string | undefined; membershipVersion?: number | undefined }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, {
+    revision: input.revision, previousDigest: input.previousDigest, nextDigest: input.nextDigest, loosened: input.loosened,
+    ...(input.action === "setup.locks_change_approved" ? { approvalMode: input.approvalMode, membershipVersion: input.membershipVersion } : {}),
+  });
+}
+
 // Tracker people (team record) -------------------------------------------------------------------------------------------
 
 /** `occurrence`: the admin's request id. `source` is `linear` or `jira`. The target is the member; the tool's id and the name it shows never go in. */

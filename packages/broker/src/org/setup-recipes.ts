@@ -141,12 +141,14 @@ export const CompanySetupLocksSchema = z.object({
   noSoleOwnerException: z.literal(true).optional(),
 }).strict();
 export type CompanySetupLocks = z.infer<typeof CompanySetupLocksSchema>;
+/** Locks the schema can read but nothing enforces yet: a write that sets one is refused ("not available yet") until a lane wires its enforcement. Enforced today: `limits` (the setup start), `setupAgentOff` (the setup start), `devcontainerImages` (recipe offers), `noSoleOwnerException` (the approval). */
+export const LOCKS_NOT_ENFORCED_YET = ["hostsOnlyFromCompanyList", "hostApprover", "nightlyHealthOn"] as const;
 
 /** A change that LOOSENS the locks waits here for a different admin (owner choice A, the 2026-10-31 tier-0 rule applied to locks). */
 export interface PendingLocksChange { locks: CompanySetupLocks; digest: string; proposedBy: string; proposedAt: string }
 export interface StoredLocks { orgId: OrgId; revision: number; locks: CompanySetupLocks; updatedBy: string; updatedAt: string; pending?: PendingLocksChange }
 
-const locksDigest = (locks: CompanySetupLocks | undefined): string => createHash("sha256").update(canonicalJson(locks ?? {}), "utf8").digest("hex");
+export const locksDigest = (locks: CompanySetupLocks | undefined): string => createHash("sha256").update(canonicalJson(locks ?? {}), "utf8").digest("hex");
 
 /**
  * Whether `next` is looser than `prev` for any field: a lock removed, a limit raised or removed, a lock turned off (`setupAgentOff`, `hostsOnlyFromCompanyList`, `nightlyHealthOn`), the image list widened or
@@ -238,6 +240,9 @@ export interface SetupRecipeDeps {
   newRecipeSuffix(): string;
 }
 
+/** What the company-locks functions need of the deps: the admin and session reads, the second-person evidence and the clock, and only the locks half of the store (so locks can be stored without the recipes' half). */
+export type SetupLocksDeps = Pick<SetupRecipeDeps, "requireAdmin" | "readSession" | "approvalEvidence" | "now"> & { store: Pick<SetupRecipeStore, "getLocks" | "commitLocks"> };
+
 const forbidden = () => agentXError("FORBIDDEN", "Live company owner or admin access is required.");
 const reauth = () => agentXError("REAUTH_REQUIRED", "Sign in again to confirm this company change.");
 const stale = () => agentXError("CHANGE_STALE", "That recipe changed. Refresh before continuing.");
@@ -250,14 +255,14 @@ function validCaller(caller: RecipeCaller): void {
 /**
  * Admin now, then a stored session of the SAME person, not revoked, whose interactive sign-in is fresh by the platform's one rule (`isFreshSignIn`). The admin check comes first and reads nothing else.
  */
-async function requireFreshAdmin(deps: SetupRecipeDeps, caller: RecipeCaller): Promise<void> {
+async function requireFreshAdmin(deps: SetupLocksDeps, caller: RecipeCaller): Promise<void> {
   validCaller(caller);
   await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
   const session = typeof caller.sessionId === "string" && caller.sessionId.length > 0 && caller.sessionId.length <= 200 ? await deps.readSession(caller.sessionId) : undefined;
   if (session === undefined || session.developerId !== caller.developerId || session.revokedAt !== undefined || !isFreshSignIn(session, deps.now().getTime())) throw reauth();
 }
 
-const iso = (deps: SetupRecipeDeps): string => deps.now().toISOString();
+const iso = (deps: Pick<SetupLocksDeps, "now">): string => deps.now().toISOString();
 
 /** Whether redaction would change anything in the body: a credential in a URL, a flag value, a key-shaped string. A recipe is shared text, so it must hold none. */
 /**
@@ -304,7 +309,7 @@ function newRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, body: SetupRecip
   };
 }
 
-const auditOf = (deps: SetupRecipeDeps, caller: RecipeCaller, action: RecipeAuditAction, proof: RecipeAuditEntry["proof"], recipe?: StoredRecipe): RecipeAuditEntry => ({
+const auditOf = (deps: Pick<SetupLocksDeps, "now">, caller: RecipeCaller, action: RecipeAuditAction, proof: RecipeAuditEntry["proof"], recipe?: StoredRecipe): RecipeAuditEntry => ({
   action, orgId: caller.orgId, actor: caller.developerId, at: iso(deps), proof,
   ...(recipe === undefined ? {} : { recipeId: recipe.recipeId, revision: recipe.revision, bodyDigest: recipe.bodyDigest }),
 });
@@ -434,7 +439,7 @@ export async function companyApprovedHosts(deps: Pick<SetupRecipeDeps, "store">,
 }
 
 /** The company's locks, or none. Server-side use. */
-export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "store">, orgId: OrgId): Promise<StoredLocks | undefined> {
+export async function readCompanyLocks(deps: Pick<SetupLocksDeps, "store">, orgId: OrgId): Promise<StoredLocks | undefined> {
   if (!OrgIdSchema.safeParse(orgId).success) return undefined;
   const found = await deps.store.getLocks(orgId);
   return found?.orgId === orgId ? found : undefined;
@@ -450,8 +455,10 @@ export type SetLocksResult = { status: "applied"; locks: StoredLocks } | { statu
  * stored as a pending change, and a DIFFERENT admin with a fresh sign-in approves it with `approveLocksChange` (owner choice A, the safer default until the owner says otherwise: the 2026-10-31 rule that any
  * loosening of an approval setting needs a second person). Any applied change clears a pending one, and a new loosening proposal replaces it.
  */
-export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<SetLocksResult> {
+export async function setCompanyLocks(deps: SetupLocksDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<SetLocksResult> {
   await requireFreshAdmin(deps, caller);
+  // Only the locks something enforces can be set (coordinator, 2026-11-02): a lock nobody reads would only look like protection.
+  if (typeof input.locks === "object" && input.locks !== null && LOCKS_NOT_ENFORCED_YET.some((key) => (input.locks as Record<string, unknown>)[key] !== undefined)) throw invalid("That company lock is not available yet.");
   const parsed = CompanySetupLocksSchema.safeParse(input.locks);
   if (!parsed.success) throw invalid("Those company locks are not valid.");
   const current = await readCompanyLocks(deps, caller.orgId);
@@ -476,7 +483,7 @@ export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCalle
  * existing sole-owner exception (`decideSecondPersonApproval`): the proposer is the only eligible person and nobody eligible left or was removed in the last 24 hours, else SOLE_OWNER_COOL_OFF (with `availableAt`) or
  * SECOND_PERSON_REQUIRED. When the company has set `noSoleOwnerException`, the exception is not available at all. The audit entry says which way the rule was met.
  */
-export async function approveLocksChange(deps: SetupRecipeDeps, caller: RecipeCaller, input: { expectedRevision: number; expectedDigest: string }): Promise<StoredLocks> {
+export async function approveLocksChange(deps: SetupLocksDeps, caller: RecipeCaller, input: { expectedRevision: number; expectedDigest: string }): Promise<StoredLocks> {
   await requireFreshAdmin(deps, caller);
   const current = await readCompanyLocks(deps, caller.orgId);
   if (current?.pending === undefined) throw agentXError("CHANGE_STALE", "There is no company lock change waiting for approval.");

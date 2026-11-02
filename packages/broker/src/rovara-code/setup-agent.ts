@@ -66,6 +66,8 @@ export const SETUP_AGENT_WORKFLOW_MODE = "SETUP_AGENT" as const;
 
 // ---- the words a person is told (fixed: never a model's, a worker's or a repository's)
 
+/** A company admin turned setup runs off for the whole company (the `setupAgentOff` lock). */
+export const SETUP_AGENT_COMPANY_OFF = "A company admin has turned off setup runs for this company.";
 export const SETUP_AGENT_BUSY = "Rovara is already setting up this project.";
 export const SETUP_AGENT_FAILURES = {
   attempts_used: "Rovara used up its tries before the setup worked. It kept what it learned.",
@@ -165,6 +167,8 @@ export interface SetupAgentView {
    */
   verification?: Record<string, SetupVerification>;
   verified?: boolean;
+  /** True when a company admin has turned setup runs off (the `setupAgentOff` lock): the page says so and offers no start. */
+  companySetupOff?: true;
   /** F5: who pressed Stop (their name as the company knows it, "Unknown" when it cannot be read) and when, on a run a person stopped. The proposal such a run keeps is partial, unproven and never applied. */
   stoppedBy?: { name: string; at: string };
 }
@@ -449,7 +453,7 @@ export interface SetupAgentDependencies {
   requireNewWork(caller: DeveloperCaller, project: string, role: ProjectRole): Promise<void>;
   latest(orgId: OrgId, project: string): Promise<{ revision: number; definition: StoredProjectDefinition } | undefined>;
   /** The project's own setup-run limits and the company's lock, as stored (any shape: `effectiveSetupAgentLimits` reads them and never throws). */
-  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown }>;
+  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean }>;
   /** SH14: throws unless the caller has a fresh browser sign-in (within 10 minutes), as the test-environment approvals ask. Absent: a person's command is refused. */
   requireFreshSignIn?(caller: DeveloperCaller): Promise<void>;
   /** Who pays for a task this person starts in this project: `resolveRunPayer`'s answer for an app start. */
@@ -499,6 +503,7 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const starter = deps.starter;
   const settings = await deps.limitSettings(caller.orgId, name);
+  if (settings.setupOff === true) throw agentXError("FORBIDDEN", SETUP_AGENT_COMPANY_OFF);
   const limits = effectiveSetupAgentLimits(settings.project, settings.companyLock);
   const payer = await deps.payerFor(caller, name);
   // Whose money: the project's, or the member who asked. Never an agent's, a chain's, or another member's.
@@ -534,7 +539,8 @@ export async function getSetupAgent(deps: SetupAgentDependencies, caller: Develo
   const { name } = await maintainerOf(deps, caller, rawName);
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
-  return new StatusReply(200, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
+  const view = await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision));
+  return new StatusReply(200, (await deps.limitSettings(caller.orgId, name)).setupOff === true ? { ...view, companySetupOff: true } : view);
 }
 
 /**

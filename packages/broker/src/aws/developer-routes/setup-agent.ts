@@ -9,8 +9,13 @@ import { cancelTaskFor } from "../developer-tasks.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { latestRevision } from "../../org/project-settings.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
-import { getSetupAgent, readState, startSetupAgent, stopSetupAgent, type SetupAgentDependencies, type SetupAgentStarter } from "../../rovara-code/setup-agent.js";
+import { getSetupAgent, maintainerOf, readState, startSetupAgent, stopSetupAgent, type SetupAgentDependencies, type SetupAgentStarter } from "../../rovara-code/setup-agent.js";
 import { runSetupCommand } from "../../rovara-code/setup-command.js";
+import { approveCompanyLockSettings, getCompanyLocksView, getProjectLimits, limitSettingsOf, setCompanyLockSettings, setProjectLimits, type SetupLimitsDeps } from "../../rovara-code/setup-limits.js";
+import { dynamoSetupLocksStore } from "../../rovara-code/setup-locks-store.js";
+import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
+import { readSecondPersonApprovalEvidence } from "../../org/second-person-evidence.js";
+import type { SessionRecord } from "../../developer/store.js";
 import { confirmSetupAgent, type SetupConfirmDependencies } from "../../rovara-code/setup-confirm.js";
 import { listHostAsks } from "../../rovara-code/setup-host-ask.js";
 import { readSetupJournal } from "../../rovara-code/setup-journal.js";
@@ -19,12 +24,15 @@ import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencie
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
 import { requireFreshSignIn } from "./test-environment-wizard.js";
+import { getSignIn } from "./authentication.js";
 import { mergeDraftWithApproved, testEnvStoreOf } from "./test-environment.js";
 import { proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal|confirm))?$/u;
+export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal|confirm|limits))?$/u;
+/** The company's setup-run limits (a lock): read and set, and approve a loosening. `org` is a browser route family, so the app reaches it as `/v1/web/org/setup-agent/locks`. */
+export const COMPANY_LOCKS_PATH = /^\/v1\/app\/org\/setup-agent\/locks(?:\/(approve))?$/u;
 
 /**
  * The starter a setup run uses: the ordinary agent run start (so the person's role, the payer RULES, the allowed models, the budget floor and the run limit all apply as for any task) with the run's
@@ -49,6 +57,20 @@ export function setupAgentStarterOf(deps: DeveloperRouteDependencies): SetupAgen
   };
 }
 
+/** The stored limits' dependencies: the project's row, the company's locks row (SH29's decider with its DynamoDB store), the live-admin and session reads, and the second-person evidence. */
+export function setupLimitsDepsOf(deps: DeveloperRouteDependencies): SetupLimitsDeps {
+  const signInTableName = deps.developer.signInTableName;
+  const audit = deps.audit === undefined ? {} : { audit: deps.audit };
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, ...audit,
+    store: dynamoSetupLocksStore({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...audit }),
+    requireAdmin: (who) => requireLiveCompanyAdmin({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName }, who),
+    readSession: (sessionId) => getSignIn<Pick<SessionRecord, "authTime" | "developerId" | "revokedAt">>(deps, `SESSION#${sessionId}`),
+    approvalEvidence: (scope) => readSecondPersonApprovalEvidence({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName, now: deps.now }, scope),
+    now: () => new Date(deps.now()),
+  };
+}
+
 /** The setup routes' dependencies for this install (the `su` switch is read from the environment, as every switch is). */
 export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.ProcessEnv = process.env): SetupAgentDependencies {
   const starter = setupAgentStarterOf(deps);
@@ -60,8 +82,8 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
       const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
       return latest === undefined ? undefined : { revision: latest.definition.revision, definition: latest.definition };
     },
-    // The project's own limits and the company's lock have no stored setting yet (SH29 holds the lock; the project setting is a later screen): a run uses the defaults, which a lock could only lower.
-    limitSettings: async () => ({}),
+    // The project's own limits and the company's lock, as stored (setup-limits.ts): a run starts with the smaller of the two for each limit.
+    limitSettings: limitSettingsOf(setupLimitsDepsOf(deps)),
     requireFreshSignIn: async (who) => { await requireFreshSignIn(deps, who); },
     modelAccessConfigured: deps.modelAccess !== undefined,
     // F5: "stopped by <person>" shows the name the company knows.
@@ -80,7 +102,10 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
  */
 export async function routeSetupAgent(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | object | undefined> {
   const match = SETUP_AGENT_PATH.exec(url.pathname);
-  if (match === null || !setupAgentEnabled(env)) return undefined;
+  const company = COMPANY_LOCKS_PATH.exec(url.pathname);
+  if ((match === null && company === null) || !setupAgentEnabled(env)) return undefined;
+  if (company !== null) return routeCompanyLocks(setupLimitsDepsOf(deps), caller, request, company[1]);
+  if (match === null) return undefined;
   const setup = setupAgentDepsOf(deps, env);
   const name = match[1]!;
   const tail = match[2];
@@ -89,7 +114,19 @@ export async function routeSetupAgent(deps: DeveloperRouteDependencies, caller: 
   if (tail === "stop" && request.method === "POST") return stopSetupAgent(setup, caller, name, jsonBody(request));
   if (tail === "command" && request.method === "POST") return runSetupCommand(setup, caller, name, jsonBody(request));
   if (tail === "journal" && request.method === "GET") return readJournalRoute(setup, caller, name, url);
+  if (tail === "limits" && (request.method === "GET" || request.method === "PUT")) {
+    const found = await maintainerOf(setup, caller, name);
+    return request.method === "GET" ? getProjectLimits(setupLimitsDepsOf(deps), caller, found) : setProjectLimits(setupLimitsDepsOf(deps), caller, found, jsonBody(request));
+  }
   if (tail === "confirm" && request.method === "POST") return confirmSetupAgent(confirmDepsOf(deps, setup, caller, env), caller, name, jsonBody(request));
+  return undefined;
+}
+
+/** `GET|PUT /v1/app/org/setup-agent/locks` and `POST .../approve`: the company's setup locks (limits among them). Each checks for itself that the caller is a live company owner or admin, from a browser. */
+async function routeCompanyLocks(limits: SetupLimitsDeps, caller: DeveloperCaller, request: AdaptedHttpRequest, tail: string | undefined): Promise<StatusReply | undefined> {
+  if (tail === undefined && request.method === "GET") return getCompanyLocksView(limits, caller);
+  if (tail === undefined && request.method === "PUT") return setCompanyLockSettings(limits, caller, jsonBody(request));
+  if (tail === "approve" && request.method === "POST") return approveCompanyLockSettings(limits, caller, jsonBody(request));
   return undefined;
 }
 

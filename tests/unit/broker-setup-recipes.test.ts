@@ -349,14 +349,25 @@ describe("company locks", () => {
     expect(first).toMatchObject({ status: "applied", locks: { orgId: ORG, revision: 1, updatedBy: ADMIN, locks: { setupAgentOff: true } } });
     expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true }, expectedRevision: null }))).toBe("CHANGE_STALE");
     store.failNextCommit();
-    expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, nightlyHealthOn: true }, expectedRevision: 1 }))).toBe("CHANGE_STALE");
-    const second = await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, nightlyHealthOn: true }, expectedRevision: 1 });
+    expect(await code(setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 }))).toBe("CHANGE_STALE");
+    const second = await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 });
     expect(second).toMatchObject({ status: "applied", locks: { revision: 2 } });
-    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true, nightlyHealthOn: true });
+    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true, noSoleOwnerException: true });
     expect(await readCompanyLocks(deps, OTHER_ORG)).toBeUndefined();
     expect(store.audit.map((entry) => [entry.action, entry.loosened])).toEqual([["locks_changed", false], ["locks_changed", false]]);
     sessions.set("s-admin", { developerId: ADMIN });
     expect(await code(setCompanyLocks(deps, admin, { locks: {}, expectedRevision: 2 }))).toBe("REAUTH_REQUIRED");
+  });
+
+  it("refuses a lock nothing enforces yet ('not available yet'), whatever its value, and stores nothing", async () => {
+    const { deps, admin, store } = harness();
+    for (const locks of [{ hostsOnlyFromCompanyList: true }, { hostApprover: "admin" }, { nightlyHealthOn: true }, { setupAgentOff: true, nightlyHealthOn: true }]) {
+      let message = "";
+      try { await setCompanyLocks(deps, admin, { locks, expectedRevision: null }); } catch (error) { message = (error as Error).message; }
+      expect(message, JSON.stringify(locks)).toContain("That company lock is not available yet.");
+    }
+    expect(await readCompanyLocks(deps, ORG)).toBeUndefined();
+    expect(store.audit).toEqual([]);
   });
 
   it("refuses limits above the design's maximum, below one, unknown fields and values that loosen", async () => {
@@ -425,20 +436,22 @@ describe("sharing a confirmed project setup", () => {
 });
 
 describe("fix round 1: loosening a lock needs a second admin (owner choice A)", () => {
-  const strict: CompanySetupLocks = { setupAgentOff: true, limits: { commands: 20, spendUsd: 2 }, hostsOnlyFromCompanyList: true, devcontainerImages: ["a/b:1"], nightlyHealthOn: true, hostApprover: "admin" };
+  // What a company can set today (the locks something enforces), and every lock the schema reads (for the pure comparison).
+  const strict: CompanySetupLocks = { setupAgentOff: true, limits: { commands: 20, spendUsd: 2 }, devcontainerImages: ["a/b:1"] };
+  const strictAll: CompanySetupLocks = { ...strict, hostsOnlyFromCompanyList: true, nightlyHealthOn: true, hostApprover: "admin" };
 
-  it("tells a loosening from a stricter change, field by field", () => {
-    expect(isLoosening(undefined, strict)).toBe(false);
-    expect(isLoosening(strict, strict)).toBe(false);
-    expect(isLoosening(strict, {})).toBe(true);
+  it("tells a loosening from a strictAller change, field by field", () => {
+    expect(isLoosening(undefined, strictAll)).toBe(false);
+    expect(isLoosening(strictAll, strictAll)).toBe(false);
+    expect(isLoosening(strictAll, {})).toBe(true);
     const loosers: CompanySetupLocks[] = [
-      { ...strict, setupAgentOff: undefined }, { ...strict, hostsOnlyFromCompanyList: undefined }, { ...strict, nightlyHealthOn: undefined }, { ...strict, hostApprover: undefined },
-      { ...strict, limits: { commands: 21, spendUsd: 2 } }, { ...strict, limits: { spendUsd: 2 } }, { ...strict, limits: undefined },
-      { ...strict, devcontainerImages: ["a/b:1", "c/d:2"] }, { ...strict, devcontainerImages: undefined },
+      { ...strictAll, setupAgentOff: undefined }, { ...strictAll, hostsOnlyFromCompanyList: undefined }, { ...strictAll, nightlyHealthOn: undefined }, { ...strictAll, hostApprover: undefined },
+      { ...strictAll, limits: { commands: 21, spendUsd: 2 } }, { ...strictAll, limits: { spendUsd: 2 } }, { ...strictAll, limits: undefined },
+      { ...strictAll, devcontainerImages: ["a/b:1", "c/d:2"] }, { ...strictAll, devcontainerImages: undefined },
     ];
-    loosers.forEach((next, index) => expect(isLoosening(strict, next), String(index)).toBe(true));
-    const stricter: CompanySetupLocks[] = [{ ...strict, limits: { commands: 10, spendUsd: 2, hostAsks: 3 } }, { ...strict, devcontainerImages: [] }, { ...strict, devcontainerImages: ["a/b:1"] }];
-    stricter.forEach((next, index) => expect(isLoosening(strict, next), `s${String(index)}`).toBe(false));
+    loosers.forEach((next, index) => expect(isLoosening(strictAll, next), String(index)).toBe(true));
+    const strictAller: CompanySetupLocks[] = [{ ...strictAll, limits: { commands: 10, spendUsd: 2, hostAsks: 3 } }, { ...strictAll, devcontainerImages: [] }, { ...strictAll, devcontainerImages: ["a/b:1"] }];
+    strictAller.forEach((next, index) => expect(isLoosening(strictAll, next), `s${String(index)}`).toBe(false));
     expect(isLoosening({ devcontainerImages: [] }, { devcontainerImages: ["a/b:1"] })).toBe(true);
   });
 
@@ -621,7 +634,7 @@ describe("fix round 1: loosening a lock needs a second admin (owner choice A)", 
       const h = harness();
       Object.assign(h.evidence, SOLE, { lastEligibleLossAtMs: NOW.getTime() - 1000 });
       await setCompanyLocks(h.deps, h.admin, { locks: {}, expectedRevision: null });
-      expect((await setCompanyLocks(h.deps, h.admin, { locks: { nightlyHealthOn: true, noSoleOwnerException: true }, expectedRevision: 1 })).status).toBe("applied");
+      expect((await setCompanyLocks(h.deps, h.admin, { locks: { setupAgentOff: true, noSoleOwnerException: true }, expectedRevision: 1 })).status).toBe("applied");
     });
   });
 
