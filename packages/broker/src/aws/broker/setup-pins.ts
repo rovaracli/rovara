@@ -12,8 +12,8 @@ export const SETUP_PIN_UNREADABLE = "Rovara can't read the project's repositorie
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 /** The pins for the repositories a setup run's worker clones (the code repositories and, as a setup draft sends it, the meta repository too). */
-export async function setupPinsOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, orgId: OrgId): Promise<PreparePins> {
-  const repositories = workerProjectDefinition(project.definition, { includeMeta: true }).repositories;
+export async function setupPinsOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, orgId: OrgId, includeMeta = true): Promise<PreparePins> {
+  const repositories = workerProjectDefinition(project.definition, includeMeta ? { includeMeta: true } : {}).repositories;
   const pins: PreparePins = [];
   for (const repository of repositories) {
     const host = hostOfRepository(dependencies, repository);
@@ -29,4 +29,16 @@ export async function setupPinsOf(dependencies: AwsBrokerDependencies, project: 
   }
   if (pins.length === 0) throw agentXError("RUNTIME_UNAVAILABLE", SETUP_PIN_UNREADABLE);
   return pins;
+}
+
+export const SETUP_PIN_MOVED = "The project's default branch has moved since the setup run read it. Ask Rovara to run setup again.";
+
+/**
+ * SU-1 addendum 3: a candidate check of a setup run's proposal prepares at the commits the RUN used. They are sent as the pins (the worker refuses a branch that is anywhere else), after the broker has read the
+ * heads now and found each exactly there: a default branch that has moved is a re-run, never a check on a newer commit than the proposal was written for. `wanted` must name every code repository.
+ */
+export async function pinsStillAtHead(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, orgId: OrgId, wanted: PreparePins): Promise<PreparePins> {
+  const heads = await setupPinsOf(dependencies, project, orgId, false);
+  if (!heads.every((head) => wanted.find((pin) => pin.repository === head.repository)?.commit === head.commit)) throw agentXError("CHANGE_STALE", SETUP_PIN_MOVED);
+  return heads;
 }

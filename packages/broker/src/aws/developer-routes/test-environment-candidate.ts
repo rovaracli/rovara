@@ -3,6 +3,8 @@
 import { testEnvDigest, type AppProjectSummary, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
 import { setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
+import { proposalIsSetupRun } from "../../org/test-environment.js";
+import { checkedAtRunCommits, setupRunCommitsOf } from "../../test-env/setup-run-pin.js";
 import { candidateListsChecked, identicalCommands } from "../../test-env/candidate-commands.js";
 import { proveReportFromSetupCheck, type ProveFromSetupCheck } from "../../test-env/prove-from-setup-check.js";
 import { setupCheckDepsOf } from "./project-list.js";
@@ -31,6 +33,12 @@ export async function deriveCandidateProve(deps: DeveloperRouteDependencies, org
   // The check ran exactly the lists the settings would hold with this proposal's commands added: a record that says otherwise (damaged, or the proposal changed under its digest) proves nothing.
   const lists = candidateListsChecked(proposal, definition);
   if (!identicalCommands(lists.setup, check.setup) || !identicalCommands(lists.readiness, check.readiness)) return { ok: false, refusal: "commands_differ" };
+  // SU-1 addendum 3: a setup run's proposal is proved only by a check made at the commits the run used (or, with none recorded, at the broker-resolved pins the check kept): never on a newer main.
+  const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+  if (check.origin === "setup_run" || await proposalIsSetupRun(store, orgId, name, testEnvDigest(proposal))) {
+    const run = await setupRunCommitsOf(store, orgId, name, testEnvDigest(proposal), (check.pins ?? []).map((pin) => pin.repository));
+    if (!checkedAtRunCommits(check.pins, run)) return { ok: false, refusal: "setup_run_moved" };
+  }
   return { ...derived, candidate: check };
 }
 

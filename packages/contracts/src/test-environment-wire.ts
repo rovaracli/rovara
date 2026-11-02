@@ -79,7 +79,7 @@ export type TestEnvTaskPlan = z.infer<typeof TestEnvTaskPlanSchema>;
 // ---- the setup routes
 
 export const TEST_ENV_REFUSALS = [
-  "no_draft", "stale_draft", "no_proposal", "not_provable", "outdated", "checking", "failed", "no_setup_check", "commands_differ", "nothing_to_prove", "services_need_prove", "setup_check_old",
+  "no_draft", "stale_draft", "no_proposal", "not_provable", "outdated", "checking", "failed", "no_setup_check", "commands_differ", "nothing_to_prove", "services_need_prove", "setup_check_old", "setup_run_moved",
 ] as const;
 export type TestEnvRefusal = (typeof TEST_ENV_REFUSALS)[number];
 
