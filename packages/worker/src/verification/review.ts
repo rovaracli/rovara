@@ -32,7 +32,7 @@ import {
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewContext, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
@@ -731,7 +731,15 @@ export async function runWorkflowReviews(input: {
   onProgress?: (message: string) => void;
   /** Called once per reviewer session with what it loaded and left out, as references only (K1 C5a). */
   onLoadedKnowledge?: (manifest: LoadedKnowledgeManifest, role: "CRITIC" | "SECURITY") => void;
-  onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED" }) => Promise<void>;
+  onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED"; secondReviewTry?: number }) => Promise<void>;
+  /**
+   * SR-1: the second reviewer (another AI company's model), run CONCURRENTLY with the reviews above in this same operation, as an extra code review with its own model: a bounded loop of at most 3 tries in all (the same model
+   * once more, then the next candidate; a context-length rejection is no answer, never an unusable model). Its report is handed to `onSecondReview` only, never added to the reports returned here.
+   */
+  secondReviewer?: { candidates: ReadonlyArray<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }>; /** What the second reviewer sees besides the change and the plan: absent or `change_only` is nothing from connected sources; `same_as_first` is what the first reviewer has (owner decision, option C). */ context?: SecondReviewContext };
+  onSecondReview?: (result: SecondReviewResult) => void;
+  /** Internal: this call is one try of the second reviewer (its number, from 1). */
+  secondReviewTry?: number;
 }): Promise<Array<ReturnType<typeof WorkflowReviewReportSchema.parse>>> {
   assertFileToolsContained(input.fileTools === undefined ? {} : { fileTools: input.fileTools });
   const manifest = createCandidateManifest(input.candidate);
@@ -751,6 +759,38 @@ export async function runWorkflowReviews(input: {
   const classify = (finding: WorkflowReviewFinding) => reclassifyFinding(finding, changes);
   const repositories = withCandidateBase(input.repositories, manifest.repositories);
   const timeoutMs = input.timeoutMs ?? 5 * 60 * 1000;
+  // SR-1: the second reviewer (another AI company's model) runs CONCURRENTLY with the reviews below, started now that the diff is built, in a bounded loop: at most 3 tries in all (the same model once more, then
+  // the next candidate), and all of them together share ONE budget of one reviewer's time limit, so the review operation takes no longer than it did without it. It gets nothing from connected sources unless the company chose `same_as_first`
+  // (the default `change_only`: the diff, the approved plan and the checks; no source tools, lessons, step instructions or skills; the step's tool list still narrows its read-only tools, as for the first reviewer).
+  // Its own stop, linked to the operation's: when a first review throws (a base whose rule files cannot be verified ends the run) the second reviewer is stopped before the throw, so no model call outlives the run.
+  const secondStop = new AbortController();
+  const linkStop = () => secondStop.abort();
+  if (input.secondReviewer !== undefined) { if (input.signal?.aborted === true) secondStop.abort(); else input.signal?.addEventListener("abort", linkStop, { once: true }); }
+  const secondRun: Promise<{ result: SecondReviewResult; fatal?: unknown }> | undefined = input.secondReviewer === undefined || !roles.includes("CRITIC") ? undefined : (async () => {
+    const { secondReviewer, onSecondReview: _onSecond, reviewSpec: _spec, onSpecReview: _onSpec, reviewers: _reviewers, model: _model, piAdapter: _adapter, onUsage, sources, learnedBlock, promptSection, skills, ...rest } = input;
+    void _onSecond; void _spec; void _onSpec; void _reviewers; void _model; void _adapter;
+    const deadline = Date.now() + timeoutMs;
+    const tries: SecondReviewTry[] = [];
+    let last: (typeof reports)[number] | undefined;
+    const refs = secondReviewer!.candidates.map((candidate) => ({ provider: candidate.model.provider, modelId: candidate.model.modelId }));
+    for (let ref = nextSecondReviewModel(refs, tries); ref !== undefined && !secondStop.signal.aborted && deadline - Date.now() > 0; ref = nextSecondReviewModel(refs, tries)) {
+      const chosen = secondReviewer!.candidates.find((candidate) => secondReviewModelKey(candidate.model) === secondReviewModelKey(ref))!;
+      const number = tries.length + 1;
+      let report: (typeof reports)[number] | undefined;
+      try {
+        [report] = await runWorkflowReviews({ ...rest, ...(secondReviewer!.context === "same_as_first" ? { ...(sources === undefined ? {} : { sources }), ...(learnedBlock === undefined ? {} : { learnedBlock }), ...(promptSection === undefined ? {} : { promptSection }), ...(skills === undefined ? {} : { skills }) } : {}), model: chosen.model, ...(chosen.piAdapter === undefined ? {} : { piAdapter: chosen.piAdapter }),
+          reviewers: ["CRITIC"], secondReviewTry: number, signal: secondStop.signal, timeoutMs: Math.max(1, deadline - Date.now()),
+          ...(onUsage === undefined ? {} : { onUsage: (usage) => onUsage({ ...usage, secondReviewTry: number }) }) });
+      } catch (error) {
+        // A base whose rule files cannot be verified ends the whole run, as for the first review.
+        if (isRuleFilesUnverified(error)) return { result: { tries: tries.length }, fatal: error };
+        report = undefined;
+      }
+      tries.push({ model: ref, outcome: secondReviewTryOutcome(report) });
+      last = report ?? last;
+    }
+    return { result: { ...(last === undefined ? {} : { report: last }), tries: tries.length } };
+  })();
   let interrupted = input.signal?.aborted ?? false;
   for (const role of roles) {
     const recordedAt = (input.now ?? (() => new Date().toISOString()))();
@@ -883,7 +923,7 @@ export async function runWorkflowReviews(input: {
       usageOutcome = "SUCCEEDED";
     } catch (error) {
       // A base whose rule files cannot be verified ends the run; it is never reported as a review that could not start.
-      if (isRuleFilesUnverified(error)) throw error;
+      if (isRuleFilesUnverified(error)) { secondStop.abort(); input.signal?.removeEventListener("abort", linkStop); throw error; }
       const message = error instanceof Error ? error.message : "";
       const failureReason = interrupted || message.includes("interrupted") ? "INTERRUPTED"
         : message.includes("timed out") ? "TIMEOUT"
@@ -926,6 +966,13 @@ export async function runWorkflowReviews(input: {
       ...(partialDiff ? { partialDiff: true as const } : {}),
       recordedAt,
     }));
+  }
+  // SR-1: the second reviewer's outcome, awaited here (it has been running beside the reviews above since the diff was built). A failure here never changes the reports above.
+  if (secondRun !== undefined) {
+    const second = await secondRun;
+    input.signal?.removeEventListener("abort", linkStop);
+    if (second.fatal !== undefined) throw second.fatal instanceof Error ? second.fatal : new Error("the second review ended the run");
+    input.onSecondReview?.(second.result);
   }
   return reports;
 }

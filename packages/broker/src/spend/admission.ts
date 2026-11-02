@@ -199,7 +199,7 @@ export interface MintOperationKeyInput {
   /** What the key says about who pays and what ran; the key is reserved in the ledger when these and `scopes` are given. */
   tags?: MintTags | undefined;
   /** The model the key may call. Its alias scopes the key (`models`) and the model counter, and its source id is the tags' source. */
-  route?: { alias: string; sourceId?: string | undefined } | undefined;
+  route?: { alias: string; sourceId?: string | undefined; /** SR-1: the other aliases a second reviewer inside this operation may call (the key is scoped to the aliases the broker chose, no others). */ extraAliases?: readonly string[] | undefined } | undefined;
   /** The task's run limit, and where the run stops: the lower of the run limit and the agent's max per run. */
   runLimitUsd: number;
   stopAtUsd: number;
@@ -399,7 +399,7 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
     const { capUsd, levels } = await planCap(deps, input, scopes, names, month);
     const minted = await mintKeyHealing(deps, {
       orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: "task", refId: input.refId,
-      maxBudgetUsd: capUsd, ttlSeconds: input.ttlSeconds, ...(input.route === undefined ? {} : { models: [input.route.alias] }), ...(tags === undefined ? {} : { tags }),
+      maxBudgetUsd: capUsd, ttlSeconds: input.ttlSeconds, ...(input.route === undefined ? {} : { models: [input.route.alias, ...(input.route.extraAliases ?? [])] }), ...(tags === undefined ? {} : { tags }),
     });
     const keyId = keyIdOf(minted.key);
     if (ledger !== undefined && tags !== undefined) {

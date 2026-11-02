@@ -579,6 +579,26 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("sends the second reviewer only to a worker that lists task.workflowSecondReviewer.v1; an older worker is sent the review without the field and runs it as today (SR-1)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];
+      const workflowSecondReviewer = { candidates: [{ model: { provider: "openrouter", modelId: "openai/gpt-5.5" } }] };
+      const record = taskRecord({ workflowMode: "REVIEW", workflowBase, workflowSecondReviewer });
+      const base = ["task.workflowMode", "task.workflowReview", "task.workflowBase"];
+      const capable = delivery({ workerFeatures: async () => [...base, "task.workflowSecondReviewer.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowSecondReviewer).toEqual(workflowSecondReviewer);
+      const older = delivery({ workerFeatures: async () => base });
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("workflowSecondReviewer");
+      expect(postedPayload(older.post).workflowBase).toEqual(workflowBase);
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({ event: "dispatch.second_reviewer_omitted", reason: "worker-lacks-feature", operationId: record.operationId }));
+      // A review that asks for no second reviewer is delivered exactly as before to either.
+      const plain = taskRecord({ workflowMode: "REVIEW", workflowBase });
+      expect(postedPayload((await (async () => { const d = delivery({ workerFeatures: async () => base }); await d.deliver(plain, plain.invocation); return d; })()).post)).not.toHaveProperty("workflowSecondReviewer");
+      log.mockRestore();
+    });
+
     it("tells a planning run its document kind and structured format only on a worker that lists them; an older worker plans without them", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "PLAN", workflowPhase: "DESIGN", planFormat: "structured" });

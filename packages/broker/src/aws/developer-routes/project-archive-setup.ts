@@ -171,12 +171,13 @@ async function admitSetupCheck(deps: DeveloperRouteDependencies, caller: Develop
  * The workspace a new check replaces is closed (its machine and volume deleted, its slot given back) before the new one is admitted, so the new
  * check does not count the old. Best effort: a close that cannot land now is left to the sweep, which closes any check older than 50 minutes.
  */
-async function closeSupersededCheck(deps: DeveloperRouteDependencies, tasks: NonNullable<DeveloperRouteDependencies["tasks"]>, previous: { workspaceId: string; startedAt: string } | undefined): Promise<void> {
+export async function closeSupersededCheck(deps: DeveloperRouteDependencies, tasks: NonNullable<DeveloperRouteDependencies["tasks"]>, previous: { workspaceId: string; startedAt: string } | undefined, options: { stop?: boolean } = {}): Promise<void> {
   if (previous === undefined) return;
   const started = Date.parse(previous.startedAt);
   try {
     await closeSetupCheck(deps.documentClient, deps.tableName, previous.workspaceId, {
-      now: new Date(deps.now()), stalled: Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS, deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
+      // TE-4: `stop` ends a check that is still running because a newer save replaced it (a prepare not yet started is failed with its outbox record so nothing starts for it; a running one is failed and its machine deleted); otherwise only a finished or stalled one is closed.
+      now: new Date(deps.now()), stalled: Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS, ...(options.stop === true ? { stop: true } : {}), deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
     });
   } catch (error) {
     logDeveloperEvent({ event: "developer.setup_check_supersede_close_failed", workspaceId: previous.workspaceId, error: error instanceof Error ? error.name : "unknown" });
@@ -216,12 +217,12 @@ export async function startCandidateSetupCheck(deps: DeveloperRouteDependencies,
  */
 export async function startListsCandidateSetupCheck(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string,
-  input: { requestId: string; digest: string; lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }; expectedRevision: number },
+  input: { requestId: string; digest: string; lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | null | undefined }; expectedRevision: number },
 ): Promise<StatusReply> {
   return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, lists: input.lists, expectedRevision: input.expectedRevision });
 }
 
-type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }; expectedRevision: number });
+type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | null | undefined }; expectedRevision: number });
 
 async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: CandidateInput): Promise<StatusReply> {
   const { name, role } = await projectRoleForRoute(deps, caller, rawName);
@@ -252,7 +253,10 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     // TE-2: the preparation is sent the candidate lists in place of the settings' own; the revision stays the settings' revision.
     // TE-3: a setup draft's batch may also set the dev container: the commands are proved in the one they will run in.
     const devcontainer = candidate !== undefined && "lists" in candidate ? candidate.lists.devcontainer : undefined;
-    const prepared = lists === undefined ? project : { ...project, definition: { ...project.definition, setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined ? {} : { devcontainer }) } };
+    // TE-4: a `null` dev container is a change that removes it, so the check runs without one.
+    const withoutDevcontainer = { ...project.definition };
+    delete withoutDevcontainer.devcontainer;
+    const prepared = lists === undefined ? project : { ...project, definition: { ...(devcontainer === null ? withoutDevcontainer : project.definition), setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined || devcontainer === null ? {} : { devcontainer }) } };
     const preparation = await tasks.preparation(identity, prepared, requestId);
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,

@@ -312,8 +312,12 @@ export async function changeDeveloperProjectSettings(
 
 /** What `agentx project settings` prints: the new revision, then any warnings. */
 export function projectSettingsText(result: ProjectSettingsResponse): string {
-  const saved = `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n`;
-  return saved + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
+  // TE-4: commands and the dev container sent with an API key are held until their check passes; the reply says so.
+  const held = result.held === undefined ? "" : result.held.status === "checking"
+    ? `Held: the ${result.held.fields.join(", ")} change is being checked on a fresh machine and is not saved yet. It is written only if the check passes; run agentx project show to see.\n`
+    : `Not saved: the ${result.held.fields.join(", ")} change${result.held.reason === undefined ? "" : ` (${clean(result.held.reason)})`}. Nothing was changed for it.\n`;
+  const saved = result.held === undefined ? `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n` : `${clean(result.project.name)} is at revision ${String(result.project.latestRevision)}.\n`;
+  return saved + held + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 }
 
 /** What `agentx project archive` asks before it archives: what stops, and what keeps going. */

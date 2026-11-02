@@ -13,6 +13,7 @@ import { EVIDENCE_ERASE_PENDING_WARNING } from "../../packages/broker/src/aws/de
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { browserRequests } from "../support/browser-session.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -506,7 +507,9 @@ describe("a settings save on an archived project", () => {
     });
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", description: "Billing", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId });
-    const put = (body: Record<string, unknown>) => h.dev(OMAR, "PUT", "/v1/app/projects/payments/settings", { requestId: randomUUID(), expectedRevision: 1, ...body });
+    // TE-4: commands land at once only from a browser session.
+    const web = browserRequests(h);
+    const put = (body: Record<string, unknown>) => web(OMAR, "PUT", "/v1/app/projects/payments/settings", { requestId: randomUUID(), expectedRevision: 1, ...body });
     const revisions = () => h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(TEST_ORG, "payments", 1).pk);
 
     await archiveRoute(h, OMAR);

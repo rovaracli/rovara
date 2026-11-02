@@ -479,6 +479,20 @@ describe("mintOperationKey: reserving before the key is handed out", () => {
     expect(keyIdOf(key.key)).toBe(key.keyId);
   });
 
+  it("a review that carries a second reviewer may also call the aliases the broker chose for it, and no others (SR-1)", async () => {
+    const t = setup();
+    seedTask(t);
+    t.limitProject(10);
+    minted(await reserving(t, taskInput({ route: { alias: "claude-sonnet-4-6", sourceId: "src_aaaaaaaaaaaaaaaaaaaa", extraAliases: ["org-route-1"] } })));
+    expect(t.access.mintKey.mock.calls.at(-1)![0]).toMatchObject({ models: ["claude-sonnet-4-6", "org-route-1"] });
+    // Without extras the key is scoped to the review's own alias, exactly as before.
+    const plain = setup();
+    seedTask(plain);
+    plain.limitProject(10);
+    minted(await reserving(plain, taskInput({ route: { alias: "claude-sonnet-4-6", sourceId: "src_aaaaaaaaaaaaaaaaaaaa" } })));
+    expect(plain.access.mintKey.mock.calls.at(-1)![0].models).toEqual(["claude-sonnet-4-6"]);
+  });
+
   it("records the key on the task and the operation, in one write", async () => {
     const t = setup();
     seedTask(t);
