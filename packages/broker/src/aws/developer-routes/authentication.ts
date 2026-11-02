@@ -8,6 +8,7 @@ import {
   META,
   endedByAdmin,
   endedByUnlink,
+  samlSessionEnded,
   startedBeforeMethodOn,
   type DeveloperMarks,
   type DeveloperRecord,
@@ -60,7 +61,7 @@ export async function authenticateBearer(deps: DeveloperRouteDependencies, autho
 
 /** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
 async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
-  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
+  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "authTime" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
   if (session === undefined || session.developerId !== token.developerId || session.revokedAt !== undefined || session.endsAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
@@ -84,7 +85,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     } catch {
       validFrom = Number.MAX_SAFE_INTEGER;
     }
-    if (startedBeforeMethodOn(session.startedAt, validFrom)) throw agentXError("AUTH_REQUIRED", "your sign-in ended when SAML single sign-on was changed; sign in again");
+    if (samlSessionEnded(session, validFrom)) throw agentXError("AUTH_REQUIRED", "your sign-in ended when SAML single sign-on was changed; sign in again");
   }
   // Release 0.4.18: the name the person chose is an item in the State table, read with their sign-in record.
   const [developer, chosenName] = await Promise.all([

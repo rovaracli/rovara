@@ -110,6 +110,14 @@ export function startedBeforeMethodOn(startedAt: string, since: number | undefin
   const started = Date.parse(startedAt);
   return !Number.isFinite(started) || started < since * 1000;
 }
+/**
+ * Whether a SAML session is over because of the settings' cutoff (`sessionsValidFrom`, epoch seconds): it started before it, or the person authenticated at the provider before it.
+ * The second is what keeps an assertion made before a certificate rotation from starting a session after it: `authTime` is never later than the session's start. An unreadable time
+ * is over (fail closed), as in `startedBeforeMethodOn`; a session with no `authTime` is judged by its start.
+ */
+export function samlSessionEnded(session: { startedAt: string; authTime?: string | undefined }, validFrom: number): boolean {
+  return startedBeforeMethodOn(session.startedAt, validFrom) || (session.authTime !== undefined && startedBeforeMethodOn(session.authTime, validFrom));
+}
 /** E9: whether an admin ended this session: it started before the developer's `sessionsEndedAt`. Fails closed on an unreadable time. */
 export function endedByAdmin(startedAt: string, sessionsEndedAt: string | undefined): boolean {
   if (sessionsEndedAt === undefined) return false;

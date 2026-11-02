@@ -185,6 +185,15 @@ export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: 
         fromVersion: expectedVersion, toVersion: expectedVersion + 1, changed, ...(certificateSha256 === undefined ? {} : { certificateSha256 }),
       });
       const next = await stores.saml.config.put(orgId, { ...settings, sessionsValidFrom }, caller.developerId, expectedVersion, now, [event]);
+      // What a SAML sign-in granted ends with its sessions: the Slack allowances (they come from an email address, and only with trustEmail on). Best effort after the save; each allowance also ends
+      // with its own session at the latest.
+      if (endSessions) {
+        try {
+          await stores.slack.revokeGrantedBy(orgId, "saml");
+        } catch (error) {
+          deps.ownerNotice?.log({ event: "saml.slack_allowances_not_cleared", error: error instanceof Error ? error.name : "unknown" });
+        }
+      }
       await tellOwnersOfSamlChange(deps, orgId, caller, changed);
       return { settings: next, version: next.version, serviceProvider: addresses };
     }

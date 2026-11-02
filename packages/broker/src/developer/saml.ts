@@ -13,6 +13,7 @@
 import { createHash, timingSafeEqual, X509Certificate } from "node:crypto";
 import { SAML, ValidateInResponseTo, type CacheProvider } from "@node-saml/node-saml";
 // The library's own parser (xmldom, with its error handling), so the document these checks read is the document it verifies. A deep import: the package has no exports map.
+// RE-CHECK THIS IMPORT ON EVERY @node-saml/node-saml UPGRADE (the file, its export and its error handling can move; `saml-verify.test.ts` fails if the parser stops being used).
 import { parseDomFromString } from "@node-saml/node-saml/lib/xml.js";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {

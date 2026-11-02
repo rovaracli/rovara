@@ -112,3 +112,11 @@ Each fix has a test that failed first (about 45 of the new tests failed before a
 - **N7, N8** noted: the library settings stand; the missing tests are added.
 - Entity-id change stays refused (accounts are keyed on it); the cutoff also covers it if that ever changes.
 - Not done: UI/CLI for the settings, as before. No new package (lockfile and package.json unchanged in this round).
+
+## Fix round 2 (re-check of S3)
+- A SAML session is over when `min(startedAt, authTime)` is before `sessionsValidFrom` (`samlSessionEnded`, store.ts): at every broker request, at refresh, and when a code is redeemed. So an assertion made before a rotation and redeemed after it gives no session and no refresh. Test: both cases, with the cutoff between the assertion time and the redemption.
+- After a cutoff the SAML request asks the provider to authenticate again for 7 days (ForceAuthn), so a provider session older than the cutoff does not give an assertion the cutoff then refuses.
+- At the cutoff the Slack allowances that SAML sign-ins granted are cleared (the allowance now records its method; `revokeGrantedBy`); those from other methods stay. Best effort after the save; each allowance also ends with its session.
+- Install with no SES sender: owners get no change email, only the log line `saml.settings_notice_skipped` and the audit record `sso.saml_changed`.
+- The deep import `@node-saml/node-saml/lib/xml.js` must be re-checked on any node-saml upgrade (comment at the import).
+- Mutation checks: each of these rules fails a test when removed.

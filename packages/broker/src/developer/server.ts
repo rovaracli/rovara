@@ -66,7 +66,7 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SamlSignInProvider, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { endedByAdmin, endedByUnlink, isFreshSignIn, samlSessionEnded, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
 import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
@@ -789,7 +789,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
     if (companySignIn !== undefined) {
       if (!companySignIn.breakGlass && companySignIn.event !== undefined) await recordAuditRead(deps.audit === undefined ? {} : { audit: deps.audit }, companySignIn.event);
-      if (slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
+      if (slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt, method);
     }
     // The mapped role replaces the person's role at every sign-in (an owner is never changed by a mapping): leaving a group takes the access away at the next sign-in.
     if (companySignIn !== undefined && org.orgId !== undefined && org.role !== companySignIn.orgRole) {
@@ -951,6 +951,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
     // A code issued just before the person unlinked its identity must not start a session afterwards.
     if (redeemed.identityKey !== undefined && !await store.identityBelongsTo(redeemed.identityKey, redeemed.developerId)) return oauthError(400, ...SIGN_IN_ENDED);
+    // A SAML code made from an assertion that is older than the settings' cutoff (the certificate was rotated, or SAML turned off, after the person authenticated) starts no session.
+    if (redeemed.amr === "saml") {
+      let validFrom = Number.MAX_SAFE_INTEGER;
+      try {
+        validFrom = deps.saml === undefined ? validFrom : await deps.saml.sessionsValidFrom();
+      } catch (error) {
+        deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
+      }
+      if (samlSessionEnded({ startedAt: new Date(deps.now()).toISOString(), ...(redeemed.authTime === undefined ? {} : { authTime: redeemed.authTime }) }, validFrom)) {
+        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
+      }
+    }
     // The edition's sign-in cap (Enterprise foundations I1) rides on the code: the session ends then, and a refresh never moves it.
     const { sessionEndsAt, ...started } = redeemed;
     if (sessionEndsAt !== undefined && sessionEndsAt <= Math.floor(deps.now() / 1000)) return oauthError(400, ...SIGN_IN_ENDED);
@@ -995,7 +1007,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       } catch (error) {
         deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
       }
-      if (startedBeforeMethodOn(session.startedAt, validFrom)) {
+      if (samlSessionEnded(session, validFrom)) {
         await revoke(session.sessionId, "method_disabled");
         return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
       }

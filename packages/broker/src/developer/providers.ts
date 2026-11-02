@@ -365,6 +365,8 @@ const SAML_EMAIL_ATTRIBUTES = ["email", "mail", "emailAddress", "http://schemas.
 const SAML_NAME_ATTRIBUTES = ["displayName", "name", "cn", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name", "urn:oid:2.16.840.1.113730.3.1.241"] as const;
 const NAME_ID_EMAIL_FORMAT = /^urn:oasis:names:tc:SAML:(?:1\.1|2\.0):nameid-format:emailAddress$/;
 
+const SAML_REAUTHENTICATE_AFTER_CUTOFF_MS = 7 * 24 * 3600_000;
+
 export function samlSignInProvider(input: {
   sp: SamlServiceProvider;
   /** The install's single org: SAML settings, the replay record and the stash live in its partition. Absent (a wiring mistake): not configured. */
@@ -394,7 +396,9 @@ export function samlSignInProvider(input: {
     },
     async authorizeUrl({ state, nonce, freshSignIn }) {
       const { config } = await settings();
-      return samlAuthorizeUrl({ sp: input.sp, idp: idpOf(config), state, nonce, ...(freshSignIn === true ? { freshSignIn } : {}) });
+      // For a week after the settings' cutoff the person is asked to authenticate again: a provider session older than the cutoff would give an assertion the cutoff then refuses.
+      const afterCutoff = config.sessionsValidFrom > 0 && input.now() - config.sessionsValidFrom * 1000 < SAML_REAUTHENTICATE_AFTER_CUTOFF_MS;
+      return samlAuthorizeUrl({ sp: input.sp, idp: idpOf(config), state, nonce, ...(freshSignIn === true || afterCutoff ? { freshSignIn: true } : {}) });
     },
     async sessionsValidFrom() {
       // Fail closed: settings that cannot be read end every SAML session, and so does an install with no org to read them from.

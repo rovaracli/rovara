@@ -335,3 +335,43 @@ describe("the settings are for the install's own organization (review N4)", () =
     expect(h.db.get(`ORG#${TEST_ORG}`, "SSO_SAML_IDP")).toBeUndefined();
   });
 });
+
+describe("the cutoff also clears what a SAML sign-in granted, and holds for the authentication time (re-check S3)", () => {
+  it("clears the Slack allowances SAML sign-ins granted when SAML is turned off or the certificate changes, and keeps the others", async () => {
+    const { web, sso } = await world();
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    await web(OMAR, "PUT", SAML, save(0));
+    await sso.slack.record(TEST_ORG, "U0SAML0001", "1".repeat(64), future, "saml");
+    await sso.slack.record(TEST_ORG, "U0OIDC0001", "2".repeat(64), future, "oidc");
+    // A change that does not end sessions leaves them.
+    await web(OMAR, "PUT", SAML, save(1, { ssoUrl: "https://idp.example.test/another", trustEmail: true }));
+    expect(await sso.slack.allowedDeveloper(TEST_ORG, "U0SAML0001", Date.now())).toBe("1".repeat(64));
+    // Rotation clears the SAML ones only.
+    await web(OMAR, "PUT", SAML, save(2, { ssoUrl: "https://idp.example.test/another", certificate: makeIdpKey().certificate }));
+    expect(await sso.slack.allowedDeveloper(TEST_ORG, "U0SAML0001", Date.now())).toBeUndefined();
+    expect(await sso.slack.allowedDeveloper(TEST_ORG, "U0OIDC0001", Date.now())).toBe("2".repeat(64));
+    // Turning SAML off does the same.
+    await sso.slack.record(TEST_ORG, "U0SAML0002", "3".repeat(64), future, "saml");
+    const saved = (await web(OMAR, "GET", SAML)).body.settings as { certificate: string };
+    await web(OMAR, "PUT", SAML, save(3, { ssoUrl: "https://idp.example.test/another", certificate: saved.certificate, enabled: false }));
+    expect(await sso.slack.allowedDeveloper(TEST_ORG, "U0SAML0002", Date.now())).toBeUndefined();
+    expect(await sso.slack.allowedDeveloper(TEST_ORG, "U0OIDC0001", Date.now())).toBe("2".repeat(64));
+  });
+
+  it("a SAML session whose authentication time is before the cutoff is refused at every request, though it started after it", async () => {
+    const { web, h, rawDev, sso } = await world();
+    await web(OMAR, "PUT", SAML, save(0));
+    const now = Date.now();
+    const cutoff = Math.floor(now / 1000) - 3600;
+    const config = (await sso.saml.config.get(TEST_ORG))!;
+    const { version, updatedAt: _at, updatedBy: _by, ...settings } = config;
+    void _at; void _by;
+    await sso.saml.config.put(TEST_ORG, { ...settings, sessionsValidFrom: cutoff }, OMAR.developerId, version, now);
+    const samlSession = (id: string, authTime: string) => h.db.set({ ...h.db.get(`SESSION#${MAYA.sessionId}`, "META")!, pk: `SESSION#${id}`, sessionId: id, amr: "saml", startedAt: new Date(now - 60_000).toISOString(), authTime });
+    const asSaml = (id: string) => rawDev({ ...MAYA, provider: "saml" as never, sessionId: id }, "GET", SAML);
+    samlSession("s-old-auth", new Date(now - 2 * 3600_000).toISOString());
+    expect((await asSaml("s-old-auth")).status).toBe(401);
+    samlSession("s-new-auth", new Date(now - 1800_000).toISOString());
+    expect((await asSaml("s-new-auth")).status).toBe(200);
+  });
+});

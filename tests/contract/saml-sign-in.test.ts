@@ -439,3 +439,65 @@ describe("freshness and the provider's session end (review N1, N2)", () => {
     expect(session.endsAt).toBeLessThanOrEqual(Math.floor((T0 + 600_000) / 1000));
   });
 });
+
+describe("the cutoff holds for the time the person authenticated, not only for when the session started (re-check S3)", () => {
+  const settingsOf = async (h: World) => {
+    const config = (await h.deps.sso!.saml.config.get(TEST_ORG))!;
+    const { version, updatedAt: _at, updatedBy: _by, ...settings } = config;
+    void _at; void _by;
+    return { settings, version };
+  };
+
+  it("an assertion made before a rotation, redeemed after it, gives no session and no refresh", async () => {
+    const { h } = await world();
+    const { request } = await start(h);
+    const body = makeResponse({ key, now: T0, inResponseTo: request!.id, subjectInResponseTo: request!.id });
+    const posted = await post(h, body, request!.relayState);
+    const back = await h.http(httpEvent("GET", posted.headers.location!.replace(ISSUER, "/v1/auth")));
+    const code = new URL(back.headers.location!).searchParams.get("code")!;
+    expect(code).not.toBeNull();
+    // The certificate is rotated after the assertion (made at T0 - 5 s) and before the code is redeemed: the cutoff falls between the two.
+    const { settings, version } = await settingsOf(h);
+    await h.deps.sso!.saml.config.put(TEST_ORG, { ...settings, sessionsValidFrom: Math.floor(T0 / 1000) - 2 }, BY, version, T0);
+    h.tick(1000);
+    const redeemed = await h.exchange(code);
+    expect(redeemed.status).toBe(400);
+    expect(redeemed.body).toMatchObject({ error: "invalid_grant" });
+    expect(redeemed.body.refresh_token).toBeUndefined();
+    expect(h.db.find((item) => String(item.pk).startsWith("SESSION#") && item.developerId === una)).toEqual([]);
+  });
+
+  it("a session whose assertion was made before the cutoff gets no refresh, even though the session itself started after it", async () => {
+    const { h } = await world();
+    const first = await signIn(h);
+    expect(first.tokens).toBeDefined();
+    const { settings, version } = await settingsOf(h);
+    await h.deps.sso!.saml.config.put(TEST_ORG, { ...settings, sessionsValidFrom: Math.floor(T0 / 1000) - 2 }, BY, version, T0);
+    const sid = String(decodeJwt(String(first.tokens!.access_token)).sid);
+    const session = (await h.deps.store.getSession(sid))!;
+    expect(Date.parse(session.startedAt)).toBeGreaterThanOrEqual((Math.floor(T0 / 1000) - 2) * 1000);
+    const refused = await h.http(httpEvent("POST", "/v1/auth/token", { grant_type: "refresh_token", client_id: "agentx-cli", refresh_token: String(first.tokens!.refresh_token) }));
+    expect(refused.statusCode).toBe(400);
+    expect((await h.deps.store.getSession(sid))?.revokedAt).toBeDefined();
+  });
+
+  it("asks the provider to authenticate again for a while after a cutoff, so a reused provider session is not refused later", async () => {
+    const { h } = await world();
+    expect((await start(h)).request!.forceAuthn).toBe(false);
+    const { settings, version } = await settingsOf(h);
+    await h.deps.sso!.saml.config.put(TEST_ORG, { ...settings, sessionsValidFrom: Math.floor(T0 / 1000) - 60 }, BY, version, T0);
+    expect((await start(h)).request!.forceAuthn).toBe(true);
+    // Long after the cutoff it is no longer forced.
+    h.tick(8 * 24 * 3600_000);
+    vi.setSystemTime(T0 + 8 * 24 * 3600_000);
+    expect((await start(h)).request!.forceAuthn).toBe(false);
+  });
+
+  it("records which method granted a Slack allowance", async () => {
+    const { h } = await world({ trustEmail: true });
+    vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" });
+    expect(roleOf((await signIn(h)).tokens)).toBe("member");
+    expect(await h.deps.sso!.slack.allowedDeveloper(TEST_ORG, "U0UNA0001", T0)).toBe(una);
+    expect(h.state.get(`ORG#${TEST_ORG.replace(/^org_/, "")}`, "SSO_SLACK#U0UNA0001") ?? h.state.find((item) => item.sk === "SSO_SLACK#U0UNA0001")[0]).toMatchObject({ method: "saml" });
+  });
+});
