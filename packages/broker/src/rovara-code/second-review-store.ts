@@ -4,7 +4,7 @@
 import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
-import { SECOND_REVIEW_OPERATION, mergeWaitsForSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
+import { mergeWaitsForSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
 
 type RunPlan = Extract<SecondReviewPlan, { run: true }>;
 
@@ -60,7 +60,7 @@ export function secondOpinionFromReviewResult(input: SecondOpinionFromResultInpu
   if (recorded.notRun !== undefined) return store(secondOpinionUnavailable({ mode: recorded.notRun.mode, choice: recorded.notRun.choice }, recorded.notRun.reason));
   const planned = recorded.plan;
   if (planned === undefined) return undefined;
-  const plan = { run: true as const, ...planned, skipped: [], operation: SECOND_REVIEW_OPERATION } as RunPlan;
+  const plan = { run: true as const, ...planned, skipped: [] } as RunPlan;
   const reported = input.result !== null && typeof input.result === "object" ? (input.result as Record<string, unknown>) : {};
   if (input.terminalStatus !== "SUCCEEDED") return store(secondOpinionUnavailable(plan, "no-answer"));
   // A succeeded review whose result has no second-review key came from a worker that did not run it (the field is dropped for an older worker at delivery).

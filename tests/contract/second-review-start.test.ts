@@ -18,6 +18,7 @@ import { secondOpinionFromReviewResult, secondReviewMergeWait, secondReviewTaskV
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
 import { orgMetaKey, TaskUsageTelemetrySchema, createTaskUsageTelemetry } from "@agentx/contracts";
 import { reviewUsageArtifactName } from "../../packages/worker/src/usage.js";
 import { acceptSecondReport } from "../../packages/broker/src/rovara-code/second-review.js";
@@ -636,4 +637,13 @@ describe("H2: the merge waits for the owner's acknowledgement", () => {
     delete process.env.SECOND_REVIEW_ENABLED;
     expect(secondReviewMergeWait(task())).toBeUndefined();
   });
+});
+
+describe("L1: the model that is named is the model that answers (no router fallbacks)", () => {
+  it("Rovara's own proxy config writes no router fallbacks, so a failing second-review alias is never answered by another model", () => {
+    const config = litellmConfig({ region: "us-east-1", models: [{ id: "us.anthropic.claude-sonnet-4-6" }] });
+    expect(config).not.toMatch(/fallbacks|router_settings/u);
+    expect(config).toContain("model_list:");
+  });
+  // DEFERRED CHECK (SR-1 L1): the broker cannot read a company source's router config at mint time, so for company sources "no router fallbacks on the alias" is checked by hand at setup (listed in the report).
 });

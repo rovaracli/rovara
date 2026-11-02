@@ -7,7 +7,7 @@
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
 import {
-  SECOND_REVIEW_CANDIDATES_MAX, SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds,
+  SECOND_REVIEW_CANDIDATES_MAX, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds,
   type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type SecondReviewMode, type SecondReviewModelRef,
   type SecondReviewReplayRun, type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
@@ -48,9 +48,6 @@ export interface SecondReviewPlanInput {
   replayRuns: readonly SecondReviewReplayRun[];
 }
 
-/** What the operation that runs the second review must be started with: its tag (every review lookup leaves it out) and the proxy's model fallback OFF (the model that answers must be the planned one). */
-export const SECOND_REVIEW_OPERATION = { tag: SECOND_REVIEW_OPERATION_TAG, modelFallback: "off" } as const;
-
 /** Why a model the company named was not used (fixed words). */
 export type SecondReviewSkippedWhy = "not-routable" | "not-allowed" | "same-company" | "company-unknown";
 export interface SecondReviewSkipped { model: SecondReviewModelRef; why: SecondReviewSkippedWhy }
@@ -63,7 +60,7 @@ export type SecondReviewPlan =
     model: ModelSelection;
     /** The models to try, in order (at most `SECOND_REVIEW_CANDIDATES_MAX`; the worker makes at most 3 tries in all). `model` is the first. In `on`, only models whose evidence holds, so a later try never turns a blocking review into a silent one. */
     candidates: readonly ModelSelection[];
-    company: Exclude<ModelCompany, "other">; downgraded?: "replay-not-passed"; against: readonly ModelIdentifier[]; operation: typeof SECOND_REVIEW_OPERATION;
+    company: Exclude<ModelCompany, "other">; downgraded?: "replay-not-passed"; against: readonly ModelIdentifier[];
     /** Why this list: the company named it, or it is the default (the top suggestion). */
     choice: SecondReviewChoice;
     /** Default only: the earlier default no longer qualifies, so the task says "Using default: <new> (previous no longer fits)". */
@@ -119,7 +116,7 @@ export function planSecondReview(input: SecondReviewPlanInput): SecondReviewPlan
     if (input.previousDefault !== undefined && !tested.some((model) => secondReviewModelKey(model) === secondReviewModelKey(input.previousDefault!))) defaultChanged = true;
   }
   const company = (model: ModelIdentifier): Exclude<ModelCompany, "other"> => modelCompany(model) as Exclude<ModelCompany, "other">;
-  const common = { against: [...input.against], operation: SECOND_REVIEW_OPERATION, choice, skipped, ...(defaultChanged ? { defaultChanged: true as const } : {}) };
+  const common = { against: [...input.against], choice, skipped, ...(defaultChanged ? { defaultChanged: true as const } : {}) };
   const listOf = (models: readonly ModelIdentifier[]): ModelSelection[] => models.slice(0, SECOND_REVIEW_CANDIDATES_MAX).map(selectionOf);
   if (input.mode === "on") {
     const proven = tested.filter((model) => verified(input, model));

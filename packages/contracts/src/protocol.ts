@@ -226,7 +226,7 @@ export const ModelRouteSchema = z.object({
 export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
 /**
  * SR-1: the second reviewer of a REVIEW operation: the models it may try, in order (each with the proxy route the broker chose for it, so it is called the way the broker checked), at most two names
- * (`SECOND_REVIEW_CANDIDATES_MAX`; the worker makes at most 3 tries in all). The model proxy's own fallback is OFF for these calls: the model named is the model that answers.
+ * (`SECOND_REVIEW_CANDIDATES_MAX`; the worker makes at most 3 tries in all). The key may call only the aliases the broker chose for these models and no others, and the proxy is configured with no router fallbacks (`litellmConfig` writes none and the guard refuses fallback fields in a request; checked by a test for Rovara's own config, and a deferred check for company sources), so the model named is the model that answers.
  */
 export const SecondReviewerSchema = z.object({
   candidates: z.array(z.object({ model: ModelSelectionSchema, modelRoute: ModelRouteSchema.optional() }).strict()).min(1).max(SECOND_REVIEW_CANDIDATES_MAX),

@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { companyChoiceUpdate, companyContextUpdate, secondReviewProjectKey } from "../../packages/broker/src/org/second-review-settings.js";
 
 afterEach(() => { delete process.env.SECOND_REVIEW_ENABLED; });
 const PATH = "/v1/app/org/second-review";
@@ -200,5 +203,31 @@ describe("a project's maintainer", () => {
     expect((await t.web(MAYA, "POST", PATH, { action: "narrow", project: NAME, models: [models[0]] })).status).toBe(200);
     expect((await t.web(MAYA, "POST", PATH, { action: "choose", primary: models[0] })).status).toBe(403);
     expect((await t.web(MAYA, "POST", PATH, { action: "context", context: "same_as_first" })).status).toBe(403);
+  });
+});
+
+describe("settings are written field by field (L5, L6)", () => {
+  const table = { documentClient: undefined as never, tableName: "state" };
+  it("a choice update names only models and a context update only context, so neither can overwrite the other", async () => {
+    const choice = companyChoiceUpdate(table, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", models: [{ provider: "p", modelId: "m" }], by: "d", at: 1 }).Update;
+    const context = companyContextUpdate(table, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", context: "same_as_first", by: "d", at: 2 }).Update;
+    expect(choice.UpdateExpression).toBe("SET #f = :v, #t = :t, #b = :b, #e = :e");
+    expect(choice.ExpressionAttributeNames["#f"]).toBe("models");
+    expect(context.ExpressionAttributeNames["#f"]).toBe("context");
+    // Applied in either order against the same item, both stay.
+    const db = new FakeDynamoDb();
+    for (const update of [context, choice]) await db.send(new UpdateCommand(update as never));
+    const item = db.get(choice.Key.pk, choice.Key.sk) as Record<string, unknown>;
+    expect(item).toMatchObject({ models: [{ provider: "p", modelId: "m" }], context: "same_as_first" });
+    // Clearing removes only models.
+    await db.send(new UpdateCommand(companyChoiceUpdate(table, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", models: undefined, by: "d", at: 3 }).Update as never));
+    const after = db.get(choice.Key.pk, choice.Key.sk) as Record<string, unknown>;
+    expect(after.models).toBeUndefined();
+    expect(after.context).toBe("same_as_first");
+  });
+
+  it("two project names never share a key (the '#' is refused, not turned into '_')", () => {
+    expect(secondReviewProjectKey("org_a", "a_b").sk).not.toBe(secondReviewProjectKey("org_a", "ab").sk);
+    expect(() => secondReviewProjectKey("org_a", "a#b")).toThrow();
   });
 });

@@ -2,6 +2,7 @@
 // Owner only (the task's effective owner, as every owner decision), from a live browser session only (the entry file refuses a token before this, and so does this), audited in the same transaction as the write.
 // The acknowledgement is one key per candidate and reason (`secondReviewAcknowledgement`): a new candidate asks again. Rovara opens pull requests as drafts and never marks them ready, so the gate is the merge
 // card (`secondReviewMergeWait` in rovara-code/merge.ts), which refuses a Merge until this is done.
+import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { agentXError, auditEventId, type AuditEventInput } from "@agentx/contracts";
@@ -41,7 +42,7 @@ export async function acknowledgeSecondReview(deps: DeveloperTaskRouteDependenci
   if (ledger === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This needs the audit ledger.");
   const now = iso(deps);
   const event: AuditEventInput = {
-    eventId: auditEventId("task.second_review_acknowledged", taskId, now, caller.developerId), orgId: caller.orgId, action: "task.second_review_acknowledged", actor: { kind: "member", id: caller.developerId },
+    eventId: auditEventId("task.second_review_acknowledged", taskId, now, caller.developerId, randomUUID()), orgId: caller.orgId, action: "task.second_review_acknowledged", actor: { kind: "member", id: caller.developerId },
     target: { kind: "task", id: taskId }, occurredAt: now, facts: { reason: opinion?.unavailableReason ?? "no-answer" },
   };
   const put = auditPending({ audit: ledger }, event)[0]?.Put;

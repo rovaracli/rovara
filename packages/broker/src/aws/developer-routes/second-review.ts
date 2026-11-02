@@ -8,6 +8,7 @@
 //           { action: "clear" }                            an owner or admin. Nobody has chosen: the default stands again.
 //           { action: "narrow", project, models | null }   an owner, admin or the project's maintainer. A subset of the company's choice, never wider (anything outside it is refused).
 // The mode (off, shadow, on) and the evidence that lets a model block are not set here; this route changes which model reviews, never whether it blocks.
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { SecondReviewContextSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewModelRef } from "@agentx/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
@@ -108,7 +109,7 @@ export async function routeSecondReview(deps: DeveloperRouteDependencies, caller
    */
   const commit = async (change: SettingsUpdate, event: Omit<AuditEventInput, "eventId" | "orgId" | "actor" | "occurredAt">): Promise<void> => {
     const when = new Date(at).toISOString();
-    const full: AuditEventInput = { ...event, eventId: auditEventId(event.action, caller.orgId, when, caller.developerId), orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: when } as AuditEventInput;
+    const full: AuditEventInput = { ...event, eventId: auditEventId(event.action, caller.orgId, when, caller.developerId, randomUUID()), orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: when } as AuditEventInput;
     const put = auditPending(auditDeps, full)[0]?.Put;
     if (put === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change, { Put: put }] }));
