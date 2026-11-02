@@ -43,6 +43,8 @@ Enterprise: Names that appear in IAM trust and resource policies. Nothing connec
 
 - Service principals named in IAM trust and resource policies and in the CDK stacks.
   `apigateway.amazonaws.com`, `cloudformation.amazonaws.com`, `codebuild.amazonaws.com`, `delivery.logs.amazonaws.com`, `ec2.amazonaws.com`, `ecs-tasks.amazonaws.com`, `ecs.amazonaws.com`, `elasticloadbalancing.amazonaws.com`, `email.cognito-idp.amazonaws.com`, `events.amazonaws.com`, `indexing.s3vectors.amazonaws.com`, `lambda.amazonaws.com`, `maintenance.s3tables.amazonaws.com`, `rds.amazonaws.com`, `route53resolver.amazonaws.com`, `s3.amazonaws.com`, `s3tables.amazonaws.com`, `s3vectors.amazonaws.com`, `scheduler.amazonaws.com`, `states.amazonaws.com`, `vpc-flow-logs.amazonaws.com`
+- The CodeArtifact service name in the sts:AWSServiceName condition that scopes the broker role's registry token policy (a policy value, not a call). (only in `infra/lib/registry-access.ts`)
+  `codeartifact.amazonaws.com`
 
 ## AWS endpoints and the AWS domain suffix
 
@@ -110,3 +112,5 @@ Enterprise: Names that cannot resolve (.invalid, .test, example domains) or that
 
 - Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.
   `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `mock.invalid`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `registry.corp.example.net`, `rovara.invalid`
+- XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched. (only in `packages/broker/src/developer/saml.ts`, `packages/broker/src/developer/providers.ts`)
+  `schemas.xmlsoap.org`, `www.w3.org`
