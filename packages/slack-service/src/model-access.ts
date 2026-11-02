@@ -1,7 +1,7 @@
 // A Slack turn's model access (Task 13): the proxy's address and a key minted for this turn alone, from the control plane's
 // POST /v1/service/model-access. The orchestrator holds no provider secret; the key stays in memory until shortly before it
 // expires, is asked for once at a time, and is never logged.
-import { ModelRouteSchema, agentXError, safeRefusalWords, type InvocationModelRoute } from "@agentx/contracts";
+import { ModelIdentifierSchema, ModelRouteSchema, agentXError, safeRefusalWords, type InvocationModelRoute } from "@agentx/contracts";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const TURN_ACCESS_MARGIN_MS = 60_000;
@@ -13,6 +13,11 @@ export interface TurnModelAccess {
   expiresAt: number;
   /** Task 26: the model the broker chose for the turn, when the org routes it to a company source. Absent, the turn runs its configured model. */
   route?: InvocationModelRoute;
+  /**
+   * RP-4: what the control plane says of the gate classifier's and router's model when the company forbids the one the service is configured with. A model: use it instead (it is on Rovara's catalog and
+   * on the turn's key). `null`: none is allowed, so there is no classifier this turn. Absent: the configured model stands.
+   */
+  classifierModel?: { provider: string; modelId: string } | null;
 }
 
 export interface TurnModelAccessInput {
@@ -37,13 +42,14 @@ function parseTurnModelAccess(body: unknown): TurnModelAccess {
   const value = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
   const { baseUrl, apiKey, expiresAt } = value;
   const route = value.route === undefined ? undefined : ModelRouteSchema.safeParse(value.route);
+  const classifier = value.classifierModel === undefined || value.classifierModel === null ? undefined : ModelIdentifierSchema.safeParse(value.classifierModel);
   let origin: URL | undefined;
   try { origin = typeof baseUrl === "string" ? new URL(baseUrl) : undefined; } catch { origin = undefined; }
   if (origin === undefined || !/^https?:$/u.test(origin.protocol) || typeof apiKey !== "string" || !KEY_PATTERN.test(apiKey)
-    || typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || route?.success === false) {
+    || typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || route?.success === false || classifier?.success === false) {
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the control plane answered the model access request with something unexpected");
   }
-  return { baseUrl: baseUrl as string, apiKey, expiresAt, ...(route?.success ? { route: route.data } : {}) };
+  return { baseUrl: baseUrl as string, apiKey, expiresAt, ...(route?.success ? { route: route.data } : {}), ...(value.classifierModel === null ? { classifierModel: null } : classifier?.success ? { classifierModel: classifier.data } : {}) };
 }
 
 /** The turn's current model access, fetched when there is none or it is about to expire; concurrent callers share one fetch. */
