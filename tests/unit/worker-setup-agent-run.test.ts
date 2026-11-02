@@ -237,6 +237,48 @@ describe("hosts_waiting: the run parks while a website waits for an administrato
     expect(t.w.prompts).toHaveLength(2);
   });
 
+  it("the 24 hours are the whole run's wait: two waits of 20 hours end it at 24 hours in all, and a run that used them up does not park again", async () => {
+    // Wait one: 20 hours, answered "approved" for a.acme.dev. Wait two: b.acme.dev stays open, and 4 hours more end the run.
+    const clock = { now: Date.parse("2026-11-02T10:00:00.000Z") };
+    let n = 0;
+    const t = await world({
+      script: async (parts) => { if (parts.n === 1) await parts.bash.exec("npm ci", "/work", { onData: () => undefined }); },
+      blocked: ["a.acme.dev", "b.acme.dev"], hostOutcome: "created",
+      poll: () => {
+        n += 1;
+        if (n === 3) clock.now += 20 * HOUR;
+        if (n === 8) clock.now += 4 * HOUR + 1000;
+        return { hosts: [{ host: "a.acme.dev", state: n < 4 ? "open" : "approved" }, { host: "b.acme.dev", state: "open" }] };
+      },
+    });
+    t.input.ports.now = () => clock.now;
+    const result = await runSetupAgent(t.input);
+    expect(result.setupRunSummary).toMatchObject({ stop: "hosts_waiting", partial: true });
+    expect(t.w.prompts).toHaveLength(2);
+  });
+
+  it("a run whose total wait is already used up ends hosts_waiting instead of parking again", async () => {
+    const { SetupAgentGovernor } = await import("../../packages/worker/src/setup-agent-journal.js");
+    const clock = { now: 0 };
+    const governor = new SetupAgentGovernor({ limits: SETUP_AGENT_LIMITS_DEFAULT, now: () => clock.now, spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+    governor.parkOnHosts();
+    clock.now += 20 * HOUR;
+    governor.resumeFromHosts();
+    governor.parkOnHosts();
+    clock.now += 4 * HOUR - 1;
+    expect(governor.check()).toBeUndefined();
+    clock.now += 1;
+    expect(governor.check()).toBe("hosts_waiting");
+    const spent = new SetupAgentGovernor({ limits: SETUP_AGENT_LIMITS_DEFAULT, now: () => clock.now, spendCents: () => 0, nextTurnCents: () => 0, setTimer: () => ({ cancel: () => undefined }) });
+    spent.parkOnHosts();
+    clock.now += 24 * HOUR;
+    spent.resumeFromHosts();
+    spent.parkOnHosts();
+    expect(spent.ended()).toBe("hosts_waiting");
+    // The wall clock does not count the parked time.
+    expect(spent.elapsedMs()).toBe(0);
+  });
+
   it("a person's Stop ends the wait at once and the run finishes as a stopped run (bounded), without another model call", async () => {
     const t = await parked((n, w) => { if (n === 3) void w.control!.abort(); return { hosts: open }; });
     const result = await runSetupAgent(t.input);

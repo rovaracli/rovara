@@ -244,6 +244,19 @@ describe("one run per project", () => {
     expect((await startSetupAgent(w.deps, caller(PAT), NAME, body())).statusCode).toBe(202);
   });
 
+  it("a run parked on a website for most of a day still reads as running, and no second run can start (the worker's total wait is capped at 24 hours, so the stale bound holds)", async () => {
+    const w = world();
+    const first = await startSetupAgent(w.deps, caller(), NAME, body());
+    w.clock.now += 23 * 3_600_000 + 45 * 60_000;
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).status).toBe("running");
+    await expect(startSetupAgent(w.deps, caller(PAT), NAME, body())).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+    expect(w.db.find((item) => item["purpose"] === "setup_agent")).toHaveLength(1);
+    // The longest a run can take: its wall clock, the whole 24 hour wait, and the hour to report. Just under it, still running.
+    w.clock.now = Date.parse("2026-11-02T10:00:00.000Z") + (SETUP_AGENT_LIMITS_DEFAULT.wallClockMin + 24 * 60 + 59) * 60_000;
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).status).toBe("running");
+    expect((first.body as { taskId: string }).taskId).toBeDefined();
+  });
+
   it("answers a repeat of a request id after the run ended with the first run's state, and starts nothing; another person's use of the id never starts a second run", async () => {
     const w = world();
     const requestId = randomUUID();

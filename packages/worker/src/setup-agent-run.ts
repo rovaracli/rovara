@@ -317,6 +317,7 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
       if (waitingOn.length === 0 || governor.ended() !== undefined) break;
       parkings += 1;
       governor.parkOnHosts();
+      if (governor.ended() !== undefined) break;
       parked = true;
       armTick(ports.parkTickMs ?? 15_000);
       await ports.progress("Rovara is waiting for an administrator to decide a website.");
