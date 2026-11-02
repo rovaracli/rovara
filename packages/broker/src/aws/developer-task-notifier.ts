@@ -20,7 +20,7 @@ import { readStream, type Notice, type StreamRecord } from "../developer/notific
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
-import { AUTOFIX_CARD_HOLD_MS, AutoFixAskSchema, autoFixCardLines } from "../developer/autofix-messages.js";
+import { AUTOFIX_CARD_HOLD_MS, AutoFixAskSchema, autoFixCardLines, fixSetupWording } from "../developer/autofix-messages.js";
 import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
 import { bindingItemsForOpenSession } from "../agent-sessions/bindings.js";
 import { failedIndexes } from "../agents/table-writes.js";
@@ -1580,7 +1580,7 @@ async function autofixFollowUp(deps: NotifierDependencies, task: DeveloperTaskRe
     return undefined;
   }
   if (card.postedText?.includes("Why I'm asking you") === true) return undefined;
-  const lines = autoFixCardLines(workflow, ask.data).map(slackText);
+  const lines = autoFixCardLines(workflow, ask.data, fixSetupWording(workflow)).map(slackText);
   return lines.length === 0 ? undefined : { text: `More on the step above:\n${lines.join("\n")}`, sameAs: `autofix:${workflow.revision}` };
 }
 

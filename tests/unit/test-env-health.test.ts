@@ -58,6 +58,8 @@ const tests: StoredNightlyHealth = { class: "tests", setupProved: true, ranFrom:
 const thinTests: StoredNightlyHealth = { class: "tests", setupProved: false, ranFrom: "fresh" };
 const unclear: StoredNightlyHealth = { class: "unclear", cause: "other", ranFrom: "fresh" };
 const off = { proposeFixTask: false };
+/** Any health version (the card calls carry the stored one; a separate test pins it). */
+const ANY_VERSION: unknown = expect.any(Number);
 const state = async (h: ReturnType<typeof harness>) => (await readProjectHealth(h.deps, ORG, PROJECT))?.state;
 
 describe("the nightly run sets the health", () => {
@@ -65,7 +67,7 @@ describe("the nightly run sets the health", () => {
     const h = harness();
     await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "healthy", source: "nightly", blocked: [] });
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_passed" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_passed", version: ANY_VERSION }]);
     expect(h.calls.open).toHaveLength(0);
   });
 
@@ -73,8 +75,19 @@ describe("the nightly run sets the health", () => {
     const h = harness();
     await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed")), off);
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "setup_failed", source: "nightly" });
-    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [] }]);
+    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [], version: ANY_VERSION }]);
     expect(h.calls.resolve).toHaveLength(0);
+  });
+
+  it("the card calls carry the stored health version they were made from (L4: the card refuses an older one)", async () => {
+    const h = harness();
+    await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed")), off);
+    const stored = await readProjectHealth(h.deps, ORG, PROJECT);
+    expect(h.calls.open.at(-1)?.version).toBe(stored?.version);
+    await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
+    const after = await readProjectHealth(h.deps, ORG, PROJECT);
+    expect(h.calls.resolve.at(-1)?.version).toBe(after?.version);
+    expect(after!.version).toBeGreaterThan(stored!.version);
   });
 
   it("the next failing night with the same cause keeps the day it started; a different cause starts again", async () => {
@@ -95,7 +108,7 @@ describe("the nightly run sets the health", () => {
     h.clock.now += DAY;
     await applyNightlyRecorded(h.deps, h.ports, night(passed, { finishedAt: new Date(h.clock.now).toISOString() }), off);
     expect(await state(h)).toBe("healthy");
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_passed" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_passed", version: ANY_VERSION }]);
   });
 
   it("a night that ran with assertion failures shows the setup works: tests failing, and the repair card closes", async () => {
@@ -104,7 +117,7 @@ describe("the nightly run sets the health", () => {
     h.clock.now += DAY;
     await applyNightlyRecorded(h.deps, h.ports, night(tests, { failed: ["tests/a.py::t1"], finishedAt: new Date(h.clock.now).toISOString() }), off);
     expect(await state(h)).toBe("tests_failing");
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_setup_ok" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_setup_ok", version: ANY_VERSION }]);
   });
 
   it("an unclear night never clears a repair state or closes a card, and a healthy project becomes 'not sure'", async () => {
@@ -157,7 +170,7 @@ describe("the nightly run sets the health", () => {
     h.fail.open = false;
     await applyNightlyRecorded(h.deps, h.ports, event, off);
     expect(await state(h)).toBe("needs_repair");
-    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [] }]);
+    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "setup_failed", source: "nightly", taskIds: [], version: ANY_VERSION }]);
   });
 
   it("keeps the health of one project apart from another's", async () => {
@@ -187,7 +200,7 @@ describe("three tasks blocked by the same cause", () => {
     expect(h.calls.open).toHaveLength(0);
     await block(h, "task_3");
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "needs_repair", cause: "host_blocked", source: "tasks" });
-    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "host_blocked", source: "tasks", taskIds: ["task_1", "task_2", "task_3"] }]);
+    expect(h.calls.open).toEqual([{ orgId: ORG, project: PROJECT, cause: "host_blocked", source: "tasks", taskIds: ["task_1", "task_2", "task_3"], version: ANY_VERSION }]);
     expect(BLOCKED_TASKS_FOR_REPAIR).toBe(3);
   });
 
@@ -239,7 +252,7 @@ describe("three tasks blocked by the same cause", () => {
     const h = harness();
     for (const id of ["task_1", "task_2", "task_3"]) await block(h, id);
     await block(h, "task_4");
-    expect(h.calls.open.at(-1)).toEqual({ orgId: ORG, project: PROJECT, cause: "host_blocked", source: "tasks", taskIds: ["task_1", "task_2", "task_3", "task_4"] });
+    expect(h.calls.open.at(-1)).toEqual({ orgId: ORG, project: PROJECT, cause: "host_blocked", source: "tasks", taskIds: ["task_1", "task_2", "task_3", "task_4"], version: ANY_VERSION });
     const before = h.calls.open.length;
     await block(h, "task_5", "login_failed");
     expect(h.calls.open).toHaveLength(before);
@@ -268,7 +281,7 @@ describe("a newly proved setup", () => {
     for (const id of ["task_1", "task_2", "task_3"]) await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: id, reason: "host_blocked" });
     await noteSetupProved(h.deps, h.ports, { orgId: ORG, project: PROJECT });
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "healthy", source: "setup_proved", blocked: [] });
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "setup_proved" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "setup_proved", version: ANY_VERSION }]);
     // The count starts again: two more tasks do not repeat the repair state.
     await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: "task_4", reason: "host_blocked" });
     await noteBlockedTask(h.deps, h.ports, { orgId: ORG, project: PROJECT, taskId: "task_5", reason: "host_blocked" });
@@ -480,7 +493,7 @@ describe("review fixes F1, F2, F3, F6", () => {
     h.clock.now += DAY;
     await applyNightlyRecorded(h.deps, h.ports, night(tests, { failed: ["t1"], finishedAt: new Date(h.clock.now).toISOString() }), off);
     expect(await state(h)).toBe("tests_failing");
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_setup_ok" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "nightly_setup_ok", version: ANY_VERSION }]);
   });
 
   it("F1: a thin tests night does not close cards for a project that was fine either; it is tests failing", async () => {
@@ -535,7 +548,7 @@ describe("review fixes F1, F2, F3, F6", () => {
     expect(proved).toBe(true);
     expect(await state(h)).toBe("healthy");
     expect(h.calls.open).toHaveLength(0);
-    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "setup_proved" }]);
+    expect(h.calls.resolve).toEqual([{ orgId: ORG, project: PROJECT, reason: "setup_proved", version: ANY_VERSION }]);
   });
 
   it("F3: a damaged item is replaced, not read: a blocked tally never starts from it", async () => {

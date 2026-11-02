@@ -36,7 +36,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
   const ALL: Record<BrokerSettingKey, string> = {
     memberWorkspaceLimit: "3", organizationWorkspaceLimit: "20",
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
-    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
+    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
     teamRecord: "0", teamRecordEmbeddingModel: "amazon.titan-embed-text-v2:0", teamRecordLake: "0", projectRegistries: "0"
   };
 
@@ -137,6 +137,7 @@ describe("the control plane wires each setting and name to what it came from", (
       secondReview: { Ref: "SecondReviewEnabled" },
       setupRecipes: { Ref: "SetupRecipesEnabled" },
       nightlyHealth: { Ref: "NightlyHealthEnabled" },
+      verifyResults: { Ref: "VerifyResultsEnabled" },
       learningSuggestionsDefault: { Ref: "LearningSuggestionsDefault" },
     });
     for (const spec of Object.values(BROKER_SETTINGS)) expect(cloud, spec.variable).not.toHaveProperty(spec.variable);

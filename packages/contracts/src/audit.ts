@@ -200,6 +200,12 @@ export const AUDIT_ACTIONS = [
   // Setup and test health (SH28): a maintainer turned "propose a fix task when tests fail" on or off for a project.
   "project.test_health_setting_changed",
   "evidence.downloaded",
+  // Setup and test health (SH17): a maintainer marked tests as already failing, so later results no longer count them against a change.
+  "project.known_failing_marked",
+  // Setup and test health SH17 (F4): the company setting "always two people" for marking tests as already failing. Tightening applies at once; loosening is a proposal a different admin approves.
+  "company.known_failing_policy_proposed",
+  "company.known_failing_policy_changed",
+  "company.known_failing_policy_refused",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -433,6 +439,12 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
   "project.test_health_setting_changed": ["setting", "enabled"],
   "evidence.downloaded": ["artifactKind", "retentionClass"],
+  // `cause` is a fixed auto-fix code word (the environment fault the card was about); `testCount` is how many tests were added to the project's already-failing list; the rest are the card's epoch, counts, two sha256 hashes (the waiting tasks, the exact set marked) and the list's version and size afterwards. Never a test name.
+  "project.known_failing_marked": ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"],
+  // `fromAlwaysTwo` / `toAlwaysTwo` are booleans; `mode` is `direct`, `second_person`; `refusal` a fixed word.
+  "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
+  "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
+  "company.known_failing_policy_refused": ["refusal"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],

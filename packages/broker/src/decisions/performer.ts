@@ -3,7 +3,7 @@
 // It adds no authority of its own: the endpoint re-checks the caller's live role, self-approval, second person and idempotency, and the card tier never overrides it (a merge passes the PULL
 // REQUEST's risk, never the card's raised tier). A kind with no handler is refused as `unsupported` and listed for wiring: its endpoint lives in a hot file (the workflow plan decision) and is
 // mounted by the controller.
-import { AgentXError, type DecisionKind, type DecisionRefusalReason } from "@agentx/contracts";
+import { AgentXError, agentXError, type DecisionKind, type DecisionRefusalReason } from "@agentx/contracts";
 import type { MergePressReply } from "../rovara-code/merge.js";
 import type { DecisionCaller, DecisionPerformer, PerformInput, PerformOutcome } from "./routes.js";
 import type { DecisionItem } from "./project.js";
@@ -105,4 +105,36 @@ export function envChangeHandler<C extends DecisionCaller>(answer: (caller: C, t
     return (await answer(caller, item.taskId, choice)) === "gone" ? { kind: "refused", reason: "stale" } : { kind: "done" };
   });
   return { approve: run("approve"), reject: run("decline") };
+}
+
+/** What the Fix setup card's two decisions answer: done, the card is out of date (the record changed or is gone), or it cannot be done now (nothing to mark, or the project's list is full). A caller who may not decide throws FORBIDDEN. */
+export type FixSetupAnswer = "done" | "stale" | "not_ready" | "second_person";
+
+/**
+ * Fix setup (SH17): "Mark as known failing" is the card's approve; "Not now" is its reject. Both go to the broker's own functions (`test-env/fix-setup.ts`), which check the caller's live authority over the
+ * project again, read the card's record again and refuse a card whose record has changed since it was shown. The tests marked are the record's own, never the request's.
+ */
+export const FIX_SETUP_BROWSER_MESSAGE = "Use a live browser session to mark tests as known failing.";
+
+export function fixSetupHandler<C extends DecisionCaller>(ports: {
+  markKnownFailing(caller: C, item: Extract<DecisionItem, { kind: "fix_setup" }>, requestId: string): Promise<FixSetupAnswer>;
+  dismiss(caller: C, item: Extract<DecisionItem, { kind: "fix_setup" }>): Promise<FixSetupAnswer>;
+}): KindHandler<C> {
+  const outcomeOf = (answer: FixSetupAnswer): PerformOutcome => (answer === "done" ? { kind: "done" } : { kind: "refused", reason: answer === "stale" ? "stale" : answer === "second_person" ? "second_person_required" : "not_ready" });
+  return {
+    // Marking changes how later results are judged, so only a live browser session may press it. Said here, outside `perform`, so the person reads the sentence and not the generic "You can't decide this."
+    approve: async (caller, input) => {
+      if (input.item.kind === "fix_setup" && (caller as { browserSession?: true }).browserSession !== true) throw agentXError("FORBIDDEN", FIX_SETUP_BROWSER_MESSAGE);
+      return perform(async () => {
+        const item = input.item;
+        if (item.kind !== "fix_setup") return { kind: "refused", reason: "unsupported" } as const;
+        return outcomeOf(await ports.markKnownFailing(caller, item, input.requestId));
+      });
+    },
+    reject: (caller, input) => perform(async () => {
+      const item = input.item;
+      if (item.kind !== "fix_setup") return { kind: "refused", reason: "unsupported" };
+      return outcomeOf(await ports.dismiss(caller, item));
+    }),
+  };
 }

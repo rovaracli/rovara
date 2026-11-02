@@ -67,7 +67,13 @@ export type DecisionItem =
   | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string; /** The revision of the approved environment the person looked at (0: none yet): the approval is bound to it. */ expectedRevision: number })
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
-  | (ItemBase & { kind: "spec_choice"; message: string });
+  | (ItemBase & { kind: "spec_choice"; message: string })
+  /**
+   * Setup and test health (SH17): the project's test environment kept `taskCount` tasks' checks from giving a verdict. `cause` is the auto-fix code that names the fault (a fixed word), `step` the failing step
+   * in the card's words, `blockedResult` the fixed result label. `knownFailingTests` is how many tests "Mark as known failing" would add (0: the card has no such action). All of it is the broker's own record,
+   * never a worker's, a model's or a repository's words.
+   */
+  | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number; unconfirmedFailing: number });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -179,6 +185,20 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
     case "spec_choice":
       return { question: plainLine(item.message, 160), next: "You choose on the task page; the code pull requests wait until you do.", evidence: [], why: "Only the task owner can choose." };
+    case "fix_setup":
+      return {
+        question: "Fix the test setup?",
+        next: item.taskCount === 0 ? "The nightly run found this. Open the setup to fix it; the next night checks it again." : item.taskCount === 1 ? "One task waits on this. Open the setup to fix it; the task's checks run again after." : `${String(item.taskCount)} tasks wait on this. Open the setup to fix it; their checks run again after.`,
+        evidence: [
+          chip("environment", "Result", "Blocked by environment", "warning"),
+          chip("environment", "Failing step", item.step, "bad"),
+          ...(item.taskCount === 0 ? [] : [chip("checks", "Tasks affected", String(item.taskCount), item.taskCount > 1 ? "warning" : "unknown")]),
+          // "Failing before this change" only for tests the nightly baseline confirms; the other failing tests of those checks are said apart, never as older.
+          ...(item.knownFailingTests > 0 ? [chip("test_proof", "Failing before this change", plural(item.knownFailingTests, "test", "tests") + ", confirmed by the nightly run", "warning")] : []),
+          ...(item.unconfirmedFailing > 0 ? [chip("test_proof", "Failing in checks that failed before", plural(item.unconfirmedFailing, "more test", "more tests") + ", not confirmed older", "bad")] : []),
+        ],
+        why: "The code did not fail: the test setup could not give a verdict.",
+      };
     case "confirm_env_change":
       return { question: "Accept this change to the test setup?", next: "The running task continues on the new setup.", evidence: [chip("environment", "Changed", item.what, "warning")], why: "The setup changed while the task was running." };
   }
@@ -194,6 +214,7 @@ function tierInputsOf(item: DecisionItem): TierInputs {
     case "approve_setting": return { setting: { secondPerson: item.secondPerson } };
     case "approve_spend": return { spend: { amountUsd: item.amountUsd } };
     case "approve_test_env": return { testEnv: { risk: item.risk, reasons: item.riskReasons } };
+    case "fix_setup": return { fixSetup: { knownFailingTests: item.knownFailingTests } };
     default: return {};
   }
 }
@@ -207,6 +228,14 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
   // A held spec is answered on the task page (its buttons are POSTs of that page): the card only opens it.
   if (item.kind === "spec_choice") return { actions: [{ ...open, label: "Choose" }], recommended: "open" };
+  // Fix setup: Run setup agent, Fix with agent and Retry task checks are done on the pages the card opens (the setup page and the affected task's page); the card itself only decides the two things that need
+  // the server's friction. "Mark as known failing" is the card's one approve (medium: the evidence is opened first, and the tests it marks are the broker's own record, never the request's); "Not now" puts
+  // the card away until the cause comes back. Recommended is to look first.
+  if (item.kind === "fix_setup") {
+    const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
+    const mark: CardAction = { kind: "approve", label: "Mark as known failing", href: `${base}/approve`, method: "POST" };
+    return { actions: item.knownFailingTests > 0 ? [{ ...open, label: "Open the setup" }, reject, mark] : [{ ...open, label: "Open the setup" }, reject], recommended: "open" };
+  }
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
   const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };
   const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };

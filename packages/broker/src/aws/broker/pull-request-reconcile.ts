@@ -11,6 +11,8 @@ import { parseGitHubRepository, pullRequestBodyWithDraftNote } from "../../githu
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
+import { loadTestingView } from "../developer-tasks/testing-view.js";
+import { nightlyHeadReaderOf } from "./nightly-head.js";
 import { evidenceRiskOfTask } from "../developer-tasks/evidence-risk-input.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../../rovara-code/pull-request-body.js";
@@ -184,7 +186,11 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
     const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined ? undefined : {
+    // Setup and test health SH18: the Testing view of the code now on the pull request (only while `vx` is on).
+    const testing = pushedChecked && workflow.definitionVersion === "1.1.0"
+      ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined && testing === undefined ? undefined : {
+      ...(testing === undefined ? {} : { testing }),
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(secondReviewLines.length === 0 ? {} : { secondReviewLines }), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }),
     };

@@ -12,6 +12,7 @@ import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
+import { recordApprovalViewed } from "./approval-viewed.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 import { resolveRecipe } from "./changes.js";
@@ -73,6 +74,7 @@ const TITLES: Record<string, string> = {
   playbook_default_process: "Switch a project back to the built-in way of working",
   setup_item: "Approve a setup suggestion from Rovara",
   test_env: "Confirm a less-safe test environment",
+  known_failing: "Confirm marking tests as already failing",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -194,7 +196,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item" && subject.kind !== "test_env" && subject.kind !== "known_failing") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -221,6 +223,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
   if (subject.kind === "setup_item") facts.push(fact("Project", subject.project), fact("Suggestion", subject.itemKind.replace("_", " ")), fact("Suggestion id", subject.itemId));
   if (subject.kind === "test_env") facts.push(fact("Project", subject.project), fact("Test environment", `digest ${prefix(subject.digest)}`), fact("Revision it replaces", subject.expectedRevision === 0 ? "none (the first)" : String(subject.expectedRevision)));
+  if (subject.kind === "known_failing") facts.push(fact("Project", subject.project), fact("What failed", subject.cause.replace(/-/gu, " ")), fact("Tests to mark as already failing", `set ${prefix(subject.testSetSha256)}`));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };
@@ -269,7 +272,8 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     if (record.status !== "PENDING") return { status: "decided", by: await nameOf(deps, record.decidedBy), at: record.decidedAt ?? record.expiresAt };
     // The sweep ends an approval whose time ran out within minutes; until it does, the page treats it as ended.
     if (Date.parse(record.expiresAt) <= deps.now()) return { status: "expired", at: record.expiresAt };
-    return { status: "open", view: await viewOf(deps, record) };
+    const view = await viewOf(deps, record);
+    return { status: "open", view };
   }
 
   async function decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome> {
@@ -283,5 +287,13 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     return outcomeOf(await getAnyApproval(deps, target.orgId, id.data), decision);
   }
 
-  return { inspect, decide };
+  // The confirmation page was rendered for this person: that is what "opened" means (the decision guard `known_failing_opened` checks it for every route that can decide).
+  async function opened(target: DecideTarget): Promise<void> {
+    const id = ApprovalIdSchema.safeParse(target.approvalId);
+    if (!id.success) return;
+    const record = await getAnyApproval(deps, target.orgId, id.data);
+    if (record !== undefined && record.status === "PENDING") await recordApprovalViewed(deps, record, target.developerId);
+  }
+
+  return { inspect, decide, opened };
 }

@@ -21,6 +21,9 @@ import {
 export const RESULT_WAITING = ["not_checked_yet", "retry_pending", "original_code_pending", "cause_unknown", "needs_a_person"] as const;
 export type ResultWaiting = (typeof RESULT_WAITING)[number];
 
+/** A test the project knows is already failing: a bare name (the last nightly's failures; matches in any check) or a name marked for one check (matches only in that check). */
+export type KnownFailingEntry = string | { name: string; checkId: string };
+
 export type ResultOutcome =
   | { decided: true; result: TestingResult; reasons: TestingReason[] }
   | { decided: false; waiting: ResultWaiting };
@@ -37,8 +40,8 @@ export interface ResultInput {
   budget: AutoFixBudget;
   /** The pack the BROKER built from the worker's raw parts. Ignored unless it is for exactly the current candidate. */
   evidence?: EvidencePack | undefined;
-  /** The nightly already-failing set (`alreadyFailingTests`): empty when unknown or truncated, which excuses nothing. */
-  alreadyFailing: readonly string[];
+  /** The already-failing set (`alreadyFailingForResults`: the nightly baseline's failures and a maintainer's marks): empty when unknown or truncated, which excuses nothing. */
+  alreadyFailing: readonly KnownFailingEntry[];
   /** What the plan said, from stored fields. */
   planned?: {
     fullSuite?: FullSuiteState | undefined;
@@ -70,7 +73,7 @@ const ASK: Rule = { kind: "ask" };
  */
 export const RESULT_RULES: Readonly<Record<AutoFixCode, Rule>> = {
   "build-failed": code("app_failed"), "app-exited": code("app_failed"), "app-unhealthy": code("app_failed"), "seed-failed": code("app_failed"),
-  "e2e-assertion-failed": code("e2e_assertion_failed"), "check-failed": code("check_failed"), "regression-found": code("regression_found"), "round-refused": code("round_refused"),
+  "e2e-assertion-failed": code("e2e_assertion_failed"), "check-failed": code("check_failed"), "new-failing-test": code("new_failing_test"), "regression-found": code("regression_found"), "round-refused": code("round_refused"),
   "review-findings": { kind: "review" },
   "deadline-exceeded": env("timed_out"), "executor-failed": env("executor_failed"), "executor-result-mismatch": env("executor_failed"), "mock-unavailable": env("mock_unavailable"),
   "check-runner-failed": env("check_runner_failed"), "check-not-started": env("check_could_not_start"), "provider-outage": env("provider_outage"), "runner-busy": env("runner_busy"),
@@ -104,15 +107,65 @@ function unclearE2e(facts: AutoFixFacts): "code" | "original_fails" | "original_
   return groups.every((result) => result === "passed") ? "code" : "cause_unknown";
 }
 
+/** The kind of a check by its id, from the task's own check list (required, optional and proposed checks). Undefined when the list does not name it: an unknown kind is never read as a test. */
+export function workflowCheckKind(workflow: WorkflowSnapshot, checkId: string): string | undefined {
+  const policy = workflow.checkPolicy;
+  return [...(policy?.required ?? []), ...(policy?.optional ?? []), ...(policy?.proposed ?? [])].find((entry) => entry.id === checkId)?.kind;
+}
+
+/** A check that failed on the original code (by the original-code facts) that the evidence pack does not name at all (or there is no pack for this code) AND that is a test check by the task's check list: no per-test data, so nothing about its failures is confirmed (M2). A check of another or an unknown kind keeps the old rule. */
+export function testCheckFailedBeforeWithoutData(workflow: WorkflowSnapshot, failedOnOriginal: readonly { checkId: string }[], pack: EvidencePack | undefined): boolean {
+  return failedOnOriginal.some((result) => !(pack?.checks ?? []).some((check) => check.checkId === result.checkId) && workflowCheckKind(workflow, result.checkId) === "test");
+}
+
+/** A check with no per-test data to read at all: no test counts, or a count of zero failures while the check failed. */
+export const hasNoTestData = (check: EvidencePack["checks"][number]): boolean => check.tests === undefined || check.tests.failed + check.tests.errored === 0;
+
+/**
+ * The failing tests of a check, when the pack gives usable per-test data for it: every failing test named once (distinct names) and as many names as the count says. Undefined when it does not (no test
+ * counts, a count of zero while the check failed, fewer names than the count, or a name twice): the data cannot say which tests failed, so nothing about them can be confirmed.
+ */
+export function readableFailingTests(check: EvidencePack["checks"][number]): string[] | undefined {
+  if (check.tests === undefined) return undefined;
+  const declared = check.tests.failed + check.tests.errored;
+  if (declared === 0) return undefined;
+  const failed = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored").map((test) => test.name);
+  if (failed.length !== declared || new Set(failed).size !== failed.length) return undefined;
+  return failed;
+}
+
+/**
+ * Whether a check that failed on the original code too has a failing test that was NOT failing before (owner decision, Opus re-check M2): a failing test the already-failing set does not know (the last usable nightly's
+ * failures and a maintainer's marks for this check; with no usable nightly, only the marks), a failing test the change itself added (`newTests`), or failing tests the pack does not name (or names twice).
+ * A check of the `test` kind whose per-test data cannot be read (no test counts, a count of zero while it failed, because the pack dropped them as disagreeing with the check) is the same: unconfirmed. A check of
+ * another kind (a lint, say) has no tests to judge. Such a check is a failure of the CODE ("Code failed", the code goes back), never "Blocked by environment": the old failure must not hide a new one.
+ */
+export function hasUnconfirmedFailingTest(check: EvidencePack["checks"][number], alreadyFailing: readonly KnownFailingEntry[]): boolean {
+  const failed = readableFailingTests(check);
+  if (failed === undefined) return hasNoTestData(check) ? check.kind === "test" : true;
+  const anyCheck = new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string"));
+  const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
+  const added = new Set(check.tests!.newTests);
+  return failed.some((name) => added.has(name) || !(anyCheck.has(name) || perCheck.has(`${check.checkId}\u0000${name}`)));
+}
+
+/** The checks (by ID) that failed on the original code too but have a failing test that was not failing before (see `hasUnconfirmedFailingTest`): the broker's input to the auto-fix policy while the four results are on. */
+export function newFailingCheckIds(evidence: EvidencePack | undefined, alreadyFailing: readonly KnownFailingEntry[]): string[] {
+  return (evidence?.checks ?? []).filter((check) => check.after === "failed" && check.class === "already_failing" && hasUnconfirmedFailingTest(check, alreadyFailing)).map((check) => check.checkId);
+}
+
 /** Whether every failing check of the evidence failed on the original code too and every failing test of it is in the already-failing set. Anything short of that excuses nothing. */
-function knownFailingExcused(failing: readonly EvidencePack["checks"][number][], alreadyFailing: readonly string[]): boolean {
+function knownFailingExcused(failing: readonly EvidencePack["checks"][number][], alreadyFailing: readonly KnownFailingEntry[]): boolean {
   if (failing.length === 0 || alreadyFailing.length === 0) return false;
-  const known = new Set(alreadyFailing);
+  const anyCheck = new Set(alreadyFailing.filter((entry): entry is string => typeof entry === "string"));
+  const perCheck = new Set(alreadyFailing.flatMap((entry) => (typeof entry === "string" ? [] : [`${entry.checkId}\u0000${entry.name}`])));
   return failing.every((check) => {
     if (check.after !== "failed" || check.class !== "already_failing" || check.tests === undefined) return false;
-    const failedTests = check.tests.names.filter((test) => test.status === "failed" || test.status === "errored");
-    // Every failure must be named (the names are capped) and known; a check that failed with no failing test named (it did not run its tests) is not excused.
-    return check.tests.failed + check.tests.errored > 0 && failedTests.length === check.tests.failed + check.tests.errored && failedTests.every((test) => known.has(test.name));
+    // A test the change itself added cannot have been failing before it: the worker's own list of new tests is never a reason to excuse one.
+    const added = new Set(check.tests.newTests);
+    // Every failure must be named once (the names are capped) and known (a nightly failure in any check, a mark for this check); a check that failed with no failing test named (it did not run its tests) is not excused.
+    const failedTests = readableFailingTests(check);
+    return failedTests !== undefined && failedTests.every((name) => !added.has(name) && (anyCheck.has(name) || perCheck.has(`${check.checkId}\u0000${name}`)));
   });
 }
 
@@ -167,6 +220,10 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   const excused = () => knownFailingExcusedAll(failingChecks.filter((check) => check.class !== "regression"), originalFailingChecks, input.alreadyFailing)
     && failedOnOriginal.every((result) => originalFailingChecks.some((check) => check.checkId === result.checkId));
   if (originalFailingChecks.length > 0) originalFails = true;
+  // A check that failed before AND has a failing test that was not failing before is the code's fault (M2): the old failure does not hide the new one.
+  if (originalFailingChecks.some((check) => hasUnconfirmedFailingTest(check, input.alreadyFailing))) codeReasons.push("new_failing_test");
+  // A TEST check the policy saw fail on the original code that the pack does not name at all (or there is no pack for this code) has no per-test data at all: nothing about its failures is confirmed, so it is the same (M2). Another or an unknown kind keeps the old rule.
+  if (testCheckFailedBeforeWithoutData(workflow, failedOnOriginal, evidence)) codeReasons.push("new_failing_test");
 
   // ---- 1. Code failed wins; environment faults are still listed
   if (codeReasons.length > 0) return { decided: true, result: "code_failed", reasons: unique([...codeReasons, ...blockedReasons, ...(originalFails && !excused() ? ["fails_on_original_code" as const] : [])]) };
@@ -222,6 +279,6 @@ function laterWaiting(current: ResultWaiting | undefined, next: ResultWaiting): 
  * Whether the "fails on the original code" fault is excused. It is only when the evidence pack names the failing checks, each failed on the original code too, and every failing test is known failing.
  * A signal without evidence behind it (`fails-on-original-code` from a check result alone) excuses nothing, and a failing check of another kind is never hidden behind a known failing one.
  */
-function knownFailingExcusedAll(failingChecks: readonly EvidencePack["checks"][number][], originalFailingChecks: readonly EvidencePack["checks"][number][], alreadyFailing: readonly string[]): boolean {
+function knownFailingExcusedAll(failingChecks: readonly EvidencePack["checks"][number][], originalFailingChecks: readonly EvidencePack["checks"][number][], alreadyFailing: readonly KnownFailingEntry[]): boolean {
   return failingChecks.length === originalFailingChecks.length && knownFailingExcused(originalFailingChecks, alreadyFailing);
 }

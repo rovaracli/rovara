@@ -63,7 +63,7 @@ export function registerTestEnvApprovals(): void {
 registerTestEnvApprovals();
 
 /** The confirmation a decided card holds, if it stands: decided on the confirmation page with a fresh sign-in proof, and still good (`confirmationStands`). A card that holds none reads as expired, so it is asked for again. */
-function confirmationOf(record: ApprovalRecord, nowMs: number): LessSafeApproval | undefined {
+export function confirmationOf(record: ApprovalRecord, nowMs: number): LessSafeApproval | undefined {
   if (record.decidedBy === undefined || record.decision !== "APPROVE") return undefined;
   const proof = AuditProofSchema.safeParse((record as { decisionProof?: unknown }).decisionProof);
   if (!proof.success || proof.data.kind !== "fresh_sign_in") return undefined;

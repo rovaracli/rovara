@@ -25,10 +25,11 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   approve_test_env: { ...base("env1"), kind: "approve_test_env", risk: "medium", riskReasons: [], tier: "sandbox", expectedRevision: 1 },
   confirm_env_change: { ...base("chg1"), kind: "confirm_env_change", what: "accounts" },
   spec_choice: { ...base("spc1"), kind: "spec_choice", message: "The spec changed. Re-plan or keep?" },
+  fix_setup: { ...base("fix1"), kind: "fix_setup", cause: "setup-failed-in-task", step: "Setup", taskCount: 2, knownFailingTests: 0, unconfirmedFailing: 0 },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
-  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low",
+  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium",
 };
 const cardOf = (item: DecisionItem, locks = {}) => {
   const result = cardOfItem(item, locks);
@@ -322,5 +323,52 @@ describe("a spec on hold (wire lane D, MD-1)", () => {
     expect(specChoiceItemOf({ ...input, state: undefined, corrupt: true })).toMatchObject({ kind: "spec_choice" });
     const item = specChoiceItemOf({ ...input, state: { ...base, status: "failed", failure: { code: "publish_failed", at: now }, attempt: 1 } })!;
     expect(DecisionCardSchema.safeParse(cardOf(item)).success).toBe(true);
+  });
+});
+
+describe("fix_setup (setup and test health SH17)", () => {
+  const fix = (extra: Partial<Extract<DecisionItem, { kind: "fix_setup" }>> = {}): DecisionItem => ({ ...(ITEMS.fix_setup as Extract<DecisionItem, { kind: "fix_setup" }>), ...extra });
+
+  it("is a medium card that opens the setup page and can be put away, with no approve when there is nothing to mark", () => {
+    const card = cardOf(fix());
+    expect(card.risk).toBe("medium");
+    expect(card.actions.map((action) => action.kind)).toEqual(["open", "reject"]);
+    expect(card.recommended.action).toBe("open");
+    expect(card.question).toBe("Fix the test setup?");
+    expect(card.evidence.map((chip) => `${chip.label}: ${chip.value}`)).toEqual(["Result: Blocked by environment", "Failing step: Setup", "Tasks affected: 2"]);
+  });
+
+  it("offers Mark as known failing as the one approve only when the record has tests to mark, and says how many", () => {
+    const card = cardOf(fix({ knownFailingTests: 3 }));
+    expect(card.actions.map((action) => [action.kind, action.label])).toEqual([["open", "Open the setup"], ["reject", "Not now"], ["approve", "Mark as known failing"]]);
+    expect(card.actions.find((action) => action.kind === "approve")!.href).toBe("/v1/app/decisions/fix_setup/fix1/approve");
+    expect(card.evidence.some((chip) => chip.label === "Failing before this change" && chip.value === "3 tests, confirmed by the nightly run")).toBe(true);
+    expect(card.friction.expandEvidenceFirst).toBe(true);
+    expect(card.riskReasons).toContain("Marking tests as already failing changes how later results are judged.");
+  });
+
+  it("says apart, and never as older, the failing tests of those checks that the nightly run does not confirm", () => {
+    const card = cardOf(fix({ knownFailingTests: 1, unconfirmedFailing: 2 }));
+    expect(card.evidence.map((chip) => `${chip.label}: ${chip.value}`)).toContain("Failing in checks that failed before: 2 more tests, not confirmed older");
+    expect(cardOf(fix({ knownFailingTests: 0, unconfirmedFailing: 2 })).actions.map((action) => action.kind)).toEqual(["open", "reject"]);
+    expect(cardOf(fix()).evidence.some((chip) => chip.label === "Failing in checks that failed before")).toBe(false);
+  });
+
+  it("a company lock that raises it to high leaves only Open to decide, never an approve", () => {
+    const card = cardOf(fix({ knownFailingTests: 3 }), { fix_setup: "high" });
+    expect(card.risk).toBe("high");
+    expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
+  });
+
+  it("the digest changes when the record's version does, so an earlier 'evidence opened' does not carry over", () => {
+    const one = projectDecisionCards([fix({ contentVersion: "v1" })]);
+    const two = projectDecisionCards([fix({ contentVersion: "v2" })]);
+    expect(Object.values(one.digests)[0]).not.toBe(Object.values(two.digests)[0]);
+  });
+
+  it("words nothing a worker, model or repository wrote: the question, next and why are fixed", () => {
+    const card = cardOf(fix({ step: "Setup" }));
+    expect(card.next.text).toContain("2 tasks wait on this");
+    expect(card.recommended.why).toBe("The code did not fail: the test setup could not give a verdict.");
   });
 });

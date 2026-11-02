@@ -6,7 +6,7 @@ import {
   WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
   type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { RESULT_RULES, classifyTestingResult, type ResultInput, type ResultOutcome } from "../../packages/broker/src/verification/result.js";
+import { RESULT_RULES, classifyTestingResult, hasUnconfirmedFailingTest, newFailingCheckIds, readableFailingTests, workflowCheckKind, type ResultInput, type ResultOutcome } from "../../packages/broker/src/verification/result.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);
@@ -138,7 +138,7 @@ describe("Code failed (4.2 code rows)", () => {
 
   it("wins when the same run also has a test that fails on the original code and is not known failing", () => {
     const evidence = pack([{ checkId: "unit", before: "passed", after: "failed", class: "regression" }, { checkId: "old", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
-    expect(run(passed(), { evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["check_failed", "fails_on_original_code"]));
+    expect(run(passed(), { evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["check_failed", "new_failing_test", "fails_on_original_code"]));
     expect(run(passed(), { evidence, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["check_failed"]));
   });
 
@@ -216,21 +216,79 @@ describe("Blocked by environment (4.2 transient and person rows)", () => {
 describe("a test that fails on the original code too (4.2 fails-on-original-code)", () => {
   const failing = () => blocked("VERIFY", undefined, results([check("unit", "FAILED")]));
   const facts: AutoFixFacts = { checkOriginal: { unit: "failed" } };
+  /** The task's own check list names `unit` with this kind (the broker takes a check's kind from it when the pack does not name the check). */
+  const withKind = (kind: string | undefined, id = "unit") => blocked("VERIFY", undefined, { ...results([check(id, "FAILED")]), checkPolicy: { required: [{ id, label: id, command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 }, ...(kind === undefined ? {} : { kind }) }], optional: [], selectedOptionalIds: [], proposed: [] } });
   const evidence = (names: string[], extra: Over = {}) => pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(names), ...extra }]);
 
   it("is Partially verified when every failing test is in the already-failing set", () => {
     expect(run(failing(), { facts, evidence: evidence(["t1", "t2"]), alreadyFailing: ["t1", "t2", "t9"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
   });
 
-  it("is Blocked by environment when a failing test is not known, or nothing is known failing (an unreadable or truncated set excuses nothing)", () => {
-    expect(run(failing(), { facts, evidence: evidence(["t1", "t2"]), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  it("never excuses a test the change itself added, even when its name is in the already-failing set", () => {
+    const added = evidence(["t1", "t2"], { tests: tests(["t1", "t2"], { newTests: ["t2"] }) });
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: ["t1", "t2"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: added, alreadyFailing: [{ name: "t1", checkId: "unit" }, { name: "t2", checkId: "unit" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { newTests: ["other"] }) }), alreadyFailing: ["t1"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
   });
 
-  it("is Blocked when the failures are not all named, no test is named, or there is no evidence behind the signal", () => {
-    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { failed: 3, passed: 7 }) }), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing" }]), alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
-    expect(run(failing(), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  it("matches a mark on the test AND its check: a nightly name matches in any check, a mark only in the check it was made for", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "unit" }] })).toEqual(decided("partially_verified", ["known_failing_only"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "t1", checkId: "lint" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [{ name: "other", checkId: "unit" }] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+  });
+
+  it("is Code failed (owner decision M2) when a failing test is not known: the old failure does not hide a new one (Y fails on old code, Z newly fails)", () => {
+    expect(run(failing(), { facts, evidence: evidence(["Y", "Z"]), alreadyFailing: ["Y"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(run(failing(), { facts, evidence: evidence(["Y"]), alreadyFailing: ["Y"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
+  });
+
+  it("is Code failed when no usable nightly exists (nothing is known failing): every failing test of a check that failed before is unconfirmed", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"]), alreadyFailing: [] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+  });
+
+  it("is Code failed when the pack does not name every failing test", () => {
+    expect(run(failing(), { facts, evidence: evidence(["t1"], { tests: tests(["t1"], { failed: 3, passed: 7 }) }), alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+  });
+
+  // M2 (second Opus re-check): a test check with no usable per-test data cannot confirm anything, so it is the code's fault, not "Blocked by environment" (a compile error or an import that breaks collection runs no test at all).
+  it("is Code failed when a failed test check has no usable per-test data (no counts, a zero count, a compile or import break), or there is no pack for this code", () => {
+    const sameReasons = decided("code_failed", ["new_failing_test", "fails_on_original_code"]);
+    expect(run(failing(), { facts, evidence: pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing" }]), alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    expect(run(failing(), { facts, evidence: evidence([], { tests: { total: 0, passed: 0, failed: 0, skipped: 0, errored: 0, newTests: [], names: [] } }), alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    expect(run(withKind("test"), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    // A pack for other code is no pack for this one.
+    expect(run(withKind("test"), { facts, evidence: { ...evidence(["t1"]), candidateDigest: otherCandidate.digest }, alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    // A pack that names other checks only.
+    expect(run(withKind("test"), { facts, evidence: pack([{ checkId: "other", before: "passed", after: "passed", class: "passing" }]), alreadyFailing: ["t1"] })).toEqual(sameReasons);
+  });
+
+  // M2 scope (coordinator): the no-pack rule is about TESTS. The kind comes from the task's own check list by check id; unknown or not `test` keeps the old rule (Blocked by environment).
+  it("keeps the old rule (Blocked) for a lint, another kind, or a check the task's list does not name, with no pack or a pack that does not name it", () => {
+    const old = decided("blocked_by_environment", ["fails_on_original_code"]);
+    for (const kind of ["lint", "typecheck", "build", "other", undefined]) {
+      expect(run(withKind(kind), { facts, evidence: undefined, alreadyFailing: ["t1"] }), String(kind)).toEqual(old);
+      expect(run(withKind(kind), { facts, evidence: pack([{ checkId: "other", before: "passed", after: "passed", class: "passing" }]), alreadyFailing: ["t1"] }), String(kind)).toEqual(old);
+    }
+    // The list does not name the failed check at all.
+    const unlisted = blocked("VERIFY", undefined, { ...results([check("unit", "FAILED")]), checkPolicy: { required: [{ id: "elsewhere", label: "x", command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 }, kind: "test" }], optional: [], selectedOptionalIds: [], proposed: [] } });
+    expect(run(unlisted, { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(old);
+    expect(run(failing(), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(old);
+    expect(workflowCheckKind(withKind("lint"), "unit")).toBe("lint");
+    expect(workflowCheckKind(withKind("lint"), "nope")).toBeUndefined();
+  });
+
+  it("leaves a check of another kind (a lint) with no per-test data to its own rule: it has no tests to judge", () => {
+    const lint = pack([{ checkId: "unit", kind: "lint", before: "failed", after: "failed", class: "already_failing" }]);
+    expect(run(failing(), { facts, evidence: lint, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+  });
+
+  it("is Code failed when a failing test name appears twice (one known name cannot stand for two failures)", () => {
+    const twice = evidence(["t1", "t1"]);
+    expect(run(failing(), { facts, evidence: twice, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    expect(hasUnconfirmedFailingTest(twice.checks[0]!, ["t1"])).toBe(true);
+    expect(newFailingCheckIds(twice, ["t1"])).toEqual(["unit"]);
+    expect(readableFailingTests(twice.checks[0]!)).toBeUndefined();
+    expect(readableFailingTests(evidence(["a", "b"]).checks[0]!)).toEqual(["a", "b"]);
   });
 
   it("does not hide another failing check behind a known failing one", () => {
@@ -310,7 +368,7 @@ describe("the worker's own words are never trusted", () => {
   it("does not take a worker's test names as known failing: only the broker's nightly set excuses", () => {
     const evidence = pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
     const failing = blocked("VERIFY", undefined, results([check("unit", "FAILED")]));
-    expect(run(failing, { facts: { checkOriginal: { unit: "failed" } }, evidence, alreadyFailing: [] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(failing, { facts: { checkOriginal: { unit: "failed" } }, evidence, alreadyFailing: [] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
   });
 });
 
@@ -357,17 +415,29 @@ describe("Opus review fixes 3 and 4", () => {
     expect(run(verifyE2e(incomplete("g1: build-failed", "g2: model-route-not-tested")))).toEqual(decided("code_failed", ["app_failed"]));
   });
 
-  it("fix 4: a check that failed on the original code and is not in the pack's excused checks keeps the result Blocked", () => {
+  it("fix 4: a check that failed on the original code and is not in the pack's excused checks is never hidden behind a known one (Replaces: 'keeps the result Blocked' for a check the pack does not name at all: it is now Code failed, M2)", () => {
     const two = blocked("VERIFY", undefined, results([check("unit", "FAILED"), check("api", "FAILED")]));
     const evidence = pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
     const facts = { checkOriginal: { unit: "failed", api: "failed" } } as const;
+    const cmd = { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 };
+    const listed = (apiKind: string) => blocked("VERIFY", undefined, { ...results([check("unit", "FAILED"), check("api", "FAILED")]), checkPolicy: { required: [{ id: "unit", label: "unit", command: cmd, kind: "test" }, { id: "api", label: "api", command: cmd, kind: apiKind }], optional: [], selectedOptionalIds: [], proposed: [] } });
+    expect(run(listed("test"), { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    // The check the pack does not name is not a test check (or the list does not say): the old rule.
+    expect(run(listed("lint"), { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
     expect(run(two, { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    // A check the pack names with another class keeps the existing rule (Blocked: the data says it did not fail before).
+    const named = pack([
+      { checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) },
+      { checkId: "api", kind: "lint", before: "failed", after: "failed", class: "already_failing" },
+    ]);
+    expect(run(two, { facts, evidence: named, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
     // Both covered and known: still Partially verified.
     const both = pack([
       { checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) },
       { checkId: "api", before: "failed", after: "failed", class: "already_failing", tests: tests(["t2"]) },
     ]);
     expect(run(two, { facts, evidence: both, alreadyFailing: ["t1", "t2"] })).toEqual(decided("partially_verified", ["known_failing_only"]));
-    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    // One of the two has a failing test nobody knows: the code's fault, whatever the other one is.
+    expect(run(two, { facts, evidence: both, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
   });
 });
