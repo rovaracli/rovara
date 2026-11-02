@@ -256,11 +256,13 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     const root = await realpath(resolve(options.rootPath));
     await wipeWorkspaceForTaint(root);
     await rm(resolve(root, MANIFEST_PATH), { force: true });
-    (options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic)(`fresh setup (saved environment failed at ${error.step})`);
-    options.savedEnv.onFallback?.(error.step);
     const { savedEnv: _used, ...withoutSavedEnv } = options;
     void _used;
-    return prepareWorkspaceOnce(withoutSavedEnv);
+    // Reported only when the fresh run SUCCEEDS: if it fails too, the fault is the project's, not the image's, and the image must not be marked stale (no rebuild storm).
+    const manifest = await prepareWorkspaceOnce(withoutSavedEnv);
+    (options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic)(`fresh setup (saved environment failed at ${error.step})`);
+    options.savedEnv.onFallback?.(error.step);
+    return manifest;
   }
 }
 

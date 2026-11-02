@@ -146,16 +146,20 @@ export function savedEnvRepositoryPolicy(input: { pushRoleArn: string; pullRoleA
   };
 }
 
+/** ECR's own count rule keeps this many MORE than the company's `keep`: it is a backstop, not the rule. The broker's walk decides which images stay (the row names them), and an image pushed but not yet recorded must not push a recorded one out. */
+export const SAVED_ENV_LIFECYCLE_MARGIN = 3;
+
 /**
- * The lifecycle policy: untagged images go after a day, and the newest `keep` images stay. Immutable tags make a tag unmovable, so the newest `keep` are exactly the last builds. There is NO age rule here:
- * ECR evaluates rules in priority order and a later rule on tagged images never sees what a count rule keeps. The 30 day ceiling is the broker's manage walk (SH24), `SAVED_ENV_IMAGE_CEILING_DAYS`.
+ * The lifecycle policy: untagged images go after a day, and images beyond `keep` plus a margin go (a BACKSTOP: the broker's walk keeps exactly the images its row names and deletes the rest). Immutable tags make a
+ * tag unmovable. There is NO age rule here: ECR evaluates rules in priority order and a later rule on tagged images never sees what a count rule keeps. The 30 day ceiling is the broker's manage walk (SH24),
+ * `SAVED_ENV_IMAGE_CEILING_DAYS`.
  */
 export function savedEnvLifecyclePolicy(keep: number): { rules: Array<Record<string, unknown>> } {
-  const count = z.number().int().min(SAVED_ENV_KEEP_MIN).max(SAVED_ENV_KEEP_MAX).parse(keep);
+  const count = z.number().int().min(SAVED_ENV_KEEP_MIN).max(SAVED_ENV_KEEP_MAX).parse(keep) + SAVED_ENV_LIFECYCLE_MARGIN;
   return {
     rules: [
       { rulePriority: 1, description: "Untagged images expire", selection: { tagStatus: "untagged", countType: "sinceImagePushed", countUnit: "days", countNumber: SAVED_ENV_UNTAGGED_DAYS }, action: { type: "expire" } },
-      { rulePriority: 2, description: `Keep the last ${String(count)} images`, selection: { tagStatus: "tagged", tagPatternList: ["*"], countType: "imageCountMoreThan", countNumber: count }, action: { type: "expire" } },
+      { rulePriority: 2, description: `Backstop: keep at most ${String(count)} images`, selection: { tagStatus: "tagged", tagPatternList: ["*"], countType: "imageCountMoreThan", countNumber: count }, action: { type: "expire" } },
     ],
   };
 }
@@ -187,6 +191,16 @@ export const SavedEnvUseSchema = z.object({
   auth: SavedEnvRegistryAuthSchema,
 }).strict().refine((use) => use.auth.repository === use.repository, "the login is for another repository");
 export type SavedEnvUse = z.infer<typeof SavedEnvUseSchema>;
+
+/** The worker feature (listed on /ping) that takes the prepare payload's `savedEnv`. A worker without it is sent no field and sets up fresh. */
+export const PREPARE_SAVED_ENV_FEATURE = "prepare.savedEnv.v1" as const;
+
+/** The prepare invocation's `savedEnv`: what to pull, and the revision this task is pinned to (the worker refuses an image of another revision). */
+export const PrepareSavedEnvSchema = z.object({
+  use: SavedEnvUseSchema,
+  taskTestEnvRevision: z.number().int().min(1),
+}).strict();
+export type PrepareSavedEnv = z.infer<typeof PrepareSavedEnvSchema>;
 
 /** The steps a use can fail at; the evidence says "fresh setup (saved environment failed at <step>)" and the registry marks the image stale. */
 export const SAVED_ENV_USE_STEPS = ["input", "revision", "pull", "inspect", "extract", "layout", "manifest", "links", "git", "copy", "fetch", "checkout", "setup"] as const;

@@ -414,12 +414,12 @@ describe("what stops a build", () => {
     expectNothingBuilt(failing);
   });
 
-  it("a secret in what would be shipped ends the build before docker is run: a token in a dependency, a .env in a build folder, a value the machine held", async () => {
+  it("a secret in what would be shipped ends the build before docker is run: a token in a dependency, a .env in a cache folder, a value the machine held", async () => {
     const token = ["gh", "p_", "a".repeat(36)].join("");
     const held = ["clone", "-", "w".repeat(24)].join("");
     const plants: Array<(dir: string) => Promise<void>> = [
       async (dir) => { await writeFile(join(dir, "node_modules", "dep", "ci.js"), `const t = "${token}";\n`); },
-      async (dir) => { await mkdir(join(dir, "build"), { recursive: true }); await writeFile(join(dir, "build", ".env"), "A=1\n"); },
+      async (dir) => { await mkdir(join(dir, "__pycache__"), { recursive: true }); await writeFile(join(dir, "__pycache__", ".env"), "A=1\n"); },
       async (dir) => { await writeFile(join(dir, "node_modules", "dep", "state.json"), `{"c":"${held}"}`); },
     ];
     for (const during of plants) {
@@ -609,7 +609,7 @@ describe("the trusted .git is taken before any process exists (review A4)", () =
 describe("only tracked files and dependency or cache folders are shipped (review A5)", () => {
   it("untracked conftest.py, pytest.ini, sitecustomize.py, .envrc, .npmrc and a stray source file are dropped; tracked ones, dependency folders, caches and declared folders are kept", async () => {
     const w = await world({
-      files: { ...FILES, "conftest.py": "# tracked\n" },
+      files: { ...FILES, "conftest.py": "# tracked\n", "pom.xml": "<project/>\n" },
       declaredFolders: ["out"],
       during: async (dir) => {
         for (const name of ["pytest.ini", "sitecustomize.py", ".envrc", ".npmrc", "src/extra.py", "conftest_untracked.py"]) await writeFile(join(dir, name), "x\n");
@@ -620,6 +620,44 @@ describe("only tracked files and dependency or cache folders are shipped (review
     const files = w.rec.contexts[0]!.files.filter((file) => file.startsWith("seed/svc/")).map((file) => file.slice("seed/svc/".length));
     for (const dropped of ["pytest.ini", "sitecustomize.py", ".envrc", ".npmrc", "src/extra.py", "conftest_untracked.py", "other", "other/stuff/f"]) expect(files, dropped).not.toContain(dropped);
     for (const kept of ["conftest.py", "package.json", "src/index.js", "node_modules/dep/f", ".venv/lib/f", "src/__pycache__/f", "target/classes/f", ".pytest_cache/f", "out/reports/f"]) expect(files, kept).toContain(kept);
+  });
+
+  it("inside the dependency and cache folders, files that run code on their own are not shipped either: conftest.py, pytest.ini, sitecustomize.py, usercustomize.py, .envrc, .npmrc, and a .pth outside site-packages", async () => {
+    const w = await world({
+      during: async (dir) => {
+        for (const folder of ["node_modules/dep", ".venv/lib/python3.12/site-packages", ".venv/lib/python3.12/other", "__pycache__"]) await mkdir(join(dir, folder), { recursive: true });
+        for (const name of ["node_modules/dep/conftest.py", "node_modules/dep/pytest.ini", ".venv/lib/python3.12/site-packages/sitecustomize.py", ".venv/lib/python3.12/site-packages/usercustomize.py", "node_modules/dep/.envrc", "node_modules/dep/.npmrc", ".venv/lib/python3.12/other/evil.pth"]) await writeFile(join(dir, name), "x\n");
+        for (const name of ["node_modules/dep/ok.js", ".venv/lib/python3.12/site-packages/ok.py", ".venv/lib/python3.12/site-packages/editable.pth"]) await writeFile(join(dir, name), "y\n");
+      },
+    });
+    expect((await proveAndBuildSavedImage(w.input, w.ports)).ok).toBe(true);
+    const files = w.rec.contexts[0]!.files.filter((file) => file.startsWith("seed/svc/")).map((file) => file.slice("seed/svc/".length));
+    for (const dropped of ["node_modules/dep/conftest.py", "node_modules/dep/pytest.ini", ".venv/lib/python3.12/site-packages/sitecustomize.py", ".venv/lib/python3.12/site-packages/usercustomize.py", "node_modules/dep/.envrc", "node_modules/dep/.npmrc", ".venv/lib/python3.12/other/evil.pth"]) expect(files, dropped).not.toContain(dropped);
+    for (const kept of ["node_modules/dep/ok.js", ".venv/lib/python3.12/site-packages/ok.py", ".venv/lib/python3.12/site-packages/editable.pth"]) expect(files, kept).toContain(kept);
+  });
+
+  it("build/, target/ and vendor/ are dependency folders only beside the committed build file that makes them", async () => {
+    const cases: Array<[string, Record<string, string>, string, boolean]> = [
+      ["build/ with no build file", {}, "build/f", false],
+      ["build/ beside build.gradle", { "build.gradle": "x\n" }, "build/f", true],
+      ["build/ beside build.gradle.kts", { "build.gradle.kts": "x\n" }, "build/f", true],
+      ["build/ beside pyproject.toml", { "pyproject.toml": "x\n" }, "build/f", true],
+      ["build/ beside setup.py", { "setup.py": "x\n" }, "build/f", true],
+      ["build/ beside a pom.xml only", { "pom.xml": "x\n" }, "build/f", false],
+      ["target/ with no build file", {}, "target/f", false],
+      ["target/ beside pom.xml", { "pom.xml": "x\n" }, "target/f", true],
+      ["target/ beside Cargo.toml", { "Cargo.toml": "x\n" }, "target/f", true],
+      ["vendor/ with no build file", {}, "vendor/f", false],
+      ["vendor/ beside go.mod", { "go.mod": "x\n" }, "vendor/f", true],
+      ["vendor/ beside composer.json", { "composer.json": "x\n" }, "vendor/f", true],
+      ["vendor/ beside Gemfile", { Gemfile: "x\n" }, "vendor/f", true],
+      ["a build file in another folder does not anchor", { "other/build.gradle": "x\n" }, "build/f", false],
+    ];
+    for (const [name, files, planted, kept] of cases) {
+      const w = await world({ files: { ...FILES, ...files }, during: async (dir) => { await mkdir(join(dir, planted, ".."), { recursive: true }); await writeFile(join(dir, planted), "z\n"); } });
+      expect((await proveAndBuildSavedImage(w.input, w.ports)).ok, name).toBe(true);
+      expect(w.rec.contexts[0]!.files.includes(`seed/svc/${planted}`), name).toBe(kept);
+    }
   });
 
   it("an untracked .env at the top is not shipped at all (so it cannot even be found by the scan)", async () => {

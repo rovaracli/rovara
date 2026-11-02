@@ -63,17 +63,17 @@ describe("the creation template", () => {
     expect(props()["CustomRoleArn"]).toBeDefined();
   });
 
-  it("keeps the newest 3 images and expires untagged ones after a day; there is NO age rule (a tagged-image age rule never matches behind a count rule: the broker's manage walk holds the 30 day ceiling)", () => {
+  it("expires untagged images after a day and has a count backstop of keep + 3 (6 by default); there is NO age rule (a tagged-image age rule never matches behind a count rule: the broker's manage walk holds the 30 day ceiling)", () => {
     const rules = (JSON.parse(props()["LifecyclePolicy"] as string) as { rules: Array<{ rulePriority: number; selection: Record<string, unknown> }> }).rules;
     expect(rules.map((rule) => rule.rulePriority)).toEqual([1, 2]);
     expect(rules[0]!.selection).toMatchObject({ tagStatus: "untagged", countNumber: 1 });
-    expect(rules[1]!.selection).toMatchObject({ tagStatus: "tagged", countType: "imageCountMoreThan", countNumber: 3 });
+    expect(rules[1]!.selection).toMatchObject({ tagStatus: "tagged", countType: "imageCountMoreThan", countNumber: 6 });
     expect(JSON.stringify(rules)).not.toContain("sinceImagePushed\",\"countUnit\":\"days\",\"countNumber\":30");
     expect(rules.some((rule) => rule.selection["tagStatus"] === "any")).toBe(false);
   });
 
   it("the company's keep setting (1 to 10) changes the count, and 0 or 11 are refused", () => {
-    expect((JSON.parse(propsOf(build({ keep: 6 }).template, "AWS::ECR::RepositoryCreationTemplate")["LifecyclePolicy"] as string) as { rules: Array<{ selection: { countNumber: number } }> }).rules[1]!.selection.countNumber).toBe(6);
+    expect((JSON.parse(propsOf(build({ keep: 6 }).template, "AWS::ECR::RepositoryCreationTemplate")["LifecyclePolicy"] as string) as { rules: Array<{ selection: { countNumber: number } }> }).rules[1]!.selection.countNumber).toBe(9);
     expect(() => build({ keep: 0 })).toThrow();
     expect(() => build({ keep: 11 })).toThrow();
   });

@@ -466,11 +466,15 @@ describe("a failure after the seed was used starts over without it (review B1)",
     expect(r.log).toEqual(["fresh clone"]);
   });
 
-  it("a failure that is also the fresh run's own failure is thrown (no loop)", async () => {
+  it("a failure that is also the fresh run's own failure is thrown, and NOTHING is reported: the image is not marked stale (no rebuild storm)", async () => {
     const f = await fixture();
     const calls: string[] = [];
-    await expect(run(f, fakeDocker(f), { project: withSetup(), prepare: { readOnly: false, commandRunner: async () => { calls.push("run"); return { exitCode: 1, stdout: "", stderr: "broken" }; } } })).rejects.toThrow();
+    const fallbacks: SavedEnvUseStep[] = [];
+    const diagnostics: string[] = [];
+    await expect(run(f, fakeDocker(f), { project: withSetup(), onFallback: (step) => fallbacks.push(step), onDiagnostic: (message) => diagnostics.push(message), prepare: { readOnly: false, commandRunner: async () => { calls.push("run"); return { exitCode: 1, stdout: "", stderr: "broken" }; } } })).rejects.toThrow();
     expect(calls).toEqual(["run", "run"]);
+    expect(fallbacks).toEqual([]);
+    expect(diagnostics).toEqual([]);
   });
 
   it("a failure when the seed was NOT used (it fell back) is not retried a second time", async () => {

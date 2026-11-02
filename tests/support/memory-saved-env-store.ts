@@ -3,26 +3,28 @@ import type { SavedEnvAuditEntry, SavedEnvState, SavedEnvStore } from "../../pac
 
 export interface MemorySavedEnvStore extends SavedEnvStore {
   rows: Map<string, SavedEnvState>;
-  audit: SavedEnvAuditEntry[];
+  /** Every audit entry, in order (those written with a change and those written alone). */
+  log: SavedEnvAuditEntry[];
   /** Makes the next commit report that the row changed meanwhile. */
   failNextCommit(): void;
 }
 
 export function memorySavedEnvStore(): MemorySavedEnvStore {
   const rows = new Map<string, SavedEnvState>();
-  const audit: SavedEnvAuditEntry[] = [];
+  const log: SavedEnvAuditEntry[] = [];
   let failNext = false;
   const key = (orgId: string, projectId: string): string => `${orgId}#${projectId}`;
   return {
-    rows, audit,
+    rows, log,
     failNextCommit() { failNext = true; },
+    audit(entry) { log.push(structuredClone(entry)); return Promise.resolve(); },
     get: (orgId, projectId) => Promise.resolve(structuredClone(rows.get(key(orgId, projectId)))),
     commit(next, expectedVersion, entry) {
       if (failNext) { failNext = false; return Promise.resolve(false); }
       const current = rows.get(key(next.orgId, next.projectId));
       if ((current?.version ?? null) !== expectedVersion) return Promise.resolve(false);
       rows.set(key(next.orgId, next.projectId), structuredClone(next));
-      audit.push(structuredClone(entry));
+      log.push(structuredClone(entry));
       return Promise.resolve(true);
     },
   };

@@ -68,23 +68,29 @@ export async function inspectLink(root: string, relative: string, target: string
       return (await isVenvInterpreterLink(root, relative, target, policy)) ? { ok: true } : { ok: false };
     }
   }
-  // Walk the target from the link's own folder, on the real tree.
+  // Walk the target from the link's own folder, on the real tree. Below a component that does not exist (or is not a folder) nothing can be a link, but the rest of the path is still normalised: a broken link
+  // whose target climbs out of the root after the missing part is refused (`missing/../../..`).
   let current = path.posix.dirname(relative);
   if (current === ".") current = "";
   const components = relativeTarget.split("/").filter((component) => component !== "" && component !== ".");
+  let real = true;
+  /** The first component that was not there (or not a folder): below it nothing is looked up; once the walk climbs above it, looking up starts again. */
+  let missingPath = "";
   for (let index = 0; index < components.length; index += 1) {
     const component = components[index]!;
     const last = index === components.length - 1;
     if (component === "..") {
       if (current === "") return { ok: false };
       current = path.posix.dirname(current) === "." ? "" : path.posix.dirname(current);
+      if (!real && current !== missingPath && !current.startsWith(`${missingPath}/`)) real = true;
       continue;
     }
     const next = current === "" ? component : `${current}/${component}`;
-    const info = await exists(path.join(root, next));
-    if (info === undefined) return rewriteTo === undefined ? { ok: true } : { ok: true, rewriteTo };
-    if (info.isSymbolicLink() && !last) return { ok: false };
-    if (!info.isDirectory() && !last) return rewriteTo === undefined ? { ok: true } : { ok: true, rewriteTo };
+    if (real) {
+      const info = await exists(path.join(root, next));
+      if (info === undefined || (!info.isDirectory() && !info.isSymbolicLink() && !last)) { real = false; missingPath = next; }
+      else if (info.isSymbolicLink() && !last) return { ok: false };
+    }
     current = next;
   }
   return rewriteTo === undefined ? { ok: true } : { ok: true, rewriteTo };

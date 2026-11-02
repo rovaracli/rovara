@@ -41,6 +41,18 @@ describe("relative links, walked on the real tree", () => {
     expect(await ok(root, "n/z", "a/../..")).toBe(false);
   });
 
+  it("a broken link is walked to the end: a missing part followed by enough .. to leave the root is refused; climbing back out of the missing part makes later components real again", async () => {
+    const root = await scratch();
+    await mkdir(join(root, "svc"), { recursive: true });
+    await symlink(".", join(root, "svc", "dirlink"));
+    expect(await ok(root, "svc/a", "missing/../../../x")).toBe(false);
+    expect(await ok(root, "svc/a", "missing/x/y")).toBe(true);
+    expect(await ok(root, "svc/a", "missing/../b")).toBe(true);
+    expect(await ok(root, "svc/a", "missing/../dirlink/f")).toBe(false);
+    expect(await ok(root, "svc/a", "a/b/c/../../../../..")).toBe(false);
+    expect(await ok(root, "svc/a", "a/b/c/../../..")).toBe(true);
+  });
+
   it("refuses any link under a .git folder", async () => {
     const root = await scratch();
     expect(await ok(root, "svc/.git/refs/x", "../HEAD")).toBe(false);

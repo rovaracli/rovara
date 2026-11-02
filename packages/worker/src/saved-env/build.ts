@@ -116,13 +116,20 @@ export interface StagePolicy {
   declaredFolders: readonly string[];
 }
 
-/** Untracked folders that are the installed dependencies and caches of a build, by name, at any depth. Everything else untracked (a `conftest.py`, a `.npmrc`, a `sitecustomize.py`, an `.envrc`) is not shipped. */
+/**
+ * Untracked folders that are the installed dependencies and caches of a build, by name, at any depth. Everything else untracked (a `conftest.py`, a `.npmrc`, a `sitecustomize.py`, an `.envrc`) is not shipped.
+ * `build`, `target` and `vendor` are such folders ONLY next to the committed build file that makes them (`SAVED_ENV_ANCHORED_FOLDERS`): a stray `build/` is just a folder.
+ */
 export const SAVED_ENV_UNTRACKED_FOLDER_NAMES: readonly string[] = [
-  "node_modules", ".venv", "venv", "__pycache__", "target", "build", ".gradle", ".m2", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs",
-  ".npm", ".yarn", ".pnpm-store", ".cargo", "vendor",
+  "node_modules", ".venv", "venv", "__pycache__", ".gradle", ".m2", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", ".npm", ".yarn", ".pnpm-store", ".cargo",
 ];
-
-export type { TreeEntry };
+export const SAVED_ENV_ANCHORED_FOLDERS: Readonly<Record<string, readonly string[]>> = {
+  build: ["build.gradle", "build.gradle.kts", "setup.py", "pyproject.toml"],
+  target: ["Cargo.toml", "pom.xml", "build.sbt"],
+  vendor: ["composer.json", "Gemfile", "go.mod"],
+};
+/** File names that run code on their own when a tool finds them, so they are never shipped untracked from inside a dependency or cache folder; `*.pth` likewise, except in `site-packages`. */
+export const SAVED_ENV_NEVER_SHIPPED_UNTRACKED: ReadonlySet<string> = new Set(["conftest.py", "pytest.ini", "sitecustomize.py", "usercustomize.py", ".envrc", ".npmrc"]);
 
 export interface SavedEnvBuildPorts {
   docker: DockerCli;
@@ -395,8 +402,24 @@ export async function stageTree(source: string, destination: string, policy: Sta
     let folder = path.posix.dirname(tracked);
     while (folder !== "." && !ancestors.has(folder)) { ancestors.add(folder); folder = path.posix.dirname(folder); }
   }
-  const inside = (relative: string): boolean => relative.split("/").some((segment) => policy.untrackedFolderNames.has(segment))
-    || policy.declaredFolders.some((folder) => relative === folder || relative.startsWith(`${folder}/`));
+  /** Whether a path component at `index` names a dependency or cache folder: by name, or (`build`, `target`, `vendor`) beside the committed build file that makes it. */
+  const folderAt = (segments: readonly string[], index: number): boolean => {
+    const name = segments[index]!;
+    if (policy.untrackedFolderNames.has(name)) return true;
+    const anchors = SAVED_ENV_ANCHORED_FOLDERS[name];
+    if (anchors === undefined) return false;
+    const parent = segments.slice(0, index).join("/");
+    return anchors.some((file) => policy.tracked.has(parent === "" ? file : `${parent}/${file}`));
+  };
+  const inside = (relative: string): boolean => {
+    const segments = relative.split("/");
+    return segments.some((_segment, index) => folderAt(segments, index)) || policy.declaredFolders.some((folder) => relative === folder || relative.startsWith(`${folder}/`));
+  };
+  /** An untracked file that runs code when a tool finds it: never shipped (`*.pth` only survives in `site-packages`). */
+  const neverShipped = (relative: string): boolean => {
+    const base = path.posix.basename(relative);
+    return SAVED_ENV_NEVER_SHIPPED_UNTRACKED.has(base) || (base.endsWith(".pth") && !relative.split("/").includes("site-packages"));
+  };
   await cp(source, destination, {
     recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true, dereference: false, preserveTimestamps: false,
     filter: async (from) => {
@@ -406,7 +429,7 @@ export async function stageTree(source: string, destination: string, policy: Sta
       if (/(?:^|\/)\.git\/hooks(?:\/|$)/u.test(relative)) return false;
       const info = await lstat(from);
       if (info.isDirectory()) return ancestors.has(relative) || inside(relative);
-      if (info.isSymbolicLink() || info.isFile()) return policy.tracked.has(relative) || inside(relative);
+      if (info.isSymbolicLink() || info.isFile()) return policy.tracked.has(relative) || (inside(relative) && !neverShipped(relative));
       if (info.isSocket() || info.isFIFO()) return false;
       throw new Error("a device file cannot be saved");
     },
