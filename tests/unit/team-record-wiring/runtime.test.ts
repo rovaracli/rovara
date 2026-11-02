@@ -1548,6 +1548,8 @@ describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to
     expect(hits[0]!.snippet.indexOf("Checkout fails")).toBeGreaterThanOrEqual(0);
     expect(hits[0]!.snippet.indexOf(SAM_WORDS)).toBeGreaterThan(hits[0]!.snippet.indexOf("add nothing"));
     expect(await search(runtime, "Safari")).toHaveLength(1);
+    // A query that two rows of the item match (the creation's title and Sam's line) still shows the item once.
+    expect(await search(runtime, "checkout reproduced")).toHaveLength(1);
     await runtime.erase.person(ORG_A, "dev-2");
     await runtime.jobs.run("hourly");
     clock.at += ERASE_SWEEP_DELAY_MS + 1;
