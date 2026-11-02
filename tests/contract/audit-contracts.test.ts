@@ -244,7 +244,7 @@ describe("the event catalog", () => {
     "company.second_review_context_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["to", "widens"], sample: { to: "same_as_first", widens: true } },
     "company.second_review_mode_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to"], sample: { scope: "company", from: "on", to: "shadow" } },
     "company.second_review_mode_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to", "mode"], sample: { scope: "project", from: "shadow", to: "on", mode: "direct" } },
-    "company.second_review_mode_cancelled": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to", "reason"], sample: { scope: "company", from: "on", to: "shadow", reason: "stale" } },
+    "company.second_review_mode_cancelled": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["scope", "from", "to", "cause"], sample: { scope: "company", from: "on", to: "shadow", cause: "stale" } },
     "company.second_review_mode_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
     "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
     "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },

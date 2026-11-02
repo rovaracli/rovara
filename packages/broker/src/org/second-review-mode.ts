@@ -162,7 +162,7 @@ export async function requestSecondReviewMode(deps: ModeDeps, input: { orgId: st
   const id = (deps.newId ?? (() => randomUUID()))();
   const audit = auditFor(deps, { action: "company.second_review_mode_proposed", target: eventTarget(orgId, scope), facts }, input.requestedBy, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
-  const replaced = open === undefined ? undefined : auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(orgId, scope), facts: { scope: scope.kind, from: open.from, to: open.to, reason: "stale" } }, input.requestedBy, at);
+  const replaced = open === undefined ? undefined : auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(orgId, scope), facts: { scope: scope.kind, from: open.from, to: open.to, cause: "stale" } }, input.requestedBy, at);
   if (open !== undefined && replaced === undefined) return { ok: false, code: "audit_unavailable" };
   const change: ModeChange = { id, orgId, scope, from: before, to, ...(clear ? { clear: true as const } : {}), proposedBy: input.requestedBy, at, expiresAt: at + SECOND_REVIEW_MODE_CHANGE_TTL_MS, state: "pending" };
   const result = await sendTransaction(deps, [
@@ -284,7 +284,7 @@ export async function cancelSecondReviewModeChange(deps: ModeDeps, input: { orgI
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const at = deps.now();
-  const audit = auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(input.orgId, change.scope), facts: { scope: change.scope.kind, from: change.from, to: change.to, reason: "withdrawn" } }, input.actorId, at);
+  const audit = auditFor(deps, { action: "company.second_review_mode_cancelled", target: eventTarget(input.orgId, change.scope), facts: { scope: change.scope.kind, from: change.from, to: change.to, cause: "withdrawn" } }, input.actorId, at);
   if (audit === undefined) return { ok: false, code: "audit_unavailable" };
   // The cancellation and its audit event commit together.
   const result = await sendTransaction(deps, [cancelUpdate(deps, input.orgId, change.id), audit.put]);

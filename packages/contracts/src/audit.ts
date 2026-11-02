@@ -491,8 +491,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.second_review_mode_proposed": ["scope", "from", "to"],
   "company.second_review_mode_changed": ["scope", "from", "to", "mode"],
   "company.second_review_mode_refused": ["refusal"],
-  // A waiting proposal withdrawn (by a person) or replaced by a newer one because the mode it was made against moved (`reason`: `withdrawn` or `stale`).
-  "company.second_review_mode_cancelled": ["scope", "from", "to", "reason"],
+  // A waiting proposal withdrawn (by a person) or replaced by a newer one because the mode it was made against moved (`cause`: `withdrawn` or `stale`).
+  "company.second_review_mode_cancelled": ["scope", "from", "to", "cause"],
   // `runId` is the replay run's id; `cases` how many it holds; `passed` what the bar says when it is scored afresh (never stored). `model` is the model's key; `days`, `findings` and `agreed` are the shadow window the broker counted itself.
   "company.second_review_replay_recorded": ["runId", "cases", "passed"],
   "company.second_review_verdict_recorded": ["model", "runId", "days", "findings", "agreed"],

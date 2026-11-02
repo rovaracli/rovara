@@ -357,7 +357,7 @@ describe("a waiting proposal that the mode has moved away from", () => {
     expect(write.input!.TransactItems!.some((item) => item.Update?.ExpressionAttributeValues?.[":cancelled"] === "cancelled")).toBe(true);
     expect(write.input!.TransactItems!.filter((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toHaveLength(2);
     expect((await view(t)).pending).toMatchObject([{ changeId, from: "on", to: "shadow" }]);
-    expect(modeEvents(audit).find((event) => event.action === "company.second_review_mode_cancelled")).toMatchObject({ facts: { scope: "company", from: "shadow", to: "off", reason: "stale" } });
+    expect(modeEvents(audit).find((event) => event.action === "company.second_review_mode_cancelled")).toMatchObject({ facts: { scope: "company", from: "shadow", to: "off", cause: "stale" } });
     // The old one can no longer be approved.
     expect((await t.web(MAYA, "POST", PATH, { action: "approve-mode", changeId: old })).status).toBe(409);
     // Still matching: a second proposal is refused as before.
@@ -377,7 +377,7 @@ describe("withdrawing a proposal", () => {
     t.db.send = original;
     const write = sent.find((command) => command.input?.TransactItems?.some((item) => item.Update !== undefined))!;
     expect(write.input!.TransactItems!.some((item) => item.Put?.Item?.pk?.startsWith("AUDIT_PENDING#"))).toBe(true);
-    expect(modeEvents(audit).at(-1)).toMatchObject({ action: "company.second_review_mode_cancelled", actor: { id: OMAR.developerId }, facts: { scope: "company", from: "on", to: "shadow", reason: "withdrawn" } });
+    expect(modeEvents(audit).at(-1)).toMatchObject({ action: "company.second_review_mode_cancelled", actor: { id: OMAR.developerId }, facts: { scope: "company", from: "on", to: "shadow", cause: "withdrawn" } });
     // Withdrawing it twice is refused and audits nothing more.
     const events = modeEvents(audit).length;
     expect((await t.web(OMAR, "POST", PATH, { action: "cancel-mode", changeId })).status).toBe(409);
