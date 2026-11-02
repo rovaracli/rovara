@@ -14,6 +14,7 @@ import { runSetupCommand } from "../../rovara-code/setup-command.js";
 import { confirmSetupAgent, type SetupConfirmDependencies } from "../../rovara-code/setup-confirm.js";
 import { listHostAsks } from "../../rovara-code/setup-host-ask.js";
 import { readSetupJournal } from "../../rovara-code/setup-journal.js";
+import { signInStoreOf } from "./common.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
@@ -63,6 +64,8 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
     limitSettings: async () => ({}),
     requireFreshSignIn: async (who) => { await requireFreshSignIn(deps, who); },
     modelAccessConfigured: deps.modelAccess !== undefined,
+    // F5: "stopped by <person>" shows the name the company knows.
+    stopperName: async (_orgId, developerId) => (await signInStoreOf(deps).getDevelopers([developerId])).get(developerId)?.displayName,
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
     payerFor: async (who, project): Promise<Payer> => {
       if (deps.agents === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");

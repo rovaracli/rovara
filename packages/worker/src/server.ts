@@ -236,7 +236,10 @@ async function executeInBackground(invocation: WorkerInvocation, state: WorkerSe
  * Spec 051 Ruling Y: a task that ends failed or cancelled with a regression AgentX found carries its report, so the
  * broker keeps the regression standing. No other failure sends a result.
  */
-function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown; noChangeFindings?: unknown } } {
+function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown; noChangeFindings?: unknown; workflowMode?: unknown; setupProposal?: unknown; setupRunSummary?: unknown } } {
+  // F5: a stopped setup run's own report (its partial proposal and summary; the broker reads both again) is the whole result.
+  const setupRun = error instanceof WorkerOperationCancelledError && typeof error.setupRunResult === "object" && error.setupRunResult !== null ? error.setupRunResult as Record<string, unknown> : undefined;
+  if (setupRun?.["workflowMode"] === "SETUP_AGENT") return { result: { workflowMode: "SETUP_AGENT", ...(setupRun["setupProposal"] === undefined ? {} : { setupProposal: setupRun["setupProposal"] }), ...(setupRun["setupRunSummary"] === undefined ? {} : { setupRunSummary: setupRun["setupRunSummary"] }) } };
   const checks = typeof error === "object" && error !== null && "checks" in error ? error.checks : undefined;
   const workflowDependenciesResult = typeof error === "object" && error !== null && "workflowDependenciesResult" in error ? error.workflowDependenciesResult : undefined;
   // A coding run that left the code as it was carries what it found (already redacted and bounded by the run; redacted again here, as every failure's text is).

@@ -65,6 +65,8 @@ export interface SetupRunInput {
   repositories: readonly SetupManifestRepository[];
   /** P1: the commits the broker recorded for these repositories (the invocation's `setupAgent.commits`). REQUIRED to be present and equal, or the run is refused before anything starts. */
   commits: SetupCommits;
+  /** Test seam: how long a stopped run may take to finish (default `SETUP_STOP_FINISH_MS`). */
+  stopFinishMs?: number | undefined;
   metaRepo?: string | undefined;
   ports: SetupRunPorts;
 }
@@ -73,6 +75,19 @@ export interface SetupRunResult {
   workflowMode: "SETUP_AGENT";
   setupProposal?: SetupProposal;
   setupRunSummary: SetupRunSummary;
+}
+
+/** F5: how long a run that a person stopped may take to finish and report what it had (killing the sandbox, the last look at the tracked files, reading the proposal). Past it the stop is reported with no proposal. */
+export const SETUP_STOP_FINISH_MS = 15_000;
+
+/** The promise's value, or undefined when it did not settle in `ms` (its late value or failure is then ignored). */
+async function withinMs<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work.catch(() => undefined), new Promise<undefined>((resolve) => { timer = setTimeout(() => { resolve(undefined); }, ms); timer.unref?.(); })]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** A cache write costs 1.25 times the input price: the extra quarter, on top of the input price already counted for it. */
@@ -150,6 +165,8 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
   let blocked: string[] = [];
   let delivered: string[] = [];
   let personSeq: number | undefined;
+  /** Set when the run was aborted from outside (a person's Stop): the end is then bounded (`SETUP_STOP_FINISH_MS`). */
+  let cancelled = false;
   /** The command place of each journal entry a person's command wrote (so a website it hit is asked for with the command's place, from which the broker finds who typed it). */
   const seqOfEntry = new Map<number, number>();
 
@@ -210,7 +227,7 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
       governorSessionListener(governor)(event);
     });
     unregister = ports.register({
-      abort: async () => { governor.stop("infrastructure"); await session?.abort(); },
+      abort: async () => { cancelled = true; governor.stop("infrastructure"); await session?.abort(); },
       steer: async (text) => (session?.steer === undefined || session.isStreaming?.() !== true ? false : (await session.steer(text), true)),
       streaming: () => session?.isStreaming?.() === true,
     });
@@ -265,32 +282,31 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     if (failed && governor.ended() === undefined) governor.stop("infrastructure");
 
     // ---- the end. Order matters: every process in the sandbox is killed (the container is removed) BEFORE the last look at the tracked files.
-    governor.dispose();
-    await sandbox.dispose();
-    const verdict = await lastFiles();
-    let proposal: SetupProposal | undefined;
-    let summary: SetupRunSummary;
-    if (governor.ended() === undefined && shell.ended() === undefined) {
-      const finished = await finishSetupAgent({
-        finalText, verdict, basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories,
-        ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }), scan, tracked,
-        records: governor.entries().filter((entry) => entry.source === "agent"),
-      });
-      if (finished.ok) {
-        proposal = finished.proposal;
-        summary = SetupRunSummarySchema.parse({ ...governor.summary(), stop: finished.end, partial: false });
-      } else {
+    // F5: after a person's Stop the run still finishes and reports what it had, but only within a few seconds; past that it reports the stop with no proposal (the cancel has already ended the task, and the
+    // sandbox is removed below whatever happened here). An unfinished look at the tracked files is never a clean one.
+    const finishRun = async (): Promise<{ proposal: SetupProposal | undefined; summary: SetupRunSummary }> => {
+      governor.dispose();
+      await sandbox!.dispose();
+      const verdict = await lastFiles();
+      if (governor.ended() === undefined && shell.ended() === undefined) {
+        const finished = await finishSetupAgent({
+          finalText, verdict, basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories,
+          ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }), scan, tracked,
+          records: governor.entries().filter((entry) => entry.source === "agent"),
+        });
+        if (finished.ok) return { proposal: finished.proposal, summary: SetupRunSummarySchema.parse({ ...governor.summary(), stop: finished.end, partial: false }) };
         if (finished.end === "changed_repository_files") governor.onEnded("changed_repository_files"); else governor.stop("infrastructure");
-        summary = governor.summary();
+        return { proposal: undefined, summary: governor.summary() };
       }
-    } else {
       const stopped = await finishStoppedRun({
         governor, trackedFiles: verdict, shell, lastText: finalText, basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories,
         ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }), scan, tracked,
       });
-      proposal = stopped.proposal;
-      summary = stopped.summary;
-    }
+      return { proposal: stopped.proposal, summary: stopped.summary };
+    };
+    const ended = cancelled ? await withinMs(finishRun(), input.stopFinishMs ?? SETUP_STOP_FINISH_MS) : await finishRun();
+    const proposal = ended?.proposal;
+    const summary = ended?.summary ?? governor.summary();
     // What is left unsent goes now, once; the broker keeps the first entry for a position.
     await flushLast(ports, pendingEntries);
     return { workflowMode: "SETUP_AGENT", ...(proposal === undefined ? {} : { setupProposal: proposal }), setupRunSummary: summary };

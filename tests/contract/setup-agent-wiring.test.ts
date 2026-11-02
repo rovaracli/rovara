@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey,
+  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, sanitizeSetupProposal, setupDraftKey,
 } from "../../packages/contracts/src/index.js";
 import * as runs from "../../packages/broker/src/agents/runs.js";
 import { runGivesAgentTools, setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
@@ -233,6 +233,75 @@ describe("the end", () => {
     const stopped = await t.dev(MAYA, "POST", `${ROUTE}/stop`, { requestId: randomUUID() });
     expect(stopped.status, JSON.stringify(stopped.body)).toBe(202);
     expect(t.db.get(taskKey(task.taskId))).toMatchObject({ setupAgentStop: { by: MAYA.developerId } });
+  });
+});
+
+describe("F5: a person's Stop keeps the partial proposal", () => {
+  const partialFor = (task: { startingRevision?: unknown }) => {
+    const read = sanitizeSetupProposal({ setup: [{ repo: "web", commands: ["npm ci"], confidence: "medium", from: [{ kind: "inferred", repo: "web", note: "worked when run" }] }], tests: [], notes: "stopped" }, { basedOnRevision: Number(task.startingRevision), repositories: [{ name: "web", url: "https://github.com/acme/web.git" }] });
+    if (!read.ok) throw new Error("fixture");
+    return read.proposal;
+  };
+  const summary = { stop: "stopped_by_person", commandsRun: 3, spendCents: 20, elapsedMs: 9000, hostAsks: 0, partial: true };
+  const stopIt = async (t: Bench) => {
+    await t.person(MAYA, "member", "maintainer");
+    const run = await started(t);
+    const stopped = await t.dev(MAYA, "POST", `${ROUTE}/stop`, { requestId: randomUUID() });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(202);
+    const cancel = ops(t, run.task.workspaceId).find((operation) => operation.kind === "cancel")!;
+    return { ...run, cancel };
+  };
+  const report = (task: { startingRevision?: unknown }) => ({ conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_AGENT", setupProposal: partialFor(task), setupRunSummary: { ...summary, stop: "infrastructure" } });
+
+  it("the cancel ends the run at once as the person's stop; the worker's own report, a moment later, adds the partial proposal and who stopped it", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    const early = await t.dev(MAYA, "GET", ROUTE);
+    expect(early.body).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+    expect(early.body).not.toHaveProperty("proposal");
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    const late = await t.dev(MAYA, "GET", ROUTE);
+    expect(late.body).toMatchObject({ status: "failed", stop: "stopped_by_person", summary: { stop: "stopped_by_person", partial: true, commandsRun: 3 }, stoppedBy: { name: expect.any(String) } });
+    expect(JSON.stringify((late.body as { proposal?: unknown }).proposal)).toContain("npm ci");
+    // The run is over and nothing was applied: no settings revision, no test-environment proposal.
+    expect(t.db.find((item) => item.entityType === "TESTENV" || String(item.pk).includes("TESTENV#"))).toEqual([]);
+  });
+
+  it("a report that arrives with a status other than the cancelled one is accepted too, never a conflict, and a second report changes nothing", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: report(task) });
+    const first = (await t.dev(MAYA, "GET", ROUTE)).body as { proposal?: unknown };
+    expect(JSON.stringify(first.proposal)).toContain("npm ci");
+    const changed = report(task);
+    (changed.setupProposal as { notes?: string }).notes = "another";
+    await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: changed });
+    expect(((await t.dev(MAYA, "GET", ROUTE)).body as { proposal?: unknown }).proposal).toEqual(first.proposal);
+  });
+
+  it("when the worker's report beats the cancel's, the same stopped run with the partial proposal is stored", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own, cancel } = await stopIt(t);
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    await t.finish(task.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    const state = (await t.dev(MAYA, "GET", ROUTE)).body as { status: string; stop: string; proposal?: unknown };
+    expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+    expect(JSON.stringify(state.proposal)).toContain("npm ci");
+  });
+
+  it("a report for a run nobody stopped adds nothing (a sweep's cancel is not a person's stop)", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    const { task, own } = await started(t);
+    await t.finish(task.workspaceId, own.id, "CANCELLED", { result: report(task) });
+    const state = (await t.dev(OMAR, "GET", ROUTE)).body as Record<string, unknown>;
+    expect(state).toMatchObject({ status: "failed", stop: "infrastructure" });
+    expect(state).not.toHaveProperty("proposal");
   });
 });
 

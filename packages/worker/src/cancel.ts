@@ -16,7 +16,8 @@ export interface AbortablePiSession {
 export interface LiveSteerTaken { messageId: string; authority: "owner_instruction" | "information" }
 
 export class WorkerOperationCancelledError extends Error {
-  constructor(readonly operationId: string) {
+  /** F5: a setup run that was stopped finishes and reports what it had; its result rides on the cancelled end (the broker reads it again and keeps only the partial proposal). */
+  constructor(readonly operationId: string, readonly setupRunResult?: unknown) {
     super(`operation ${operationId} was cancelled`);
     this.name = "WorkerOperationCancelledError";
   }

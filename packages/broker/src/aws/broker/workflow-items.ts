@@ -483,7 +483,8 @@ export async function completedWorkflowItems(
   }
   // SH14: a setup run's result is its proposal and summary (or the fixed reason there is none), written with the result; a person's stop, if one was recorded, is passed so the end can tell it from a system cancel.
   if (task?.purpose === "setup_agent") {
-    const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
+    // F5: a stopped run's partial proposal is read against the project's repositories too (the worker finishes and reports after the abort); the cancel's own end carries no result and reads nothing.
+    const repositories = (terminalStatus === "SUCCEEDED" || (task.setupAgentStop !== undefined && result !== undefined)) && operation.kind === "task"
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return setupAgentEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }

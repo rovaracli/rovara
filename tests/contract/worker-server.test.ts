@@ -271,6 +271,23 @@ describe("worker HTTP contract", () => {
     }
   });
 
+  it("F5: a stopped setup run ends cancelled and carries only its partial proposal and summary; nothing else it holds is sent", async () => {
+    const setupRun = { workflowMode: "SETUP_AGENT", setupProposal: { setup: [] }, setupRunSummary: { stop: "infrastructure", partial: true }, conversationId: "c", secret: "x", checks: { status: "regression" } };
+    const journal = new OperationJournal(await mkdtemp(join(tmpdir(), "agentx-terminal-")));
+    const terminal: Array<Record<string, unknown>> = [];
+    const state = createWorkerServerState(journal, { execute: async () => { throw new WorkerOperationCancelledError("op", setupRun); } }, { onTerminal: async (result) => { terminal.push(result as unknown as Record<string, unknown>); } });
+    await handleWorkerRequest(invocationRequest(taskInvocation()), state);
+    await vi.waitFor(() => expect(terminal).toHaveLength(1));
+    expect(terminal[0]).toMatchObject({ status: "CANCELLED", result: { workflowMode: "SETUP_AGENT", setupProposal: { setup: [] }, setupRunSummary: { stop: "infrastructure", partial: true } } });
+    expect(Object.keys(terminal[0]!["result"] as object).sort()).toEqual(["setupProposal", "setupRunSummary", "workflowMode"]);
+    // A cancelled error whose carried value is not a setup run's report sends nothing of it.
+    const other: Array<Record<string, unknown>> = [];
+    const second = createWorkerServerState(new OperationJournal(await mkdtemp(join(tmpdir(), "agentx-terminal-"))), { execute: async () => { throw new WorkerOperationCancelledError("op", { workflowMode: "PLAN", setupProposal: {} }); } }, { onTerminal: async (result) => { other.push(result as unknown as Record<string, unknown>); } });
+    await handleWorkerRequest(invocationRequest(taskInvocation()), second);
+    await vi.waitFor(() => expect(other).toHaveLength(1));
+    expect(other[0]).not.toHaveProperty("result");
+  });
+
   it("sends the findings of a run that left the code as it was, redacted again, and nothing of them for another failure", async () => {
     const token = ["ghp_", "Ab12".repeat(9)].join("");
     const findings = { commands: [{ command: "grep -rn retry app", output: `app/a.ts: ${token}` }], conclusion: "We use retry in one file." };

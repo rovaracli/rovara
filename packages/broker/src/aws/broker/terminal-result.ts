@@ -10,6 +10,7 @@ import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
 import { keepSetupPreparedBase } from "../../rovara-code/setup-agent.js";
+import { isStoppedSetupOperation, keepStoppedSetupRun } from "./setup-stopped-result.js";
 import { releaseFailedCancelWorkspace } from "../failed-cancel-release.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
 import { noteDurationAtPullRequest } from "../../rovara-code/duration.js";
@@ -257,6 +258,8 @@ export async function recordTerminalResult(
       const released = await releaseOnOwnResult(dependencies, operation);
       if (released !== undefined) return released;
     }
+    // F5 (su): a stopped setup run's late report adds its partial proposal to the run and changes nothing else (setup-stopped-result.ts); it is never a conflict.
+    if (isStoppedSetupOperation(operation)) { await keepStoppedSetupRun(dependencies, operation, input.result); if (operation.status !== status) return operation; }
     if (operation.status !== status && !isQueueFailedPrepare(operation, status) && !isSweptPrepare(operation)) throw agentXError("IDEMPOTENCY_CONFLICT", "terminal result is immutable");
     // #213: a repeated result releases a failed prepare's slot too, in case the first one's release
     // did not land (the release is idempotent, and does nothing to a workspace that moved on).

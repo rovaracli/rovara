@@ -8,7 +8,7 @@ import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SetupAgentWireSchema, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal,
 } from "@agentx/contracts";
 import {
-  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, keepSetupPreparedBase, setupAgentEndItems, setupAgentKey, setupAgentWireOf, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
+  SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, keepSetupPreparedBase, keepStoppedSetupProposal, SETUP_STOP_KEEP_MS, setupAgentEndItems, setupAgentKey, setupAgentWireOf, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
   type SetupAgentDependencies, type SetupAgentRunRequest, type SetupAgentStarter,
 } from "../../packages/broker/src/rovara-code/setup-agent.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -587,5 +587,140 @@ describe("P1: the commits the broker recorded travel in the run's payload", () =
     expect(SetupAgentWireSchema.safeParse({ limits, commits: [{ repository: "web", commit: "main" }] }).success).toBe(false);
     expect(SetupAgentWireSchema.safeParse({ limits, commits: [{ repository: "web", commit: COMMIT, ref: "main" }] }).success).toBe(false);
     expect(SetupAgentWireSchema.safeParse({ limits, commits: [] }).success).toBe(false);
+  });
+});
+
+describe("F5: a person's Stop keeps the partial proposal", () => {
+  const started = async (w: World) => (await startSetupAgent(w.deps, caller(), NAME, body())).body as { taskId: string };
+  const partial = (extra: Record<string, unknown> = {}) => summary({ stop: "infrastructure", partial: true, ...extra });
+  const stopRecorded = async (w: World, taskId: string) => { await stopSetupAgent(w.deps, caller(PAT), NAME, body()); expect(taskOf(w, taskId).setupAgentStop).toMatchObject({ by: PAT }); };
+  const keep = (w: World, taskId: string, result: unknown, repos = repositories) => keepStoppedSetupProposal(w.deps, taskOf(w, taskId) as never, result, repos);
+
+  it("a worker that was aborted and finished reports its partial proposal as an ordinary end: with a recorded stop that is the person's stop, with the proposal, marked stopped and partial", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await stopRecorded(w, taskId);
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: partial() } });
+    const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+    expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person, summary: { stop: "stopped_by_person", partial: true, commandsRun: 9 } });
+    expect(state.proposal).toBeDefined();
+    expect(state.stoppedBy).toMatchObject({ name: "Unknown", at: new Date(w.clock.now).toISOString() });
+  });
+
+  it("a worker that finished by itself keeps its own word even if Stop was pressed a moment before: a proposal stays ready, a limit stays that limit, changed files keep no proposal", async () => {
+    for (const [stop, status, proposalKept] of [["proposed", "ready", true], ["attempts_used", "ready", true], ["changed_repository_files", "failed", false], ["needs_code_change", "failed", false]] as const) {
+      const w = world();
+      const { taskId } = await started(w);
+      await stopRecorded(w, taskId);
+      await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: summary({ stop, partial: stop !== "proposed" && stop !== "needs_code_change" }) } });
+      const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+      expect(state, stop).toMatchObject({ status, stop });
+      expect(state.proposal !== undefined, stop).toBe(proposalKept);
+      expect(state.stoppedBy, stop).toBeUndefined();
+    }
+  });
+
+  it("an answer that cannot be read after a stop is still the person's stop, with nothing kept", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await stopRecorded(w, taskId);
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: "not a proposal" } });
+    const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+    expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+    expect(state.proposal).toBeUndefined();
+  });
+
+  it("without a recorded stop the same answer is not a person's stop and no person is named", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: partial() } });
+    const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+    expect(state).toMatchObject({ status: "failed", stop: "infrastructure" });
+    expect(state.stoppedBy).toBeUndefined();
+  });
+
+  it("names the person who pressed Stop as the company knows them, one plain line, and 'Unknown' when the name cannot be read", async () => {
+    const w = world();
+    const { taskId } = await started(w);
+    await stopRecorded(w, taskId);
+    await end(w, taskId, { status: "CANCELLED", result: { setupProposal: proposal, setupRunSummary: partial() } });
+    w.deps.stopperName = async (_org, developerId) => (developerId === PAT ? "Pat\u202E  Quinn\n" + "x".repeat(300) : undefined);
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).stoppedBy?.name).toMatch(/^Pat Quinn x+$/u);
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).stoppedBy?.name.length).toBeLessThanOrEqual(100);
+    w.deps.stopperName = async () => { throw new Error("directory down"); };
+    expect((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).stoppedBy?.name).toBe("Unknown");
+  });
+
+  describe("the worker's late report, after the cancel already ended the run", () => {
+    const cancelled = async (w: World) => {
+      const { taskId } = await started(w);
+      await stopRecorded(w, taskId);
+      await end(w, taskId, { status: "CANCELLED" });
+      expect(await setupAgentState(w.deps, TEST_ORG, NAME, 3)).toMatchObject({ status: "failed", stop: "stopped_by_person" });
+      expect(taskOf(w, taskId).setupAgentResult?.["proposal"]).toBeUndefined();
+      return taskId;
+    };
+    const report = { setupProposal: proposal, setupRunSummary: partial() };
+
+    it("adds the partial proposal to the stopped run, re-read against the project, marked stopped and partial", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      w.clock.now += 20_000;
+      expect(await keep(w, taskId, report)).toBe(true);
+      const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+      expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person", failure: SETUP_AGENT_FAILURES.stopped_by_person });
+      expect(state.proposal).toBeDefined();
+      expect(state.summary).toMatchObject({ stop: "stopped_by_person", partial: true });
+      expect(taskOf(w, taskId).agentRunEnd).toMatchObject({ state: "CANCELLED" });
+    });
+    it("is refused with no recorded stop, for another purpose, and for a run that is not (any longer) the person's stop with no proposal", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      expect(await keep(w, taskId, { ...report, setupProposal: undefined })).toBe(false);
+      expect(await keepStoppedSetupProposal(w.deps, { ...(taskOf(w, taskId) as never as Record<string, unknown>), setupAgentStop: undefined } as never, report, repositories)).toBe(false);
+      expect(await keepStoppedSetupProposal(w.deps, { ...(taskOf(w, taskId) as never as Record<string, unknown>), purpose: "setup_draft" } as never, report, repositories)).toBe(false);
+      expect(await keepStoppedSetupProposal(w.deps, { ...(taskOf(w, taskId) as never as Record<string, unknown>), setupAgentResult: { status: "failed", stop: "infrastructure", failure: "x" } } as never, report, repositories)).toBe(false);
+      expect(taskOf(w, taskId).setupAgentResult?.["proposal"]).toBeUndefined();
+    });
+    it("holds the first proposal: a second late report changes nothing", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      expect(await keep(w, taskId, report)).toBe(true);
+      const kept = JSON.stringify(taskOf(w, taskId).setupAgentResult);
+      expect(await keep(w, taskId, report)).toBe(false);
+      expect(JSON.stringify(taskOf(w, taskId).setupAgentResult)).toBe(kept);
+    });
+    it("holds the write itself to the stored state: a proposal written between the read and the write wins", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      const stale = taskOf(w, taskId);
+      expect(await keepStoppedSetupProposal(w.deps, stale as never, report, repositories)).toBe(true);
+      // The same stale read again: its own checks pass, the stored result no longer allows the write.
+      expect(await keepStoppedSetupProposal(w.deps, stale as never, report, repositories)).toBe(false);
+    });
+    it("is bounded: a report that comes more than the window after the stop is not kept, nor one dated before it", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      w.clock.now += SETUP_STOP_KEEP_MS + 1;
+      expect(await keep(w, taskId, report)).toBe(false);
+      w.clock.now -= SETUP_STOP_KEEP_MS + 1 + 1000;
+      expect(await keep(w, taskId, report)).toBe(false);
+      w.clock.now += 1000 + SETUP_STOP_KEEP_MS;
+      expect(await keep(w, taskId, report)).toBe(true);
+    });
+    it("reads the proposal again: one for a repository the project does not have is not kept, and a report with nothing readable keeps nothing", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      expect(await keep(w, taskId, report, { names: ["api"], urls: {} })).toBe(false);
+      expect(await keep(w, taskId, { setupProposal: { setup: "ls" }, setupRunSummary: partial() })).toBe(false);
+      expect(await keep(w, taskId, undefined)).toBe(false);
+      expect(await keep(w, taskId, "text")).toBe(false);
+    });
+    it("is not kept once the citations were re-read (the verdicts belong to the proposal they were made for)", async () => {
+      const w = world();
+      const taskId = await cancelled(w);
+      w.db.set({ ...taskOf(w, taskId), setupAgentVerification: { at: "2026-11-02T10:00:00.000Z", items: {} } });
+      expect(await keep(w, taskId, report)).toBe(false);
+    });
   });
 });

@@ -55,6 +55,32 @@ describe("the setup run's proposal, read back", () => {
   });
 });
 
+describe("a stopped run's partial proposal (F5)", () => {
+  it("is shown with who stopped it and its citations re-read, and it can never be used: confirm refuses it and nothing reaches the test environment or the settings", async () => {
+    const t = await bench();
+    const reply = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(reply.status).toBe(202);
+    const [task] = tasks(t);
+    const ops = () => t.operations(task!.workspaceId);
+    await t.finish(task!.workspaceId, ops().find((operation) => operation.kind === "prepare")!.id, "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: COMMIT }] } });
+    const own = ops().find((operation) => operation.kind === "task")!;
+    await t.events(task!.workspaceId, own.id, [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
+    expect((await t.dev(OMAR, "POST", `${ROUTE}/stop`, { requestId: randomUUID() })).status).toBe(202);
+    const cancel = ops().find((operation) => operation.kind === "cancel")!;
+    await t.finish(task!.workspaceId, cancel.id, "SUCCEEDED", { result: { status: "CANCELLED", remainingProcesses: 0 } });
+    await t.finish(task!.workspaceId, own.id, "CANCELLED", { result: { workflowMode: "SETUP_AGENT", setupProposal: { ...raw(), basedOnRevision: 1 }, setupRunSummary: { ...summary, stop: "infrastructure", partial: true } } });
+    const view = (await t.dev(OMAR, "GET", ROUTE)).body as { status: string; stop: string; verified: boolean; verification: Record<string, string>; stoppedBy: { name: string }; proposal: unknown };
+    expect(view).toMatchObject({ status: "failed", stop: "stopped_by_person", verified: true, verification: { "setup-web": "verified", "tests-web": "verified" }, stoppedBy: { name: expect.any(String) as string } });
+    expect(view.proposal).toBeDefined();
+    const refused = await confirm(t);
+    expect(refused.status).toBe(400);
+    expect(refused.body).not.toHaveProperty("digest");
+    expect((await t.state()).proposal).toBeUndefined();
+    expect(t.db.find((item) => item.entityType === "TEST_ENV_SETUP_RUN")).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+  });
+});
+
 describe("confirm: Use this setup", () => {
   it("stores the verified commands as the test environment PROPOSAL and applies nothing: no settings change, no check, not approved, not proved", async () => {
     const t = await bench();

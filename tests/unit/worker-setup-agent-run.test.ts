@@ -37,6 +37,7 @@ interface World {
   concurrent: { now: number; max: number };
   steered: string[];
   base: { exec: BashOperations["exec"] };
+  control?: { abort(): Promise<void>; steer(text: string): Promise<boolean>; streaming(): boolean };
 }
 
 async function world(options: {
@@ -73,7 +74,7 @@ async function world(options: {
     openSession: async (parts) => { sessionBash = parts.bashOperations; return session; },
     callback: async (body) => { w.callbacks.push(body); const kind = (body as { kind: string }).kind; return kind === "poll" ? (options.poll?.(++polls) ?? { hosts: [] }) : { ok: true }; },
     progress: async () => undefined,
-    register: () => () => undefined,
+    register: (control) => { w.control = control; return () => undefined; },
     checkFiles: async () => { w.order.push("checkFiles"); return w.files.shift() ?? { ok: true }; },
     tickMs: 5,
   };
@@ -119,6 +120,56 @@ describe("P1: the manifest is held to the commits the broker recorded", () => {
     await expect(runSetupAgent(t.input)).rejects.toThrow(/another commit/u);
     expect(t.w.order).toEqual([]);
     expect(t.w.stopped.network).toBe(false);
+  });
+});
+
+describe("F5: a run a person stopped finishes, within a few seconds, and reports what it had", () => {
+  const stopMidRun = async ({ bash, world: w }: { bash: BashOperations; world: World }) => {
+    await bash.exec("npm ci", "/work", { onData: () => undefined });
+    await w.control!.abort();
+  };
+  it("kills the sandbox, looks at the tracked files once more, and reports the proposal it had, marked partial", async () => {
+    const t = await world({ script: stopMidRun });
+    const result = await runSetupAgent(t.input);
+    expect(JSON.stringify(result.setupProposal)).toContain("npm ci");
+    expect(result.setupRunSummary).toMatchObject({ partial: true, commandsRun: 1 });
+    expect(result.setupRunSummary.stop).not.toBe("proposed");
+    const afterPrompt = t.w.order.slice(t.w.order.indexOf("prompt"));
+    expect(afterPrompt.indexOf("sandbox.dispose")).toBeLessThan(afterPrompt.lastIndexOf("checkFiles"));
+    expect(t.w.stopped.network).toBe(true);
+  });
+  it("keeps no proposal when the last look at the tracked files finds a change, as for any end", async () => {
+    const t = await world({ script: stopMidRun, files: [{ ok: true }, { ok: false, reason: "tracked_files_changed" }] });
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary.stop).toBe("changed_repository_files");
+  });
+  it("is bounded: when the finish takes longer than the bound it reports the stop with no proposal, and still tears the sandbox and the network down", async () => {
+    const t = await world({ script: stopMidRun });
+    t.input.stopFinishMs = 30;
+    t.input.ports.checkFiles = async () => { t.w.order.push("checkFiles"); if (t.w.order.includes("sandbox.dispose")) await new Promise((resolve) => setTimeout(resolve, 400)); return { ok: true }; };
+    const started = Date.now();
+    const result = await runSetupAgent(t.input);
+    expect(Date.now() - started).toBeLessThan(350);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary).toMatchObject({ partial: true });
+    expect(t.w.stopped.network).toBe(true);
+    expect(t.w.order).toContain("sandbox.dispose");
+  });
+  it("a finish that fails is the stop with no proposal, never an error that hides the stop", async () => {
+    const t = await world({ script: stopMidRun });
+    t.input.ports.checkFiles = async () => { if (t.w.order.includes("sandbox.dispose")) throw new Error("git is gone"); return { ok: true }; };
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeUndefined();
+    expect(result.setupRunSummary.partial).toBe(true);
+  });
+  it("a run nobody stopped has no bound on its finish: a slow last look still ends with its proposal", async () => {
+    const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); } });
+    t.input.stopFinishMs = 5;
+    t.input.ports.checkFiles = async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { ok: true }; };
+    const result = await runSetupAgent(t.input);
+    expect(result.setupProposal).toBeDefined();
+    expect(result.setupRunSummary).toMatchObject({ stop: "proposed", partial: false });
   });
 });
 
@@ -372,5 +423,22 @@ describe("the network and the helper (deployment code; not run against Docker he
     expect(args.join(" ")).toContain("--opt com.docker.network.bridge.name=rvbs7");
     expect(args).toContain("agentx.setup-workspace=ws-key");
     expect(args.at(-1)).toBe("agentx-setup-abc");
+  });
+});
+
+describe("F5: the invocation of a stopped run ends cancelled and carries its report", () => {
+  it("is a cancelled end with the run's result when the cancel controller stopped the operation, and nothing for a run nobody cancelled", async () => {
+    const { WorkerCancellationController, WorkerOperationCancelledError } = await import("../../packages/worker/src/cancel.js");
+    const { cancelledWithReport } = await import("../../packages/worker/src/setup-agent-invocation.js");
+    const controller = new WorkerCancellationController();
+    const result = { workflowMode: "SETUP_AGENT" as const, setupRunSummary: { stop: "infrastructure", commandsRun: 1, spendCents: 0, elapsedMs: 5, hostAsks: 0, partial: true } as never };
+    expect(cancelledWithReport(controller, OPERATION, result)).toBeUndefined();
+    expect(cancelledWithReport(undefined, OPERATION, result)).toBeUndefined();
+    controller.register(OPERATION, { abort: async () => undefined });
+    await controller.cancel(OPERATION, 1);
+    const stopped = cancelledWithReport(controller, OPERATION, result);
+    expect(stopped).toBeInstanceOf(WorkerOperationCancelledError);
+    expect(stopped?.setupRunResult).toBe(result);
+    expect(cancelledWithReport(controller, "22222222-2222-4222-8222-222222222222", result)).toBeUndefined();
   });
 });
