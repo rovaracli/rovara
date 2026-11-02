@@ -17,7 +17,7 @@ export interface DirectoryInput {
 const NOBODY = { complete: false, membershipVersion: 0, ownerIds: [] as string[], eligibleIds: [] as string[], lastEligibleLossAtMs: null };
 
 export function createApproverDirectory(input: DirectoryInput): ApproverDirectory {
-  const resolveMember = input.resolveMember;
+  const resolveMember = input.resolveMember?.bind(input);
   return {
     ...(resolveMember === undefined ? {} : {
       async resolveMember(workspaceId, developerId) {

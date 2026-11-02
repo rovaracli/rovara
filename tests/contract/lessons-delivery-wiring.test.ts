@@ -1,7 +1,7 @@
 // WL-6: the dispatcher's lesson reader over the real Dynamo lesson store (the in-memory DynamoDB): a stage queued with ids and versions gets its text from the store at delivery, an erased or
 // fenced person's lesson is not delivered, and an install with no Team record table builds nothing.
 import { describe, expect, it } from "vitest";
-import { memberGithubKey, type LearnedRefs, type OrgId } from "../../packages/contracts/src/index.js";
+import { memberGithubKey, type LearnedRefs } from "../../packages/contracts/src/index.js";
 import { createLessonDelivery } from "../../packages/broker/src/lessons/delivery-wiring.js";
 import { DynamoLessonStore } from "../../packages/broker/src/lessons/dynamo-store.js";
 import { KEY, PROJECT, WS, lessonRecord } from "../unit/lessons/lesson-helpers.js";
@@ -38,7 +38,7 @@ describe("createLessonDelivery", () => {
 
   it("a private task's reader is looked up in the State table (the linked account), and a lookup that fails delivers nothing", async () => {
     const { deliver, db } = await world();
-    db.set({ ...memberGithubKey(WS as OrgId, "d".repeat(64)), githubUserId: "gh-1" });
+    db.set({ ...memberGithubKey(WS, "d".repeat(64)), githubUserId: "gh-1" });
     const private1 = refs(["les_other0001"], { audience: { kind: "private", developerId: "d".repeat(64) } });
     expect((await deliver(private1))?.lessons.map((l) => l.id)).toEqual(["les_other0001"]);
     expect(await deliver({ ...private1, orgId: "not-an-org" })).toBeUndefined();
