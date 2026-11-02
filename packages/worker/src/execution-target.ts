@@ -6,7 +6,11 @@
 //
 // `runner:<id>` is the team build runner (R3, contracts/src/runner.ts). It is NOT built: `executionFor` refuses it with "no runner configured". Nothing can select it: no setting, route or payload field
 // carries a target, every call site names `SANDBOX_TARGET` in code, and `parseExecutionTarget` has no caller outside tests. A later task that adds a runner adds the selector, the lease client and
-// the third arm of the switch below, in one reviewed change. The runner never runs the agent: the agent, its model calls and its edits stay central (the contract forbids those fields).
+// the third arm of the switch below, in one reviewed change.
+//
+// The seam is GUARDED, not only used: tests/unit/worker-execution-target.test.ts resolves every use of `TaskSandbox.runCommand` and `TaskSandbox.bashOperations` through the type checker and fails on any outside this
+// file and task-sandbox.ts (optional chains, destructuring, aliases and string keys included). Two consumers are not wired through it yet and MUST be when they are: Prove's production ports (the setup executor builds
+// `ProvePorts.runCommand`, use `proveCommandPort(executionFor(...))`) and the person-command runner (setup-command-runner.ts takes a `BashOperations`; hand it the seam's, as setup-agent-run.ts does). The runner never runs the agent: the agent, its model calls and its edits stay central (the contract forbids those fields).
 import { RunnerIdSchema, agentXError, type ProjectCommand } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import type { CommandResult } from "./readiness.js";

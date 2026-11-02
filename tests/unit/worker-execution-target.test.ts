@@ -1,8 +1,9 @@
 // SH35: the ExecutionTarget seam. The `sandbox` target is today's task sandbox with NO behaviour change (the same docker calls, arguments, environment, timeouts and outputs), `runner:<id>` is refused
 // ("no runner configured"), and no call site starts a command except through the seam.
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectCommand } from "../../packages/contracts/src/index.js";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../../packages/worker/src/execution-target.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
+import { programOf } from "../support/task-owner-scan.js";
 
 const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "a".repeat(64);
 const TASK = "0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11";
@@ -138,25 +140,84 @@ describe("Prove's command port", () => {
   });
 });
 
-describe("no call site reaches the sandbox's commands except through the seam", () => {
-  it("has no direct sandbox.bashOperations() or sandbox.runCommand() outside the sandbox and the seam", async () => {
-    const base = join(process.cwd(), "packages/worker/src");
-    const files: string[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      for (const entry of await readdir(dir, { withFileTypes: true })) {
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) await walk(path); else if (entry.name.endsWith(".ts")) files.push(path);
+/**
+ * The type-level guard: every place that reaches `TaskSandbox.runCommand` or `TaskSandbox.bashOperations`, found through the type checker rather than by text, so `?.`, destructuring, an alias, a split line
+ * and a string key are all seen. Only the sandbox's own file and the seam may reach them.
+ */
+function sandboxCommandReaches(program: ts.Program, allowed: (file: string) => boolean): string[] {
+  const checker = program.getTypeChecker();
+  const names = new Set(["runCommand", "bashOperations"]);
+  const isSandboxMember = (symbol: ts.Symbol | undefined): boolean => symbol?.declarations?.some((declaration) =>
+    (ts.isMethodDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) && ts.isClassDeclaration(declaration.parent) && declaration.parent.name?.text === "TaskSandbox" && names.has(declaration.name.getText())) ?? false;
+  const isSandboxType = (type: ts.Type): boolean => (type.isUnion() ? type.types : [type]).some((part) => part.getSymbol()?.getName() === "TaskSandbox");
+  const found: string[] = [];
+  for (const file of program.getSourceFiles()) {
+    if (file.isDeclarationFile || allowed(file.fileName)) continue;
+    const flag = (node: ts.Node) => found.push(`${file.fileName}:${String(file.getLineAndCharacterOfPosition(node.getStart()).line + 1)}`);
+    const visit = (node: ts.Node): void => {
+      if (ts.isPropertyAccessExpression(node) && isSandboxMember(checker.getSymbolAtLocation(node.name))) flag(node);
+      else if (ts.isElementAccessExpression(node)) {
+        const argument = node.argumentExpression;
+        if (ts.isStringLiteralLike(argument) ? isSandboxMember(checker.getSymbolAtLocation(argument)) || (names.has(argument.text) && isSandboxType(checker.getTypeAtLocation(node.expression))) : isSandboxType(checker.getTypeAtLocation(node.expression))) flag(node);
+      } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        const key = node.propertyName ?? node.name;
+        const name = ts.isIdentifier(key) || ts.isStringLiteralLike(key) ? key.text : undefined;
+        const type = checker.getTypeAtLocation(node.parent);
+        if (name !== undefined && names.has(name) && isSandboxMember(type.getProperty(name))) flag(node);
+        else if (name === undefined && isSandboxType(type)) flag(node);
       }
+      ts.forEachChild(node, visit);
     };
-    await walk(base);
-    const offenders: string[] = [];
-    for (const file of files) {
-      if (file.endsWith("/task-sandbox.ts") || file.endsWith("/execution-target.ts")) continue;
-      const text = await readFile(file, "utf8");
-      text.split("\n").forEach((line, at) => {
-        if (/\bsandbox\.(bashOperations|runCommand)\(/u.test(line)) offenders.push(`${file.slice(base.length + 1)}:${String(at + 1)}`);
-      });
-    }
-    expect(offenders).toEqual([]);
-  });
+    visit(file);
+  }
+  return found;
+}
+
+function virtualProgram(files: Record<string, string>): ts.Program {
+  const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, noLib: true, strict: true, noEmit: true };
+  const host = ts.createCompilerHost(options);
+  const original = { fileExists: host.fileExists.bind(host), readFile: host.readFile.bind(host), getSourceFile: host.getSourceFile.bind(host) };
+  const directoryExists = host.directoryExists?.bind(host);
+  host.directoryExists = (name) => name === "/v" || (directoryExists?.(name) ?? false);
+  host.realpath = (name) => name;
+  host.fileExists = (name) => name in files || original.fileExists(name);
+  host.readFile = (name) => files[name] ?? original.readFile(name);
+  host.getSourceFile = (name, languageVersion, onError) => (name in files ? ts.createSourceFile(name, files[name]!, languageVersion, true) : original.getSourceFile(name, languageVersion, onError));
+  return ts.createProgram({ rootNames: Object.keys(files), options, host });
+}
+
+describe("no call site reaches the sandbox's commands except through the seam", () => {
+  const sandboxFile = "class TaskSandbox { runCommand(c: string): number { return 0; } bashOperations(): number { return 0; } fileOpsTarget(): number { return 0; } }\nexport { TaskSandbox };\n";
+  const header = 'import { TaskSandbox } from "./task-sandbox";\ndeclare const sandbox: TaskSandbox;\ndeclare const maybe: TaskSandbox | undefined;\n';
+  const bad: Record<string, string> = {
+    "/v/call.ts": "sandbox.runCommand(\"x\");",
+    "/v/optional.ts": "maybe?.bashOperations();",
+    "/v/destructure.ts": "const { runCommand } = sandbox; void runCommand;",
+    "/v/renamed.ts": "const { bashOperations: ops } = sandbox; void ops;",
+    "/v/split.ts": "sandbox\n  .\n  runCommand(\"x\");",
+    "/v/string-key.ts": "sandbox[\"runCommand\"](\"x\");",
+    "/v/dynamic-key.ts": "declare const key: string; (sandbox as unknown as Record<string, unknown>)[key]; sandbox[key as \"runCommand\"];",
+    "/v/alias.ts": "const same = sandbox; same\n.runCommand(\"x\");",
+    "/v/parameter.ts": "export function f({ runCommand }: TaskSandbox) { return runCommand; }",
+    "/v/bound.ts": "export const bound = sandbox.bashOperations.bind(sandbox);",
+  };
+  const good: Record<string, string> = {
+    "/v/files.ts": "sandbox.fileOpsTarget();",
+    "/v/other-class.ts": "class Other { runCommand(): number { return 1; } bashOperations(): number { return 2; } }\nnew Other().runCommand(); const { bashOperations } = new Other(); void bashOperations;",
+    "/v/execution-target.ts": "sandbox.runCommand(\"x\"); sandbox.bashOperations();",
+  };
+
+  it("sees every way of reaching them, and nothing else (the detector itself)", () => {
+    const files: Record<string, string> = { "/v/task-sandbox.ts": sandboxFile };
+    for (const [name, body] of Object.entries({ ...bad, ...good })) files[name] = `${header}${body}\n`;
+    const reached = sandboxCommandReaches(virtualProgram(files), (file) => file.endsWith("/task-sandbox.ts") || file.endsWith("/execution-target.ts"));
+    expect([...new Set(reached.map((entry) => entry.split(":")[0]))].sort()).toEqual(Object.keys(bad).sort());
+  }, 60_000);
+
+  // Prove's production wiring (the setup executor's ports) and the person-command runner's shell must also be built from `executionFor` when they are wired; this guard then covers them like any other file.
+  it("has no reach in the worker outside the sandbox's own file and the seam", () => {
+    const program = programOf(join(process.cwd(), "packages/worker/tsconfig.json"));
+    expect(program.getSourceFiles().some((file) => file.fileName.endsWith("/packages/worker/src/execution-target.ts"))).toBe(true);
+    expect(sandboxCommandReaches(program, (file) => file.endsWith("/packages/worker/src/task-sandbox.ts") || file.endsWith("/packages/worker/src/execution-target.ts"))).toEqual([]);
+  }, 180_000);
 });
