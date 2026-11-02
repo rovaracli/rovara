@@ -92,6 +92,11 @@ export interface ControlPlaneStackProps extends StackProps {
   reservedConcurrency?: boolean;
   /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
   privateEgressCidrs?: readonly string[];
+  /** Enterprise installs that turned company model endpoints on (N8): the model access function may read secrets named under `rovara/model-endpoints/`. Absent: it may not. */
+  customModelEndpoints?: boolean;
+  /** With `customModelEndpoints`: the environment the access function judges endpoint addresses with, and the private ranges the model proxy may reach over HTTPS besides `privateEgressCidrs`. */
+  customModelEndpointEnvironment?: Readonly<Record<string, string>>;
+  modelEndpointCidrs?: readonly string[];
   /** Enterprise installs: the model proxy runs LiteLLM from the install's own ECR (loaded from the signed release bundle). Absent: the public image, as before. */
   bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
@@ -1447,7 +1452,7 @@ export class ControlPlaneStack extends Stack {
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
         models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
-        ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
+        ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: [...props.privateEgressCidrs, ...(props.modelEndpointCidrs ?? [])] }),
         ...(props?.bundledImages === true ? { bundledImages: true } : {}),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
@@ -1463,6 +1468,7 @@ export class ControlPlaneStack extends Stack {
         proxy: modelProxy,
         handler: modelAccessFunction,
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
+        ...(props?.customModelEndpoints === true ? { customModelEndpoints: true, customModelEndpointEnvironment: props.customModelEndpointEnvironment ?? {} } : {}),
       });
       modelAccessFunction.grantInvoke(broker);
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);

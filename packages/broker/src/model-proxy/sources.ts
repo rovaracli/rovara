@@ -1,6 +1,7 @@
 // How a company source becomes LiteLLM models (Plan 3 Task 25). Pure: no network, no secret. The key itself never appears here;
 // a model carries only the name of the credential the proxy stored it under (docs/learnings/model-sources-spike.md, question 3).
 import { agentXError, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { endpointQualified } from "../model-sources/endpoint-digest.js";
 
 /** List prices in USD per million tokens, as Pi's catalog records them. */
 export interface ListPrices {
@@ -86,6 +87,11 @@ export function proxyModelsOf(orgId: OrgId, source: ModelSource, credentialName:
       params.api_base = source.baseUrl;
       // LiteLLM does not know a custom model's capabilities, and refuses a reasoning request for it otherwise (spike, question 4).
       info.supports_reasoning = true;
+      // N8: like a Bedrock role until its probe passes, an endpoint's models exist for the probe but no team may call them until a check passed for exactly these
+      // settings. The registry reads both back from the proxy: a missing flag is "not served".
+      info.rovara_kind = "endpoint";
+      info.rovara_api = source.api;
+      info.rovara_tested = endpointQualified(source);
     }
     return { model_name: sourceAlias(orgId, source.sourceId, catalog), litellm_params: params, model_info: info };
   });

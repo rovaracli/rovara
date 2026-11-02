@@ -21,6 +21,9 @@ export function contextKeysRead(): Map<string, string> {
   const mcp = read("infra/lib/private-mcp.ts");
   const block = /PRIVATE_MCP_CONTEXT_KEYS = \{([^}]*)\}/.exec(mcp)?.[1] ?? "";
   for (const match of block.matchAll(/:\s*"([^"]+)"/g)) note(match[1]!, "infra/lib/private-mcp.ts");
+  const modelEndpoints = read("infra/lib/model-endpoints.ts");
+  const endpointBlock = /MODEL_ENDPOINT_CONTEXT_KEYS = \{([^}]*)\}/.exec(modelEndpoints)?.[1] ?? "";
+  for (const match of endpointBlock.matchAll(/:\s*"([^"]+)"/g)) note(match[1]!, "infra/lib/model-endpoints.ts");
   for (const path of ["packages/contracts/src/operator-access.ts", "packages/contracts/src/edition.ts"]) {
     for (const match of read(path).matchAll(/export const \w+_CONTEXT_KEY = "([^"]+)"/g)) note(match[1]!, path);
   }

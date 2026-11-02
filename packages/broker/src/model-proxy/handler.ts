@@ -4,9 +4,10 @@
 // Manager and kept in memory. Nothing here logs a key, the master key, or request arguments.
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AgentXError, agentXError } from "@agentx/contracts";
+import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@agentx/contracts";
 import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import type { ModelAccess } from "./access.js";
+import { endpointRangesFromEnvironment, modelEndpointChecker, CUSTOM_MODEL_ENDPOINTS_ENV } from "../model-sources/endpoint-qualification.js";
 import { ModelProxyClient, type RoleAssumer } from "./client.js";
 import { ModelAccessRequestSchema, type ModelAccessRequest, type ModelAccessResponse } from "./protocol.js";
 
@@ -41,6 +42,28 @@ export function stsRoleAssumer(sts: { send(command: AssumeRoleCommand): Promise<
   };
 }
 
+/**
+ * N8: reads the secret behind a company model endpoint's reference. Only a name under `rovara/model-endpoints/` is ever asked for (the function's IAM role is limited to the
+ * same prefix, so this is the second fence, not the only one). Missing, not readable and empty are fixed refusals; any other failure is left to the caller as a read that
+ * may work later. The value is returned to the proxy client alone and never logged.
+ */
+export function endpointSecretReader(secrets: { send(command: GetSecretValueCommand): Promise<{ SecretString?: string | undefined }> }): (reference: string) => Promise<string> {
+  return async (reference) => {
+    if (!isModelEndpointSecretRef(reference) || !reference.startsWith(MODEL_ENDPOINT_SECRET_PREFIX)) throw agentXError("CONFIG_INVALID", "the endpoint's secret reference is not valid");
+    let found: { SecretString?: string | undefined };
+    try {
+      found = await secrets.send(new GetSecretValueCommand({ SecretId: reference }));
+    } catch (error) {
+      const name = typeof error === "object" && error !== null && "name" in error ? String((error).name) : "";
+      if (name === "ResourceNotFoundException" || name === "AccessDeniedException") throw agentXError("CONFIG_INVALID", "the endpoint's secret could not be read; check that it exists under rovara/model-endpoints/ and that Rovara may read it");
+      throw error;
+    }
+    const value = found.SecretString?.trim();
+    if (value === undefined || value === "") throw agentXError("CONFIG_INVALID", "the endpoint's secret is empty or not a plain key");
+    return value;
+  };
+}
+
 async function perform(access: ModelAccess, request: ModelAccessRequest): Promise<unknown> {
   switch (request.op) {
     case "upsertOrg": return access.upsertOrg(request.args.orgId, request.args.monthlyBudgetUsd).then(() => null);
@@ -52,6 +75,10 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "upsertSource": return access.upsertSource(request.args).then(() => null);
     case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);
     case "listSources": return access.listSources();
+    case "checkEndpoint":
+      // No checker, no pass: an endpoint address is never judged anywhere else.
+      if (access.checkEndpoint === undefined) throw agentXError("CONFIG_INVALID", "custom model endpoints are not set up on this install");
+      return access.checkEndpoint(request.args.url).then(() => null);
     case "checkSource": return access.checkSource(request.args.orgId, request.args.sourceId);
     case "auditKeys": return access.auditKeys(request.args.budgetMs === undefined ? undefined : { budgetMs: request.args.budgetMs });
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
@@ -86,6 +113,16 @@ export function createModelAccessHandler(input: { access: ModelAccess; log?: (en
   };
 }
 
+/** The in-VPC address checker for company model endpoints: present only when the switch is "1" and the ranges parse. */
+export function endpointAddressChecker(env: Record<string, string | undefined>): { checkEndpointHost?: (url: string) => Promise<void> } {
+  if (env[CUSTOM_MODEL_ENDPOINTS_ENV] !== "1") return {};
+  try {
+    return { checkEndpointHost: modelEndpointChecker(endpointRangesFromEnvironment(env)) };
+  } catch {
+    return {};
+  }
+}
+
 function requiredEnvironment(name: string): string {
   const value = process.env[name];
   if (value === undefined || value === "") throw agentXError("CONFIG_INVALID", `${name} is not set`);
@@ -114,6 +151,10 @@ function wire() {
       // The models the proxy's own config serves for this region (the control plane builds the config from the same list).
       catalog: bedrockClaudeModelIds(proxyGeographyForRegion(requiredEnvironment("AWS_REGION"))),
       roles: stsRoleAssumer(new STSClient({})),
+      resolveSecret: endpointSecretReader(secrets),
+      // N8: the address of a company endpoint is judged here, inside the VPC, with the resolver the proxy connects with. Only when the install turned endpoints on; a bad range
+      // setting leaves no checker (every address is then refused).
+      ...endpointAddressChecker(process.env),
     }),
   });
 }

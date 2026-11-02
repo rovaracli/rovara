@@ -5,6 +5,7 @@ import {
   Stack,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { modelEndpointSecretsStatement } from "./model-endpoints.js";
 import { MODEL_PROXY_MANAGEMENT_PORT, assumeOrgBedrockRoles, type ModelProxy } from "./model-proxy.js";
 import type { AgentXNaming } from "./naming.js";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
@@ -19,6 +20,10 @@ export interface ModelAccessProps {
   handler: lambda.Function;
   /** Enterprise installs: the ranges the function may reach over HTTPS. Absent: HTTPS to the whole internet, as before. */
   privateEgressCidrs?: readonly string[];
+  /** Enterprise installs that turned company model endpoints on (N8): the function may read secrets named under `rovara/model-endpoints/`, and no others. */
+  customModelEndpoints?: boolean;
+  /** With `customModelEndpoints`: the environment the function judges endpoint addresses with (`modelEndpointBrokerEnvironment`: the switch, the private ranges, Rovara's own network). */
+  customModelEndpointEnvironment?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -74,6 +79,12 @@ export class ModelAccess extends Construct {
     // The Bedrock probe (checkSource) assumes a customer's role to test its trust policy. Company keys are not stored in Secrets
     // Manager (they live in the proxy's own store), so this function is given no way to create or change a secret.
     handler.addToRolePolicy(assumeOrgBedrockRoles(Stack.of(this)));
+    // N8: the secret behind a company's model endpoint is read here, when the source is registered, and handed to the proxy's credential store. Only the prefix.
+    if (props.customModelEndpoints === true) {
+      handler.addToRolePolicy(modelEndpointSecretsStatement(Stack.of(this)));
+      // The address of an endpoint is judged here, inside the VPC, with the resolver the proxy connects with.
+      for (const [name, value] of Object.entries(props.customModelEndpointEnvironment ?? {})) handler.addEnvironment(name, value);
+    }
   }
 }
 

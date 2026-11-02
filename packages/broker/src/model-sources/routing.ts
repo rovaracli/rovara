@@ -6,11 +6,13 @@
 import {
   agentXError,
   canonicalModelName,
+  endpointForbiddenModelProblem,
   modelCompany,
   sourceAlias,
   sourceKindProblem,
   type InvocationModelRoute,
   type ModelIdentifier,
+  type EditionPolicy,
   type ModelSource,
   type OrgId,
   type SourceLaunch,
@@ -19,6 +21,7 @@ import { bedrockClaudeModelIds, proxyGeographyOfModelId, type ProxyGeography } f
 import { chatGptConnectionUsable } from "../chatgpt/task-model.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { readEgressDomains } from "../org/egress-domains.js";
+import { customEndpointsAllowed, endpointQualified } from "./endpoint-qualification.js";
 import type { StoredModelSources } from "./store.js";
 
 export type ModelRouteApi = InvocationModelRoute["api"];
@@ -50,6 +53,13 @@ export interface RoutingDependencies {
   launch?: SourceLaunch;
   /** The Bedrock inference-profile geography the proxy serves when a model names none. Default `us`. */
   rovaraGeography?: ProxyGeography;
+  /** N8: the install's edition. A company's own model endpoint is routed to only when the edition has `customModelEndpoint`; absent, no endpoint is. */
+  edition?: EditionPolicy;
+  /**
+   * N8: the company's forbidden models, read now. An endpoint is usable only while none of its models is one of them, by the catalog model it stands for or by the
+   * name it serves (the shared matcher). Absent, nothing can show that, so no endpoint is usable.
+   */
+  forbiddenModels?: (orgId: OrgId) => Promise<readonly ModelIdentifier[]>;
 }
 
 export interface RouteInput {
@@ -119,7 +129,7 @@ export async function effectiveSources(deps: RoutingDependencies, orgId: OrgId, 
 }
 
 /** Whether an endpoint's host is approved in that source's own egress entry (an approval for another source or another host is not this one's). */
-async function hostApproved(deps: RoutingDependencies, orgId: OrgId, source: Source): Promise<boolean> {
+async function hostApproved(deps: Pick<RoutingDependencies, "egress">, orgId: OrgId, source: Source): Promise<boolean> {
   if (source.kind !== "endpoint" || deps.egress === undefined) return false;
   try {
     const item = await readEgressDomains(deps.egress, orgId, { kind: "model-source", sourceId: source.sourceId });
@@ -130,12 +140,27 @@ async function hostApproved(deps: RoutingDependencies, orgId: OrgId, source: Sou
   }
 }
 
-/** Whether a company source may be routed to at all: its kind and transport are at launch, a Bedrock source has passed its probe, an endpoint's host is approved. */
+/**
+ * N8: whether a company's own model endpoint may be called now. The edition has the feature, a check passed for exactly the settings it has now (an address,
+ * wire format, secret reference or model list changed since leaves it unqualified), and its host is approved and active in the source's own egress item.
+ * The three are cheapest-first; the egress read is the only one that can fail, and an unreadable item is the retryable refusal, never a pass.
+ */
+export async function endpointUsable(deps: Pick<RoutingDependencies, "edition" | "egress" | "forbiddenModels">, orgId: OrgId, source: Source): Promise<boolean> {
+  if (source.kind !== "endpoint" || !customEndpointsAllowed(deps.edition) || !endpointQualified(source) || deps.forbiddenModels === undefined) return false;
+  try {
+    if (endpointForbiddenModelProblem(source.models, await deps.forbiddenModels(orgId)) !== undefined) return false;
+  } catch (error) {
+    throw unavailable(error);
+  }
+  return hostApproved(deps, orgId, source);
+}
+
+/** Whether a company source may be routed to at all: its kind and transport are at launch, a Bedrock source has passed its probe, an endpoint is qualified and its host is approved. */
 async function usable(deps: RoutingDependencies, walk: Walk, orgId: OrgId, source: Source): Promise<boolean> {
   if (walk.stored.removing.some((entry) => entry.sourceId === source.sourceId)) return false;
   if (sourceKindProblem(source.kind, source.kind === "endpoint" ? source.api : undefined, deps.launch) !== undefined) return false;
   if (source.kind === "bedrock" && !source.tested) return false;
-  if (source.kind === "endpoint") return hostApproved(deps, orgId, source);
+  if (source.kind === "endpoint") return endpointUsable(deps, orgId, source);
   return true;
 }
 

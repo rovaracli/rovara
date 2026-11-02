@@ -18,6 +18,8 @@ import type { CreatorCheckDependencies } from "../../developer/creator-member.js
 import { readChatGptSettings } from "../../chatgpt/settings.js";
 import { ModelSourceStore } from "../../model-sources/store.js";
 import type { ModelSourceRouteDependencies } from "../../model-sources/routes.js";
+import { CUSTOM_MODEL_ENDPOINTS_ENV, customEndpointsAllowed, endpointRangesFromEnvironment } from "../../model-sources/endpoint-qualification.js";
+import { readGuardrails } from "../../agents/guardrails.js";
 import { cloudwatchConnectionCheck } from "../cloudwatch-connector-type.js";
 import { dnsResolveHost, checkEndpointUrl } from "../../connections/endpoint-check.js";
 import { datadogConnectionCheck } from "../datadog-connector-type.js";
@@ -170,6 +172,52 @@ export async function putInstallBudget(dependencies: AwsBrokerDependencies, iden
 /** What an install may set about company AI sources beyond the model proxy itself (Task 24b); the rest of their dependencies come from the broker's own. */
 export type ModelSourceBrokerOptions = Pick<ModelSourceRouteDependencies, "launch" | "checkEndpoint" | "bedrockTrustPrincipals" | "isKnownCatalog">;
 
+/**
+ * N8: custom model endpoints (a company's own gateway or private Bedrock-compatible endpoint) are on for an install only when its edition has the feature, the operator set
+ * `ROVARA_CUSTOM_MODEL_ENDPOINTS=1`, AND the operator's address ranges parse. One answer for everything: the launch list, the routes and routing all read it, so a range that
+ * does not parse turns the whole feature off (no half-on state where qualified endpoints are still routed to but cannot be checked). Off otherwise, and always off on Public.
+ */
+export function customModelEndpointsOn(dependencies: Pick<AwsBrokerDependencies, "editionPolicy">): boolean {
+  if (!customEndpointsAllowed(dependencies.editionPolicy) || process.env[CUSTOM_MODEL_ENDPOINTS_ENV] !== "1") return false;
+  try {
+    endpointRangesFromEnvironment(process.env);
+    return true;
+  } catch {
+    // Said once for these settings, not on every call.
+    const key = `${process.env.ROVARA_MODEL_ENDPOINT_CIDRS ?? ""}|${process.env.ROVARA_VPC_CIDRS ?? ""}`;
+    if (!saidMisconfigured.has(key)) {
+      saidMisconfigured.add(key);
+      console.log(JSON.stringify({ component: "broker", event: "model_endpoints.misconfigured" }));
+    }
+    return false;
+  }
+}
+const saidMisconfigured = new Set<string>();
+
+/** The launch lists with the endpoint kind added when the install has custom endpoints on. A launch an install or test supplied is kept as it is. */
+function launchWithEndpoint(dependencies: AwsBrokerDependencies): ModelSourceBrokerOptions["launch"] {
+  const given = dependencies.agents?.modelSources?.launch;
+  if (!customModelEndpointsOn(dependencies)) return given;
+  return { ...(given ?? {}), kinds: [...new Set([...(given?.kinds ?? []), "endpoint" as const])] };
+}
+
+/**
+ * N8: what an install adds to the company AI source routes for custom endpoints: the edition (the routes refuse the kind without the feature), the launch switch, and the
+ * address checker. The checker runs inside the VPC, in the model access function, with the resolver the proxy connects with; the broker (outside the VPC) judges no address itself.
+ */
+export function modelEndpointRouteOptions(dependencies: AwsBrokerDependencies): Pick<ModelSourceBrokerOptions, "launch" | "checkEndpoint"> & { edition?: NonNullable<ModelSourceRouteDependencies["edition"]> } {
+  const launch = launchWithEndpoint(dependencies);
+  const access = dependencies.modelAccess?.access;
+  const checkEndpoint: ModelSourceBrokerOptions["checkEndpoint"] = customModelEndpointsOn(dependencies) && access?.checkEndpoint !== undefined
+    ? async (url) => { await access.checkEndpoint!(url); }
+    : undefined;
+  return {
+    ...(dependencies.editionPolicy === undefined ? {} : { edition: dependencies.editionPolicy }),
+    ...(launch === undefined ? {} : { launch }),
+    ...(checkEndpoint === undefined ? {} : { checkEndpoint }),
+  };
+}
+
 /** The company AI sources' record (Task 24b). The install-wide ChatGPT switch sets a new org's default order. */
 export function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSourceStore {
   return new ModelSourceStore({
@@ -196,8 +244,11 @@ export function routingOf(dependencies: AwsBrokerDependencies, stageModel = fals
     egress: settings,
     projectSourceOrder: async (orgId, project) => (await readProjectAi(settings, orgId, project)).sourceOrder,
     ...(dependencies.chatgpt === undefined ? {} : { chatgpt: chatGptServing(dependencies.chatgpt) }),
-    ...(dependencies.agents?.modelSources?.launch === undefined ? {} : { launch: dependencies.agents.modelSources.launch }),
+    ...(launchWithEndpoint(dependencies) === undefined ? {} : { launch: launchWithEndpoint(dependencies)! }),
     ...(geography === undefined ? {} : { rovaraGeography: geography }),
+    // N8: a company endpoint is routed to only while the edition has the feature and none of its models is forbidden (read now, from the company's guardrails).
+    ...(dependencies.editionPolicy === undefined ? {} : { edition: dependencies.editionPolicy }),
+    forbiddenModels: async (orgId) => (await readGuardrails(settings, orgId)).forbiddenModels,
   };
 }
 

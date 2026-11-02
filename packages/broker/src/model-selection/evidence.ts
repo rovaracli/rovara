@@ -3,7 +3,7 @@ import {inactiveModelSourcesRevision,type ModelPolicyReader} from "./policy-stor
 import { createHash } from "node:crypto";
 import { agentXError, canonicalModelName, canonicalJson, modelCompany, sourceKindProblem, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { bedrockClaudeModelIds, catalogModel } from "@agentx/model-runtime/catalog";
-import { effectiveSources, type RoutingDependencies } from "../model-sources/routing.js";
+import { effectiveSources, endpointUsable, type RoutingDependencies } from "../model-sources/routing.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { chatGptConnectionUsable } from "../chatgpt/task-model.js";
 import type { VerifiedStageCandidate } from "./resolver.js";
@@ -48,8 +48,12 @@ export async function readStageModelEvidence(deps:StageEvidenceDependencies&Part
    const source=sources?.stored.sources.find(source=>source.sourceId===sourceId);
    if(source===undefined || sources?.stored.removing.some(removed=>removed.sourceId===sourceId)===true || sourceKindProblem(source.kind,source.kind==="endpoint"?source.api:undefined,deps.routing.launch)!==undefined) continue;
    if(!source.models.some(entry=>canonicalModelName(entry.catalog)===canonicalModelName(model))) continue;
-   // Endpoints are not launched. Their future source-specific egress evidence remains a separate reviewed adapter.
-   if(source.kind==="endpoint") continue;
+   // N8: a company's own model endpoint counts only while it is usable NOW (the edition has the feature, a check passed for its exact settings, and its host is
+   // approved in its own egress item). It proves source-level access like the other kinds; it is never a funding exemption (task-stop-funding.ts).
+   if(source.kind==="endpoint") {
+    if(!(await endpointUsable(deps.routing,input.orgId,source))) continue;
+    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,sourceKind:"endpoint",evidence:{orgId:input.orgId,sourcesRevision,kind:"qualified_endpoint"}});break;
+   }
    if(source.kind==="bedrock" ? !source.tested : !sources?.stored.credentials.includes(sourceId)) continue;
    candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:source.kind==="bedrock"?"tested_bedrock_role":"stored_key"}});break;
   }

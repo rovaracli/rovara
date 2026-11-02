@@ -6,7 +6,7 @@ export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@a
 export interface SourceModelEvidence {
   orgId: string;
   sourcesRevision: number;
-  kind: "rovara_catalog" | "tested_bedrock_role" | "stored_key" | "chatgpt_connection";
+  kind: "rovara_catalog" | "tested_bedrock_role" | "stored_key" | "qualified_endpoint" | "chatgpt_connection";
   payerDeveloperId?: string;
   connectionRevision?: string;
 }
@@ -16,6 +16,8 @@ export interface VerifiedStageCandidate {
   enabled: boolean;
   inEffectiveOrder: boolean;
   evidence?: SourceModelEvidence | undefined;
+  /** The kind of the company source the candidate came from, set from the live record. `qualified_endpoint` evidence counts only for an `endpoint` source. */
+  sourceKind?: string | undefined;
 }
 export interface StageModelInput {
   orgId: string;
@@ -62,7 +64,10 @@ export function stageCandidateVerified(input: StageModelInput, candidate: Verifi
   if ((input.deniedModels ?? []).some((model) => same(model, candidate.model))) return false;
   if (candidate.sourceId === "personal-chatgpt") return evidence.kind === "chatgpt_connection" && input.payerDeveloperId !== undefined && evidence.payerDeveloperId === input.payerDeveloperId && input.connectionRevision !== undefined && evidence.connectionRevision === input.connectionRevision;
   if (candidate.sourceId === "rovara") return evidence.kind === "rovara_catalog";
-  return /^src_[a-z0-9]{20}$/u.test(candidate.sourceId) && (evidence.kind === "tested_bedrock_role" || evidence.kind === "stored_key");
+  if (!/^src_[a-z0-9]{20}$/u.test(candidate.sourceId)) return false;
+  if (evidence.kind === "qualified_endpoint") return candidate.sourceKind === "endpoint";
+  // The other company-source proofs are never a company endpoint's.
+  return (evidence.kind === "tested_bedrock_role" || evidence.kind === "stored_key") && candidate.sourceKind !== "endpoint";
 }
 
 const projectDefaultChoice=(model:ModelSelection)=>StageModelChoiceSchema.safeParse({model:{provider:model.provider,modelId:model.modelId},...(model.thinkingLevel===undefined?{}:{thinkingLevel:model.thinkingLevel})});

@@ -62,6 +62,9 @@ function everythingOn(): Record<string, string> {
     rovaraMcpControllerCa: sampleControllerCa(),
     // Project package registries (N9): one CodeArtifact domain bound to the install's own org, with the repositories its projects may read.
     rovaraCodeArtifactDomains: "example-domain:123456789012:us-east-1:install:shared+tools",
+    // N8: a company's own model endpoint (the broker's switch and its private ranges, and the model access function's secret-prefix grant). The range is outside the install's VPC.
+    rovaraCustomModelEndpoints: "true",
+    rovaraModelEndpointCidrs: "192.168.50.0/24",
     agentxReservedConcurrency: "true",
     agentxRovaraOrgId: "o-abcdef1234",
     // (Text, as every recorded setting is; the infrastructure parses it as JSON.)

@@ -1,12 +1,13 @@
 // Plan 3 Task 25: company sources in the model proxy. A fake LiteLLM keeps models, credentials and teams the way the real one does
 // (docs/learnings/model-sources-spike.md), and a fake STS evaluates a role's trust policy, so the Bedrock probe tests prove something.
-import { INFERENCE_PATHS, ModelSourceSchema, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
+import { INFERENCE_PATHS, ModelSourceSchema, agentXError, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
 import type * as NodeCrypto from "node:crypto";
 import { createHash, randomInt } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient, type RoleAssumer } from "../../packages/broker/src/model-proxy/client.js";
-import { createModelAccessHandler, stsRoleAssumer } from "../../packages/broker/src/model-proxy/handler.js";
+import { createModelAccessHandler, endpointSecretReader, stsRoleAssumer } from "../../packages/broker/src/model-proxy/handler.js";
+import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import { ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
 
 // A passthrough spy, so the probe's random id can be shown to come from randomInt (no modulo bias).
@@ -33,8 +34,18 @@ const anthropicSource = (models = [sonnet, haiku], sourceId = SRC): ModelSource 
 const bedrockSource = (tested = false, sourceId = SRC): ModelSource => ModelSourceSchema.parse({
   kind: "bedrock", sourceId, label: "Our AWS", roleArn: ROLE, region: "us-east-1", externalId: `rovara-${ORG}`, models: [{ catalog: bedrockModel }], tested,
 });
-const endpointSource = (api = "openai-completions"): ModelSource => ModelSourceSchema.parse({
-  kind: "endpoint", sourceId: SRC, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: sonnet }],
+const REF = `rovara/model-endpoints/${ORG}/llm.example.com/gateway-key`;
+/** An endpoint source as stored: with the secret reference N8 requires for a key, and (when `qualified`) the digest a passing check wrote. */
+const endpointSource = (api = "openai-completions", options: { qualified?: boolean; keyRef?: string | null } = {}): ModelSource => {
+  const base = { kind: "endpoint", sourceId: SRC, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: sonnet }], ...(options.keyRef === null ? {} : { keyRef: options.keyRef ?? REF }) };
+  const parsed = ModelSourceSchema.parse(base);
+  return options.qualified === true && parsed.kind === "endpoint" ? ModelSourceSchema.parse({ ...base, qualifiedDigest: endpointQualificationDigest(parsed) }) : parsed;
+};
+/** The secret the fake reader holds for each reference. */
+const resolver = (secrets: Record<string, string> = { [REF]: VENDOR_KEY }) => vi.fn(async (reference: string) => {
+  const value = secrets[reference];
+  if (value === undefined) throw new Error(`no secret ${reference} value=${VENDOR_KEY}`);
+  return value;
 });
 
 /** Pi's catalog prices for a model, in USD per million tokens. */
@@ -49,7 +60,7 @@ interface StoredModel { id: string; model_name: string; litellm_params: Record<s
 interface StoredCredential { credential_name: string; credential_values: Record<string, unknown>; credential_info: unknown }
 
 /** A stateful fake of the LiteLLM routes the registry uses. */
-function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined } = {}) {
+function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined; /** The usage a test completion reports; absent means a usual one. */ usage?: (seen: Seen) => Record<string, unknown> | undefined | null; completion?: (seen: Seen) => Response | undefined; /** Whether a streamed test reply carries usage (default yes). */ streamUsage?: boolean } = {}) {
   const models: StoredModel[] = [];
   const credentials = new Map<string, StoredCredential>();
   const teams = new Map<string, string[] | undefined>();
@@ -126,6 +137,21 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     if (method === "GET" && path === "/key/info") {
       const found = keys.find((candidate) => candidate.token === new URLSearchParams(url.search).get("key"));
       return found === undefined ? json({ error: { message: "key not found" } }, 404) : json({ info: found });
+    }
+    if (method === "POST" && (path === "/chat/completions" || path === "/v1/messages" || path === "/v1/responses")) {
+      const answered = options.completion?.(entry);
+      if (answered !== undefined) return answered;
+      if (entry.body?.stream === true) {
+        const carries = options.streamUsage !== false;
+        const events = path === "/v1/messages"
+          ? [{ type: "message_start", message: { usage: carries ? { input_tokens: 5, output_tokens: 1 } : {} } }, { type: "message_delta", usage: carries ? { output_tokens: 2 } : {} }]
+          : path === "/v1/responses"
+            ? [{ type: "response.output_text.delta", delta: "ok" }, { type: "response.completed", response: { usage: carries ? { input_tokens: 5, output_tokens: 2, total_tokens: 7 } : {} } }]
+            : [{ choices: [{ delta: { content: "ok" } }] }, { choices: [], ...(carries ? { usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } } : {}) }];
+        return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      const reported = options.usage === undefined ? (path === "/v1/messages" ? { input_tokens: 5, output_tokens: 2 } : { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }) : options.usage(entry);
+      return json({ id: "reply", ...(reported === null || reported === undefined ? {} : { usage: reported }) });
     }
     if (method === "GET" && path === "/health") {
       const id = new URLSearchParams(url.search).get("model_id") ?? "";
@@ -293,12 +319,12 @@ describe("upsertSource", () => {
 
   it("registers an endpoint with its base address, the transport's provider prefix and the reasoning flag", async () => {
     const completions = litellm();
-    await client(completions).upsertSource({ orgId: ORG, source: endpointSource("openai-completions"), apiKey: VENDOR_KEY });
+    await client(completions, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource("openai-completions") });
     expect(completions.models[0]!.litellm_params).toMatchObject({ model: "openai/our-model", api_base: "https://llm.example.com/v1", litellm_credential_name: `${ORG}.${SRC}` });
     expect(completions.models[0]!.model_info.supports_reasoning).toBe(true);
     expect(completions.credentials.get(`${ORG}.${SRC}`)!.credential_values).toEqual({ api_key: VENDOR_KEY, api_base: "https://llm.example.com/v1" });
     const messages = litellm();
-    await client(messages).upsertSource({ orgId: ORG, source: endpointSource("anthropic-messages"), apiKey: VENDOR_KEY });
+    await client(messages, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource("anthropic-messages") });
     expect(messages.models[0]!.litellm_params.model).toBe("anthropic/our-model");
   });
 
@@ -494,7 +520,7 @@ describe("listSources", () => {
 describe("listSources: the hosts a registration points at", () => {
   it("returns the hosts of an endpoint's models and credential, and never a key", async () => {
     const proxy = litellm();
-    await client(proxy).upsertSource({ orgId: ORG, source: endpointSource(), apiKey: VENDOR_KEY });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
     await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource([haiku], SRC_TWO), apiKey: VENDOR_KEY });
     const [endpointEntry, keyedEntry] = [(await client(proxy).listSources()).find((entry) => entry.sourceId === SRC)!, (await client(proxy).listSources()).find((entry) => entry.sourceId === SRC_TWO)!];
     expect(endpointEntry.hosts).toEqual(["llm.example.com"]);
@@ -762,5 +788,429 @@ describe("stsRoleAssumer", () => {
     await expect(denied.assumeRole({ roleArn: ROLE, sessionName: "s", externalId: "e" })).resolves.toBe(false);
     const down = stsRoleAssumer({ send: async () => { throw Object.assign(new Error("throttled"), { name: "Throttling" }); } });
     await expect(down.assumeRole({ roleArn: ROLE, sessionName: "s", externalId: "e" })).rejects.toThrow("throttled");
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8: a company's own model endpoint. The record holds a secret REFERENCE; the access function reads the secret when it registers the source and gives it to the
+// proxy's credential store alone. Its models are not served to the org's team until a check qualified exactly these settings.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("an endpoint source's secret reference (N8)", () => {
+  it("reads the secret from its reference, writes it to the proxy's credential with the endpoint's address, and keeps it out of every model body", async () => {
+    const proxy = litellm();
+    const read = resolver();
+    await client(proxy, { resolveSecret: read }).upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(read).toHaveBeenCalledWith(REF);
+    expect(proxy.credentials.get(`${ORG}.${SRC}`)).toEqual({
+      credential_name: `${ORG}.${SRC}`, credential_values: { api_key: VENDOR_KEY, api_base: "https://llm.example.com/v1" }, credential_info: { rovara_org: ORG, rovara_source: SRC },
+    });
+    expect(JSON.stringify(proxy.models)).not.toContain(VENDOR_KEY);
+    // The model carries the credential's name and nothing that could be the secret or where it lives.
+    expect(JSON.stringify(proxy.models)).not.toContain(REF);
+  });
+
+  it("reads the secret again on every registration, so a rotated secret reaches the proxy with the next save or check", async () => {
+    const proxy = litellm();
+    const secrets = { [REF]: VENDOR_KEY };
+    const read = resolver(secrets);
+    const registry = client(proxy, { resolveSecret: read });
+    await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+    secrets[REF] = "rotated-secret-0123456789";
+    await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(proxy.credentials.get(`${ORG}.${SRC}`)!.credential_values.api_key).toBe("rotated-secret-0123456789");
+  });
+
+  it("refuses a pasted key beside an endpoint, before anything is read or written", async () => {
+    const proxy = litellm();
+    const read = resolver();
+    const error = await failure(client(proxy, { resolveSecret: read }).upsertSource({ orgId: ORG, source: endpointSource(), apiKey: VENDOR_KEY }));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(error.message).not.toContain(VENDOR_KEY);
+    expect(read).not.toHaveBeenCalled();
+    expect(proxy.seen).toEqual([]);
+  });
+
+  it("refuses when the function has no secret reader, and says nothing about the reference's value", async () => {
+    const proxy = litellm();
+    const error = await failure(client(proxy).upsertSource({ orgId: ORG, source: endpointSource() }));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(proxy.seen).toEqual([]);
+  });
+
+  it("never carries a reader's own error text: a missing secret is a fixed refusal, and an unexpected failure is an unavailable proxy", async () => {
+    const proxy = litellm();
+    const missing = await failure(client(proxy, { resolveSecret: resolver({}) }).upsertSource({ orgId: ORG, source: endpointSource() }));
+    expect(missing.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(missing.message).not.toContain(VENDOR_KEY);
+    expect(missing.message).not.toContain(REF);
+    const fixed = await failure(client(proxy, { resolveSecret: async () => { throw agentXError("CONFIG_INVALID", "the endpoint's secret could not be read; check it"); } }).upsertSource({ orgId: ORG, source: endpointSource() }));
+    expect([fixed.code, fixed.message]).toEqual(["CONFIG_INVALID", "CONFIG_INVALID: the endpoint's secret could not be read; check it"]);
+    expect(proxy.seen).toEqual([]);
+  });
+
+  it.each(["", "short", "has a space in it 0123456789", "{\"json\":\"document-0123456789\"}x y"])("sends no value that is not a plain key (%j) to the proxy", async (value) => {
+    const proxy = litellm();
+    const error = await failure(client(proxy, { resolveSecret: async () => value }).upsertSource({ orgId: ORG, source: endpointSource() }));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(proxy.credentials.size).toBe(0);
+    expect(proxy.seen.filter((entry) => entry.method !== "GET")).toEqual([]);
+  });
+
+  it("scrubs the resolved secret from a refusal that quoted it", async () => {
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/credentials" && seen.method === "POST" ? json({ error: { message: `bad credential ${VENDOR_KEY} rejected` } }, 400) : undefined) });
+    const error = await failure(client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() }));
+    expect(error.message).toContain("rejected");
+    expect(error.message).not.toContain(VENDOR_KEY);
+  });
+
+  it("removes the credential left from an earlier reference when the source no longer names one, and does not use it", async () => {
+    const proxy = litellm();
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(proxy.credentials.size).toBe(1);
+    await client(proxy).upsertSource({ orgId: ORG, source: endpointSource("openai-completions", { keyRef: null }) });
+    expect(proxy.credentials.size).toBe(0);
+    expect(proxy.models[0]!.litellm_params).not.toHaveProperty("litellm_credential_name");
+  });
+});
+
+describe("an endpoint's models are served only once a check qualified exactly these settings (N8)", () => {
+  it("registers an unqualified endpoint's models for the probe but leaves them out of the org's team, so no key can call them", async () => {
+    const proxy = litellm();
+    const unqualified = endpointSource("openai-completions");
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: unqualified });
+    expect(proxy.models.map((model) => model.model_name)).toEqual([aliasOf(unqualified, 0)]);
+    expect(proxy.models[0]!.model_info).toMatchObject({ rovara_kind: "endpoint", rovara_tested: false });
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+    // The probe can still find the model.
+    expect(await client(proxy).checkSource(ORG, SRC)).toEqual({ ok: true, health: "healthy" });
+  });
+
+  it("serves them once qualified, and takes them out again when a changed source is registered unqualified", async () => {
+    const proxy = litellm();
+    const qualified = endpointSource("openai-completions", { qualified: true });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    expect(proxy.models[0]!.model_info).toMatchObject({ rovara_kind: "endpoint", rovara_tested: true });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(qualified, 0), ...CATALOG]);
+    // The same digest on a source whose address changed is stale: unqualified again.
+    const moved = ModelSourceSchema.parse({ ...qualified, baseUrl: "https://elsewhere.example.com/v1", keyRef: undefined });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: moved });
+    expect(proxy.models[0]!.model_info.rovara_tested).toBe(false);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+  });
+
+  it("does not add an unqualified endpoint's alias to the team when the org changes another source", async () => {
+    const proxy = litellm();
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    const other = anthropicSource([sonnet], SRC_TWO);
+    await client(proxy).upsertSource({ orgId: ORG, source: other, apiKey: VENDOR_KEY });
+    expect(proxy.teams.get(ORG)).toEqual([sourceAlias(ORG, SRC_TWO, sonnet), ...CATALOG]);
+  });
+
+  it("prices an endpoint's models from the catalog entry they stand for and ties them to the org, like any company source", async () => {
+    const proxy = litellm();
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource("openai-completions", { qualified: true }) });
+    expect(proxy.models[0]!.litellm_params).toMatchObject({ input_cost_per_token: 3 / 1e6, output_cost_per_token: 15 / 1e6, ssl_verify: true });
+    expect(proxy.models[0]!.model_info).toMatchObject({ rovara_org: ORG, rovara_source: SRC, input_cost_per_token: 3 / 1e6, output_cost_per_token: 15 / 1e6 });
+    // A model the catalog cannot price is refused: its spend could not be counted.
+    const unpriced = ModelSourceSchema.parse({ kind: "endpoint", sourceId: SRC, label: "G", baseUrl: "https://llm.example.com/v1", api: "openai-completions", models: [{ name: "m", catalog: { provider: "anthropic", modelId: "claude-unpriced-9" } }] });
+    expect((await failure(client(litellm(), { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: unpriced }))).message).toContain("no list price");
+  });
+
+  it("reports an endpoint whose models did not all answer as not healthy, so it is never qualified", async () => {
+    let figures = { healthy: 1, unhealthy: 0 };
+    const proxy = litellm({ health: () => figures });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(await client(proxy).checkSource(ORG, SRC)).toEqual({ ok: true, health: "healthy" });
+    figures = { healthy: 0, unhealthy: 0 };
+    expect(await client(proxy).checkSource(ORG, SRC)).toEqual({ ok: true, health: "unknown" });
+    figures = { healthy: 0, unhealthy: 1 };
+    expect(await client(proxy).checkSource(ORG, SRC)).toEqual({ ok: false, message: "this source did not answer a test call" });
+  });
+});
+
+describe("endpointSecretReader (N8)", () => {
+  const secretsOf = (answer: (id: string) => { SecretString?: string } | Error) => {
+    const asked: string[] = [];
+    return { asked, secrets: { send: vi.fn(async (command: { input: { SecretId: string } }) => {
+      asked.push(command.input.SecretId);
+      const result = answer(command.input.SecretId);
+      if (result instanceof Error) throw result;
+      return result;
+    }) } };
+  };
+  const named = (name: string) => Object.assign(new Error("denied with " + VENDOR_KEY), { name });
+
+  it("asks only for a name under rovara/model-endpoints/, refusing every other secret before it calls AWS", async () => {
+    const { asked, secrets } = secretsOf(() => ({ SecretString: VENDOR_KEY }));
+    const read = endpointSecretReader(secrets as never);
+    for (const bad of ["agentx/staging/model-proxy-master-key", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara/model-endpoints/", "rovara/model-endpoints/../master", "rovara/model-endpoints//x", "rovara/other/x", "rovara/model-endpoints/gateway-key", "", `${VENDOR_KEY}`]) {
+      expect((await failure(read(bad))).code, bad).toBe("CONFIG_INVALID");
+    }
+    expect(asked).toEqual([]);
+    expect(await read(REF)).toBe(VENDOR_KEY);
+    expect(asked).toEqual([REF]);
+  });
+
+  it("trims the value, and turns a missing secret, a denial and an empty value into fixed refusals that never carry AWS's text", async () => {
+    expect(await endpointSecretReader(secretsOf(() => ({ SecretString: `  ${VENDOR_KEY}\n` })).secrets as never)(REF)).toBe(VENDOR_KEY);
+    for (const answer of [() => named("ResourceNotFoundException"), () => named("AccessDeniedException"), () => ({ SecretString: "  " }), () => ({})]) {
+      const error = await failure(endpointSecretReader(secretsOf(answer).secrets as never)(REF));
+      expect(error.code).toBe("CONFIG_INVALID");
+      expect(error.message).not.toContain(VENDOR_KEY);
+    }
+    // Any other failure is left to the caller as a read that may work later.
+    const throttled = await failure(endpointSecretReader(secretsOf(() => named("ThrottlingException")).secrets as never)(REF));
+    expect(throttled.name).toBe("ThrottlingException");
+  });
+});
+
+describe("the handler and the invoker carry an endpoint's secret reference (N8)", () => {
+  const sourceArgs = (source: unknown) => ({ op: "upsertSource", args: { orgId: ORG, source } });
+  const withReference = (keyRef: unknown) => ({ ...(endpointSource("openai-completions", { qualified: true }) as unknown as Record<string, unknown>), keyRef });
+
+  it("passes the reference and the qualification to the proxy client as they are, with no value beside them", async () => {
+    const upsertSource = vi.fn(async () => undefined);
+    const handler = createModelAccessHandler({ access: { upsertSource } as unknown as ModelAccess, log: () => undefined });
+    const source = endpointSource("openai-completions", { qualified: true });
+    expect(await handler(sourceArgs(source))).toEqual({ ok: true, result: null });
+    expect(upsertSource).toHaveBeenCalledWith({ orgId: ORG, source });
+    expect(JSON.stringify(upsertSource.mock.calls)).toContain(REF);
+  });
+
+  it("refuses a reference that is an ARN, another secret, or a pasted value by its field path, never quoting it", async () => {
+    const upsertSource = vi.fn(async () => undefined);
+    const handler = createModelAccessHandler({ access: { upsertSource } as unknown as ModelAccess, log: () => undefined });
+    for (const value of ["arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "agentx/staging/master-key", VENDOR_KEY]) {
+      const answer = await handler(sourceArgs(withReference(value)));
+      expect(answer).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+      expect(JSON.stringify(answer)).not.toContain(value);
+    }
+    expect(upsertSource).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8 fix round 1 (Opus review): S1 org-bound secrets, S5 order of a host change, N1 health text, N2 usage, N5 old deployments, S4 the in-VPC address check.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("an endpoint's secret belongs to its org and its host (S1, S3)", () => {
+  it("refuses another org's secret, and a secret named for another host, before the reader is asked", async () => {
+    const proxy = litellm();
+    for (const keyRef of [`rovara/model-endpoints/${OTHER_ORG}/llm.example.com/gateway-key`, `rovara/model-endpoints/${ORG}/other.example.org/gateway-key`]) {
+      const read = resolver();
+      const error = await failure(client(proxy, { resolveSecret: read }).upsertSource({ orgId: ORG, source: endpointSource("openai-completions", { keyRef }) }));
+      expect(error.code, keyRef).toBe("CONFIG_INVALID");
+      expect(error.message).not.toContain(keyRef);
+      expect(read).not.toHaveBeenCalled();
+    }
+    expect(proxy.seen.filter((entry) => entry.method !== "GET")).toEqual([]);
+  });
+});
+
+describe("a host change takes the alias out of the team before any deployment changes (S5)", () => {
+  it("removes the alias first when the new settings are not served, so the alias never reaches an unapproved host", async () => {
+    const proxy = litellm();
+    const qualified = endpointSource("openai-completions", { qualified: true });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(qualified, 0), ...CATALOG]);
+    proxy.seen.length = 0;
+    const otherRef = `rovara/model-endpoints/${ORG}/other.example.org/other-key`;
+    const moved = ModelSourceSchema.parse({ ...qualified, baseUrl: "https://other.example.org/v1", keyRef: otherRef });
+    await client(proxy, { resolveSecret: resolver({ [otherRef]: "second-secret-0123456789" }) }).upsertSource({ orgId: ORG, source: moved });
+    const writes = proxy.seen.filter((entry) => entry.method !== "GET").map((entry) => `${entry.method} ${entry.path}`);
+    expect(writes.indexOf("POST /team/update"), writes.join(", ")).toBeGreaterThanOrEqual(0);
+    expect(writes.indexOf("POST /team/update")).toBeLessThan(writes.indexOf("POST /model/new"));
+    // The team update that came first no longer holds the alias.
+    const first = proxy.seen.find((entry) => entry.path === "/team/update")!;
+    expect(first.body!.models).toEqual(CATALOG);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+  });
+
+  it("keeps a served source's alias in the team throughout when its settings do not change what is served", async () => {
+    const proxy = litellm();
+    const qualified = endpointSource("openai-completions", { qualified: true });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    proxy.seen.length = 0;
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: qualified });
+    expect(proxy.seen.filter((entry) => entry.path === "/team/update").every((entry) => (entry.body!.models as string[]).includes(aliasOf(qualified, 0)))).toBe(true);
+  });
+});
+
+describe("an old deployment is never read as served (N5)", () => {
+  it("leaves out an endpoint deployment that has an address and no flags, when the org changes another source", async () => {
+    const proxy = litellm();
+    const old = endpointSource("openai-completions", { qualified: true });
+    proxy.models.push({ id: "old-1", model_name: aliasOf(old, 0), litellm_params: { api_base: "https://llm.example.com/v1" }, model_info: { rovara_org: ORG } });
+    const other = anthropicSource([haiku], SRC_TWO);
+    await client(proxy).upsertSource({ orgId: ORG, source: other, apiKey: VENDOR_KEY });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(other, 0), ...CATALOG]);
+  });
+});
+
+describe("checkSource for an endpoint (N1, N2)", () => {
+  const checked = async (options: Parameters<typeof litellm>[0], api = "openai-completions") => {
+    const proxy = litellm(options);
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource(api) });
+    return { proxy, answer: await client(proxy).checkSource(ORG, SRC) };
+  };
+
+  it("asks each model for one small reply in the endpoint's own wire format and passes a reply that reports usage", async () => {
+    for (const [api, path] of [["openai-completions", "/chat/completions"], ["openai-responses", "/v1/responses"], ["anthropic-messages", "/v1/messages"]] as const) {
+      const { proxy, answer } = await checked({}, api);
+      expect(answer, api).toEqual({ ok: true, health: "healthy" });
+      const probe = proxy.seen.find((entry) => entry.method === "POST" && entry.path === path)!;
+      expect(probe.body!.model).toBe(aliasOf(endpointSource(api), 0));
+    }
+  });
+
+  it("refuses a reply with no usage, or usage of zero, so spend is never counted as nothing", async () => {
+    const message = "this endpoint's replies carry no token usage, so its spend could not be counted";
+    for (const usage of [() => undefined, () => ({}), () => ({ total_tokens: 0 }), () => ({ prompt_tokens: 0, completion_tokens: 0 }), () => ({ total_tokens: "7" })]) {
+      expect((await checked({ usage })).answer).toEqual({ ok: false, message });
+    }
+    expect((await checked({ usage: () => ({ input_tokens: 3, output_tokens: 1 }) }, "anthropic-messages")).answer).toEqual({ ok: true, health: "healthy" });
+    expect((await checked({ usage: () => undefined }, "anthropic-messages")).answer).toEqual({ ok: false, message });
+  });
+
+  it("says the source did not answer when the test reply fails, and does not ask a source that is not an endpoint", async () => {
+    expect((await checked({ completion: () => json({ error: { message: "boom" } }, 400) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    expect((await checked({ completion: () => json({ error: { message: "down" } }, 503) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource(), apiKey: VENDOR_KEY });
+    await client(proxy).checkSource(ORG, SRC);
+    expect(proxy.seen.some((entry) => entry.path === "/chat/completions" || entry.path === "/v1/messages")).toBe(false);
+  });
+
+  it("does not repeat the proxy's words when the health call is refused", async () => {
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/health" ? json({ error: { message: `request failed with key ${VENDOR_KEY} for the endpoint` } }, 400) : undefined) });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    const error = await failure(client(proxy).checkSource(ORG, SRC));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(error.message).toBe("CONFIG_INVALID: model proxy refused the health check (400)");
+    expect(error.message).not.toContain(VENDOR_KEY);
+  });
+});
+
+describe("the endpoint address is judged inside the VPC (S4)", () => {
+  it("is judged by the function's own checker, and an access function with none refuses every address", async () => {
+    const seenUrls: string[] = [];
+    const proxy = litellm();
+    await client(proxy, { checkEndpointHost: async (url) => { seenUrls.push(url); } }).checkEndpoint("https://llm.example.com/v1");
+    expect(seenUrls).toEqual(["https://llm.example.com/v1"]);
+    const refused = await failure(client(proxy).checkEndpoint("https://llm.example.com/v1"));
+    expect([refused.code, refused.message]).toEqual(["CONFIG_INVALID", "CONFIG_INVALID: custom model endpoints are not set up on this install"]);
+  });
+
+  it("is a request of its own for the handler and the invoker, and the handler refuses when its access has no checker", async () => {
+    const check = vi.fn(async () => undefined);
+    const handler = createModelAccessHandler({ access: { checkEndpoint: check } as unknown as ModelAccess, log: () => undefined });
+    expect(await handler({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } })).toEqual({ ok: true, result: null });
+    expect(check).toHaveBeenCalledWith("https://llm.example.com/v1");
+    expect(await handler({ op: "checkEndpoint", args: { url: "" } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    expect(await handler({ op: "checkEndpoint", args: { url: "https://x.example.com", extra: 1 } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    const bare = createModelAccessHandler({ access: {} as unknown as ModelAccess, log: () => undefined });
+    expect(await bare({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } })).toEqual({ ok: false, code: "CONFIG_INVALID", message: "custom model endpoints are not set up on this install" });
+
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: false, code: "CONFIG_INVALID", message: "the endpoint host resolves to an address Rovara never calls" })) })) };
+    const invoker = new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never });
+    const refused = await failure(invoker.checkEndpoint("https://llm.example.com/v1"));
+    expect([refused.code, refused.message]).toEqual(["CONFIG_INVALID", "CONFIG_INVALID: the endpoint host resolves to an address Rovara never calls"]);
+    expect(JSON.parse(Buffer.from((lambda.send.mock.calls[0] as unknown as [{ input: { Payload: Buffer } }])[0].input.Payload).toString())).toEqual({ op: "checkEndpoint", args: { url: "https://llm.example.com/v1" } });
+  });
+
+  it("builds its checker only when the switch is on and the ranges parse, and a bad range leaves none", async () => {
+    const { endpointAddressChecker } = await import("../../packages/broker/src/model-proxy/handler.js");
+    expect(endpointAddressChecker({})).toEqual({});
+    expect(endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "0" })).toEqual({});
+    expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1" }).checkEndpointHost).toBe("function");
+    expect(typeof endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "10.4.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" }).checkEndpointHost).toBe("function");
+    expect(endpointAddressChecker({ ROVARA_CUSTOM_MODEL_ENDPOINTS: "1", ROVARA_MODEL_ENDPOINT_CIDRS: "8.8.8.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// N8 fix round 2: redirects (N6) and streamed usage (N2).
+// ---------------------------------------------------------------------------------------------------------------------
+describe("a redirect is never followed on a call to the proxy, so none can carry a request elsewhere (N6)", () => {
+  function recording(proxy: ReturnType<typeof litellm>) {
+    const calls: Array<{ url: string; redirect: string | undefined }> = [];
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, redirect: init?.redirect });
+      return proxy.fetch(input, init);
+    }) as typeof globalThis.fetch;
+    return { calls, wrapped };
+  }
+
+  it("asks for manual redirect handling on every call: registration, health, the test reply and the stream", async () => {
+    const proxy = litellm();
+    const { calls, wrapped } = recording(proxy);
+    const registry = client(proxy, { fetch: wrapped, resolveSecret: resolver() });
+    await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(await registry.checkSource(ORG, SRC)).toEqual({ ok: true, health: "healthy" });
+    expect(calls.some((call) => call.url.endsWith("/health?model_id=model-id-1"))).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/chat/completions"))).toBe(true);
+    expect(calls.length).toBeGreaterThan(8);
+    expect(calls.filter((call) => call.redirect !== "manual")).toEqual([]);
+  });
+
+  it("refuses an answer that is a redirect, whichever call it answers, and follows nothing", async () => {
+    for (const path of ["/health", "/chat/completions", "/model/new", "/credentials"]) {
+      const proxy = litellm({ failOn: (seen) => (seen.path === path ? new Response(null, { status: 302, headers: { location: "https://evil.example.net/steal" } }) : undefined) });
+      const { calls, wrapped } = recording(proxy);
+      const registry = client(proxy, { fetch: wrapped, resolveSecret: resolver() });
+      try {
+        await registry.upsertSource({ orgId: ORG, source: endpointSource() });
+        await registry.checkSource(ORG, SRC);
+      } catch {
+        // A refusal is the expected outcome for most of these; what matters is where the request went.
+      }
+      // /chat/completions is answered through the probe, which reports it as a source that did not answer; the others are refused outright.
+      expect(calls.some((call) => call.url.includes("evil.example.net")), path).toBe(false);
+    }
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/health" ? new Response(null, { status: 307, headers: { location: "https://evil.example.net/" } }) : undefined) });
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    const refused = await failure(client(proxy).checkSource(ORG, SRC));
+    expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(refused.message).toContain("redirect");
+    const probe = litellm({ completion: () => new Response(null, { status: 302, headers: { location: "https://evil.example.net/" } }) });
+    await client(probe, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource() });
+    expect(await client(probe).checkSource(ORG, SRC)).toEqual({ ok: false, message: "this source did not answer a test call" });
+  });
+});
+
+describe("a streamed reply with no usage is refused as well (N2)", () => {
+  const checked = async (options: Parameters<typeof litellm>[0], api = "openai-completions") => {
+    const proxy = litellm(options);
+    await client(proxy, { resolveSecret: resolver() }).upsertSource({ orgId: ORG, source: endpointSource(api) });
+    return { proxy, answer: await client(proxy).checkSource(ORG, SRC) };
+  };
+  const message = "this endpoint's streamed replies carry no token usage, so its spend could not be counted";
+
+  it("asks for a streamed reply in each wire format (with usage requested where the format has the option) and passes one that reports usage", async () => {
+    for (const [api, path] of [["openai-completions", "/chat/completions"], ["openai-responses", "/v1/responses"], ["anthropic-messages", "/v1/messages"]] as const) {
+      const { proxy, answer } = await checked({}, api);
+      expect(answer, api).toEqual({ ok: true, health: "healthy" });
+      const streamed = proxy.seen.find((entry) => entry.method === "POST" && entry.path === path && entry.body?.stream === true)!;
+      expect(streamed, api).toBeDefined();
+      if (api === "openai-completions") expect(streamed.body!.stream_options).toEqual({ include_usage: true });
+    }
+  });
+
+  it("refuses a stream that ends without any usage, in each wire format, while the plain reply is fine", async () => {
+    for (const api of ["openai-completions", "openai-responses", "anthropic-messages"]) {
+      expect((await checked({ streamUsage: false }, api)).answer, api).toEqual({ ok: false, message });
+    }
+  });
+
+  it("counts the output tokens of an Anthropic stream that reports input in no event at all", async () => {
+    const events = [{ type: "message_start", message: { usage: {} } }, { type: "message_delta", usage: { output_tokens: 3 } }];
+    const completion = (seen: Seen) => (seen.body?.stream === true ? new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200 }) : undefined);
+    expect((await checked({ completion }, "anthropic-messages")).answer).toEqual({ ok: true, health: "healthy" });
+  });
+
+  it("says the source did not answer when the stream cannot be read or the call fails", async () => {
+    expect((await checked({ completion: (seen) => (seen.body?.stream === true ? json({ error: { message: "no" } }, 400) : undefined) })).answer).toEqual({ ok: false, message: "this source did not answer a test call" });
+    expect((await checked({ completion: (seen) => (seen.body?.stream === true ? new Response("not an event stream at all", { status: 200 }) : undefined) })).answer).toEqual({ ok: false, message });
   });
 });

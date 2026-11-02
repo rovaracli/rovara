@@ -16,6 +16,7 @@ import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
 import { assertStdioHostStackBuilt, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
+import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
@@ -161,6 +162,9 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   // Past the release flag a build must also contain the host's stack; until it does, asking for package-run servers stops here (see private-mcp.ts).
   assertStdioHostStackBuilt(privateMcp);
+  // The model endpoint settings (N8: rovaraCustomModelEndpoints, rovaraModelEndpointCidrs): Enterprise only, off by default, checked here so a wrong one stops the synth.
+  const modelEndpoints = parseModelEndpointContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
+  const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints) };
   // The Team record's switch (off by default; `-c agentxTeamRecord=enabled` turns its storage, schedules and broker setting on). Checked here so a wrong value stops the synth.
   const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
@@ -170,7 +174,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     naming,
     ...(teamRecord === undefined ? {} : { teamRecord }),
     ...(registryDomains === undefined ? {} : { registryDomains }),
-    ...(Object.keys(privateMcpBrokerEnvironment(privateMcp)).length === 0 ? {} : { brokerEnvironment: privateMcpBrokerEnvironment(privateMcp) }),
+    ...(Object.keys(brokerEnvironment).length === 0 ? {} : { brokerEnvironment }),
+    ...(modelEndpoints.enabled ? { customModelEndpoints: true, customModelEndpointEnvironment: modelEndpointBrokerEnvironment(modelEndpoints), modelEndpointCidrs: modelEndpoints.privateCidrs } : {}),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
     ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs], bundledImages: true } : {}),

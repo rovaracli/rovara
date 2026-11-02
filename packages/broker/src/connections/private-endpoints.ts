@@ -45,12 +45,12 @@ const PRIVATE_RANGES: ReadonlyArray<[string, number, "ipv4" | "ipv6"]> = [["10.0
  * inside a private range: a public range, a broad one, or a loopback/link-local range is a mistake and stops the install, never a silent widening. Unset gives none,
  * and then every test and call is refused.
  */
-export function parseInstallCidrs(raw: string | undefined, rovaraCidrs: readonly string[] = []): string[] {
+export function parseInstallCidrs(raw: string | undefined, rovaraCidrs: readonly string[] = [], name = "ROVARA_PRIVATE_MCP_CIDRS"): string[] {
   if (raw === undefined || raw.trim() === "") return [];
   return raw.split(",").map((part) => part.trim()).filter((part) => part !== "").map((cidr) => {
     const [network, prefixText, extra] = cidr.split("/");
     const family = network === undefined ? 0 : isIP(network);
-    if (network === undefined || prefixText === undefined || extra !== undefined || family === 0 || !/^\d{1,3}$/u.test(prefixText)) throw agentXError("CONFIG_INVALID", `ROVARA_PRIVATE_MCP_CIDRS: "${cidr.slice(0, 60)}" is not a range such as 10.0.0.0/8`);
+    if (network === undefined || prefixText === undefined || extra !== undefined || family === 0 || !/^\d{1,3}$/u.test(prefixText)) throw agentXError("CONFIG_INVALID", `${name}: "${cidr.slice(0, 60)}" is not a range such as 10.0.0.0/8`);
     const prefix = Number(prefixText);
     const inside = PRIVATE_RANGES.some(([base, basePrefix, baseFamily]) => {
       if (baseFamily !== (family === 4 ? "ipv4" : "ipv6") || prefix < basePrefix || prefix > (family === 4 ? 32 : 128)) return false;
@@ -58,10 +58,10 @@ export function parseInstallCidrs(raw: string | undefined, rovaraCidrs: readonly
       list.addSubnet(base, basePrefix, baseFamily);
       return list.check(network, baseFamily);
     });
-    if (!inside || isNeverCalledAddress(network)) throw agentXError("CONFIG_INVALID", `ROVARA_PRIVATE_MCP_CIDRS: "${cidr.slice(0, 60)}" is not inside a private range`);
+    if (!inside || isNeverCalledAddress(network)) throw agentXError("CONFIG_INVALID", `${name}: "${cidr.slice(0, 60)}" is not inside a private range`);
     // The network Rovara itself runs in is never a place for a customer's MCP server: a range that contains it, sits inside it or equals it is a mistake that would let a test
     // of a pasted address find the install's own services.
-    if (rovaraCidrs.some((own) => cidrsOverlap(cidr, own))) throw agentXError("CONFIG_INVALID", `ROVARA_PRIVATE_MCP_CIDRS: "${cidr.slice(0, 60)}" overlaps the network Rovara itself runs in`);
+    if (rovaraCidrs.some((own) => cidrsOverlap(cidr, own))) throw agentXError("CONFIG_INVALID", `${name}: "${cidr.slice(0, 60)}" overlaps the network Rovara itself runs in`);
     return cidr;
   });
 }

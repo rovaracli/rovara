@@ -5,8 +5,9 @@
 // once per call, and never puts it, or a key, in an error. Network failures and 5xx answers are
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
 import { createHash, randomInt } from "node:crypto";
-import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
+import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
 import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { endpointQualified } from "../model-sources/endpoint-digest.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
 
 const BUDGET_DURATION = "1mo";
@@ -45,14 +46,21 @@ export interface ModelProxyClientInput {
   catalog?: readonly string[];
   /** For the Bedrock probe. */
   roles?: RoleAssumer;
+  /**
+   * N8: reads the secret behind a company endpoint's reference (a name under `rovara/model-endpoints/`). Only the model access function, inside the VPC, has one. It throws an
+   * AgentXError with a fixed message for a secret that is missing or not readable, and anything else for a read that may work later; it never puts the value in an error.
+   */
+  resolveSecret?: (reference: string) => Promise<string>;
+  /** N8: judges a company endpoint's address inside the VPC (see `ModelAccess.checkEndpoint`). Absent: every address is refused. */
+  checkEndpointHost?: (url: string) => Promise<void>;
   /** Twenty lowercase base-36 characters; replaceable so a test can name the wrong external id. */
   random?: () => string;
   /** Where the client says what it refused to rewrite. Never a key or a model name. */
   log?: (entry: Record<string, unknown>) => void;
 }
 
-/** `served` is false for a Bedrock source that has not passed its probe: its models exist (the probe finds the role through them) but no team may call them. */
-interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean; /** The hostname the model's `api_base` points at, when it has one. */ host: string | undefined }
+/** `served` is false for a Bedrock source that has not passed its probe, and for an endpoint source no check has qualified: their models exist (the probe finds them) but no team may call them. */
+interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; /** `endpoint` for a company's own model endpoint. */ kind: string | undefined; /** The wire format an endpoint is called in. */ api: string | undefined; served: boolean; /** The hostname the model's `api_base` points at, when it has one. */ host: string | undefined }
 
 type Json = Record<string, unknown>;
 interface Reply { status: number; body: unknown }
@@ -65,6 +73,30 @@ function hostnameOf(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The most token usage any event of a streamed reply reports: a `usage` object on the event, on its `message` (Anthropic message_start) or on its `response` (OpenAI Responses
+ * completed). Anthropic reports input in one event and output in another, so its two counts are added across events.
+ */
+function streamedUsageTotal(text: string): number {
+  let total = 0, input = 0, output = 0;
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    let event: unknown;
+    try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
+    if (typeof event !== "object" || event === null) continue;
+    const record = event as Record<string, unknown>;
+    for (const holder of [record, record.message, record.response]) {
+      const usage = typeof holder === "object" && holder !== null ? (holder as Record<string, unknown>).usage : undefined;
+      if (typeof usage !== "object" || usage === null) continue;
+      const counts = usage as Record<string, unknown>;
+      total = Math.max(total, numberOf(counts.total_tokens) ?? ((numberOf(counts.prompt_tokens) ?? 0) + (numberOf(counts.completion_tokens) ?? 0)));
+      input = Math.max(input, numberOf(counts.input_tokens) ?? 0);
+      output = Math.max(output, numberOf(counts.output_tokens) ?? 0);
+    }
+  }
+  return Math.max(total, input + output);
 }
 
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -397,37 +429,75 @@ export class ModelProxyClient implements ModelAccess {
     if (problem !== undefined) throw agentXError("CONFIG_INVALID", problem);
     // A Bedrock source authenticates by role and external id; a key beside them could be used as a bearer token and bypass both.
     if (source.kind === "bedrock" && apiKey !== undefined) throw agentXError("CONFIG_INVALID", "a Bedrock source uses a role, not an api key");
+    // N8: an endpoint's secret is only ever a reference, read below; a key sent beside it would be a second, unreviewable way to hold one.
+    if (source.kind === "endpoint" && apiKey !== undefined) throw agentXError("CONFIG_INVALID", "an endpoint source names its secret with a reference; it takes no pasted key");
     const prices = this.input.prices;
     if (prices === undefined) throw agentXError("CONFIG_INVALID", "model prices are not configured");
     const catalog = this.teamCatalog();
     const master = await this.master();
     const credentialName = credentialNameOf(orgId, source.sourceId);
-    // Reads first, so a source that cannot be built is refused before anything is written.
-    const stored = source.kind === "bedrock" ? false : await this.credentialExists(master, credentialName, apiKey);
-    if (apiKey === undefined && !stored && sourceUsesKey(source)) throw agentXError("CONFIG_INVALID", "this source has no stored key; send one");
-    const wanted = proxyModelsOf(orgId, source, apiKey !== undefined || stored ? credentialName : undefined, prices);
-    const existing = await this.listModels(master, apiKey);
-    const prefix = sourceAliasPrefix(orgId, source.sourceId);
-    const mine = existing.filter((entry) => entry.org === orgId && entry.name.startsWith(prefix));
-    const names = new Set(wanted.map((model) => model.model_name));
-    // The alias carries the org, so another org cannot own one of these names; a deployment that does is a collision LiteLLM would load-balance across.
-    if (existing.some((entry) => names.has(entry.name) && entry.org !== orgId)) throw agentXError("CONFIG_INVALID", "a model with this alias already exists");
-    const refuse = (reply: Reply): AgentXError => refusal(reply, apiKey);
-    if (apiKey !== undefined) {
-      const credential = { credential_name: credentialName, credential_values: { api_key: apiKey, ...(source.kind === "endpoint" ? { api_base: source.baseUrl } : {}) }, credential_info: { rovara_org: orgId, rovara_source: source.sourceId } };
-      const written = stored
-        ? await this.request("PATCH", `/credentials/${encodeURIComponent(credentialName)}`, master, credential)
-        : await this.request("POST", "/credentials", master, credential);
-      if (written.status !== 200) throw refuse(written);
+    // The secret behind an endpoint's reference is read here, in this function, and goes straight to the proxy's credential store: it is never returned, logged or sent
+    // anywhere else. It is read on every registration, so a rotated secret is picked up by the next save or check.
+    // The reference must be this org's and named for this address's host before the function reads it (a second fence beside the routes').
+    if (source.kind === "endpoint" && source.keyRef !== undefined && endpointSecretRefProblem(orgId, source.baseUrl, source.keyRef) !== undefined) throw agentXError("CONFIG_INVALID", "the endpoint's secret is not this organization's, or is not named for this address's host");
+    const referenced = source.kind === "endpoint" && source.keyRef !== undefined ? await this.readReferencedSecret(source.keyRef) : undefined;
+    const key = apiKey ?? referenced;
+    try {
+      // Reads first, so a source that cannot be built is refused before anything is written.
+      const stored = source.kind === "bedrock" ? false : await this.credentialExists(master, credentialName, key);
+      if (key === undefined && !stored && sourceUsesKey(source)) throw agentXError("CONFIG_INVALID", "this source has no stored key; send one");
+      // An endpoint holds a credential only through its reference: one left from an earlier reference is not used (and is removed below).
+      const usesCredential = key !== undefined || (stored && source.kind !== "endpoint");
+      const wanted = proxyModelsOf(orgId, source, usesCredential ? credentialName : undefined, prices);
+      const existing = await this.listModels(master, key);
+      const prefix = sourceAliasPrefix(orgId, source.sourceId);
+      const mine = existing.filter((entry) => entry.org === orgId && entry.name.startsWith(prefix));
+      const names = new Set(wanted.map((model) => model.model_name));
+      // The alias carries the org, so another org cannot own one of these names; a deployment that does is a collision LiteLLM would load-balance across.
+      if (existing.some((entry) => names.has(entry.name) && entry.org !== orgId)) throw agentXError("CONFIG_INVALID", "a model with this alias already exists");
+      const refuse = (reply: Reply): AgentXError => refusal(reply, key);
+      const others = existing.filter((entry) => entry.org === orgId && entry.served && !entry.name.startsWith(prefix)).map((entry) => entry.name);
+      // A Bedrock source is served only once its probe has passed (`tested`), and an endpoint only once a check qualified these exact settings; until then its models
+      // exist for the probe but no team has them.
+      const gated = (source.kind === "bedrock" && !source.tested) || (source.kind === "endpoint" && !endpointQualified(source));
+      // S5: settings that are not served (a changed address or secret, say) leave the team BEFORE any deployment changes, so the alias never reaches a new, unapproved host
+      // between the deployment and the team update. A served source keeps its alias throughout: new deployments first, then the old ones go.
+      if (gated) await this.setTeamModels(master, orgId, others, catalog, key);
+      if (key !== undefined) {
+        const credential = { credential_name: credentialName, credential_values: { api_key: key, ...(source.kind === "endpoint" ? { api_base: source.baseUrl } : {}) }, credential_info: { rovara_org: orgId, rovara_source: source.sourceId } };
+        const written = stored
+          ? await this.request("PATCH", `/credentials/${encodeURIComponent(credentialName)}`, master, credential)
+          : await this.request("POST", "/credentials", master, credential);
+        if (written.status !== 200) throw refuse(written);
+      }
+      // New deployments first, then the old ones go: the alias never stops serving. The old ids are the ones listed above.
+      const created = await Promise.all(wanted.map((model) => this.request("POST", "/model/new", master, { ...model })));
+      for (const reply of created) if (reply.status !== 200) throw refuse(reply);
+      await this.deleteModels(master, mine.map((entry) => entry.id), key);
+      if (source.kind === "endpoint" && key === undefined && stored) {
+        const dropped = await this.request("DELETE", `/credentials/${encodeURIComponent(credentialName)}`, master, undefined);
+        if (dropped.status !== 200 && dropped.status !== 404) throw refuse(dropped);
+      }
+      if (!gated) await this.setTeamModels(master, orgId, [...others, ...names], catalog, key);
+    } catch (error) {
+      throw scrubbed(error, key);
     }
-    // New deployments first, then the old ones go: the alias never stops serving. The old ids are the ones listed above.
-    const created = await Promise.all(wanted.map((model) => this.request("POST", "/model/new", master, { ...model })));
-    for (const reply of created) if (reply.status !== 200) throw refuse(reply);
-    await this.deleteModels(master, mine.map((entry) => entry.id), apiKey);
-    const others = existing.filter((entry) => entry.org === orgId && entry.served && !entry.name.startsWith(prefix)).map((entry) => entry.name);
-    // A Bedrock source is served only once its probe has passed (`tested`); until then its models exist for the probe but no team has them.
-    const served = source.kind !== "bedrock" || source.tested ? [...names] : [];
-    await this.setTeamModels(master, orgId, [...others, ...served], catalog, apiKey);
+  }
+
+  /** Reads an endpoint's secret through the function's reader. A reader that is missing, a secret that cannot be read, or a value that is not a plausible key is a fixed refusal with no detail. */
+  private async readReferencedSecret(reference: string): Promise<string> {
+    const resolve = this.input.resolveSecret;
+    if (resolve === undefined) throw agentXError("CONFIG_INVALID", "secret references are not set up on this install");
+    let value: string;
+    try {
+      value = await resolve(reference);
+    } catch (error) {
+      if (error instanceof AgentXError) throw error;
+      throw unavailable("the endpoint's secret could not be read just now");
+    }
+    // The same shape as a vendor key: printable ASCII with no space. A value that is not one (a JSON document, an empty string) is not sent anywhere.
+    if (!/^[\x21-\x7e]{8,4096}$/.test(value)) throw agentXError("CONFIG_INVALID", "the endpoint's secret is empty or not a plain key");
+    return value;
   }
 
   async removeSource(orgId: OrgId, sourceId: string): Promise<void> {
@@ -465,6 +535,11 @@ export class ModelProxyClient implements ModelAccess {
     return [...found.values()].map(({ orgId, sourceId, hosts }) => ({ orgId, sourceId, ...(hosts.size === 0 ? {} : { hosts: [...hosts].sort() }) }));
   }
 
+  async checkEndpoint(url: string): Promise<void> {
+    if (this.input.checkEndpointHost === undefined) throw agentXError("CONFIG_INVALID", "custom model endpoints are not set up on this install");
+    await this.input.checkEndpointHost(url);
+  }
+
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
     const master = await this.master();
     const prefix = sourceAliasPrefix(orgId, sourceId);
@@ -478,13 +553,85 @@ export class ModelProxyClient implements ModelAccess {
     const replies = await Promise.all(mine.map((entry) => this.request("GET", `/health?model_id=${encodeURIComponent(entry.id)}`, master, undefined)));
     let healthy = 0;
     for (const reply of replies) {
-      if (reply.status !== 200) throw refusal(reply);
+      // The refusal's own words are not repeated: a health answer can quote the request it made.
+      if (reply.status !== 200) throw agentXError(reply.status === 404 ? "NOT_FOUND" : "CONFIG_INVALID", `model proxy refused the health check (${String(reply.status)})`);
       const body = isRecord(reply.body) ? reply.body : {};
       // Never the body: an unhealthy entry carries the request, with a partly masked key.
       if ((numberOf(body.unhealthy_count) ?? 0) > 0) return { ok: false, message: "this source did not answer a test call" };
       if ((numberOf(body.healthy_count) ?? 0) > 0) healthy += 1;
     }
-    return { ok: true, health: healthy === replies.length ? "healthy" : "unknown" };
+    const health = healthy === replies.length ? "healthy" : "unknown";
+    // N2: a company endpoint is also asked for one tiny reply per model, and a reply that carries no token usage is refused: it would be priced at nothing.
+    if (health === "healthy") {
+      for (const entry of mine) {
+        if (entry.kind !== "endpoint") continue;
+        const refused = await this.probeUsage(master, entry);
+        if (refused !== undefined) return { ok: false, message: refused };
+      }
+    }
+    return { ok: true, health };
+  }
+
+  /** One small call through the proxy to an endpoint model; the message to show when it did not answer, or answered without token usage. */
+  private async probeUsage(master: string, entry: ProxyModelEntry): Promise<string | undefined> {
+    const prompt = "Reply with the single word: ok";
+    let reply: Reply;
+    try {
+      reply = entry.api === "anthropic-messages"
+        ? await this.request("POST", "/v1/messages", master, { model: entry.name, max_tokens: 16, messages: [{ role: "user", content: prompt }] })
+        : entry.api === "openai-responses"
+          ? await this.request("POST", "/v1/responses", master, { model: entry.name, input: prompt, max_output_tokens: 16 })
+          : await this.request("POST", "/chat/completions", master, { model: entry.name, messages: [{ role: "user", content: prompt }], max_tokens: 16 });
+    } catch (error) {
+      // The proxy answered the health call a moment ago: a failure now is the endpoint's, not the proxy's.
+      if (error instanceof AgentXError && error.code === "MODEL_PROXY_UNAVAILABLE") return "this source did not answer a test call";
+      throw error;
+    }
+    if (reply.status !== 200) return "this source did not answer a test call";
+    const usage = isRecord(reply.body) && isRecord(reply.body.usage) ? reply.body.usage : {};
+    const total = numberOf(usage.total_tokens) ?? ((numberOf(usage.prompt_tokens) ?? numberOf(usage.input_tokens) ?? 0) + (numberOf(usage.completion_tokens) ?? numberOf(usage.output_tokens) ?? 0));
+    if (total <= 0) return "this endpoint's replies carry no token usage, so its spend could not be counted";
+    return this.probeStreamedUsage(master, entry);
+  }
+
+  /**
+   * N2: the same small call, streamed. Usage is asked for where the format has the option (OpenAI chat), and the events are read for any usage report; a stream that ends
+   * without one is refused, since the spend of a streamed reply would otherwise be counted as nothing.
+   */
+  private async probeStreamedUsage(master: string, entry: ProxyModelEntry): Promise<string | undefined> {
+    const prompt = "Reply with the single word: ok";
+    const [path, body]: [string, Json] = entry.api === "anthropic-messages"
+      ? ["/v1/messages", { model: entry.name, max_tokens: 16, stream: true, messages: [{ role: "user", content: prompt }] }]
+      : entry.api === "openai-responses"
+        ? ["/v1/responses", { model: entry.name, input: prompt, max_output_tokens: 16, stream: true }]
+        : ["/chat/completions", { model: entry.name, messages: [{ role: "user", content: prompt }], max_tokens: 16, stream: true, stream_options: { include_usage: true } }];
+    let text: string;
+    try {
+      text = await this.requestText("POST", path, master, body);
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "MODEL_PROXY_UNAVAILABLE") return "this source did not answer a test call";
+      throw error;
+    }
+    return streamedUsageTotal(text) > 0 ? undefined : "this endpoint's streamed replies carry no token usage, so its spend could not be counted";
+  }
+
+  /** One HTTP exchange whose answer is text (an event stream). A status that is not 200 is "did not answer"; redirects are not followed. */
+  private async requestText(method: "POST", path: string, master: string, body: Json): Promise<string> {
+    let response: Response;
+    try {
+      response = await this.input.fetch(`${this.baseUrl}${path}`, {
+        method, headers: { authorization: `Bearer ${master}`, "content-type": "application/json" }, body: JSON.stringify(body), redirect: "manual",
+        signal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      });
+    } catch {
+      throw unavailable("model proxy is unreachable");
+    }
+    if (response.status !== 200) throw unavailable("model proxy did not answer the test call");
+    try {
+      return (await response.text()).slice(0, 262_144);
+    } catch {
+      throw unavailable("model proxy answer could not be read");
+    }
   }
 
   /**
@@ -546,8 +693,11 @@ export class ModelProxyClient implements ModelAccess {
         name: item.model_name,
         org: typeof info.rovara_org === "string" ? info.rovara_org : undefined,
         roleArn: typeof info.rovara_role_arn === "string" ? info.rovara_role_arn : undefined,
-        // A Bedrock model is served only once its probe has passed; a missing flag fails closed.
-        served: typeof info.rovara_role_arn !== "string" || info.rovara_tested === true,
+        kind: typeof info.rovara_kind === "string" ? info.rovara_kind : undefined,
+        api: typeof info.rovara_api === "string" ? info.rovara_api : undefined,
+        // A Bedrock model is served only once its probe has passed, and an endpoint's once a check qualified it; a missing flag fails closed. A deployment with an address
+        // of its own (an endpoint) counts as one even when it predates the `rovara_kind` flag, so an older deployment is never read as served.
+        served: (typeof info.rovara_role_arn !== "string" && info.rovara_kind !== "endpoint" && hostnameOf(isRecord(item.litellm_params) ? item.litellm_params.api_base : undefined) === undefined) || info.rovara_tested === true,
         host: hostnameOf(isRecord(item.litellm_params) ? item.litellm_params.api_base : undefined),
       });
     }
@@ -581,11 +731,15 @@ export class ModelProxyClient implements ModelAccess {
         method,
         headers: { authorization: `Bearer ${master}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // N6: a redirect is never followed. The calls that reach a company's endpoint (the health call, the test replies) go through this one function; an answer that is a
+        // redirect is refused, so no request, and nothing in it, is sent on to an address nobody approved.
+        redirect: "manual",
         signal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
     } catch {
       throw unavailable("model proxy is unreachable");
     }
+    if (response.status >= 300 && response.status < 400) throw unavailable("model proxy answered with a redirect, which is not followed");
     if (response.status >= 500) throw unavailable(`model proxy answered ${String(response.status)}`);
     let parsed: unknown;
     try {
