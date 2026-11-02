@@ -78,7 +78,7 @@ import {
 } from "./project-list.js";
 import { getAppProject, startListsCandidateSetupCheck, startProjectSetupCheck } from "./project-archive-setup.js";
 import { candidateStateOf } from "./test-environment-candidate.js";
-import { setupCheckReplay } from "../../org/project-setup-check.js";
+import { adoptCandidateAsProjectCheck, setupCheckReplay } from "../../org/project-setup-check.js";
 import { projectRoleForRoute } from "./project-members.js";
 import { putProjectSettings } from "./project-settings.js";
 import { checkProjectAccess } from "./project-access.js";
@@ -112,6 +112,7 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
         read: (who, project, digest, definition) => candidateStateOf(deps, who.orgId, project, digest, definition),
         started: (who, project, requestId) => setupCheckReplay(setupCheckDepsOf(deps), who.orgId, project, requestId, who.developerId),
         start: async (who, project, input) => { await startListsCandidateSetupCheck(deps, who, encodeURIComponent(project), input); },
+        adopt: (who, project, input) => adoptCandidateAsProjectCheck(setupCheckDepsOf(deps), { orgId: who.orgId, project, actorId: who.developerId, ...input }),
       },
     }),
     // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.

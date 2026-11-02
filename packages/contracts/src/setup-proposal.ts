@@ -238,6 +238,8 @@ export const SetupApplyBodySchema = z.object({
   requestId: z.string().uuid(),
   expectedRevision: z.number().int().positive(),
   items: z.array(z.object({ id: ItemId, useSuggestion: z.boolean().optional() }).strict()).min(1).max(SETUP_APPLY_ITEMS_MAX),
+  /** True only when the person asks to run the check of these commands again after it failed (without it, a failed check for the same commands and settings is shown again, not re-run). */
+  checkAgain: z.boolean().optional(),
 }).strict().superRefine((body, context) => {
   const seen = new Set<string>();
   for (const [index, item] of body.items.entries()) {

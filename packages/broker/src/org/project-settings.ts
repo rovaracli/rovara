@@ -171,7 +171,7 @@ export function parseProjectSettingsBody(body: unknown): ProjectSettingsBody {
 type Repository = StoredProjectDefinition["repositories"][number];
 
 /** The repository an entry means: its name in the project, or its GitHub `owner/name`, compared without regard to case. */
-function resolveRepository(repositories: readonly Repository[], entry: string): Repository | undefined {
+export function resolveRepository(repositories: readonly Repository[], entry: string): Repository | undefined {
   const wanted = entry.toLowerCase();
   return repositories.find((repository) => repository.name.toLowerCase() === wanted || fullNameOf(repository).toLowerCase() === wanted);
 }

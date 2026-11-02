@@ -26,6 +26,18 @@ describe("draftCommandLists", () => {
   });
 });
 
+describe("a dev container in the batch", () => {
+  it("is part of the lists as the save stores it (the repository by its project name) and of the digest", () => {
+    const plain = draftCommandLists(definition, { setupCommands: ["npm ci"] });
+    const withContainer = draftCommandLists(definition, { setupCommands: ["npm ci"], devcontainer: { repository: "WEB", configPath: ".devcontainer/devcontainer.json" } });
+    expect(withContainer.devcontainer).toEqual({ repository: "web", configPath: ".devcontainer/devcontainer.json" });
+    expect(withContainer.setup).toEqual(plain.setup);
+    expect(draftCommandsDigest(withContainer)).not.toBe(draftCommandsDigest(plain));
+    expect(draftCommandsDigest(withContainer)).not.toBe(draftCommandsDigest({ ...withContainer, devcontainer: { repository: "web", configPath: ".devcontainer.json" } }));
+    expect(() => draftCommandLists(definition, { setupCommands: ["npm ci"], devcontainer: { repository: "nope" } })).toThrow(/devcontainer\.repository/u);
+  });
+});
+
 describe("draftCommandsDigest", () => {
   it("names the exact lists: another command, timeout or env is another digest, key order is not", () => {
     const base = draftCommandLists(definition, { setupCommands: ["npm ci"] });
@@ -60,7 +72,10 @@ describe("judgeDraftCheck", () => {
   it("a check this request started that cannot be used reads as lost; one that failed reads as failed; one that runs is waited for by anybody", () => {
     expect(judge(state({ setup: [] }), { workspaceId: "w" })).toBe("lost");
     expect(judge(state({}, "failed"), { workspaceId: "w" })).toBe("failed");
-    expect(judge(state({}, "failed"))).toBe("start");
+    // Another request's press shows the failure; only "check again" runs a new check.
+    expect(judge(state({}, "failed"))).toBe("failed");
+    expect(judgeDraftCheck({ state: state({}, "failed"), lists, revision: 3, nowMs: now, mine: undefined, again: true }).kind).toBe("start");
+    expect(judgeDraftCheck({ state: state({}, "failed"), lists, revision: 3, nowMs: now, mine: { workspaceId: "w" }, again: true }).kind).toBe("failed");
     expect(judge(state({}, "checking"))).toBe("checking");
     expect(judge(state({}, "checking"), { workspaceId: "w" })).toBe("checking");
   });

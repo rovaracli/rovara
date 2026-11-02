@@ -67,7 +67,7 @@ import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposa
 import { addIntakeSource } from "../intake/sources.js";
 import { registerIntakeSetupApplier } from "../intake/setup-applier.js";
 import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
-import { DRAFT_CHECK_WORDS, gateDraftCommands, type SetupDraftCandidatePort } from "./setup-draft-check.js";
+import { ADOPT_MAX_AGE_MS, DRAFT_CHECK_WORDS, gateDraftCommands, type SetupDraftCandidatePort } from "./setup-draft-check.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
@@ -673,7 +673,8 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // shown) and nothing is saved, for any item of the batch (they are one save).
   const gate = settingItems.length === 0 ? { kind: "not_needed" as const } : await gateDraftCommands({
     candidate: deps.candidate, caller, orgId: caller.orgId, project: name, requestId: body.requestId, derivedRequestId: (purpose) => derivedRequestId(body.requestId, purpose),
-    definition: latest.definition, settings: { setupCommands: settings["setupCommands"] as string[] | undefined, testCommands: settings["testCommands"] as string[] | undefined }, nowMs: deps.now(),
+    definition: latest.definition, nowMs: deps.now(), again: body.checkAgain === true,
+    settings: { setupCommands: settings["setupCommands"] as string[] | undefined, testCommands: settings["testCommands"] as string[] | undefined, devcontainer: settings["devcontainer"] as { repository: string; configPath: string } | undefined },
   });
   const waiting = gate.kind === "blocked";
   if (gate.kind === "blocked") {
@@ -696,8 +697,15 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
       savedAt(saved);
       appliedRevision = revisionNow;
       try {
-        await deps.startSetupCheck(caller, name, derivedRequestId(body.requestId, "setup-check"));
-        setupCheck = "started";
+        // TE-3: a check that just passed on exactly these commands (and dev container) stands for the project's own check, so a second full check is not run.
+        const proven = gate.kind === "passed" ? gate.check : undefined;
+        const adopted = proven !== undefined && deps.candidate !== undefined && deps.now() - Date.parse(proven.startedAt) <= ADOPT_MAX_AGE_MS
+          && await deps.candidate.adopt(caller, name, { ...proven, revision: revisionNow });
+        if (adopted) { setupCheck = "not_needed"; project = await deps.readProject(caller, name); }
+        else {
+          await deps.startSetupCheck(caller, name, derivedRequestId(body.requestId, "setup-check"));
+          setupCheck = "started";
+        }
       } catch (error) {
         setupCheck = "not_started";
         setupCheckMessage = `The settings are saved, but the setup check didn't start: ${messageOf(error)}`;

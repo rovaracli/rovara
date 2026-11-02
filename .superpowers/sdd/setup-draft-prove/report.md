@@ -46,3 +46,9 @@ None.
 
 ## High-risk (needs Opus review)
 Yes: settings writes and approval authority (what is saved is only what was proved; browser-session requirement; revision race; the exact-lists comparison).
+
+## Review round 1 (Opus) fixes
+- B1: a dev container ticked in the same batch is part of the check: `DraftCommandLists.devcontainer` (as the save stores it, via the exported `resolveRepository`), in the digest, and the candidate workspace is prepared with it (`runSetupCheck`). Commands and dev container are saved together only after that check passes. Tests: outbox payload carries the new dev container; both saved together; a commands-only check never stands for commands+container (other digest); a dev container alone still needs no check.
+- S3: after a passing check the project's own follow-up check is NOT run: `adoptCandidateAsProjectCheck` writes META `setupCheck` pointing at the candidate workspace at the new revision (only if the check is under 60 min old, no newer check exists, project not archived; otherwise the own check starts as before). A failed check for the same digest and revision is shown again to any new press and starts nothing; `checkAgain: true` (the "Check again" button) starts a new one.
+- S2: release note: reload the Setup page after the upgrade. An old tab rejects the new `checking` outcome, so the press starts the check but shows "Couldn't apply the suggestions"; it fails closed and a reload fixes it. No version-tolerant reply (the server cannot tell the client's version).
+- S1 (plain settings PUT can write commands with a token) predates this lane: unchanged; "tokens refused" applies to the draft route only.

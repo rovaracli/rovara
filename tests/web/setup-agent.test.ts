@@ -142,7 +142,7 @@ it("Check and apply: says the commands are being checked on a fresh machine, sav
 it("Check and apply: a check that fails shows the reason, saves nothing, stops asking, and a new press is a new request", async () => {
   const quick = quickPolling();
   const failed = { id: "setup-web", kind: "setup", outcome: "check_failed", message: "These commands did not pass the check on a fresh machine, so nothing was saved.", reason: "setup: npm ci - exited 1: boom" };
-  const f = setup(h(OnboardScreen), { draft: READY, sequence: [{ project: project({}, 2), results: [CHECKING] }, { project: project({}, 2), results: [failed] }, { project: project({}, 2), results: [CHECKING] }] });
+  const f = setup(h(OnboardScreen), { draft: READY, sequence: [{ project: project({}, 2), results: [CHECKING] }, { project: project({}, 2), results: [failed] }, { project: project({}, 2), results: [failed] }, { project: project({}, 2), results: [CHECKING] }] });
   await screen.findByText("npm ci");
   fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
   await screen.findByText("These commands did not pass the check on a fresh machine, so nothing was saved.");
@@ -150,10 +150,15 @@ it("Check and apply: a check that fails shows the reason, saves nothing, stops a
   expect(screen.getByLabelText("Setup commands")).toHaveProperty("value", "");
   await waitFor(() => expect(screen.getByRole("button", { name: "Check and apply" })).toHaveProperty("disabled", false));
   expect(posts(f, "/setup-draft/apply")).toHaveLength(2);
+  // Pressing the main button again is not a new check; "Check again" is, and says so.
   fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
   await waitFor(() => expect(posts(f, "/setup-draft/apply").length).toBeGreaterThanOrEqual(3));
-  const ids = posts(f, "/setup-draft/apply").map((request) => (request.body as { requestId: string }).requestId);
-  expect(ids[2]).not.toBe(ids[0]);
+  expect(JSON.stringify(posts(f, "/setup-draft/apply")[2]!.body)).not.toContain("checkAgain");
+  fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(posts(f, "/setup-draft/apply").length).toBeGreaterThanOrEqual(4));
+  const sent = posts(f, "/setup-draft/apply");
+  expect(sent[3]!.body).toMatchObject({ checkAgain: true });
+  expect((sent[3]!.body as { requestId: string }).requestId).not.toBe((sent[0]!.body as { requestId: string }).requestId);
   quick.mockRestore();
   f.close();
 });

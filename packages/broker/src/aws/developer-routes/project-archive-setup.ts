@@ -216,12 +216,12 @@ export async function startCandidateSetupCheck(deps: DeveloperRouteDependencies,
  */
 export async function startListsCandidateSetupCheck(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string,
-  input: { requestId: string; digest: string; lists: { setup: ProjectCommand[]; readiness: ProjectCommand[] }; expectedRevision: number },
+  input: { requestId: string; digest: string; lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }; expectedRevision: number },
 ): Promise<StatusReply> {
   return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, lists: input.lists, expectedRevision: input.expectedRevision });
 }
 
-type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[] }; expectedRevision: number });
+type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEnvironmentBody } | { lists: { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }; expectedRevision: number });
 
 async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: CandidateInput): Promise<StatusReply> {
   const { name, role } = await projectRoleForRoute(deps, caller, rawName);
@@ -250,7 +250,9 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     // a task's workspace or the caller's default one, and re-checking at a newer revision is a new workspace.
     const identity = developerTaskIdentity({ taskId: randomUUID(), developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client: "Rovara app" }, caller.orgId);
     // TE-2: the preparation is sent the candidate lists in place of the settings' own; the revision stays the settings' revision.
-    const prepared = lists === undefined ? project : { ...project, definition: { ...project.definition, setup: lists.setup, readiness: lists.readiness } };
+    // TE-3: a setup draft's batch may also set the dev container: the commands are proved in the one they will run in.
+    const devcontainer = candidate !== undefined && "lists" in candidate ? candidate.lists.devcontainer : undefined;
+    const prepared = lists === undefined ? project : { ...project, definition: { ...project.definition, setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined ? {} : { devcontainer }) } };
     const preparation = await tasks.preparation(identity, prepared, requestId);
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,

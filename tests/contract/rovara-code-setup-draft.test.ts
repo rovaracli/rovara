@@ -712,7 +712,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: settings", () => {
     await t.drafted();
     const reply = await t.apply([{ id: "tests-web", useSuggestion: true }]);
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    expect(reply.body).toMatchObject({ setupCheck: "started" });
+    expect(reply.body).toMatchObject({ setupCheck: "not_needed" });
     expect(outcomeOf(reply, "tests-web")).toMatchObject({ outcome: "applied", kind: "tests" });
     const settings = t.latestSettings();
     expect(settings.revision).toBe(2);
@@ -1459,14 +1459,14 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: the commands are prove
     const done = await t.web(OMAR, "POST", `${BASE}/apply`, { requestId, expectedRevision: 1, items: BOTH });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(["setup-web", "tests-web"].map((id) => outcomeOf(done, id)?.outcome)).toEqual(["applied", "applied"]);
-    expect(done.body).toMatchObject({ setupCheck: "started" });
+    expect(done.body).toMatchObject({ setupCheck: "not_needed" });
     // What is stored is what the check ran: the same commands, with the same timeouts and env.
     const saved = t.latestSettings();
     expect(saved.revision).toBe(2);
     expect(saved.setup).toEqual(record!.setup);
     expect(saved.readiness).toEqual(record!.readiness);
     expect(t.pointer()).toMatchObject({ appliedRevision: 2 });
-    expect(t.meta()!.setupCheck).toMatchObject({ revision: 2 });
+    expect(t.meta()!.setupCheck).toMatchObject({ revision: 2, workspaceId: record!.workspaceId });
     // The request is kept now: a repeat answers the first outcome and saves nothing more.
     const replay = await t.web(OMAR, "POST", `${BASE}/apply`, { requestId, expectedRevision: 1, items: BOTH });
     expect(outcomeOf(replay, "tests-web")?.outcome).toBe("applied");
@@ -1498,8 +1498,13 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: the commands are prove
     const repeat = await t.web(OMAR, "POST", `${BASE}/apply`, { requestId, expectedRevision: 1, items: BOTH });
     expect(outcomeOf(repeat, "tests-web")?.outcome).toBe("check_failed");
     expect(t.candidates()).toHaveLength(1);
-    // A new press (a new request id) after the failure runs the check again.
-    const retry = await t.applyOnce(BOTH);
+    // A new press (a new request id) for the same commands and revision shows the same failure and starts nothing, until the person asks to check again.
+    const reshown = await t.applyOnce(BOTH);
+    expect(outcomeOf(reshown, "tests-web")?.outcome).toBe("check_failed");
+    expect((reshown.body.results as Array<{ reason?: string }>)[0]!.reason).toBe(reason);
+    expect(t.candidates()).toHaveLength(1);
+    expect(t.candidates()[0]!.workspaceId).toBe(failedWorkspace);
+    const retry = await t.applyOnce(BOTH, { checkAgain: true });
     expect(outcomeOf(retry, "tests-web")?.outcome).toBe("checking");
     // The stored result of these commands at this revision is now the new check's, on a workspace of its own.
     expect(t.candidates()).toHaveLength(1);
@@ -1508,6 +1513,56 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: the commands are prove
     await t.reportCheck("SUCCEEDED");
     const ok = await t.apply(BOTH);
     expect(outcomeOf(ok, "tests-web")?.outcome).toBe("applied");
+  });
+
+  it("after a passing check the project's own setup check is not run a second time: the candidate result stands for it", async () => {
+    const t = await setup();
+    await t.drafted();
+    await t.applyOnce(BOTH);
+    const record = await t.reportCheck("SUCCEEDED");
+    const done = await t.apply(BOTH);
+    expect(outcomeOf(done, "tests-web")?.outcome).toBe("applied");
+    expect(done.body).toMatchObject({ setupCheck: "not_needed" });
+    expect(t.meta()!.setupCheck).toMatchObject({ revision: 2, workspaceId: record.workspaceId });
+    expect((done.body.project as { setup: { status: string } }).setup.status).toBe("ready");
+    // The project's own check was not started: the only setup-check requests are the candidate's.
+    expect(t.db.find((item) => item.entityType === "PROJECT_SETUP_CHECK_REQUEST")).toHaveLength(1);
+  });
+
+  it("a dev container ticked with the commands is part of the check: the commands are proved in the container they will run in, and both are saved together", async () => {
+    const t = await setup();
+    await t.drafted({ ...NODE_ANSWER, devcontainer: { repository: "web", configPath: ".devcontainer/devcontainer.json", exists: true, from: [cite("package.json")] } });
+    const items = [...BOTH, { id: "devcontainer" }];
+    const first = await t.applyOnce(items);
+    expect(["setup-web", "tests-web", "devcontainer"].map((id) => outcomeOf(first, id)?.outcome)).toEqual(["checking", "checking", "checking"]);
+    // The workspace is prepared with the NEW dev container and the new commands.
+    const [record] = t.candidates();
+    const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === record!.workspaceId)[0] as unknown as { invocation: { payload: { project: { devcontainer?: unknown; setup: unknown[] } } } };
+    expect(outbox.invocation.payload.project.devcontainer).toEqual({ repository: "web", configPath: ".devcontainer/devcontainer.json" });
+    expect(outbox.invocation.payload.project.setup).toEqual(record!.setup);
+    expect(t.latestSettings().devcontainer).toBeUndefined();
+    await t.reportCheck("SUCCEEDED");
+    const done = await t.apply(items);
+    expect(["setup-web", "tests-web", "devcontainer"].map((id) => outcomeOf(done, id)?.outcome)).toEqual(["applied", "applied", "applied"]);
+    expect(t.latestSettings().devcontainer).toMatchObject({ repository: "web", configPath: ".devcontainer/devcontainer.json" });
+    expect(t.latestSettings().setup).toEqual(record!.setup);
+    expect(t.candidates()).toHaveLength(1);
+  });
+
+  it("a check of the commands alone never stands for the commands with a dev container, and the other way round", async () => {
+    const t = await setup();
+    await t.drafted({ ...NODE_ANSWER, devcontainer: { repository: "web", configPath: ".devcontainer/devcontainer.json", exists: true, from: [cite("package.json")] } });
+    // Commands alone: checked and saved at once, as before.
+    await t.applyOnce(BOTH);
+    const alone = t.candidates()[0]!;
+    await t.reportCheck("SUCCEEDED");
+    // The same commands with the dev container are another check (another digest): the first one proves nothing for them and nothing is saved.
+    const withContainer = await t.applyOnce([...BOTH, { id: "devcontainer" }]);
+    expect(outcomeOf(withContainer, "tests-web")?.outcome).toBe("checking");
+    expect(t.candidates()).toHaveLength(2);
+    expect(t.candidates().find((c) => c.digest !== alone.digest)).toBeDefined();
+    expect(t.latestSettings().revision).toBe(1);
+    expect(t.latestSettings().devcontainer).toBeUndefined();
   });
 
   it("refuses when the settings changed while the check ran: nothing of the draft is saved and the person's change stands", async () => {

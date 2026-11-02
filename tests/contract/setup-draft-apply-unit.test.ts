@@ -30,7 +30,7 @@ const proposal: SetupProposal = read.proposal;
 
 /** A candidate check that has passed for any of the lists these items make (TE-3): what a stored, recent, ready check of exactly those commands answers. */
 const COMBINATIONS = [{ setupCommands: ["npm ci"] }, { testCommands: ["npm test"] }, { setupCommands: ["npm ci"], testCommands: ["npm test"] }];
-type PortSpy = { read: SetupDraftCandidatePort["read"]; started: SetupDraftCandidatePort["started"]; start: Mock<SetupDraftCandidatePort["start"]> };
+type PortSpy = { read: SetupDraftCandidatePort["read"]; started: SetupDraftCandidatePort["started"]; start: Mock<SetupDraftCandidatePort["start"]>; adopt: Mock<SetupDraftCandidatePort["adopt"]> };
 function passingCandidate(): PortSpy {
   return {
     read: async (_caller, _project, digest, current) => {
@@ -40,6 +40,7 @@ function passingCandidate(): PortSpy {
     },
     started: async () => undefined,
     start: vi.fn<SetupDraftCandidatePort["start"]>(async () => undefined),
+    adopt: vi.fn<SetupDraftCandidatePort["adopt"]>(async () => true),
   };
 }
 
@@ -169,16 +170,20 @@ describe("the commands are saved only after a passing check of exactly those com
     return { check: { workspaceId: "w1", revision: 1, startedAt: at, ...lists, ...over }, setup: { status: "ready", checkedRevision: 1, checkedAt: at, ...status } } as never;
   };
   const port = (over: Partial<SetupDraftCandidatePort> = {}): PortSpy =>
-    ({ read: ready(), started: async () => undefined, start: vi.fn<SetupDraftCandidatePort["start"]>(async () => undefined), ...over }) as never;
+    ({ read: ready(), started: async () => undefined, start: vi.fn<SetupDraftCandidatePort["start"]>(async () => undefined), adopt: vi.fn<SetupDraftCandidatePort["adopt"]>(async () => true), ...over }) as never;
   const savesNothing = (updateSettings: ReturnType<typeof vi.fn>, startSetupCheck: ReturnType<typeof vi.fn>) => { expect(updateSettings).not.toHaveBeenCalled(); expect(startSetupCheck).not.toHaveBeenCalled(); };
 
   it("saves the commands when the check passed for exactly them at this revision, and passes the save the strings the check ran", async () => {
     const candidate = port();
-    const { deps, updateSettings } = stubDeps({ candidate });
+    const { deps, updateSettings, startSetupCheck } = stubDeps({ candidate });
     const reply = await applySetupDraft(deps, caller, "web", body(both));
     expect(outcomes(reply).map((entry) => entry.outcome)).toEqual(["applied", "applied"]);
     expect(candidate.start).not.toHaveBeenCalled();
     expect((updateSettings.mock.calls[0] as unknown[])[2]).toMatchObject({ expectedRevision: 1, setupCommands: ["npm ci"], testCommands: ["npm test"] });
+    // The passed check stands for the project's own check; a second one is not started.
+    expect(candidate.adopt).toHaveBeenCalledTimes(1);
+    expect(startSetupCheck).not.toHaveBeenCalled();
+    expect((reply.body as { setupCheck: string }).setupCheck).toBe("not_needed");
   });
 
   it("a deployment with no candidate check saves no commands and says so (it fails closed, it does not save unchecked)", async () => {
@@ -254,9 +259,14 @@ describe("the commands are saved only after a passing check of exactly those com
     expect(mine.start).not.toHaveBeenCalled();
     savesNothing(shown.updateSettings, shown.startSetupCheck);
 
+    // A press by another request shows the same failure and starts nothing; only an explicit "check again" starts a new check.
     const fresh = port({ read: state({ status: "failed", failedStep: "setup: npm ci - exited 1" }) });
+    const shownAgain = stubDeps({ candidate: fresh });
+    expect(outcomes(await applySetupDraft(shownAgain.deps, caller, "web", body(both))).map((entry) => entry.outcome)).toEqual(["check_failed", "check_failed"]);
+    expect(fresh.start).not.toHaveBeenCalled();
+    savesNothing(shownAgain.updateSettings, shownAgain.startSetupCheck);
     const again = stubDeps({ candidate: fresh });
-    expect(outcomes(await applySetupDraft(again.deps, caller, "web", body(both))).map((entry) => entry.outcome)).toEqual(["checking", "checking"]);
+    expect(outcomes(await applySetupDraft(again.deps, caller, "web", { ...body(both), checkAgain: true })).map((entry) => entry.outcome)).toEqual(["checking", "checking"]);
     expect(fresh.start).toHaveBeenCalledTimes(1);
     savesNothing(again.updateSettings, again.startSetupCheck);
   });
@@ -295,5 +305,25 @@ describe("the commands are saved only after a passing check of exactly those com
     await applySetupDraft(deps, caller, "web", body(both));
     expect(puts).toEqual([]);
     expect(pointerUpdates).toEqual([]);
+  });
+});
+
+describe("the follow-up check after a save (TE-3)", () => {
+  it("starts the project's own check when the passed check could not be adopted, or was too old", async () => {
+    const old = passingCandidate();
+    const read = old.read;
+    old.read = async (...args) => { const state = await read(...args); return state.check === undefined ? state : { ...state, check: { ...state.check, startedAt: new Date(Date.now() - 2 * 3_600_000).toISOString() } }; };
+    const first = stubDeps({ candidate: old });
+    const reply = await applySetupDraft(first.deps, caller, "web", body([{ id: "setup-web", useSuggestion: true }]));
+    expect(outcomes(reply)[0]!.outcome).toBe("applied");
+    expect(old.adopt).not.toHaveBeenCalled();
+    expect(first.startSetupCheck).toHaveBeenCalledTimes(1);
+
+    const refused = passingCandidate();
+    refused.adopt.mockResolvedValue(false);
+    const second = stubDeps({ candidate: refused });
+    await applySetupDraft(second.deps, caller, "web", body([{ id: "setup-web", useSuggestion: true }]));
+    expect(refused.adopt).toHaveBeenCalledTimes(1);
+    expect(second.startSetupCheck).toHaveBeenCalledTimes(1);
   });
 });

@@ -8,11 +8,12 @@
 // and nothing else; a changed settings revision is another key (nothing found), so a check never carries over to settings it did not run against.
 import { createHash } from "node:crypto";
 import { AgentXError, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, canonicalJson, type AppProjectSummary, type OrgId, type ProjectCommand, type StoredProjectDefinition } from "@agentx/contracts";
-import { settingsCommands } from "../org/project-settings.js";
+import { resolveRepository, settingsCommands } from "../org/project-settings.js";
 import { SETUP_CHECK_MAX_AGE_MS } from "../test-env/prove-from-setup-check.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 
-export interface DraftCommandLists { setup: ProjectCommand[]; readiness: ProjectCommand[] }
+/** `devcontainer`: the dev container the batch also saves (as the save stores it), absent when the batch leaves it alone. The check prepares its workspace with it, so the commands are proved in the environment they will run in. */
+export interface DraftCommandLists { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }
 
 /** What a person is told (fixed words). A failure's reason comes from the check itself (a redacted one-liner), never from a model. */
 export const DRAFT_CHECK_WORDS = {
@@ -33,19 +34,28 @@ const REFUSED_AS_THEY_ARE: readonly string[] = ["PROJECT_REVISION_MISMATCH", "PR
  * would throw for a command it cannot read (CONFIG_INVALID, naming the field and index).
  */
 export function draftCommandLists(
-  definition: Pick<StoredProjectDefinition, "repositories" | "setup" | "readiness">, settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined },
+  definition: Pick<StoredProjectDefinition, "repositories" | "setup" | "readiness">,
+  settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined; devcontainer?: { repository: string; configPath?: string | undefined } | undefined },
 ): DraftCommandLists {
   const cwd = definition.repositories[0]?.path;
   if (cwd === undefined) throw agentXError("CONFIG_INVALID", "the project has no repository to run commands in");
+  let devcontainer: DraftCommandLists["devcontainer"];
+  if (settings.devcontainer !== undefined) {
+    // As the settings save stores it: the repository by its name in the project.
+    const repository = resolveRepository(definition.repositories, settings.devcontainer.repository);
+    if (repository === undefined) throw agentXError("CONFIG_INVALID", "devcontainer.repository: is not a repository of this project");
+    devcontainer = { repository: repository.name, ...(settings.devcontainer.configPath === undefined ? {} : { configPath: settings.devcontainer.configPath }) };
+  }
   return {
+    ...(devcontainer === undefined ? {} : { devcontainer }),
     setup: settings.setupCommands === undefined ? [...definition.setup] : settingsCommands("setupCommands", settings.setupCommands, cwd, SETUP_TIMEOUT),
     readiness: settings.testCommands === undefined ? [...definition.readiness] : settingsCommands("testCommands", settings.testCommands, cwd, TEST_TIMEOUT),
   };
 }
 
-/** The digest a check is stored under: the exact lists. A different list pair is another digest, so no check is ever read for commands it did not run. Namespaced, so it cannot meet a test environment's digest. */
+/** The digest a check is stored under: the exact lists and the dev container they run in. A different list pair is another digest, so no check is ever read for commands it did not run. Namespaced, so it cannot meet a test environment's digest. */
 export function draftCommandsDigest(lists: DraftCommandLists): string {
-  return createHash("sha256").update(canonicalJson({ kind: "setup_draft_commands", version: 1, setup: lists.setup, readiness: lists.readiness }), "utf8").digest("hex");
+  return createHash("sha256").update(canonicalJson({ kind: "setup_draft_commands", version: 1, setup: lists.setup, readiness: lists.readiness, devcontainer: lists.devcontainer }), "utf8").digest("hex");
 }
 
 const identical = (left: readonly ProjectCommand[], right: readonly ProjectCommand[]): boolean => left.length === right.length && left.every((command, index) => canonicalJson(command) === canonicalJson(right[index]));
@@ -58,6 +68,11 @@ export interface SetupDraftCandidatePort {
   }>;
   /** The check this request id already started, if any. */
   started(caller: DeveloperCaller, project: string, requestId: string): Promise<{ workspaceId: string } | undefined>;
+  /**
+   * After the commands were saved from a check that passed: makes that check the project's own setup check at the new revision (the same commands, in the same dev container, ran on a fresh workspace), so
+   * a second full check is not run. False when it could not (a newer check is there, the project is archived): the caller then starts the project's own check as before.
+   */
+  adopt(caller: DeveloperCaller, project: string, input: { workspaceId: string; startedAt: string; revision: number }): Promise<boolean>;
   /** Starts the check of exactly `lists` on a fresh workspace at `expectedRevision` (refused when the settings have moved). Nothing is saved. */
   start(caller: DeveloperCaller, project: string, input: { requestId: string; digest: string; lists: DraftCommandLists; expectedRevision: number }): Promise<void>;
 }
@@ -68,19 +83,20 @@ export type DraftCheckVerdict = { kind: "passed" } | { kind: "checking" } | { ki
  * What a stored check means for saving `lists` at `definition.revision`:
  *   passed    ready, for exactly these lists, recent
  *   checking  still running (any request: no second check is started)
- *   failed    did not pass, and THIS request is the one that ran it (a new press starts a new check)
+ *   failed    did not pass (a new press shows the same failure; only an explicit "check again" starts a new check)
  *   start     nothing usable is stored (none, failed earlier, too old, other lists) and this request has started none
  *   lost      this request did start a check, but what is stored now cannot be used
  */
 export function judgeDraftCheck(input: {
-  state: Awaited<ReturnType<SetupDraftCandidatePort["read"]>>; lists: DraftCommandLists; revision: number; nowMs: number; mine: { workspaceId: string } | undefined;
+  state: Awaited<ReturnType<SetupDraftCandidatePort["read"]>>; lists: DraftCommandLists; revision: number; nowMs: number; mine: { workspaceId: string } | undefined; again?: boolean | undefined;
 }): DraftCheckVerdict {
   const { state, lists, mine } = input;
   const unusable: DraftCheckVerdict = mine === undefined ? { kind: "start" } : { kind: "lost" };
   const { check, setup } = state;
   if (check === undefined || check.revision !== input.revision || setup.status === "unchecked" || setup.status === "outdated") return unusable;
   if (setup.status === "checking") return { kind: "checking" };
-  if (setup.status === "failed") return mine === undefined ? { kind: "start" } : { kind: "failed", reason: setup.failedStep };
+  // A failure of these commands at this revision is shown again to anyone who asks, not run again, until the person asks to check again (or the draft or the settings change, which change the key).
+  if (setup.status === "failed") return mine === undefined && input.again === true ? { kind: "start" } : { kind: "failed", reason: setup.failedStep };
   // Ready: for exactly these commands, and recent.
   const checkedAt = Date.parse(check.startedAt);
   if (!Number.isFinite(checkedAt) || checkedAt > input.nowMs + 5 * 60_000 || input.nowMs - checkedAt > SETUP_CHECK_MAX_AGE_MS) return unusable;
@@ -89,11 +105,16 @@ export function judgeDraftCheck(input: {
 }
 
 /** Why a settings batch with commands did not go on: the outcome every item of the batch gets, with the fixed words and (for a failure) the check's own reason. */
-export type DraftGate = { kind: "not_needed" } | { kind: "passed" } | { kind: "blocked"; outcome: "checking" | "check_failed" | "not_available"; message: string; reason?: string };
+export type DraftGate = { kind: "not_needed" } | { kind: "passed"; check: { workspaceId: string; startedAt: string } } | { kind: "blocked"; outcome: "checking" | "check_failed" | "not_available"; message: string; reason?: string };
+
+/** A passed check is made the project's own check only while it is this fresh (the repository's default branch may have moved since). */
+export const ADOPT_MAX_AGE_MS = 60 * 60_000;
 
 export interface DraftGateInput {
   candidate: SetupDraftCandidatePort | undefined; caller: DeveloperCaller & { browserSession?: true | undefined }; orgId: OrgId; project: string; requestId: string; derivedRequestId: (purpose: string) => string;
-  definition: StoredProjectDefinition; settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined }; nowMs: number;
+  definition: StoredProjectDefinition; settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined; devcontainer?: { repository: string; configPath?: string | undefined } | undefined }; nowMs: number;
+  /** The person asked to run the check again after a failure. */
+  again?: boolean | undefined;
 }
 
 /**
@@ -111,9 +132,9 @@ export async function gateDraftCommands(input: DraftGateInput): Promise<DraftGat
   const checkRequestId = input.derivedRequestId(`draft-check:${digest.slice(0, 16)}`);
   const state = await input.candidate.read(input.caller, input.project, digest, input.definition);
   const mine = await input.candidate.started(input.caller, input.project, checkRequestId);
-  const verdict = judgeDraftCheck({ state, lists, revision: input.definition.revision, nowMs: input.nowMs, mine });
+  const verdict = judgeDraftCheck({ state, lists, revision: input.definition.revision, nowMs: input.nowMs, mine, again: input.again });
   switch (verdict.kind) {
-    case "passed": return { kind: "passed" };
+    case "passed": return { kind: "passed", check: { workspaceId: state.check!.workspaceId, startedAt: state.check!.startedAt } };
     case "checking": return blocked("checking", DRAFT_CHECK_WORDS.checking);
     case "failed": return blocked("check_failed", DRAFT_CHECK_WORDS.failed, verdict.reason);
     case "lost": return blocked("check_failed", DRAFT_CHECK_WORDS.lost);
