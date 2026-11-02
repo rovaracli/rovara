@@ -198,9 +198,9 @@ describe("the checks a task is held to", () => {
 });
 
 describe("the plan a verification run is sent", () => {
-  async function pinned() {
+  async function pinned(environment: TestEnvironmentBody = body()) {
     const h = harness();
-    await h.approve(body());
+    await h.approve(environment);
     const start = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
     h.db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
     return h;
@@ -214,6 +214,16 @@ describe("the plan a verification run is sent", () => {
     expect(plan).toMatchObject({ revision: 1, digest: testEnvDigest(body()), roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: ["lint"], fullSuiteOn: ["poetry.lock"] } });
     expect(plan.checks).toEqual([{ id: "unit", kind: "test", selectArgs: ["{tests}"] }, { id: "lint", kind: "lint" }]);
     expect(plan.coverageMap).toBeUndefined();
+  });
+
+  it("carries the approved coveragePath of a check (S-2), and nothing for a check that has none", async () => {
+    const withPath = body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [
+      { id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test", selectArgs: ["{tests}"], coveragePath: "reports/coverage.xml" },
+      { id: "lint", label: "Lint", command: cmd("ruff", ["check"]), kind: "lint" },
+    ] }] });
+    const h = await pinned(withPath);
+    const plan = (await planOf(h))!;
+    expect(plan.checks).toEqual([{ id: "unit", kind: "test", coveragePath: "reports/coverage.xml", selectArgs: ["{tests}"] }, { id: "lint", kind: "lint" }]);
   });
 
   it("carries the tests that failed in the last nightly, when there is a baseline", async () => {

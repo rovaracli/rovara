@@ -9,6 +9,7 @@ import {
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { approvedUnion, decideEgressDomain, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { archiveProject, restoreProject } from "../../packages/broker/src/org/project-archive.js";
+import { EVIDENCE_ERASE_PENDING_WARNING } from "../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -407,6 +408,35 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
     await working.approve(["artifacts.acme.dev"]);
     expect((await archiveRoute(working, OMAR)).body.warnings).toEqual([]);
     expect((await restoreRoute(working, OMAR)).body.warnings).toEqual([]);
+  });
+
+  // PRF-3: an install with no settlement schedule (a private install) has nothing that resumes an evidence erase the archive's own pass could not finish; the answer says so, and archiving again finishes it.
+  // The real erase runs over the harness's table and bucket: the install has kept evidence (the marker), the project has a workspace, and the bucket will not list.
+  it("says so when the project's stored proof evidence could not all be removed now, and says nothing when it was or there is none", async () => {
+    const world = async (bucketDown: boolean, kept: boolean) => {
+      const h = await createSingleAnswerPlanBroker();
+      setRole(h.db, OMAR, "owner");
+      expect((await h.dev(OMAR, "POST", "/v1/dev/tasks", start())).status).toBe(200);
+      if (kept) h.db.set({ pk: `EVIDENCE_STORED#${TEST_ORG}`, sk: "META", entityType: "EVIDENCE_STORED", orgId: TEST_ORG });
+      // The harness's bucket has no listing; this one lists nothing (a well bucket with no evidence left) or is unavailable.
+      const original = h.s3.send.bind(h.s3);
+      h.s3.send = (async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "ListObjectsV2Command") { if (bucketDown) throw new Error("bucket unavailable"); return { Contents: [] }; }
+        return original(command as never);
+      }) as unknown as typeof h.s3.send;
+      return h;
+    };
+    const down = await world(true, true);
+    const answer = await archiveRoute(down, OMAR);
+    expect(answer.status).toBe(200);
+    expect(answer.body.project).toMatchObject({ status: "archived" });
+    expect(answer.body.warnings).toEqual([EVIDENCE_ERASE_PENDING_WARNING]);
+    expect(down.db.find((item) => item.pk === "EVIDENCE_ERASE_PENDING")).toEqual([expect.objectContaining({ kind: "project", scopeKey: "payments" })]);
+    // Evidence kept and the bucket well: erased in the request, no warning, no record left. Never kept: nothing to say.
+    const well = await world(false, true);
+    expect((await archiveRoute(well, OMAR)).body.warnings).toEqual([]);
+    expect(well.db.find((item) => item.pk === "EVIDENCE_ERASE_PENDING")).toEqual([]);
+    expect((await archiveRoute(await world(true, false), OMAR)).body.warnings).toEqual([]);
   });
 
   it("answers a replay of the same request id without applying it again: a late archive after a restore leaves the project active", async () => {

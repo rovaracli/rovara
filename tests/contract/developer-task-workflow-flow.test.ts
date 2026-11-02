@@ -5954,14 +5954,15 @@ describe("the autonomous publication and the evidence's risk rule", () => {
         : { tool: "Bandit", newCount: 1, bySeverity: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, items: [{ ruleId: "B608", severity: "high", path: "src/db.py", line: 7, message: "SQL built from input" }] } }],
     selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [],
   });
-  async function autoPublished(on: boolean, unverified = false) {
+  async function autoPublished(on: boolean, unverified = false, options: { storePack?: boolean; securityKind?: boolean } = {}) {
     if (on) process.env.PROOF_EVIDENCE_ENABLED = "1";
     else delete process.env.PROOF_EVIDENCE_ENABLED;
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string; workflow: Record<string, unknown> };
-    harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0" } });
-    harness.s3.objects.set(evidencePackKey({ ownerKey: record.ownerKey, workspaceId, taskId }, candidate.digest), JSON.stringify(securityPack(candidate.digest, unverified)));
+    const policy = (record.workflow as { checkPolicy: { required: Array<Record<string, unknown>> } }).checkPolicy;
+    harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0", ...(options.securityKind === true ? { checkPolicy: { ...policy, required: policy.required.map((check) => ({ ...check, kind: "security" })) } } : {}) } });
+    if (options.storePack !== false) harness.s3.objects.set(evidencePackKey({ ownerKey: record.ownerKey, workspaceId, taskId }, candidate.digest), JSON.stringify(securityPack(candidate.digest, unverified)));
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
     const publish = operations(harness, workspaceId).find((item) => item.kind === "publish") as { publication: { body: string } } | undefined;
@@ -5980,6 +5981,20 @@ describe("the autonomous publication and the evidence's risk rule", () => {
     expect(body).toContain("A security scan reported 2 high or critical findings that could not be compared with the original code, so it needs review.");
     expect(body).toMatch(/## Risk: Medium/u);
     expect(taskWorkflow(harness, taskId).risk?.level).toBe("medium");
+  });
+
+  // EV-2: with the switch on and a security check in the policy, a pack that cannot be read must not leave the pull request Low.
+  it("a security check in the policy and no pack: the sweep's pull request is Medium and says the evidence was not available", async () => {
+    const { body, harness, taskId } = await autoPublished(true, false, { storePack: false, securityKind: true });
+    expect(body).toContain("The proof evidence for this code was not available, so a security scan could not be checked, and it needs review.");
+    expect(body).toMatch(/## Risk: Medium/u);
+    expect(taskWorkflow(harness, taskId).risk?.level).toBe("medium");
+  });
+
+  it("no pack and no security check in the policy: no such sentence; with the pack there, no such sentence either", async () => {
+    expect((await autoPublished(true, false, { storePack: false })).body).not.toContain("proof evidence for this code was not available");
+    expect((await autoPublished(true, false, { securityKind: true })).body).not.toContain("proof evidence for this code was not available");
+    expect((await autoPublished(false, false, { storePack: false, securityKind: true })).body).not.toContain("proof evidence for this code was not available");
   });
 
   it("with the switch off the same stored pack changes nothing", async () => {

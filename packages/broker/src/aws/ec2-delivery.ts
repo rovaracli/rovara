@@ -19,6 +19,7 @@ import {
   SETUP_AGENT_FEATURE,
   SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
+  TEST_ENV_COVERAGE_PATH_FEATURE,
   TEST_ENV_DETECT_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
@@ -581,7 +582,13 @@ async function forWorkerFeatures(
   if (detectUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_detect_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, detection: "not_run" }));
   }
-  const withAttribution = withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported);
+  // Evidence (S-2): the approved report path in the test environment's plan only helps the evidence read changed-line coverage, so a worker that lists the plan but not this field is sent the plan without it (its
+  // strict parse would refuse the field); nothing else in the plan changes, and the omission is recorded.
+  const coveragePathUnsupported = invocation.kind === "task" && invocation.payload.testEnvironment?.checks.some((check) => check.coveragePath !== undefined) === true && !features.includes(TEST_ENV_COVERAGE_PATH_FEATURE);
+  if (coveragePathUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_coverage_path_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  const withAttribution = withoutCoveragePath(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), coveragePathUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -992,6 +999,13 @@ function withoutUnparsedFields(invocation: WorkerInvocation, features: readonly 
 }
 
 /** A publication without the attribution field (and the very object back for anything else). */
+/** The invocation with the plan's checks stripped of `coveragePath` when `drop` (and the very object back otherwise). */
+function withoutCoveragePath(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task" || invocation.payload.testEnvironment === undefined) return invocation;
+  const plan = invocation.payload.testEnvironment;
+  return { ...invocation, payload: { ...invocation.payload, testEnvironment: { ...plan, checks: plan.checks.map(({ id, kind, selectArgs }) => ({ id, kind, ...(selectArgs === undefined ? {} : { selectArgs }) })) } } };
+}
+
 /** The invocation without the evidence request when `drop` (and the very object back otherwise). */
 function withoutEvidenceCapture(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
   if (!drop || invocation.kind !== "task") return invocation;

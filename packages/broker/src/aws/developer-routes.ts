@@ -497,7 +497,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
     if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
     if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
-    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps), clearLearning: (orgId, project) => clearArchivedProjectLearning(deps, orgId, project) }, caller, name, jsonBody(request));
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps), clearLearning: (orgId, project, unfinished) => clearArchivedProjectLearning(deps, orgId, project, unfinished) }, caller, name, jsonBody(request));
   }
   // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
   const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
