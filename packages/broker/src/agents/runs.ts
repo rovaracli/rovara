@@ -141,6 +141,8 @@ export interface AgentRunRequest {
    * down to the company's lock); `seenTaskId` is the run the project's pointer named when the route read it.
    */
   setupAgent?: { limits: SetupAgentLimits; seenTaskId?: string | undefined };
+  /** The named payer was worked out from the rules by the caller moments ago (not chosen by a client): a difference at the start is the setting changing under it (retryable busy). Only broker code sets it. */
+  payerFromRules?: true;
 }
 
 /**
@@ -213,6 +215,7 @@ const AgentRunRequestShape = z.object({
   setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
   diagnosis: z.object({ diagnosisId: DiagnosisIdSchema, errorRef: ErrorRefSchema }).strict().optional(),
   setupAgent: z.object({ limits: SetupAgentLimitsSchema, seenTaskId: z.string().uuid().optional() }).strict().optional(),
+  payerFromRules: z.literal(true).optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -608,7 +611,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   // may differ from who started it and who pays, so everyone else the run names must be allowed to start work here.
   const { payer } = await resolveRunPayer(deps, {
     orgId: request.orgId, project: request.project, agentId: request.agent.agentId, origin: originOf(request.origin, request.agent),
-    startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts,
+    startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts, ...(request.payerFromRules === true ? { payerFromRules: true } : {}),
   });
   const fingerprint = runRequestFingerprint({ ...rest, payer });
   const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
@@ -621,7 +624,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(intent?.binding?.kind === "slack_thread" ? { shareToChannel: true, channel: intent.binding.channelId } : {}),
   };
   const started = await deps.startTask(actingAs, body, {
-    origin: request.origin, autonomous, payer, ...(request.payer === undefined ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
+    origin: request.origin, autonomous, payer, ...(request.payer === undefined || request.payerFromRules === true ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
     ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
     ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
     ...(request.chain === undefined ? {} : { chain: request.chain }),

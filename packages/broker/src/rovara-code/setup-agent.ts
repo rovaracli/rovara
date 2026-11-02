@@ -42,6 +42,7 @@ import {
   type ProjectRole,
   type SetupAgentLimits,
   type SetupProposal,
+  type SetupVerification,
   type SetupRunEndWord,
   type SetupRunSummary,
   type StoredProjectDefinition,
@@ -52,6 +53,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { SetupDraftRepositories } from "./setup-draft.js";
+import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
@@ -152,6 +154,12 @@ export interface SetupAgentView {
   summary?: SetupRunSummary;
   proposal?: SetupProposal;
   failure?: string;
+  /**
+   * What re-reading the proposal's citations from the code host at the commits the run read found, per item (`holds`, `fails`, `unchecked`): the proposal is shown with these and never without them
+   * (`verifiedView`). `verified` says every verdict is final (nothing was left unread).
+   */
+  verification?: Record<string, SetupVerification>;
+  verified?: boolean;
 }
 
 /** What a run may take at the longest: its wall clock, the longest wait on an administrator, and an hour of grace for the end to be reported. Past it with no result the run reads as failed. */
@@ -317,6 +325,30 @@ export interface SetupAgentStarter {
   cancel(request: { orgId: OrgId; ownerDeveloperId: string; taskId: string; requestId: string; stoppedBy: DeveloperCaller }): Promise<void>;
 }
 
+/**
+ * The view with its proposal re-read: every citation of the run's proposal is read again from the code host at the commit the run read (the agent worked in a tree it could write, so what it cites is checked against the
+ * repository, not against its workspace). The verdicts are kept on the task once final. A view with no proposal is returned as it is; with no reader, every item is `unchecked`.
+ */
+export async function verifiedView(deps: SetupAgentDependencies, caller: DeveloperCaller, definition: StoredProjectDefinition, view: SetupAgentView): Promise<SetupAgentView> {
+  if (view.proposal === undefined || view.taskId === undefined) return view;
+  const task = (await getItem(deps.documentClient, deps.tableName, taskKey(view.taskId))) as (DeveloperTaskRecord & { setupAgentVerification?: { items: Record<string, SetupVerification> } }) | undefined;
+  if (task?.setupAgentVerification !== undefined) return { ...view, verification: task.setupAgentVerification.items, verified: true };
+  const urlOf = new Map(definition.repositories.map((repository) => [repository.name, repository.url]));
+  const reader: CitationFileReader | undefined = deps.readFile === undefined ? undefined : async (repository, path, commit, options) => {
+    const url = urlOf.get(repository);
+    if (url === undefined) throw new Error("unknown repository");
+    return deps.readFile!(caller.orgId, url, path, commit, options);
+  };
+  const { items, final } = await verifyProposalDetailed(reader, view.proposal, { now: deps.now });
+  if (final) {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(view.taskId), UpdateExpression: "SET setupAgentVerification = :v", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(setupAgentVerification)",
+      ExpressionAttributeValues: { ":v": { at: new Date(deps.now()).toISOString(), items } },
+    })).catch((error: unknown) => { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; });
+  }
+  return { ...view, verification: items, verified: final };
+}
+
 export interface SetupAgentDependencies {
   documentClient: Client;
   tableName: string;
@@ -336,6 +368,10 @@ export interface SetupAgentDependencies {
   requireFreshSignIn?(caller: DeveloperCaller): Promise<void>;
   /** Who pays for a task this person starts in this project: `resolveRunPayer`'s answer for an app start. */
   payerFor(caller: DeveloperCaller, project: string): Promise<Payer>;
+  /** SH14: the citation reader (GitHub's file read at a commit). Absent: a proposal is shown with every item `unchecked`. */
+  readFile?: ((orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>) | undefined;
+  /** SH14: the install has a model proxy, which meters and prices a setup run. Without it a run is refused. */
+  modelAccessConfigured?: boolean | undefined;
 }
 
 const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }) => {
@@ -369,6 +405,8 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
   if (!parsed.success) throw bodyError(parsed.error);
   const { requestId } = parsed.data;
   if (deps.starter === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
+  // A setup run spends model money by the minute: it needs the model proxy that meters it (and the price table the worker stops it by).
+  if (deps.modelAccessConfigured !== true) throw agentXError("NOT_FOUND", "setting up a project with Rovara needs this installation's model proxy");
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const starter = deps.starter;
@@ -386,7 +424,7 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
   const previous = await getItem(deps.documentClient, deps.tableName, runRequestKey(caller.orgId, requestId));
   if (previous !== undefined) {
     await run(undefined);
-    return new StatusReply(200, await setupAgentState(deps, caller.orgId, name, latest.revision));
+    return new StatusReply(200, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
   }
   await deps.requireNewWork(caller, name, role);
   const before = await readState(deps, caller.orgId, name, latest.revision);
@@ -400,7 +438,7 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
     }
     throw error;
   }
-  return new StatusReply(202, await setupAgentState(deps, caller.orgId, name, latest.revision));
+  return new StatusReply(202, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
 }
 
 /** `GET /v1/app/projects/{name}/setup-agent`: where the project's run stands. A maintainer only (the proposal is a maintainer's to read, as the draft's). */
@@ -408,7 +446,7 @@ export async function getSetupAgent(deps: SetupAgentDependencies, caller: Develo
   const { name } = await maintainerOf(deps, caller, rawName);
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
-  return new StatusReply(200, await setupAgentState(deps, caller.orgId, name, latest.revision));
+  return new StatusReply(200, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
 }
 
 /**
@@ -424,7 +462,7 @@ export async function stopSetupAgent(deps: SetupAgentDependencies, caller: Devel
   const state = await readState(deps, caller.orgId, name, latest.revision);
   // A run that reads as stale ("failed", never reported an end) may still have a live task: Stop reaches it too, so a maintainer is never left with a run they cannot end.
   const staleButLive = state.view.status === "failed" && state.view.failure === SETUP_AGENT_FAILURES.stale && state.view.summary === undefined;
-  if ((state.view.status !== "running" && !staleButLive) || state.pointer === undefined) return new StatusReply(200, state.view);
+  if ((state.view.status !== "running" && !staleButLive) || state.pointer === undefined) return new StatusReply(200, await verifiedView(deps, caller, latest.definition, state.view));
   if (deps.starter === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
   // Who pressed Stop is written BEFORE the cancel (the first stop stands), so the end can tell a person's stop from a cancel the system made; a write that fails cancels nothing.
   await deps.documentClient.send(new UpdateCommand({
@@ -434,5 +472,5 @@ export async function stopSetupAgent(deps: SetupAgentDependencies, caller: Devel
   await deps.starter.cancel({
     orgId: caller.orgId, ownerDeveloperId: state.pointer.requestedBy, taskId: state.pointer.taskId, requestId: derivedRequestId(`${state.pointer.taskId}|${parsed.data.requestId}`, "stop"), stoppedBy: caller,
   });
-  return new StatusReply(202, await setupAgentState(deps, caller.orgId, name, latest.revision));
+  return new StatusReply(202, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
 }

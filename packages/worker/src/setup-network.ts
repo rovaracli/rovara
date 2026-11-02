@@ -17,15 +17,22 @@
 //   3. queries reach the helper from the sandbox's own address (tcpdump on the helper), which is what `allowedSources` relies on;
 //   4. NXDOMAIN and REFUSED from the DNS firewall reach the sandbox unchanged (the helper relays byte for byte), and a blocked name appears in blocked.json;
 //   5. the embedded DNS does not fall back to the daemon's resolvers when the helper drops a query (a query from another source must get no answer, and the sandbox must not resolve around the helper).
-//   Also: the boot firewall walls only `rvb+`/`rvi+` bridges, and these `br-*` networks are plain: the helper's address is reachable from every container on the same network only, which is the sandbox alone.
+//   6. the boot firewall (packages/worker/ec2/boot.sh `wall_off_containers`; the exception is in boot-stage2.sh `block_imds`) walls every `rvb*` bridge, and a run's network is named `rvbs<slot>` so it is walled too: from the sandbox, the host's gateway address and every host port, every
+//      private range (10/8, 172.16/12 which holds 172.29/16, 192.168/16, 100.64/10, link-local, loopback) and the metadata address are dropped; the only exception between `rvbs*` interfaces is UDP/TCP port 53 of 172.29.0.0/16 (the helper), and
+//      the public internet and the host's resolvers' port 53 stay open, which is the path the helper's upstream and the sandbox's allowed websites use. Check from inside a sandbox: the gateway (172.29.<slot>.1) on any port, a 10.x address,
+//      the helper on a port other than 53, and another run's helper all fail; the helper's port 53 and a public name resolve. Docker's own isolation chains (after DOCKER-USER) keep one run's network from another's.
 import { createHash } from "node:crypto";
 import { agentXError } from "@agentx/contracts";
 import type { DockerCli } from "./swebench/containers.js";
 
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
 export const SETUP_NETWORK_LABEL = "agentx.setup-run";
+/** The label that ties a run's containers and network to ONE workspace, so a worker never removes another worker's on a shared Docker daemon. */
+export const SETUP_WORKSPACE_LABEL = "agentx.setup-workspace";
 export const SETUP_NETWORK_FIRST_OCTET = "172.29";
 export const SETUP_NETWORK_SLOTS = 253;
+/** The host interface of a run's network is `rvbs<slot>`: the boot firewall walls `rvb*` bridges (private ranges, the host's own ports, metadata) and opens only port 53 of 172.29.0.0/16 between `rvbs*` interfaces (boot.sh's firewall unit walls it, boot-stage2.sh's launcher opens the helper's port). */
+export const SETUP_BRIDGE_PREFIX = "rvbs";
 export const SETUP_HELPER_ENTRY = "/opt/agentx/packages/worker/dist/setup-dns-watch-helper.js";
 const NODE = "/usr/local/bin/node";
 
@@ -51,21 +58,21 @@ export function setupNetworkSlot(taskId: string, attempt = 0): number {
 export const setupNetworkName = (taskId: string): string => `agentx-setup-${createHash("sha256").update(`setup-name\0${taskId}`).digest("hex").slice(0, 12)}`;
 
 /** The addresses of a slot. */
-export function setupNetworkAddresses(slot: number): { subnet: string; gateway: string; helperIp: string; sandboxIp: string } {
+export function setupNetworkAddresses(slot: number): { subnet: string; gateway: string; helperIp: string; sandboxIp: string; bridge: string } {
   if (!Number.isInteger(slot) || slot < 1 || slot > SETUP_NETWORK_SLOTS) throw agentXError("CONFIG_INVALID", "not a setup network slot");
   const base = `${SETUP_NETWORK_FIRST_OCTET}.${String(slot)}`;
-  return { subnet: `${base}.0/24`, gateway: `${base}.1`, helperIp: `${base}.2`, sandboxIp: `${base}.3` };
+  return { subnet: `${base}.0/24`, gateway: `${base}.1`, helperIp: `${base}.2`, sandboxIp: `${base}.3`, bridge: `${SETUP_BRIDGE_PREFIX}${String(slot)}` };
 }
 
 /** The `docker network create` arguments of a run's network. */
-export function networkCreateArgs(name: string, taskId: string, addresses: ReturnType<typeof setupNetworkAddresses>): string[] {
-  return ["network", "create", "--driver", "bridge", "--subnet", addresses.subnet, "--gateway", addresses.gateway, "--label", `${SETUP_NETWORK_LABEL}=${setupNetworkName(taskId)}`, name];
+export function networkCreateArgs(name: string, taskId: string, addresses: ReturnType<typeof setupNetworkAddresses>, workspace: string): string[] {
+  return ["network", "create", "--driver", "bridge", "--subnet", addresses.subnet, "--gateway", addresses.gateway, "--opt", `com.docker.network.bridge.name=${addresses.bridge}`, "--label", `${SETUP_NETWORK_LABEL}=${setupNetworkName(taskId)}`, "--label", `${SETUP_WORKSPACE_LABEL}=${workspace}`, name];
 }
 
 /** The `docker run` arguments of the helper: no capability, read-only, one tmpfs for its file, bounded, serving only the sandbox's address. `image` is the worker's own image. */
-export function helperRunArgs(input: { name: string; network: string; taskId: string; image: string; addresses: ReturnType<typeof setupNetworkAddresses>; upstream: string }): string[] {
+export function helperRunArgs(input: { name: string; network: string; taskId: string; workspace: string; image: string; addresses: ReturnType<typeof setupNetworkAddresses>; upstream: string }): string[] {
   return [
-    "run", "--detach", "--name", input.name, "--label", `${SETUP_NETWORK_LABEL}=${setupNetworkName(input.taskId)}`,
+    "run", "--detach", "--name", input.name, "--label", `${SETUP_NETWORK_LABEL}=${setupNetworkName(input.taskId)}`, "--label", `${SETUP_WORKSPACE_LABEL}=${input.workspace}`,
     "--network", input.network, "--ip", input.addresses.helperIp,
     "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
     "--sysctl", "net.ipv4.ip_unprivileged_port_start=53",
@@ -78,6 +85,8 @@ export function helperRunArgs(input: { name: string; network: string; taskId: st
 
 export interface StartRunNetworkInput {
   taskId: string;
+  /** The workspace root (`workspaceKey(rootPath)` labels what the run makes). */
+  workspace: string;
   /** The worker's own image (it carries node and the helper's script). */
   image: string;
   /** The resolver the helper forwards to: the helper container's own embedded resolver. */
@@ -92,10 +101,10 @@ export async function startRunNetwork(docker: DockerCli, input: StartRunNetworkI
   let addresses: ReturnType<typeof setupNetworkAddresses> | undefined;
   for (let attempt = 0; attempt < 8 && addresses === undefined; attempt += 1) {
     const candidate = setupNetworkAddresses(setupNetworkSlot(input.taskId, attempt));
-    const created = await call(networkCreateArgs(name, input.taskId, candidate));
+    const created = await call(networkCreateArgs(name, input.taskId, candidate, input.workspace));
     if (created.exitCode === 0) addresses = candidate;
     // A subnet another run has: try the next. Any other failure ends it.
-    else if (!/pool overlaps|address already in use|overlap/iu.test(`${created.stderr}${created.stdout}`)) break;
+    else if (!/pool overlaps|address already in use|overlap|already exists/iu.test(`${created.stderr}${created.stdout}`)) break;
   }
   const fail = async (): Promise<never> => {
     await call(["rm", "--force", helperName]);
@@ -103,7 +112,7 @@ export async function startRunNetwork(docker: DockerCli, input: StartRunNetworkI
     throw agentXError("RUNTIME_UNAVAILABLE", "AgentX could not set up the network for the setup run");
   };
   if (addresses === undefined) return fail();
-  const started = await call(helperRunArgs({ name: helperName, network: name, taskId: input.taskId, image: input.image, addresses, upstream: input.upstream ?? "127.0.0.11" }));
+  const started = await call(helperRunArgs({ name: helperName, network: name, taskId: input.taskId, workspace: input.workspace, image: input.image, addresses, upstream: input.upstream ?? "127.0.0.11" }));
   if (started.exitCode !== 0) return fail();
   let stopped = false;
   return {
@@ -123,4 +132,22 @@ export async function startRunNetwork(docker: DockerCli, input: StartRunNetworkI
       await call(["network", "rm", name]);
     },
   };
+}
+
+/**
+ * At the worker's start: removes the helpers and networks an earlier worker process left for THIS workspace (a crash skips `stop`), helpers first and then their networks, which frees their /24 slots.
+ * Like `removeLeftoverTaskSandboxes`, it runs when none of this worker's own exists yet. Answers how many containers and networks were removed; never throws.
+ */
+export async function removeLeftoverSetupRuns(workspace: string, docker: DockerCli): Promise<{ containers: number; networks: number }> {
+  const call = (args: string[]) => docker.run(args, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+  const ids = async (args: string[]): Promise<string[]> => {
+    const listed = await call(args);
+    return listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter((line) => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(line)) : [];
+  };
+  const filters = ["--filter", `label=${SETUP_NETWORK_LABEL}`, "--filter", `label=${SETUP_WORKSPACE_LABEL}=${workspace}`];
+  const containers = await ids(["ps", "--all", "--quiet", ...filters]);
+  if (containers.length > 0) await call(["rm", "--force", ...containers]);
+  const networks = await ids(["network", "ls", "--quiet", ...filters]);
+  for (const id of networks) await call(["network", "rm", id]);
+  return { containers: containers.length, networks: networks.length };
 }

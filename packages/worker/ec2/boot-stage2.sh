@@ -97,9 +97,11 @@ require_model_proxy() { ! named_environment || grep -q '^AGENTX_MODEL_PROXY_URL=
 worker_network_args() {
   if named_environment; then printf '%s\n' --network bridge --publish 8080:8080; else printf '%s\n' --network host; fi
 }
+# Also, for a setup run (rvbs<slot> bridges, which the firewall unit already walls as rvb* bridges: the host's ports, every private range): the helper's port 53 in 172.29.0.0/16 between those bridges, inserted first so
+# the metadata rejection stays on top and this sits above the range drops. Docker's own isolation keeps one run's network from another's.
 block_imds() {
   local rule
-  for rule in "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
+  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
     iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   done
 }

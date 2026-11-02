@@ -1,10 +1,12 @@
 // The setup run, wired (SH14), through the whole broker: the routes, the start (task purpose, pointer, limits, read-only preparation), the operation the preparation starts (mode SETUP_AGENT, its payload and
 // its capability), the worker's one callback action, the end (result, cost estimates untouched), and that with the `su` switch off none of it exists. The worker's half is tested in the worker's tests.
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, setupDraftKey,
 } from "../../packages/contracts/src/index.js";
+import * as runs from "../../packages/broker/src/agents/runs.js";
+import { setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { recordRunCost } from "../../packages/broker/src/spend/estimate.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -12,13 +14,19 @@ import { TEST_ORG } from "../support/orgs.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 
+// The real start, watched: the setup run's start must hold to the payer the route resolved (F9).
+vi.mock("../../packages/broker/src/agents/runs.js", async (original) => {
+  const actual = await original<typeof runs>();
+  return { ...actual, startAgentRun: vi.fn(actual.startAgentRun) };
+});
+
 afterEach(() => { delete process.env.SETUP_AGENT_ENABLED; delete process.env.DECISION_CARDS_ENABLED; });
 const ROUTE = `/v1/app/projects/${NAME}/setup-agent`;
 const orgId = TEST_ORG;
 
 async function bench(): Promise<Bench> {
   const audit = capturingAuditDeps();
-  const t = await setupWizardBench({ audit });
+  const t = await setupWizardBench({ audit, modelProxy: true });
   audit.audit.documentClient = t.db as unknown as typeof audit.audit.documentClient;
   return t;
 }
@@ -75,6 +83,30 @@ describe("with the switch on", () => {
     expect(claims.actions).toContain("setup-agent");
     // The run's limit is the setup budget ($4), not the planning limit.
     expect(task["budgetUsd"] === undefined || task["budgetUsd"] === SETUP_AGENT_LIMITS_DEFAULT.budgetCents / 100).toBe(true);
+  });
+
+  it("holds the start to the payer the route resolved once (payerFromRules), so a setting that changes in between is a retryable busy answer and never a charge to another", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const t = await bench();
+    await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    const call = vi.mocked(runs.startAgentRun).mock.calls.at(-1)![1];
+    expect(call.payerFromRules).toBe(true);
+    expect(call.payer).toEqual({ kind: "member", developerId: OMAR.developerId });
+  });
+
+  it("is refused with no model proxy on the install (a run is paid for by the minute), and starts nothing", async () => {
+    process.env.SETUP_AGENT_ENABLED = "1";
+    const audit = capturingAuditDeps();
+    const t = await setupWizardBench({ audit });
+    audit.audit.documentClient = t.db as unknown as typeof audit.audit.documentClient;
+    expect((await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() })).status).toBe(404);
+    expect(tasks(t)).toEqual([]);
+  });
+
+  it("sends a setup run none of the plan step's settings (its time limit, skills and tools are the coding agent's), and every other mode its step", () => {
+    const step = { id: "plan", timeoutSeconds: 600 };
+    expect(setupRunStepOf("SETUP_AGENT", step)).toBeUndefined();
+    for (const mode of ["PLAN", "IMPLEMENT", "REVIEW", "UNDERSTAND", undefined]) expect(setupRunStepOf(mode, step)).toBe(step);
   });
 
   it("another operation of the same install does not get the action", async () => {

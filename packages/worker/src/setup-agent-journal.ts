@@ -15,6 +15,8 @@ import {
 } from "@agentx/contracts";
 import type { SetupAgentHooks, SetupCommandDecision, SetupCommandRecord, TrackedFilesVerdict } from "./setup-agent.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
+import type { SetupScan } from "./setup-scan.js";
+import type { TrackedPaths } from "./setup-citations.js";
 
 const MINUTE_MS = 60_000;
 const COMMAND_CHARS = 2_000;
@@ -384,12 +386,16 @@ export async function finishStoppedRun(input: {
   rootPath: string;
   repositories: ReadonlyArray<SetupDraftRepository>;
   metaRepo?: string | undefined;
+  /** See `finishSetupAgent`: the scan taken before the run and the files of the resolved commit. */
+  scan?: SetupScan | undefined;
+  tracked?: TrackedPaths | undefined;
 }): Promise<StoppedRunResult> {
   if (!input.trackedFiles.ok || input.shell?.ended() === "changed_repository_files") input.governor.onEnded("changed_repository_files");
   const summary = input.governor.summary();
   if (summary.stop === "changed_repository_files") return { end: summary.stop, summary, proposal: undefined, learned: [] };
   const read = await readSetupProposalAnswer(input.lastText, {
     basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories: input.repositories, ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }),
+    ...(input.scan === undefined ? {} : { scan: input.scan }), ...(input.tracked === undefined ? {} : { tracked: input.tracked }),
   }).catch(() => ({ ok: false as const, errors: ["unreadable"] }));
   return { end: summary.stop, summary, proposal: read.ok ? read.proposal : undefined, learned: input.governor.learned() };
 }

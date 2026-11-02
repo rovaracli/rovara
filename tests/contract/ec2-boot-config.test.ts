@@ -332,14 +332,21 @@ exit 0
     };
     const DOCKER_USER = "DOCKER-USER -d 169.254.169.254/32 -j REJECT";
     const OUTPUT = "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT";
+    // A setup run's network (host interface rvbs<slot>) may reach its helper's port 53 and nothing else of 172.29.0.0/16 (the firewall unit walls every rvb* bridge).
+    const HELPER_UDP = "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p udp --dport 53 -j RETURN";
+    const HELPER_TCP = "DOCKER-USER -i rvbs+ -o rvbs+ -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN";
 
     it("rejects 169.254.169.254 for bridged containers and for every non-root process on the host, in a named environment", () => {
-      expect(blockImds(NAMED)).toEqual([`-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+      expect(blockImds(NAMED)).toEqual([`-C ${HELPER_UDP}`, `-I ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-I ${HELPER_TCP}`, `-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+      // Port 53 of the helper's range only, between setup bridges only, after nothing that could open more: the helper rules are the only RETURN rules and the metadata rejection is inserted after them (so it is above them).
+      const rules = blockImds(NAMED).filter((line) => line.startsWith("-I "));
+      expect(rules.filter((line) => line.includes("RETURN")).every((line) => line.includes("-i rvbs+ -o rvbs+ -d 172.29.0.0/16") && line.includes("--dport 53"))).toBe(true);
+      expect(rules.findIndex((line) => line === `-I ${DOCKER_USER}`)).toBeGreaterThan(rules.findIndex((line) => line === `-I ${HELPER_TCP}`));
     });
 
     it("adds each rule once: nothing is inserted when it is already there (the launcher runs on every restart)", () => {
-      expect(blockImds(NAMED, [DOCKER_USER, OUTPUT])).toEqual([`-C ${DOCKER_USER}`, `-C ${OUTPUT}`]);
-      expect(blockImds(NAMED, [DOCKER_USER])).toEqual([`-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+      expect(blockImds(NAMED, [HELPER_UDP, HELPER_TCP, DOCKER_USER, OUTPUT])).toEqual([`-C ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`]);
+      expect(blockImds(NAMED, [HELPER_UDP, HELPER_TCP, DOCKER_USER])).toEqual([`-C ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
     });
 
     it("leaves the legacy deployment's boot exactly as it was: no firewall rule and the host network (ruling R58)", () => {

@@ -19,9 +19,10 @@ const legacy = read("packages/worker/ec2/boot-legacy.sh");
 
 /**
  * boot-legacy.sh: boot.sh as it stood on this plan's branch before the split (308a2cf8, the start-of-plan merge of origin/mainline), brought forward by each merge of origin/mainline.
+ * sh-setup-wire (SH14): the launcher's `block_imds` also opens a setup run's helper port 53 (named environments only; the legacy worker never runs it), in this file and in boot-stage2.sh alike.
  * Round 4 (mainline 46973735): re-taken after the three-way merge of mainline's boot.sh changes into it (kernel pin, MODEL3 worker environment, qualification diagnostics).
  */
-export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "a731533fe3cd7bca59455befabed6d9f1747022b005a3a1db4e8bf8f5c4c19e1";
+export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "9cc46e302f2273f083fa3fda74af6d93c04bb2328633c7d86164874de2f68977";
 
 /** Constants only the moved functions use: their declarations moved with them, and nothing else in the script changed. */
 const MOVED_DECLARATIONS = [

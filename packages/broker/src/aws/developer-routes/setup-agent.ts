@@ -33,6 +33,8 @@ export function setupAgentStarterOf(deps: DeveloperRouteDependencies): SetupAgen
       requestId: request.requestId, orgId: request.orgId, project: request.project, agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: request.text }, origin: "app",
       owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId }, caller,
       setupAgent: { limits: request.limits, seenTaskId: request.seenTaskId },
+      // One resolution: the route resolved the payer (project or the person) once; the start holds to it and answers a changed setting as busy, never charges another.
+      payer: request.payer, payerFromRules: true,
     }),
     // The cancel is the stopper's own (a maintainer the route has just checked), whoever owns the run now: it works when the run's owner was removed, and the audit names the person who pressed Stop.
     cancel: async (request) => {
@@ -55,6 +57,8 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
     // The project's own limits and the company's lock have no stored setting yet (SH29 holds the lock; the project setting is a later screen): a run uses the defaults, which a lock could only lower.
     limitSettings: async () => ({}),
     requireFreshSignIn: async (who) => { await requireFreshSignIn(deps, who); },
+    modelAccessConfigured: deps.modelAccess !== undefined,
+    ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
     payerFor: async (who, project): Promise<Payer> => {
       if (deps.agents === undefined) throw agentXError("NOT_FOUND", "setting up a project with Rovara is not set up in this deployment");
       return (await resolveRunPayer(deps.agents, { orgId: who.orgId, project, agentId: ROVARA_CODE_AGENT_ID, origin: "app", startedBy: { developerId: who.developerId } })).payer;

@@ -14,9 +14,14 @@
 // merge of the agent's findings.
 import { resolve } from "node:path";
 import {
-  SetupRunSummarySchema, agentXError, effectiveSetupAgentLimits, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunSummary,
+  AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SetupRunSummarySchema, agentXError, effectiveSetupAgentLimits, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunSummary,
 } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { scanRepositories, type SetupScan } from "./setup-scan.js";
+import { trackedPathsOf, type TrackedPaths } from "./setup-citations.js";
+import { SETUP_NEXT_TURN_MARGIN_TOKENS, type ModelPrice } from "./setup-agent-price.js";
+import { assistantOutcome, failedTurn } from "./session-events.js";
+import { budgetExhaustedFromMarker } from "@agentx/model-runtime";
 import { checkTrackedFiles, finishSetupAgent, setupAgentShell, setupAgentSessionParts, type SetupAgentRepository, type SetupCommandRecord, type TrackedFilesVerdict } from "./setup-agent.js";
 import { SETUP_AGENT_MAX_OUTPUT_TOKENS, SetupAgentGovernor, centsFromDollars, estimateNextTurnCents, finishStoppedRun, governorSessionListener } from "./setup-agent-journal.js";
 import { setupAgentInstructions } from "./setup-agent-prompt.js";
@@ -24,9 +29,6 @@ import { createPersonCommandRunner } from "./setup-command-runner.js";
 import type { PiSessionHandle } from "./pi-session.js";
 import type { RunNetwork } from "./setup-network.js";
 import type { TaskSandbox } from "./task-sandbox.js";
-
-/** A ceiling for the next model turn's price, dollars per million tokens: above the list price of the models a setup run uses, so the governor stops BEFORE a turn could cross the budget. */
-export const SETUP_AGENT_PRICE_CEILING = { inputPerMTok: 6, outputPerMTok: 30 } as const;
 
 /** What the preparation manifest says about a repository (the broker's own record of the default branch's head). */
 export interface SetupManifestRepository { name: string; path: string; resolvedCommit: string; checkedOut?: unknown }
@@ -46,6 +48,8 @@ export interface SetupRunPorts {
   register(control: { abort(): Promise<void>; steer(text: string): Promise<boolean>; streaming(): boolean }): () => void;
   /** The tracked-files check (`checkTrackedFiles` in production). */
   checkFiles?: (repositories: ReadonlyArray<SetupAgentRepository>) => Promise<TrackedFilesVerdict>;
+  /** What the project says before the run starts (the scan) and which files its resolved commit holds. Default: the real ones (`scanRepositories`, `git ls-tree`). */
+  beforeStart?: (repositories: ReadonlyArray<SetupAgentRepository>, metaRepo: string | undefined) => Promise<{ scan: SetupScan; tracked: TrackedPaths }>;
   now?: () => number;
   /** How often the run talks to the broker. Default 3 s. */
   tickMs?: number;
@@ -56,6 +60,8 @@ export interface SetupRunInput {
   operationId: string;
   basedOnRevision: number;
   limits: SetupAgentLimits;
+  /** The model's price per million tokens (setup-agent-price.ts). REQUIRED: a run for a model with no price is refused before anything starts. */
+  price: ModelPrice | undefined;
   repositories: readonly SetupManifestRepository[];
   metaRepo?: string | undefined;
   ports: SetupRunPorts;
@@ -101,12 +107,22 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
   const now = ports.now ?? Date.now;
   const limits = effectiveSetupAgentLimits(input.limits);
   const repositories = setupRepositoriesOf(input.rootPath, input.repositories);
+  if (input.price === undefined || !Number.isFinite(input.price.inputPerMTok) || !Number.isFinite(input.price.outputPerMTok)) throw agentXError("RUNTIME_UNAVAILABLE", "AgentX does not know this model's price, so it did not start the setup run");
+  const price = input.price;
   const checkFiles = ports.checkFiles ?? ((list) => checkTrackedFiles(list));
+  // What the project says, taken BEFORE the sandbox starts (the working tree is as the clone left it) and what the commit holds: an install script that writes a project file or a rule later changes neither.
+  const before = ports.beforeStart === undefined
+    ? { scan: await scanRepositories(input.rootPath, repositories, { metaRepo: input.metaRepo }), tracked: await trackedPathsOf(repositories) }
+    : await ports.beforeStart(repositories, input.metaRepo);
+  const { scan, tracked } = before;
   const lastFiles = (): Promise<TrackedFilesVerdict> => checkFiles(repositories);
 
   let session: PiSessionHandle | undefined;
   let finalText = "";
   let lastInputTokens = 20_000;
+  let lastOutputTokens = 0;
+  let ownSpendUsd = 0;
+  let turns = 0;
   const pendingEntries: SetupJournalEntry[] = [];
   const seenHosts = new Set<string>();
   const told = new Set<string>();
@@ -127,8 +143,16 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     const base = serialize(sandbox.bashOperations(), refreshBlocked);
     const governor = new SetupAgentGovernor({
       limits, now,
-      spendCents: () => (session === undefined ? 0 : centsFromDollars(session.getSessionStats().cost)),
-      nextTurnCents: () => estimateNextTurnCents({ inputTokens: lastInputTokens, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS, ...SETUP_AGENT_PRICE_CEILING }),
+      // The larger of what the session reports and what the run counted itself from each turn's tokens at the catalog price: a proxy-routed model may report a cost of 0, and a turn with no usage and no cost is unreadable (= used up).
+      spendCents: () => {
+        if (session === undefined) return 0;
+        const reported = centsFromDollars(session.getSessionStats().cost);
+        const own = centsFromDollars(ownSpendUsd);
+        if (turns > 0 && (reported ?? 0) === 0 && (own ?? 0) === 0) return undefined;
+        return reported === undefined ? own : own === undefined ? reported : Math.max(reported, own);
+      },
+      // The next turn at most: the last turn's input and output and 4 KiB more as input, and the full output cap as output, at the model's own prices.
+      nextTurnCents: () => estimateNextTurnCents({ inputTokens: lastInputTokens + lastOutputTokens + SETUP_NEXT_TURN_MARGIN_TOKENS, maxOutputTokens: SETUP_AGENT_MAX_OUTPUT_TOKENS, ...price }),
       // The names the helper saw refused since the last entry: from the helper's file, never from any output.
       takeBlockedHosts: () => { const fresh = blocked.filter((name) => !delivered.includes(name)); delivered = [...delivered, ...fresh]; return fresh; },
       onStop: () => { void session?.abort().catch(() => undefined); },
@@ -144,13 +168,23 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     });
     session = await ports.openSession(setupAgentSessionParts({ sandbox, shell }));
     unsubscribe = session.subscribe((event) => {
-      governorSessionListener(governor)(event);
-      const message = (event as { type?: unknown; message?: { role?: unknown; content?: unknown; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } } }).message;
+      const message = (event as { type?: unknown; message?: { role?: unknown; content?: unknown; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } }).message;
       if ((event as { type?: unknown }).type === "message_end" && message?.role === "assistant") {
         finalText = textOf(message.content) ?? finalText;
         const used = (message.usage?.input ?? 0) + (message.usage?.cacheRead ?? 0) + (message.usage?.cacheWrite ?? 0);
+        const produced = message.usage?.output ?? 0;
+        turns += 1;
         if (used > 0) lastInputTokens = used;
+        lastOutputTokens = produced;
+        ownSpendUsd += (used * price.inputPerMTok + produced * price.outputPerMTok) / 1_000_000;
+        // A spent budget on the proxy (the model call itself was refused for it) is the budget limit, in the run's own words.
+        const outcome = assistantOutcome(event);
+        const failure = failedTurn(outcome);
+        if (budgetExhaustedFromMarker(outcome?.errorMessage) !== undefined || failure?.message === BUDGET_EXHAUSTED_FAILURE_MESSAGE) governor.stop("budget_used");
+        else if (failure instanceof AgentXError && failure.code === "MODEL_NOT_ALLOWED") governor.stop("infrastructure");
       }
+      // The limits are looked at AFTER the turn's tokens were counted, so a turn that crossed the budget is seen at once.
+      governorSessionListener(governor)(event);
     });
     unregister = ports.register({
       abort: async () => { governor.stop("infrastructure"); await session?.abort(); },
@@ -216,7 +250,7 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     if (governor.ended() === undefined && shell.ended() === undefined) {
       const finished = await finishSetupAgent({
         finalText, verdict, basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories,
-        ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }),
+        ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }), scan, tracked,
         records: governor.entries().filter((entry) => entry.source === "agent"),
       });
       if (finished.ok) {
@@ -229,7 +263,7 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
     } else {
       const stopped = await finishStoppedRun({
         governor, trackedFiles: verdict, shell, lastText: finalText, basedOnRevision: input.basedOnRevision, rootPath: input.rootPath, repositories,
-        ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }),
+        ...(input.metaRepo === undefined ? {} : { metaRepo: input.metaRepo }), scan, tracked,
       });
       proposal = stopped.proposal;
       summary = stopped.summary;

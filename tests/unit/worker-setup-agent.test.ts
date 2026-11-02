@@ -261,7 +261,8 @@ describe("the tools", () => {
     const shell = setupAgentShell({ base: { exec: () => Promise.resolve({ exitCode: 0 }) } });
     const parts = setupAgentSessionParts({ sandbox, shell });
     expect(parts.agentTools).toBe(SETUP_AGENT_TOOLS);
-    expect(parts.workflowMode).toBe("IMPLEMENT");
+    expect(piTaskToolCapabilities("SETUP").tools).toEqual(expect.arrayContaining(["bash", "read"]));
+    expect(parts.workflowMode).toBe("SETUP");
     expect(parts.bashOperations).toBe(shell.operations);
     expect(parts.fileTools.container).toBe(sandbox.name);
   });

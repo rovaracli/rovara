@@ -64,7 +64,7 @@ async function world(options: {
     getModel: () => ({ provider: "p", modelId: "m" }), getSessionStats: () => ({ cost: 0.05 }) as never, subscribe: (l) => { listeners.push(l); return () => undefined; }, dispose: () => { w.order.push("session.dispose"); },
   };
   let sessionBash: BashOperations | undefined;
-  const network: RunNetwork = { name: "agentx-setup-test", subnet: "172.29.9.0/24", gateway: "172.29.9.1", helperName: "h", helperIp: "172.29.9.2", sandboxIp: "172.29.9.3", readBlocked: async () => w.blocked, stop: async () => { w.stopped.network = true; w.order.push("network.stop"); } };
+  const network: RunNetwork = { name: "agentx-setup-0123456789ab", subnet: "172.29.9.0/24", gateway: "172.29.9.1", helperName: "h", helperIp: "172.29.9.2", sandboxIp: "172.29.9.3", readBlocked: async () => w.blocked, stop: async () => { w.stopped.network = true; w.order.push("network.stop"); } };
   const ports: SetupRunPorts = {
     startNetwork: async () => network,
     createSandbox: () => ({ bashOperations: () => base, dispose: async () => { w.order.push("sandbox.dispose"); }, fileOpsTarget: () => ({}) }) as never,
@@ -75,7 +75,8 @@ async function world(options: {
     checkFiles: async () => { w.order.push("checkFiles"); return w.files.shift() ?? { ok: true }; },
     tickMs: 5,
   };
-  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, repositories: options.repositories ?? [repo], ports };
+  ports.beforeStart = async () => ({ scan: { repositories: [], setup: [], tests: [], checks: [], knowledge: [], sources: [], foundNotUsed: [], notes: [] }, tracked: new Map([["web", new Set(["package.json", ".github/workflows/ci.yml"])]]) });
+  const input: SetupRunInput = { rootPath, operationId: OPERATION, basedOnRevision: 4, limits: { ...SETUP_AGENT_LIMITS_DEFAULT, ...options.limits }, price: { inputPerMTok: 3, outputPerMTok: 15 }, repositories: options.repositories ?? [repo], ports };
   return { w, input, rootPath };
 }
 
@@ -229,11 +230,11 @@ describe("the sandbox of the run holds no secret and sits on the run's own netwo
     const { docker, calls } = fakeDocker();
     const rootPath = await mkdtemp(join(tmpdir(), "setup-sbx-"));
     roots.push(rootPath);
-    const sandbox = createSetupSandbox({ rootPath, taskId: OPERATION, docker, image: "worker@sha256:" + "b".repeat(64), dns: ["172.29.9.2"], network: { name: "agentx-setup-test", ip: "172.29.9.3" } });
+    const sandbox = createSetupSandbox({ rootPath, taskId: OPERATION, docker, image: "worker@sha256:" + "b".repeat(64), dns: ["172.29.9.2"], network: { name: "agentx-setup-0123456789ab", ip: "172.29.9.3" } });
     await sandbox.start();
     const run = calls.find((args) => args[0] === "run")!;
     const at = (flag: string) => run[run.indexOf(flag) + 1];
-    expect(at("--network")).toBe("agentx-setup-test");
+    expect(at("--network")).toBe("agentx-setup-0123456789ab");
     expect(at("--ip")).toBe("172.29.9.3");
     expect(at("--dns")).toBe("172.29.9.2");
     expect(run).not.toContain("--env");
@@ -245,13 +246,13 @@ describe("the sandbox of the run holds no secret and sits on the run's own netwo
     const { docker } = fakeDocker();
     const rootPath = await mkdtemp(join(tmpdir(), "setup-sbx-"));
     roots.push(rootPath);
-    const guarded = (await import("../../packages/worker/src/setup-agent.js")).guardedSetupDocker(docker, { rootPath, network: { name: "agentx-setup-test", ip: "172.29.9.3" } });
+    const guarded = (await import("../../packages/worker/src/setup-agent.js")).guardedSetupDocker(docker, { rootPath, network: { name: "agentx-setup-0123456789ab", ip: "172.29.9.3", helperIp: "172.29.9.2" } });
     const { taskSandboxRunArgs } = await import("../../packages/worker/src/task-sandbox.js");
-    const good = taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], dns: ["172.29.9.2"], network: { name: "agentx-setup-test", ip: "172.29.9.3" }, hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 });
+    const good = taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], dns: ["172.29.9.2"], network: { name: "agentx-setup-0123456789ab", ip: "172.29.9.3" }, hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 });
     await expect(guarded.run(good)).resolves.toBeTruthy();
     for (const bad of [
       taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], dns: ["172.29.9.2"], network: { name: "agentx-task", ip: "172.29.9.3" }, hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 }),
-      taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], dns: ["172.29.9.2"], network: { name: "agentx-setup-test", ip: "172.29.9.9" }, hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 }),
+      taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], dns: ["172.29.9.2"], network: { name: "agentx-setup-0123456789ab", ip: "172.29.9.9" }, hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 }),
       good.map((arg) => (arg === "172.29.9.2" ? "evil.example.com" : arg)),
       taskSandboxRunArgs({ name: "agentx-task-x", taskId: "x", image: "i", rootPath, maskedPaths: [], hostCpus: 2, hostMemoryBytes: 8 * 2 ** 30 }),
     ]) await expect(guarded.run(bad)).rejects.toThrow();
@@ -268,12 +269,12 @@ describe("the network and the helper (deployment code; not run against Docker he
     expect(setupNetworkName(OPERATION)).toMatch(/^agentx-setup-[0-9a-f]{12}$/u);
     expect(setupNetworkSlot(OPERATION)).toBeGreaterThanOrEqual(1);
     expect(setupNetworkSlot(OPERATION, 5)).not.toBe(setupNetworkSlot(OPERATION, 0));
-    expect(setupNetworkAddresses(7)).toEqual({ subnet: "172.29.7.0/24", gateway: "172.29.7.1", helperIp: "172.29.7.2", sandboxIp: "172.29.7.3" });
+    expect(setupNetworkAddresses(7)).toEqual({ subnet: "172.29.7.0/24", gateway: "172.29.7.1", helperIp: "172.29.7.2", sandboxIp: "172.29.7.3", bridge: "rvbs7" });
     expect(() => setupNetworkAddresses(0)).toThrow();
     expect(() => setupNetworkAddresses(254)).toThrow();
   });
   it("the helper has no capability, is read-only, binds port 53 only through the one namespaced sysctl, serves only the sandbox and is bounded", () => {
-    const args = helperRunArgs({ name: "n-dns", network: "n", taskId: OPERATION, image: "worker@sha256:" + "b".repeat(64), addresses: setupNetworkAddresses(7), upstream: "127.0.0.11" });
+    const args = helperRunArgs({ name: "n-dns", network: "n", taskId: OPERATION, workspace: "ws-key", image: "worker@sha256:" + "b".repeat(64), addresses: setupNetworkAddresses(7), upstream: "127.0.0.11" });
     const at = (flag: string) => args[args.indexOf(flag) + 1];
     expect(at("--cap-drop")).toBe("ALL");
     expect(at("--security-opt")).toBe("no-new-privileges");
@@ -290,8 +291,11 @@ describe("the network and the helper (deployment code; not run against Docker he
   });
   it("makes the network, then the helper; reads the blocked names with one fixed exec; removes both at the end, once", async () => {
     const { docker, calls } = fakeDocker((args) => (args[0] === "exec" ? { exitCode: 0, stdout: JSON.stringify(["a.acme-build.io", 3, "b.acme-build.io"]) } : { exitCode: 0 }));
-    const net = await startRunNetwork(docker, { taskId: OPERATION, image: "worker@sha256:" + "b".repeat(64) });
+    const net = await startRunNetwork(docker, { taskId: OPERATION, workspace: "ws-key", image: "worker@sha256:" + "b".repeat(64) });
     expect(calls[0]!.slice(0, 3)).toEqual(["network", "create", "--driver"]);
+    // The workspace label ties the run to one worker; the bridge name is what the boot firewall walls (rvb*).
+    expect(calls[0]!.join(" ")).toMatch(/--label agentx\.setup-workspace=ws-key/u);
+    expect(calls[0]!.join(" ")).toMatch(/com\.docker\.network\.bridge\.name=rvbs\d+/u);
     expect(calls[1]![0]).toBe("run");
     expect(await net.readBlocked()).toEqual(["a.acme-build.io", "b.acme-build.io"]);
     expect(calls.at(-1)).toEqual(["exec", net.helperName, "cat", "/state/blocked.json"]);
@@ -303,25 +307,28 @@ describe("the network and the helper (deployment code; not run against Docker he
   it("tries the next subnet when one is taken, and removes what it made when the helper will not start", async () => {
     let creates = 0;
     const taken = fakeDocker((args) => (args[0] === "network" && args[1] === "create" ? (++creates === 1 ? { exitCode: 1, stderr: "Pool overlaps with other one on this address space" } : { exitCode: 0 }) : { exitCode: 0 }));
-    await startRunNetwork(taken.docker, { taskId: OPERATION, image: "i" });
+    await startRunNetwork(taken.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" });
     expect(creates).toBe(2);
     const broken = fakeDocker((args) => (args[0] === "run" ? { exitCode: 125, stderr: "secret detail" } : { exitCode: 0 }));
-    await expect(startRunNetwork(broken.docker, { taskId: OPERATION, image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
+    await expect(startRunNetwork(broken.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
     expect(broken.calls.some((args) => args[0] === "network" && args[1] === "rm")).toBe(true);
     expect(broken.calls.some((args) => args[0] === "rm")).toBe(true);
   });
   it("gives up with one fixed sentence when no subnet is free, and never repeats the docker error", async () => {
     const full = fakeDocker((args) => (args[0] === "network" && args[1] === "create" ? { exitCode: 1, stderr: "Pool overlaps" } : { exitCode: 0 }));
-    await expect(startRunNetwork(full.docker, { taskId: OPERATION, image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
+    await expect(startRunNetwork(full.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" })).rejects.toThrow("AgentX could not set up the network for the setup run");
   });
   it("reads nothing (not even a broken file) as an empty list", async () => {
     const bad = fakeDocker((args) => (args[0] === "exec" ? { exitCode: 0, stdout: "not json" } : { exitCode: 0 }));
-    const net = await startRunNetwork(bad.docker, { taskId: OPERATION, image: "i" });
+    const net = await startRunNetwork(bad.docker, { taskId: OPERATION, workspace: "ws-key", image: "i" });
     expect(await net.readBlocked()).toEqual([]);
   });
   it("also builds the network create arguments from the hashed name only", () => {
-    const args = networkCreateArgs("agentx-setup-abc", OPERATION, setupNetworkAddresses(7));
+    const args = networkCreateArgs("agentx-setup-abc", OPERATION, setupNetworkAddresses(7), "ws-key");
     expect(args).toContain("--subnet");
+    // The host interface is rvbs<slot>, which the boot firewall's rvb+ rules wall off (tests/contract/container-firewall.test.ts).
+    expect(args.join(" ")).toContain("--opt com.docker.network.bridge.name=rvbs7");
+    expect(args).toContain("agentx.setup-workspace=ws-key");
     expect(args.at(-1)).toBe("agentx-setup-abc");
   });
 });

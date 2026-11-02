@@ -515,7 +515,7 @@ export async function taskOperationParts(
       // The AI browser-test agent's model budget (M1.4): only a round that has agent steps may ask for it.
       e2eModelBudget: input.workflowE2EAdmission?.agentSteps === true,
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
-      agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
+      agentSkills: (setupRunStepOf(input.workflowMode, applied?.agentStep)?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
       agentTools: givesAgentTools(applied),
       contextTools: contextToolsOn,
@@ -572,7 +572,7 @@ export async function taskOperationParts(
       ...(applied?.modelPolicy===undefined?{}:{modelPolicy:applied.modelPolicy}),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
-      ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
+      ...(setupRunStepOf(input.workflowMode, applied?.agentStep) === undefined ? {} : { agentStep: applied!.agentStep }),
       // Learning v2: advice from the team's approved lessons; a worker without "task.learnedContext.v1" has it removed at delivery (it is never refused for it).
       ...learned,
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
@@ -585,6 +585,14 @@ export async function taskOperationParts(
   const modelChecks=turnPolicy===undefined?undefined:[...turnPolicy.checks,...(turnAudit?.items??[])];
   if(modelChecks!==undefined&&modelChecks.length>25)throw new TurnAdmissionLimitError(modelChecks.length,25);
   return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
+}
+
+/**
+ * The plan step's settings a setup run is sent: NONE. The step's time limit would cut a setup run short (its clock is the run's own wall-clock limit, set when it started, which can be longer than a planning
+ * step's), and its skills and tool list are the coding agent's, not the setup run's (the worker builds the setup session itself). Every other mode keeps its step.
+ */
+export function setupRunStepOf<T>(mode: string | undefined, step: T | undefined): T | undefined {
+  return mode === "SETUP_AGENT" ? undefined : step;
 }
 
 /** Whether the workspace's task has a baseline round that is requested and not yet started, so a coding run is to export the unchanged code. Never throws: a baseline never stops the coding. */

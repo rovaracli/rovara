@@ -9,7 +9,8 @@ import type { WorkerCancellationController } from "./cancel.js";
 import { runSetupAgent, type SetupRunResult } from "./setup-agent-run.js";
 import { createSetupSandbox } from "./setup-agent.js";
 import { startRunNetwork } from "./setup-network.js";
-import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskShellSelection } from "./task-sandbox.js";
+import { TASK_SANDBOX_IMAGE_ENVIRONMENT, workspaceKey, type TaskShellSelection } from "./task-sandbox.js";
+import { setupModelPrice } from "./setup-agent-price.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 
 export interface SetupInvocationDependencies {
@@ -41,16 +42,20 @@ export async function runSetupAgentInvocation(
   const environment = dependencies.environment ?? process.env;
   const image = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
   if (image === undefined || image === "") throw agentXError("RUNTIME_UNAVAILABLE", `AgentX has no task sandbox image (${TASK_SANDBOX_IMAGE_ENVIRONMENT}), so it did not run the setup`);
+  // Money: a setup run is metered by the model proxy (the broker's spend ledger) and priced from the catalog; without either it does not start.
+  const proxy = environment["AGENTX_MODEL_PROXY_URL"];
+  if (proxy === undefined || proxy === "") throw agentXError("RUNTIME_UNAVAILABLE", "this install has no model proxy, so AgentX did not run the setup (its spending could not be counted)");
+  const price = setupModelPrice(dependencies.model);
   const docker = dependencies.docker ?? createDockerCli();
   const callback = dependencies.setupAgent;
   const events = new EventBatcher(dependencies.eventSink);
   const conversationId = invocation.payload.conversationId;
   const result = await runSetupAgent({
-    rootPath: canonicalRoot, operationId: invocation.operationId, basedOnRevision: invocation.projectRevision, limits: setup.limits,
+    rootPath: canonicalRoot, operationId: invocation.operationId, basedOnRevision: invocation.projectRevision, limits: setup.limits, price,
     repositories: manifest.repositories,
     ...(manifest.meta === undefined ? {} : { metaRepo: manifest.meta.name }),
     ports: {
-      startNetwork: () => startRunNetwork(docker, { taskId: invocation.operationId, image }),
+      startNetwork: () => startRunNetwork(docker, { taskId: invocation.operationId, image, workspace: workspaceKey(canonicalRoot) }),
       createSandbox: (network) => createSetupSandbox({
         rootPath: canonicalRoot, taskId: invocation.operationId, docker, image, environment,
         dns: [network.helperIp], network: { name: network.name, ip: network.sandboxIp },
