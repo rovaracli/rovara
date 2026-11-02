@@ -126,7 +126,7 @@ it("Use this setup: an item that does not match the code cannot be ticked; the r
   expect(within(card).getByText(/saves it as a proposal in the test environment below; it does not change the project's settings/u)).toBeTruthy();
   expect(within(card).queryByText(/Nothing is saved until/u)).toBeNull();
   expect(within(card).getByText("Does not match the code")).toBeTruthy();
-  const boxes = within(card).getAllByRole("checkbox") as HTMLInputElement[];
+  const boxes = within(card).getAllByRole<HTMLInputElement>("checkbox");
   expect(boxes).toHaveLength(2);
   expect(boxes[0]!.checked).toBe(true);
   expect(boxes[1]!.disabled).toBe(true);
@@ -145,7 +145,7 @@ it("only what the code host confirmed is ticked to begin with: an item that coul
   const unchecked = { ...READY, verification: { "setup-web": "verified", "tests-web": "unchecked" } };
   const f = setup({ read: { status: 200, body: unchecked }, answers: { "/confirm": { status: 200, body: { ...REPLY, used: ["setup-web", "tests-web"] } } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
-  const boxes = within(card).getAllByRole("checkbox") as HTMLInputElement[];
+  const boxes = within(card).getAllByRole<HTMLInputElement>("checkbox");
   expect([boxes[0]!.checked, boxes[1]!.checked]).toEqual([true, false]);
   expect(boxes[1]!.disabled).toBe(false);
   fireEvent.click(boxes[1]!);
@@ -159,7 +159,7 @@ it("Use this setup waits for the re-read of the citations: it can't be pressed u
   const f = setup({ read: { status: 200, body: { ...READY, verified: false } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
   expect(within(card).getByText(/still checking where each suggestion came from/u)).toBeTruthy();
-  expect((within(card).getByRole("button", { name: "Use this setup" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(card).getByRole<HTMLButtonElement>("button", { name: "Use this setup" }).disabled).toBe(true);
   f.close();
 });
 
