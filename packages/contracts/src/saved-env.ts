@@ -81,7 +81,9 @@ export const SavedEnvManifestSchema = z.object({
   environmentKey: Sha256Hex,
   /** The test environment revision the setup was proved at; a task pinned to another revision does not use this image. */
   testEnvRevision: z.number().int().min(1),
-  commits: z.array(z.object({ repositoryId: RepositoryId, sha: z.string().regex(/^[a-f0-9]{40}$/u) }).strict()).min(1).max(SAVED_ENV_MAX_COMMITS),
+  commits: z.array(z.object({ repositoryId: RepositoryId, sha: z.string().regex(/^[a-f0-9]{40}$/u) }).strict()).min(1).max(SAVED_ENV_MAX_COMMITS)
+    // One commit per repository: two entries for one id could hide a different commit from a comparison that looks the id up.
+    .refine((commits) => new Set(commits.map((entry) => entry.repositoryId)).size === commits.length, "a repository is listed twice"),
   /** The digest of the Prove report that allowed the build. */
   proveReportDigest: Sha256Hex,
   imageDigest: ImageDigestSchema,

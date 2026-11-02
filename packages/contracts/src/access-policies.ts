@@ -1,6 +1,7 @@
 // The two access-stack policy documents as pure functions: no CDK imports, so they can be unit
 // tested with plain strings and printed as JSON (the access stack passes CDK tokens instead).
 import { STACK_PARTS, environmentStackName } from "./environments.js";
+import { savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
 import { REALTIME_NAMESPACE } from "./realtime.js";
 
 export interface PolicyScope {
@@ -347,6 +348,7 @@ export function taskPersonProofRoleName(env: string): string {
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
     connectorSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+    savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
   ];
 }
@@ -509,7 +511,12 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Sid: "ConnectorSecretsRole",
       Effect: "Allow",
       Action: ["sts:AssumeRole", "sts:TagSession"],
-      Resource: `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
+      // Setup and test health SH22: the same two actions, for the saved-environment push, pull and manage roles (the broker assumes them with a one-repository session policy). One wildcard
+      // ARN rather than three names, since the deployed boundary has a 6,144 character limit and little room; the broker's own policy names the three exactly, and the boundary is only a ceiling.
+      Resource: [
+        `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
+        `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${savedEnvRolePrefix(scope.env)}*`,
+      ],
     },
     // A bounded role may be granted `sts:AssumeRole` into a customer's role in ANOTHER account, with an external id that names a Rovara org (the broker's CloudWatch
     // connector, Plan 4 Task 16, and the model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect.

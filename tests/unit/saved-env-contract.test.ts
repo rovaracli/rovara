@@ -113,5 +113,8 @@ describe("saved environment manifest", () => {
   it("refuses a malformed commit and an empty commit list", () => {
     expect(SavedEnvManifestSchema.safeParse({ ...manifest(), commits: [{ repositoryId: "svc", sha: "main" }] }).success).toBe(false);
     expect(SavedEnvManifestSchema.safeParse({ ...manifest(), commits: [] }).success).toBe(false);
+    // one commit per repository: a repository listed twice (even with the same commit) is refused
+    expect(SavedEnvManifestSchema.safeParse({ ...manifest(), commits: [{ repositoryId: "svc", sha: "c".repeat(40) }, { repositoryId: "svc", sha: "d".repeat(40) }] }).success).toBe(false);
+    expect(SavedEnvManifestSchema.safeParse({ ...manifest(), commits: [{ repositoryId: "svc", sha: "c".repeat(40) }, { repositoryId: "web", sha: "c".repeat(40) }] }).success).toBe(true);
   });
 });

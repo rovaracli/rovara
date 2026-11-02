@@ -63,6 +63,10 @@ export interface OperationRecord extends Operation {
   targetOperationId?: string;
   /** Meta repo lane A: the meta repository's default-branch head the BROKER read and sent in this prepare invocation; the task keeps it only when the worker reports the same one. */
   knowledgeCommit?: string;
+  /** Saved environments (SH25): the image digest this prepare invocation was told to pull. The pull login is given for this digest only. */
+  savedEnvDigest?: string;
+  /** How many pull logins this preparation was given (at most 3). */
+  savedEnvLoginCount?: number;
   /** P1: the default-branch head the BROKER read for each repository when it built a setup run's prepare invocation (sent as `pins`). The task keeps the worker's report only when it equals these. */
   preparePins?: Array<{ repository: string; commit: string }>;
   /** The model proxy keys minted for this operation's worker by key id (a hash), when no task record keeps them (Slack work, ruling R31). */

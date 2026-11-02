@@ -84,6 +84,7 @@ import { requireAdministrator, requireLatestProject, requireWorkspace } from "./
 import { brokerEnvironmentName, decideRequestContext, egressDepsOf, githubScope, installOrgId, modelSourceStoreOf, orgConnectionStoreOf, orgOfRecord, orgResolverOf, routingOf, modelEndpointRouteOptions } from "./scope-helpers.js";
 import { codeMergeHostOf, operationEventsNewestFirst } from "./terminal-and-github-events.js";
 import { deleteWorkspaceCompute, requesterOf, startTaskClose } from "./thread-workspaces.js";
+import { installSavedEnv } from "./saved-env-prepare.js";
 import { deleteSlackBinding, heldPreparationDispatch, newWorkspacePreparation, spendRequestHostOf } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
 import { learningSettler } from "../../learning/settle.js";
@@ -601,6 +602,8 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
   const contextSources = input.contextSources ?? contextSourcesInstallOf(input)?.runtime;
   return {
     ...rest,
+    // Saved environments (SH25): the hooks exist only while the `sv` switch is on.
+    ...installSavedEnv(rest),
     ...(contextSources === undefined ? {} : { contextSources }),
     catalogs: input.catalogs ?? new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 256 }),
     ...(credentialRegistry ? { credentialRegistry } : {}),

@@ -46,6 +46,7 @@ import type {
 import { openRegistrySession, removeLeftoverRegistryConfigs, type RegistrySession } from "./registry-config.js";
 import { RegistryTokenLeakError, wipeWorkspaceForTaint } from "./registry-guard.js";
 import type { RegistryCredentialProvider } from "./registry-credentials.js";
+import { savedEnvMaterializer, type SavedEnvUseOptions } from "./saved-env/use.js";
 
 const MANIFEST_PATH = ".agentx/preparation-manifest.json";
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
@@ -176,6 +177,11 @@ export interface PrepareWorkspaceOptions {
   registryCredentialProvider?: RegistryCredentialProvider;
   /** The waits and log of the "Repository not found" retry (see `retryRepositoryNotFound`); tests replace them. */
   cloneRetry?: CloneRetryOptions;
+  /**
+   * Setup and test health SH23: the project's saved environment (an image of the repositories with their dependency folders, pulled by digest). Each repository tries it first and any failure clones fresh
+   * and reports the failed step (saved-env/use.ts). Sent only to a worker that lists the saved environment feature (SH25).
+   */
+  savedEnv?: SavedEnvUseOptions;
 }
 
 export interface CloneRetryOptions {
@@ -241,12 +247,41 @@ function credentialSession(options: PrepareWorkspaceOptions, repository: { name:
   return session;
 }
 
+/**
+ * Prepares the workspace. With a saved environment, a failure AFTER it was used (the checkout over the seed, or the project's setup and readiness over its dependencies) is not the end: the workspace is wiped,
+ * the failed step is reported (`onFallback("checkout" | "setup")`), and the preparation runs once more WITHOUT the saved environment, as it always did. A failure of that second run is the real one.
+ */
 export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
+  if (options.savedEnv === undefined) return prepareWorkspaceOnce(options);
+  try {
+    return await prepareWorkspaceOnce(options);
+  } catch (error) {
+    if (!(error instanceof SeededPreparationFailure)) throw error;
+    const root = await realpath(resolve(options.rootPath));
+    await wipeWorkspaceForTaint(root);
+    await rm(resolve(root, MANIFEST_PATH), { force: true });
+    const { savedEnv: _used, ...withoutSavedEnv } = options;
+    void _used;
+    // Reported only when the fresh run SUCCEEDS: if it fails too, the fault is the project's, not the image's, and the image must not be marked stale (no rebuild storm).
+    const manifest = await prepareWorkspaceOnce(withoutSavedEnv);
+    (options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic)(`fresh setup (saved environment failed at ${error.step})`);
+    options.savedEnv.onFallback?.(error.step);
+    return manifest;
+  }
+}
+
+/** A preparation that failed after the saved environment had been used: the caller starts over without it. */
+class SeededPreparationFailure extends Error {
+  constructor(readonly step: "checkout" | "setup", readonly original: unknown) { super(original instanceof Error ? original.message : "workspace preparation failed"); }
+}
+
+async function prepareWorkspaceOnce(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
   const project = StoredProjectDefinitionSchema.parse(options.project);
   const rootPath = resolve(options.rootPath);
   await mkdir(rootPath, { recursive: true });
   const canonicalRoot = await realpath(rootPath);
-  const materializer = options.materializer ?? cloneRepository;
+  const savedEnv = options.savedEnv === undefined ? undefined : savedEnvMaterializer({ ...options.savedEnv, workspaceRoot: canonicalRoot, onDiagnostic: options.savedEnv.onDiagnostic ?? options.onDiagnostic ?? logPreparationDiagnostic }, project.repositories, options.materializer ?? cloneRepository);
+  const materializer = savedEnv ?? options.materializer ?? cloneRepository;
   const readOnly = options.readOnly === true;
   const target = readOnly ? undefined : devcontainerTarget(canonicalRoot, project);
   const runtimeBackingPath = options.trustedRuntimeBackingOwner === undefined
@@ -435,11 +470,14 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     // The manifest is on the workspace disk: a clone, Git or devcontainer error can carry a secret (#170).
     // A leaked registry token taints the workspace: it is not resumed, and the next attempt clones again.
     await writeManifest(canonicalRoot, { ...manifest, complete: false, ...(error instanceof RegistryTokenLeakError ? { tainted: true } : {}), failure: registrySession === undefined ? redactText(message) : registrySession.scrub(redactText(message)) });
+    // After the saved environment was used, a failure to check out or to set up is reported to the caller, who wipes and starts over without it (`prepareWorkspace`). A leaked token is never retried.
+    if (savedEnv?.used() === true && !(error instanceof RegistryTokenLeakError)) throw new SeededPreparationFailure(manifest.repositories.length < project.repositories.length ? "checkout" : "setup", error);
     throw error;
   } finally {
     // The registries' config first: nothing that fails after it can leave a token on the disk. A config that cannot be removed fails the preparation and taints the workspace (S2).
     let removalFailure: unknown;
     try { await registrySession?.dispose(); } catch (disposeError) { removalFailure = disposeError; }
+    await savedEnv?.dispose();
     await sandbox?.dispose();
     if (removalFailure !== undefined) {
       await writeManifest(canonicalRoot, { ...manifest, complete: false, tainted: true, failure: removalFailure instanceof Error ? removalFailure.message : "the package registry config could not be removed" }).catch(() => undefined);

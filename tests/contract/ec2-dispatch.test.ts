@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, agentXError, taskGraphDigest, workflowPublicationContext, workflowPublicationContextDigest, workspaceSessionKey, type Ec2RuntimeBinding, type WorkerInvocation } from "../../packages/contracts/src/index.js";
+import { WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, agentXError, savedEnvRepositoryName, taskGraphDigest, workflowPublicationContext, workflowPublicationContextDigest, workspaceSessionKey, type Ec2RuntimeBinding, type WorkerInvocation } from "../../packages/contracts/src/index.js";
 import { createDispatcherHandler, createWorkflowE2EReadinessCompleter, createWorkflowE2EReadinessValidator, workerPingFeatures } from "../../packages/broker/src/aws/dispatcher.js";
 import { guardTaskDispatch as coreGuardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { STARTING_COMPUTE_MESSAGE, createEc2Delivery, type Ec2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -1370,6 +1370,27 @@ describe("ec2-ebs delivery", () => {
         const capable = delivery({ workerFeatures: async () => ["prepare.registries.v1"] });
         await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
         expect(postedPayload(capable.post).registries).toEqual(registries);
+      });
+
+      it("sends a preparation that carries a saved environment to a worker that lacks prepare.savedEnv.v1 WITHOUT the field (it sets up fresh), logs the omission, and sends it unchanged to one that has it (SH25)", async () => {
+        const repository = savedEnvRepositoryName({ env: "test", orgId: "org-1", projectId: "payments" });
+        const savedEnv = { repository, digest: `sha256:${"d".repeat(64)}`, testEnvRevision: 4, environmentKey: "a".repeat(64), taskTestEnvRevision: 4 };
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", savedEnv } } as unknown as WorkerInvocation };
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        for (const features of [undefined, [], ["task.agentRun", "prepare.registries.v1"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          await expect(older.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+          expect(postedPayload(older.post)).not.toHaveProperty("savedEnv");
+          expect(postedPayload(older.post)).toMatchObject({ repositoryGrant: "signed-grant" });
+        }
+        expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.saved_env_omitted"))).toBe(true);
+        log.mockRestore();
+        const capable = delivery({ workerFeatures: async () => ["prepare.savedEnv.v1"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).savedEnv).toEqual(savedEnv);
+        // a preparation that carries none is delivered to either, unchanged
+        const plain = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant" } } as unknown as WorkerInvocation };
+        await expect(delivery({ workerFeatures: async () => [] }).deliver(plain, plain.invocation)).resolves.toBe("DELIVERED");
       });
 
       it("refuses a setup run's preparation that carries pins on a worker that lacks prepare.pins.v1, and sends them unchanged to one that has it (P1)", async () => {

@@ -25,6 +25,7 @@ import {
   SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
+  PREPARE_SAVED_ENV_FEATURE,
   PREPARE_PINS_FEATURE,
   credentialKindsOfWorkerFeatures,
   OWNER_REDIRECT_FEATURE,
@@ -384,6 +385,7 @@ async function forWorkerFeatures(
   // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesRegistries = invocation.kind === "prepare" && invocation.payload.registries !== undefined;
+  const carriesSavedEnv = invocation.kind === "prepare" && invocation.payload.savedEnv !== undefined;
   const carriesPins = invocation.kind === "prepare" && invocation.payload.pins !== undefined;
   // P8: a grant that names a credential kind beyond the legacy two (an ssh key). A worker that does not list repository.credentialKinds.v1 would be sent a shape it cannot take, so the run is refused here.
   const credentialKindsNeeded = invocation.kind === "prepare" || invocation.kind === "publish" || invocation.kind === "maintain" ? nonLegacyCredentialKindsOfGrant(invocation.payload.repositoryGrant) : [];
@@ -394,7 +396,7 @@ async function forWorkerFeatures(
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -617,7 +619,13 @@ async function forWorkerFeatures(
   if (recipesUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.setup_recipes_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
-  const withAttribution = withoutCoveragePath(withoutSecondReviewer(withoutTestEnvRecipes(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), recipesUnsupported), secondReviewerUnsupported), coveragePathUnsupported);
+  // Saved environments (SH25): the saved image only SPEEDS UP a preparation, so a worker that does not list the feature is sent no field and sets up fresh (its strict parse would refuse the field); the omission
+  // is recorded. Replaces: refusing the run.
+  const savedEnvUnsupported = carriesSavedEnv && !features.includes(PREPARE_SAVED_ENV_FEATURE);
+  if (savedEnvUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.saved_env_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  const withAttribution = withoutSavedEnv(withoutCoveragePath(withoutSecondReviewer(withoutTestEnvRecipes(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), recipesUnsupported), secondReviewerUnsupported), coveragePathUnsupported), savedEnvUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -1056,6 +1064,13 @@ function withoutTestEnvDetect(invocation: WorkerInvocation, drop: boolean): Work
   if (!drop || invocation.kind !== "task") return invocation;
   const payload = { ...invocation.payload };
   delete payload.testEnvDetect;
+  return { ...invocation, payload };
+}
+
+function withoutSavedEnv(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "prepare") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.savedEnv;
   return { ...invocation, payload };
 }
 

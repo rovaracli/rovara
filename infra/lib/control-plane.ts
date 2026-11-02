@@ -5,6 +5,7 @@ import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachTeamRecord } from "./team-record-wiring.js";
+import { attachSavedEnvImages } from "./saved-env-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
@@ -106,6 +107,8 @@ export interface ControlPlaneStackProps extends StackProps {
    * the record is created and the templates are unchanged. Named environments only (checked by `parseTeamRecordSwitch`).
    */
   teamRecord?: TeamRecordContext;
+  /** Saved environment images (SH22): Enterprise may bring its own KMS key (`rovaraSavedEnvKmsKeyArn`); `registryScan: true` turns on the registry-wide basic scan-on-push setting (`agentxSavedEnvRegistryScan=on`; off by default: it replaces an existing registry setting). */
+  savedEnv?: { kmsKeyArn?: string; registryScan?: boolean };
   /** N9 (INTG2): the CodeArtifact domains a project's registries may name. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains`; absent (the default), nothing is granted and the switch is off. */
   registryDomains?: readonly RegistryDomain[];
 }
@@ -1111,6 +1114,8 @@ export class ControlPlaneStack extends Stack {
     }
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole });
+    // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
+    if (naming.env !== undefined) attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
     if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
@@ -1302,6 +1307,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("secondReview", signInParameters.secondReviewEnabled.valueAsString);
       // Company setup recipes as a proposal source (setup-test-health SH30): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
+      // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).

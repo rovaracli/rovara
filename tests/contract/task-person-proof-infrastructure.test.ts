@@ -111,6 +111,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.VerifyResultsEnabled;
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.SetupAgentEnabled;
+  delete remainder.Parameters?.SavedEnvEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -323,24 +324,30 @@ describe("the named TEST proof-only installation gate", () => {
     // `dp` in the broker's AGENTX_NAMES (live-fixes LA-1), DISPATCH_QUEUE_ARN on the dispatcher (live-fixes S2: only its own queue's SQS events are accepted), LEARNED_LESSONS_ENABLED on the
     // dispatcher (lessons-fixes WL-6 S1), and the provisioner state machine recording worker features on markReady (live-fixes LR-1). Legacy moved too, deliberately: the dispatcher queue check and the
     // worker-features record apply to every install. Controller 37 accepted the legacy move.
+    // 2026-11-02, saved-env-build (SH22 and its review fixes): the four named and foreign digests were retaken after the saved environment images were added to the named control plane (legacy did not move): the key,
+    // the repository creation template, four roles (push, pull and manage, which the broker assumes with a one-repository session policy, and the fixed-name role ECR assumes to create a repository) and their
+    // policies, and one broker statement (AssumeSavedEnvImageRoles). The registry-wide scan setting is NOT created by default. SH25 added the SavedEnvEnabled parameter and its packed `sv` setting (the parameter is taken out of the remainder like the other switches). The lifecycle count backstop is keep + 3. Nothing else in the control plane moved.
+    // 2026-11-02, merge of cloud/next abde6ff3b into feat/saved-env-build: the four named and foreign digests were retaken again for the two sets of additions together (cloud/next's own and the saved environment images); legacy did not move.
     // 2026-11-02, NH-1 (nightly run): the named and foreign digests were retaken after ONE intended addition to the artifact bucket (checked by synthesizing with and without it: nothing else moved): the lifecycle
     // rule `ExpireNightlyMaps` (prefix nightly-maps/, 30 days). The legacy digests did not move (named environments only).
     // 2026-11-02, merge of cloud/next abde6ff3b into feat/nightly-run: the named and foreign digests were retaken again. cloud/next's own pins (4eb11f80... named, 7831380a... foreign) no longer matched its template after
     // the notifier change in TE-4 (c16c4db50, which retook the named-templates snapshot but not these); the digests now include that change and the ExpireNightlyMaps rule above. Legacy did not move.
+    // 2026-11-02, merge of cloud/next 3488a7a48 into feat/saved-env-build: the four named and foreign digests were retaken for the nightly run's artifact bucket rule and the saved environment images together. Legacy did not move.
     // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
     // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
+    // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4c105b2dd764c4a88c059c9d1b0cd673e7c726ed69e67371d174741893573267",
-        withoutRoute: "e74e2fef4928c621758159e507eafaa4d30a0811c4b73dce74ccca570cc45ce1",
+        withRoute: "91137fb21d371db9072a27e664164d322540b4a4d6fb1d859666bee35a4965dd",
+        withoutRoute: "a851a74ff7daec9325285f7108477e4ce144c3af285b9c7c102158f8c45325ca",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "fde3ddaf4b19da60e1bc15f22741af9e3ac7082912cde44a7352a1f7d113129c",
-        withoutRoute: "885f2a80dfd7696ddbcf1483ec01035e0a794bf5ab8fb3554b0d404dc048bfd9",
+        withRoute: "77dae9bfb7465567aa293a692d57cefd1069e3ac5122136428250595082d462b",
+        withoutRoute: "e8ce2f951acfbcd5e3658e17530a3bdd66bbd663c969da6f47b955441506d192",
       },
       {
         label: "legacy",

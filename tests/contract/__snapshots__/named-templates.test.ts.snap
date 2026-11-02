@@ -609,6 +609,70 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         ],
                       ],
                     },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-push",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-pull",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-manage",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-img-create",
+                        ],
+                      ],
+                    },
                   ],
                   "Sid": "IamFixedNameRolesNotYetCreated",
                 },
@@ -1053,22 +1117,40 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "sts:TagSession",
               ],
               "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":iam::",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":role/agentx/staging/agentx-staging-connector-secrets",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx/staging/agentx-staging-connector-secrets",
+                    ],
                   ],
-                ],
-              },
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx/staging/agentx-staging-img-*",
+                    ],
+                  ],
+                },
+              ],
             },
             {
               "Action": [
@@ -1283,6 +1365,70 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-chain-schedule",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-push",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-pull",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-manage",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-create",
                     ],
                   ],
                 },
@@ -3011,6 +3157,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)",
       "Type": "String",
     },
+    "SavedEnvEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a project's proven setup can be built into a saved image and used by tasks (deploy the worker image and the registry roles first); 0: nothing is built, pushed, pulled or sent to a worker (agentx config set savedEnv.enabled 1)",
+      "Type": "String",
+    },
     "SecondReviewEnabled": {
       "AllowedValues": [
         "0",
@@ -3612,6 +3767,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",su=",
                   {
                     "Ref": "SetupAgentEnabled",
+                  },
+                  ",sv=",
+                  {
+                    "Ref": "SavedEnvEnabled",
                   },
                   ",tm=",
                   {
@@ -4393,6 +4552,31 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ],
                 },
               ],
+            },
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "SavedEnvImagesPushRole68F53DE7",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::GetAtt": [
+                    "SavedEnvImagesPullRoleF44C4C9E",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::GetAtt": [
+                    "SavedEnvImagesManageRoleA0F3E8CD",
+                    "Arn",
+                  ],
+                },
+              ],
+              "Sid": "AssumeSavedEnvImageRoles",
             },
             {
               "Action": [
@@ -9933,6 +10117,663 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",
+    },
+    "SavedEnvImagesCreateRole30347FD6": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecr.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Rovara saved environment images: ECR assumes this to create a repository from the creation template",
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "RoleName": "agentx-staging-img-create",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "SavedEnvImagesCreateRoleDefaultPolicyA5FAEA7E": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "ecr:CreateRepository",
+                "ecr:TagResource",
+                "ecr:SetRepositoryPolicy",
+                "ecr:PutLifecyclePolicy",
+                "ecr:PutImageTagMutability",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/rovara-env/staging/*",
+                  ],
+                ],
+              },
+              "Sid": "CreateUnderThePrefix",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "SavedEnvImagesCreateRoleDefaultPolicyA5FAEA7E",
+        "Roles": [
+          {
+            "Ref": "SavedEnvImagesCreateRole30347FD6",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "SavedEnvImagesCreationTemplate55581766": {
+      "DependsOn": [
+        "SavedEnvImagesCreateRoleDefaultPolicyA5FAEA7E",
+        "SavedEnvImagesCreateRole30347FD6",
+        "SavedEnvImagesManageRoleDefaultPolicyB6EE424C",
+        "SavedEnvImagesManageRoleA0F3E8CD",
+        "SavedEnvImagesPullRoleDefaultPolicy3F49BC10",
+        "SavedEnvImagesPullRoleF44C4C9E",
+        "SavedEnvImagesPushRoleDefaultPolicy52BB6454",
+        "SavedEnvImagesPushRole68F53DE7",
+      ],
+      "Properties": {
+        "AppliedFor": [
+          "CREATE_ON_PUSH",
+        ],
+        "CustomRoleArn": {
+          "Fn::GetAtt": [
+            "SavedEnvImagesCreateRole30347FD6",
+            "Arn",
+          ],
+        },
+        "Description": "Rovara saved environment images: immutable tags, KMS, keep the newest images, data actions for the push and pull roles only",
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "SavedEnvImagesImagesKey550AA1C0",
+              "Arn",
+            ],
+          },
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 13 images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":13},"action":{"type":"expire"}}]}",
+        "Prefix": "rovara-env/staging",
+        "RepositoryPolicy": {
+          "Fn::Join": [
+            "",
+            [
+              "{"Version":"2012-10-17","Statement":[{"Sid":"OnlyTheRolesMayRead","Effect":"Deny","Principal":"*","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:BatchCheckLayerAvailability"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":["",
+              {
+                "Fn::GetAtt": [
+                  "SavedEnvImagesPushRole68F53DE7",
+                  "Arn",
+                ],
+              },
+              "","",
+              {
+                "Fn::GetAtt": [
+                  "SavedEnvImagesPullRoleF44C4C9E",
+                  "Arn",
+                ],
+              },
+              ""]}}},{"Sid":"OnlyThePushRoleMayWrite","Effect":"Deny","Principal":"*","Action":["ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":"",
+              {
+                "Fn::GetAtt": [
+                  "SavedEnvImagesPushRole68F53DE7",
+                  "Arn",
+                ],
+              },
+              ""}}},{"Sid":"OnlyTheManageRoleMayDeleteImages","Effect":"Deny","Principal":"*","Action":["ecr:BatchDeleteImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":["",
+              {
+                "Fn::GetAtt": [
+                  "SavedEnvImagesManageRoleA0F3E8CD",
+                  "Arn",
+                ],
+              },
+              ""]}}}]}",
+            ],
+          ],
+        },
+        "ResourceTags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "saved-environment-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::RepositoryCreationTemplate",
+    },
+    "SavedEnvImagesImagesKey550AA1C0": {
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "agentx:retain-on-create-rollback": true,
+      },
+      "Properties": {
+        "Description": "Rovara saved environment images: encrypts the repositories under the creation template",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": [
+                "kms:CreateAlias",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Get*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:CancelKeyDeletion",
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "AdminWithoutUse",
+            },
+            {
+              "Action": [
+                "kms:ScheduleKeyDeletion",
+                "kms:DisableKey",
+                "kms:PutKeyPolicy",
+              ],
+              "Condition": {
+                "ArnNotEquals": {
+                  "aws:PrincipalArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":iam::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":role/agentx-staging-cloudformation",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*",
+              },
+              "Resource": "*",
+              "Sid": "DenyDestroy",
+            },
+            {
+              "Action": [
+                "kms:CreateGrant",
+                "kms:DescribeKey",
+              ],
+              "Condition": {
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true",
+                },
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "ecr.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "SavedEnvImagesCreateRole30347FD6",
+                    "Arn",
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "CreationRoleGrantForEcr",
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "ArnNotEquals": {
+                  "aws:PrincipalArn": {
+                    "Fn::GetAtt": [
+                      "SavedEnvImagesCreateRole30347FD6",
+                      "Arn",
+                    ],
+                  },
+                },
+              },
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": "*",
+              "Sid": "DenyOtherGrants",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::KMS::Key",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "SavedEnvImagesManageRoleA0F3E8CD": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BrokerServiceRole1938BCC9",
+                    "Arn",
+                  ],
+                },
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images",
+        "MaxSessionDuration": 3600,
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "RoleName": "agentx-staging-img-manage",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "SavedEnvImagesManageRoleDefaultPolicyB6EE424C": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "ecr:DescribeRepositories",
+                "ecr:GetRepositoryPolicy",
+                "ecr:DescribeImages",
+                "ecr:ListImages",
+                "ecr:BatchDeleteImage",
+                "ecr:DeleteRepository",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/rovara-env/staging/*",
+                  ],
+                ],
+              },
+              "Sid": "ThisEnvironmentsImages",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "SavedEnvImagesManageRoleDefaultPolicyB6EE424C",
+        "Roles": [
+          {
+            "Ref": "SavedEnvImagesManageRoleA0F3E8CD",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "SavedEnvImagesPullRoleDefaultPolicy3F49BC10": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "ecr:GetAuthorizationToken",
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "RegistryToken",
+            },
+            {
+              "Action": [
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/rovara-env/staging/*",
+                  ],
+                ],
+              },
+              "Sid": "ThisEnvironmentsImages",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "SavedEnvImagesPullRoleDefaultPolicy3F49BC10",
+        "Roles": [
+          {
+            "Ref": "SavedEnvImagesPullRoleF44C4C9E",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "SavedEnvImagesPullRoleF44C4C9E": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BrokerServiceRole1938BCC9",
+                    "Arn",
+                  ],
+                },
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to pull an image",
+        "MaxSessionDuration": 3600,
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "RoleName": "agentx-staging-img-pull",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "SavedEnvImagesPushRole68F53DE7": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BrokerServiceRole1938BCC9",
+                    "Arn",
+                  ],
+                },
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image",
+        "MaxSessionDuration": 3600,
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "RoleName": "agentx-staging-img-push",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "SavedEnvImagesPushRoleDefaultPolicy52BB6454": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "ecr:GetAuthorizationToken",
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "RegistryToken",
+            },
+            {
+              "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:PutImage",
+                "ecr:BatchGetImage",
+                "ecr:DescribeImages",
+                "ecr:CreateRepository",
+                "ecr:TagResource",
+                "ecr:StartImageScan",
+                "ecr:DescribeImageScanFindings",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/rovara-env/staging/*",
+                  ],
+                ],
+              },
+              "Sid": "ThisEnvironmentsImages",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "SavedEnvImagesPushRoleDefaultPolicy52BB6454",
+        "Roles": [
+          {
+            "Ref": "SavedEnvImagesPushRole68F53DE7",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
     },
     "SchedulerRoleForTarget490aa1BE062C91": {
       "Properties": {

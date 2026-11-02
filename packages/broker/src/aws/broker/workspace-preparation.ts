@@ -4,6 +4,7 @@ import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { registriesPrepareOf } from "./registry-credentials.js";
+import { savedEnvPrepareOf } from "./saved-env-prepare.js";
 import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
@@ -107,7 +108,7 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; grantedBy?: unknown } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; grantedBy?: unknown; testEnvPin?: { revision: number; digest: string } } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -133,6 +134,8 @@ export async function newWorkspacePreparation(
     createdAt: now,
     updatedAt: now,
   });
+  // Saved environments (SH25): the image this task's preparation may pull (a reference only; the worker asks for the login at pull time). Only a developer task's start sends a pin, and never a setup draft.
+  const savedEnv = await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId), setupDraft: options.setupDraft === true, testEnvPin: options.testEnvPin });
   const operation = operationRecord({
     ...operationOrg(workspace),
     id: operationId,
@@ -147,6 +150,8 @@ export async function newWorkspacePreparation(
     ...requesterOf(identity),
   });
   if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
+  // The digest this operation was told to pull is kept with the operation, so the login exchange gives a login for THAT image only and never for one the worker names.
+  if (savedEnv.savedEnv !== undefined) operation.savedEnvDigest = savedEnv.savedEnv.digest;
   if (pins !== undefined) operation.preparePins = pins;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -173,6 +178,7 @@ export async function newWorkspacePreparation(
       ...(pins === undefined ? {} : { pins }),
       // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) }),
+      ...savedEnv,
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -246,7 +252,7 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
  */
 export async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; testEnvPin?: { revision: number; digest: string } } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -254,6 +260,7 @@ export async function heldPreparationDispatch(
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, workspace.orgId);
+  const savedEnv = await savedEnvPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId, setupDraft: options.setupDraft === true, testEnvPin: options.testEnvPin });
   // P1 (su): a setup run's heads are read again now and replace the pins its start kept on the operation (setup-pins.ts).
   const pins = options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(workspace.orgId)) : undefined;
   const invocation: WorkerInvocation = {
@@ -268,6 +275,7 @@ export async function heldPreparationDispatch(
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
       ...(pins === undefined ? {} : { pins }),
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId }),
+      ...savedEnv,
     },
   };
   const pinHeadsItem: TransactItems = pins === undefined ? [] : [{ Update: {
@@ -278,7 +286,11 @@ export async function heldPreparationDispatch(
     TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET knowledgeCommit = :commit",
     ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":commit": metaPrepare.knowledgeCommit },
   } }];
-  return { workspace, items: [...pinKnowledge, ...pinHeadsItem, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
+  const pinSavedEnv: TransactItems = savedEnv.savedEnv === undefined ? [] : [{ Update: {
+    TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET savedEnvDigest = :digest",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":digest": savedEnv.savedEnv.digest },
+  } }];
+  return { workspace, items: [...pinKnowledge, ...pinHeadsItem, ...pinSavedEnv, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**

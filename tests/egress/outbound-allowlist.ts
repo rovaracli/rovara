@@ -137,6 +137,10 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
+    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call).", files: ["infra/lib/saved-env-images.ts"],
+    hosts: ["ecr.amazonaws.com"],
+  },
+  {
     category: "aws-service-principal", why: "The CodeArtifact service name in the sts:AWSServiceName condition that scopes the broker role's registry token policy (a policy value, not a call).", files: ["infra/lib/registry-access.ts"],
     hosts: ["codeartifact.amazonaws.com"],
   },
