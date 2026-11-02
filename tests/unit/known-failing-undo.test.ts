@@ -1,8 +1,9 @@
 // Setup and test health KF-1: taking marks OFF the known-failing list. Undo (one maintainer, a live browser session, audited, no second person) and expiry (a usable, healthy nightly shows the test passing; audited as the system).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { KnownFailingMarkViewSchema, NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@agentx/contracts";
-import { KNOWN_FAILING_MAX, KNOWN_FAILING_FULL_MESSAGE, knownFailingKey, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "../../packages/broker/src/test-env/known-failing.js";
+import { NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@agentx/contracts";
+import { KnownFailingMarkViewSchema } from "../../packages/contracts/src/app-known-failing.js";
+import { KnownFailingMarkSchema, KnownFailingTestId, KNOWN_FAILING_MAX, KNOWN_FAILING_FULL_MESSAGE, knownFailingKey, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "../../packages/broker/src/test-env/known-failing.js";
 import { expireKnownFailing, knownFailingExpiryListener, nightShowsPassing, passingMarks, undoKnownFailing, type MarkRef } from "../../packages/broker/src/test-env/known-failing-undo.js";
 import { NIGHTLY_BASELINE_MAX_AGE_MS } from "../../packages/broker/src/test-env/nightly-usable.js";
 import type { NightlyRecorded } from "../../packages/broker/src/test-env/nightly.js";
@@ -148,6 +149,12 @@ describe("expiry by a nightly", () => {
     const view = { name: `tests/${"d".repeat(400)}.py::t`, checkId: "unit", markedBy: "dev_a", markedByName: "Dev A", markedAt, epoch: 3, markedByYou: false };
     expect(KnownFailingMarkViewSchema.safeParse(view).success).toBe(true);
     expect(KnownFailingMarkViewSchema.safeParse({ ...view, name: "x".repeat(501) }).success).toBe(false);
+  });
+
+  it("a mark is named by a SAFE test id only: one token, no whitespace, not an option, at most 500 characters", () => {
+    expect(KnownFailingTestId.safeParse("tests/test_cart.py::TestRules::test_a[1-2]").success).toBe(true);
+    for (const bad of ["has space", "tests/t.py::t[a b]", "-x", "@file", "x".repeat(501), "tab\there", ""]) expect(KnownFailingTestId.safeParse(bad).success, bad).toBe(false);
+    expect(KnownFailingMarkSchema.safeParse({ name: "t/a.py::one y", checkId: "unit", markedBy: "dev_b", markedAt, epoch: 3 }).success).toBe(false);
   });
 
   it("a flaky list that hit its cap may be missing tests, so no mark is shown passing by that night", () => {
