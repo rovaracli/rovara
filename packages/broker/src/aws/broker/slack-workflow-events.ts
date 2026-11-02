@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { nightlyHeadDependencies } from "./nightly-head.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
@@ -380,6 +381,7 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
     ...specSeamsOf(dependencies),
     // Proof and evidence (wire-proof): the evidence port, only while the proof switch is on (nothing is added otherwise).
     ...evidenceRouteDependencies(dependencies),
+    ...nightlyHeadDependencies(dependencies),
   };
 }
 

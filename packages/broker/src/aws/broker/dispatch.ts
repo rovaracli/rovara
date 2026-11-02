@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent run, workflow and autofix dispatch.
 
+import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -273,6 +274,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
       // Proof and evidence: the system-run publish and update rows (the autonomous path) read the same evidence port as an owner's press, so the risk rule and the evidence lines apply here too; empty with the proof switch off.
       ...evidenceRouteDependencies(dependencies),
+    ...nightlyHeadDependencies(dependencies),
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       ...specSeamsOf(dependencies),

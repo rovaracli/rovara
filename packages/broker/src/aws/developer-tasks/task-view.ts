@@ -329,7 +329,7 @@ export async function taskView(
   const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
   // Setup and test health SH19: the four test results (only while `vx` is on; full reads only, like the proof table). The evidence pack feeds it only for a person who may read the task's evidence.
   const testing = rovaraCodeV2 && options.details && task.workflow !== undefined
-    ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
+    ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), nightlyHead: deps.nightlyHead, evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   // SH34: the second review by another AI company (switch `cr`), from the task record beside the workflow; full reads only. Silent for shadow that did not run.

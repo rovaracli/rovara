@@ -77,7 +77,8 @@ describe("the wiring and the nightly baseline", () => {
   });
 
   it("names a check that failed on the original code when the broker has no pack for this code, or the pack does not name it (nothing about its tests is confirmed)", async () => {
-    const withVerification = (rows: Array<{ checkId: string; status: string }>) => ({ ...taskOf, workflow: { candidate: { digest: "d".repeat(64) }, verification: { candidateDigest: "d".repeat(64), results: rows } } }) as unknown as DeveloperTaskRecord;
+    const listed = (kinds: Record<string, string>) => ({ required: Object.entries(kinds).map(([id, kind]) => ({ id, label: id, kind, command: { cwd: "repo/app", executable: "pytest", args: [], timeoutSeconds: 60 } })), optional: [], selectedOptionalIds: [], proposed: [] });
+    const withVerification = (rows: Array<{ checkId: string; status: string }>, kinds: Record<string, string> = { unit: "test", api: "test", lint: "lint", ok: "test" }) => ({ ...taskOf, workflow: { candidate: { digest: "d".repeat(64) }, checkPolicy: listed(kinds), verification: { candidateDigest: "d".repeat(64), results: rows } } }) as unknown as DeveloperTaskRecord;
     const task2 = withVerification([{ checkId: "unit", status: "FAILED" }, { checkId: "api", status: "FAILED" }, { checkId: "lint", status: "FAILED" }, { checkId: "ok", status: "PASS" }]);
     const originals = { unit: "failed", api: "cannot-run", lint: "passed", ok: "failed" };
     const call = async (read: () => Promise<undefined | ReturnType<typeof pack>>) => (await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, read).newFailingChecks!(task2, originals));
@@ -85,6 +86,11 @@ describe("the wiring and the nightly baseline", () => {
     expect([...await call(async () => undefined)].sort()).toEqual(["api", "unit"]);
     // A pack that names only unit (and knows its test): api is still unconfirmed.
     expect(await call(async () => pack(["Y"]))).toEqual(["api"]);
+    // A lint (or a check the list does not call a test) that failed before is not named: the old rule applies to it.
+    const lintApi = withVerification([{ checkId: "unit", status: "FAILED" }, { checkId: "api", status: "FAILED" }], { unit: "test", api: "lint" });
+    expect(await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, async () => undefined).newFailingChecks!(lintApi, originals)).toEqual(["unit"]);
+    const unknownKind = withVerification([{ checkId: "unit", status: "FAILED" }], {});
+    expect(await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, async () => undefined).newFailingChecks!(unknownKind, originals)).toEqual([]);
     // Without the facts of the original run nothing is claimed.
     expect(await fixSetupDependencies({ documentClient: bench({}), tableName: "state", now: () => NOW } as never, { VERIFY_RESULTS_ENABLED: "1" }, async () => undefined).newFailingChecks!(task2, undefined)).toEqual([]);
   });

@@ -16,7 +16,7 @@ import {
   type AutoFixBudget, type AutoFixFacts, type TestingResult, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { testingViewOf } from "../packages/broker/src/rovara-code/testing-section.js";
-import { hasUnconfirmedFailingTest, type KnownFailingEntry } from "../packages/broker/src/verification/result.js";
+import { hasUnconfirmedFailingTest, testCheckFailedBeforeWithoutData, type KnownFailingEntry } from "../packages/broker/src/verification/result.js";
 
 const KnownFailingEntrySchema = z.union([z.string().min(1).max(500), z.object({ name: z.string().min(1).max(500), checkId: z.string().min(1).max(64) }).strict()]);
 export const ReplaySnapshotSchema = z.object({
@@ -49,11 +49,10 @@ const BUDGET: AutoFixBudget = { enabled: false, dayBudgetHasRoom: false, baselin
 /** Codes whose class is "code" and that are about the tests (a review's findings have their own section, not a test result). */
 const isTestCodeFault = (code: keyof typeof AUTO_FIX_CODE_CLASS): boolean => AUTO_FIX_CODE_CLASS[code] === "code" && code !== "review-findings";
 
-/** A check that failed on the original code (by the original-code facts) that the evidence pack of THIS code does not name, or there is no such pack: it has no per-test data, so nothing about its failures is confirmed (M2). */
+/** A test check that failed on the original code (by the original-code facts) that the evidence pack of THIS code does not name, or there is no such pack: it has no per-test data, so nothing about its failures is confirmed (M2). */
 function failedBeforeWithoutData(workflow: WorkflowSnapshot, facts: AutoFixFacts, current: z.infer<typeof EvidencePackSchema> | undefined): boolean {
   const results = workflow.verification?.candidateDigest === workflow.candidate?.digest ? workflow.verification?.results ?? [] : [];
-  return results.some((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED" && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run")
-    && !(current?.checks ?? []).some((check) => check.checkId === result.checkId));
+  return testCheckFailedBeforeWithoutData(workflow, results.filter((result) => result.checkId !== E2E_PROJECT_CHECK_ID && result.status === "FAILED" && (facts.checkOriginal?.[result.checkId] === "failed" || facts.checkOriginal?.[result.checkId] === "cannot-run")), current);
 }
 
 /** Whether the stored fields show a failure of the code, by the auto-fix code classes and the evidence pack's own regression class (not by the result rules). */

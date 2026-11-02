@@ -6,7 +6,7 @@ import {
   WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
   type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { RESULT_RULES, classifyTestingResult, hasUnconfirmedFailingTest, newFailingCheckIds, readableFailingTests, type ResultInput, type ResultOutcome } from "../../packages/broker/src/verification/result.js";
+import { RESULT_RULES, classifyTestingResult, hasUnconfirmedFailingTest, newFailingCheckIds, readableFailingTests, workflowCheckKind, type ResultInput, type ResultOutcome } from "../../packages/broker/src/verification/result.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);
@@ -216,6 +216,8 @@ describe("Blocked by environment (4.2 transient and person rows)", () => {
 describe("a test that fails on the original code too (4.2 fails-on-original-code)", () => {
   const failing = () => blocked("VERIFY", undefined, results([check("unit", "FAILED")]));
   const facts: AutoFixFacts = { checkOriginal: { unit: "failed" } };
+  /** The task's own check list names `unit` with this kind (the broker takes a check's kind from it when the pack does not name the check). */
+  const withKind = (kind: string | undefined, id = "unit") => blocked("VERIFY", undefined, { ...results([check(id, "FAILED")]), checkPolicy: { required: [{ id, label: id, command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 }, ...(kind === undefined ? {} : { kind }) }], optional: [], selectedOptionalIds: [], proposed: [] } });
   const evidence = (names: string[], extra: Over = {}) => pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(names), ...extra }]);
 
   it("is Partially verified when every failing test is in the already-failing set", () => {
@@ -253,9 +255,26 @@ describe("a test that fails on the original code too (4.2 fails-on-original-code
     const sameReasons = decided("code_failed", ["new_failing_test", "fails_on_original_code"]);
     expect(run(failing(), { facts, evidence: pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing" }]), alreadyFailing: ["t1"] })).toEqual(sameReasons);
     expect(run(failing(), { facts, evidence: evidence([], { tests: { total: 0, passed: 0, failed: 0, skipped: 0, errored: 0, newTests: [], names: [] } }), alreadyFailing: ["t1"] })).toEqual(sameReasons);
-    expect(run(failing(), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    expect(run(withKind("test"), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(sameReasons);
     // A pack for other code is no pack for this one.
-    expect(run(failing(), { facts, evidence: { ...evidence(["t1"]), candidateDigest: otherCandidate.digest }, alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    expect(run(withKind("test"), { facts, evidence: { ...evidence(["t1"]), candidateDigest: otherCandidate.digest }, alreadyFailing: ["t1"] })).toEqual(sameReasons);
+    // A pack that names other checks only.
+    expect(run(withKind("test"), { facts, evidence: pack([{ checkId: "other", before: "passed", after: "passed", class: "passing" }]), alreadyFailing: ["t1"] })).toEqual(sameReasons);
+  });
+
+  // M2 scope (coordinator): the no-pack rule is about TESTS. The kind comes from the task's own check list by check id; unknown or not `test` keeps the old rule (Blocked by environment).
+  it("keeps the old rule (Blocked) for a lint, another kind, or a check the task's list does not name, with no pack or a pack that does not name it", () => {
+    const old = decided("blocked_by_environment", ["fails_on_original_code"]);
+    for (const kind of ["lint", "typecheck", "build", "other", undefined]) {
+      expect(run(withKind(kind), { facts, evidence: undefined, alreadyFailing: ["t1"] }), String(kind)).toEqual(old);
+      expect(run(withKind(kind), { facts, evidence: pack([{ checkId: "other", before: "passed", after: "passed", class: "passing" }]), alreadyFailing: ["t1"] }), String(kind)).toEqual(old);
+    }
+    // The list does not name the failed check at all.
+    const unlisted = blocked("VERIFY", undefined, { ...results([check("unit", "FAILED")]), checkPolicy: { required: [{ id: "elsewhere", label: "x", command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 }, kind: "test" }], optional: [], selectedOptionalIds: [], proposed: [] } });
+    expect(run(unlisted, { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(old);
+    expect(run(failing(), { facts, evidence: undefined, alreadyFailing: ["t1"] })).toEqual(old);
+    expect(workflowCheckKind(withKind("lint"), "unit")).toBe("lint");
+    expect(workflowCheckKind(withKind("lint"), "nope")).toBeUndefined();
   });
 
   it("leaves a check of another kind (a lint) with no per-test data to its own rule: it has no tests to judge", () => {
@@ -400,7 +419,12 @@ describe("Opus review fixes 3 and 4", () => {
     const two = blocked("VERIFY", undefined, results([check("unit", "FAILED"), check("api", "FAILED")]));
     const evidence = pack([{ checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) }]);
     const facts = { checkOriginal: { unit: "failed", api: "failed" } } as const;
-    expect(run(two, { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    const cmd = { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 };
+    const listed = (apiKind: string) => blocked("VERIFY", undefined, { ...results([check("unit", "FAILED"), check("api", "FAILED")]), checkPolicy: { required: [{ id: "unit", label: "unit", command: cmd, kind: "test" }, { id: "api", label: "api", command: cmd, kind: apiKind }], optional: [], selectedOptionalIds: [], proposed: [] } });
+    expect(run(listed("test"), { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("code_failed", ["new_failing_test", "fails_on_original_code"]));
+    // The check the pack does not name is not a test check (or the list does not say): the old rule.
+    expect(run(listed("lint"), { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
+    expect(run(two, { facts, evidence, alreadyFailing: ["t1"] })).toEqual(decided("blocked_by_environment", ["fails_on_original_code"]));
     // A check the pack names with another class keeps the existing rule (Blocked: the data says it did not fail before).
     const named = pack([
       { checkId: "unit", before: "failed", after: "failed", class: "already_failing", tests: tests(["t1"]) },

@@ -107,6 +107,17 @@ function unclearE2e(facts: AutoFixFacts): "code" | "original_fails" | "original_
   return groups.every((result) => result === "passed") ? "code" : "cause_unknown";
 }
 
+/** The kind of a check by its id, from the task's own check list (required, optional and proposed checks). Undefined when the list does not name it: an unknown kind is never read as a test. */
+export function workflowCheckKind(workflow: WorkflowSnapshot, checkId: string): string | undefined {
+  const policy = workflow.checkPolicy;
+  return [...(policy?.required ?? []), ...(policy?.optional ?? []), ...(policy?.proposed ?? [])].find((entry) => entry.id === checkId)?.kind;
+}
+
+/** A check that failed on the original code (by the original-code facts) that the evidence pack does not name at all (or there is no pack for this code) AND that is a test check by the task's check list: no per-test data, so nothing about its failures is confirmed (M2). A check of another or an unknown kind keeps the old rule. */
+export function testCheckFailedBeforeWithoutData(workflow: WorkflowSnapshot, failedOnOriginal: readonly { checkId: string }[], pack: EvidencePack | undefined): boolean {
+  return failedOnOriginal.some((result) => !(pack?.checks ?? []).some((check) => check.checkId === result.checkId) && workflowCheckKind(workflow, result.checkId) === "test");
+}
+
 /** A check with no per-test data to read at all: no test counts, or a count of zero failures while the check failed. */
 export const hasNoTestData = (check: EvidencePack["checks"][number]): boolean => check.tests === undefined || check.tests.failed + check.tests.errored === 0;
 
@@ -211,8 +222,8 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   if (originalFailingChecks.length > 0) originalFails = true;
   // A check that failed before AND has a failing test that was not failing before is the code's fault (M2): the old failure does not hide the new one.
   if (originalFailingChecks.some((check) => hasUnconfirmedFailingTest(check, input.alreadyFailing))) codeReasons.push("new_failing_test");
-  // A check the policy saw fail on the original code that the pack does not name at all (or there is no pack for this code) has no per-test data at all: nothing about its failures is confirmed, so it is the same (M2).
-  if (failedOnOriginal.some((result) => !evidenceChecks.some((check) => check.checkId === result.checkId))) codeReasons.push("new_failing_test");
+  // A TEST check the policy saw fail on the original code that the pack does not name at all (or there is no pack for this code) has no per-test data at all: nothing about its failures is confirmed, so it is the same (M2). Another or an unknown kind keeps the old rule.
+  if (testCheckFailedBeforeWithoutData(workflow, failedOnOriginal, evidence)) codeReasons.push("new_failing_test");
 
   // ---- 1. Code failed wins; environment faults are still listed
   if (codeReasons.length > 0) return { decided: true, result: "code_failed", reasons: unique([...codeReasons, ...blockedReasons, ...(originalFails && !excused() ? ["fails_on_original_code" as const] : [])]) };

@@ -40,6 +40,14 @@ export async function taskBaseBranches(deps: Pick<TestEnvDeps, "documentClient" 
   }
 }
 
+/** Reads a project's default-branch head from its code host: for a project, a function from a branch to its head now (undefined when it cannot be read). */
+export type NightlyHeadReader = (orgId: OrgId, project: string) => (branch: string) => Promise<string | undefined>;
+
+/** The options a caller gives `usableNightlyFailing` for a task: the branches of its open pull requests and, where the host can be asked, the branch's head now. */
+export async function nightlyOptionsFor(deps: Pick<TestEnvDeps, "documentClient" | "tableName">, task: { taskId: string; orgId: OrgId; project: string }, reader: NightlyHeadReader | undefined): Promise<UsableNightlyOptions> {
+  return { taskBranches: await taskBaseBranches(deps, task.taskId), currentHead: reader?.(task.orgId, task.project) };
+}
+
 export interface UsableNightlyOptions {
   /** The branches the task itself is based on (`taskBaseBranches`). When given and not empty, the nightly's branch must be each of them: a task on another branch gets no excuse from a nightly of this one. Otherwise the project's default branch is used. */
   taskBranches?: readonly string[] | undefined;

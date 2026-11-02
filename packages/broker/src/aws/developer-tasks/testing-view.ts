@@ -8,7 +8,7 @@ import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { needsFullSuiteFollowup, readFollowup } from "../../rovara-code/full-suite-followup.js";
 import { testingViewOf } from "../../rovara-code/testing-section.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
-import { taskBaseBranches } from "../../test-env/nightly-usable.js";
+import { nightlyOptionsFor, type NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { verifyResultsEnabled } from "../../verification/switch.js";
 import type { FullSuiteState } from "../../verification/result.js";
 
@@ -17,6 +17,8 @@ export interface TestingViewDeps {
   tableName: string;
   now: () => number;
   /** The evidence port (only while the proof switch is on); absent, the view says "the test details are missing" and cannot be Verified. */
+  /** Reads the default-branch head (only while `vx` is on); absent, a baseline older than 7 days is refused. */
+  nightlyHead?: NightlyHeadReader | undefined;
   evidence?: { pack: (task: { taskId: string; ownerKey: string; workspaceId: string }, candidateDigest: string | undefined) => Promise<EvidencePack | undefined> } | undefined;
 }
 
@@ -53,7 +55,7 @@ export async function loadTestingView(deps: TestingViewDeps, task: DeveloperTask
     const fullSuite = await fullSuiteOf(deps, task, evidence, digest);
     if (fullSuite === "failed") return undefined;
     const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
-    const alreadyFailing = task.orgId === undefined ? [] : await alreadyFailingForResults(store, task.orgId, task.project, { taskBranches: await taskBaseBranches(store, task.taskId) }).catch(() => [] as string[]);
+    const alreadyFailing = task.orgId === undefined ? [] : await alreadyFailingForResults(store, task.orgId, task.project, await nightlyOptionsFor(store, { taskId: task.taskId, orgId: task.orgId, project: task.project }, deps.nightlyHead)).catch(() => [] as string[]);
     // The stored ask says the decision was made; no automatic retry is coming (the policy would only look again at a task it can still act on).
     const budget: AutoFixBudget = { enabled: false, dayBudgetHasRoom: false, baselineRequests: 0, spend: { spentUsd: wholeTaskSpendUsd(0), roundEstimateUsd: 0, capUsd: AUTO_FIX_DEFAULT_CAP_USD } };
     const outcome = testingViewOf({ workflow, facts: {}, budget, evidence, alreadyFailing, planned: { fullSuite } });

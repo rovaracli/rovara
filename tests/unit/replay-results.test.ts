@@ -8,7 +8,7 @@ import { hasCodeSignal, readSnapshotFolder, replayOne, replayResults, replayText
 
 const candidate = createCandidateManifest([{ repositoryId: "app", commitSha: "1".repeat(40), treeSha: "2".repeat(40), baseCommitSha: "3".repeat(40) }]);
 const NOW = "2026-11-02T12:00:00.000Z";
-const policy = { required: [{ id: "unit", label: "Unit tests", command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 } }], optional: [], selectedOptionalIds: [], proposed: [] };
+const policy = { required: [{ id: "unit", label: "Unit tests", kind: "test", command: { cwd: "repo/app", executable: "pytest", args: ["-q"], timeoutSeconds: 600 } }], optional: [], selectedOptionalIds: [], proposed: [] };
 const workflow = (over: Record<string, unknown> = {}, state: "READY" | "BLOCKED" = "READY", blockReason?: string) => WorkflowSnapshotSchema.parse({
   ...createWorkflowSnapshot({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", ownerId: "a".repeat(64), now: NOW }), definitionVersion: "1.1.0", revision: 7, stage: "VERIFY", state, ...(blockReason === undefined ? {} : { blockReason }), candidate, checkPolicy: policy,
   verification: { candidateDigest: candidate.digest, producer: "worker", environmentId: "env", recordedAt: NOW, results: [{ checkId: "unit", status: "PASS" }] }, ...over,
@@ -38,6 +38,15 @@ describe("a check that failed before with no usable per-test data (M2, second Op
     const report = replayResults([base("t-nocounts", noCounts), base("t-zero", zero), base("t-nopack", undefined), base("t-other", { ...oldFailing(["Y"]), candidateDigest: "9".repeat(64) }), base("t-fine", oldFailing(["Y"]))]);
     expect(report.suspect).toEqual(["t-nocounts", "t-zero", "t-nopack", "t-other"]);
     expect(report.byVerdict).toMatchObject({ code_failed: 4, partially_verified: 1 });
+    expect(report.ok).toBe(true);
+  });
+
+  it("a lint (or a check the list does not call a test) with no pack keeps the old rule: not suspect, Blocked by environment", () => {
+    const lintList = { ...policy, required: [{ ...policy.required[0]!, kind: "lint" }] };
+    const lint = snapshot("t-lint", workflow({ ...failedOld, checkPolicy: lintList }, "BLOCKED"), { alreadyFailing: ["Y"], facts: { checkOriginal: { unit: "failed" } } });
+    const report = replayResults([lint]);
+    expect(report.suspect).toEqual([]);
+    expect(report.byVerdict).toMatchObject({ blocked_by_environment: 1 });
     expect(report.ok).toBe(true);
   });
 

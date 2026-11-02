@@ -9,6 +9,7 @@ import type {
   TaskPersonInviteOutcome,
   ProjectRole,
 } from "@agentx/contracts";
+import type { NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import type { EvidencePort } from "./evidence-port.js";
 import type { BoundChannel } from "../../developer/share.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
@@ -93,6 +94,8 @@ export interface DeveloperTaskRouteDependencies {
   workflowE2EArtifact?(input: { task: DeveloperTaskRecord; sha256: string }): Promise<{ contentType: "image/jpeg"; bytes: Uint8Array } | undefined>;
   /** Proof and evidence (wire-proof): the evidence of a task's checks, for the pull request, the task page and the download. Present only while the proof switch is on; absent, nothing reads or shows any. */
   evidence?: EvidencePort;
+  /** Setup and test health (`vx` only): reads a project's default-branch head, so a quiet repository's older nightly baseline still counts. Absent, an older baseline is refused. */
+  nightlyHead?: NightlyHeadReader;
   startWorkflowE2EBaseline?(input: { task: DeveloperTaskRecord }): Promise<unknown>;
   /**
    * Evaluates a plan's schema-v2 application intent for approval against the task's pinned project, the approved setup snapshot and the runtime rows
