@@ -189,6 +189,8 @@ describe("the XML is read safely", () => {
     expect(await refusal({ assertionVersion: "1.1" })).toBe("bad_assertion");
     expect(await refusal({ omitSubject: true })).toBe("no_subject");
     expect(await refusal({ secondNameId: true })).toBe("no_subject");
+    // Two Conditions elements: which one a reader trusts is the attacker's choice, so neither is.
+    expect(await refusal({ secondConditions: true })).toBe("bad_assertion");
   });
   it("a document with too many elements is refused", async () => {
     expect(await verify(toPost(responseXml({ key }).replace("<saml:Issuer>", `${"<a>".repeat(5001)}<saml:Issuer>`)))).toEqual({ ok: false, reason: "response_too_large" });
