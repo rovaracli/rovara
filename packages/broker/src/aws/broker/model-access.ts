@@ -528,17 +528,19 @@ export async function mintChatTurnKey(
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
+  // Only an unreadable guardrails document (read below) is let through as CONFIG_INVALID; the proxy's own 4xx refusals arrive as CONFIG_INVALID too and keep being "the proxy could not issue a key".
+  let guardrailsUnreadable = false;
   try {
     // RP-4: every model a turn may run is checked against the company's forbidden models, read now with the reader schema (an unreadable document is CONFIG_INVALID, a 400 like any other path's, and no key is made).
     // `body.model` is the Slack service's own configured orchestrator model, sent on every turn (no person names a model in Slack today), so a forbidden one is replaced like a forbidden assistant model (`routeTurn`).
-    const forbidden = forbiddenModelMatcher((await readGuardrails(dependencies, orgId)).forbiddenModels);
+    const forbidden = forbiddenModelMatcher(await readGuardrails(dependencies, orgId).then((guardrails) => guardrails.forbiddenModels, (error: unknown) => { guardrailsUnreadable = error instanceof AgentXError && error.code === "CONFIG_INVALID"; throw error; }));
     // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
     const routing = routingOf(dependencies);
-    // With no routing nothing can name another model to the service, which would answer with the forbidden one it is configured with: the turn is refused.
-    if (routing === undefined && body.model !== undefined && forbidden(body.model)) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
+    // With no routing nothing can name another model to the service, which would answer with the forbidden one it is configured with, and the key is not scoped to a list of models (an older service that ignores
+    // `classifierModel` would call a forbidden classifier with it): a turn whose configured model or classifier is forbidden is refused.
+    if (routing === undefined && (body.model !== undefined && forbidden(body.model) || body.classifierModel !== undefined && forbidden(body.classifierModel))) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
     const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
-    // Without routing nothing can stand in for the classifier, so a forbidden one is skipped (null); the service then asks a person instead of classifying.
-    const classifierModel = routed !== undefined ? routed.classifierModel : body.classifierModel !== undefined && forbidden(body.classifierModel) ? null : undefined;
+    const classifierModel = routed?.classifierModel;
     // Live interaction F2 (Public light diagnosis): Rovara pays for its own support. Only a turn routed to Rovara's own AI is let through unmetered, on a key that can call that route alone and spend a
     // fixed small amount; it is counted against none of the customer's budgets and does not need the trial or machine-time admission. A turn that routes anywhere else (the company's own source)
     // is paid like any chat turn, below. The caller decides `rovaraPays` from the edition and the tier; nothing in a request can ask for it.
@@ -607,7 +609,7 @@ export async function mintChatTurnKey(
     return { baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED" || error.code === "REMOVED_FROM_ORG" || error.code === "CONFIG_INVALID")) throw error;
+    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED" || error.code === "REMOVED_FROM_ORG" || guardrailsUnreadable && error.code === "CONFIG_INVALID")) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
@@ -619,7 +621,7 @@ async function giveKeyBack(access: { revokeKey(key: string): Promise<unknown> },
   catch (error) { console.log(JSON.stringify({ component: "broker", event: "model_access.turn_revoke_failed", errorName: error instanceof Error ? error.name : "unknown" })); }
 }
 
-/** What a member is told when the model the service is configured with is one the company forbids and there is no way to name another to it. */
+/** What a member is told when the model or classifier the service is configured with is one the company forbids and there is no way to name another to it. */
 const TURN_MODEL_BLOCKED = "That model is blocked for your company.";
 /** What a member is told when the company forbids every model the turn could have answered with. */
 const TURN_NO_MODEL_ALLOWED = "Your company blocks every model Slack could answer with. Ask an admin to allow one.";

@@ -2,8 +2,8 @@
 // cannot reach by its own name), the key the worker asks for is scoped to that route and checked again against the live sources, and a Slack turn is routed
 // from the org's assistant model or the orchestrator's own. Everything here goes through the real broker over a fake table and a fake proxy.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentGuardrailsKey, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentXError, agentGuardrailsKey, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
@@ -561,18 +561,34 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
       expect(access.mintKey).not.toHaveBeenCalled();
     });
 
-    it("skips a forbidden classifier where the install has no routing at all (no agents), since nothing can stand in for it", async () => {
+    it("refuses a turn whose classifier is forbidden where the install has no routing (no agents), rather than mint a key that names no models, which an older service would use for the forbidden classifier", async () => {
       const access = fakeModelAccess();
       const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
       await registerSlackProject(handler);
       access.setOrgSpent(TEST_ORG, 0);
       forbid(db, [HAIKU_45]);
       const reply = await serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: randomUUID(), classifierModel: bedrock("jp.anthropic.claude-haiku-4-5-20251001-v1:0") });
-      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-      expect(reply.body.classifierModel).toBeNull();
-      // A classifier that is not forbidden is not mentioned.
+      expect(reply.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "That model is blocked for your company." } });
+      expect(access.mintKey).not.toHaveBeenCalled();
+      // A classifier that is not forbidden is minted as before and not mentioned in the answer.
       const other = await serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: randomUUID(), classifierModel: bedrock("us.anthropic.claude-sonnet-4-6") });
+      expect(other.status, JSON.stringify(other.body)).toBe(200);
       expect(other.body).not.toHaveProperty("classifierModel");
+      expect(access.mintKey).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the proxy's own refusal of a key (its 4xx is a CONFIG_INVALID) as 'the model proxy could not issue a key', logged by name, and not as a broken company config", async () => {
+      const h = await install();
+      await h.seed({ order: ["rovara"] });
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        h.access.mintKey.mockRejectedValueOnce(agentXError("CONFIG_INVALID", "model proxy refused the request (400): bad budget"));
+        const reply = await h.turn();
+        expect(reply.status).toBe(503);
+        expect(reply.body).toMatchObject({ error: { code: "MODEL_PROXY_UNAVAILABLE", message: "the model proxy could not issue a key" } });
+        expect(log.mock.calls.map((call) => String(call[0]))).toContainEqual(expect.stringContaining("model_access.turn_mint_failed"));
+        expect(JSON.stringify(reply.body)).not.toContain("bad budget");
+      } finally { log.mockRestore(); }
     });
 
     it("replaces a forbidden assistant model with the cheapest allowed one, once the configured model and the install's default are forbidden too, and sends it whole", async () => {
