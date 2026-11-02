@@ -329,7 +329,7 @@ export interface ApprovedTestEnvironment { revision: number; digest: string; les
  */
 export async function approveTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number },
+  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number; /** The caller knows the proposal is a setup run's from another record (the candidate check's mark): the fresh sign-in is asked for whatever the proposal item says now. */ setupRun?: boolean },
 ): Promise<ApprovedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can approve a test environment");
   if (!DIGEST.test(input.digest) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.requestId.length < 8 || input.requestId.length > 100) throw invalid("the approval is not well formed");
@@ -354,7 +354,7 @@ export async function approveTestEnvironment(
   const fresh = (at: number | undefined): boolean => at !== undefined && Number.isFinite(at) && at <= now && now - at <= TEST_ENV_FRESH_SIGN_IN_MS;
   // A high-risk card (anything less safe, or a tier above the sandbox) needs the person pressing approve to have signed in just now too.
   // A proposal a setup RUN made counts the same: its commands were worked out by running things, so the approver signs in just now (defence in depth: the route asks for it too).
-  const setupRun = await proposalIsSetupRun(deps, input.orgId, input.project, input.digest);
+  const setupRun = input.setupRun === true || await proposalIsSetupRun(deps, input.orgId, input.project, input.digest);
   if ((lessSafe.length > 0 || setupRun || testEnvApprovalRisk(body) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
   let second: { check: SecondPersonCheck; approverId: string; signedInAtMs: number; sessionRef: string } | undefined;
   if (lessSafe.length > 0) {

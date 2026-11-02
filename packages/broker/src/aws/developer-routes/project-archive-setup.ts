@@ -205,11 +205,11 @@ export async function startProjectSetupCheck(deps: DeveloperRouteDependencies, c
  * TE-2: the CANDIDATE check of a test-environment proposal. The same admissions, limits and workspace as the project's own check, but the workspace is prepared from the commands the settings WOULD hold once the
  * proposal's are added (never from the applied settings alone), and the result is stored under the proposal's digest and the settings revision, not in the project's own `setupCheck`. Nothing is written to the settings.
  */
-export async function startCandidateSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, input: { requestId: string; digest: string; body: TestEnvironmentBody }): Promise<StatusReply> {
-  return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, body: input.body });
+export async function startCandidateSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, input: { requestId: string; digest: string; body: TestEnvironmentBody; origin?: "setup_run" }): Promise<StatusReply> {
+  return runSetupCheck(deps, caller, rawName, input.requestId, { digest: input.digest, body: input.body, ...(input.origin === undefined ? {} : { origin: input.origin }) });
 }
 
-async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: { digest: string; body: TestEnvironmentBody }): Promise<StatusReply> {
+async function runSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, requestId: string, candidate?: { digest: string; body: TestEnvironmentBody; origin?: "setup_run" }): Promise<StatusReply> {
   const { name, role } = await projectRoleForRoute(deps, caller, rawName);
   if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a setup check");
   const tasks = deps.tasks;
@@ -240,7 +240,7 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
       workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: previous?.workspaceId,
-      ...(candidate === undefined || lists === undefined ? {} : { candidate: { digest: candidate.digest, setup: lists.setup, readiness: lists.readiness } }),
+      ...(candidate === undefined || lists === undefined ? {} : { candidate: { digest: candidate.digest, setup: lists.setup, readiness: lists.readiness, ...(candidate.origin === undefined ? {} : { origin: candidate.origin }) } }),
     });
     if (committed) {
       logDeveloperEvent({ event: candidate === undefined ? "developer.project_setup_check_started" : "developer.test_env_candidate_check_started", orgId: caller.orgId, project: name, workspaceId: preparation.workspace.id });

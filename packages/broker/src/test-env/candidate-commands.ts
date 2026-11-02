@@ -45,10 +45,25 @@ export function commandsToApply(
  */
 export const asSaved = (command: ProjectCommand, timeoutSeconds: number): ProjectCommand => ({ cwd: command.cwd, executable: command.executable, args: [...command.args], timeoutSeconds });
 
-/** The lists the settings would hold once the proposal's commands are added, in the form the save stores: what the candidate check runs, and what an approval writes. */
+/**
+ * The lists the settings would hold once the proposal's commands are added: what the candidate check runs, and what an approval writes. The save rewrites a list only when the proposal adds to it (every command of
+ * that list comes back in the saved form); a list it adds nothing to is left exactly as stored, env and timeout included, so the check runs what stays in the settings.
+ */
 export function candidateLists(body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
   const plan = commandsToApply(body, current, firstRepositoryPath);
-  return { setup: [...current.setup, ...plan.setup].map((command) => asSaved(command, SETUP_TIMEOUT)), readiness: [...current.readiness, ...plan.readiness].map((command) => asSaved(command, TEST_TIMEOUT)) };
+  const list = (stored: readonly ProjectCommand[], added: readonly ProjectCommand[], timeoutSeconds: number): ProjectCommand[] =>
+    added.length === 0 ? [...stored] : [...stored, ...added].map((command) => asSaved(command, timeoutSeconds));
+  return { setup: list(current.setup, plan.setup, SETUP_TIMEOUT), readiness: list(current.readiness, plan.readiness, TEST_TIMEOUT) };
+}
+
+/** How many of an environment's commands the save would still add to the settings (not those it never adds: another directory, downloaded code, too many, not a build, smoke or test check). */
+export function commandsMissingFromSettings(
+  body: TestEnvironmentBody, definition: { repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] },
+): number {
+  const first = definition.repositories[0]?.path;
+  if (first === undefined) return 0;
+  const plan = commandsToApply(body, definition, first);
+  return plan.setup.length + plan.readiness.length;
 }
 
 /** Whether two command lists are the same commands in the same order. */

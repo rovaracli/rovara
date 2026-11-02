@@ -16,8 +16,10 @@ const CommandsSchema = z.array(ProjectCommandSchema).max(64);
 const CandidateCheckSchema = z.object({
   workspaceId: z.string().min(1).max(100), revision: z.number().int().positive(), startedAt: z.string().min(1).max(40), startedBy: z.string().min(1).max(200),
   digest: z.string().regex(/^[a-f0-9]{64}$/u), setup: CommandsSchema, readiness: CommandsSchema,
+  /** `setup_run`: the proposal this checked was marked as a setup run's when the check started (the mark outlives the proposal item). */
+  origin: z.literal("setup_run").optional(),
 });
-export interface CandidateCheck { workspaceId: string; revision: number; startedAt: string; startedBy: string; digest: string; setup: ProjectCommand[]; readiness: ProjectCommand[] }
+export interface CandidateCheck { workspaceId: string; revision: number; startedAt: string; startedBy: string; digest: string; setup: ProjectCommand[]; readiness: ProjectCommand[]; origin?: "setup_run" | undefined }
 
 type Send = { send(command: unknown): Promise<unknown> };
 

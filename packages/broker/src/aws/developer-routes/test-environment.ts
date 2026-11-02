@@ -51,6 +51,7 @@ import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from
 import { derivedRequestId, setupDraftState } from "../../rovara-code/setup-draft.js";
 import { readSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
 import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
+import { commandsMissingFromSettings } from "../../test-env/candidate-commands.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { StatusReply } from "../status-reply.js";
@@ -160,6 +161,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     const report = await readTestEnvProveReport(store, project.orgId, project.name, shown.digest);
     const lessSafe = testEnvLessSafeChanges(approved?.environment, shown.body);
     const risk = lessSafe.length > 0 ? "high" : testEnvApprovalRisk(shown.body);
+    const candidate = await candidateStateOf(deps, project.orgId, project.name, shown.digest, latest.definition);
     const { valueSources, origin } = await readProposalSources(store, project.orgId, project.name, shown.digest);
     let approval: "none" | "pending" | "approved" | "expired" = "none";
     if (lessSafe.length > 0 && deps.agents !== undefined) {
@@ -169,10 +171,10 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
       proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
-      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
+      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
-      check: await checkOf(deps, project, shown.digest, latest.definition),
+      check: checkOf(candidate.setup),
     };
   }
   return {
@@ -204,13 +206,12 @@ const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message
 
 /** S2: an approved environment whose commands are not all in the settings (the write after the approval did not land, or the settings changed since), and where the check of THAT digest stands at the settings revision as it is now. */
 async function approvedGapOf(deps: DeveloperRouteDependencies, project: ProjectView, environment: TestEnvironmentBody, definition: Awaited<ReturnType<typeof latestOf>>["definition"]): Promise<{ commandsNotInSettings: number; check: NonNullable<TestEnvironmentState["proposal"]>["check"] }> {
-  const missing = commandsNotRun(environment, definition);
-  return { commandsNotInSettings: missing, check: missing === 0 ? { status: "unchecked" } : await checkOf(deps, project, testEnvDigest(environment), definition) };
+  const missing = commandsMissingFromSettings(environment, definition);
+  return { commandsNotInSettings: missing, check: missing === 0 ? { status: "unchecked" } : checkOf((await candidateStateOf(deps, project.orgId, project.name, testEnvDigest(environment), definition)).setup) };
 }
 
 /** Where the proposal's candidate check stands at the settings as they are now (a failing step is a redacted one-liner, cut to what the page shows). */
-async function checkOf(deps: DeveloperRouteDependencies, project: ProjectView, digest: string, definition: Awaited<ReturnType<typeof latestOf>>["definition"]): Promise<NonNullable<TestEnvironmentState["proposal"]>["check"]> {
-  const { setup } = await candidateStateOf(deps, project.orgId, project.name, digest, definition);
+function checkOf(setup: Awaited<ReturnType<typeof candidateStateOf>>["setup"]): NonNullable<TestEnvironmentState["proposal"]>["check"] {
   const failedStep = setup.failedStep === undefined ? undefined : [...setup.failedStep].slice(0, 400).join("");
   return { status: setup.status, ...(failedStep === undefined || failedStep === "" ? {} : { failedStep }) };
 }
@@ -281,7 +282,7 @@ export async function routeTestEnvironment(
     // The proposal, or the approved environment it became (to run its check again after the settings changed).
     const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
     if (proposal === undefined) throw refuse("no_proposal");
-    const started = await startCandidateSetupCheck(deps, caller, encodeURIComponent(name), { requestId: parsed.data.requestId, digest: parsed.data.digest, body: proposal });
+    const started = await startCandidateSetupCheck(deps, caller, encodeURIComponent(name), { requestId: parsed.data.requestId, digest: parsed.data.digest, body: proposal, ...(await proposalIsSetupRun(store, caller.orgId, name, parsed.data.digest) ? { origin: "setup_run" as const } : {}) });
     logDeveloperEvent({ event: "developer.test_env_check_requested", orgId: caller.orgId, project: name, digest: parsed.data.digest, replayed: String(started.statusCode === 200) });
     return new StatusReply(started.statusCode, await stateOf(deps, project));
   }
@@ -336,6 +337,7 @@ export async function approveChecked(
   const current = await readApprovedTestEnvironment(store, caller.orgId, name);
   let approvedBySignedInAtMs: number | undefined;
   let approval: Awaited<ReturnType<typeof confirmedTestEnvApproval>>;
+  let setupRunMark = false;
   if (current === undefined || testEnvDigest(current.environment) !== input.digest) {
     const proposal = await readProposal(store, caller.orgId, name, input.digest);
     if (proposal !== undefined) {
@@ -344,7 +346,8 @@ export async function approveChecked(
       if (!again.ok) throw refuse(again.refusal);
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal);
       // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
-      const setupRun = await proposalIsSetupRun(store, caller.orgId, name, input.digest);
+      const setupRun = again.candidate?.origin === "setup_run" || await proposalIsSetupRun(store, caller.orgId, name, input.digest);
+      setupRunMark = setupRun;
       if (lessSafe.length > 0 || testEnvApprovalRisk(proposal) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
       if (lessSafe.length > 0 && deps.agents !== undefined) {
         approval = await confirmedTestEnvApproval(deps.agents, { orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, askedBy: caller.developerId });
@@ -353,7 +356,7 @@ export async function approveChecked(
   }
   const approvedNow = await approveTestEnvironment(testEnvApprovalStoreOf(deps), {
     orgId: caller.orgId, project: name, digest: input.digest, expectedRevision: input.expectedRevision, requestId: input.requestId, approvedBy: caller.developerId, role,
-    ...(approval === undefined ? {} : { approval }), ...(approvedBySignedInAtMs === undefined ? {} : { approvedBySignedInAtMs }),
+    ...(approval === undefined ? {} : { approval }), ...(approvedBySignedInAtMs === undefined ? {} : { approvedBySignedInAtMs }), ...(setupRunMark ? { setupRun: true } : {}),
   });
   logDeveloperEvent({ event: "developer.test_env_approved", orgId: caller.orgId, project: name, revision: String(approvedNow.revision), replayed: String(approvedNow.replayed) });
   // TE-2: only now do the approved environment's commands reach the settings, and only as the candidate check ran them. A failure here never undoes the approval: the commands stay out of the settings (the

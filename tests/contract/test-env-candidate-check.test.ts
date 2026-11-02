@@ -3,7 +3,7 @@
 // commands into the settings. These tests go through the whole broker (routes, stores, the real preparation) with the worker's report played by the test.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectMetaKey, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
+import { projectMetaKey, projectPk, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { approveTestEnvironment, proposeTestEnvironment, readProposalSources } from "../../packages/broker/src/org/test-environment.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
@@ -23,7 +23,7 @@ const argsOf = (commands: ReadonlyArray<{ args: string[] }>) => commands.map((en
 interface Stored { definition: { revision: number; setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }> } }
 const revisions = (t: Bench) => t.db.find((item) => item.entityType === "PROJECT") as unknown as Stored[];
 const settingsOf = (t: Bench) => revisions(t).sort((a, b) => a.definition.revision - b.definition.revision).at(-1)!.definition;
-const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; revision: number; digest: string; setup: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }>; readiness: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }> }>;
+const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ origin?: string; workspaceId: string; revision: number; digest: string; setup: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }>; readiness: Array<{ args: string[]; timeoutSeconds: number; env?: unknown }> }>;
 const metaCheck = (t: Bench) => (t.db.get(projectMetaKey(TEST_ORG, NAME)) as { setupCheck?: unknown }).setupCheck;
 const prepareOf = (t: Bench, workspaceId: string) => String((t.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
 
@@ -291,6 +291,29 @@ describe("S1: what is written is what was run", () => {
   });
 });
 
+describe("S1: a list the proposal adds nothing to is left as stored", () => {
+  it("the check runs the stored setup list as it is (env and timeout kept), and the written settings are exactly what the check ran", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const stored = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: { setup: Array<Record<string, unknown>> } } & Record<string, unknown>;
+      t.db.set({ ...stored, definition: { ...stored.definition, setup: [{ ...stored.definition.setup[0]!, env: { FOO: "1" }, timeoutSeconds: 77 }] } });
+      // The proposal adds only a smoke check: the setup list is not rewritten by the save.
+      const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [
+        { id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }] }] });
+      const digest = await proposed(t, draftOf(body));
+      await startCheck(t, digest);
+      const [record] = candidates(t);
+      expect(record!.setup).toEqual([{ cwd: "repo/web", executable: "make", args: ["old-setup"], timeoutSeconds: 77, env: { FOO: "1" } }]);
+      await reportCheck(t, "SUCCEEDED");
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);
+      const written = settingsOf(t) as unknown as { setup: unknown[]; readiness: unknown[] };
+      expect(written.setup).toEqual(record!.setup);
+      expect(written.readiness).toEqual(record!.readiness);
+    });
+  });
+});
+
 describe("S2: an approval whose write did not land can be finished", () => {
   it("shows the approved environment's missing commands with the check state, runs the check for that digest and revision, then writes them", async () => {
     const t = await setupWizardBench({ autoCandidate: false });
@@ -318,6 +341,33 @@ describe("S2: an approval whose write did not land can be finished", () => {
       expect(argsOf(settingsOf(t).setup)).toEqual(["old-setup", "deps"]);
       expect(argsOf(settingsOf(t).readiness)).toEqual(["old-test", "smoke"]);
       expect((await t.state()).approved).toMatchObject({ commandsNotInSettings: 0 });
+    });
+  });
+});
+
+describe("B1 residual: the setup-run mark survives the proposal item", () => {
+  it("a check started from a marked proposal carries the mark, so approving after the proposal expired and was re-proposed from the draft still needs the fresh sign-in", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    await withSwitch("1", async () => {
+      const store = { documentClient: t.db, tableName: "state", now: () => Date.now() };
+      const body = proposalBody();
+      await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body, origin: "setup_run", valueSources: [{ field: "repos[0].setupCommands[1]", source: { path: "package.json", line: 3 } }] });
+      const digest = testEnvDigest(body);
+      expect((await startCheck(t, digest)).status).toBe(202);
+      expect(candidates(t)[0]).toMatchObject({ origin: "setup_run" });
+      await reportCheck(t, "SUCCEEDED");
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      // The proposal item expires; the same body is proposed again from the draft path, with no mark.
+      t.db.delete({ pk: projectPk(TEST_ORG, NAME), sk: `TESTENV#PROPOSAL#${digest}` });
+      await proposeTestEnvironment(store, { orgId: TEST_ORG, project: NAME, proposedBy: OMAR.developerId, role: "maintainer", body });
+      expect((await readProposalSources(store, TEST_ORG, NAME, digest)).origin).toBeUndefined();
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      const viaToken = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(viaToken.status, JSON.stringify(viaToken.body)).toBe(403);
+      expect(errorOf(viaToken).message).toContain("in a browser");
+      expect(revisions(t)).toHaveLength(1);
+      t.ageSignIn(OMAR, 1);
+      expect((await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);
     });
   });
 });
