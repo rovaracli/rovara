@@ -306,9 +306,6 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
   throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
 }
 
-/** The longest request for changes the task's decision takes (its reason is held to 500 characters). */
-const PLAN_CHANGES_MAX_CHARS = 500;
-
 /** Writes what a request that left no record answered, with the stopped event's sibling audit item, so a repeat answers it. Best effort after the action: the action itself is idempotent by the request id. */
 async function recordAnswer(deps: RedirectDependencies, caller: ControlCaller, session: AgentSessionRecord, task: DeveloperTaskRecord, input: z.infer<typeof RedirectBodySchema>, messageId: string, step: string,
   answer: { state: "revise_started" | "refused"; message?: string }): Promise<void> {
@@ -336,7 +333,6 @@ async function requestChangesForWaitingPlan(deps: RedirectDependencies, caller: 
   const { session } = access;
   if (deps.control?.requestPlanChanges === undefined) throw redirectRefusal("not_available");
   const reason = redactText(input.text).trim();
-  if (reason.length > PLAN_CHANGES_MAX_CHARS) throw agentXError("CONFIG_INVALID", `Keep your instruction under ${String(PLAN_CHANGES_MAX_CHARS)} characters while the plan waits for your approval.`);
   await deps.control.requestPlanChanges(task, { requestId: input.requestId, expectedRevision: plan.revision, artifactDigest: plan.artifactDigest, reason });
   await recordAnswer(deps, caller, session, task, input, newMessageId(deps.now(), caller.developerId, input.requestId), "PLAN_REVIEW", { state: "revise_started" });
   await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);

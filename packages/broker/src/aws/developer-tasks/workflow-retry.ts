@@ -62,6 +62,8 @@ import {
   retiredClaimIdList,
 } from "./workflow-inputs.js";
 import { ciFixRetryKey, planCheckRetryKey, queueWorkflowCoding, retryCiFix, retryPlanCritique, retryWorkflowImplementation } from "./workflow-coding.js";
+import { carriedRedirect } from "./redirect-carry.js";
+import { framedPlanningInstruction } from "./redirect-frame.js";
 import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } from "./workflow-starts.js";
 import { fedThroughUpdate, withCurrentThreadNotes } from "./thread-notes.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
@@ -378,7 +380,11 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.
   // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
-  if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
+  if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") {
+    // A run a redirect restarted that failed: a plain Retry gives the owner's instruction again (LR-2); it starts a new cap window as any Retry does.
+    const carried = await carriedRedirect(deps, task);
+    return retryWorkflowImplementation(deps, caller, access, request, carried === undefined ? undefined : { ownerRedirect: carried.ownerRedirect, skipNoteIds: [carried.record.messageId], keepWindow: false });
+  }
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
   if (task.workflow === undefined || task.workflow.state !== "BLOCKED" || task.workflow.stage !== "PLAN") {
@@ -395,6 +401,9 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   delete unblocked.blockReason;
   const next: WorkflowSnapshot = { ...unblocked, revision: task.workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   const retired = await retiredClaimIdList(deps, task.workflow);
+  // A planning run a redirect restarted that failed: a plain Retry gives the owner's instruction again, framed as data as the restart framed it (LR-2).
+  const carried = await carriedRedirect(deps, task);
+  const carriedInstruction = carried === undefined ? "" : `\n\n${framedPlanningInstruction(task, carried.record.requestId, carried.text)}`;
   // An unreadable answer is retried with what was wrong in it (the planning prompt adds the format instructions).
   const unreadable = task.planUnreadable;
   const retryInstructions = unreadable !== undefined && task.workflow.blockReason === WORKFLOW_BLOCK_REASONS.planUnreadable && unreadable.workflowRevision === task.workflow.revision
@@ -406,7 +415,7 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
       // that never ran (cancelled, or its start failed) would otherwise start without them.
       const understood = current.workflow?.definitionVersion === "1.1.0" && current.workflow.intent?.assessment?.kind === "ready"
         ? `${understandPrompt({ requestText: current.requestText ?? "", intent: current.workflow.intent, notes: "", forPlan: true })}\n\n` : "";
-      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: understood + retryInstructions + notes.suffix }, (operation) => [
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: understood + retryInstructions + carriedInstruction + notes.suffix }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${cap.clause}`,
@@ -447,8 +456,11 @@ async function retryWorkflowUnderstand(
   await actionableWorkspace(deps, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   try {
+    // An Understand run a redirect restarted that failed: a plain Retry gives the owner's instruction again, framed (LR-2).
+    const carried = await carriedRedirect(deps, task);
     await queueWorkflowUnderstand(deps, task, {
       requestId: request.requestId, access, actor: caller, cap, request: request.instructions, response: "Restarting the understanding step",
+      ...(carried === undefined ? {} : { redirect: { instruction: framedPlanningInstruction(task, carried.record.requestId, carried.text), skipNoteIds: [carried.record.messageId] } }),
     });
   } catch (error) {
     if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "retry");

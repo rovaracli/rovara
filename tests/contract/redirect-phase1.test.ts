@@ -208,7 +208,7 @@ describe("a redirect from the owner (R2, phase 1)", () => {
     const merged = world({ stage: "MERGED", state: "COMPLETE" });
     expect(await code(merged.go(PRIYA))).toMatchObject({ code: "SESSION_ENDED" });
     const critique = world({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
-    expect(await code(critique.go(PRIYA))).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
+    expect(await code(critique.go(PRIYA))).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.step_not_redirectable });
     expect(critique.records()).toEqual([]);
   });
 
@@ -394,19 +394,45 @@ describe("nothing is running (R4)", () => {
     expect(other.calls.plan).toEqual([]);
   });
 
-  it("refuses a plan-review instruction longer than a request for changes can hold, a plan with no document, and a deployment with no decision seam, writing nothing", async () => {
+  it("takes a plan-review instruction as long as any other redirect (2,000 characters), whole (LR-2), and refuses one longer than that at the body", async () => {
     const plan = { id: "p", type: "plan", version: 1, sha256: "c".repeat(64) };
     const long = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] } });
-    const before = long.table();
-    expect(await code(long.go(PRIYA, { text: "x".repeat(501) }))).toMatchObject({ code: "CONFIG_INVALID", message: "Keep your instruction under 500 characters while the plan waits for your approval." });
-    expect(long.table()).toBe(before);
-    expect(long.calls.plan).toEqual([]);
+    await expect(long.go(PRIYA, { text: "x".repeat(2_000) })).resolves.toMatchObject({ redirect: { state: "revise_started" } });
+    expect(long.calls.plan).toHaveLength(1);
+    expect(String(long.calls.plan[0]!["reason"])).toHaveLength(2_000);
+    const tooLong = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] } });
+    const beforeTooLong = tooLong.table();
+    expect(await code(tooLong.go(PRIYA, { text: "x".repeat(2_001) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(tooLong.table()).toBe(beforeTooLong);
+    expect(tooLong.calls.plan).toEqual([]);
+  });
+
+  it("refuses a plan with no document, and a deployment with no decision seam, writing nothing", async () => {
+    const plan = { id: "p", type: "plan", version: 1, sha256: "c".repeat(64) };
     const none = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [] } });
     expect(await code(none.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
     const bare = world({ stage: "PLAN_REVIEW", state: "WAITING", workflow: { artifacts: [plan] }, planChanges: false });
     const bareBefore = bare.table();
     expect(await code(bare.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
     expect(bare.table()).toBe(bareBefore);
+  });
+});
+
+describe("the steps a redirect does not reach say so in their own words (LR-2)", () => {
+  it("refuses the check of a plan and the review of a pull request's comments with a sentence that names them and points to Stop, writing nothing", async () => {
+    for (const [stage, state] of [["PLAN_CRITIQUE", "RUNNING"], ["PLAN_CRITIQUE", "BLOCKED"], ["WAIT_FOR_MERGE", "RUNNING"], ["WAIT_FOR_MERGE", "BLOCKED"]] as const) {
+      const s = world({ stage, state });
+      const before = s.table();
+      expect(await code(s.go(PRIYA)), `${stage} ${state}`).toEqual({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.step_not_redirectable });
+      expect(s.table(), `${stage} ${state}`).toBe(before);
+      expect(s.calls.cancel).toEqual([]);
+    }
+    expect(REDIRECT_REFUSAL_MESSAGES.step_not_redirectable).toContain("plan");
+    expect(REDIRECT_REFUSAL_MESSAGES.step_not_redirectable).toContain("pull request");
+    expect(REDIRECT_REFUSAL_MESSAGES.step_not_redirectable).toContain("stop it");
+    // A step this does not know stays the general sentence.
+    const other = world({ stage: "SOMETHING_NEW", state: "RUNNING" });
+    expect(await code(other.go(PRIYA))).toMatchObject({ message: REDIRECT_REFUSAL_MESSAGES.not_available });
   });
 });
 

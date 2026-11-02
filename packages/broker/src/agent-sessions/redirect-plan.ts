@@ -42,6 +42,8 @@ export function classifyRedirect(task: DeveloperTaskRecord, mode: RedirectMode =
     const plan = workflow.artifacts.filter((artifact) => artifact.type === "plan").at(-1);
     return plan === undefined ? { refusal: "not_available" } : { kind: "plan_review", revision: workflow.revision, artifactDigest: plan.sha256 };
   }
+  // The check of a plan, and the review of a pull request's comments while the change waits for its merge, are advice or a later stage: Stop ends them, and the refusal says so in its own words (LR-2).
+  if (workflow.stage === "PLAN_CRITIQUE" || workflow.stage === "WAIT_FOR_MERGE") return { refusal: "step_not_redirectable" };
   const step = stepOf(workflow.stage);
   if (step === undefined) return { refusal: "not_available" };
   const guard = { revision: workflow.revision, stage: workflow.stage, state: workflow.state };

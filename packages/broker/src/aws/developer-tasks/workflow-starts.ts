@@ -57,7 +57,9 @@ import type { ShareAdmin } from "./share.js";
 export async function queueWorkflowUnderstand(
   deps: DeveloperTaskRouteDependencies,
   task: DeveloperTaskRecord,
-  input: { requestId: string; access?: TaskAccess | undefined; actor?: DeveloperCaller | undefined; cap?: { clause: string; values: Record<string, number> } | undefined; request: string; response: string },
+  input: { requestId: string; access?: TaskAccess | undefined; actor?: DeveloperCaller | undefined; cap?: { clause: string; values: Record<string, number> } | undefined; request: string; response: string;
+    /** Stop & redirect (and the Retry that keeps its instruction, LR-2): the owner's words, already framed as data after Rovara's own introduction, go in the prompt; `skipNoteIds` are the notes the prompt leaves out because of that. */
+    redirect?: { instruction: string; skipNoteIds: readonly string[] } },
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   return withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
     const workflow = current.workflow;
@@ -65,7 +67,7 @@ export async function queueWorkflowUnderstand(
     const fed = fedThroughUpdate(notes);
     const receivedAt = iso(deps);
     const next = startWorkflowUnderstand(workflow, receivedAt);
-    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix, ...(current.retryOfTaskId === undefined ? {} : { changeAnyway: true }), ...(workflow.intent?.pathFrom === "request" ? { explicitPath: true } : {}) });
+    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: `${input.redirect === undefined ? "" : `\n\n${input.redirect.instruction}`}${notes.suffix}`, ...(current.retryOfTaskId === undefined ? {} : { changeAnyway: true }), ...(workflow.intent?.pathFrom === "request" ? { explicitPath: true } : {}) });
     return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt }, (operation) => [
       { Update: {
         TableName: deps.tableName, Key: taskKey(current.taskId),
@@ -82,7 +84,7 @@ export async function queueWorkflowUnderstand(
       })),
       ...(input.access === undefined ? [] : [accessFence(deps, input.access)]),
     ], { sharedTask: current.shared === true, workflowMode: "UNDERSTAND", ...taskBaseOption(current, next) });
-  });
+  }, input.redirect?.skipNoteIds);
 }
 
 /**
