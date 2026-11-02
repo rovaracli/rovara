@@ -4,6 +4,7 @@
 import type { InvocationModelRoute, SlackRequestMessage } from "@agentx/contracts";
 import type { RequestRouter } from "@agentx/orchestrator/request-router";
 import type { ActionClassifier } from "@agentx/orchestrator/action-gate";
+import { ClassifierError } from "@agentx/orchestrator/action-classifier";
 import { turnModelAccessSource, turnModelProxy, turnModelRoute, type TurnModelAccess } from "./model-access.js";
 import type { createHostedClassifier, createHostedRequestRouter } from "./runtime.js";
 import type { ServiceLog } from "./processor.js";
@@ -58,7 +59,11 @@ export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModel
     proxyFor,
     async turnModels(message) {
       const proxy = await proxyFor(message);
-      const { classifier } = await options.createClassifier({ model: options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy });
+      // RP-4: a classifier model the company forbids is replaced by the one the control plane names, or, when it names none, there is no classifier (every change no rule settles asks a person).
+      const stated = (await sourceFor(message)()).classifierModel;
+      const classifier: ActionClassifier = stated === null
+        ? async () => { options.log("gate.classifier_blocked", { eventId: message.eventId }); throw new ClassifierError("the classifier is blocked by the company"); }
+        : (await options.createClassifier({ model: stated ?? options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy })).classifier;
       // The route is the orchestrator's alone: the gate's classifier and the router keep their own models.
       const route = await turnModelRoute(sourceFor(message));
       return { proxy, classifier, ...(route === undefined ? {} : { route }) };
@@ -67,9 +72,11 @@ export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModel
       let made: ReturnType<typeof options.createRouter> | undefined;
       return async (text, signal) => {
         try {
-          made ??= proxyFor(message).then((proxy) => options.createRouter({
-            classifierAvailable: true, model: options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy,
-          }));
+          made ??= proxyFor(message).then(async (proxy) => {
+            // RP-4: the router shares the classifier's model, so a blocked classifier leaves no router (the three-choice card is shown) and a replaced one is routed on the replacement.
+            const stated = (await sourceFor(message)()).classifierModel;
+            return stated === null ? undefined : options.createRouter({ classifierAvailable: true, model: stated ?? options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy });
+          });
           const router = await made;
           return router === undefined ? { kind: "unclear", outcome: "unavailable" } : await router(text, signal);
         } catch (error) {

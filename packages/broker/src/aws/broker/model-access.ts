@@ -24,13 +24,14 @@ import { agentGitHubConnector, approvalsNotWiredGate, attributionOf, classifyDep
 import type { WriteGateRuntime } from "../../agents/write-gate.js";
 import { inGeography, stepForOperation } from "../../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
-import { effectiveSources, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
+import { effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
 import { json } from "../json-reply.js";
 import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
 import { readCompanyStagePolicy } from "../../model-selection/policy-store.js";
 import { parseTurnModelPin } from "../../model-selection/turn-policy.js";
 import { ProcessModelRefusal } from "../../model-selection/process-refusal.js";
-import { canonicalModelName } from "@agentx/contracts";
+import { canonicalModelName, forbiddenModelMatcher } from "@agentx/contracts";
+import { readGuardrails } from "../../agents/guardrails.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import { ADMISSION_REFUSALS, agentStepNotes, systemTaskDispatchAccessFence, taskPageUrl } from "../developer-tasks.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -521,15 +522,21 @@ export async function mintChatTurnKey(
   /** SY-7: conditions on the requester's standing, checked in the write that records the key (or, where no key is recorded, in one of their own right) and refused as REMOVED_FROM_ORG. */
   guard?: RegisterGuard,
   options: { rovaraPays?: true } = {},
-): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown }> {
+): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown; classifierModel?: ModelIdentifier | null }> {
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
+    // RP-4: every model a turn may run is checked against the company's forbidden models, read now with the reader schema (an unreadable document is CONFIG_INVALID and no key is made).
+    // A model the request asks for is refused outright and never swapped for another; a model the company or the service defaults to is replaced by an allowed one (`routeTurn`).
+    const forbidden = forbiddenModelMatcher((await readGuardrails(dependencies, orgId)).forbiddenModels);
+    if (body.model !== undefined && forbidden(body.model)) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
     // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
     const routing = routingOf(dependencies);
-    const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body);
+    const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
+    // Without routing nothing can stand in for the classifier, so a forbidden one is skipped (null); the service then asks a person instead of classifying.
+    const classifierModel = routed !== undefined ? routed.classifierModel : body.classifierModel !== undefined && forbidden(body.classifierModel) ? null : undefined;
     // Live interaction F2 (Public light diagnosis): Rovara pays for its own support. Only a turn routed to Rovara's own AI is let through unmetered, on a key that can call that route alone and spend a
     // fixed small amount; it is counted against none of the customer's budgets and does not need the trial or machine-time admission. A turn that routes anywhere else (the company's own source)
     // is paid like any chat turn, below. The caller decides `rovaraPays` from the edition and the tier; nothing in a request can ask for it.
@@ -550,7 +557,7 @@ export async function mintChatTurnKey(
         { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
         { orgId: orgId, purpose: "turn", refId: body.turnId, maxBudgetUsd: DIAGNOSIS_LIGHT_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS, models: routed.models },
       );
-      return { baseUrl: modelAccess.proxyUrl, apiKey: support.key, expiresAt: support.expiresAt, ...(routed.wire === undefined ? {} : { route: routed.wire }) };
+      return { baseUrl: modelAccess.proxyUrl, apiKey: support.key, expiresAt: support.expiresAt, ...(routed.wire === undefined ? {} : { route: routed.wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
     }
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, orgId, requester) : keyMember(slack.payer);
@@ -595,10 +602,10 @@ export async function mintChatTurnKey(
         throw error;
       }
     }
-    return { baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) };
+    return { baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED" || error.code === "REMOVED_FROM_ORG")) throw error;
+    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED" || error.code === "REMOVED_FROM_ORG" || error.code === "CONFIG_INVALID")) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
@@ -610,12 +617,39 @@ async function giveKeyBack(access: { revokeKey(key: string): Promise<unknown> },
   catch (error) { console.log(JSON.stringify({ component: "broker", event: "model_access.turn_revoke_failed", errorName: error instanceof Error ? error.name : "unknown" })); }
 }
 
+/** What a member is told when the model a turn asked for is one the company forbids. */
+const TURN_MODEL_BLOCKED = "That model is blocked for your company.";
+/** What a member is told when the company forbids every model the turn could have answered with. */
+const TURN_NO_MODEL_ALLOWED = "Your company blocks every model Slack could answer with. Ask an admin to allow one.";
+
 /**
- * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service is configured to answer with
+ * RP-4: the first model of `candidates` (in order) that the company does not forbid and that `serves` accepts, with what `serves` returned for it. A forbidden model is
+ * never offered, whatever the spelling of its name (`forbidden` matches by canonical name, so a region prefix or a version suffix does not hide it).
+ */
+async function firstAllowed<T>(candidates: readonly ModelIdentifier[], forbidden: (model: ModelIdentifier) => boolean, serves: (model: ModelIdentifier) => Promise<T | undefined>): Promise<{ model: ModelIdentifier; served: T } | undefined> {
+  const seen = new Set<string>();
+  for (const model of candidates) {
+    const name = canonicalModelName(model);
+    if (seen.has(name) || forbidden(model)) continue;
+    seen.add(name);
+    const served = await serves(model);
+    if (served !== undefined) return { model, served };
+  }
+  return undefined;
+}
+
+/**
+ * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service asked for, else the model the service is configured to answer with
  * (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
  * turn's route, and the gate classifier's and router's model when it is one of Rovara's catalog and Rovara is in the org's order (they share the turn's key).
+ *
+ * RP-4 (replaces the old "Slack turn models are not checked"): none of them may be a model the company forbids (`forbidden`). The model the request asked for is refused by the caller before this runs.
+ * An assistant model or default that is forbidden is replaced by the first allowed model the web chat could list for the project (the install's default first, then the servable models in the order of
+ * its sources); with none, the turn is refused. The replacement always travels on the wire (`wire`), because the service would otherwise answer with the model it was configured with. A forbidden
+ * classifier is replaced the same way from Rovara's catalog (`classifierModel` names the one to use) or, with none allowed, skipped (`classifierModel: null`): the service then has no classifier, which it
+ * treats as "ask a person" for the gate and as "show the three-choice card" for routing, never as "allow".
  */
-async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined }): Promise<{ route: ModelRoute; models: string[]; wire?: InvocationModelRoute }> {
+async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined }, forbidden: (model: ModelIdentifier) => boolean): Promise<{ route: ModelRoute; models: string[]; wire?: InvocationModelRoute; classifierModel?: ModelIdentifier | null }> {
   const sources = await effectiveSources(routing, orgId, project);
   if (sources === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const assistant = sources.stored.assistantModel;
@@ -623,15 +657,39 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   if (assistant === undefined && !rovara) {
     throw agentXError("MODEL_NOT_ALLOWED", "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.");
   }
-  const model: ModelIdentifier = assistant ?? body.model ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.orchestrator, routing.rovaraGeography) };
-  const [route] = await servingRoutes(routing, { orgId, project, model });
+  const defaultOrchestrator: ModelIdentifier = { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.orchestrator, routing.rovaraGeography) };
+  const defaultClassifier: ModelIdentifier = { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
+  let model: ModelIdentifier = assistant ?? body.model ?? defaultOrchestrator;
+  let route: ModelRoute | undefined;
+  let replaced = false;
+  if (forbidden(model)) {
+    // The web chat's list: what the sources can serve, less what is forbidden (`getModels`), tried with the install's default first.
+    const next = await firstAllowed([defaultOrchestrator, ...await servableModels(routing, orgId, project)], forbidden, async (candidate) => (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.alias !== undefined));
+    if (next === undefined) throw agentXError("MODEL_NOT_ALLOWED", TURN_NO_MODEL_ALLOWED);
+    model = next.model;
+    route = next.served;
+    replaced = true;
+  } else {
+    [route] = await servingRoutes(routing, { orgId, project, model });
+  }
   if (route?.alias === undefined) {
     throw agentXError("MODEL_NOT_ALLOWED", `Slack's model ${model.provider}/${model.modelId} isn't served by any AI source your company can use. Ask an admin to set another assistant model.`);
   }
-  const classifier: ModelIdentifier = body.classifierModel ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
-  const classifierRoute = rovara ? (await servingRoutes(routing, { orgId, project, model: classifier })).find((candidate) => candidate.sourceId === "rovara") : undefined;
-  const wire = routeOnWire(route, model);
-  return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }) };
+  const classifier: ModelIdentifier = body.classifierModel ?? defaultClassifier;
+  const onRovara = async (candidate: ModelIdentifier) => rovara ? (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.sourceId === "rovara") : undefined;
+  let classifierModel: ModelIdentifier | null | undefined;
+  let classifierRoute: ModelRoute | undefined;
+  if (forbidden(classifier)) {
+    const next = await firstAllowed([defaultClassifier, ...await servableModels(routing, orgId, project)], forbidden, onRovara);
+    if (next?.served.alias === undefined) classifierModel = null;
+    else {
+      classifierRoute = next.served;
+      classifierModel = { provider: "amazon-bedrock", modelId: next.served.alias };
+    }
+  } else classifierRoute = await onRovara(classifier);
+  // A replaced model is sent whole: `routeOnWire` leaves out a Rovara catalog model the worker reaches by its own name, but the service's own configured model is not that one.
+  const wire = routeOnWire(route, model) ?? (replaced && route.api !== undefined ? { alias: route.alias, api: route.api, catalog: route.catalog } : undefined);
+  return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
 }
 
 /** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */

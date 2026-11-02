@@ -3,7 +3,8 @@
 // from the org's assistant model or the orchestrator's own. Everything here goes through the real broker over a fake table and a fake proxy.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModelSourceSchema, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentGuardrailsKey, forbiddenModelMatcher, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
+import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { settleKey, type LedgerDependencies, type ModelKeyRecord } from "../../packages/broker/src/spend/ledger.js";
@@ -506,6 +507,169 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
     const reply = await call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": invocation.callbackCapability } });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
+  });
+
+  // RP-4 (2026-11-02, "make Slack obey it"): the assistant model, the model a request asks for and the classifier are held to the company's forbidden models, like any other model choice.
+  describe("the company's forbidden models (RP-4)", () => {
+    const bedrock = (modelId: string) => ({ provider: "amazon-bedrock", modelId });
+    const OPUS_46 = { provider: "anthropic", modelId: "claude-opus-4-6" };
+    const HAIKU_45 = { provider: "anthropic", modelId: "claude-haiku-4-5" };
+    const ROVARA_IDS = bedrockClaudeModelIds("us");
+    const forbid = (db: unknown, forbiddenModels: Array<{ provider: string; modelId: string }>) =>
+      (db as Db).set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 1, guardrails: { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), forbiddenModels } });
+    /** The first of Rovara's catalog the company has not forbidden, which is where a replacement lands. */
+    const firstRovaraOutside = (...forbidden: Array<{ provider: string; modelId: string }>) => ROVARA_IDS.find((id) => !forbiddenModelMatcher(forbidden)(bedrock(id)))!;
+
+    it("refuses the model the request asks for when it is forbidden, in any spelling of its name, and mints nothing", async () => {
+      for (const asked of [bedrock("us.anthropic.claude-opus-4-6-v1"), bedrock("jp.anthropic.claude-opus-4-6-v1"), bedrock("anthropic.claude-opus-4-6-v1:0"), { provider: "openrouter", modelId: "anthropic/claude-opus-4.6:batch" }, OPUS_46]) {
+        const h = await install();
+        await h.seed({ order: ["rovara"] });
+        forbid(h.db, [OPUS_46]);
+        const reply = await h.turn({ model: asked });
+        expect(reply.status, asked.modelId).toBe(403);
+        expect(reply.body, asked.modelId).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "That model is blocked for your company." } });
+        expect(h.access.mintKey, asked.modelId).not.toHaveBeenCalled();
+      }
+    });
+
+    it("refuses an asked-for model that is forbidden even when the org's assistant model would have answered, and never falls back to another", async () => {
+      const h = await install();
+      await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"], assistantModel: SONNET });
+      forbid(h.db, [OPUS_46]);
+      const reply = await h.turn({ model: bedrock("us.anthropic.claude-opus-4-6-v1") });
+      expect(reply.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "That model is blocked for your company." } });
+      expect(h.access.mintKey).not.toHaveBeenCalled();
+    });
+
+    it("refuses a forbidden asked-for model where the install has no routing at all (no agents), not just where sources decide", async () => {
+      const access = fakeModelAccess();
+      const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+      await registerSlackProject(handler);
+      access.setOrgSpent(TEST_ORG, 0);
+      forbid(db, [OPUS_46]);
+      const reply = await serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: randomUUID(), model: bedrock("jp.anthropic.claude-opus-4-6-v1") });
+      expect(reply.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "That model is blocked for your company." } });
+      expect(access.mintKey).not.toHaveBeenCalled();
+    });
+
+    it("skips a forbidden classifier where the install has no routing at all (no agents), since nothing can stand in for it", async () => {
+      const access = fakeModelAccess();
+      const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+      await registerSlackProject(handler);
+      access.setOrgSpent(TEST_ORG, 0);
+      forbid(db, [HAIKU_45]);
+      const reply = await serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: randomUUID(), classifierModel: bedrock("jp.anthropic.claude-haiku-4-5-20251001-v1:0") });
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.classifierModel).toBeNull();
+      // A classifier that is not forbidden is not mentioned.
+      const other = await serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: randomUUID(), classifierModel: bedrock("us.anthropic.claude-sonnet-4-6") });
+      expect(other.body).not.toHaveProperty("classifierModel");
+    });
+
+    it("replaces a forbidden assistant model with the first allowed one and sends it whole, so the service does not answer with the model it was configured with", async () => {
+      const h = await install();
+      await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"], assistantModel: SONNET });
+      // The assistant model is forbidden under another spelling than the one it was set with (Rovara's default is the same model).
+      forbid(h.db, [bedrock("eu.anthropic.claude-sonnet-4-6")]);
+      const reply = await h.turn({ model: bedrock("us.anthropic.claude-opus-4-6-v1") });
+      const landed = firstRovaraOutside(bedrock(DEFAULT_ID));
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.route).toEqual({ alias: landed, api: "anthropic-messages", catalog: landed });
+      expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([landed, CLASSIFIER_ID]);
+      expect(h.access.mintKey.mock.calls[0]![0].models).not.toContain(sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET));
+    });
+
+    it("replaces the install's default when the company forbids it and no assistant model is set", async () => {
+      const h = await install();
+      await h.seed({ order: ["rovara"] });
+      forbid(h.db, [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }]);
+      const reply = await h.turn();
+      const landed = firstRovaraOutside(bedrock(DEFAULT_ID));
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.route).toEqual({ alias: landed, api: "anthropic-messages", catalog: landed });
+      expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([landed, CLASSIFIER_ID]);
+    });
+
+    it("refuses the turn, with a plain message and no key, when the forbidden assistant model has nothing allowed to stand in for it", async () => {
+      const h = await install();
+      await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC], assistantModel: SONNET });
+      forbid(h.db, [SONNET]);
+      const reply = await h.turn();
+      expect(reply.status).toBe(403);
+      expect(reply.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "Your company blocks every model Slack could answer with. Ask an admin to allow one." } });
+      expect(h.access.mintKey).not.toHaveBeenCalled();
+      // Rovara's whole catalog forbidden too: the same refusal.
+      const all = await install();
+      await all.seed({ order: ["rovara"] });
+      forbid(all.db, ROVARA_IDS.map(bedrock));
+      expect((await all.turn()).body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "Your company blocks every model Slack could answer with. Ask an admin to allow one." } });
+      expect(all.access.mintKey).not.toHaveBeenCalled();
+    });
+
+    it("replaces a forbidden classifier with an allowed one of Rovara's catalog, names it to the service and puts it on the key", async () => {
+      const h = await install();
+      await h.seed({ order: ["rovara"] });
+      forbid(h.db, [HAIKU_45]);
+      const reply = await h.turn({ model: bedrock(DEFAULT_ID), classifierModel: bedrock(CLASSIFIER_ID) });
+      const landed = firstRovaraOutside(HAIKU_45);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.classifierModel).toEqual(bedrock(landed));
+      expect(reply.body).not.toHaveProperty("route");
+      expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([...new Set([DEFAULT_ID, landed])]);
+      expect(h.access.mintKey.mock.calls[0]![0].models).not.toContain(CLASSIFIER_ID);
+    });
+
+    it("skips the classifier (null, off the key) when no model of Rovara's catalog is allowed for it, but still answers the turn", async () => {
+      const h = await install();
+      await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC], assistantModel: SONNET });
+      forbid(h.db, [HAIKU_45]);
+      const reply = await h.turn({ classifierModel: bedrock(CLASSIFIER_ID) });
+      const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.classifierModel).toBeNull();
+      expect(reply.body.route).toEqual({ alias, api: "anthropic-messages", catalog: "claude-sonnet-4-6" });
+      expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
+      // Rovara is in the order but every model of its catalog is forbidden, and the assistant model is a company source's: nothing is left for the classifier either.
+      const rovaraBlocked = await install();
+      await rovaraBlocked.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: GPT });
+      forbid(rovaraBlocked.db, ROVARA_IDS.map(bedrock));
+      const skipped = await rovaraBlocked.turn({ classifierModel: bedrock(CLASSIFIER_ID) });
+      expect(skipped.status, JSON.stringify(skipped.body)).toBe(200);
+      expect(skipped.body.classifierModel).toBeNull();
+      expect(rovaraBlocked.access.mintKey.mock.calls[0]![0].models).toEqual([sourceAlias(TEST_ORG, SRC_OPENAI, GPT)]);
+    });
+
+    it("catches a forbidden classifier under another region's or version's spelling", async () => {
+      const h = await install();
+      await h.seed({ order: ["rovara"] });
+      forbid(h.db, [bedrock("jp.anthropic.claude-haiku-4-5-20251001-v1:0")]);
+      const reply = await h.turn({ model: bedrock(DEFAULT_ID), classifierModel: bedrock(CLASSIFIER_ID) });
+      expect(reply.status).toBe(200);
+      expect(reply.body.classifierModel).toEqual(bedrock(firstRovaraOutside(HAIKU_45)));
+      expect(h.access.mintKey.mock.calls[0]![0].models).not.toContain(CLASSIFIER_ID);
+    });
+
+    it("changes nothing for models the company has not forbidden, and says nothing of the classifier", async () => {
+      const h = await install();
+      await h.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"], assistantModel: SONNET });
+      forbid(h.db, [OPUS_46]);
+      const reply = await h.turn({ model: bedrock(DEFAULT_ID), classifierModel: bedrock(CLASSIFIER_ID) });
+      const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect(reply.body.route).toEqual({ alias, api: "anthropic-messages", catalog: "claude-sonnet-4-6" });
+      expect(reply.body).not.toHaveProperty("classifierModel");
+      expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([alias, CLASSIFIER_ID]);
+    });
+
+    it("refuses with no key when the company's guardrails cannot be read (CONFIG_INVALID), and never runs a model unchecked", async () => {
+      const h = await install();
+      await h.seed({ order: ["rovara"] });
+      h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 1, guardrails: { forbiddenModels: "garbage" } });
+      const reply = await h.turn({ model: bedrock(DEFAULT_ID) });
+      expect(reply.status).toBe(400);
+      expect(reply.body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+      expect(h.access.mintKey).not.toHaveBeenCalled();
+    });
   });
 });
 

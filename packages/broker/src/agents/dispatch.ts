@@ -188,7 +188,8 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const stepName = step?.name ?? KIND_LABEL[KIND_OF_MODE[input.mode ?? "IMPLEMENT"]];
 
   // The company's forbidden models and cross-company rule apply to every agent with a snapshot, Rovara Code's own model included (ruled intended).
-  // Work with no agent (a Slack thread operation, an install without `agents`) has no snapshot and is not checked here.
+  // Work with no agent (a Slack thread operation, an install without `agents`) has no snapshot and is not checked here. A Slack turn's models are not left unchecked: the key for the turn
+  // is minted by `mintChatTurnKey`, which holds the assistant model, the model the request asks for and the classifier to the same forbidden list (RP-4: "make Slack obey it", 2026-11-02).
   const forbidden = forbiddenModelMatcher(input.guardrails.forbiddenModels);
   const usable = (model: ModelIdentifier): boolean => !forbidden(model)
     && (input.projectApproved === undefined || input.projectApproved.some((approved) => sameModel(approved, model)));

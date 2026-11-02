@@ -10,6 +10,7 @@ import { orgBanKey, orgMemberKey, orgRemovedKey } from "../../packages/contracts
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
+import { ClassifierError } from "@agentx/orchestrator/action-classifier";
 import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orchestrator.js";
 import { createModelRequestRouter } from "../../packages/orchestrator/src/request-router.js";
 import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
@@ -509,5 +510,60 @@ describe("the model access of one Slack message (R32)", () => {
     expect(logs).toContainEqual(expect.objectContaining({ event: "route.router_unavailable" }));
     expect(h.mintKey).not.toHaveBeenCalled();
     await expect(h.models.turnModels(unbound)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+// RP-4: when the company forbids the classifier's model, the control plane names the model to use instead (or none), and the service follows.
+describe("the classifier model the control plane names (RP-4)", () => {
+  const HAIKU = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" };
+  const STAND_IN = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-fable-5" };
+  const message: SlackRequestMessage = {
+    version: 1, eventId: "EvRP4000001", receivedAt: "2026-11-02T10:00:00.000Z", userId: SLACK_USER,
+    thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, text: "fix the bug",
+  };
+  const answerWith = (extra: Record<string, unknown>) => vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ baseUrl: PROXY_URL, apiKey: TURN_KEY, expiresAt: Date.now() + 900_000, ...extra }), { status: 200, headers: { "content-type": "application/json" } }));
+  const access = (extra: Record<string, unknown>) => turnModelAccessSource({ controlPlaneUrl: "https://api.example.test", signedFetch: answerWith(extra), turnId: "Ev1" });
+  function proxied(extra: Record<string, unknown>) {
+    const createClassifier = vi.fn<typeof createHostedClassifier>(async () => ({ classifier: async () => { throw new Error("not called"); }, available: true }));
+    const createRouter = vi.fn<typeof createHostedRequestRouter>(async () => async () => ({ kind: "question", outcome: "ok" }));
+    const logs: string[] = [];
+    const models = createProxiedModels({
+      controlPlaneUrl: "https://api.example.test", signedFetchFor: () => answerWith(extra), classifierModel: HAIKU, classifierTimeoutMs: 8_000,
+      log: (event) => { logs.push(event); }, createClassifier, createRouter,
+    });
+    return { models, createClassifier, createRouter, logs };
+  }
+
+  it("reads the model named for the classifier, a null that means none, and an answer that says nothing of it", async () => {
+    expect((await access({ classifierModel: STAND_IN })()).classifierModel).toEqual(STAND_IN);
+    expect((await access({ classifierModel: null })()).classifierModel).toBeNull();
+    expect(await access({})()).not.toHaveProperty("classifierModel");
+    await expect(access({ classifierModel: { provider: "amazon-bedrock" } })()).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+  });
+
+  it("builds the classifier and the router on the model the control plane named instead of the configured one", async () => {
+    const h = proxied({ classifierModel: STAND_IN });
+    await h.models.turnModels(message);
+    expect(h.createClassifier).toHaveBeenCalledWith(expect.objectContaining({ model: STAND_IN }));
+    await h.models.routerFor(message)("fix it");
+    expect(h.createRouter).toHaveBeenCalledWith(expect.objectContaining({ model: STAND_IN }));
+  });
+
+  it("keeps the configured classifier model when the control plane says nothing of it", async () => {
+    const h = proxied({});
+    await h.models.turnModels(message);
+    await h.models.routerFor(message)("fix it");
+    expect(h.createClassifier).toHaveBeenCalledWith(expect.objectContaining({ model: HAIKU }));
+    expect(h.createRouter).toHaveBeenCalledWith(expect.objectContaining({ model: HAIKU }));
+  });
+
+  it("has no classifier and no router when the control plane names none: the gate asks a person and a request gets the three-choice card, and no model is called", async () => {
+    const h = proxied({ classifierModel: null });
+    const { classifier } = await h.models.turnModels(message);
+    await expect(classifier({} as never, undefined as never)).rejects.toBeInstanceOf(ClassifierError);
+    expect(await h.models.routerFor(message)("fix it")).toEqual({ kind: "unclear", outcome: "unavailable" });
+    expect(h.createClassifier).not.toHaveBeenCalled();
+    expect(h.createRouter).not.toHaveBeenCalled();
+    expect(h.logs).toContain("gate.classifier_blocked");
   });
 });
