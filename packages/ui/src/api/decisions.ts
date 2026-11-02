@@ -49,13 +49,13 @@ export function readDecisions(view: View): ReadDecision[] {
 }
 
 /** What an approve or a reject came to: decided, or waiting on the confirmation page (nothing was decided). */
-export type DecisionResult = { kind: "decided"; outcome: "approved" | "rejected" } | { kind: "needs_confirmation"; confirmUrl: string | undefined };
+export type DecisionResult = { kind: "decided"; outcome: "approved" | "rejected" } | { kind: "needs_confirmation"; confirmUrl: string | undefined; /** A merge: the pull requests and the branch each goes into, for the "Merge #N into <branch>?" question. */ merging?: ReadonlyArray<{ repositoryId: string; number: number; baseBranch: string }> | undefined };
 
 export function createDecisionsApi(host: AppHost) {
  const api = createApiClient(host);
  const done = <T,>(result: { kind: string; value?: T }): T => { if (result.kind !== "done" || result.value === undefined) throw new ApiError(409, "PENDING", "This isn't finished. Open the decision to continue."); return result.value; };
  const resultOf = (value: ReturnType<typeof DecisionOutcomeSchema.parse>): DecisionResult => value.outcome === "needs_confirmation"
-  ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined }
+  ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined, merging: value.merging }
   : { kind: "decided", outcome: value.outcome };
  return {
   async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, DecisionEvidenceOpenedAnswerSchema)); },
@@ -72,8 +72,17 @@ export function createDecisionsApi(host: AppHost) {
  };
 }
 
-/** The caller's decision cards. A server without the routes (or a refusal) is "no cards", never an error on Home: the older Home cards still show. */
+/**
+ * The caller's decision cards. Only a 404 is "no cards": the cards switch is off in this deployment and the route does not exist (the broker's tests pin that the browser boundary lets the route through, so a 404 here is the switch).
+ * Any other failure (a refusal, a server error, no connection, an answer that cannot be read) is an error for the screen to show; it is never read as "no cards" (WEB-1: a 404 from the browser boundary was swallowed that way).
+ */
 export function useDecisions() {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- return useQuery({ queryKey: ["decisions"], retry: false, queryFn: async () => readDecisions(await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema)) });
+ return useQuery({
+  queryKey: ["decisions"], retry: false,
+  queryFn: async () => {
+   try { return readDecisions(await api.get("/v1/app/decisions", DecisionCardsViewReaderSchema)); }
+   catch (failure) { if (failure instanceof ApiError && failure.status === 404) return []; throw failure; }
+  },
+ });
 }

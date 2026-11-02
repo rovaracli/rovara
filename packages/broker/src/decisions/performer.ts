@@ -57,7 +57,9 @@ export function mergeHandler<C extends DecisionCaller>(press: (caller: C, sessio
       const item = input.item as MergeItem;
       if (item.kind !== "merge" || item.sessionId === undefined || item.heads === undefined || item.heads.length === 0) return { kind: "refused", reason: "unsupported" };
       const reply = await press(caller, item.sessionId, { requestId: input.requestId, risk: item.prRisk }, item.heads);
-      return reply.status === 200 ? { kind: "done" } : { kind: "needs_confirmation", confirmUrl: reply.body.confirmUrl };
+      if (reply.status === 200) return { kind: "done" };
+      // The pull requests and branches the person was shown (`expectedHeads` made the press refuse any other); an item with none still confirms, without the question's details.
+      return { kind: "needs_confirmation", confirmUrl: reply.body.confirmUrl, ...(item.targets === undefined || item.targets.length === 0 ? {} : { merging: item.targets.map((target) => ({ ...target })) }) };
     }),
   };
 }

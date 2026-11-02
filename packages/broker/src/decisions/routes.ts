@@ -29,7 +29,7 @@ export interface DecisionSources<C extends DecisionCaller = DecisionCaller> {
 export type PerformOutcome =
   | { kind: "done" }
   /** The endpoint did not decide: the person decides on its confirmation page (an https address), with a fresh sign-in. */
-  | { kind: "needs_confirmation"; confirmUrl: string }
+  | { kind: "needs_confirmation"; confirmUrl: string; /** A merge: what is about to be merged and into which branch. */ merging?: DecisionNeedsConfirmation["merging"] | undefined }
   | { kind: "refused"; reason: DecisionRefusalReason };
 
 /** The thing to act on: the card's own subject, or for a tab the document's own card and item (`kind` is the document's kind, never the pair's). */
@@ -125,7 +125,7 @@ function answerOfRecord(record: DecisionRecord): DecisionAnswered {
 function outcomeReply(cardId: string, outcome: PerformOutcome): StatusReply | undefined {
   if (outcome.kind === "done") return undefined;
   if (outcome.kind === "needs_confirmation") {
-    const body: DecisionNeedsConfirmation = { cardId: DecisionCardIdSchema.parse(cardId), outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl };
+    const body: DecisionNeedsConfirmation = { cardId: DecisionCardIdSchema.parse(cardId), outcome: "needs_confirmation", confirmUrl: outcome.confirmUrl, ...(outcome.merging === undefined ? {} : { merging: outcome.merging }) };
     return new StatusReply(202, body);
   }
   const refusal = DECISION_REFUSALS[outcome.reason];

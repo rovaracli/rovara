@@ -82,8 +82,11 @@ export const DecisionAnsweredSchema = z
 export type DecisionAnswered = z.infer<typeof DecisionAnsweredSchema>;
 
 /** `202`: the existing endpoint did not decide; the person decides on its confirmation page (a fresh sign-in). Nothing was approved, so no surface may say "Approved". */
+export const DECISION_MERGING_MAX = 20;
+/** What a merge press is about to merge, so the app can ask "Merge #N into <branch>?" before the person goes on to the confirmation page. Present only on a merge. */
+export const DecisionMergingSchema = z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().positive(), baseBranch: z.string().min(1).max(255) }).strict()).min(1).max(DECISION_MERGING_MAX);
 export const DecisionNeedsConfirmationSchema = z
-  .object({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link") })
+  .object({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link"), merging: DecisionMergingSchema.optional() })
   .strict();
 export type DecisionNeedsConfirmation = z.infer<typeof DecisionNeedsConfirmationSchema>;
 
