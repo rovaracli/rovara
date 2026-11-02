@@ -235,6 +235,8 @@ export interface DeveloperTaskRecord {
    */
   /** Setup agent: who pressed Stop, written before the cancel (rovara-code/setup-agent.ts). A cancelled run is a person's stop only when this is here; a system cancel has none. */
   setupAgentStop?: { by: string; at: string };
+  /** SH13: how far a running setup run has got, for the Live wall tile: the highest journal position stored and when. Fixed words and numbers only. */
+  setupAgentProgress?: { commands: number; at: string };
   setupAgentResult?: { status: "ready"; proposal: SetupProposal; summary: SetupRunSummary; stop: SetupRunEndWord } | { status: "failed"; stop: SetupRunEndWord; failure: string; proposal?: SetupProposal; summary?: SetupRunSummary };
   /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches

@@ -169,7 +169,7 @@ export async function setupAgentState(
   return (await readState(deps, orgId, project, latestRevision)).view;
 }
 
-async function readState(
+export async function readState(
   deps: Pick<SetupAgentDependencies, "documentClient" | "tableName" | "now" | "limitSettings">,
   orgId: OrgId,
   project: string,

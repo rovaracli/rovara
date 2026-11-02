@@ -99,6 +99,13 @@ Enterprise: Names the environment detector holds so it can tell a repository's u
 - The Gradle wrapper's usual download host, which the environment detector compares a repository's wrapper properties with (a host other than the usual ones is reported to the person). (only in `packages/worker/src/env-detect/java.ts`)
   `services.gradle.org`
 
+## Hosts a setup run is never allowed to ask for
+
+Enterprise: Names the setup agent's website ask refuses without a card (paste and file-drop sites, link shorteners, tunnels, webhook collectors, open storage and hosting). Compared with names the setup sandbox failed to resolve; never called by the install, and never added to an allow-list.
+
+- The suffixes the setup agent's host ask refuses outright, so no card is made for them and a run cannot get them approved. (only in `packages/broker/src/rovara-code/setup-host-ask.ts`)
+  `0bin.net`, `anonfiles.com`, `backblazeb2.com`, `beeceptor.com`, `blob.core.windows.net`, `burpcollaborator.net`, `canarytokens.com`, `digitaloceanspaces.com`, `dpaste.com`, `dpaste.org`, `file.io`, `firebaseapp.com`, `firebasestorage.googleapis.com`, `glitch.me`, `gofile.io`, `hastebin.com`, `herokuapp.com`, `hookbin.com`, `ix.io`, `localtunnel.me`, `mockbin.org`, `netlify.app`, `ngrok-free.app`, `ngrok.app`, `ngrok.dev`, `ngrok.io`, `oast.me`, `oast.online`, `oast.site`, `pagekite.me`, `pages.dev`, `pastebin.com`, `pipedream.net`, `portmap.io`, `r2.cloudflarestorage.com`, `r2.dev`, `rentry.co`, `repl.co`, `replit.dev`, `requestbin.com`, `requestbin.net`, `requestcatcher.com`, `serveo.net`, `storage.googleapis.com`, `t.co`, `termbin.com`, `tinyurl.com`, `trycloudflare.com`, `tunnelmole.net`, `vercel.app`, `wasabisys.com`, `web.app`, `webhook.site`, `wetransfer.com`, `workers.dev`
+
 ## Links shown to people
 
 Enterprise: Shown in help text and messages. Never called by the install.

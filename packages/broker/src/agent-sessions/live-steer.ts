@@ -11,6 +11,7 @@ import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
   LIVE_STEER_STEPS,
+  LIVE_STEER_STEP_OF_MODE,
   LIVE_STEER_TEXT_MAX_CHARS,
   liveSteerOperationId,
   redactText,
@@ -49,7 +50,7 @@ type Item = Record<string, unknown>;
 const getItem = async (deps: Pick<LiveSteerDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 
-/** The running step a message could reach, or why not: only a RUNNING Understand, Plan or Implement operation of this task, on the workspace that is busy with it, on an ec2 worker. */
+/** The running step a message could reach, or why not: only a RUNNING Understand, Plan, Implement or setup-run operation of this task, on the workspace that is busy with it, on an ec2 worker. */
 async function runningStep(deps: LiveSteerDependencies, task: DeveloperTaskRecord): Promise<{ workspace: Item; operationId: string; step: LiveSteerStep } | undefined> {
   if (task.workspaceId === undefined) return undefined;
   const workspace = await getItem(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: "META" });
@@ -58,7 +59,8 @@ async function runningStep(deps: LiveSteerDependencies, task: DeveloperTaskRecor
   // The workspace is this task's own.
   if ((await getItem(deps, taskPointerKey(task.workspaceId)))?.["taskId"] !== task.taskId) return undefined;
   const operation = await getItem(deps, operationKey(task.workspaceId, workspace["activeOperationId"]));
-  const step = LIVE_STEER_STEPS.find((candidate) => candidate === operation?.["workflowMode"]);
+  const mode = operation?.["workflowMode"];
+  const step = LIVE_STEER_STEPS.find((candidate) => candidate === (typeof mode === "string" ? LIVE_STEER_STEP_OF_MODE[mode] ?? mode : mode));
   if (operation === undefined || step === undefined || operation["kind"] !== "task" || operation["status"] !== "RUNNING" || operation["fence"] !== workspace["fence"] || operation["programStepId"] !== undefined) return undefined;
   return { workspace, operationId: workspace["activeOperationId"], step };
 }
