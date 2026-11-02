@@ -19,10 +19,11 @@ function world(options: { features?: readonly string[] | "down" | undefined; sta
   const made = w.seedSession({ kind: "task", ...(options.people === undefined ? {} : { people: options.people }), ...(options.currentOwner === undefined ? {} : { currentOwner: options.currentOwner }) });
   const patchTask = (fields: Record<string, unknown>) => w.db.set({ ...(w.db.get(taskKey(made.taskId)) as Item), ...fields });
   patchTask({ workflow: { revision: 3, stage: options.stage ?? "IMPLEMENT", state: options.state ?? "RUNNING", decisions: [], definitionVersion: "1.0.0", ...options.workflow } });
-  const calls = { cancel: [] as Array<{ taskId: string; requestId: string }>, features: 0, continued: [] as string[], plan: [] as Array<Record<string, unknown>> };
-  const live = { cancelFailure: undefined as Error | undefined };
+  const calls = { cancel: [] as Array<{ taskId: string; requestId: string }>, features: 0, gate: [] as Array<{ taskId: string; who: string }>, continued: [] as string[], plan: [] as Array<Record<string, unknown>> };
+  const live = { cancelFailure: undefined as Error | undefined, sendBackRefusal: undefined as Error | undefined };
   const redirect: RedirectConfig = {
     workerFeatures: async () => { calls.features += 1; if (options.features === "down") throw new Error("ping failed"); return options.features ?? [OWNER_REDIRECT_FEATURE]; },
+    sendBackAllowed: async (task, who) => { calls.gate.push({ taskId: task.taskId, who: who.developerId }); if (live.sendBackRefusal !== undefined) throw live.sendBackRefusal; },
     continueRedirect: async (taskId) => { calls.continued.push(taskId); },
   };
   const deps = {
@@ -406,6 +407,53 @@ describe("nothing is running (R4)", () => {
     const bareBefore = bare.table();
     expect(await code(bare.go(PRIYA))).toMatchObject({ code: "CONFIG_INVALID", message: REDIRECT_REFUSAL_MESSAGES.not_available });
     expect(bare.table()).toBe(bareBefore);
+  });
+});
+
+describe("a check or review redirect needs the send-back gate before anything is stopped (SB-1)", () => {
+  const refusal = () => agentXError("PROJECT_ACCESS_DENIED", "You don't have access to start tasks in `payments`, so you can't send this task back to coding. Ask a maintainer to make you a contributor.");
+
+  it("refuses with the gate's own words and writes, stops and counts nothing, for a running or a blocked check or review", async () => {
+    const cases = [
+      { stage: "VERIFY", state: "RUNNING" }, { stage: "REVIEW", state: "RUNNING" },
+      { stage: "VERIFY", state: "BLOCKED", workflow: { blockReason: WORKFLOW_BLOCK_REASONS.regressionFound } },
+    ];
+    for (const one of cases) {
+      const s = world({ ...one });
+      s.live.sendBackRefusal = refusal();
+      const before = s.table();
+      expect(await code(s.go(PRIYA)), `${one.stage} ${one.state}`).toEqual({ code: "PROJECT_ACCESS_DENIED", message: refusal().message.replace("PROJECT_ACCESS_DENIED: ", "") });
+      // The whole table is unchanged: no message, note, record, marker, rate or event; no cancel; the worker was never asked.
+      expect(s.table(), `${one.stage} ${one.state}`).toBe(before);
+      expect(s.calls.cancel).toEqual([]);
+      expect(s.calls.features).toBe(0);
+      expect(s.calls.gate).toEqual([{ taskId: s.made.taskId, who: PRIYA }]);
+    }
+  });
+
+  it("keeps the refused person's redirect rate: after the refusals a permitted redirect still has all of its places", async () => {
+    const s = world({ stage: "REVIEW", state: "RUNNING" });
+    s.live.sendBackRefusal = refusal();
+    for (let attempt = 0; attempt < 4; attempt += 1) await code(s.go(PRIYA));
+    s.live.sendBackRefusal = undefined;
+    await expect(s.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
+  });
+
+  it("an unreadable role is the gate's retryable error, and also writes nothing", async () => {
+    const s = world({ stage: "VERIFY", state: "RUNNING" });
+    s.live.sendBackRefusal = agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
+    const before = s.table();
+    expect(await code(s.go(PRIYA))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(s.table()).toBe(before);
+  });
+
+  it("is asked only where a send-back happens: not for coding, planning, Understand, a changed plan, or a plan that waits", async () => {
+    for (const options of [{ stage: "IMPLEMENT" }, { stage: "PLAN" }, { stage: "UNDERSTAND" }, { stage: "IMPLEMENT", mode: "change_plan" }]) {
+      const s = world({ stage: options.stage });
+      s.live.sendBackRefusal = refusal();
+      await expect(s.go(PRIYA, options.mode === undefined ? {} : { mode: options.mode }), options.stage).resolves.toMatchObject({ redirect: { state: "stopping" } });
+      expect(s.calls.gate).toEqual([]);
+    }
   });
 });
 

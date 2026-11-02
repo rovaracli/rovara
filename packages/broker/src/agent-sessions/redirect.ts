@@ -57,6 +57,12 @@ export interface RedirectConfig {
    * one that does not support it, so the owner's instruction is never run without the re-approval stop that binds it).
    */
   workerFeatures(task: DeveloperTaskRecord): Promise<readonly string[] | undefined>;
+  /**
+   * Whether the person may restart this task's checks or review as a send-back (0.4.27: the project access starting a task needs). Resolves when they may; throws the gate's own error (PROJECT_ACCESS_DENIED
+   * with its fixed words, or RUNTIME_UNAVAILABLE when their role cannot be read) when they may not. Asked in phase 1 before anything is written or stopped, so a refused redirect stops nothing and spends no
+   * rate (SB-1); phase 2 asks the same gate again at the restart.
+   */
+  sendBackAllowed(task: DeveloperTaskRecord, caller: ControlCaller): Promise<void>;
   /** Phase 2 for a task: restarts the stopped step if the stop has landed (`redirect-continue.ts`, bound to the broker). Best effort, never throws. */
   continueRedirect?(taskId: string): Promise<void>;
 }
@@ -197,6 +203,8 @@ async function recordAndStop(deps: RedirectDependencies, config: RedirectConfig,
     }
     // The plan waits for the owner: a request for changes with the instruction as its words.
     if (plan.kind === "plan_review") return requestChangesForWaitingPlan(deps, caller, access, task, plan, input);
+    // A blocked or running check or review is restarted as a send-back, which needs the project access a send-back needs: asked first, so a refused person stops nothing and uses no rate (SB-1).
+    if (plan.step === "VERIFY" || plan.step === "REVIEW") await config.sendBackAllowed(task, caller);
     if (needsCodingRestart(plan.step, input.mode) && !await workerTakesRedirect(config, task)) throw redirectRefusal("old_worker");
     // Where the instruction goes as a note: a task that cannot take one (it holds all it keeps, it waits for answers) cannot be redirected, and nothing is written.
     const route = await planSteer(deps, session);

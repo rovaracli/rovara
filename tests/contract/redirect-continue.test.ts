@@ -24,6 +24,7 @@ import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-
 import { redirectRestartHost } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
 import { redirectRestartRequestId } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
+import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -761,12 +762,64 @@ describe("the checks and the review restart coding, as a send-back does", () => 
     expect(t.operations(prepared.workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
   });
 
-  it("refuses a co-owner who is only a project viewer, and writes nothing", async () => {
+  it("refuses a co-owner who is only a project viewer, with the viewer's own words, and writes nothing", async () => {
     const t = await setup();
     const prepared = await stoppedReview(t);
     t.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "viewer" });
     const before = t.everything();
-    await expect(sendBackAsOmar(t, prepared)).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    // The gate's message, not only its code: a refusal for another reason (a missing grant, a closed task) carries a different sentence (SB-1 S2).
+    await expect(sendBackAsOmar(t, prepared)).rejects.toThrow(viewerCannotStartTasksMessage("payments"));
     expect(t.everything()).toBe(before);
+  });
+
+  it("refuses a person whose sign-in was revoked when the restart runs (SB-1: redirectCaller counts a revoked person as no caller)", async () => {
+    const t = await setup();
+    const prepared = await stoppedReview(t);
+    grantProject(t.db, OMAR);
+    const signIn = t.db.get(`DEVELOPER#${OMAR.developerId}`, "META") as Item | undefined;
+    t.db.set({ ...(signIn ?? { pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", provider: "oidc", displayName: OMAR.name }), revoked: true });
+    const before = t.everything();
+    await expect(sendBackAsOmar(t, prepared)).rejects.toThrow(/revoked/);
+    expect(t.everything()).toBe(before);
+  });
+});
+
+describe("phase 1 asks the send-back gate before it stops a check or review (SB-1), on the real broker", () => {
+  /** Maya's task with its review running; Omar is a second owner on the People list, with whatever project access the test gives him. */
+  const runningReviewWithOmar = async () => {
+    const t = await setup();
+    const started = await t.runningCoding();
+    await t.finish(started.workspaceId, String(t.operations(started.workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
+    const reviewId = randomUUID();
+    const row = t.task(started.taskId);
+    t.db.set({ ...row, workflow: { ...row.workflow, stage: "REVIEW", state: "RUNNING", revision: row.workflow.revision + 1 } });
+    const workspace = t.db.get(`WORKSPACE#${started.workspaceId}`, "META") as Item;
+    const fence = Number(workspace["fence"]) + 1;
+    t.db.set({ ...workspace, status: "BUSY", activeOperationId: reviewId, fence });
+    const coder = t.db.find((item) => item.pk === `WORKSPACE#${started.workspaceId}` && item.entityType === "OPERATION" && item.workflowMode === "IMPLEMENT")[0]!;
+    t.db.set({ ...coder, sk: `OPERATION#${reviewId}`, id: reviewId, status: "RUNNING", fence, workflowMode: "REVIEW", requestId: randomUUID(), createdAt: new Date().toISOString() });
+    t.db.set({ pk: `DEVTASK#${started.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [
+      { developerId: MAYA.developerId, slackUserId: "U0MAYA001", name: MAYA.name, role: "owner" }, { developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: OMAR.name, role: "owner" },
+    ] });
+    return { t, ...started };
+  };
+
+  it("a co-owner with no project access is refused with the gate's words: the review keeps running, nothing is written, no rate is used", async () => {
+    const { t, sessionId, workspaceId, taskId } = await runningReviewWithOmar();
+    const before = t.everything();
+    const refused = await t.redirect(OMAR, sessionId);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain(sendBackNoAccessMessage("payments"));
+    expect(t.everything()).toBe(before);
+    expect(t.operations(workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+    expect(t.open(taskId)).toBeUndefined();
+  });
+
+  it("a co-owner who holds a contributor grant is accepted and the review is stopped", async () => {
+    const { t, sessionId, workspaceId } = await runningReviewWithOmar();
+    grantProject(t.db, OMAR);
+    const answer = await t.redirect(OMAR, sessionId);
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(t.operations(workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
   });
 });
