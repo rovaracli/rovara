@@ -10,6 +10,7 @@
 import { testEnvDigest, type OrgId, type ProjectCommand, type TestEnvTaskPlan } from "@agentx/contracts";
 import { lastNightlyFailures } from "./nightly.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
+import { selectionFieldsAreSafe } from "./prove-from-setup-check.js";
 import { readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
@@ -24,6 +25,8 @@ export async function testEnvPlanFor(
   const found = await usableTestEnvironment(deps, input.orgId, input.project, pin.revision, env);
   if (!found.ok || testEnvDigest(found.environment.environment) !== pin.digest) return undefined;
   const body = found.environment.environment;
+  // The narrowing rule again, at dispatch: an environment approved before the rule, or by any path that skipped it, never sends `{tests}` to a command that is not a test runner (the run then goes out as without an environment).
+  if (!selectionFieldsAreSafe(body)) return undefined;
   const checks = body.repos.flatMap((repo) => repo.checks);
   if (checks.length === 0 || input.readiness.length < checks.length || !checks.every((check, index) => sameCommand(check.command, input.readiness[index]!))) return undefined;
   const failures = await lastNightlyFailures(deps, input.orgId, input.project).catch(() => []);

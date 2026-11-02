@@ -413,12 +413,12 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         diagnosis: DiagnosisInvocationSchema.optional(),
         /**
          * Proof and evidence (wire-proof): this verification run also writes `evidence-raw.json` (the test report of each check that names one, read in the workspace; never a change to any command). Verification mode
-         * only. Sent only while the proof switch is on, and only to a worker whose /ping lists "task.evidenceCapture.v1"; never dropped, because an older worker's strict parse would refuse the field.
+         * only. Sent only while the proof switch is on, and only to a worker whose /ping lists "task.evidenceCapture.v1"; the dispatcher drops the field for an older worker (no evidence is captured and the omission is logged), because its strict parse would refuse it.
          */
         evidenceCapture: z.literal(true).optional(),
         /**
          * Test environment (wire-testenv): this setup draft also runs the environment detectors over the default branch's files and reports the environment it would propose (a draft, never approved or run). Setup-draft
-         * mode only. Sent only while the test environment switch is on, and only to a worker whose /ping lists "task.testEnvDetect.v1"; never dropped, because an older worker's strict parse would refuse the field.
+         * mode only. Sent only while the test environment switch is on, and only to a worker whose /ping lists "task.testEnvDetect.v1"; the dispatcher drops the field for an older worker (the setup draft then has no environment draft and the omission is logged), because its strict parse would refuse it.
          */
         testEnvDetect: z.literal(true).optional(),
         /**

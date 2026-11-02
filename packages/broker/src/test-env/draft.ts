@@ -27,7 +27,7 @@ import {
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { TransactItem } from "../audit/outbox.js";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "../org/test-environment.js";
-import { selectArgsAreSafe, SAFE_SELECTION_METHODS } from "./prove-from-setup-check.js";
+import { checkSelectionIsSafe, SAFE_SELECTION_METHODS } from "./prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
@@ -68,8 +68,8 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
   const repos = draft.environment.repos.map((repo) => {
     const setupCommands = repo.setupCommands.filter((command) => { const refused = refusedCommand(command); leftOut ||= refused; return !refused; });
     const checks = repo.checks.filter((check) => { const refused = refusedCommand(check.command); leftOut ||= refused; if (!refused) kept.add(check.id); return !refused; })
-      // A narrowing argument other than the approved placeholder is dropped (the check then runs in full), never carried.
-      .map((check) => { if (selectArgsAreSafe(check.selectArgs)) return check; narrowingDropped = true; const { selectArgs: _dropped, ...whole } = check; void _dropped; return whole; });
+      // A narrowing argument other than the approved placeholder, or the placeholder on a command that is not a test runner taking test ids, is dropped (the check then runs in full), never carried.
+      .map((check) => { if (checkSelectionIsSafe(check)) return check; narrowingDropped = true; const { selectArgs: _dropped, ...whole } = check; void _dropped; return whole; });
     return { ...repo, setupCommands, checks };
   });
   if (repos.every((repo) => repo.checks.length === 0)) return undefined;

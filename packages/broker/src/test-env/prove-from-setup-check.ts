@@ -21,8 +21,36 @@ export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
 export const SAFE_SELECT_ARGS: readonly string[] = ["{tests}"];
 export const SAFE_SELECTION_METHODS: readonly string[] = ["full", "coverage_map"];
 export const selectArgsAreSafe = (selectArgs: readonly string[] | undefined): boolean => selectArgs === undefined || (selectArgs.length === SAFE_SELECT_ARGS.length && selectArgs.every((arg, index) => arg === SAFE_SELECT_ARGS[index]));
+
+/**
+ * The test runners that take the ids of the tests to run as plain arguments (the detectors propose the placeholder for pytest; jest, vitest and mocha take file paths the same way). A `{tests}` template on any other
+ * command (`make test`, `npm test`, `go test`, a script) would put test ids where that command does not take them: it might ignore them (the whole suite runs, which is safe but not what the card says) or read them as
+ * something else. So the placeholder is kept only where the check's command is one of these runners, run directly, as `python -m pytest`, or through `npx`, `bunx`, `pnpm exec|dlx` or `yarn exec|dlx`. The
+ * package managers' `run` and bare `pnpm jest` / `yarn jest` forms run the package.json script of that name, which can be any command, so they are not accepted.
+ */
+const SELECTING_RUNNERS: readonly string[] = ["pytest", "jest", "vitest", "mocha"];
+const baseName = (executable: string): string => executable.slice(executable.lastIndexOf("/") + 1);
+const firstProgram = (args: readonly string[]): string | undefined => args.find((arg) => !arg.startsWith("-"));
+export function commandTakesTestIds(command: ProjectCommand): boolean {
+  const name = baseName(command.executable);
+  if (SELECTING_RUNNERS.includes(name)) return true;
+  if (/^python(?:3(?:\.\d{1,2})?)?$/u.test(name)) return command.args[0] === "-m" && command.args[1] === "pytest";
+  // The first argument that is not an option is the program the package runner starts.
+  const started = name === "npx" || name === "bunx" ? firstProgram(command.args)
+    : (name === "pnpm" || name === "yarn") && (command.args[0] === "exec" || command.args[0] === "dlx") ? firstProgram(command.args.slice(1)) : undefined;
+  return started !== undefined && SELECTING_RUNNERS.includes(baseName(started));
+}
+/**
+ * A flag that makes a run with no test pass (jest and vitest `--passWithNoTests`, pytest's `--suppress-no-test-exit-code`, and the like). With a selection a run can match no test at all (a path with regex
+ * characters, a deleted file), and with such a flag it would pass: "the selected tests passed" would then claim nothing. Compared by name, ignoring case, dashes, underscores and any `=value`.
+ */
+const PASS_WITH_NO_TESTS_FLAGS: readonly string[] = ["passwithnotests", "suppressnotestexitcode", "allowempty", "allownotests", "exitzero"];
+export const passesWithNoTests = (command: ProjectCommand): boolean => command.args.some((arg) => arg.startsWith("--") && PASS_WITH_NO_TESTS_FLAGS.includes(arg.slice(2).split("=")[0]!.replace(/[-_]/gu, "").toLowerCase()));
+/** Whether a check's narrowing template is one the broker carries: exactly the placeholder, on a test runner that takes test ids, in a command that does not pass with no tests. */
+export const checkSelectionIsSafe = (check: { selectArgs?: readonly string[] | undefined; command: ProjectCommand }): boolean =>
+  check.selectArgs === undefined || (selectArgsAreSafe(check.selectArgs) && commandTakesTestIds(check.command) && !passesWithNoTests(check.command));
 export function selectionFieldsAreSafe(body: TestEnvironmentBody): boolean {
-  return SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined && body.repos.every((repo) => repo.checks.every((check) => selectArgsAreSafe(check.selectArgs)));
+  return SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined && body.repos.every((repo) => repo.checks.every(checkSelectionIsSafe));
 }
 
 export interface ProjectCommandsAt { revision: number; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }
