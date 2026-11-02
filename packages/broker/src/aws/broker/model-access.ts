@@ -24,6 +24,7 @@ import { agentGitHubConnector, approvalsNotWiredGate, attributionOf, classifyDep
 import type { WriteGateRuntime } from "../../agents/write-gate.js";
 import { inGeography, stepForOperation } from "../../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
+import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
 import { json } from "../json-reply.js";
 import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
@@ -528,12 +529,13 @@ export async function mintChatTurnKey(
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
-    // RP-4: every model a turn may run is checked against the company's forbidden models, read now with the reader schema (an unreadable document is CONFIG_INVALID and no key is made).
-    // A model the request asks for is refused outright and never swapped for another; a model the company or the service defaults to is replaced by an allowed one (`routeTurn`).
+    // RP-4: every model a turn may run is checked against the company's forbidden models, read now with the reader schema (an unreadable document is CONFIG_INVALID, a 400 like any other path's, and no key is made).
+    // `body.model` is the Slack service's own configured orchestrator model, sent on every turn (no person names a model in Slack today), so a forbidden one is replaced like a forbidden assistant model (`routeTurn`).
     const forbidden = forbiddenModelMatcher((await readGuardrails(dependencies, orgId)).forbiddenModels);
-    if (body.model !== undefined && forbidden(body.model)) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
     // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
     const routing = routingOf(dependencies);
+    // With no routing nothing can name another model to the service, which would answer with the forbidden one it is configured with: the turn is refused.
+    if (routing === undefined && body.model !== undefined && forbidden(body.model)) throw agentXError("MODEL_NOT_ALLOWED", TURN_MODEL_BLOCKED);
     const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body, forbidden);
     // Without routing nothing can stand in for the classifier, so a forbidden one is skipped (null); the service then asks a person instead of classifying.
     const classifierModel = routed !== undefined ? routed.classifierModel : body.classifierModel !== undefined && forbidden(body.classifierModel) ? null : undefined;
@@ -617,10 +619,21 @@ async function giveKeyBack(access: { revokeKey(key: string): Promise<unknown> },
   catch (error) { console.log(JSON.stringify({ component: "broker", event: "model_access.turn_revoke_failed", errorName: error instanceof Error ? error.name : "unknown" })); }
 }
 
-/** What a member is told when the model a turn asked for is one the company forbids. */
+/** What a member is told when the model the service is configured with is one the company forbids and there is no way to name another to it. */
 const TURN_MODEL_BLOCKED = "That model is blocked for your company.";
 /** What a member is told when the company forbids every model the turn could have answered with. */
 const TURN_NO_MODEL_ALLOWED = "Your company blocks every model Slack could answer with. Ask an admin to allow one.";
+
+/** What a model costs per million tokens, input and output together, from the catalog's list prices; a model the catalog does not price sorts after every priced one. */
+function listPrice(model: ModelIdentifier): number {
+  const price = listPricesPerMillion(model);
+  return price === undefined ? Number.POSITIVE_INFINITY : price.input + price.output;
+}
+
+/** RP-4: `models` from the cheapest to the dearest by list price, the same price tied by canonical name, so a replacement is the same model every time and never an expensive one by accident of the list's order. */
+function cheapestFirst(models: readonly ModelIdentifier[]): ModelIdentifier[] {
+  return [...models].sort((left, right) => listPrice(left) - listPrice(right) || canonicalModelName(left).localeCompare(canonicalModelName(right)));
+}
 
 /**
  * RP-4: the first model of `candidates` (in order) that the company does not forbid and that `serves` accepts, with what `serves` returned for it. A forbidden model is
@@ -639,13 +652,13 @@ async function firstAllowed<T>(candidates: readonly ModelIdentifier[], forbidden
 }
 
 /**
- * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service asked for, else the model the service is configured to answer with
- * (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
+ * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service is configured with (`body.model`, sent on every turn), else the install's
+ * default (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
  * turn's route, and the gate classifier's and router's model when it is one of Rovara's catalog and Rovara is in the org's order (they share the turn's key).
  *
- * RP-4 (replaces the old "Slack turn models are not checked"): none of them may be a model the company forbids (`forbidden`). The model the request asked for is refused by the caller before this runs.
- * An assistant model or default that is forbidden is replaced by the first allowed model the web chat could list for the project (the install's default first, then the servable models in the order of
- * its sources); with none, the turn is refused. The replacement always travels on the wire (`wire`), because the service would otherwise answer with the model it was configured with. A forbidden
+ * RP-4 (replaces the old "Slack turn models are not checked"): none of them may be a model the company forbids (`forbidden`). A forbidden assistant model or configured model is replaced by the cheapest
+ * model the company allows and a source serves (the web chat lists models without a default, so there is no default rule to follow); with none, the turn is refused. The replacement always travels on the
+ * wire (`wire`), also when the assistant model stands but the service's configured one is forbidden, because the service would otherwise answer with the model it was configured with. A forbidden
  * classifier is replaced the same way from Rovara's catalog (`classifierModel` names the one to use) or, with none allowed, skipped (`classifierModel: null`): the service then has no classifier, which it
  * treats as "ask a person" for the gate and as "show the three-choice card" for routing, never as "allow".
  */
@@ -661,14 +674,14 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   const defaultClassifier: ModelIdentifier = { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
   let model: ModelIdentifier = assistant ?? body.model ?? defaultOrchestrator;
   let route: ModelRoute | undefined;
-  let replaced = false;
+  // The service answers with its own configured model unless a route is sent, so when that model is forbidden the route is sent whatever model stands.
+  let sendRoute = body.model !== undefined && forbidden(body.model);
   if (forbidden(model)) {
-    // The web chat's list: what the sources can serve, less what is forbidden (`getModels`), tried with the install's default first.
-    const next = await firstAllowed([defaultOrchestrator, ...await servableModels(routing, orgId, project)], forbidden, async (candidate) => (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.alias !== undefined));
+    const next = await firstAllowed(cheapestFirst(await servableModels(routing, orgId, project)), forbidden, async (candidate) => (await servingRoutes(routing, { orgId, project, model: candidate })).find((served) => served.alias !== undefined));
     if (next === undefined) throw agentXError("MODEL_NOT_ALLOWED", TURN_NO_MODEL_ALLOWED);
     model = next.model;
     route = next.served;
-    replaced = true;
+    sendRoute = true;
   } else {
     [route] = await servingRoutes(routing, { orgId, project, model });
   }
@@ -680,15 +693,15 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   let classifierModel: ModelIdentifier | null | undefined;
   let classifierRoute: ModelRoute | undefined;
   if (forbidden(classifier)) {
-    const next = await firstAllowed([defaultClassifier, ...await servableModels(routing, orgId, project)], forbidden, onRovara);
+    const next = await firstAllowed(cheapestFirst(await servableModels(routing, orgId, project)), forbidden, onRovara);
     if (next?.served.alias === undefined) classifierModel = null;
     else {
       classifierRoute = next.served;
       classifierModel = { provider: "amazon-bedrock", modelId: next.served.alias };
     }
   } else classifierRoute = await onRovara(classifier);
-  // A replaced model is sent whole: `routeOnWire` leaves out a Rovara catalog model the worker reaches by its own name, but the service's own configured model is not that one.
-  const wire = routeOnWire(route, model) ?? (replaced && route.api !== undefined ? { alias: route.alias, api: route.api, catalog: route.catalog } : undefined);
+  // `routeOnWire` leaves out a Rovara catalog model the worker reaches by its own name, but the service's own configured model is not that one when it was replaced or is forbidden.
+  const wire = routeOnWire(route, model) ?? (sendRoute && route.api !== undefined ? { alias: route.alias, api: route.api, catalog: route.catalog } : undefined);
   return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }), ...(classifierModel === undefined ? {} : { classifierModel }) };
 }
 
