@@ -3015,6 +3015,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "The foundation's session manager security group",
       "Type": "String",
     },
+    "SetupRecipesEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: approved company setup recipes are offered to a project's setup run as a proposal source (each value they add is cited as the recipe's and is still proved and confirmed; only after the worker image that reads recipe offers is deployed); 0: no recipe is offered (agentx config set setupRecipes.enabled 1)",
+      "Type": "String",
+    },
     "SlackAppPostedMessages": {
       "AllowedValues": [
         "accept",
@@ -3550,6 +3559,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",sn=",
                   {
                     "Ref": "DeveloperSignInSlackSince",
+                  },
+                  ",sp=",
+                  {
+                    "Ref": "SetupRecipesEnabled",
                   },
                   ",ss=",
                   {

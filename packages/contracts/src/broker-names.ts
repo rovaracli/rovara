@@ -184,6 +184,8 @@ export const BROKER_SETTINGS = {
   projectRegistries: { code: "pr", variable: "PROJECT_REGISTRIES_ENABLED" },
   // Second review by a different AI company (setup-test-health SH34): an added second opinion on a task's code from a model of another company, in shadow (never blocks) and then on. Stack parameter SecondReviewEnabled, "0" by default: the broker reads it as SECOND_REVIEW_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   secondReview: { code: "cr", variable: "SECOND_REVIEW_ENABLED" },
+  // Company setup recipes as a proposal source (setup-test-health SH30): approved company recipes are offered to a project's setup run and cited `recipe:` on what they add (still proved and confirmed). Stack parameter SetupRecipesEnabled, "0" by default: the broker reads it as SETUP_RECIPES_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  setupRecipes: { code: "sp", variable: "SETUP_RECIPES_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

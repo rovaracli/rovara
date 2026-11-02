@@ -42,6 +42,7 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
   checks.forEach((item, index) => {
     if (item.value.reportPath !== undefined && item.value.reportSource !== undefined) valueSources.push({ field: `repos[0].checks[${String(index)}].reportPath`, source: sourceOf(item.value.reportSource) });
     if (item.value.coveragePath !== undefined && item.value.coverageSource !== undefined) valueSources.push({ field: `repos[0].checks[${String(index)}].coveragePath`, source: sourceOf(item.value.coverageSource) });
+    if (item.value.sarifPath !== undefined && item.value.sarifSource !== undefined) valueSources.push({ field: `repos[0].checks[${String(index)}].sarifPath`, source: sourceOf(item.value.sarifSource) });
   });
   detection.fullSuiteOn.forEach((item, index) => { if (index < fullSuiteOn.length) valueSources.push({ field: `selection.fullSuiteOn[${String(index)}]`, source: sourceOf(item.source) }); });
   const environment = TestEnvironmentBodySchema.safeParse({
