@@ -84,7 +84,7 @@ describe("a passing night", () => {
   });
 
   it("a test that appears twice in a report is one test, the worse of the two (the count and the failing list stay equal)", async () => {
-    const f = fakes({ reports: { "pytest -q": report(t("dup", "passed"), t("dup", "failed"), t("other", "passed")) } });
+    const f = fakes({ reports: { "pytest -q": report(t("dup", "failed"), t("dup", "passed"), t("other", "passed")) } });
     const { result } = await night(f.ports);
     expect(result.tests).toEqual({ total: 2, passed: 1, failed: 1, skipped: 0 });
     expect(result.failed).toEqual(["tests/test_a.py::dup"]);
@@ -112,7 +112,8 @@ describe("the one rerun", () => {
     expect(result.flaky).toEqual([]);
   });
   it("a rerun that times out or writes nothing readable excuses nothing", async () => {
-    for (const rerun of [{ exits: { "pytest -q tests/test_a.py::a tests/test_a.py::b": { timedOut: true, exitCode: null } }, reports: { "pytest -q": first } }, { reports: { "pytest -q": first } }]) {
+    const fixed = report(t("a", "passed"), t("b", "passed"));
+    for (const rerun of [{ exits: { "pytest -q tests/test_a.py::a tests/test_a.py::b": { timedOut: true, exitCode: null } }, reports: { "pytest -q": first, "pytest -q tests/test_a.py::a tests/test_a.py::b": fixed } }, { reports: { "pytest -q": first } }]) {
       const f = fakes(rerun);
       const { result } = await night(f.ports);
       expect(result.failed).toEqual(["tests/test_a.py::a", "tests/test_a.py::b"]);
@@ -175,7 +176,8 @@ describe("a night that is not the tests' fault, and one that never finishes", ()
 describe("the coverage map", () => {
   it("is built right after a suite that FAILED too, before a rerun can overwrite the data, and the result names it by its digest", async () => {
     const order: string[] = [];
-    const f = fakes({ reports: { "pytest -q": report(t("a", "failed")), "pytest -q tests/test_a.py::a": report(t("a", "passed")) }, map: MAP });
+    // The suite exits non-zero because a test failed, as a real runner does: the Prove step fails and builds no map of its own.
+    const f = fakes({ exits: { "pytest -q": { exitCode: 1 } }, reports: { "pytest -q": report(t("a", "failed")), "pytest -q tests/test_a.py::a": report(t("a", "passed")) }, map: MAP });
     const runCommand = f.ports.runCommand;
     f.ports.runCommand = (command, signal) => { order.push(`run:${command.args.join(" ")}`); return runCommand(command, signal); };
     const build = f.ports.buildCoverageMap;

@@ -231,7 +231,7 @@ describe("the result route", () => {
     expect(await codeOf(record(h, result(), { ...OPERATION, orgId: OTHER_ORG }))).toBe("CALLBACK_FORBIDDEN");
     // A workspace that no nightly task points at (another company's, or a setup run's) records nothing either.
     expect(await codeOf(record(h, result(), { ...OPERATION, workspaceId: "55555555-5555-4555-8555-555555555555" }))).toBe("CALLBACK_FORBIDDEN");
-    h.db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG, project: PROJECT, workspaceId: WORKSPACE, purpose: "setup_agent" });
+    h.db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG, project: PROJECT, workspaceId: WORKSPACE, purpose: "setup_agent", nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD } });
     expect(await codeOf(record(h, result()))).toBe("CALLBACK_FORBIDDEN");
     expect(await baselineOf(h)).toBeUndefined();
   });
