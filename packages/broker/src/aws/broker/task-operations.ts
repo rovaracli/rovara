@@ -525,7 +525,7 @@ export async function taskOperationParts(
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
-      // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is refused the run at delivery, never sent it without the field.
+      // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
       // Live interaction F3: the marker that makes the worker's read-only look a diagnosis. A worker without "task.diagnosis.v1" is refused the run at delivery, never sent it without the field.
       ...(diagnosing ? { diagnosis: { diagnosisId: task.diagnosis!.diagnosisId } } : {}),
@@ -550,7 +550,7 @@ export async function taskOperationParts(
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
-      // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is refused the run at delivery, never sent it without the field.
+      // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is sent the run without the field at delivery (no evidence is captured, and the omission is logged).
       ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled() ? { evidenceCapture: true as const } : {}),
       // Test environment (wire-testenv): a worker without "task.testEnvironment.v1" is refused the run at delivery, never sent it without the field.
       ...(testEnvironment === undefined ? {} : { testEnvironment }),

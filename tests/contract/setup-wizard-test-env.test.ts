@@ -45,12 +45,13 @@ describe("what the wizard shows", () => {
   it("a proposal states what will run, where each value came from, what approving needs, and whether the setup check has run its commands", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", async () => {
-      await t.drafted();
+      // The narrowing template rides only on a test runner that takes test ids (pytest), so this proposal's test check is one.
+      await t.drafted(draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("pytest", ["-q"], 1800), kind: "test", selectArgs: ["{tests}"] }] }] })));
       expect((await t.dev(OMAR, "POST", `${ENV}/propose`, {})).status).toBe(200);
       const { proposal } = await t.state();
       expect(proposal).toMatchObject({
-        source: "setup", risk: "medium", lessSafe: [], proved: false, needs: { freshSignIn: false, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 0,
-        runs: [{ repositoryId: "web", setup: ["make old-setup"], checks: [{ id: "unit", kind: "test", command: "make old-test", selectArgs: ["{tests}"] }] }],
+        source: "setup", risk: "medium", lessSafe: [], proved: false, needs: { freshSignIn: false, secondPerson: false }, approval: { status: "none" }, commandsNotInSettings: 1,
+        runs: [{ repositoryId: "web", setup: ["make old-setup"], checks: [{ id: "unit", kind: "test", command: "pytest -q", selectArgs: ["{tests}"] }] }],
       });
       expect(proposal!.valueSources).toEqual([{ field: "repos[0].checks[0]", source: "detector:node" }, { field: "repos[0].setupCommands[0]", source: { path: "Makefile", line: 3 } }]);
     });

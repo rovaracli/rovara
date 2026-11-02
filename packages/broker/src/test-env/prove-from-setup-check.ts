@@ -21,8 +21,31 @@ export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
 export const SAFE_SELECT_ARGS: readonly string[] = ["{tests}"];
 export const SAFE_SELECTION_METHODS: readonly string[] = ["full", "coverage_map"];
 export const selectArgsAreSafe = (selectArgs: readonly string[] | undefined): boolean => selectArgs === undefined || (selectArgs.length === SAFE_SELECT_ARGS.length && selectArgs.every((arg, index) => arg === SAFE_SELECT_ARGS[index]));
+
+/**
+ * The test runners that take the ids of the tests to run as plain arguments (the detectors propose the placeholder for pytest; jest, vitest and mocha take file paths the same way). A `{tests}` template on any other
+ * command (`make test`, `npm test`, `go test`, a script) would put test ids where that command does not take them: it might ignore them (the whole suite runs, which is safe but not what the card says) or read them as
+ * something else. So the placeholder is kept only where the check's command is one of these runners, run directly, as `python -m pytest`, or through `npx`, `pnpm exec`, `yarn` or `bunx`.
+ */
+const SELECTING_RUNNERS: readonly string[] = ["pytest", "jest", "vitest", "mocha"];
+const PACKAGE_RUNNERS: readonly string[] = ["npx", "pnpm", "yarn", "bunx"];
+const baseName = (executable: string): string => executable.slice(executable.lastIndexOf("/") + 1);
+export function commandTakesTestIds(command: ProjectCommand): boolean {
+  const name = baseName(command.executable);
+  if (SELECTING_RUNNERS.includes(name)) return true;
+  if (/^python(?:3(?:\.\d{1,2})?)?$/u.test(name)) return command.args[0] === "-m" && command.args[1] === "pytest";
+  if (PACKAGE_RUNNERS.includes(name)) {
+    // The first argument that is not an option (and not `exec`, `dlx` or `run`) is the program the package runner starts.
+    const program = command.args.find((arg, index) => !arg.startsWith("-") && !(index === 0 && ["exec", "dlx", "run"].includes(arg)));
+    return program !== undefined && SELECTING_RUNNERS.includes(baseName(program));
+  }
+  return false;
+}
+/** Whether a check's narrowing template is one the broker carries: exactly the placeholder, on a test runner that takes test ids. */
+export const checkSelectionIsSafe = (check: { selectArgs?: readonly string[] | undefined; command: ProjectCommand }): boolean =>
+  check.selectArgs === undefined || (selectArgsAreSafe(check.selectArgs) && commandTakesTestIds(check.command));
 export function selectionFieldsAreSafe(body: TestEnvironmentBody): boolean {
-  return SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined && body.repos.every((repo) => repo.checks.every((check) => selectArgsAreSafe(check.selectArgs)));
+  return SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined && body.repos.every((repo) => repo.checks.every(checkSelectionIsSafe));
 }
 
 export interface ProjectCommandsAt { revision: number; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }

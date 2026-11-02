@@ -64,6 +64,24 @@ describe("what the broker accepts as a draft", () => {
     }
   });
 
+  it("keeps the placeholder only on a test runner that takes test ids as arguments (pytest, jest, vitest, mocha); on any other command the check runs in full, with a note", () => {
+    const runnerBody = (executable: string, args: string[]) => body({
+      repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: cmd(executable, args), kind: "test", selectArgs: ["{tests}"] }] }],
+      selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] },
+    });
+    for (const [executable, args] of [["pytest", ["-q"]], ["python", ["-m", "pytest", "-q"]], ["python3.12", ["-m", "pytest"]], [".venv/bin/pytest", []], ["npx", ["jest"]], ["jest", []], ["vitest", ["run"]], ["npx", ["--no-install", "vitest", "run"]], ["pnpm", ["exec", "mocha"]], ["yarn", ["jest", "--ci"]]] as Array<[string, string[]]>) {
+      const kept = sanitizeTestEnvDraft(draftOf(runnerBody(executable, args)))!;
+      expect(kept.environment.repos[0]!.checks[0]!.selectArgs, `${executable} ${args.join(" ")}`).toEqual(["{tests}"]);
+      expect(kept.notes).not.toContain(DRAFT_SELECTION_NOTE);
+    }
+    for (const [executable, args] of [["make", ["test"]], ["npm", ["test"]], ["go", ["test", "./..."]], ["mvn", ["test"]], ["python", ["run_tests.py"]], ["python", ["-c", "pytest"]], ["sh", ["-c", "pytest"]], ["npx", ["rimraf", "jest"]], ["pytest-wrapper", []]] as Array<[string, string[]]>) {
+      const kept = sanitizeTestEnvDraft(draftOf(runnerBody(executable, args)))!;
+      expect(kept.environment.repos[0]!.checks[0]!.selectArgs, `${executable} ${args.join(" ")}`).toBeUndefined();
+      expect(kept.notes).toContain(DRAFT_SELECTION_NOTE);
+      expect(kept.valueSources).toEqual([]);
+    }
+  });
+
   it("refuses a draft whose selection method is not full or coverage map, or that maps globs to tests (declared)", () => {
     expect(sanitizeTestEnvDraft(draftOf(narrowing(undefined, { method: "full" })))).toBeDefined();
     expect(sanitizeTestEnvDraft(draftOf(narrowing(["{tests}"], { method: "import_graph" })))).toBeUndefined();
@@ -125,6 +143,18 @@ describe("a draft too large to keep", () => {
   const own = { kind: "task", workflowMode: "SETUP_DRAFT" };
   const NOW = "2026-11-02T10:00:00.000Z";
   const ON = { TEST_ENVIRONMENT_ENABLED: "1" };
+
+  it("a draft just under the cap is kept, and its stored item stays well under DynamoDB's 400 KB item limit", () => {
+    const nearCap = draftOf(body({ repos: [{ repositoryId: "service", setupCommands: [], checks: Array.from({ length: 12 }, (_, index) => ({ id: `c${String(index)}`, label: `Check ${String(index)}`, command: cmd("pytest", ["-q", ...Array.from({ length: 2 }, (_unused, part) => `--note=${String(index)}-${String(part)}-${"x".repeat(8_100)}`)]), kind: "test" as const })) }] }));
+    const size = Buffer.byteLength(JSON.stringify(nearCap), "utf8");
+    expect(size).toBeGreaterThan(150 * 1_024);
+    expect(size).toBeLessThanOrEqual(200 * 1_024);
+    const items = testEnvDraftEndItems("t", task, own, { status: "SUCCEEDED", result: { [TEST_ENV_DRAFT_RESULT_KEY]: nearCap } }, NOW, ON);
+    expect(items).toHaveLength(1);
+    const put = (items[0] as { Put: { Item: Record<string, unknown> } }).Put.Item;
+    expect(put.entityType).toBe("TEST_ENV_DRAFT");
+    expect(Buffer.byteLength(JSON.stringify(put), "utf8")).toBeLessThan(250 * 1_024);
+  });
 
   it("is dropped with a fixed note and a small marker, so the setup draft's own write is never at risk", async () => {
     const huge = hugeDraft();
@@ -250,6 +280,12 @@ describe("the Prove report derived from the setup check", () => {
     expect(derive({ environment: sel(["--co", "{tests}"]) })).toEqual({ ok: false, refusal: "not_provable" });
     expect(derive({ environment: sel(["{tests}"], { method: "import_graph" }) })).toEqual({ ok: false, refusal: "not_provable" });
     expect(derive({ environment: sel(["{tests}"], { method: "declared", declared: [{ glob: "src/**", tests: ["tests/t.py"] }] }) })).toEqual({ ok: false, refusal: "not_provable" });
+  });
+
+  it("a check whose command is not a test runner that takes test ids is not provable with a narrowing template", () => {
+    const on = (executable: string, args: string[]) => body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: cmd(executable, args), kind: "test", selectArgs: ["{tests}"] }] }], selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } });
+    expect(derive({ environment: on("pytest", ["-q"]) }).ok).toBe(true);
+    expect(derive({ environment: on("make", ["test"]), definition: definition({ readiness: [cmd("make", ["test"])] }) })).toEqual({ ok: false, refusal: "not_provable" });
   });
 
   it("the approval card's summary shows the narrowing arguments and the selection method", () => {

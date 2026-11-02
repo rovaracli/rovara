@@ -5,7 +5,7 @@ import { continueRedirectAfterStop } from "../../agent-sessions/redirect-hook.js
 import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
 import { closeSetupCheck } from "../setup-check-close.js";
@@ -225,6 +225,18 @@ function withSafeNoChangeFindings(result: unknown): unknown {
   return safe === undefined ? rest : { ...rest, noChangeFindings: safe };
 }
 
+/**
+ * Test environment (wire-testenv, TE-1 S3): a setup draft run's environment draft rides in its result, but it is kept in its own item (`testEnvDraftEndItems`, read back by the sanitizer, capped at 200 KB and
+ * refused with a small marker when larger). The operation's stored result must not carry it too: a worker that ignored the cap would make the operation item too big for DynamoDB and fail the terminal
+ * transaction, the setup draft's own result with it. The full result still goes to the end items that read the draft.
+ */
+function withoutTestEnvDraft(result: unknown): unknown {
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !(TEST_ENV_DRAFT_RESULT_KEY in result)) return result;
+  const { [TEST_ENV_DRAFT_RESULT_KEY]: _draft, ...rest } = result as Record<string, unknown>;
+  void _draft;
+  return rest;
+}
+
 export async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -271,6 +283,8 @@ export async function recordTerminalResult(
     : operation.kind === "close" && status === "SUCCEEDED"
       ? WorkspaceClosePreflightResultSchema.parse(input.result)
       : withSafeNoChangeFindings(input.result);
+  // What the operation item stores: the result without the environment draft (that has its own item).
+  const storedResult = withoutTestEnvDraft(result);
   const closePreflight = operation.kind === "close" && terminalStatus === "SUCCEEDED"
     ? WorkspaceClosePreflightResultSchema.parse(result)
     : undefined;
@@ -315,7 +329,7 @@ export async function recordTerminalResult(
       UpdateExpression: "SET #status = :status, updatedAt = :now, #result = :result, #error = :error",
       ConditionExpression: "fence = :fence",
       ExpressionAttributeNames: { "#status": "status", "#result": "result", "#error": "error" },
-      ExpressionAttributeValues: { ":status": terminalStatus, ":now": now, ":result": result ?? null, ":error": error ?? null, ":fence": operation.fence },
+      ExpressionAttributeValues: { ":status": terminalStatus, ":now": now, ":result": storedResult ?? null, ":error": error ?? null, ":fence": operation.fence },
     } },
   ];
   if (operation.kind === "cancel" && terminalTarget) {
@@ -463,7 +477,7 @@ export async function recordTerminalResult(
           if (again.status === terminalStatus) return again;
           throw agentXError("STALE_FENCE", "terminal callback no longer owns the workspace");
         }
-        return { ...operation, status: terminalStatus, updatedAt: now, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) };
+        return { ...operation, status: terminalStatus, updatedAt: now, ...(storedResult === undefined ? {} : { result: storedResult }), ...(error === undefined ? {} : { error }) };
       }
     }
     throw agentXError("STALE_FENCE", "terminal callback no longer owns the workspace");
@@ -561,7 +575,7 @@ export async function recordTerminalResult(
     if (target !== undefined) await blockEndedOperationKeys(dependencies, target);
   }
   if (recordedStatus !== terminalStatus) return { ...operation, status: recordedStatus, updatedAt: now, error: startRefusal.text ?? FIRST_TASK_QUEUE_FAILED };
-  return { ...operation, status: terminalStatus, updatedAt: now, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) };
+  return { ...operation, status: terminalStatus, updatedAt: now, ...(storedResult === undefined ? {} : { result: storedResult }), ...(error === undefined ? {} : { error }) };
 }
 
 /**
