@@ -2,14 +2,14 @@
 import { describe, expect, it } from "vitest";
 import type { DeleteMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
 import { applyTeamRecordRemoval, drainTeamRecordQueue, isTeamRecordRemovalEvent, removalFallbackThroughLambda } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
-import { deadLetterUrlOf, sqsDeadLetters, TEAM_RECORD_REMOVAL_SOURCE } from "../../../packages/broker/src/team-record/ops-queue.js";
+import { deadLetterUrlOf, sqsDeadLetters, TEAM_RECORD_REMOVAL_SOURCE, type RemovalFallbackEvent } from "../../../packages/broker/src/team-record/ops-queue.js";
 import { DeveloperSignInStore, signInIdentityKey } from "../../../packages/broker/src/developer/store.js";
 import { ownerKeyForSubject } from "../../../packages/broker/src/aws/lambda.js";
 import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A } from "../../support/team-record-core.js";
 
-const event = { source: TEAM_RECORD_REMOVAL_SOURCE, workspaceId: ORG_A, system: "linear", sourceIds: ["issue:i1"], cause: "source_deleted" as const };
+const event: RemovalFallbackEvent = { source: TEAM_RECORD_REMOVAL_SOURCE, workspaceId: ORG_A, system: "linear", sourceIds: ["issue:i1"], cause: "source_deleted" };
 
 describe("the removal event", () => {
   it("is recognised only in its exact shape (never an HTTP request, never another source)", () => {

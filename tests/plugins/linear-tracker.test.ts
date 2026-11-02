@@ -11,18 +11,19 @@ import { trackerChecks, type TrackerWorld } from "./tracker.contract.js";
 import { HOOK, SECRET, linearBody, signedLinear } from "./linear-fixtures.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+type ReadableLinearAccess = LinearTrackerAccess & { readIssue: NonNullable<LinearTrackerAccess["readIssue"]> };
 interface LinearWorld extends TrackerWorld {
   issues: Map<string, LinearIssueRead>;
   replies: Array<{ orgId: OrgId; issueKey: string; text: string }>;
-  access: LinearTrackerAccess;
+  access: ReadableLinearAccess;
 }
 
 const STATE_OF: Record<string, LinearStateType> = { open: "unstarted", in_progress: "started", in_review: "started", done: "completed", cancelled: "canceled" };
 
-function newAccess(): { access: LinearTrackerAccess; issues: Map<string, LinearIssueRead>; replies: LinearWorld["replies"] } {
+function newAccess(): { access: ReadableLinearAccess; issues: Map<string, LinearIssueRead>; replies: LinearWorld["replies"] } {
   const issues = new Map<string, LinearIssueRead>();
   const replies: LinearWorld["replies"] = [];
-  const access: LinearTrackerAccess = {
+  const access: ReadableLinearAccess = {
     reply: { reply: async (input) => { replies.push(input); }, ownActorId: async () => "rovara-bot" },
     readIssue: async (_orgId, key) => issues.get(key),
     hook: async () => ({ hook: HOOK, secret: SECRET }),

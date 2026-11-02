@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { FakeCheckRunner } from "../../packages/broker/src/plugins/fake/check-runner.js";
 import { FakeCodeHost, fakeSignedDelivery, type FakeRawEvent } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeTracker } from "../../packages/broker/src/plugins/fake/tracker.js";
-import type { CodeHostEvents, RepositoryRef } from "../../packages/contracts/src/index.js";
+import type { CodeHostEvents, GitCredential, RepositoryRef } from "../../packages/contracts/src/index.js";
 import { checkRunnerChecks } from "./check-runner.contract.js";
 import { codeHostChecks } from "./code-host.contract.js";
 import { runContract } from "./contract-kit.js";
@@ -121,8 +121,9 @@ class RateLimitAsPlainFailure extends FakeCodeHost {
   }
 }
 class DeliversUnadvertisedCredentialKind extends FakeCodeHost {
-  override issueGitCredential(...args: Parameters<FakeCodeHost["issueGitCredential"]>) {
-    return super.issueGitCredential(...args).then((credential) => ({ kind: "ssh-key" as const, privateKey: "k", expiresAt: credential.expiresAt }));
+  override issueGitCredential(...args: Parameters<FakeCodeHost["issueGitCredential"]>): Promise<GitCredential> {
+    // Deliberately not a valid ssh-key credential (no address, no host keys): the check must catch a kind the host never advertised.
+    return super.issueGitCredential(...args).then((credential) => ({ kind: "ssh-key", privateKey: "k", expiresAt: credential.expiresAt }) as unknown as GitCredential);
   }
 }
 
