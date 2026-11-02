@@ -3,12 +3,12 @@ import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-be
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import { canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
+import { BEDROCK_REGION_PREFIXES, canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
 
 let catalogs: Map<string, ReadonlyMap<string, Model<Api>>> | undefined;
 
 /** A Bedrock cross-region inference profile names its model with a geography prefix the catalog omits. */
-const INFERENCE_PROFILE = /^(?:us|eu|apac|jp|au|ca|us-gov|global)\./;
+const INFERENCE_PROFILE = new RegExp(`^(?:${BEDROCK_REGION_PREFIXES.join("|")})\\.`);
 
 /** The installed Pi catalogs' entry for a model, which the runtime resolves models from; undefined when neither knows it. */
 export function catalogModel(model: ModelIdentifier): Model<Api> | undefined {

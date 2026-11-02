@@ -1,6 +1,6 @@
 // Read-only preparation for the company writer. These conditions authorize no
 // mutation by themselves: the writer must commit them with identity, receipt and audit.
-import {ModelSelectionPolicyPutSchema,STAGE_EDIT_GROUPS,STAGE_REFERENCE,AgentXError,agentXError,canonicalModelName,canonicalJson,type ModelIdentifier,type StageId} from "@agentx/contracts";
+import {ModelSelectionPolicyPutSchema,STAGE_EDIT_GROUPS,STAGE_REFERENCE,AgentXError,agentXError,canonicalJson,forbiddenModelMatcher,sameModelOrUnrecognised,type ModelIdentifier,type StageId} from "@agentx/contracts";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 import {readModelSelectionPolicy,modelSelectionRevisionChecks,type ModelPolicyReader} from "./policy-store.js";
@@ -24,7 +24,7 @@ export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvid
  const companyChoice=(stage:StageId)=>STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))?.map(member=>body.stepOverrides[member]).find(row=>row!==undefined);
  for(const stage of ["plan_check","code_review","security_review"] as const){
   const checking=companyChoice(stage),reference=companyChoice(STAGE_REFERENCE[stage])?.model;
-  if(reference!==undefined&&[checking?.model,checking?.fallbackModel].some(model=>model!==undefined&&canonicalModelName(model)===canonicalModelName(reference)))throw new CompanySameModelPolicyRefusal();
+  if(reference!==undefined&&[checking?.model,checking?.fallbackModel].some(model=>model!==undefined&&sameModelOrUnrecognised(model,reference)))throw new CompanySameModelPolicyRefusal();
  }
  const current=await readModelSelectionPolicy(deps,caller.orgId);
  if(current.revision!==body.expectedRevision)throw agentXError("POLICY_STALE","The company model policy changed. Reload and review again.");
@@ -32,8 +32,8 @@ export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvid
  const models=new Map<string,ModelIdentifier>();
  for(const row of Object.values(body.stepOverrides))for(const model of [row?.model,row?.fallbackModel])if(model!==undefined)models.set(JSON.stringify([model.provider,model.modelId]),model);
  const evidence=await readStageModelEvidence(deps,{orgId:caller.orgId,project:"",models:[...models.values()],excludePersonalPlan:true});
- const denied=new Set(guardrails.guardrails.forbiddenModels.map(canonicalModelName));
- for(const model of models.values())if(denied.has(canonicalModelName(model))||!evidence.candidates.some(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId))throw agentXError("MODEL_NOT_ALLOWED","A chosen company model is unavailable. Review model sources.");
+ const denied=forbiddenModelMatcher(guardrails.guardrails.forbiddenModels);
+ for(const model of models.values())if(denied(model)||!evidence.candidates.some(candidate=>candidate.model.provider===model.provider&&candidate.model.modelId===model.modelId))throw agentXError("MODEL_NOT_ALLOWED","A chosen company model is unavailable. Review model sources.");
  const changes=classifyStageChoiceChange({kind:"company",before:current.stepOverrides,after:body.stepOverrides});
  const changed=canonicalJson(current.stepOverrides)!==canonicalJson(body.stepOverrides);
  const next={version:1 as const,revision:current.revision+(changed?1:0),rankingVersion:"g3-v1" as const,stepOverrides:body.stepOverrides};

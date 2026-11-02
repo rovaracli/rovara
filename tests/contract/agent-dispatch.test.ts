@@ -135,6 +135,18 @@ describe("applyAgentStep: the model", () => {
     expect(apply({ recipe, mode: "REVIEW", guardrails: forbidSonnet }).model).toEqual(GPT55);
   });
 
+  it("treats a forbidden model as forbidden through every Bedrock geography, and an id with a geography nobody listed whenever a model is forbidden", () => {
+    const OPUS5: ModelSelection = { provider: "anthropic", modelId: "claude-opus-5" };
+    const forbidOpus = guardrails({ forbiddenModels: [OPUS5] });
+    for (const geography of ["jp", "au", "in", "ca", "us-gov", "US", "eu", "apac", "global"]) {
+      const recipe = recipeOf([review({ model: { provider: "amazon-bedrock", modelId: `${geography}.anthropic.claude-opus-5` }, fallbackModel: HAIKU })]);
+      expect(apply({ recipe, mode: "REVIEW", guardrails: forbidOpus }).model, geography).toEqual(HAIKU);
+    }
+    const unknown = recipeOf([review({ model: { provider: "amazon-bedrock", modelId: "zz.anthropic.claude-opus-5" }, fallbackModel: HAIKU })]);
+    expect(apply({ recipe: unknown, mode: "REVIEW", guardrails: forbidOpus }).model).toEqual(HAIKU);
+    expect(apply({ recipe: unknown, mode: "REVIEW" }).model).toEqual({ provider: "amazon-bedrock", modelId: "zz.anthropic.claude-opus-5" });
+  });
+
   it("refuses a project model the company has forbidden since, in the words of the step that would run it", () => {
     const recipe = recipeOf([review()]);
     expect(refusal(() => apply({ recipe, mode: "REVIEW", projectModel: GPT55, guardrails: guarded }))).toEqual({

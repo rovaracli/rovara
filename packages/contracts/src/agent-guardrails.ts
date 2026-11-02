@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { AutonomySchema, BuiltinAgentIdSchema } from "./agent.js";
 import { ModelIdentifierSchema } from "./models.js";
-import { canonicalModelName } from "./models-node.js";
+import { canonicalModelName, legacyAliasModelName, type ModelIdentifier } from "./models-node.js";
 import { DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_MAX_AUTONOMY, DEFAULT_MAX_PER_RUN_CEILING_USD } from "./spend.js";
 
 export const MAX_FORBIDDEN_MODELS = 50;
@@ -41,40 +41,48 @@ const TriggerLabelSchema = z.string().trim().toLowerCase().max(MAX_ENTRY_LENGTH)
 const CommandWordSchema = z.string().trim().toLowerCase().min(1).max(MAX_ENTRY_LENGTH).refine((word) => !/\s/u.test(word), "must be one word, with no spaces");
 const ReportDomainSchema = z.string().trim().toLowerCase().refine((host) => HOST.test(host), "must be an exact host name such as reports.example.com (no scheme, path or wildcard)");
 
-export const AgentGuardrailsSchema = z.object({
-  /** Models no agent may use. Matched by canonical name, so the same model on another route is the same entry. */
-  forbiddenModels: z.array(ModelIdentifierSchema).max(MAX_FORBIDDEN_MODELS).superRefine((models, context) => {
-    const seen = new Set<string>();
-    for (const [index, model] of models.entries()) {
-      const name = canonicalModelName(model);
-      if (seen.has(name)) context.addIssue({ code: "custom", path: [index], message: `${name} is listed twice` });
-      seen.add(name);
-    }
-  }),
-  /** A review step must use a model from a different AI company than the build steps'. */
-  requireCrossCompanyReview: z.boolean(),
-  maxAgentMonthlyUsd: amount,
-  maxPerRunCeilingUsd: amount,
-  /** The most a single step's budget may be; unset means no limit. */
-  maxStepBudgetUsd: amount.optional(),
-  maxAutonomy: AutonomySchema,
-  disabledBuiltins: uniqueList(BuiltinAgentIdSchema, BuiltinAgentIdSchema.options.length),
-  /** Label patterns that make an agent's label write need a person, beyond the maintained list. They only add to it. */
-  extraTriggerLabels: uniqueList(TriggerLabelSchema, MAX_EXTRA_TRIGGER_LABELS),
-  /** Words that make an agent's comment need a person, beyond the maintained list. They only add to it. */
-  extraCommandWords: uniqueList(CommandWordSchema, MAX_EXTRA_COMMAND_WORDS),
-  /** Hosts an agent's report may link to, besides the cell's own. */
-  reportLinkDomains: uniqueList(ReportDomainSchema, MAX_REPORT_LINK_DOMAINS),
-  /**
-   * v1.2 learning loop (design §2.5): "locked_off" stops projects learning from PR review comments; absent means "allowed". READER ONLY until B8: this schema is strict and
-   * the readers throw on an unknown field, so the field ships to every reader first, and the writers (`AgentGuardrailsWriteSchema`) accept it only once B1 is live in staging.
-   */
-  prCommentLearning: z.enum(["allowed", "locked_off"]).optional(),
-}).strict();
+/**
+ * The guardrails document. A forbidden model listed twice is refused by name: the READER names models as it did before Bedrock's other geographies were read (`legacyAliasModelName`), so a stored row or
+ * a pending approval that lists `claude-opus-5` and `jp.anthropic.claude-opus-5` still reads (both entries forbid, which is harmless); the WRITER names them by `canonicalModelName`, so a new save of that pair is refused.
+ */
+function guardrailsSchema(nameOf: (model: ModelIdentifier) => string) {
+  return z.object({
+    /** Models no agent may use. Matched by canonical name, so the same model on another route is the same entry. */
+    forbiddenModels: z.array(ModelIdentifierSchema).max(MAX_FORBIDDEN_MODELS).superRefine((models, context) => {
+      const seen = new Set<string>();
+      for (const [index, model] of models.entries()) {
+        const name = nameOf(model);
+        if (seen.has(name)) context.addIssue({ code: "custom", path: [index], message: `${name} is listed twice` });
+        seen.add(name);
+      }
+    }),
+    /** A review step must use a model from a different AI company than the build steps'. */
+    requireCrossCompanyReview: z.boolean(),
+    maxAgentMonthlyUsd: amount,
+    maxPerRunCeilingUsd: amount,
+    /** The most a single step's budget may be; unset means no limit. */
+    maxStepBudgetUsd: amount.optional(),
+    maxAutonomy: AutonomySchema,
+    disabledBuiltins: uniqueList(BuiltinAgentIdSchema, BuiltinAgentIdSchema.options.length),
+    /** Label patterns that make an agent's label write need a person, beyond the maintained list. They only add to it. */
+    extraTriggerLabels: uniqueList(TriggerLabelSchema, MAX_EXTRA_TRIGGER_LABELS),
+    /** Words that make an agent's comment need a person, beyond the maintained list. They only add to it. */
+    extraCommandWords: uniqueList(CommandWordSchema, MAX_EXTRA_COMMAND_WORDS),
+    /** Hosts an agent's report may link to, besides the cell's own. */
+    reportLinkDomains: uniqueList(ReportDomainSchema, MAX_REPORT_LINK_DOMAINS),
+    /**
+     * v1.2 learning loop (design §2.5): "locked_off" stops projects learning from PR review comments; absent means "allowed". READER ONLY until B8: this schema is strict and
+     * the readers throw on an unknown field, so the field ships to every reader first, and the writers (`AgentGuardrailsWriteSchema`) accept it only once B1 is live in staging.
+     */
+    prCommentLearning: z.enum(["allowed", "locked_off"]).optional(),
+  }).strict();
+}
+
+export const AgentGuardrailsSchema = guardrailsSchema(legacyAliasModelName);
 export type AgentGuardrails = z.infer<typeof AgentGuardrailsSchema>;
 
-/** B8 writer: reader-first PR capture field is now accepted, using existing loosening approval. */
-export const AgentGuardrailsWriteSchema = AgentGuardrailsSchema;
+/** B8 writer: reader-first PR capture field is now accepted, using existing loosening approval. A forbidden model twice by canonical name (any geography) is refused here, and only here. */
+export const AgentGuardrailsWriteSchema = guardrailsSchema(canonicalModelName);
 
 /** What an org has until its owners and admins change it. `maxStepBudgetUsd` is left unset. */
 export const DEFAULT_AGENT_GUARDRAILS: AgentGuardrails = {
