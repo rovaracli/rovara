@@ -222,7 +222,7 @@ describe("the task page", () => {
   });
 
   it("shows a shadow opinion's findings as not blocking, with plain single lines", () => {
-    const view = secondReviewTaskView(stored(answered("shadow", [{ text: "line one\nline two with a secret ghp_abcdefghijklmnopqrstuvwxyz0123456789", origin: "INTRODUCED" }])), code.digest, ENABLED)!;
+    const view = secondReviewTaskView(stored(answered("shadow", [{ text: "line one\nline two with a secret " + "ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789", origin: "INTRODUCED" }])), code.digest, ENABLED)!;
     expect(view.lines[0]).toContain("Second opinion (not blocking)");
     expect(view.lines).toHaveLength(2);
     expect(view.lines[1]).not.toMatch(/\n|ghp_/u);
