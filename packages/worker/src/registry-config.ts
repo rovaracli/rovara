@@ -6,17 +6,18 @@
 //      files 0600; a repository's folder is always below the workspace root, never the root), and points the tools at it with NPM_CONFIG_USERCONFIG, PIP_CONFIG_FILE and MAVEN_ARGS,
 //      so no file is ever put in a repository, a home folder or the agent's reach;
 //   3. scrubs every command's output (and any error) for the tokens, in every spelling, before it can reach the manifest, a log or a callback;
-//   4. looks for a token a setup step copied into a repository's changes, and fails the preparation if one did;
-//   5. removes the directory when the preparation ends, and sweeps leftovers of a crashed one at start.
+//   4. after EVERY command (successful or not) searches the whole workspace the agent can read, ignored files included, for the tokens of this session and, by hash, for every token ever
+//      issued for this workspace; a hit stops the preparation and taints the workspace (registry-guard.ts);
+//   5. removes the directory when the preparation ends and fails closed, tainting the workspace, if it cannot; sweeps leftovers of a crashed one at start.
 // A token that cannot be written safely (not URL-safe), a registry that cannot be reached, or a project with a devcontainer (the folder is not mounted there) fails the
 // preparation with a fixed sentence. There is no unauthenticated retry and no fall-back to a public mirror.
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { REGISTRY_TOKEN_MIN_LENGTH, agentXError, scrubRegistrySecrets, e2eSecretSpellings, type PrepareRegistry, type ProjectCommand, type RegistryCredential } from "@agentx/contracts";
+import { REGISTRY_TOKEN_MIN_LENGTH, agentXError, scrubRegistrySecrets, type PrepareRegistry, type ProjectCommand, type RegistryCredential } from "@agentx/contracts";
 import type { CommandResult } from "./readiness.js";
 import type { RegistryCredentialProvider } from "./registry-credentials.js";
-import { runIsolatedGit } from "./isolated-repository.js";
+import { RegistryTokenLeakError, readIssuedTokens, recordIssuedTokens, removeTree, workspaceHoldsToken } from "./registry-guard.js";
 
 export const REGISTRY_CONFIG_PREFIX = ".agentx-registry-";
 /** What a token may be made of for the config files to carry it without quoting or expansion (every CodeArtifact token is). */
@@ -66,8 +67,11 @@ export interface RegistrySession {
   /** A command runner whose commands carry the environment, and whose results and errors are scrubbed. */
   wrap<Run extends (command: ProjectCommand, index: number, rootPath: string) => Promise<CommandResult>>(run: Run): Run;
   scrub(text: string): string;
-  /** Fails if a token is in any file the repository now has changed or untracked. */
-  assertTokenNotInRepository(repositoryDirectory: string): Promise<void>;
+  /** The leak a command's scan found, if one did. Later commands do not run once it is set; the caller rethrows it (a runner's errors become step results, which would hide it). */
+  readonly leak: () => RegistryTokenLeakError | undefined;
+  /** Throws RegistryTokenLeakError if a token (this session's, or one issued for this workspace before) is anywhere the agent can read. */
+  assertNoToken(): Promise<void>;
+  /** Removes the config folder; throws RegistryTokenLeakError if it cannot (fail closed). */
   dispose(): Promise<void>;
 }
 
@@ -78,6 +82,7 @@ export async function openRegistrySession(input: {
   onDiagnostic?: (message: string) => void;
 }): Promise<RegistrySession> {
   const root = resolve(input.rootPath);
+  const previous = await readIssuedTokens(root);
   const credentials: PreparedCredential[] = [];
   // Every token is asked for before any file is written, so one refusal leaves nothing behind.
   for (const registry of input.registries) {
@@ -98,13 +103,24 @@ export async function openRegistrySession(input: {
     await writeFile(path, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
     return path;
   };
+  /** Removes the folder. A folder that cannot be removed leaves a token where the agent can read it: that is an error, not a diagnostic (S2). */
   const remove = async (): Promise<void> => {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-      if (await lstat(directory).then(() => false, () => true)) return;
+    try {
+      await removeTree(directory);
+    } catch {
+      throw new RegistryTokenLeakError("Rovara could not remove the package registry config at the end of the preparation, so the workspace was set aside and will be set up again from a fresh clone");
     }
-    // Nothing the next start does not also sweep (`removeLeftoverRegistryConfigs`); the token lasts an hour at most. It is said, without the path's contents.
-    input.onDiagnostic?.("AgentX could not remove a package registry's config at the end of the preparation; it will be removed at the next start");
+  };
+  const openedAt = Date.now();
+  let changedSince = openedAt - 2_000;
+  let leaked: RegistryTokenLeakError | undefined;
+  const scan = async (sinceMs: number, onlyPrevious = false): Promise<void> => {
+    try {
+      if (await workspaceHoldsToken({ rootPath: root, skip: [directory], secrets: onlyPrevious ? [] : secrets, issued: previous, changedSinceMs: sinceMs })) throw new RegistryTokenLeakError();
+    } catch (error) {
+      leaked ??= error instanceof RegistryTokenLeakError ? error : new RegistryTokenLeakError();
+      throw leaked;
+    }
   };
   try {
     await mkdir(directory, { mode: 0o700 });
@@ -113,8 +129,16 @@ export async function openRegistrySession(input: {
     if (byFormat("pypi").length > 0) environment.PIP_CONFIG_FILE = await write("pip.conf", renderPipConf(byFormat("pypi")));
     if (byFormat("maven").length > 0) environment.MAVEN_ARGS = `-s ${await write("settings.xml", renderMavenSettings(byFormat("maven")))}`;
   } catch (error) {
-    await remove();
+    await remove().catch(() => undefined);
     throw agentXError("RUNTIME_UNAVAILABLE", `Rovara could not prepare the package registry config: ${error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : "failed"}`);
+  }
+  // B2: the hashes of every token issued for this workspace are kept for its life; a retry looks for the old ones too, in every file, before any command runs.
+  try {
+    await recordIssuedTokens(root, secrets);
+    if (previous.length > 0) await scan(0, true);
+  } catch (error) {
+    await remove().catch(() => undefined);
+    throw error instanceof RegistryTokenLeakError ? error : agentXError("RUNTIME_UNAVAILABLE", "Rovara could not record the package registry token it issued");
   }
 
   return {
@@ -125,29 +149,29 @@ export async function openRegistrySession(input: {
     wrap(run) {
       const wrapped = async (command: ProjectCommand, index: number, rootPath: string): Promise<CommandResult> => {
         // The project's own `env` wins, as it does over every default of the sandbox.
+        // Once a leak is found, no later command runs: it could read the copy.
+        if (leaked !== undefined) throw leaked;
         const withEnvironment: ProjectCommand = { ...command, env: { ...environment, ...command.env } };
+        let outcome: { result: CommandResult } | { error: unknown };
         try {
-          const result = await run(withEnvironment, index, rootPath);
-          return { ...result, stdout: scrub(result.stdout), stderr: scrub(result.stderr) };
+          outcome = { result: await run(withEnvironment, index, rootPath) };
         } catch (error) {
+          outcome = { error };
+        }
+        // B2: after EVERY command, a failed one included, before the step is recorded as done and before any retry.
+        const started = Date.now();
+        await scan(changedSince);
+        changedSince = started - 2_000;
+        if ("error" in outcome) {
+          const error = outcome.error;
           throw error instanceof Error ? Object.assign(new Error(scrub(error.message)), { name: error.name }) : new Error("command failed");
         }
+        return { ...outcome.result, stdout: scrub(outcome.result.stdout), stderr: scrub(outcome.result.stderr) };
       };
       return wrapped as typeof run;
     },
-    async assertTokenNotInRepository(repositoryDirectory) {
-      const forms = new Set(secrets.flatMap((secret) => e2eSecretSpellings(secret)).filter((form) => form.length >= 6));
-      const listed = await runIsolatedGit(repositoryDirectory, ["status", "--porcelain", "-z", "--untracked-files=all"], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }).catch(() => undefined);
-      // Unknowable is not clean: a repository whose changes cannot be listed is not trusted to be free of the token.
-      if (listed === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara could not check that a setup step kept the package registry token out of the repository");
-      for (const entry of listed.split("\0").filter((item) => item.length > 3)) {
-        const path = join(repositoryDirectory, entry.slice(3));
-        const info = await stat(path).catch(() => undefined);
-        if (info === undefined || !info.isFile() || info.size > 4 * 1024 * 1024) continue;
-        const text = await readFile(path, "utf8").catch(() => "");
-        if ([...forms].some((form) => text.includes(form))) throw agentXError("RUNTIME_UNAVAILABLE", "A setup step wrote a package registry token into the repository, so the preparation was stopped");
-      }
-    },
+    leak: () => leaked,
+    assertNoToken: async () => { const started = Date.now(); await scan(changedSince); changedSince = started - 2_000; },
     dispose: remove,
   };
 }

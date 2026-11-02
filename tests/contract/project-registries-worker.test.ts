@@ -1,13 +1,15 @@
 // N9 (INTG2): the worker's half. The setup and readiness commands run for real (a local shell, with real Git), so the config file the tools are pointed at is the one a command reads.
 // A fake token is built at run time and PLANTED: every case that says "never appears" also proves the token really was in play (a positive control).
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { StoredProjectDefinitionSchema, e2eSecretSpellings, prepareRegistriesOf, type PrepareRegistry, type ProjectRegistry, type RegistryCredential } from "../../packages/contracts/src/index.js";
+import { ISSUED_TOKENS_PATH, recordIssuedTokens } from "../../packages/worker/src/registry-guard.js";
 import { REGISTRY_CONFIG_PREFIX, openRegistrySession, removeLeftoverRegistryConfigs, renderMavenSettings, renderNpmrc, renderPipConf } from "../../packages/worker/src/registry-config.js";
 import { createRegistryCredentialProvider } from "../../packages/worker/src/registry-credentials.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
@@ -210,11 +212,137 @@ describe("a preparation with registries", () => {
       project: project(['cp "$NPM_CONFIG_USERCONFIG" .npmrc']),
       registries: registries(CA), registryCredentialProvider: providerOf({ "internal-npm": token }),
     }).then(() => undefined, (error: Error) => error);
-    expect(failure?.message).toMatch(/wrote a package registry token into the repository/);
+    expect(failure?.message).toMatch(/left a package registry token where the agent can read it/);
     expect(await readFile(join(rootPath, "repo/api/.npmrc"), "utf8")).toContain(token.slice(0, 20)); // positive control: it really was copied
     expect(await leftovers(rootPath)).toEqual([]);
-    // The failure the broker will see does not carry it either.
-    expect((await readFile(join(rootPath, ".agentx", "preparation-manifest.json"), "utf8"))).not.toContain(token);
+    // The failure the broker will see does not carry it either, and the workspace is marked so it is never resumed.
+    const written = await readFile(join(rootPath, ".agentx", "preparation-manifest.json"), "utf8");
+    expect(written).not.toContain(token);
+    expect(JSON.parse(written)).toMatchObject({ complete: false, tainted: true });
+  });
+
+  describe("the guard (B2, S1)", () => {
+    const tainted = async (rootPath: string) => (JSON.parse(await readFile(join(rootPath, ".agentx", "preparation-manifest.json"), "utf8")) as { tainted?: boolean }).tainted === true;
+    const attempt = (f: Awaited<ReturnType<typeof fixture>>, rootPath: string, token: string, setup: string[], readiness: string[] = []) => prepareWorkspace({
+      rootPath, materializer: f.materializer, commandRunner: f.commandRunner, creationIdentity: "op", project: project(setup, readiness),
+      registries: registries(CA), registryCredentialProvider: providerOf({ "internal-npm": token }),
+    });
+
+    it("a retry after a refused copy starts from a fresh clone: the copy is gone and the old token is nowhere", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const first = fakeToken("1");
+      const second = fakeToken("2");
+      await expect(attempt(f, rootPath, first, ['cp "$NPM_CONFIG_USERCONFIG" .npmrc', "echo second-step"])).rejects.toThrow(/left a package registry token/);
+      expect(await tainted(rootPath)).toBe(true);
+      expect(await filesCarrying(rootPath, first)).not.toEqual([]); // positive control: the copy is on the disk until the next attempt
+      // The retry: the copying step is NOT skipped as done; the tree is wiped and cloned again.
+      const manifest = await attempt(f, rootPath, second, ["test ! -e .npmrc && echo clean-clone"], ["echo ready"]);
+      expect(manifest.complete).toBe(true);
+      expect(manifest.completedSetupSteps).toEqual([0]);
+      expect(await filesCarrying(rootPath, first)).toEqual([]);
+      expect(await filesCarrying(rootPath, second)).toEqual([]);
+      expect(await tainted(rootPath)).toBe(false);
+    });
+
+    it("keeps hashes of the issued tokens, never the tokens, for the workspace's life", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const first = fakeToken("h");
+      const second = fakeToken("j");
+      await expect(attempt(f, rootPath, first, ["exit 1"])).rejects.toThrow(/exited 1/);
+      const sha = (text: string) => createHash("sha256").update(text, "latin1").digest("hex");
+      const afterFirst = JSON.parse(await readFile(join(rootPath, ISSUED_TOKENS_PATH), "utf8")) as Array<{ length: number; sha256: string }>;
+      expect(afterFirst.map((record) => record.sha256)).toEqual([sha(first)]);
+      expect((await stat(join(rootPath, ISSUED_TOKENS_PATH))).mode & 0o777).toBe(0o600);
+      // The retry (an ordinary failure is resumed, not wiped) adds its token to the list; the first stays.
+      await attempt(f, rootPath, second, ["echo again"]);
+      const afterSecond = JSON.parse(await readFile(join(rootPath, ISSUED_TOKENS_PATH), "utf8")) as Array<{ sha256: string }>;
+      expect(afterSecond.map((record) => record.sha256)).toEqual([sha(first), sha(second)]);
+      // The list holds hashes: neither token is in any file, the list included.
+      expect(await filesCarrying(rootPath, first)).toEqual([]);
+      expect(await filesCarrying(rootPath, second)).toEqual([]);
+    });
+
+    it("a step that fails AFTER copying the token is reported as the leak it is, and the retry still starts clean", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const first = fakeToken("3");
+      const failure = await attempt(f, rootPath, first, ['cp "$NPM_CONFIG_USERCONFIG" .npmrc; exit 3']).then(() => undefined, (error: Error) => error);
+      expect(failure?.message).toMatch(/left a package registry token/);
+      expect(failure?.message).not.toMatch(/exited 3/);
+      expect(await tainted(rootPath)).toBe(true);
+      await expect(attempt(f, rootPath, fakeToken("4"), ["test ! -e .npmrc"])).resolves.toMatchObject({ complete: true });
+    });
+
+    it("a readiness check that copies the token is caught too", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      await expect(attempt(f, rootPath, fakeToken("r"), [], ['cp "$NPM_CONFIG_USERCONFIG" .npmrc'])).rejects.toThrow(/left a package registry token/);
+      expect(await tainted(rootPath)).toBe(true);
+    });
+
+    it.each([
+      ["a gitignored file in the repository", 'echo .env.local >> .git/info/exclude; cp "$NPM_CONFIG_USERCONFIG" .env.local'],
+      ["a file at the workspace root, outside every repository", 'cp "$NPM_CONFIG_USERCONFIG" ../../stash.txt'],
+      ["a folder at the workspace root (the Python user base)", 'mkdir -p ../../.agentx-python/lib && cp "$NPM_CONFIG_USERCONFIG" ../../.agentx-python/lib/cfg'],
+      ["a hidden cache under node_modules", 'mkdir -p node_modules/.cache && cp "$NPM_CONFIG_USERCONFIG" node_modules/.cache/x'],
+      ["a copy that keeps its times (cp -p)", 'touch -t 200001010000 "$NPM_CONFIG_USERCONFIG"; cp -p "$NPM_CONFIG_USERCONFIG" .keep'],
+      ["the percent-encoded spelling a pip.conf carries", 'cp "$PIP_CONFIG_FILE" pip-copy.conf'],
+    ])("finds %s (anything the agent can read counts)", async (_name, script) => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const token = fakeToken("i");
+      await expect(prepareWorkspace({
+        rootPath, materializer: f.materializer, commandRunner: f.commandRunner, creationIdentity: "op", project: project([script]),
+        registries: registries(CA, CA_PIP), registryCredentialProvider: providerOf({ "internal-npm": token, "internal-pypi": fakeToken("k") }),
+      })).rejects.toThrow(/left a package registry token/);
+      expect(await tainted(rootPath)).toBe(true);
+    });
+
+    it("does not read Rovara's own config folder or private state: a clean run passes", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      await expect(attempt(f, rootPath, fakeToken("n"), ["mkdir -p node_modules/.cache && echo harmless > node_modules/.cache/x"], ["echo ok"])).resolves.toMatchObject({ complete: true });
+    });
+
+    it("a token issued for this workspace before, found in a file by its hash, stops a new attempt and taints the workspace", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      const old = fakeToken("o");
+      await recordIssuedTokens(rootPath, [old]);
+      await mkdir(join(rootPath, "leftover"), { recursive: true });
+      await writeFile(join(rootPath, "leftover", "notes.txt"), `see registry\n//host/path/:_authToken=${old}\n`);
+      await expect(attempt(f, rootPath, fakeToken("p"), [])).rejects.toThrow(/left a package registry token/);
+      expect(await tainted(rootPath)).toBe(true);
+      expect(await leftovers(rootPath)).toEqual([]);
+      // The next attempt wipes the leftover and succeeds.
+      await expect(attempt(f, rootPath, fakeToken("q"), [])).resolves.toMatchObject({ complete: true });
+      expect(await filesCarrying(rootPath, old)).toEqual([]);
+    });
+
+    it("a workspace that holds no old token is not tainted by the hash scan (positive control for the scan itself)", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      await recordIssuedTokens(rootPath, [fakeToken("u")]);
+      await expect(attempt(f, rootPath, fakeToken("v"), [])).resolves.toMatchObject({ complete: true });
+    });
+
+    it.skipIf(process.getuid?.() === 0)("fails closed and taints the workspace when the config folder cannot be removed (S2)", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      // A step that makes the workspace root read-only: the config folder cannot be unlinked from it.
+      const failure = await attempt(f, rootPath, fakeToken("s"), ["chmod 555 ../.."]).then(() => undefined, (error: Error) => error);
+      try {
+        expect(failure?.message).toMatch(/could not remove the package registry config/);
+        expect((await readdir(rootPath)).filter((name) => name.startsWith(REGISTRY_CONFIG_PREFIX))).toHaveLength(1); // positive control: it is still there
+        expect(await tainted(rootPath)).toBe(true);
+      } finally {
+        await chmod(rootPath, 0o755);
+      }
+      await expect(attempt(f, rootPath, fakeToken("w"), [])).resolves.toMatchObject({ complete: true });
+      expect(await leftovers(rootPath)).toEqual([]);
+    });
   });
 
   it("a project command's own env wins over the default, and a project without registries is untouched", async () => {
