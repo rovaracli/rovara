@@ -532,6 +532,35 @@ describe("ec2-ebs delivery", () => {
       expect(await delivery({ workerFeatures: async () => base }).deliver(plain, plain.invocation)).toBe("DELIVERED");
     });
 
+    it("sends a setup draft that is offered company recipes to a worker that does not list task.setupRecipes.v1 WITHOUT them, forgets the recorded offers and logs it; it does not fail the draft (SH30)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const offer = { recipeId: `rcp_${"1".repeat(20)}`, revision: 1, body: { schemaVersion: 1, label: "Python", buildSystems: ["python"], toolchains: [], setupCommands: [], updateCommands: [], checks: [], approvedHosts: [], match: { markerFiles: ["pyproject.toml"], registryHosts: [] } } };
+      const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true, testEnvRecipes: [offer] });
+      const base = ["task.workflowMode", "task.setupDraft", "task.setupProposal.v2", "task.testEnvDetect.v1"];
+      const forget = vi.fn(async () => undefined);
+      const older = delivery({ workerFeatures: async () => base, setupRecipesNotNegotiated: forget });
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("testEnvRecipes");
+      expect(postedPayload(older.post)).toMatchObject({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });
+      expect(forget).toHaveBeenCalledWith(record);
+      expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.setup_recipes_omitted") && line.includes("worker-lacks-feature"))).toBe(true);
+      // A worker with no detection cannot use recipes either, and is sent neither field.
+      const noDetect = delivery({ workerFeatures: async () => ["task.workflowMode", "task.setupDraft", "task.setupProposal.v2", "task.setupRecipes.v1"], setupRecipesNotNegotiated: forget });
+      expect(await noDetect.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(noDetect.post)).not.toHaveProperty("testEnvRecipes");
+      expect(postedPayload(noDetect.post)).not.toHaveProperty("testEnvDetect");
+      // An unwired recorder never fails the draft.
+      const unwired = delivery({ workerFeatures: async () => base });
+      expect(await unwired.deliver(record, record.invocation)).toBe("DELIVERED");
+      log.mockRestore();
+      // A worker that lists them is sent them, and nothing is forgotten.
+      forget.mockClear();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.setupRecipes.v1"], setupRecipesNotNegotiated: forget });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).testEnvRecipes).toHaveLength(1);
+      expect(forget).not.toHaveBeenCalled();
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];
