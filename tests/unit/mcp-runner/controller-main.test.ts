@@ -108,6 +108,36 @@ describe("controller main: the registry", () => {
     // approved and disabled entries still give none, even to their own pinned package
     for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
   });
+  it("SR-7 H1: the equality check also holds the destinations, the size and the tarball's integrity: a paused entry's secret never goes to a task that may reach other addresses, or is another size, or another tarball", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const withSecret: McpStdioSpec = { ...spec, secretEnv: ["API_KEY"], destinations: [{ host: "jira.corp.example", port: 443 }, { host: "wiki.corp.example", port: 8443 }], size: { cpu: 512, memoryMiB: 1024 } };
+    const paused = registry(entry({ status: "changed_needs_review", hasSecret: true, transport: { kind: "stdio", spec: withSecret } }));
+    const own = { spec: { registry: "npm" as const, name: withSecret.name, version: withSecret.version, args: withSecret.args, integrity: withSecret.integrity, destinations: withSecret.destinations, secretEnv: withSecret.secretEnv, size: withSecret.size }, pinned: { lockfileHash: withSecret.lockfileHash, bundleHash: withSecret.bundleHash } };
+    expect(await paused.probeSecret!("mcpsim000001", own)).toBe(arn("mcpsim000001"));
+    const other: Array<[string, typeof own.spec]> = [
+      ["another address", { ...own.spec, destinations: [{ host: "jira.corp.example", port: 443 }, { host: "evil.corp.example", port: 8443 }] }],
+      ["another port", { ...own.spec, destinations: [{ host: "jira.corp.example", port: 443 }, { host: "wiki.corp.example", port: 9443 }] }],
+      ["an address added", { ...own.spec, destinations: [...own.spec.destinations, { host: "extra.corp.example", port: 443 }] }],
+      ["an address left out", { ...own.spec, destinations: [own.spec.destinations[0]!] }],
+      ["no addresses", { ...own.spec, destinations: [] }],
+      ["the addresses in another order", { ...own.spec, destinations: [own.spec.destinations[1]!, own.spec.destinations[0]!] }],
+      ["another cpu", { ...own.spec, size: { cpu: 1024, memoryMiB: 1024 } }],
+      ["another memory", { ...own.spec, size: { cpu: 512, memoryMiB: 2048 } }],
+      ["another tarball", { ...own.spec, integrity: `sha512-${"B".repeat(86)}==` }],
+    ];
+    for (const [label, changed] of other) expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: changed }), label).toBeUndefined();
+    // a test that does not name an integrity at all is not the pinned package either
+    const { integrity: _omitted, ...withoutIntegrity } = own.spec; // eslint-disable-line @typescript-eslint/no-unused-vars -- the proposal form leaves it out
+    expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: withoutIntegrity }), "no integrity").toBeUndefined();
+  });
+  it("SR-7 H1 / review M4: a waiting entry gives its secret to a test only when it is a package-run entry (an http server's token never goes into a package test), and a proposal with no entry still does", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const http = entry({ status: "awaiting_approval", hasSecret: true, transport: { kind: "http", address: "https://mcp.corp.example/mcp" } });
+    expect(await registry(http).probeSecret!("mcpsim000001")).toBeUndefined();
+    expect(await registry({ ...http, status: "changed_needs_review" } as McpServerEntry).probeSecret!("mcpsim000001")).toBeUndefined();
+    expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
+    expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
+  });
   it("fix round 2: the old hash (names and schemas only) is what a version 1 approval carries, and the controller is given the means to compute it", () => {
     const tools = [{ name: "b", description: "one", inputSchema: { type: "object" } }, { name: "a", description: "two", inputSchema: { type: "object" } }];
     const shown = summariseProbe(tools, 0);

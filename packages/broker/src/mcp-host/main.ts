@@ -7,7 +7,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
+import { OrgIdSchema, stdioSpecIfComplete, type McpStdioProposal, type McpStdioSpec } from "@agentx/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -30,6 +30,19 @@ function required(env: Record<string, string | undefined>, name: string): string
   return value;
 }
 
+/**
+ * Whether a test is the pinned install of a paused entry, in every part that decides what a task may do with the secret: the package and its tarball, the arguments, the secret names, the addresses
+ * it may reach (in order), the size, and both pinned hashes. The tarball's integrity must be named: a test that leaves it out is not the pinned package.
+ */
+function isPinnedInstall(test: McpStdioProposal, tested: { lockfileHash: string; bundleHash: string }, pinned: McpStdioSpec): boolean {
+  const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+  return test.name === pinned.name && test.version === pinned.version && test.registry === pinned.registry && test.integrity === pinned.integrity
+    && same(test.args, pinned.args) && same(test.secretEnv, pinned.secretEnv)
+    && same(test.destinations.map((item) => [item.host, item.port]), pinned.destinations.map((item) => [item.host, item.port]))
+    && test.size.cpu === pinned.size.cpu && test.size.memoryMiB === pinned.size.memoryMiB
+    && tested.lockfileHash === pinned.lockfileHash && tested.bundleHash === pinned.bundleHash;
+}
+
 /** An Enterprise install has one org; the controller serves that org's approved stdio entries and nothing else. */
 export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgId: string, secretArn?: (serverId: string) => Promise<string | undefined>): ControllerRegistry {
   const org = OrgIdSchema.parse(orgId);
@@ -47,18 +60,16 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
     async probeSecret(serverId, test): Promise<string | undefined> {
       if (secretArn === undefined) return undefined;
       // The broker stores a proposal's secrets under the proposal's id BEFORE the test. That secret is read by a test only while the proposal has no entry yet or its entry still waits for
-      // approval: the secret of an approved or disabled entry never goes into a test of a package the caller names.
+      // approval: the secret of an approved or disabled entry never goes into a test of a package the caller names. A waiting entry must be a package-run entry (review M4): an address-based
+      // server's token is never handed to a package test.
       // Fix round 2 (N1): the one other case is the review and re-approve test of a PAUSED stdio entry, which has secrets and must be tested to be looked at. It gets the secret only when the test
-      // is that entry's own pinned package (same name, version, arguments, secret names and both pinned hashes); anything else under that id gets none.
+      // is that entry's own pinned install: the same package, arguments, secret names, tarball, addresses and size, and both pinned hashes (SR-7 H1); anything else under that id gets none.
       const entry = await store.get(org, serverId);
       if (entry !== undefined && entry.status === "changed_needs_review") {
         const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
         if (entry.hasSecret !== true || pinned === undefined || test === undefined || test.pinned === undefined) return undefined;
-        const same = test.spec.name === pinned.name && test.spec.version === pinned.version && test.spec.registry === pinned.registry
-          && JSON.stringify(test.spec.args) === JSON.stringify(pinned.args) && JSON.stringify(test.spec.secretEnv) === JSON.stringify(pinned.secretEnv)
-          && test.pinned.lockfileHash === pinned.lockfileHash && test.pinned.bundleHash === pinned.bundleHash;
-        if (!same) return undefined;
-      } else if (entry !== undefined && entry.status !== "awaiting_approval") return undefined;
+        if (!isPinnedInstall(test.spec, test.pinned, pinned)) return undefined;
+      } else if (entry !== undefined && (entry.status !== "awaiting_approval" || entry.transport.kind !== "stdio")) return undefined;
       return secretArn(serverId).catch(() => undefined);
     },
   };
