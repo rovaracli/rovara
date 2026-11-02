@@ -11,7 +11,7 @@ import { latestRevision } from "../../org/project-settings.js";
 import { setupAgentEnabled } from "../../rovara-code/setup-agent-switch.js";
 import { getSetupAgent, maintainerOf, readState, startSetupAgent, stopSetupAgent, type SetupAgentDependencies, type SetupAgentStarter } from "../../rovara-code/setup-agent.js";
 import { runSetupCommand } from "../../rovara-code/setup-command.js";
-import { approveCompanyLockSettings, getCompanyLocksView, getProjectLimits, limitSettingsOf, setCompanyLockSettings, setProjectLimits, type SetupLimitsDeps } from "../../rovara-code/setup-limits.js";
+import { approveCompanyLockSettings, getCompanyLocksView, getProjectLimits, limitSettingsOf, repairUnreadableLocks, setCompanyLockSettings, setProjectLimits, type SetupLimitsDeps } from "../../rovara-code/setup-limits.js";
 import { dynamoSetupLocksStore } from "../../rovara-code/setup-locks-store.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { readSecondPersonApprovalEvidence } from "../../org/second-person-evidence.js";
@@ -32,7 +32,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export const SETUP_AGENT_PATH = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|command|journal|confirm|limits))?$/u;
 /** The company's setup-run limits (a lock): read and set, and approve a loosening. `org` is a browser route family, so the app reaches it as `/v1/web/org/setup-agent/locks`. */
-export const COMPANY_LOCKS_PATH = /^\/v1\/app\/org\/setup-agent\/locks(?:\/(approve))?$/u;
+export const COMPANY_LOCKS_PATH = /^\/v1\/app\/org\/setup-agent\/locks(?:\/(approve|repair))?$/u;
 
 /**
  * The starter a setup run uses: the ordinary agent run start (so the person's role, the payer RULES, the allowed models, the budget floor and the run limit all apply as for any task) with the run's
@@ -127,6 +127,7 @@ async function routeCompanyLocks(limits: SetupLimitsDeps, caller: DeveloperCalle
   if (tail === undefined && request.method === "GET") return getCompanyLocksView(limits, caller);
   if (tail === undefined && request.method === "PUT") return setCompanyLockSettings(limits, caller, jsonBody(request));
   if (tail === "approve" && request.method === "POST") return approveCompanyLockSettings(limits, caller, jsonBody(request));
+  if (tail === "repair" && request.method === "POST") return repairUnreadableLocks(limits, caller, jsonBody(request));
   return undefined;
 }
 

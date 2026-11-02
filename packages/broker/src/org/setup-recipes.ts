@@ -115,6 +115,9 @@ export const SETUP_LIMIT_MAXIMA = { commands: 120, sameStepTries: 5, wallClockMi
 export type SetupLimits = { [K in keyof typeof SETUP_LIMIT_MAXIMA]: number };
 const LIMIT_KEYS = Object.keys(SETUP_LIMIT_MAXIMA) as Array<keyof SetupLimits>;
 const limitField = (key: keyof SetupLimits) => z.number().min(1).max(SETUP_LIMIT_MAXIMA[key]);
+/** The model spend a company may cap a setup run at: from one cent up to the maximum, in whole cents (the run counts cents, so a fraction of a cent could not be kept). */
+export const SETUP_SPEND_LOCK_MIN_USD = 0.01;
+const spendField = z.number().min(SETUP_SPEND_LOCK_MIN_USD).max(SETUP_LIMIT_MAXIMA.spendUsd).refine((usd) => Math.abs(usd * 100 - Math.round(usd * 100)) < 1e-9, { message: "whole cents" });
 
 const ImageReference = SetupRecipeBodySchema.shape.devcontainerBaseImage.unwrap();
 
@@ -124,7 +127,7 @@ export const CompanySetupLocksSchema = z.object({
   /** Lower limits: a project's limit is the smaller of its own and this. */
   limits: z.object({
     commands: limitField("commands").optional(), sameStepTries: limitField("sameStepTries").optional(), wallClockMinutes: limitField("wallClockMinutes").optional(),
-    spendUsd: limitField("spendUsd").optional(), hostAsks: limitField("hostAsks").optional(),
+    spendUsd: spendField.optional(), hostAsks: limitField("hostAsks").optional(),
   }).strict().optional(),
   /** A project may use only hosts on the company list. */
   hostsOnlyFromCompanyList: z.literal(true).optional(),
@@ -154,6 +157,9 @@ export const locksDigest = (locks: CompanySetupLocks | undefined): string => cre
  * Whether `next` is looser than `prev` for any field: a lock removed, a limit raised or removed, a lock turned off (`setupAgentOff`, `hostsOnlyFromCompanyList`, `nightlyHealthOn`), the image list widened or
  * removed, or `hostApprover` going from admin back to maintainer. With nothing set before, nothing can loosen.
  */
+/** A change that loosens a company lock waits this long for a second admin; after it the proposal is gone and has to be made again. */
+export const LOCKS_PENDING_TTL_MS = 24 * 3_600_000;
+
 export function isLoosening(prev: CompanySetupLocks | undefined, next: CompanySetupLocks): boolean {
   if (prev === undefined) return false;
   for (const flag of ["setupAgentOff", "hostsOnlyFromCompanyList", "nightlyHealthOn", "hostApprover", "noSoleOwnerException"] as const) if (prev[flag] !== undefined && next[flag] === undefined) return true;
@@ -255,7 +261,7 @@ function validCaller(caller: RecipeCaller): void {
 /**
  * Admin now, then a stored session of the SAME person, not revoked, whose interactive sign-in is fresh by the platform's one rule (`isFreshSignIn`). The admin check comes first and reads nothing else.
  */
-async function requireFreshAdmin(deps: SetupLocksDeps, caller: RecipeCaller): Promise<void> {
+export async function requireFreshAdmin(deps: SetupLocksDeps, caller: RecipeCaller): Promise<void> {
   validCaller(caller);
   await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
   const session = typeof caller.sessionId === "string" && caller.sessionId.length > 0 && caller.sessionId.length <= 200 ? await deps.readSession(caller.sessionId) : undefined;
@@ -450,6 +456,15 @@ const NO_CONDITIONS: readonly TransactItem[] = [];
 
 export type SetLocksResult = { status: "applied"; locks: StoredLocks } | { status: "needs_second_admin"; locks: StoredLocks };
 
+/** Says which lock is wrong and what it may be, in words (the spend lock is in dollars and cents, from one cent up). */
+function invalidLocksMessage(error: z.ZodError): string {
+  const issue = error.issues[0];
+  const [field, key] = issue?.path ?? [];
+  if (field === "limits" && key === "spendUsd") return `The spend limit must be from $${SETUP_SPEND_LOCK_MIN_USD.toFixed(2)} to $${String(SETUP_LIMIT_MAXIMA.spendUsd)}, in whole cents.`;
+  if (field === "limits" && typeof key === "string" && key in SETUP_LIMIT_MAXIMA) return `The ${key} limit must be a number from 1 to ${String(SETUP_LIMIT_MAXIMA[key as keyof SetupLimits])}.`;
+  return "Those company locks are not valid.";
+}
+
 /**
  * Sets the company's locks (admin, fresh sign-in, against the revision the admin saw). A change that only makes projects STRICTER applies at once. A change that LOOSENS anything (`isLoosening`) does not apply: it is
  * stored as a pending change, and a DIFFERENT admin with a fresh sign-in approves it with `approveLocksChange` (owner choice A, the safer default until the owner says otherwise: the 2026-10-31 rule that any
@@ -457,11 +472,11 @@ export type SetLocksResult = { status: "applied"; locks: StoredLocks } | { statu
  */
 export async function setCompanyLocks(deps: SetupLocksDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<SetLocksResult> {
   await requireFreshAdmin(deps, caller);
-  // Only the locks something enforces can be set (coordinator, 2026-11-02): a lock nobody reads would only look like protection.
-  if (typeof input.locks === "object" && input.locks !== null && LOCKS_NOT_ENFORCED_YET.some((key) => (input.locks as Record<string, unknown>)[key] !== undefined)) throw invalid("That company lock is not available yet.");
-  const parsed = CompanySetupLocksSchema.safeParse(input.locks);
-  if (!parsed.success) throw invalid("Those company locks are not valid.");
   const current = await readCompanyLocks(deps, caller.orgId);
+  // Only the locks something enforces can be ADDED or CHANGED (coordinator, 2026-11-02): a lock nobody reads would only look like protection. A request that leaves such a lock as it is stored is not refused for it.
+  if (typeof input.locks === "object" && input.locks !== null && LOCKS_NOT_ENFORCED_YET.some((key) => canonicalJson((input.locks as Record<string, unknown>)[key] ?? null) !== canonicalJson((current?.locks as Record<string, unknown> | undefined)?.[key] ?? null))) throw invalid("That company lock is not available yet.");
+  const parsed = CompanySetupLocksSchema.safeParse(input.locks);
+  if (!parsed.success) throw invalid(invalidLocksMessage(parsed.error));
   if ((current?.revision ?? null) !== input.expectedRevision) throw stale();
   const now = iso(deps);
   const revision = (current?.revision ?? 0) + 1;
@@ -488,6 +503,9 @@ export async function approveLocksChange(deps: SetupLocksDeps, caller: RecipeCal
   const current = await readCompanyLocks(deps, caller.orgId);
   if (current?.pending === undefined) throw agentXError("CHANGE_STALE", "There is no company lock change waiting for approval.");
   if (current.revision !== input.expectedRevision || current.pending.digest !== input.expectedDigest || locksDigest(current.pending.locks) !== current.pending.digest) throw stale();
+  // A proposal nobody approved within a day is gone: whoever still wants the change proposes it again, so an old request is never approved by a different admin long after the reasons are forgotten.
+  const proposedAt = Date.parse(current.pending.proposedAt);
+  if (!Number.isFinite(proposedAt) || deps.now().getTime() - proposedAt > LOCKS_PENDING_TTL_MS) throw agentXError("CHANGE_STALE", "That change waited too long for approval. Propose it again.");
   const proposerId = current.pending.proposedBy;
   if (proposerId === caller.developerId && current.locks.noSoleOwnerException === true) throw Object.assign(agentXError("FORBIDDEN", "Another admin must approve a change that loosens company locks."), { soleOwner: { available: false, availableAt: null, reasonCode: "EXCEPTION_OFF" } });
   const evidence = await deps.approvalEvidence({ orgId: caller.orgId, proposerId, approverId: caller.developerId });

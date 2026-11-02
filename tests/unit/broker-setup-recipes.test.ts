@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentXError, orgMemberKey, orgMetaKey, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
 import {
-  SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
+  LOCKS_PENDING_TTL_MS, SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
   recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupRecipeDeps,
 } from "../../packages/broker/src/org/setup-recipes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -368,6 +368,30 @@ describe("company locks", () => {
     }
     expect(await readCompanyLocks(deps, ORG)).toBeUndefined();
     expect(store.audit).toEqual([]);
+  });
+
+  it("L4: 'not available yet' applies only to a lock the request adds or changes: one already stored and left as it is does not stop another change", async () => {
+    const { deps, admin, store } = harness();
+    await store.commitLocks({ orgId: ORG, revision: 1, locks: { hostsOnlyFromCompanyList: true, hostApprover: "admin" }, updatedBy: ADMIN, updatedAt: NOW.toISOString() }, null,
+      { action: "locks_changed", orgId: ORG, actor: ADMIN, at: NOW.toISOString(), proof: "fresh_sign_in", revision: 1, previousDigest: "0".repeat(64), nextDigest: "1".repeat(64), loosened: false }, []);
+    const kept = await setCompanyLocks(deps, admin, { locks: { hostsOnlyFromCompanyList: true, hostApprover: "admin", setupAgentOff: true }, expectedRevision: 1 });
+    expect(kept.status).toBe("applied");
+    for (const locks of [{ hostsOnlyFromCompanyList: true, setupAgentOff: true }, { hostsOnlyFromCompanyList: true, hostApprover: "admin", setupAgentOff: true, nightlyHealthOn: true }]) {
+      let message = "";
+      try { await setCompanyLocks(deps, admin, { locks, expectedRevision: 2 }); } catch (error) { message = (error as Error).message; }
+      expect(message, JSON.stringify(locks)).toContain("That company lock is not available yet.");
+    }
+  });
+
+  it("L7: a waiting loosening is gone after 24 hours and can no longer be approved", async () => {
+    const { deps, admin, admin2, clock, sessions } = harness();
+    await setCompanyLocks(deps, admin, { locks: { setupAgentOff: true }, expectedRevision: null });
+    const waiting = await setCompanyLocks(deps, admin, { locks: {}, expectedRevision: 1 });
+    if (waiting.status !== "needs_second_admin" || waiting.locks.pending === undefined) throw new Error("not waiting");
+    clock.now = new Date(clock.now.getTime() + LOCKS_PENDING_TTL_MS + 1000);
+    sessions.set("s-admin-2", { developerId: SECOND_ADMIN, authTime: new Date(clock.now.getTime() - 60_000).toISOString() });
+    expect(await code(approveLocksChange(deps, admin2, { expectedRevision: waiting.locks.revision, expectedDigest: waiting.locks.pending.digest }))).toBe("CHANGE_STALE");
+    expect((await readCompanyLocks(deps, ORG))?.locks).toEqual({ setupAgentOff: true });
   });
 
   it("refuses limits above the design's maximum, below one, unknown fields and values that loosen", async () => {

@@ -807,3 +807,14 @@ describe("M2: every citation is read at the commit the broker recorded", () => {
     expect(commitsIn((await setupAgentState(w.deps, TEST_ORG, NAME, 3)).proposal)).toEqual([COMMIT]);
   });
 });
+
+describe("L12: a run the worker ended itself without a person's stop keeps what it learned", () => {
+  it("is failed with the sentence for a run that could not go on, and keeps the proposal", async () => {
+    const w = world();
+    const { taskId } = await startSetupAgent(w.deps, caller(), NAME, body()).then((reply) => reply.body as { taskId: string });
+    await end(w, taskId, { status: "SUCCEEDED", result: { setupProposal: proposal, setupRunSummary: summary({ stop: "infrastructure", partial: true }) } });
+    const state = await setupAgentState(w.deps, TEST_ORG, NAME, 3);
+    expect(state).toMatchObject({ status: "failed", stop: "infrastructure", failure: SETUP_AGENT_FAILURES.infrastructure });
+    expect(state.proposal).toBeDefined();
+  });
+});

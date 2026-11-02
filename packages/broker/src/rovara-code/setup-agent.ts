@@ -67,6 +67,8 @@ export const SETUP_AGENT_WORKFLOW_MODE = "SETUP_AGENT" as const;
 
 /** A company admin turned setup runs off for the whole company (the `setupAgentOff` lock). */
 export const SETUP_AGENT_COMPANY_OFF = "A company admin has turned off setup runs for this company.";
+/** The company's locks row does not read (M3): every start is held until an admin repairs it. */
+export const SETUP_AGENT_LOCKS_UNREADABLE = "Company locks unreadable, runs held. A company admin has to repair them.";
 export const SETUP_AGENT_BUSY = "Rovara is already setting up this project.";
 export const SETUP_AGENT_FAILURES = {
   attempts_used: "Rovara used up its tries before the setup worked. It kept what it learned.",
@@ -168,6 +170,8 @@ export interface SetupAgentView {
   verified?: boolean;
   /** True when a company admin has turned setup runs off (the `setupAgentOff` lock): the page says so and offers no start. */
   companySetupOff?: true;
+  /** The company's locks row does not read: runs are held (and `companySetupOff` is set) until an admin repairs it. */
+  companyLocksUnreadable?: true;
   /** F5: who pressed Stop (their name as the company knows it, "Unknown" when it cannot be read) and when, on a run a person stopped. The proposal such a run keeps is partial, unproven and never applied. */
   stoppedBy?: { name: string; at: string };
 }
@@ -298,6 +302,8 @@ function resultOf(task: Pick<DeveloperTaskRecord, "startingRevision" | "prepared
     return failed(stop, SETUP_AGENT_FAILURES[stop], kept);
   }
   const { proposal, summary } = learned;
+  // The worker ended the run itself without a person's stop (a company switch turned setup runs off, a fault): what it learned is kept, with the fixed sentence for a run that could not go on.
+  if (summary?.stop === "infrastructure") return failed("infrastructure", SETUP_AGENT_FAILURES.infrastructure, kept);
   if (summary === undefined || !WORKER_STOPS.has(summary.stop)) return failed("infrastructure", SETUP_AGENT_FAILURES.unreadable);
   // Two stops mean there is nothing to confirm: setup needs a code change, or it changed tracked files (which are never kept).
   if (summary.stop === "needs_code_change") return failed("needs_code_change", SETUP_AGENT_FAILURES.needs_code_change, { summary });
@@ -468,7 +474,7 @@ export interface SetupAgentDependencies {
   requireNewWork(caller: DeveloperCaller, project: string, role: ProjectRole): Promise<void>;
   latest(orgId: OrgId, project: string): Promise<{ revision: number; definition: StoredProjectDefinition } | undefined>;
   /** The project's own setup-run limits and the company's lock, as stored (any shape: `effectiveSetupAgentLimits` reads them and never throws). */
-  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean }>;
+  limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean; locksUnreadable?: boolean }>;
   /** SH14: throws unless the caller has a fresh browser sign-in (within 10 minutes), as the test-environment approvals ask. Absent: a person's command is refused. */
   requireFreshSignIn?(caller: DeveloperCaller): Promise<void>;
   /** Who pays for a task this person starts in this project: `resolveRunPayer`'s answer for an app start. */
@@ -518,6 +524,7 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const starter = deps.starter;
   const settings = await deps.limitSettings(caller.orgId, name);
+  if (settings.locksUnreadable === true) throw agentXError("FORBIDDEN", SETUP_AGENT_LOCKS_UNREADABLE);
   if (settings.setupOff === true) throw agentXError("FORBIDDEN", SETUP_AGENT_COMPANY_OFF);
   const limits = effectiveSetupAgentLimits(settings.project, settings.companyLock);
   const payer = await deps.payerFor(caller, name);
@@ -555,7 +562,8 @@ export async function getSetupAgent(deps: SetupAgentDependencies, caller: Develo
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const view = await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision));
-  return new StatusReply(200, (await deps.limitSettings(caller.orgId, name)).setupOff === true ? { ...view, companySetupOff: true } : view);
+  const settings = await deps.limitSettings(caller.orgId, name);
+  return new StatusReply(200, settings.locksUnreadable === true ? { ...view, companySetupOff: true, companyLocksUnreadable: true } : settings.setupOff === true ? { ...view, companySetupOff: true } : view);
 }
 
 /**

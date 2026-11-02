@@ -602,6 +602,31 @@ describe("the network and the helper (deployment code; not run against Docker he
   });
 });
 
+describe("L12: setup runs turned off for the company end a run that is going", () => {
+  it("a poll that says so ends the run at once: no more commands are run, and what it had is reported", async () => {
+    let polls = 0;
+    const t = await world({
+      script: async ({ bash }) => {
+        await bash.exec("npm ci", "/work", { onData: () => undefined });
+        // The model goes on while the run talks to the broker (a few ticks).
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await bash.exec("npm test", "/work", { onData: () => undefined });
+      },
+      poll: () => { polls += 1; return polls >= 2 ? { hosts: [], companyOff: true } : { hosts: [] }; },
+    });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci"]);
+    expect(result.setupRunSummary).toMatchObject({ stop: "infrastructure", partial: true });
+    expect(result.setupProposal).toBeDefined();
+  });
+  it("without it nothing changes", async () => {
+    const t = await world({ script: async ({ bash }) => { await bash.exec("npm ci", "/work", { onData: () => undefined }); await bash.exec("npm test", "/work", { onData: () => undefined }); } });
+    const result = await runSetupAgent(t.input);
+    expect(t.w.ran.map((entry) => entry.command)).toEqual(["npm ci", "npm test"]);
+    expect(result.setupRunSummary.stop).toBe("proposed");
+  });
+});
+
 describe("F5: the invocation of a stopped run ends cancelled and carries its report", () => {
   it("is a cancelled end with the run's result when the cancel controller stopped the operation, and nothing for a run nobody cancelled", async () => {
     const { WorkerCancellationController, WorkerOperationCancelledError } = await import("../../packages/worker/src/cancel.js");

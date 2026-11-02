@@ -17,7 +17,8 @@ import {
 import { auditSetupLimitsChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { SETUP_LIMIT_MAXIMA, approveLocksChange, readCompanyLocks, setCompanyLocks, type CompanySetupLocks, type RecipeCaller, type SetupLocksDeps, type StoredLocks } from "../org/setup-recipes.js";
+import { LOCKS_PENDING_TTL_MS, SETUP_LIMIT_MAXIMA, approveLocksChange, isLoosening, readCompanyLocks, requireFreshAdmin, setCompanyLocks, type CompanySetupLocks, type RecipeCaller, type SetupLocksDeps, type StoredLocks } from "../org/setup-recipes.js";
+import { SETUP_LOCKS_UNREADABLE, inspectCompanyLocks, writeRepairedLocks } from "./setup-locks-store.js";
 import { StatusReply } from "../aws/status-reply.js";
 import type { DeveloperCaller } from "../aws/developer-routes/types.js";
 
@@ -28,6 +29,7 @@ export const SETUP_LIMITS_WORDS = {
   aboveLock: "That is more than the company allows for a setup run. Choose a smaller number, or ask a company admin to raise the company's limit.",
   stale: "The limits changed since you looked. Refresh and try again.",
   noPending: "There is no company limit change waiting for approval.",
+  unreadable: "Company locks unreadable, runs held. A company admin has to repair them.",
 } as const;
 
 // ---- units: the lock counts minutes and dollars, a run counts minutes and cents
@@ -85,11 +87,23 @@ export async function readProjectLimits(deps: Pick<SetupLimitsDeps, "documentCli
  * The two stored settings a run starts from: the project's own and the company's lock (in the run's units). Read at the start of every run; a lock that cannot be read refuses the start (the store throws), it is never
  * taken for "no lock". `effectiveSetupAgentLimits` combines them.
  */
-export function limitSettingsOf(deps: SetupLimitsDeps): (orgId: OrgId, project: string) => Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean }> {
+export function limitSettingsOf(deps: SetupLimitsDeps): (orgId: OrgId, project: string) => Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean; locksUnreadable?: boolean }> {
   return async (orgId, project) => {
-    const [stored, locks] = await Promise.all([readProjectLimits(deps, orgId, project), readCompanyLocks(deps, orgId)]);
+    const [stored, locks] = await Promise.all([readProjectLimits(deps, orgId, project), readLocksOrUnreadable(deps, orgId)]);
+    // M3: a locks row that does not read holds every start (the caller refuses) but never breaks the page that reads it.
+    if (locks === "unreadable") return { ...(stored === undefined ? {} : { project: stored.limits }), companyLock: {}, setupOff: true, locksUnreadable: true };
     return { ...(stored === undefined ? {} : { project: stored.limits }), companyLock: lockToRunSetting(locks?.locks), ...(locks?.locks.setupAgentOff === true ? { setupOff: true } : {}) };
   };
+}
+
+/** The company's locks, or "unreadable" for a row that does not read as locks (any other fault is raised). */
+async function readLocksOrUnreadable(deps: Pick<SetupLimitsDeps, "store">, orgId: OrgId): Promise<StoredLocks | undefined | "unreadable"> {
+  try {
+    return await readCompanyLocks(deps, orgId);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(SETUP_LOCKS_UNREADABLE)) return "unreadable";
+    throw error;
+  }
 }
 
 export const ProjectLimitsBodySchema = z.object({
@@ -113,8 +127,8 @@ export interface ProjectLimitsView {
 }
 
 async function projectView(deps: SetupLimitsDeps, orgId: OrgId, project: string): Promise<ProjectLimitsView> {
-  const [stored, locks] = await Promise.all([readProjectLimits(deps, orgId, project), readCompanyLocks(deps, orgId)]);
-  const companyLock = lockToRunSetting(locks?.locks);
+  const [stored, locks] = await Promise.all([readProjectLimits(deps, orgId, project), readLocksOrUnreadable(deps, orgId)]);
+  const companyLock = lockToRunSetting(locks === "unreadable" ? undefined : locks?.locks);
   return { revision: stored?.revision ?? 0, limits: stored?.limits ?? {}, companyLock, effective: effectiveSetupAgentLimits(stored?.limits, companyLock), defaults: SETUP_AGENT_LIMITS_DEFAULT, maxima: SETUP_AGENT_LIMITS_MAX };
 }
 
@@ -154,6 +168,9 @@ export async function setProjectLimits(deps: SetupLimitsDeps, caller: DeveloperC
   const event = auditSetupLimitsChanged({
     orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: at, occurrence: auditOccurrence(found.name, String(revision)), projectName: found.name, revision, previousDigest, nextDigest, limits: body.limits,
   });
+  // Audited like every lock write: exactly one audit item rides with the row, else nothing is written.
+  const auditItems = auditPending(deps, event);
+  if (auditItems.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Changing the setup limits needs the audit ledger.");
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: {
@@ -161,7 +178,7 @@ export async function setProjectLimits(deps: SetupLimitsDeps, caller: DeveloperC
         Item: { ...setupLimitsKey(caller.orgId, found.name), entityType: "SETUP_LIMITS", orgId: caller.orgId, project: found.name, revision, limits: body.limits, updatedBy: caller.developerId, updatedAt: at, lastRequestId: body.requestId },
         ...(current === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "revision = :expected", ExpressionAttributeValues: { ":expected": current.revision } }),
       } },
-      ...auditPending(deps, event),
+      ...auditItems,
     ] }));
   } catch (error) {
     if (error instanceof Error && error.name === "TransactionCanceledException") throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
@@ -207,10 +224,12 @@ const stateOf = (locks: CompanySetupLocks | undefined): CompanyLocksState => ({
   limits: lockToRunSetting(locks), setupAgentOff: locks?.setupAgentOff === true, devcontainerImages: locks?.devcontainerImages === undefined ? null : [...locks.devcontainerImages], noSoleOwnerException: locks?.noSoleOwnerException === true,
 });
 
-function companyView(stored: StoredLocks | undefined, viewer: string): CompanyLocksView {
+function companyView(stored: StoredLocks | undefined, viewer: string, nowMs: number): CompanyLocksView {
+  // A proposal older than a day is gone (it can no longer be approved), so the page does not offer it.
+  const waiting = stored?.pending !== undefined && nowMs - Date.parse(stored.pending.proposedAt) <= LOCKS_PENDING_TTL_MS ? stored.pending : undefined;
   return {
     revision: stored?.revision ?? null, ...stateOf(stored?.locks), defaults: SETUP_AGENT_LIMITS_DEFAULT, maxima: SETUP_AGENT_LIMITS_MAX,
-    ...(stored?.pending === undefined ? {} : { pending: { ...stateOf(stored.pending.locks), digest: stored.pending.digest, proposedAt: stored.pending.proposedAt, byYou: stored.pending.proposedBy === viewer } }),
+    ...(waiting === undefined ? {} : { pending: { ...stateOf(waiting.locks), digest: waiting.digest, proposedAt: waiting.proposedAt, byYou: waiting.proposedBy === viewer } }),
   };
 }
 
@@ -219,39 +238,113 @@ function requireBrowser(caller: DeveloperCaller): void {
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_LIMITS_WORDS.browserOnly);
 }
 
-/** `GET /v1/app/org/setup-agent/locks`: the company's setup locks and any change waiting for a second admin. A live company owner or admin, from a browser. */
+/** `GET /v1/app/org/setup-agent/locks`: the company's setup locks and any change waiting for a second admin. A live company owner or admin, from a browser. A row that does not read answers `unreadable: true` (never an error). */
 export async function getCompanyLocksView(deps: SetupLimitsDeps, caller: DeveloperCaller): Promise<StatusReply> {
   requireBrowser(caller);
   await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
-  return new StatusReply(200, companyView(await readCompanyLocks(deps, caller.orgId), caller.developerId));
+  const locks = await readLocksOrUnreadable(deps, caller.orgId);
+  if (locks === "unreadable") {
+    const raw = await inspectCompanyLocks(storeDepsOf(deps), caller.orgId);
+    return new StatusReply(200, { unreadable: true, revision: raw.revision, message: SETUP_LIMITS_WORDS.unreadable });
+  }
+  return new StatusReply(200, companyView(locks, caller.developerId, deps.now().getTime()));
+}
+
+/** The locks that something enforces, by the part of a request that sets them; the rest of a stored row stays as it is. */
+const LOCK_FIELDS = ["setupAgentOff", "devcontainerImages", "noSoleOwnerException", "hostsOnlyFromCompanyList", "hostApprover", "nightlyHealthOn"] as const;
+const LIMIT_KEYS = ["commands", "sameStepTries", "wallClockMinutes", "spendUsd", "hostAsks"] as const;
+
+/**
+ * Splits a request that both tightens and loosens (L6): `tighten` is the stored locks with only the changes that do not loosen anything, `loosen` says whether anything is left that does. A request that
+ * loosens nothing is all `tighten`. Field by field, and limit by limit, so one limit lowered while another is raised is two changes.
+ */
+export function splitLoosening(current: CompanySetupLocks | undefined, next: CompanySetupLocks): { tighten: CompanySetupLocks; loosen: boolean } {
+  if (current === undefined || !isLoosening(current, next)) return { tighten: next, loosen: false };
+  const tighten: Record<string, unknown> = { ...current };
+  for (const field of LOCK_FIELDS) {
+    const candidate: Record<string, unknown> = { ...current };
+    if (next[field] === undefined) delete candidate[field]; else candidate[field] = next[field];
+    if (!isLoosening(current, candidate)) { if (next[field] === undefined) delete tighten[field]; else tighten[field] = next[field]; }
+  }
+  const limits: Record<string, number | undefined> = { ...current.limits };
+  for (const key of LIMIT_KEYS) {
+    const candidateLimits: Record<string, number | undefined> = { ...current.limits };
+    const wanted = next.limits?.[key];
+    if (wanted === undefined) delete candidateLimits[key]; else candidateLimits[key] = wanted;
+    const candidate: Record<string, unknown> = { ...current, limits: Object.keys(candidateLimits).length === 0 ? undefined : candidateLimits };
+    if (!isLoosening(current, candidate)) { if (wanted === undefined) delete limits[key]; else limits[key] = wanted; }
+  }
+  if (Object.keys(limits).length === 0) delete tighten["limits"]; else tighten["limits"] = limits;
+  return { tighten: tighten, loosen: true };
 }
 
 /**
- * `PUT /v1/app/org/setup-agent/locks`: a company admin changes the company's setup locks, from a browser, with a fresh sign-in, against the revision they saw. Only the locks given change. A change to a lock that
- * something enforces (limits, setupAgentOff, devcontainerImages, noSoleOwnerException) that is stricter or equal applies at once (200 `applied`); a loosening of ANY lock is stored as a change waiting for a second
- * admin (202 `needs_second_admin`) and changes nothing until they approve it. Every write is audited. The other locks (hostsOnlyFromCompanyList, hostApprover, nightlyHealthOn) are "not available yet".
+ * `PUT /v1/app/org/setup-agent/locks`: a company admin changes the company's setup locks, from a browser, with a fresh sign-in, against the revision they saw (a different current revision is `CHANGE_STALE`, before anything is
+ * merged). Only the locks given change. The part of the request that is stricter or equal applies at once and is audited (200 `applied`); the part that LOOSENS any lock is stored as a change waiting for a second admin for 24
+ * hours (202 `needs_second_admin`, `appliedNow` says whether a stricter part applied at once). The other locks (hostsOnlyFromCompanyList, hostApprover, nightlyHealthOn) are "not available yet". Every write is audited.
  */
 export async function setCompanyLockSettings(deps: SetupLimitsDeps, caller: DeveloperCaller, rawBody: unknown): Promise<StatusReply> {
   requireBrowser(caller);
   const parsed = CompanyLocksBodySchema.safeParse(rawBody);
   if (!parsed.success) throw bodyError(parsed.error);
   const body = parsed.data;
+  await requireFreshAdmin(deps, recipeCaller(caller));
   const current = await readCompanyLocks(deps, caller.orgId);
+  if ((current?.revision ?? null) !== body.expectedRevision) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
   const next: Record<string, unknown> = { ...(current?.locks ?? {}) };
   const put = (key: string, value: unknown): void => { if (value === undefined) delete next[key]; else next[key] = value; };
   if (body.limits !== undefined) put("limits", runSettingToLockLimits(body.limits));
   if (body.setupAgentOff !== undefined) put("setupAgentOff", body.setupAgentOff ? true : undefined);
   if (body.devcontainerImages !== undefined) put("devcontainerImages", body.devcontainerImages === null ? undefined : body.devcontainerImages);
   if (body.noSoleOwnerException !== undefined) put("noSoleOwnerException", body.noSoleOwnerException ? true : undefined);
-  const result = await setCompanyLocks(deps, recipeCaller(caller), { locks: next, expectedRevision: body.expectedRevision });
-  return new StatusReply(result.status === "applied" ? 200 : 202, { status: result.status, ...companyView(result.locks, caller.developerId) });
+  const { tighten, loosen } = splitLoosening(current?.locks, next);
+  if (!loosen) {
+    const result = await setCompanyLocks(deps, recipeCaller(caller), { locks: tighten, expectedRevision: body.expectedRevision });
+    return new StatusReply(result.status === "applied" ? 200 : 202, { status: result.status, ...companyView(result.locks, caller.developerId, deps.now().getTime()) });
+  }
+  // The stricter part first (it applies at once), then the loosening against the revision that wrote it.
+  let expected = body.expectedRevision;
+  let appliedNow = false;
+  if (canonicalJson(tighten) !== canonicalJson(current?.locks ?? {})) {
+    const first = await setCompanyLocks(deps, recipeCaller(caller), { locks: tighten, expectedRevision: expected });
+    expected = first.locks.revision;
+    appliedNow = true;
+  }
+  const second = await setCompanyLocks(deps, recipeCaller(caller), { locks: next, expectedRevision: expected });
+  return new StatusReply(202, { status: second.status, appliedNow, ...companyView(second.locks, caller.developerId, deps.now().getTime()) });
 }
 
-/** `POST /v1/app/org/setup-agent/locks/approve`: a DIFFERENT admin (or the sole owner, through the existing exception after its cool-off, unless the company turned it off) approves the waiting loosening they saw, from a browser, with a fresh sign-in. */
+/** `POST /v1/app/org/setup-agent/locks/approve`: a DIFFERENT admin (or the sole owner, through the existing exception after its cool-off, unless the company turned it off) approves the waiting loosening they saw, within 24 hours of its proposal, from a browser, with a fresh sign-in. */
 export async function approveCompanyLockSettings(deps: SetupLimitsDeps, caller: DeveloperCaller, rawBody: unknown): Promise<StatusReply> {
   requireBrowser(caller);
   const parsed = CompanyLocksApproveBodySchema.safeParse(rawBody);
   if (!parsed.success) throw bodyError(parsed.error);
   const approved = await approveLocksChange(deps, recipeCaller(caller), { expectedRevision: parsed.data.expectedRevision, expectedDigest: parsed.data.expectedDigest });
-  return new StatusReply(200, { status: "applied", ...companyView(approved, caller.developerId) });
+  return new StatusReply(200, { status: "applied", ...companyView(approved, caller.developerId, deps.now().getTime()) });
+}
+
+export const CompanyLocksRepairBodySchema = z.object({
+  requestId: z.string().uuid(),
+  /** The revision stored in the row as the page showed it (null: the stored revision is not a number). */
+  expectedRevision: z.number().int().min(0).nullable(),
+}).strict();
+
+/** The strict default values a damaged row is replaced with: the setup-run limits at their defaults, and nothing else. */
+export const REPAIRED_LOCKS: CompanySetupLocks = { limits: runSettingToLockLimits(SETUP_AGENT_LIMITS_DEFAULT)! };
+
+const storeDepsOf = (deps: SetupLimitsDeps) => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now().getTime(), ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+
+/**
+ * `POST /v1/app/org/setup-agent/locks/repair` (M3): replaces a locks row that does not read with strict default values. A live company admin, from a browser, with a fresh sign-in, against exactly the revision stored in
+ * the row (so a row that was repaired or rewritten meanwhile is `CHANGE_STALE`), audited. A row that reads is not repaired here (use the ordinary change).
+ */
+export async function repairUnreadableLocks(deps: SetupLimitsDeps, caller: DeveloperCaller, rawBody: unknown): Promise<StatusReply> {
+  requireBrowser(caller);
+  const parsed = CompanyLocksRepairBodySchema.safeParse(rawBody);
+  if (!parsed.success) throw bodyError(parsed.error);
+  await requireFreshAdmin(deps, recipeCaller(caller));
+  const raw = await inspectCompanyLocks(storeDepsOf(deps), caller.orgId);
+  if (!raw.present || raw.readable || raw.revision !== parsed.data.expectedRevision) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
+  if (!await writeRepairedLocks(storeDepsOf(deps), { orgId: caller.orgId, actor: caller.developerId, expectedRevision: raw.revision, previousDigest: raw.digest, locks: REPAIRED_LOCKS })) throw agentXError("CHANGE_STALE", SETUP_LIMITS_WORDS.stale);
+  return new StatusReply(200, { status: "repaired", ...companyView(await readCompanyLocks(deps, caller.orgId), caller.developerId, deps.now().getTime()) });
 }

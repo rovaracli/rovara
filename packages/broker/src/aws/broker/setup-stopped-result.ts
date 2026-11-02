@@ -13,12 +13,17 @@ export function isStoppedSetupOperation(operation: Pick<OperationRecord, "kind" 
   return operation.kind === "task" && operation.workflowMode === "SETUP_AGENT" && operation.status === "CANCELLED";
 }
 
+/** The report must be of THIS task's own operation: the workspace is the task's, and so is the company (a pointer that names another task's workspace is never trusted). */
+export function operationBelongsToTask(task: Pick<DeveloperTaskRecord, "workspaceId" | "orgId">, operation: Pick<OperationRecord, "workspaceId" | "orgId">): boolean {
+  return task.workspaceId === operation.workspaceId && (operation.orgId === undefined || operation.orgId === task.orgId);
+}
+
 /** Keeps the partial proposal of a stopped setup run from the worker's late report. Never throws for a report that does not qualify; a table fault is raised so the worker's retry tries again. */
 export async function keepStoppedSetupRun(dependencies: AwsBrokerDependencies, operation: OperationRecord, result: unknown): Promise<void> {
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   if (pointer === undefined) return;
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  if (task?.purpose !== "setup_agent" || task.setupAgentStop === undefined) return;
+  if (task?.purpose !== "setup_agent" || task.setupAgentStop === undefined || !operationBelongsToTask(task, operation)) return;
   let repositories;
   try {
     repositories = setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition);

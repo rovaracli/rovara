@@ -23,6 +23,8 @@ export const SetupAgentViewSchema = z.object({
   verified: z.boolean().optional(),
   /** A company admin has turned setup runs off: nothing can be started. */
   companySetupOff: z.literal(true).optional(),
+  /** The company's locks row does not read: runs are held until an admin repairs it. */
+  companyLocksUnreadable: z.literal(true).optional(),
   /** A run a person stopped: who (a name, one plain line) and when. Its proposal, if it has one, is what the run had so far: unproven and never applied. */
   stoppedBy: z.object({ name: z.string().min(1).max(100), at: z.string().datetime() }).strict().optional(),
 }).passthrough();

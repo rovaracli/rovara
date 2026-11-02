@@ -6,6 +6,8 @@ import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.j
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
+import { setupLocksKey } from "../../packages/contracts/src/index.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 
 afterEach(() => { delete process.env.SETUP_AGENT_ENABLED; });
@@ -81,6 +83,42 @@ describe("setupAgentOff", () => {
     expect((await t.web(MAYA, "POST", `${COMPANY}/approve`, { requestId: randomUUID(), expectedRevision: 2, expectedDigest: digest })).status).toBe(200);
     expect((await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() })).status).toBe(202);
     expect((await t.dev(OMAR, "GET", ROUTE)).body).not.toHaveProperty("companySetupOff");
+  });
+});
+
+describe("M3: a locks row that does not read", () => {
+  it("holds every start with a clear message and shows it on the setup page, which still loads; an admin repairs it from the web app", async () => {
+    const t = await bench();
+    t.db.set({ ...setupLocksKey(TEST_ORG), entityType: "SETUP_LOCKS", orgId: TEST_ORG, revision: 3, locks: { limits: { commands: "many" } }, updatedBy: OMAR.developerId, updatedAt: "2026-11-02T10:00:00.000Z" });
+    const refused = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("Company locks unreadable, runs held");
+    expect(t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_agent")).toEqual([]);
+    expect((await t.dev(OMAR, "GET", ROUTE)).body).toMatchObject({ status: "none", companySetupOff: true, companyLocksUnreadable: true });
+    expect((await t.web(OMAR, "GET", COMPANY)).body).toMatchObject({ unreadable: true, revision: 3 });
+    expect((await t.web(OMAR, "POST", `${COMPANY}/repair`, { requestId: randomUUID(), expectedRevision: 2 })).status).toBe(409);
+    const repaired = await t.web(OMAR, "POST", `${COMPANY}/repair`, { requestId: randomUUID(), expectedRevision: 3 });
+    expect(repaired.status, JSON.stringify(repaired.body)).toBe(200);
+    expect((await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() })).status).toBe(202);
+  });
+});
+
+describe("L12: setup runs turned off for the company stop the runs that are going", () => {
+  it("a running run is told to stop at its next look, is handed no person's command, and its website asks are refused", async () => {
+    const t = await bench();
+    await t.person(OMAR, "owner", "maintainer");
+    const started = await t.dev(OMAR, "POST", ROUTE, { requestId: randomUUID() });
+    expect(started.status).toBe(202);
+    const task = t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_agent")[0] as { workspaceId: string };
+    const operations = t.operations(task.workspaceId);
+    await t.finish(task.workspaceId, operations.find((operation) => operation.kind === "prepare")!.id, "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: "c".repeat(40) }] } });
+    const own = t.operations(task.workspaceId).find((operation) => operation.kind === "task")!;
+    await t.events(task.workspaceId, own.id, [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
+    expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "poll" })).not.toHaveProperty("companyOff");
+    expect((await t.web(OMAR, "PUT", COMPANY, { requestId: randomUUID(), expectedRevision: null, setupAgentOff: true })).status).toBe(200);
+    expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "poll" })).toMatchObject({ companyOff: true });
+    expect(await t.callback(task.workspaceId, own.id, "setup-agent", { kind: "host", host: "registry.acme-build.io" })).toMatchObject({ outcome: "no_run" });
+    expect(t.db.find((item) => item.entityType === "SETUP_HOST_ASK")).toEqual([]);
   });
 });
 

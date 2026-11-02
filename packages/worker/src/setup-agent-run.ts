@@ -275,7 +275,9 @@ export async function runSetupAgent(input: SetupRunInput): Promise<SetupRunResul
             }
           }
         }
-        const polled = await ports.callback({ kind: "poll" }) as { command?: { seq: number; command: string }; hosts?: Array<{ host: string; state: string }> };
+        const polled = await ports.callback({ kind: "poll" }) as { command?: { seq: number; command: string }; hosts?: Array<{ host: string; state: string }>; companyOff?: boolean };
+        // L12: a company admin turned setup runs off: the run ends at once, runs nothing more and asks for nothing more, and reports what it had.
+        if (polled.companyOff === true) { governor.stop("infrastructure"); return; }
         for (const answer of polled.hosts ?? []) {
           if (answer.state === "open" || answer.state === "approved" || answer.state === "refused") askStates.set(answer.host, answer.state);
           // While the run is parked nothing is streaming; the answer goes into the follow-up prompt instead of a steer message.

@@ -7,6 +7,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import * as runs from "../../packages/broker/src/agents/runs.js";
 import { runGivesAgentTools, setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
+import { operationBelongsToTask } from "../../packages/broker/src/aws/broker/setup-stopped-result.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { recordRunCost } from "../../packages/broker/src/spend/estimate.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -315,6 +316,14 @@ describe("F5: a person's Stop keeps the partial proposal", () => {
     const state = (await t.dev(MAYA, "GET", ROUTE)).body as { status: string; stop: string; proposal?: unknown };
     expect(state).toMatchObject({ status: "failed", stop: "stopped_by_person" });
     expect(JSON.stringify(state.proposal)).toContain("npm ci");
+  });
+
+  it("L10: a late report is trusted only for the task's own workspace and company", () => {
+    const task = { workspaceId: "w1", orgId: TEST_ORG } as never;
+    expect(operationBelongsToTask(task, { workspaceId: "w1", orgId: TEST_ORG })).toBe(true);
+    expect(operationBelongsToTask(task, { workspaceId: "w1" })).toBe(true);
+    expect(operationBelongsToTask(task, { workspaceId: "w2", orgId: TEST_ORG })).toBe(false);
+    expect(operationBelongsToTask(task, { workspaceId: "w1", orgId: "org_bbbbbbbbbbbbbbbbbbbb" })).toBe(false);
   });
 
   it("a report for a run nobody stopped adds nothing (a sweep's cancel is not a person's stop)", async () => {
