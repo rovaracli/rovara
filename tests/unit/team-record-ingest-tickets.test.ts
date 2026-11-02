@@ -114,7 +114,7 @@ describe("per-editor rows: every change is its own row under the person who made
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:2", body: "line one by Priya\nline two by Sam", changed: { body: true } });
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:3", body: "h1. Wiki markup version", changed: { body: true }, previousBody: "line one by Priya" });
     await recorder.record({ workspaceId: WS }, { ...base, kind: "ticket.updated", edit: true, updaterId: "acc-2", version: "updated:4", body: "all of it", occurredAt: "2026-10-30T09:40:00.000Z" });
-    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual([undefined, "h1. Wiki markup version", undefined]);
+    expect(w.sink.puts.map((draft) => draft.text)).toStrictEqual([undefined, "Wiki markup version", undefined]);
     expect(w.sink.puts.map((draft) => draft.structured?.changed)).toStrictEqual(["body", "body", "unknown"]);
   });
 

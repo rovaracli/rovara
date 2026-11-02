@@ -111,39 +111,29 @@ export function withRetention(draft: RecordDraft, retention: Retention): RecordD
 /** Every tap's hard bound on what one delivery may write. */
 export const MAX_DRAFTS_PER_DELIVERY = 50;
 
-/** The most words either text may have for a word-by-word comparison (the table is words x words); more than this and the edit keeps no words. */
-const DIFF_WORDS_MAX = 2_000;
-
 /**
- * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after, WORD BY WORD (a longest common subsequence of the words, so a one-word typo fix credits that one word and
- * not the sentence, line or title around it). The inserted runs are returned in order, separated by a space. It is how a person who edited someone else's text is credited with their own words only,
- * never with the author's.
+ * Per-editor rows: the words a person ADDED in an edit, from the text before and the text after. A word counts as added only when the earlier text has no more of it than the new text does (a COUNT of each word, not
+ * a position), so a block of text that was only moved adds nothing, and a typo fix adds just the one changed word. Link and markup syntax is taken away first: `[Priya](http://x.y/z)` is the word "Priya" (which was
+ * there) and the address (which is the editor's); a heading, list or emphasis marker is no word. Words are compared without case and without any punctuation, and returned as the editor wrote them, in order.
  *
- * Fail closed: `previous` unknown gives nothing; nothing inserted gives nothing; and texts too long to compare word by word give nothing. The two texts must be in the SAME format (a source that sends the old
- * and the new text in different markups must not be compared: Jira's changelog gives both, in wiki markup).
+ * Fail closed: `previous` unknown gives nothing; nothing added gives nothing. The two texts must be in the SAME format (a source that sends the old and the new text in different markups must not be compared:
+ * Jira's changelog gives both, in wiki markup).
  */
 export function addedText(previous: string | undefined, next: string | undefined): string | undefined {
   if (previous === undefined || next === undefined) return undefined;
-  const words = (text: string): string[] => text.split(/\s+/u).filter((word) => word !== "");
-  // Words are compared without the punctuation around them and without case ("hand." is "hand"); what is returned is the word as the editor wrote it.
-  const key = (word: string): string => { const bare = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").toLowerCase(); return bare === "" ? word : bare; };
-  const original = words(next);
-  const before = words(previous).map(key);
-  const after = original.map(key);
-  if (before.length > DIFF_WORDS_MAX || after.length > DIFF_WORDS_MAX) return undefined;
-  // lcs[i][j]: the length of the longest common run of words in before[i..] and after[j..].
-  const width = after.length + 1;
-  const lcs = new Uint16Array((before.length + 1) * width);
-  for (let i = before.length - 1; i >= 0; i -= 1) {
-    for (let j = after.length - 1; j >= 0; j -= 1) {
-      lcs[i * width + j] = before[i] === after[j] ? lcs[(i + 1) * width + j + 1]! + 1 : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
-    }
+  const plain = (text: string): string => text
+    .replace(/\[([^\]]*)\]\(([^)\s]*)[^)]*\)/gu, "$1 $2")
+    .replace(/\[([^\]|]*)\|([^\]]*)\]/gu, "$1 $2")
+    .replace(/<a\s[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gisu, "$2 $1");
+  const key = (word: string): string => word.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+  // A word with no letter or digit, or a Jira heading marker (`h2.`), is markup and counts for nothing.
+  const words = (text: string): Array<{ word: string; key: string }> => plain(text).split(/\s+/u).flatMap((word) => { const k = key(word); return k === "" || /^h[1-6]\.$/iu.test(word) ? [] : [{ word, key: k }]; });
+  const remaining = new Map<string, number>();
+  for (const { key: k } of words(previous)) remaining.set(k, (remaining.get(k) ?? 0) + 1);
+  const added: string[] = [];
+  for (const { word, key: k } of words(next)) {
+    const left = remaining.get(k) ?? 0;
+    if (left > 0) remaining.set(k, left - 1); else added.push(word);
   }
-  const inserted: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (j < after.length) {
-    if (i < before.length && before[i] === after[j]) { i += 1; j += 1; } else if (i < before.length && lcs[(i + 1) * width + j]! >= lcs[i * width + j + 1]!) { i += 1; } else { inserted.push(original[j]!); j += 1; }
-  }
-  return inserted.length === 0 ? undefined : inserted.join(" ");
+  return added.length === 0 ? undefined : added.join(" ");
 }

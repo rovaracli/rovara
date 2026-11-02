@@ -7,7 +7,7 @@ import { recordSearch } from "../../../packages/broker/src/team-record/query.js"
 import { ORG_A, addSource, caller, githubDraft, world } from "../../support/team-record-core.js";
 
 describe("addedText: an editor is credited with the words they added, never the author's", () => {
-  it("returns only the inserted words, in order, whole lines or not", () => {
+  it("returns only the words that are not in the earlier text, in the order written", () => {
     expect(addedText("a b", "a b c")).toBe("c");
     expect(addedText("a", "a a")).toBe("a");
     expect(addedText("hand.", "hand today.")).toBe("today.");
@@ -18,16 +18,31 @@ describe("addedText: an editor is credited with the words they added, never the 
     expect(addedText(line, line.replace("Tuesday", "Tuesdays"))).toBe("Tuesdays");
     expect(addedText("Fix cart total", "Fix the cart total")).toBe("the");
     expect(addedText("Cart total wrong", "Cart total wrong on Tuesdays")).toBe("on Tuesdays");
-    // The author's words around the edit are not in the result.
     expect(addedText(line, line.replace("by hand.", "by hand today."))).toBe("today.");
   });
-  it("fails closed: unknown earlier text, nothing added, or texts too long to compare give nothing", () => {
+  it("B2 leak (a): moving text credits nothing, because every word was already there", () => {
+    const first = "Priya wrote the migration plan with a rollback step for each table.";
+    const second = "Priya also wrote the on-call notes for the weekend rota.";
+    expect(addedText(`${first}\n\n${second}`, `${second}\n\n${first}`)).toBeUndefined();
+    expect(addedText("a b c d e f g h", "e f g h a b c d")).toBeUndefined();
+    // Moving a paragraph AND adding a word credits only the word.
+    expect(addedText(`${first}\n\n${second}`, `${second}\n\n${first} Also tested.`)).toBe("Also tested.");
+  });
+  it("B2 leak (b): wrapping a word in a link, a heading or a list keeps the word the author's; only the new URL is the editor's", () => {
+    expect(addedText("Ask Priya about it", "Ask [Priya](http://x.y/z) about it")).toBe("http://x.y/z");
+    expect(addedText("Ask Priya about it", "Ask [Priya|http://x.y/z] about it")).toBe("http://x.y/z");
+    expect(addedText("Ask Priya about it", 'Ask <a href="http://x.y/z">Priya</a> about it')).toBe("http://x.y/z");
+    expect(addedText("Ask Priya about it", "Ask **Priya** about it")).toBeUndefined();
+    expect(addedText("Context\nplan", "## Context\n- plan")).toBeUndefined();
+    expect(addedText("Context\nplan", "h2. Context\n* plan")).toBeUndefined();
+    // A punctuation change inside a word is not a new word.
+    expect(addedText("Priya's plan", "Priyas plan")).toBeUndefined();
+  });
+  it("fails closed: unknown earlier text or nothing added gives nothing", () => {
     expect(addedText(undefined, "x")).toBeUndefined();
     expect(addedText("a", undefined)).toBeUndefined();
     expect(addedText("a b", "a")).toBeUndefined();
     expect(addedText("Tuesday run", "tuesday   run!")).toBeUndefined();
-    const long = Array.from({ length: 2_001 }, (_, i) => `w${String(i)}`).join(" ");
-    expect(addedText(long, `${long} more`)).toBeUndefined();
   });
   it("an earlier text that was empty makes everything new; an unrelated rewrite is all the editor's", () => {
     expect(addedText("", "first words")).toBe("first words");
