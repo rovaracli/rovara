@@ -206,6 +206,9 @@ export const AUDIT_ACTIONS = [
   "company.known_failing_policy_proposed",
   "company.known_failing_policy_changed",
   "company.known_failing_policy_refused",
+  // Second review by another AI company (SR-1, switch `cr`): the company chose (or cleared) its reviewer models, and a project narrowed that choice. Counts and fixed words only: a model's name is not recorded.
+  "company.second_review_choice_changed",
+  "project.second_review_narrowed",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -448,6 +451,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.known_failing_policy_proposed": ["fromAlwaysTwo", "toAlwaysTwo"],
   "company.known_failing_policy_changed": ["fromAlwaysTwo", "toAlwaysTwo", "mode"],
   "company.known_failing_policy_refused": ["refusal"],
+  // `change` is `choose` or `clear`; `count` is how many models the choice now holds (0 to 2).
+  "company.second_review_choice_changed": ["change", "count"],
+  "project.second_review_narrowed": ["change", "count"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],
