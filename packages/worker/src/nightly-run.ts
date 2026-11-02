@@ -14,8 +14,8 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import {
-  CoverageMapSchema, NightlyResultSchema, TEST_ENV_PROVE_STEPS, agentXError, canonicalJson, testEnvDigest,
-  type CoverageMapData, type NightlyResult, type NightlyRunWire, type NightlyStepWord, type TestEnvCheck, type TestEnvironmentBody,
+  CoverageMapSchema, NightlyResultSchema, agentXError, canonicalJson, testEnvDigest,
+  type CoverageMapData, type NightlyResult, type NightlyRunWire, type NightlyStepWord, type TestEnvCheck, type TestEnvironmentBody, type TEST_ENV_PROVE_STEPS,
 } from "@agentx/contracts";
 import { nightlyCountsAndHealth, type NightlyRunFacts, type NightlyStepStatus } from "./nightly-health-report.js";
 import { proveEnvironment, type ProveCommandResult, type ProvePorts } from "./prove.js";

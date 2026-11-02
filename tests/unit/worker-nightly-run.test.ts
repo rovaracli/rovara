@@ -180,7 +180,7 @@ describe("the coverage map", () => {
     const f = fakes({ exits: { "pytest -q": { exitCode: 1 } }, reports: { "pytest -q": report(t("a", "failed")), "pytest -q tests/test_a.py::a": report(t("a", "passed")) }, map: MAP });
     const runCommand = f.ports.runCommand;
     f.ports.runCommand = (command, signal) => { order.push(`run:${command.args.join(" ")}`); return runCommand(command, signal); };
-    const build = f.ports.buildCoverageMap;
+    const build = f.ports.buildCoverageMap.bind(f.ports);
     f.ports.buildCoverageMap = (signal) => { order.push("map"); return build(signal); };
     const { result, coverageMap } = await night(f.ports, env({}, [
       { id: "unit", label: "Unit", command: cmd("pytest", ["-q"]), kind: "test", reportPath: "reports/junit.xml", selectArgs: ["{tests}"] },

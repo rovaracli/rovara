@@ -30,7 +30,7 @@ async function bench(): Promise<Bench> {
   return t;
 }
 const scheduledAt = () => new Date(Date.now() - 1_000).toISOString();
-const fire = (t: Bench, at = scheduledAt()) => t.handler({ source: NIGHTLY_SOURCE, orgId: TEST_ORG, project: NAME, scheduledAt: at } as never).then((response) => (typeof response === "object" && response !== null && "body" in response ? JSON.parse(String((response as { body: unknown }).body)) : response) as Record<string, unknown>);
+const fire = (t: Bench, at = scheduledAt()) => t.handler({ source: NIGHTLY_SOURCE, orgId: TEST_ORG, project: NAME, scheduledAt: at }).then((response) => (typeof response === "object" && response !== null && "body" in response ? JSON.parse(String((response as { body: unknown }).body)) : response) as Record<string, unknown>);
 const nightlyTasks = (t: Bench) => t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "nightly_run") as Array<Record<string, unknown> & { taskId: string; workspaceId: string }>;
 const ops = (t: Bench, workspaceId: string) => t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId) as Array<{ id: string; kind: string; workflowMode?: string }>;
 const outbox = (t: Bench, operationId: string) => WorkerInvocationSchema.parse((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0] as { invocation: unknown }).invocation);

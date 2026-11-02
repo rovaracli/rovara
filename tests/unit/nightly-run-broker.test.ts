@@ -1,7 +1,7 @@
 // NH-1: the nightly run on the broker's side. The fire starts a run (the project pays, as the person who approved the environment), the worker's result is accepted only for the run it was started for, and with the
 // switches off nothing runs and nothing is read.
 import { describe, expect, it, vi } from "vitest";
-import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { resolvePayer } from "../../packages/broker/src/spend/payer.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
@@ -91,7 +91,7 @@ describe("a fire starts the run", () => {
       requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: "dev_a" }, startedBy: { developerId: "dev_a" },
       payer: { kind: "project", project: PROJECT }, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD },
     });
-    expect(h.started[0]!["input"].text).toContain(PROJECT);
+    expect((h.started[0]!["input"] as { text: string }).text).toContain(PROJECT);
     expect(nightlyRequestId(slotOf())).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   });
 
@@ -141,7 +141,7 @@ describe("a fire starts the run", () => {
   it("a full budget or workspace limit at the start is a skipped night; a fault that may pass is thrown and gives the claims back", async () => {
     const h = await harness();
     for (const [code, reason] of [["ORG_BUDGET_EXCEEDED", "budget"], ["TASK_STOP_ZERO", "budget"], ["WORKSPACE_LIMIT", "workspace_limit"], ["PROJECT_ARCHIVED", "owner_unavailable"]] as const) {
-      h.startError.value = agentXError(code as never, "refused");
+      h.startError.value = agentXError(code, "refused");
       expect(await h.fireNow(), code).toEqual({ outcome: "skipped", reason });
     }
     h.startError.value = new Error("dispatch down");
@@ -281,14 +281,14 @@ describe("the result route", () => {
     const h = await harness();
     await h.fireNow();
     await record(h, result());
-    const stored = (await h.db.get({ pk: `ORG#${ORG}#PROJECT#${PROJECT}`, sk: "TESTENV#BASELINE#LATEST" })) as { health?: { class: string; cause?: string } } | undefined;
+    const stored = h.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#BASELINE#LATEST" }) as { health?: { class: string; cause?: string } } | undefined;
     expect(stored?.health?.class).toBe("tests");
     expect(stored?.health?.cause).toBeUndefined();
     // The same night with a health block whose counts are not the result's own reads as unclear.
     const h2 = await harness();
     await h2.fireNow();
     await record(h2, result({}, { tests: { total: 10, passed: 9, failures: 0, errors: 0, skipped: 1 } }));
-    const stored2 = (await h2.db.get({ pk: `ORG#${ORG}#PROJECT#${PROJECT}`, sk: "TESTENV#BASELINE#LATEST" })) as { health?: { class: string; cause?: string } } | undefined;
+    const stored2 = h2.db.get({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#BASELINE#LATEST" }) as { health?: { class: string; cause?: string } } | undefined;
     expect(stored2?.health).toMatchObject({ class: "unclear", cause: "steps_disagree" });
   });
 });
@@ -302,7 +302,7 @@ describe("the end of the task and the coverage map store", () => {
     expect(nightlyEndItems("T", task, { kind: "task", workflowMode: "CHECKS" }, { status: "CANCELLED" }, "x")[0]!.Update.ExpressionAttributeValues[":end"]).toMatchObject({ state: "CANCELLED" });
     expect(nightlyEndItems("T", task, { kind: "prepare" }, { status: "FAILED" }, "x")).toHaveLength(1);
     expect(nightlyEndItems("T", task, { kind: "prepare" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
-    expect(nightlyEndItems("T", { taskId: TASK, purpose: "setup_agent" as never }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
+    expect(nightlyEndItems("T", { taskId: TASK, purpose: "setup_agent" as const }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
     expect(nightlyEndItems("T", { taskId: TASK }, { kind: "task", workflowMode: "CHECKS" }, { status: "SUCCEEDED" }, "x")).toEqual([]);
   });
 
@@ -313,7 +313,7 @@ describe("the end of the task and the coverage map store", () => {
       const text = objects.get(command.input.Key);
       return text === undefined ? Promise.reject(new Error("NoSuchKey")) : Promise.resolve({ Body: { transformToString: () => Promise.resolve(text) } });
     } };
-    const store = s3CoverageMapStore(s3 as never, "bucket");
+    const store = s3CoverageMapStore(s3, "bucket");
     const map = { builtAt: new Date(T0).toISOString(), files: { "src/a.py": ["tests/a.py::t"] } };
     const digest = await store.put(ORG, PROJECT, map);
     expect(digest).toBe(coverageMapDigest(map));
