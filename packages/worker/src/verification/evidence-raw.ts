@@ -23,6 +23,7 @@ import { withIsolatedGit } from "../isolated-git.js";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { evidenceTests, parseTestReport } from "./test-report.js";
+import { withTestIds } from "./test-ids.js";
 
 export interface CollectEvidenceInput {
   /** The workspace root, where a check's report path is resolved from its cwd. */
@@ -112,7 +113,9 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
       const entry = entryOf(index);
       if (entry === undefined) continue;
       const read = await readCheckReport(input.rootPath, command).catch(() => undefined);
-      const parsed = read === undefined ? undefined : parseTestReport(read.text, read.kind);
+      const reported = read === undefined ? undefined : parseTestReport(read.text, read.kind);
+      // The tests in ID form (contracts `test-id.ts`), the same strings the nightly run and the known-failing marks use.
+      const parsed = reported === undefined ? undefined : await withTestIds(reported, { root: input.rootPath, cwd: command.cwd });
       const partial: CheckParts = { index, entry };
       if (parsed !== undefined) { partial.tests = evidenceTests(parsed, { changedTestPaths }); measured += parsed.total; }
       if (entry.after === "failed") { const tail = outputTailOf(entry.output); if (tail !== undefined) partial.outputTail = tail; }

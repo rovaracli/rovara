@@ -76,10 +76,14 @@ const STEP_CAUSE: Readonly<Record<(typeof NIGHTLY_HEALTH_SETUP_STEPS)[number], N
 /**
  * What one nightly run says about the project's health. `input` is parsed here, and anything that is not exactly the bounded shape is "unclear", never "passed".
  */
-export function classifyNightlyHealth(input: unknown): NightlyHealth {
+export function classifyNightlyHealth(input: unknown, context: { /** The broker's own approved environment for this night defines NO smoke check: a skipped `smoke` step is then all of its (no) checks passing. The worker's word is never used for this. */ noSmokeCheck?: boolean } = {}): NightlyHealth {
   const parsed = NightlyHealthInputSchema.safeParse(input);
   if (!parsed.success) return { class: "unclear", cause: "unreadable" };
-  const { steps, checks, tests } = parsed.data;
+  const { checks, tests } = parsed.data;
+  // The worker reports `smoke` skipped when the environment has no smoke check (it says only what ran). That is fine for the verdict only if the BROKER's approved environment, at the night's revision, really defines none.
+  const steps = context.noSmokeCheck === true
+    ? [...parsed.data.steps.filter((entry) => entry.step !== "smoke"), { step: "smoke" as const, status: (parsed.data.steps.find((entry) => entry.step === "smoke")?.status ?? "skipped") === "failed" ? "failed" as const : "passed" as const }]
+    : parsed.data.steps;
 
   // 1. a step before the tests failed (the earliest in the run's own order of steps)
   for (const step of NIGHTLY_HEALTH_SETUP_STEPS) {

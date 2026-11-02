@@ -62,7 +62,7 @@ export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string 
       }
       const counts = [`${number(tests.passed)} passed`, ...(tests.failed > 0 ? [`${number(tests.failed)} failed`] : []), ...(tests.errored > 0 ? [`${number(tests.errored)} errored`] : []), ...(tests.skipped > 0 ? [`${number(tests.skipped)} skipped`] : [])];
       // "Fails on the original code" is the broker's own TestProof's word, never the worker's per-test verdict in the pack.
-      const fails = proven === undefined ? undefined : tests.newTests.filter((name) => proven.has(Array.from(name).slice(0, 200).join(""))).length;
+      const fails = proven === undefined ? undefined : tests.newTests.filter((id) => proven.has(id)).length;
       const added = tests.newTests.length === 0 ? "" : `; ${number(tests.newTests.length)} new${fails === undefined ? "" : `, ${number(fails)} fail on the original code`}`;
       parts.push(`${label} ${mark}: ${counts.join(", ")}${added}`);
     } else if (check.kind === "security") {

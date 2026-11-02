@@ -175,7 +175,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "setup-agent">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "setup-agent" | "nightly-result">;
   expiresAt: number;
 }
 
@@ -302,6 +302,8 @@ export interface CapabilityOptions {
   contextTools?: boolean;
   /** SH14: a setup run (switch `su`) reports its journal, asks for websites and takes a person's commands through one action (`POST .../setup-agent`); granted only to a SETUP_AGENT operation. */
   setupAgent?: boolean;
+  /** NH-1: the nightly run reports its result through one action (`POST .../nightly-result`); granted only to the verification operation of a nightly task. */
+  nightlyResult?: boolean;
 }
 
 export function issueCapability(
@@ -339,6 +341,7 @@ export function issueCapability(
       ...(options.agentTools === true ? ["agent-tools" as const] : []),
       ...(options.contextTools === true ? ["context-tools" as const] : []),
       ...(options.setupAgent === true ? ["setup-agent" as const] : []),
+      ...(options.nightlyResult === true ? ["nightly-result" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,
   };

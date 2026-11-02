@@ -2,9 +2,10 @@
 // that test selection reads, the set of tests that already fail on the default branch (so a known failure is not a regression of the task), and the flaky set (a failure that passed on its one rerun).
 // Everything is bounded and holds ids and counts only: no test output, no message text. Nothing here imports a Node module.
 import { z } from "zod";
+import { TestIdSchema } from "./test-id.js";
 
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
-const TestId = z.string().min(1).max(500).regex(/^[^\p{Cc}\p{Cf}\s]+$/u, "a test id has no whitespace or control characters");
+const TestId = TestIdSchema;
 
 export const NIGHTLY_FAILED_MAX = 500;
 export const NIGHTLY_FLAKY_MAX = 500;
@@ -69,6 +70,10 @@ export const NightlyResultSchema = z
     flaky: z.array(TestId).max(NIGHTLY_FLAKY_MAX),
     /** The digest of the coverage map the run stored, when it recorded one (coverage contexts on). */
     coverageMapRef: Sha256.optional(),
+    /** How many of the failing tests have an id that is not valid (control or look-alike characters, too long): they are counted in `tests.failed` and left out of `failed`. The failing set is still whole for the rest. */
+    failedUnlisted: z.number().int().min(0).max(100_000_000).optional(),
+    /** The run built a coverage map and did not send it: the callback body would have been too large (a presigned upload is the follow-up). A result with this word names no map. */
+    coverageMapSkipped: z.literal("too_large").optional(),
     slowest: z.array(z.object({ id: TestId, durationMs: z.number().int().min(0) }).strict()).max(NIGHTLY_SLOW_MAX),
     /** The step words (SH27). Optional: a result from before them parses exactly as it did, and carries no health. */
     health: NightlyHealthReportSchema.optional(),
@@ -77,6 +82,8 @@ export const NightlyResultSchema = z
   .superRefine((result, context) => {
     if (result.tests.total !== result.tests.passed + result.tests.failed + result.tests.skipped) context.addIssue({ code: "custom", path: ["tests", "total"], message: "total is passed, failed and skipped together" });
     if (Date.parse(result.finishedAt) < Date.parse(result.startedAt)) context.addIssue({ code: "custom", path: ["finishedAt"], message: "a run finishes after it starts" });
+    if (result.failedUnlisted !== undefined && result.failedUnlisted + result.failed.length > result.tests.failed) context.addIssue({ code: "custom", path: ["failedUnlisted"], message: "the failing tests listed and left out are the failing tests" });
+    if (result.coverageMapSkipped !== undefined && result.coverageMapRef !== undefined) context.addIssue({ code: "custom", path: ["coverageMapSkipped"], message: "a map that was not sent is not named" });
     if (new Set(result.failed).size !== result.failed.length || new Set(result.flaky).size !== result.flaky.length) context.addIssue({ code: "custom", path: ["failed"], message: "a test appears once" });
     if (result.flaky.some((id) => result.failed.includes(id))) context.addIssue({ code: "custom", path: ["flaky"], message: "a test that failed again on the rerun is failing, not flaky" });
   });
@@ -95,12 +102,14 @@ export const NightlyBaselineSchema = z
     flaky: z.array(TestId).max(NIGHTLY_FLAKY_MAX),
     coverageMapRef: Sha256.optional(),
     coverageMapBuiltAt: z.string().datetime().optional(),
+    /** The failing tests whose ids were left out of `failed` as not valid (see the result). The baseline's failing set is whole when `failed` and this add up to `tests.failed`. */
+    failedUnlisted: z.number().int().min(0).max(100_000_000).optional(),
   })
   .strict();
 export type NightlyBaseline = z.infer<typeof NightlyBaselineSchema>;
 
 /** Why a fire did not start a run (fixed words). */
-export const NIGHTLY_SKIP_REASONS = ["environment_missing", "nightly_off", "branch_changed", "no_merges", "head_unreadable", "still_running", "already_handled", "stale_fire", "budget", "ran_recently"] as const;
+export const NIGHTLY_SKIP_REASONS = ["environment_missing", "nightly_off", "branch_changed", "no_merges", "head_unreadable", "still_running", "already_handled", "stale_fire", "budget", "ran_recently", "owner_unavailable", "workspace_limit", "branch_not_default", "registries_unsupported", "services_unsupported"] as const;
 export type NightlySkipReason = (typeof NIGHTLY_SKIP_REASONS)[number];
 
 // ---- the coverage map

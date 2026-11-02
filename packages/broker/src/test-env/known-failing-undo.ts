@@ -8,7 +8,7 @@
 // Every removal is one transaction that holds only while the list is at the version it was read at, and carries its audit event. Nothing a worker, a model or a repository prints is read.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, type NightlyBaseline, type OrgId } from "@agentx/contracts";
+import { NIGHTLY_FLAKY_MAX, agentXError, type NightlyBaseline, type OrgId } from "@agentx/contracts";
 import { auditOccurrence, auditProjectKnownFailingRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";
@@ -74,6 +74,8 @@ export function nightShowsPassing(night: Pick<NightlyRecorded, "baseline" | "hea
   const health = night.health;
   // A night without step words cannot say the setup worked, so it never expires a mark.
   if (health === undefined) return false;
+  // A flaky list that hit its cap may be missing tests that failed once: a mark absent from it is not shown passing (the failing list is checked whole by `nightlyBaselineUsable`; ids that are not safe are never in a mark).
+  if (night.baseline.flaky.length >= NIGHTLY_FLAKY_MAX) return false;
   return health.class === "passed" || (health.class === "tests" && health.setupProved === true);
 }
 

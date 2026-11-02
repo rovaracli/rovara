@@ -220,7 +220,9 @@ export interface DeveloperTaskRecord {
    * Plan 6, Task 10: the task is Rovara drafting a project's dev setup (read-only look at the repositories; its result is a proposal in the project's `SETUP_DRAFT` item). It is
    * no workflow and no agent-step run: its result sets `agentRunEnd`, which is how it gives back its workspace, and it never feeds the run-cost estimates.
    */
-  purpose?: "setup_draft" | "diagnosis" | "setup_agent";
+  purpose?: "setup_draft" | "diagnosis" | "setup_agent" | "nightly_run";
+  /** NH-1: what a `purpose: "nightly_run"` task was started to run, fixed by the broker when the fire started it (slot, environment revision, branch, the commit it resolved). The nightly result is accepted only for exactly this. */
+  nightlyRun?: { slotId: string; envRevision: number; branch: string; headSha: string };
   /**
    * Live interaction F3 (Fix with agent, deep tier): a `purpose: "diagnosis"` task reads the repositories read-only to diagnose the error `errorRef` names (codes and ids only). It is no workflow and no agent-step
    * run: like a setup draft its end sets `agentRunEnd` and it never feeds the run-cost estimates, and its answer is written to `DIAGNOSIS#<diagnosisId>` in the same transaction (diagnosis/deep.ts).
@@ -328,7 +330,7 @@ export interface DeveloperTaskPointerRecord {
   /** The first instructions, until the prepare's result queues them (R3). */
   pendingPrompt?: string;
   /** The first plan-only operation is selected by the broker, never by the request. */
-  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT" | "SETUP_AGENT";
+  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT" | "SETUP_AGENT" | "CHECKS";
   /** Set when the task was cancelled before its instructions ran (R16). */
   cancelledAt?: string;
 }

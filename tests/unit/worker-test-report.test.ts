@@ -1,5 +1,6 @@
 // Proof and evidence P2: reading a check's own JUnit or vitest/jest JSON report into totals, names, new tests and skip counts. Fail closed: a file that is not a report, is empty, too big or holds no test is "not measured".
 import { describe, expect, it } from "vitest";
+import { isValidTestId } from "@agentx/contracts";
 import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
 import { evidenceTests, parseGoTestJson, parseJsonReport, parseJunit, parseTestReport, plainName, skipRise, skippedOutsideChanged, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
 
@@ -23,7 +24,7 @@ describe("JUnit", () => {
     expect(parseJunit(PYTEST.replace('tests="5"', 'tests="500"').replace('failures="1"', 'failures="0"'))).toMatchObject({ total: 5, failed: 1 });
   });
   it("reads each test's file from the file attribute or the class name, its name unescaped and its time as milliseconds", () => {
-    expect(report.tests[0]).toEqual({ file: "tests/test_match", name: "test_no_region", status: "passed", durationMs: 12 });
+    expect(report.tests[0]).toEqual({ file: "tests/test_match", name: "test_no_region", status: "passed", durationMs: 12, classname: "tests.test_match" });
     expect(report.tests[4]?.name).toBe("test_top5[a & b]");
     expect(parseJunit('<testsuite><testcase classname="a/b.py" file="a/b.py" name="t"/></testsuite>')?.tests[0]?.file).toBe("a/b.py");
   });
@@ -38,7 +39,10 @@ describe("JUnit", () => {
   });
   it("reads a bare testsuite and numeric entities", () => {
     expect(parseJunit('<testsuite><testcase name="caf&#233; &#x1F600;"/></testsuite>')?.tests[0]?.name).toBe("café \u{1F600}");
-    expect(parseJunit('<testsuite><testcase name="bad &#0; &#xD800;"/></testsuite>')?.tests[0]?.name).toBe("bad");
+    // A name is kept as the report wrote it (NH-1: the test's id is built from it); a control character or a lone surrogate in it makes the ID not valid, which is how it is kept out of every list that is matched.
+    const odd = parseJunit('<testsuite><testcase name="bad &#0; &#xD800;"/></testsuite>')?.tests[0]?.name ?? "";
+    expect(odd.startsWith("bad")).toBe(true);
+    expect(isValidTestId(odd)).toBe(false);
   });
   it("is not measured when it is not a report, holds no test, or has too many tests", () => {
     expect(parseJunit("<html><body>not junit</body></html>")).toBeUndefined();
@@ -166,14 +170,14 @@ describe("evidence tests", () => {
   const view = evidenceTests(report, { changedTestPaths: changed, proofByTest: new Map([["test_no_region", "proves_change"], ["test_top5[a & b]", "does_not_prove"]]) });
   it("keeps the totals, lists failing and errored tests first, then touched tests, then the rest", () => {
     expect(view).toMatchObject({ total: 5, passed: 2, failed: 1, errored: 1, skipped: 1 });
-    expect(view.names.map((entry) => entry.name)).toEqual(["test_scores_partner", "test_timeout", "test_no_region", "test_slow", "test_top5[a & b]"]);
+    expect(view.names.map((entry) => entry.name)).toEqual(["tests/test_match::test_scores_partner", "tests/test_rank::test_timeout", "tests/test_match::test_no_region", "tests/test_rank::test_slow", "tests/test_rank::test_top5[a & b]"]);
   });
   it("names the tests the change added or changed (not skipped ones) as new", () => {
-    expect(view.newTests).toEqual(["test_no_region", "test_scores_partner"]);
+    expect(view.newTests).toEqual(["tests/test_match::test_no_region", "tests/test_match::test_scores_partner"]);
   });
   it("attaches TESTPROOF's verdict to a touched test only", () => {
-    expect(view.names.find((entry) => entry.name === "test_no_region")?.proof).toBe("proves_change");
-    expect(view.names.find((entry) => entry.name === "test_top5[a & b]")?.proof).toBeUndefined();
+    expect(view.names.find((entry) => entry.name === "tests/test_match::test_no_region")?.proof).toBe("proves_change");
+    expect(view.names.find((entry) => entry.name === "tests/test_rank::test_top5[a & b]")?.proof).toBeUndefined();
   });
   it("caps names at 500 and new tests at 100, with the totals still true", () => {
     const tests = Array.from({ length: 700 }, (_, index) => ({ file: "tests/test_match.py", name: `t${String(index)}`, status: "passed" as const }));
@@ -282,7 +286,9 @@ describe("go test -json", () => {
   });
   it("redacts and cuts a test name, and bounds the number of tests", () => {
     const name = `Test${"x".repeat(500)}`;
-    expect(parseGoTestJson([ev({ Action: "run", Package: "p", Test: name }), ev({ Action: "pass", Package: "p", Test: name })].join("\n"))?.tests[0]?.name.length).toBeLessThanOrEqual(300);
+    expect(parseGoTestJson([ev({ Action: "run", Package: "p", Test: name }), ev({ Action: "pass", Package: "p", Test: name })].join("\n"))?.tests[0]?.name).toBe(name);
+    // Never cut silently: a name over the id limit is kept whole, and is simply not a valid id.
+    expect(isValidTestId(`p::${name}`)).toBe(false);
     const many = Array.from({ length: TEST_REPORT_MAX_TESTS + 1 }, (_, n) => ev({ Action: "pass", Package: "p", Test: `T${String(n)}` })).join("\n");
     expect(parseGoTestJson(many)).toBeUndefined();
   });
