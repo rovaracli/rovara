@@ -2,10 +2,11 @@
 // Raising applies at once; `on` only for a model whose evidence holds; LOWERING is a proposal a DIFFERENT admin approves (signed in within 10 minutes), with no sole-owner exception; every change is audited in its own transaction.
 import { afterEach, describe, expect, it } from "vitest";
 import { secondReviewModelKey } from "../../packages/contracts/src/index.js";
+import { SecondReviewStateSchema } from "../../packages/contracts/src/app-second-review.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
-import { seedHoldingEvidence, replayRun, verdictFor, BASELINE } from "../support/second-review-evidence.js";
+import { seedHoldingEvidence, seedTrackRow, replayRun, verdictFor, BASELINE } from "../support/second-review-evidence.js";
 import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -255,6 +256,19 @@ describe("a project's override", () => {
   it("a project name that holds the key separator is refused", async () => {
     const { t } = await bench();
     expect((await t.web(OMAR, "POST", PATH, { action: "mode", scope: "project", project: "a#b", mode: "shadow" })).status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("what the settings screen reads", () => {
+  it("is exactly the shape the app's strict contract describes, with and without the model that writes the code, for a project, with evidence, a pending request and a notice", async () => {
+    const { t, model } = await withEvidence();
+    const parse = (reply: { body: Record<string, unknown> }) => { const { requestId: _gateway, ...own } = reply.body; void _gateway; return SecondReviewStateSchema.safeParse(own); };
+    for (const query of [QUERY, PATH, `${QUERY}&project=${NAME}`]) { const parsed = parse(await t.web(OMAR, "GET", query)); expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues)).toBe(true); }
+    await setMode(t, OMAR, "on");
+    await setMode(t, OMAR, "shadow");
+    seedTrackRow(t.db, model, { at: "2026-10-02T12:00:00.000Z", task: "t1", fixed: 1 });
+    for (const who of [OMAR, MAYA]) { const parsed = parse(await t.web(who, "GET", QUERY)); expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues)).toBe(true); }
+    expect(parse(await t.web(OMAR, "GET", QUERY)).data).toMatchObject({ pendingLowering: true, evidence: { holds: true }, trackRecord: { reviews: 1, agreed: 1 } });
   });
 });
 
