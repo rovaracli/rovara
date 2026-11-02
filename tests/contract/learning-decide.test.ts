@@ -1137,7 +1137,7 @@ describe("erase emits rule.withdrawn with the cause `erased`, through the wiring
 
   it("broker.ts builds both the erase hook and the walk-resume job through it, with the install's ledger", () => {
     const source = readBrokerSource();
-    expect(source).toMatch(/eraseLearning: learningEraseHook\(learningWalkDeps\(\{[^}]*audit[^}]*\}\)\)/);
+    expect(source).toMatch(/eraseLearning: learningEraseHook\(learningWalkDeps\(\{[^}]*audit[^}]*\}\)[,)]/);
     expect(source).toMatch(/resumeOpenLearningWalks\(learningWalkDeps\(\{[^}]*audit: dependencies\.audit[^}]*\}\)/);
   });
 

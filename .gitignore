@@ -49,3 +49,6 @@ graph-state.lock
 
 # TypeScript browser-test build output
 .test-build/
+
+# Agents' scratch copies (reviewers and builders keep these inside a worktree); never committed.
+/scratchpad/
