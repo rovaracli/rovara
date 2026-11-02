@@ -17,6 +17,8 @@ export * from "./prepare.js";
 export * from "./readiness.js";
 export * from "./repository-context.js";
 export * from "./repository-credentials.js";
+export * from "./registry-credentials.js";
+export * from "./registry-config.js";
 export * from "./reconcile.js";
 export * from "./resume.js";
 export * from "./run-task.js";

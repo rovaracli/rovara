@@ -1288,6 +1288,21 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).meta).toEqual(meta);
       });
 
+      it("refuses a preparation that brings the project's package registries on a worker that lacks prepare.registries.v1, and sends it unchanged to one that has it (N9)", async () => {
+        const registries = [{ name: "internal-npm", kind: "codeartifact", format: "npm", url: "https://acme-123456789012.d.codeartifact.us-west-2.amazonaws.com/npm/shared/" }];
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", registries } } as unknown as WorkerInvocation };
+        for (const features of [undefined, [], ["task.agentRun", "prepare.metaRepo"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+          expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+          expect(refused?.message).toContain("package registries need a newer worker");
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["prepare.registries.v1"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).registries).toEqual(registries);
+      });
+
       it("never drops a governed model policy binding for an older or unprobed worker",async()=>{
         const modelPolicy={version:1,stage:"build",companyRevision:0,recipeDigest:"a".repeat(64)};
         const record=taskRecord({model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},modelPolicy});

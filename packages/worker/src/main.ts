@@ -5,6 +5,8 @@ import { OperationJournal } from "./journal.js";
 import { prepareWorkspace, preparedBaseResult } from "./prepare.js";
 import { createWorkerCallbackSinks } from "./callback-client.js";
 import { createRepositoryCredentialProvider } from "./repository-credentials.js";
+import { createRegistryCredentialProvider } from "./registry-credentials.js";
+import { removeLeftoverRegistryConfigs } from "./registry-config.js";
 import { runTaskInvocation } from "./run-task.js";
 import { publishWorkspace } from "./publish.js";
 import { maintainPullRequest } from "./maintain-pull-request.js";
@@ -41,6 +43,8 @@ const trustedRuntimeBackingOwner = CONTAINED_RUNTIME_PROFILE?.id === "linux-arm6
 const invokeAuthentication = invokeAuthenticationFromEnvironment();
 // Pi installs no package for the worker (R56): a settings file's `packages` would otherwise make it run `npmCommand` here.
 process.env.PI_OFFLINE = "1";
+// N9: a preparation that crashed may have left a package registry's config (and its token) in the workspace; it is removed before any task runs.
+await removeLeftoverRegistryConfigs(rootPath).catch(() => 0);
 // R56: where a project without a devcontainer runs its commands comes from the environment (always the task sandbox on EC2),
 // so a bad AGENTX_TASK_SHELL, or a request for the local shell on EC2, stops the worker here, not on its first task.
 if (taskShellSelection().kind === "sandbox") {
@@ -98,6 +102,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
           // Meta repo lane A3: the project's meta repository, read-only and sparse.
           ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
+          // N9 (INTG2): the project's private package registries, for the setup and readiness commands.
+          ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
         });
         return {
           manifestPath: ".agentx/preparation-manifest.json",

@@ -53,6 +53,7 @@ export const SYNTH_CONTEXT_KEYS = [
   "rovaraMcpControllerTlsSecretArn",
   "rovaraMcpControllerDnsNamespace",
   "rovaraMcpControllerCa",
+  "rovaraCodeArtifactDomains",
   "agentxReservedConcurrency",
   "agentxRovaraOrgId",
   "evidenceRetentionDays",

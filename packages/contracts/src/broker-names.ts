@@ -180,6 +180,8 @@ export const BROKER_SETTINGS = {
   testEnvironment: { code: "ev", variable: "TEST_ENVIRONMENT_ENABLED" },
   // Lessons reach the agent (follow-up S3 of the wire-lessons review): approved lessons are loaded into an agent's prompt only when this install switch is exactly "1". Stack parameter LearnedLessonsEnabled, "0" by default, SEPARATE from the Team record flag (`tn`): turning the record on to collect and show things does not, by itself, send a lesson to an agent. The broker reads it as LEARNED_LESSONS_ENABLED. Packed setting, not a Lambda variable (ENV-ROOM).
   learnedLessons: { code: "ll", variable: "LEARNED_LESSONS_ENABLED" },
+  // Project registries (N9, INTG2): a project's private package registries reach the worker's setup. Present ONLY when the install is synthesised with `rovaraCodeArtifactDomains` (infra/lib/registry-access.ts), which also grants the broker the one named CodeArtifact domain; absent otherwise, and the broker reads absence as OFF. On only when exactly "1" (project-registries/switch.ts). Packed setting, not a Lambda variable (ENV-ROOM).
+  projectRegistries: { code: "pr", variable: "PROJECT_REGISTRIES_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

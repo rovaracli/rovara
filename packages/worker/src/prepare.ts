@@ -16,6 +16,7 @@ import {
   agentXError,
   redactText,
   type PrepareMeta,
+  type PrepareRegistry,
   type ProjectCommand,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
@@ -40,6 +41,9 @@ import type {
   RepositoryCloneCredential,
   RepositoryCredentialProvider,
 } from "./repository-credentials.js";
+import { openRegistrySession, removeLeftoverRegistryConfigs, type RegistrySession } from "./registry-config.js";
+import { RegistryTokenLeakError, wipeWorkspaceForTaint } from "./registry-guard.js";
+import type { RegistryCredentialProvider } from "./registry-credentials.js";
 
 const MANIFEST_PATH = ".agentx/preparation-manifest.json";
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
@@ -97,6 +101,11 @@ export interface PreparationManifest {
   complete: boolean;
   updatedAt: string;
   failure?: string;
+  /**
+   * N9 (B2, S2): a package registry token was, or may have been, left where the agent can read it. A tainted workspace is never resumed or reused: the next preparation removes everything
+   * the project's code made and clones again (`wipeWorkspaceForTaint`).
+   */
+  tainted?: boolean;
 }
 
 export type RepositoryMaterializer = (
@@ -152,6 +161,13 @@ export interface PrepareWorkspaceOptions {
   pullRequestRemote?: (repository: StoredProjectDefinition["repositories"][number]) => string;
   /** Tests only: how the credentialed pull request fetch runs Git (the real Git by default). */
   gitRunner?: CredentialedGitRunner;
+  /**
+   * N9 (INTG2): the project's private package registries. For the setup and readiness commands only, each registry's short-lived token is asked of the broker, its config is written
+   * outside every repository, and every command's output is scrubbed for the tokens; the config is removed when the preparation ends (registry-config.ts). Sent only to a worker that lists
+   * `prepare.registries.v1`; a project with a devcontainer is refused (the config folder is not mounted there).
+   */
+  registries?: readonly PrepareRegistry[];
+  registryCredentialProvider?: RegistryCredentialProvider;
   /** The waits and log of the "Repository not found" retry (see `retryRepositoryNotFound`); tests replace them. */
   cloneRetry?: CloneRetryOptions;
 }
@@ -230,6 +246,12 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   const runtimeBackingPath = options.trustedRuntimeBackingOwner === undefined
     ? undefined
     : resolve(canonicalRoot, RUNTIME_BACKING_DIRECTORY);
+  if ((options.registries ?? []).length > 0 && target !== undefined) {
+    throw new Error("a project with a devcontainer cannot use private package registries yet");
+  }
+  if ((options.registries ?? []).length > 0 && options.registryCredentialProvider === undefined) {
+    throw new Error("package registries need the broker's credential exchange");
+  }
   const devcontainerCli = target === undefined ? undefined : options.devcontainerCli ?? createDevcontainerCli();
   // With a devcontainer, setup and readiness run in it, like the agent's shell; without one, in the task sandbox (R56).
   const sandbox = readOnly || options.commandRunner !== undefined || (target !== undefined && devcontainerCli !== undefined)
@@ -241,11 +263,20 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       : sandbox !== undefined
         ? (command: ProjectCommand) => sandbox.runCommand(command)
         : (command: ProjectCommand, index: number, root: string) => runProjectCommand(command, index, root, undefined, true));
+  // A crashed preparation may have left a registry config (and a token) behind: removed before anything else runs.
+  await removeLeftoverRegistryConfigs(canonicalRoot);
+  let registrySession: RegistrySession | undefined;
   let manifest = await loadOrCreateManifest(
     canonicalRoot,
     project,
     options.creationIdentity ?? "agentx-worker",
   );
+  // N9: a tainted workspace is never resumed. Everything the project's code made is removed, and this attempt starts from a fresh clone and a fresh manifest.
+  if (manifest.tainted === true) {
+    await wipeWorkspaceForTaint(canonicalRoot);
+    await rm(resolve(canonicalRoot, MANIFEST_PATH), { force: true });
+    manifest = await loadOrCreateManifest(canonicalRoot, project, options.creationIdentity ?? "agentx-worker");
+  }
 
   // A finished workspace is reused as it is, so the meta repository it holds must be the one asked for now (a task never reads a commit the broker did not pin for it).
   if (options.meta !== undefined && manifest.complete) {
@@ -258,6 +289,18 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   }
 
   try {
+    // N9: the registries' tokens exist from here to the end of this preparation, for the setup and readiness commands only. They are asked for FIRST: the repository grant
+    // that authorizes the request lives 15 minutes from the invocation, and a slow clone must not outlast it. No token reaches a clone, which runs none of the project's code.
+    if ((options.registries ?? []).length > 0) {
+      registrySession = await openRegistrySession({
+        rootPath: canonicalRoot,
+        registries: options.registries!,
+        provider: options.registryCredentialProvider!,
+        onDiagnostic: options.onDiagnostic ?? logPreparationDiagnostic,
+      });
+    }
+    const run: PreparationCommandRunner = registrySession === undefined ? commandRunner : registrySession.wrap(commandRunner);
+
     for (const repository of project.repositories) {
       if (manifest.repositories.some((entry) => entry.name === repository.name)) continue;
       const destination = containedPath(canonicalRoot, repository.path);
@@ -332,8 +375,10 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       if (manifest.completedSetupSteps.includes(index)) continue;
       let result: CommandResult;
       try {
-        result = await commandRunner(command, index, canonicalRoot);
+        result = await run(command, index, canonicalRoot);
       } catch (error) {
+        // A leaked registry token is not a step result: it stops the preparation and taints the workspace.
+        if (error instanceof RegistryTokenLeakError) throw error;
         // For example, the step's directory does not exist: still say which step (#154).
         result = { exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : "setup command could not run" };
       }
@@ -348,8 +393,11 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
 
     const readiness = await evaluateReadiness(
       { rootPath: canonicalRoot, commands: project.readiness },
-      commandRunner,
+      run,
     );
+    // The readiness runner turns an error into a result; a leak found by a check's scan is thrown here instead.
+    const leak = registrySession?.leak();
+    if (leak !== undefined) throw leak;
     const readinessFailure = readiness.ready ? undefined : describeReadinessFailure(project.readiness, readiness.results);
     // Spec 051 Ruling M: before the workspace is READY, so a task never plans from an outcome this preparation replaced.
     if (readiness.ready) await resetCheckHistory(canonicalRoot, project.readiness, options.onDiagnostic ?? logPreparationDiagnostic);
@@ -369,10 +417,20 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   } catch (error) {
     const message = error instanceof Error ? error.message : "workspace preparation failed";
     // The manifest is on the workspace disk: a clone, Git or devcontainer error can carry a secret (#170).
-    await writeManifest(canonicalRoot, { ...manifest, complete: false, failure: redactText(message) });
+    // A leaked registry token taints the workspace: it is not resumed, and the next attempt clones again.
+    await writeManifest(canonicalRoot, { ...manifest, complete: false, ...(error instanceof RegistryTokenLeakError ? { tainted: true } : {}), failure: registrySession === undefined ? redactText(message) : registrySession.scrub(redactText(message)) });
     throw error;
   } finally {
+    // The registries' config first: nothing that fails after it can leave a token on the disk. A config that cannot be removed fails the preparation and taints the workspace (S2).
+    let removalFailure: unknown;
+    try { await registrySession?.dispose(); } catch (disposeError) { removalFailure = disposeError; }
     await sandbox?.dispose();
+    if (removalFailure !== undefined) {
+      await writeManifest(canonicalRoot, { ...manifest, complete: false, tainted: true, failure: removalFailure instanceof Error ? removalFailure.message : "the package registry config could not be removed" }).catch(() => undefined);
+      // Deliberate: a token that could not be removed fails the preparation, whatever the body returned or threw.
+      // eslint-disable-next-line no-unsafe-finally
+      throw removalFailure instanceof Error ? removalFailure : new RegistryTokenLeakError();
+    }
   }
 }
 
@@ -466,6 +524,8 @@ async function loadOrCreateManifest(
   const path = resolve(rootPath, MANIFEST_PATH);
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as PreparationManifest;
+    // A tainted manifest is wiped by the caller, whatever revision it was pinned to.
+    if (parsed.tainted === true) return parsed;
     if (
       parsed.schemaVersion !== 2 ||
       parsed.projectName !== project.name ||

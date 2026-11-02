@@ -12,6 +12,7 @@ import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { SettingOriginSchema, type SettingOrigin } from "./provenance.js";
 import { SpecTargetSchema } from "./spec-target.js";
 import { ExternalIdSchema, PluginKindSchema } from "./plugins/common.js";
+import { ProjectRegistriesSchema } from "./project-registries.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
@@ -295,6 +296,8 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
       readiness: z.array(ProjectCommandSchema).max(64),
       devcontainer: DevcontainerDefinitionSchema.optional(),
       network: ProjectNetworkSchema.optional(),
+      /** N9 (INTG2): the project's private package registries. Where they are and which credential reference reaches them, never a token. Control-plane only (`workerProjectDefinition`). */
+      registries: ProjectRegistriesSchema.optional(),
       orchestratorInstructions: z.string().min(1).max(32_768),
       models: ProjectModelsSchema.optional(),
       integrations: z.object({
@@ -458,9 +461,11 @@ export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
  * alone (the DNS firewall enforces `network`, the broker's start check the pins).
  * `includeMeta` keeps a meta repository that is not also code, for the one run that reads it whole (the setup draft).
  */
-export function workerProjectDefinition<Definition extends object>(definition: Definition, options: { includeMeta?: boolean } = {}): Omit<Definition, "network" | "origins" | "specTarget"> {
+export function workerProjectDefinition<Definition extends object>(definition: Definition, options: { includeMeta?: boolean } = {}): Omit<Definition, "network" | "origins" | "specTarget" | "registries"> {
   const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
   delete rest.network;
+  // N9: the registries reach a worker as the prepare payload's `registries` (where, never how), only if it lists `prepare.registries.v1`; an earlier worker's strict schema does not know the field.
+  delete rest.registries;
   // Meta repo lane A: who set each setting is the control plane's too.
   delete rest.origins;
   // Lane D: where specs are written is the control plane's (the broker renders and publishes them); an earlier worker's strict schema does not know it.
@@ -483,7 +488,7 @@ export function workerProjectDefinition<Definition extends object>(definition: D
         return repository;
       });
   }
-  return rest as Omit<Definition, "network" | "origins" | "specTarget">;
+  return rest as Omit<Definition, "network" | "origins" | "specTarget" | "registries">;
 }
 
 function isPureMetaRepository(entry: unknown): boolean {
