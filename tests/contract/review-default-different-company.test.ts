@@ -50,6 +50,12 @@ describe("rule 2: no other company's model is usable, so today's behaviour stand
     expect(resolveStageModel(input("code_review", [sonnet, strange]))).toMatchObject({ kind: "resolved", model: strange });
     expect(resolveStageModel(input("code_review", [sonnet, strange]))).not.toHaveProperty("noOtherCompany");
   });
+  it("two unrecognised companies are never claimed to be the same company either", () => {
+    const first = { provider: "acme", modelId: "mystery-0" }, second = { provider: "acme", modelId: "mystery-1" };
+    const result = resolveStageModel(input("code_review", [first, second], { referenceModel: first }));
+    expect(result).toMatchObject({ kind: "resolved", model: second });
+    expect(result).not.toHaveProperty("noOtherCompany");
+  });
   it("the sentence is the fixed one, and the contract carries the flag to the page", () => {
     expect(reviewNoOtherCompanyLine(opus)).toBe("Review uses anthropic/claude-opus-4 (same company as the builder: no other company's model is available)");
     const shape = { model: opus, sourceId: "rovara", thinkingLevel: null, decidedBy: "rovara", locked: false, reason: "BUILTIN_DEFAULT", noOtherCompany: true };
@@ -77,6 +83,9 @@ describe("rule 4: explicit choices, forbidden models and approved lists", () => 
     const vendor = { differentFrom: { stage: "build" as const, level: "vendor" as const } };
     expect(resolveStageModel(input("code_review", [sonnet, opus], { projectChoice: vendor }))).toEqual({ kind: "refusal", code: "DIFFERENT_FROM_UNSATISFIABLE" });
     expect(resolveStageModel(input("code_review", [sonnet, opus], { requireDifferentVendor: true }))).toEqual({ kind: "refusal", code: "DIFFERENT_FROM_UNSATISFIABLE" });
+  });
+  it("the company guardrail is a rule, not the default: its pick keeps the ordinary reason", () => {
+    expect(resolveStageModel(input("code_review", undefined, { requireDifferentVendor: true }))).toMatchObject({ kind: "resolved", model: gpt, reason: "BUILTIN_DEFAULT" });
   });
   it("a forbidden other-company model is never the default; the next company's, then the same company's, is", () => {
     expect(resolveStageModel(input("code_review", undefined, { forbidden: [gpt] }))).toMatchObject({ model: gemini, reason: "DEFAULT_DIFFERENT_COMPANY" });
