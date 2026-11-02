@@ -15,6 +15,7 @@ import { listTeamChannels, readSlackBinding, slackBindingItem } from "../../org/
 import { getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, requireOperation } from "../cancellation.js";
 import { effectiveProjectRole, viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { effectiveTaskOwner, taskKey, taskOwnerKey, taskOwnerSubject, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { requirePerson } from "../../developer/system-owner.js";
 import { hashJson } from "../broker-shared.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { taskSpendBaseline } from "../../org/budget.js";
@@ -206,6 +207,8 @@ export async function newWorkspacePreparation(
  */
 export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies): SpendRequestHost {
   const asOwner = async (orgId: OrgId, developerId: string, orgRole?: OrgRole) => {
+    // Nothing acts AS a project's system owner (automatic runs): a spend request or a Continue is a person's.
+    requirePerson(developerId, "act as the owner");
     const developer = dependencies.developer;
     if (developer === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "developer sign-in is not set up in this deployment");
     const record = await agents.signInStore.getDeveloper(developerId);

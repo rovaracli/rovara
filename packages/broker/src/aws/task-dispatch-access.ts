@@ -1,9 +1,10 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
+import { OrgIdSchema, OrgRoleSchema, agentXError, isSystemOwnerId, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
+import { systemOwnerStands } from "../developer/system-owner.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
 import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
@@ -284,6 +285,24 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
       const sidecar = await get<{ revision?: unknown }>(guardDeps, { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" });
       await park(guardDeps, record, pointer, task, sidecar === undefined ? undefined : Number(sidecar.revision), "OWNERLESS");
       return "PARKED";
+    }
+    // A project's system owner (automatic runs) is judged by its standing, not by a person's membership: the company is open and the project is active. It has no People sidecar (a task with no share has none, and no
+    // person is added to it), so a sidecar that is there is a fault and the fence below, which needs none, refuses. A system owner that does not stand pauses the operation, as an ownerless task does.
+    const ownerId = tryEffectiveTaskOwner(task)!.developerId;
+    if (isSystemOwnerId(ownerId)) {
+      const orgId = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
+      const stands = await systemOwnerStands(guardDeps, orgId.success ? orgId.data : deps.orgId!, task.project).catch(() => undefined);
+      if (stands === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the standing of the project's automatic runs could not be verified");
+      if (!stands) {
+        if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
+        await park(guardDeps, record, pointer, task, undefined, "OWNERLESS");
+        return "PARKED";
+      }
+      if (await allowedStillCurrent(guardDeps, record, pointer, task, undefined, undefined)) {
+        deps.admission?.assertOpen();
+        return "ALLOWED";
+      }
+      continue;
     }
     const access = await resolveTaskDispatchPeople(guardDeps, task);
     // Plan 2, Task 21: a task with no People sidecar is its owner's alone, and an owner who holds the viewer role in its project starts no work on it. A task with a

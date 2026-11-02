@@ -8,6 +8,7 @@ import { verifyTaskPullRequestFeedbackCurrent } from "../github-webhooks.js";
 import { ownerAnswersFor } from "../../developer/owner-answers.js";
 import { loadWorkflowDocument, shortenMarkdown } from "../../developer/plan-artifacts.js";
 import { getItem, operationKey, type OperationRecord } from "../cancellation.js";
+import { personOwnerOf } from "../../developer/system-owner.js";
 import { effectiveTaskOwner, ownerDecisionCounts, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
 import { readTaskRecipe } from "../../agents/runs.js";
@@ -62,7 +63,7 @@ export async function logCallbackRefusal<T>(action: string, operation: Operation
  * else its creator, so `taskOwnerKey(caller.developerId, taskId)` is `ownerActorIdOf(task)`. A task whose owner can't be read gives no caller (it throws, and nothing runs).
  */
 export async function ownerCallerOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, sessionId: string): Promise<DeveloperCaller> {
-  const owner = effectiveTaskOwner(task);
+  const owner = personOwnerOf(effectiveTaskOwner(task));
   return {
     developerId: owner.developerId, sessionId, amr: owner.provider, name: owner.name, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const,
     ...(owner.slackUserId === undefined ? {} : { slackUserId: owner.slackUserId }),

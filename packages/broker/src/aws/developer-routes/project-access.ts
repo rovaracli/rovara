@@ -7,6 +7,8 @@ import {
   WORKSPACE_PROJECT_INDEX,
   WorkspaceInstanceSchema,
   agentXError,
+  isSystemOwnerId,
+  systemOwnerIdOf,
   workspaceProjectIndexValue,
   workspaceRecordFields,
   type ProjectRole,
@@ -39,6 +41,12 @@ export async function checkProjectAccess(
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
   const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
+  // A project's system owner (automatic runs) is no member: it holds no grant and is bound to no channel. Its access to ITS OWN project is the project's existence, as the project's own revision says, with the
+  // role that starts work; the tasks-off switch is for people's tasks from AI tools and does not stop an automatic run. Any other id with the system owner's session is refused (it is built for one project only).
+  if (isSystemOwnerId(caller.developerId)) {
+    if (caller.developerId !== systemOwnerIdOf(caller.orgId, project)) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
+    return { revision: known.revision, policy: known.policy, access: "granted", channelIds: [], role: "contributor" };
+  }
   const grant = (await grantRowsOf(deps, caller)).find((row) => row.projectName === project)?.grant;
   const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => binding.projectName === project);
   // An org owner or admin counts as granted on every project in their org, with no grant (Plan 2, Task 11, I4). A project of another org

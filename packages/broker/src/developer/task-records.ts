@@ -45,6 +45,8 @@ import {
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
+  SYSTEM_OWNER_PROVIDER,
+  type AutomaticRunMark,
   type ErrorRef,
   type OrgId,
   type Payer,
@@ -97,9 +99,12 @@ export interface DeveloperTaskRecord {
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */
   modelKeyIds?: string[];
   developerId: string;
-  provider: DeveloperSignInMethod;
+  /** A person's sign-in method, or `system` for the system owner of automatic runs (no person signs in that way). */
+  provider: DeveloperSignInMethod | typeof SYSTEM_OWNER_PROVIDER;
   developerName: string;
   slackUserId?: string;
+  /** System-owned work (a project's automatic job): which job, and who approved the setup it runs. Set only with a system owner (`developerId`). */
+  automatic?: AutomaticRunMark;
   client: string;
   project: string;
   title: string;
@@ -324,7 +329,8 @@ export interface DeveloperTaskPointerRecord {
   entityType: "DEVELOPER_TASK_POINTER";
   taskId: string;
   developerId: string;
-  requester: DeveloperRequester;
+  /** Absent for a system owner (automatic runs): no person asked, so its operations name no requester. */
+  requester?: DeveloperRequester;
   conversationId: string;
   firstRequestId: string;
   /** The first instructions, until the prepare's result queues them (R3). */
@@ -382,7 +388,7 @@ export function taskOwnerKey(developerId: string, taskId: string): string {
 // ---- the effective owner (Plan 5 Task 12a)
 
 /** Who owns a task now: the creator's own fields, or the taker's once the task was taken over. */
-export interface TaskOwner { developerId: string; name: string; slackUserId?: string; provider: DeveloperSignInMethod }
+export interface TaskOwner { developerId: string; name: string; slackUserId?: string; provider: DeveloperSignInMethod | typeof SYSTEM_OWNER_PROVIDER }
 /** The taker, as `currentOwner` stores them, and when they took the task over. */
 export interface TaskCurrentOwner extends TaskOwner { since: string }
 /** What the owner functions read of a task: its creator's fields and its `currentOwner`. A `DeveloperTaskRecord` fits, and so does a stored row read as one. */
@@ -688,7 +694,7 @@ export function recentTaskEvents(newestFirst: readonly StoredEvent[], count: num
 export interface TurnParty {
   taskId: string;
   developerId: string;
-  provider: DeveloperSignInMethod;
+  provider: DeveloperSignInMethod | typeof SYSTEM_OWNER_PROVIDER;
   developerName: string;
   slackUserId?: string | undefined;
   client: string;

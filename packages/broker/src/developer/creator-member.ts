@@ -4,8 +4,9 @@
 // then ends with outcome `creator_removed` and that message as its reason. "Removed" is the member record gone with the removal's
 // tombstone present (OrgStore writes it in the same transaction): a person with no member record and no tombstone never joined. Their workspaces are left to the idle reaper.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, chainRunKey, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, isSystemOwnerId, chainRunKey, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
 import { paymentOfTask } from "../spend/payer.js";
+import { systemOwnerStands } from "./system-owner.js";
 import { hasTaskEndHandlers, onTaskEnded } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "../aws/task-end-row.js";
 import { effectiveTaskOwner, ownerFenceOf, taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
@@ -99,6 +100,11 @@ async function checkOwnerStillMember(deps: CreatorCheckDependencies, task: Devel
   const stored = OrgIdSchema.safeParse(task.orgId);
   const orgId = stored.success ? stored.data : deps.orgOf === undefined ? deps.orgId : await deps.orgOf(task);
   if (orgId === undefined) return;
+  // A project's system owner is no member to lose: it stands while the company is open and the project is there and active. It is never "removed", so nothing is recorded on the task; the work is refused.
+  if (isSystemOwnerId(owner.developerId)) {
+    if (!await systemOwnerStands(deps, orgId, task.project)) throw agentXError("TASK_ACCESS_DENIED", "This project's automatic runs can't continue: the project or the company is no longer active.");
+    return;
+  }
   // The owner, and the member who pays for the task when that is someone else: either gone since the work began stops it (a person who rejoined does not revive their old work).
   let start: Promise<string | undefined> | undefined;
   const workStart = () => (start ??= taskWorkStart(deps, orgId, task));

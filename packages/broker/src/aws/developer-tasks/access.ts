@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { type AgentXError, agentXError, type StartDeveloperTaskRequest } from "@agentx/contracts";
+import { type AgentXError, agentXError, isSystemOwnerId, type StartDeveloperTaskRequest } from "@agentx/contracts";
 import { aiToolTurn, taskKey, taskOwnerKey, isTaskOwner, isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TurnParty } from "../../developer/task-records.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
@@ -15,6 +15,8 @@ import { CLOSED_TASK, TASK_ID, get, iso, turnRecordFailed } from "./common.js";
  * write is counted and logged, and never hides the refusal.
  */
 export async function refuse(deps: DeveloperTaskRouteDependencies, turns: string, party: TurnParty, request: StartDeveloperTaskRequest, receivedAt: string, error: AgentXError): Promise<never> {
+  // A system owner's start is no AI tool's request: no turn record is kept of it (its refusals reach the caller as the error, and the audit trail names the automatic job).
+  if (isSystemOwnerId(party.developerId)) throw error;
   try {
     const record = aiToolTurn({
       party, turnId: randomUUID(), action: "start", phase: "refused", outcome: "refused", receivedAt, finishedAt: iso(deps),

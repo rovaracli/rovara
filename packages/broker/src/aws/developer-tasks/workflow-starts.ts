@@ -21,6 +21,7 @@ import {
   type E2EWorkflowAdmissionRef,
 } from "@agentx/contracts";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../../rovara-code/critic.js";
+import { personOwnerOf } from "../../developer/system-owner.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
@@ -288,7 +289,7 @@ export function automaticRetryDecision(workflow: WorkflowSnapshot, stage: "VERIF
  * Decisions it records are AGENTX's, not the owner's (mainline #408 sync: the caller gains the org and role the org-scoped routes need; owner ruling pending).
  */
 export function automaticCaller(deps: Pick<DeveloperTaskRouteDependencies, "orgId">, task: DeveloperTaskRecord): DeveloperCaller {
-  const owner = effectiveTaskOwner(task);
+  const owner = personOwnerOf(effectiveTaskOwner(task));
   return {
     developerId: owner.developerId, sessionId: "workflow-autofix", amr: owner.provider, name: owner.name, orgId: deps.orgId, orgRole: "member",
     ...(owner.slackUserId === undefined ? {} : { slackUserId: owner.slackUserId }),

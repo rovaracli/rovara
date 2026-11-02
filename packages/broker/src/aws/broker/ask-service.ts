@@ -10,7 +10,7 @@
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
-import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
+import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, isSystemOwnerId, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
 import { loadTaskPeople } from "../../developer/task-people.js";
 import { chosenOwnerNames } from "../../agent-sessions/owner-names.js";
@@ -157,6 +157,8 @@ export async function handleAskServiceRoute(
   }
   // At most ASK_KEYS_PER_ASK keys for one Ask (the service asks once per turn, and again only when a turn is delivered again): counted in the request item, conditional on the count read, before the key is made.
   await takeKeyPlace(ask, named, item);
+  // A system owner (automatic runs) has no model key to ask with: the task's provider is the system's only for such a task, and the Ask is refused.
+  if (task.provider === "system" || (askedBy !== undefined && isSystemOwnerId(askedBy))) throw agentXError("FORBIDDEN", "automatic runs can't be asked questions");
   const requester = askedBy === undefined ? undefined : { kind: "developer" as const, developerId: askedBy, provider: task.provider };
   // SY-7: the asker's standing is read after the level check and asserted again in the write that records the key, so a removal or ban in between refuses the key.
   const guard = askedBy === undefined ? undefined : requesterStandingGuard(dependencies.tableName, await developerStanding(dependencies, named.orgId, askedBy));
