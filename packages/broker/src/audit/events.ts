@@ -734,6 +734,11 @@ export function auditProjectLearningChanged(input: AuditBuilderBase & { projectN
   return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
 }
 
+/** `occurrence`: `auditOccurrence(project, new revision)`. A maintainer went back to the last proved setup (TE-4). */
+export function auditProjectSetupRestored(input: AuditBuilderBase & { projectName: string; revision: number; fromRevision: number; provenRevision: number }): AuditEventInput {
+  return build("project.setup_restored", input, { kind: "project", name: input.projectName }, { revision: input.revision, fromRevision: input.fromRevision, provenRevision: input.provenRevision });
+}
+
 /** One system bootstrap/upgrade occurrence, preserving numeric policies already set by an admin. */
 export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "bootstrap" | "upgrade"; mode: "rovara_estimate"; revision: number; ceilingMicrousd: number }): AuditEventInput {
   return build("spending.policy_seeded", input, { kind: "spend_policy", id: "task_stop" }, {

@@ -80,10 +80,37 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold", "settings_proof"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
+}
+
+/**
+ * TE-4: tells the person who saved setup commands in a browser that they failed their check on a fresh machine, with the check's own reason (already a redacted one-liner), once. The page has the banner and the
+ * Undo button; this is the message that sends them there. Read from the stored item, never from the notice. A person with no linked Slack was never given a notice.
+ */
+async function deliverSettingsProof(deps: NotifierDependencies, notice: Notice): Promise<string> {
+  if (notice.proofItem === undefined || notice.proofCheckId === undefined) return "invalid";
+  const key = notice.proofItem;
+  const row = await getItem<{ entityType?: unknown; project?: unknown; saved?: { checkRequestId?: unknown; status?: unknown; slackUserId?: unknown; reason?: unknown; notifiedAt?: unknown; noticeAt?: unknown } }>(deps, key);
+  const saved = row?.saved;
+  if (row?.entityType !== "PROJECT_SETTINGS_PROOF" || saved === undefined || saved.checkRequestId !== notice.proofCheckId || saved.status !== "failed" || typeof saved.slackUserId !== "string" || typeof row.project !== "string") return "stale";
+  if (saved.notifiedAt !== undefined) return "delivered";
+  const reason = typeof saved.reason === "string" ? saved.reason.slice(0, 400) : undefined;
+  const text = `The setup commands you saved for \`${row.project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
+  await deps.post({ channel: saved.slackUserId, text });
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET saved.notifiedAt = :at",
+      ConditionExpression: "saved.checkRequestId = :id AND attribute_not_exists(saved.notifiedAt)",
+      ExpressionAttributeValues: { ":at": new Date(deps.now()).toISOString(), ":id": notice.proofCheckId },
+    }));
+  } catch (error) {
+    // The message was sent; a repeat of the delivery finds the mark missing and may send it once more, which only repeats the words.
+    if (!isConditional(error)) throw error;
+  }
+  return "sent";
 }
 
 async function deliverPeopleNotification(deps: NotifierDependencies, notice: Notice): Promise<string> {
@@ -1691,6 +1718,7 @@ export function createNotifierHandler(deps: NotifierDependencies) {
       }
       try {
         const outcome = notice.kind === "people_dm" ? await deliverPeopleNotification(deps, notice)
+          : notice.kind === "settings_proof" ? await deliverSettingsProof(deps, notice)
           : notice.kind === "agent_report" ? await deliverAgentReport(deps, notice)
           : notice.kind === "admin_change_dm" || notice.kind === "admin_change_outcome" || notice.kind === "admin_change_expiry" ? await deliverAdminChange(deps, notice) : await deliver(deps, notice);
         deps.log({ event: "developer_notifier.notice", kind: notice.kind, noticeId: notice.id, outcome });

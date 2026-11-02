@@ -171,7 +171,8 @@ export class DeveloperTaskNotifier extends Construct {
         // Task 19: a Slack press the broker refused, told privately to whoever pressed. Spec 061 FR-044: a commenter's
         // nudge window, on the same filter (a mapping takes five filters by default). Plan 3, Task 22: an agent-step run's
         // final report, ready to post to its project's channel. Wire lane D: a task's spec changed or could not be made.
-        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST", "SPEC_STATE"]) } } } }),
+        // TE-4: a project's settings-proof item (commands a person saved in a browser failed their check: the saver is told).
+        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST", "SPEC_STATE", "PROJECT_SETTINGS_PROOF"]) } } } }),
       ],
     });
     new lambda.EventSourceMapping(this, "NoticeQueueMapping", {

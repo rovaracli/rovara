@@ -13,7 +13,7 @@ import { SETUP_CHECK_MAX_AGE_MS } from "../test-env/prove-from-setup-check.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 
 /** `devcontainer`: the dev container the batch also saves (as the save stores it), absent when the batch leaves it alone. The check prepares its workspace with it, so the commands are proved in the environment they will run in. */
-export interface DraftCommandLists { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | undefined }
+export interface DraftCommandLists { setup: ProjectCommand[]; readiness: ProjectCommand[]; devcontainer?: { repository: string; configPath?: string } | null | undefined }
 
 /** What a person is told (fixed words). A failure's reason comes from the check itself (a redacted one-liner), never from a model. */
 export const DRAFT_CHECK_WORDS = {
@@ -35,12 +35,14 @@ const REFUSED_AS_THEY_ARE: readonly string[] = ["PROJECT_REVISION_MISMATCH", "PR
  */
 export function draftCommandLists(
   definition: Pick<StoredProjectDefinition, "repositories" | "setup" | "readiness">,
-  settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined; devcontainer?: { repository: string; configPath?: string | undefined } | undefined },
+  settings: { setupCommands?: readonly string[] | undefined; testCommands?: readonly string[] | undefined; devcontainer?: { repository: string; configPath?: string | undefined } | null | undefined },
 ): DraftCommandLists {
   const cwd = definition.repositories[0]?.path;
   if (cwd === undefined) throw agentXError("CONFIG_INVALID", "the project has no repository to run commands in");
   let devcontainer: DraftCommandLists["devcontainer"];
-  if (settings.devcontainer !== undefined) {
+  // TE-4: `null` is a change that removes the dev container: the check then runs without one.
+  if (settings.devcontainer === null) devcontainer = null;
+  else if (settings.devcontainer !== undefined) {
     // As the settings save stores it: the repository by its name in the project.
     const repository = resolveRepository(definition.repositories, settings.devcontainer.repository);
     if (repository === undefined) throw agentXError("CONFIG_INVALID", "devcontainer.repository: is not a repository of this project");

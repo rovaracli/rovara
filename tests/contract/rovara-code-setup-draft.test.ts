@@ -827,7 +827,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: settings", () => {
   it("refuses a stale revision, and lets the proposal follow the revision its own apply made", async () => {
     const t = await setup();
     await t.drafted();
-    expect((await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, description: "x", setupCommands: ["make other"] })).status).toBe(200);
+    expect((await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, description: "x", setupCommands: ["make other"] })).status).toBe(200);
     const stale = await t.apply([{ id: "tests-web", useSuggestion: true }], { expectedRevision: 1 });
     expect(stale.status).toBe(409);
     expect(errorOf(stale)).toEqual({ code: "PROJECT_REVISION_MISMATCH", message: "someone changed this project's settings; reload and try again" });
@@ -848,7 +848,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: settings", () => {
   it("refuses a proposal written for settings that a person has since changed", async () => {
     const t = await setup();
     await t.drafted();
-    expect((await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, description: "x", setupCommands: ["make other"] })).status).toBe(200);
+    expect((await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, description: "x", setupCommands: ["make other"] })).status).toBe(200);
     const reply = await t.apply([{ id: "tests-web", useSuggestion: true }], { expectedRevision: 2 });
     expect(reply.status).toBe(409);
     expect(errorOf(reply)).toEqual({ code: "PROJECT_REVISION_MISMATCH", message: SETUP_DRAFT_OLD });
@@ -1572,7 +1572,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: the commands are prove
     await t.applyOnce(BOTH, { requestId });
     await t.reportCheck("SUCCEEDED");
     // A teammate saves in between.
-    expect((await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make teammate"] })).status).toBe(200);
+    expect((await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make teammate"] })).status).toBe(200);
     const late = await t.web(OMAR, "POST", `${BASE}/apply`, { requestId, expectedRevision: 1, items: BOTH });
     expect(late.status).toBe(409);
     expect(errorOf(late).code).toBe("PROJECT_REVISION_MISMATCH");

@@ -147,7 +147,7 @@ describe("Prove reads the candidate result", () => {
       await reportCheck(t, "SUCCEEDED");
       expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
       // Someone saves the project's settings: revision 2. The check ran against revision 1.
-      const saved = await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make old-setup", "make other"] });
+      const saved = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make old-setup", "make other"] });
       expect(saved.status, JSON.stringify(saved.body)).toBe(200);
       const stale = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
       expect(stale.status).toBe(400);
@@ -325,7 +325,7 @@ describe("S2: an approval whose write did not land can be finished", () => {
       expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);
       expect(argsOf(settingsOf(t).setup)).toEqual(["old-setup", "deps"]);
       // The write did not land (here: the settings were put back afterwards, revision 3).
-      const put = await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 2, setupCommands: ["make old-setup"], testCommands: ["make old-test"] });
+      const put = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 2, setupCommands: ["make old-setup"], testCommands: ["make old-test"] });
       expect(put.status, JSON.stringify(put.body)).toBe(200);
       const stuck = await t.state();
       expect(stuck.approved).toMatchObject({ digest, commandsNotInSettings: 2, check: { status: "unchecked" } });

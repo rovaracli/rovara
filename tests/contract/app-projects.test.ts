@@ -192,6 +192,8 @@ describe("GET /v1/app/projects/{name}", () => {
       name: "web", description: "The website", status: "active", latestRevision: 1, repositories: [{ name: "web", fullName: "Acme/web", defaultBranch: "trunk" }],
       myRole: "maintainer", setup: { status: "unchecked" },
       settings: { setupCommands: ["npm ci"], testCommands: ["npm test -- --run"], devcontainer: null, allowedDomains: [] },
+      // TE-4: commands nobody has checked are unproven, and with nothing proved before there is nothing to go back to.
+      settingsProof: { status: "unproven", reason: "These commands have not been checked yet.", canUndo: false },
       createdAt: "2026-10-02T00:00:00.000Z", createdBy: { developerId: MAYA.developerId, name: MAYA.name },
     });
   });
