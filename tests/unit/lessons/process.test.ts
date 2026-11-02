@@ -15,7 +15,7 @@ function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; setti
   let n = 0;
   const deps: ProcessDeps = {
     store, embedder, vectors: new MemoryVectors(), judgeModel: over.model ?? new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now,
-    verifier: over.verifier ?? verifier("valid"), facts: facts(), settings: over.settings ?? autoSettings(), newId: () => `les_${String(++n).padStart(4, "0")}`,
+    verifier: over.verifier ?? verifier("valid"), coldStartLessons: 0, facts: facts(), settings: over.settings ?? autoSettings(), newId: () => `les_${String(++n).padStart(4, "0")}`,
   };
   return { deps, store, audit, clock, alerts };
 }

@@ -20,6 +20,7 @@ const INTERNAL_LESSON_FILES: Record<string, string> = {
   "lessons/process.ts": "the reflector pipeline; lessons go back into the store",
   "lessons/store.ts": "the store itself",
   "lessons/metric.ts": "the same-mistake-twice measure: reads lessons, their versions and load manifests only to count; returns numbers, never a lesson or any text (metric.test.ts pins that)",
+  "lessons/sources.ts": "the cold-start rule counts the person-approved lessons that name a source (L7-2); it returns names and a yes or no, never a lesson",
   "lessons/approve.ts": "decisions (approve, reject, retire, roll back) act on a lesson after mayHandle; the lists use readVisible",
 };
 const LESSON_READS = new Set(["list", "get", "manifests", "listAllHeads", "getHead", "versions"]);

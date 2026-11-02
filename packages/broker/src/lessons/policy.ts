@@ -56,6 +56,13 @@ export function learningCaps(edition: Edition, override?: LearningCaps): Learnin
  */
 export const SPIKE = { multiple: 10, minimum: 10, baselineDays: 14, baselineFloor: 1, projectMinimum: 30 } as const;
 
+/**
+ * Two brakes on tier-0 AUTO-APPLY (L7-2; controller default, owner may change; they matter only where automatic go-live is on, which it is not by default):
+ * - project brake: after the project's volume alert fires, a tier-0 lesson goes to the one-tap queue (a person decides) for the next `brakeMs`. No source is paused by it.
+ * - cold start: a source (a member, a channel, CI) with fewer than `coldStartLessons` lessons that a PERSON approved cannot auto-apply a lesson; its first nine wait for a person.
+ */
+export const AUTO_APPLY_GUARDS = { brakeMs: 86_400_000, coldStartLessons: 9 } as const;
+
 export const MIN_EXPIRY_DAYS = 14;
 export const MAX_EXPIRY_DAYS = 365;
 export const DEFAULT_EXPIRY_DAYS = 90;

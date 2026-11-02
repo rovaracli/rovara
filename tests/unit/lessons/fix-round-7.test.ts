@@ -127,7 +127,7 @@ describe("one switch: the tier-0 approval default", () => {
     const store = new InMemoryLessonStore();
     let n = 0;
     const clock = new Clock();
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(tier0Approval === undefined ? {} : { tier0Approval }), newId: () => `les_sw${++n}` };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), coldStartLessons: 0, facts: facts(), settings: settings(tier0Approval === undefined ? {} : { tier0Approval }), newId: () => `les_sw${++n}` };
     const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: deps.settings, audit: deps.audit, now: clock.now };
     return { deps, store, approve };
   }
