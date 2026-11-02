@@ -1303,6 +1303,35 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).registries).toEqual(registries);
       });
 
+      it("refuses a run whose repository grant names a credential kind beyond token and password on a worker that lacks repository.credentialKinds.v1, and sends it unchanged to one that has it (P8)", async () => {
+        const grantOf = (credentialKinds?: string[]) => `${Buffer.from(JSON.stringify({ version: 3, repositories: [{ credentialRef: "r", repositoryUrl: "https://git.example.invalid/a.git", access: "clone", hostKind: "customer-host", ...(credentialKinds === undefined ? {} : { credentialKinds }) }] })).toString("base64url")}.signature`;
+        const recordOf = (kind: "prepare" | "publish" | "maintain", repositoryGrant: string) => ({ ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind, payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant } } as unknown as WorkerInvocation });
+        for (const kind of ["prepare", "publish", "maintain"] as const) {
+          const record = recordOf(kind, grantOf(["basic", "ssh-key"]));
+          for (const features of [undefined, [], ["task.agentRun", "prepare.registries.v1"]]) {
+            const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+            const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+            expect(refused?.code, kind).toBe("RUNTIME_UNAVAILABLE");
+            expect(refused?.message).toContain("code host needs a newer worker");
+            expect(older.post).not.toHaveBeenCalled();
+          }
+          const capable = delivery({ workerFeatures: async () => ["repository.credentialKinds.v1"] });
+          await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+          expect(postedPayload(capable.post).repositoryGrant).toBe((record.invocation.payload as { repositoryGrant: string }).repositoryGrant);
+        }
+        // A kind no worker takes (a helper) is refused even by a worker that lists the feature.
+        const helper = recordOf("prepare", grantOf(["helper"]));
+        const listing = delivery({ workerFeatures: async () => ["repository.credentialKinds.v1"] });
+        await expect(listing.deliver(helper, helper.invocation)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+        expect(listing.post).not.toHaveBeenCalled();
+        // A grant that names only the legacy kinds, or none (every GitHub grant), needs no probe at all and is sent as before.
+        for (const grant of [grantOf(), grantOf(["token", "basic"]), "signed-grant"]) {
+          const record = recordOf("prepare", grant);
+          const unprobed = delivery();
+          await expect(unprobed.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        }
+      });
+
       it("never drops a governed model policy binding for an older or unprobed worker",async()=>{
         const modelPolicy={version:1,stage:"build",companyRevision:0,recipeDigest:"a".repeat(64)};
         const record=taskRecord({model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},modelPolicy});

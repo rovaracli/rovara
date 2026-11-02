@@ -12,6 +12,34 @@ export const GIT_CREDENTIAL_KINDS = ["token", "basic", "ssh-key", "helper"] as c
 export const GitCredentialKindSchema = z.enum(GIT_CREDENTIAL_KINDS);
 export type GitCredentialKind = z.infer<typeof GitCredentialKindSchema>;
 
+/** The kinds every worker takes: the wire shapes `{username, password}` and `{token}`. A worker that says nothing about kinds takes these and no others. */
+export const LEGACY_WORKER_CREDENTIAL_KINDS: readonly GitCredentialKind[] = ["token", "basic"];
+/**
+ * The feature a worker lists on /ping when it takes a credential kind beyond the legacy two (today: an ssh key, `ssh-key`). Without it the broker neither dispatches a repository whose host
+ * hands out such a kind nor sends one at the exchange (Enterprise foundations P8). A kind no worker takes yet (`helper`) is never sent.
+ */
+export const WORKER_CREDENTIAL_KINDS_FEATURE = "repository.credentialKinds.v1" as const;
+/** The request header a worker sends at `/repository-credentials` to say which kinds it takes: a comma-separated list. Absent or unreadable means the legacy two. */
+export const WORKER_CREDENTIAL_KINDS_HEADER = "x-agentx-credential-kinds";
+/** The kinds a worker with these /ping features takes. */
+export function credentialKindsOfWorkerFeatures(features: readonly string[]): GitCredentialKind[] {
+  return features.includes(WORKER_CREDENTIAL_KINDS_FEATURE) ? [...LEGACY_WORKER_CREDENTIAL_KINDS, "ssh-key"] : [...LEGACY_WORKER_CREDENTIAL_KINDS];
+}
+/** The kinds a request header names. Unknown names are dropped, the list is bounded, and a header that is missing or empty names the legacy two (never more than was said). */
+export function parseWorkerCredentialKindsHeader(value: string | undefined): GitCredentialKind[] {
+  if (value === undefined || value.length > 128) return [...LEGACY_WORKER_CREDENTIAL_KINDS];
+  const named = new Set<GitCredentialKind>();
+  for (const part of value.split(",")) {
+    const parsed = GitCredentialKindSchema.safeParse(part.trim());
+    if (parsed.success) named.add(parsed.data);
+  }
+  return named.size === 0 ? [...LEGACY_WORKER_CREDENTIAL_KINDS] : GIT_CREDENTIAL_KINDS.filter((kind) => named.has(kind));
+}
+/** Whether a credential kind needs the worker feature (every kind beyond the legacy two does). */
+export function credentialKindNeedsWorkerFeature(kind: string): boolean {
+  return !(LEGACY_WORKER_CREDENTIAL_KINDS as readonly string[]).includes(kind);
+}
+
 export const CodeHostCapabilitiesSchema = z.object({
   /** Change requests can be opened as drafts. */
   drafts: z.boolean(),
@@ -52,6 +80,23 @@ export const GitCredentialHelperSchema = z.enum(GIT_CREDENTIAL_HELPERS);
 /** A credential handed to a worker lives at most this long (GitHub's installation tokens last an hour). */
 export const GIT_CREDENTIAL_MAX_LIFETIME_MS = 60 * 60 * 1_000;
 
+/** An OpenSSH-format private key (never printed or logged; it goes to a file only the worker's user can read). */
+const SshPrivateKey = z.string().min(1).max(16_384).regex(/^-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n: ,.-]+\r?\n-----END (?:OPENSSH|RSA|EC) PRIVATE KEY-----\r?\n?$/, "an OpenSSH private key");
+/**
+ * Where an ssh credential clones and pushes: `ssh://[user@]host[:port]/path`. The host starts with a letter or digit, so it can never be read as an ssh option, and the path has no
+ * space, quote or `$`, so it can never be read by the remote shell as more than a path.
+ */
+const SshRemoteUrl = z.string().min(1).max(512).regex(/^ssh:\/\/(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?\/[A-Za-z0-9._~+/-]{1,300}$/, "an ssh:// address");
+const KNOWN_HOSTS_LINE = /^[A-Za-z0-9.*?\-[\]:]+(?:,[A-Za-z0-9.*?\-[\]:]+)* (?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]{20,1000}={0,2}$/;
+/**
+ * The host keys the ssh server is trusted under, as `known_hosts` lines (plain host patterns, no marker, no hashed host). The worker pins them and never accepts an unknown host,
+ * so a credential with no host key is refused rather than trusting the first server that answers.
+ */
+const SshKnownHosts = z.string().min(1).max(8_192).refine((value) => {
+  const lines = value.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  return lines.length > 0 && lines.length <= 16 && lines.every((line) => KNOWN_HOSTS_LINE.test(line));
+}, "known_hosts lines");
+
 const ExpiresAt = z.string().min(1).max(64).refine((value) => Number.isFinite(Date.parse(value)), "an ISO time");
 
 /**
@@ -62,7 +107,7 @@ const ExpiresAt = z.string().min(1).max(64).refine((value) => Number.isFinite(Da
 export const GitCredentialSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("token"), username: z.string().min(1).max(200).optional(), token: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
   z.object({ kind: z.literal("basic"), username: z.string().min(1).max(200), password: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
-  z.object({ kind: z.literal("ssh-key"), privateKey: z.string().min(1).max(16_384), expiresAt: ExpiresAt }).strict(),
+  z.object({ kind: z.literal("ssh-key"), privateKey: SshPrivateKey, sshUrl: SshRemoteUrl, knownHosts: SshKnownHosts, expiresAt: ExpiresAt }).strict(),
   z.object({ kind: z.literal("helper"), helper: GitCredentialHelperSchema, expiresAt: ExpiresAt }).strict(),
 ]);
 export type GitCredential = z.infer<typeof GitCredentialSchema>;

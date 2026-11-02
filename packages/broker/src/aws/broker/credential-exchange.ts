@@ -2,11 +2,12 @@
 // `issueGitCredential`) and is held to `workerGitCredentialUsable` first: it must parse, not be expired, not outlive an hour, and an ssh key goes only to a service
 // identity. A credential that fails is refused with a fixed sentence and the worker gets nothing.
 //
-// The worker's wire shape is still `{username, password}` or `{token}` (it refuses any other field). A credential kind the worker cannot take yet (ssh-key, helper) is
-// refused here rather than sent: the broker never sends a kind an old worker cannot handle (task P8 adds the kind and the worker's ping feature).
+// The worker's wire shape stays `{username, password}` or `{token}` for the two legacy kinds (an older worker refuses any other field). An ssh key goes as `{ssh: {...}}`
+// and only to a worker that said it takes one (P8: the `x-agentx-credential-kinds` header, and the `repository.credentialKinds.v1` ping feature the dispatcher checks);
+// the grant service drops any other kind. A kind no worker takes (helper) is refused here rather than sent.
 import { agentXError, workerGitCredentialUsable, type GitCredential, type GitCredentialRefusal } from "@agentx/contracts";
 import type { GitHubTokenScope } from "../../github-app.js";
-import type { RepositoryAccess, RepositoryCredential } from "../../repository-access.js";
+import { WORKER_CANNOT_TAKE_CREDENTIAL, type RepositoryAccess, type RepositoryCredential } from "../../repository-access.js";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 
 export const CREDENTIAL_REFUSED_MESSAGES: Readonly<Record<GitCredentialRefusal | "unsupported_kind", string>> = {
@@ -14,13 +15,14 @@ export const CREDENTIAL_REFUSED_MESSAGES: Readonly<Record<GitCredentialRefusal |
   expired: "The code host gave a repository credential that has already expired.",
   too_long_lived: "The code host gave a repository credential that lasts longer than Rovara allows.",
   ssh_key_needs_service_identity: "A repository key is not handed to a task that acts for a person.",
-  unsupported_kind: "The code host gave a kind of repository credential this worker cannot take yet.",
+  unsupported_kind: WORKER_CANNOT_TAKE_CREDENTIAL,
 };
 
-/** What the worker is sent for a credential that passed. Only the kinds the worker's wire shape holds. */
+/** What the worker is sent for a credential that passed. A helper has no wire shape yet. */
 export function workerWireCredential(credential: GitCredential): RepositoryCredential | undefined {
   if (credential.kind === "basic") return { username: credential.username, password: credential.password };
   if (credential.kind === "token") return { token: credential.token, ...(credential.username === undefined ? {} : { username: credential.username }) };
+  if (credential.kind === "ssh-key") return { ssh: { privateKey: credential.privateKey, url: credential.sshUrl, knownHosts: credential.knownHosts } };
   return undefined;
 }
 

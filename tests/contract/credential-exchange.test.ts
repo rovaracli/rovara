@@ -51,7 +51,9 @@ describe("the repository credential exchange", () => {
     ["one with no expiry", { kind: "basic", username: "u", password: "p" }, "invalid"],
     ["one in a shape nobody defined", { kind: "cookie", value: "x" }, "invalid"],
     ["nothing at all", undefined, "invalid"],
-    ["an ssh key (a service identity may hold one, but this worker cannot take it yet)", { kind: "ssh-key", privateKey: "k", expiresAt: iso(30 * 60_000) }, "unsupported_kind"],
+    // P8: an ssh key is a kind a worker takes only when it says so (the `x-agentx-credential-kinds` header); a caller that says nothing is never sent one.
+    ["an ssh key to a caller that did not say it takes one", { kind: "ssh-key", privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n", sshUrl: "ssh://git@git.example.invalid/srv/app.git", knownHosts: `git.example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(43)}`, expiresAt: iso(30 * 60_000) }, "unsupported_kind"],
+    ["an ssh key with no host key to trust", { kind: "ssh-key", privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n", sshUrl: "ssh://git@git.example.invalid/srv/app.git", expiresAt: iso(30 * 60_000) }, "invalid"],
     ["a credential helper (the worker cannot take one yet)", { kind: "helper", helper: "aws-codecommit", expiresAt: iso(30 * 60_000) }, "unsupported_kind"],
   ] as const)("refuses %s, with a fixed sentence, and the worker gets nothing", async (_name, issued, reason) => {
     const { exchange } = setup(issued);
