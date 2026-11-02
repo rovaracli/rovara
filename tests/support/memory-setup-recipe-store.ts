@@ -1,5 +1,7 @@
 // An in-memory SetupRecipeStore for tests: compare-and-set on the revision, and the audit entries kept beside the rows.
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { OrgId } from "@agentx/contracts";
+import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import type { RecipeAuditEntry, SetupRecipeStore, StoredLocks, StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
 
 export interface MemorySetupRecipeStore extends SetupRecipeStore {
@@ -9,7 +11,11 @@ export interface MemorySetupRecipeStore extends SetupRecipeStore {
   failNextCommit(): void;
 }
 
-export function memorySetupRecipeStore(): MemorySetupRecipeStore {
+/**
+ * `conditionDb` holds the rows the approval evidence's ConditionChecks read (org META with its membership version, the members). A commit with conditions runs them as one DynamoDB transaction against it, the way the
+ * real adapter does, and fails when any condition fails. Conditions without a `conditionDb` are a test mistake and throw.
+ */
+export function memorySetupRecipeStore(conditionDb?: FakeDynamoDb): MemorySetupRecipeStore {
   const recipes = new Map<string, StoredRecipe>();
   const locks = new Map<string, StoredLocks>();
   const audit: RecipeAuditEntry[] = [];
@@ -30,12 +36,19 @@ export function memorySetupRecipeStore(): MemorySetupRecipeStore {
       return Promise.resolve(true);
     },
     getLocks: (orgId) => Promise.resolve(locks.get(orgId)),
-    commitLocks(next, expectedRevision, entry) {
-      if (failNext) { failNext = false; return Promise.resolve(false); }
-      if ((locks.get(next.orgId)?.revision ?? null) !== expectedRevision) return Promise.resolve(false);
+    async commitLocks(next, expectedRevision, entry, conditions) {
+      if (failNext) { failNext = false; return false; }
+      if ((locks.get(next.orgId)?.revision ?? null) !== expectedRevision) return false;
+      if (conditions !== undefined && conditions.length > 0) {
+        if (conditionDb === undefined) throw new Error("conditions need a conditionDb");
+        try { await conditionDb.send(new TransactWriteCommand({ TransactItems: [...conditions] })); } catch (error) {
+          if (error instanceof Error && error.name === "TransactionCanceledException") return false;
+          throw error;
+        }
+      }
       locks.set(next.orgId, structuredClone(next));
       audit.push(structuredClone(entry));
-      return Promise.resolve(true);
+      return true;
     },
   };
 }

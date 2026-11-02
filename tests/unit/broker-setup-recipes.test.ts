@@ -1,11 +1,13 @@
 // Setup and test health SH29: company setup recipes and company locks (admin only with a fresh sign-in; locks stricter only; no repository names stored).
 import { describe, expect, it } from "vitest";
-import { AgentXError, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
+import { AgentXError, orgMemberKey, orgMetaKey, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
 import {
   SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
   recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupRecipeDeps,
 } from "../../packages/broker/src/org/setup-recipes.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { memorySetupRecipeStore } from "../support/memory-setup-recipe-store.js";
+import { secondPersonMembershipCondition } from "../../packages/broker/src/org/second-person-approval.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const OTHER_ORG = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
@@ -31,7 +33,13 @@ const body = (changes: Record<string, unknown> = {}): SetupRecipeBody => SetupRe
 const FITS = { markerFiles: ["pyproject.toml"], registryHosts: ["pypi.internal.example.com"] };
 
 function harness(options: { admins?: string[]; maintainers?: Record<string, string[]>; refusedHosts?: string[]; repositoryNames?: Record<string, string[]> } = {}) {
-  const store = memorySetupRecipeStore();
+  // The rows the evidence's conditions fence: the org META with its membership version, and the two admins' member records.
+  const db = new FakeDynamoDb();
+  db.set({ ...orgMetaKey(ORG), approvalMembershipVersion: 7 });
+  db.set({ ...orgMemberKey(ORG, ADMIN), role: "owner" });
+  db.set({ ...orgMemberKey(ORG, SECOND_ADMIN), role: "admin" });
+  const hooks: { afterEvidence?: (() => void) | undefined } = {};
+  const store = memorySetupRecipeStore(db);
   const admins = new Set(options.admins ?? [ADMIN, SECOND_ADMIN]);
   // The stored sessions: session id -> person and sign-in time. A session id is the route's authenticated one; its freshness is read here, never claimed by the caller.
   const sessions = new Map<string, { developerId: string; authTime?: string; revokedAt?: string }>([
@@ -53,7 +61,18 @@ function harness(options: { admins?: string[]; maintainers?: Record<string, stri
       getLocks: (...args) => { calls.push("store"); return store.getLocks(...args); },
     },
     requireAdmin: (caller) => { calls.push("admin"); return admins.has(caller.developerId) ? Promise.resolve() : Promise.reject(new AgentXError("FORBIDDEN", "Live company owner or admin access is required.", 403)); },
-    approvalEvidence: () => Promise.resolve({ ...evidence }),
+    approvalEvidence: (scope) => {
+      // As readSecondPersonApprovalEvidence does: read the version, fence it and both people's live records, and answer a decision input.
+      const version = Number(db.get(orgMetaKey(ORG))?.approvalMembershipVersion);
+      const person = (id: string) => ({ ConditionCheck: { TableName: "t", Key: orgMemberKey(ORG, id), ConditionExpression: "attribute_exists(pk) AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": db.get(orgMemberKey(ORG, id))?.role ?? "none" } } });
+      const people = [...new Set([scope.proposerId, scope.approverId])];
+      const result = {
+        decisionInput: { ...evidence, membershipVersion: version, proposerId: scope.proposerId, approverId: scope.approverId, nowMs: clock.now.getTime() },
+        conditions: [{ ConditionCheck: { TableName: "t", Key: orgMetaKey(ORG), ...secondPersonMembershipCondition(version) } }, ...people.map(person)],
+      };
+      hooks.afterEvidence?.();
+      return Promise.resolve(result);
+    },
     readSession: (sessionId) => Promise.resolve(sessions.get(sessionId)),
     repositoryNamesOf: (_orgId, project) => Promise.resolve(project === undefined ? Object.values(repositoryNames).flat() : (repositoryNames[project] ?? [])),
     requireProjectMaintainer: (caller, project) => (maintainers[caller.developerId]?.includes(project) ? Promise.resolve() : Promise.reject(new AgentXError("FORBIDDEN", "no", 403))),
@@ -64,7 +83,7 @@ function harness(options: { admins?: string[]; maintainers?: Record<string, stri
   const admin: RecipeCaller = { orgId: ORG, developerId: ADMIN, sessionId: "s-admin" };
   const admin2: RecipeCaller = { orgId: ORG, developerId: SECOND_ADMIN, sessionId: "s-admin-2" };
   const maintainer: RecipeCaller = { orgId: ORG, developerId: MAINTAINER, sessionId: "s-maint" };
-  return { store, deps, admin, admin2, maintainer, clock, calls, refused, sessions, evidence };
+  return { store, deps, admin, admin2, maintainer, clock, calls, refused, sessions, evidence, db, hooks };
 }
 const code = async (promise: Promise<unknown>): Promise<string> => {
   try { await promise; } catch (error) { return (error as { code?: string }).code ?? "OTHER"; }
@@ -537,6 +556,55 @@ describe("fix round 1: loosening a lock needs a second admin (owner choice A)", 
       Object.assign(h.evidence, { eligibleIds: [ADMIN, SECOND_ADMIN] });
       const applied = await approveLocksChange(h.deps, h.admin2, { expectedRevision: waiting.locks.revision, expectedDigest: waiting.locks.pending!.digest });
       expect(applied.locks.noSoleOwnerException).toBeUndefined();
+    });
+
+    describe("the evidence fences the commit (membership version and both people's live records)", () => {
+      async function soleApproval(h: ReturnType<typeof harness>) {
+        Object.assign(h.evidence, SOLE);
+        const waiting = await waitingLoosening(h);
+        return () => approveLocksChange(h.deps, h.admin, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest });
+      }
+
+      it("commits when nothing changed between the read and the write (positive control)", async () => {
+        const h = harness();
+        const approve = await soleApproval(h);
+        expect((await approve()).locks).toEqual({});
+        expect(h.store.audit.at(-1)?.approvalMode).toBe("sole_owner_exception");
+      });
+
+      it("refuses a sole-owner approval when a second admin is added (membership version moves) between the evidence read and the commit", async () => {
+        const h = harness();
+        const approve = await soleApproval(h);
+        h.hooks.afterEvidence = () => { h.db.set({ ...orgMetaKey(ORG), approvalMembershipVersion: 8 }); h.db.set({ ...orgMemberKey(ORG, "e".repeat(64)), role: "admin" }); };
+        expect(await code(approve())).toBe("CHANGE_STALE");
+        expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual(strict);
+        expect(h.store.audit.map((entry) => entry.action)).not.toContain("locks_change_approved");
+      });
+
+      it("refuses when the approver's or the proposer's live record changes or goes away before the write", async () => {
+        for (const change of [(h: ReturnType<typeof harness>) => h.db.set({ ...orgMemberKey(ORG, ADMIN), role: "member" }), (h: ReturnType<typeof harness>) => h.db.delete(orgMemberKey(ORG, ADMIN))]) {
+          const h = harness();
+          const approve = await soleApproval(h);
+          h.hooks.afterEvidence = () => change(h);
+          expect(await code(approve())).toBe("CHANGE_STALE");
+          expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual(strict);
+        }
+      });
+
+      it("fences a two-admin approval the same way, and refuses evidence that names other people or carries no conditions", async () => {
+        const h = harness();
+        const waiting = await waitingLoosening(h);
+        h.hooks.afterEvidence = () => h.db.delete(orgMemberKey(ORG, SECOND_ADMIN));
+        expect(await code(approveLocksChange(h.deps, h.admin2, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest }))).toBe("CHANGE_STALE");
+        h.hooks.afterEvidence = undefined;
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- the harness's own arrow function, kept to wrap below
+        const real = h.deps.approvalEvidence;
+        h.deps.approvalEvidence = async (scope) => real({ ...scope, approverId: MAINTAINER });
+        expect(await code(approveLocksChange(h.deps, h.admin2, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest }))).toBe("CHANGE_STALE");
+        h.deps.approvalEvidence = async (scope) => ({ ...(await real(scope)), conditions: [] });
+        expect(await code(approveLocksChange(h.deps, h.admin2, { expectedRevision: waiting.revision, expectedDigest: waiting.pending!.digest }))).toBe("CHANGE_STALE");
+        expect((await readCompanyLocks(h.deps, ORG))?.locks).toEqual(strict);
+      });
     });
 
     it("applies a stricter change directly, whatever the evidence", async () => {

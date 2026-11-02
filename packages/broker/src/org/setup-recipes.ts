@@ -17,6 +17,7 @@ import {
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { isFreshSignIn, type SessionRecord } from "../developer/store.js";
+import type { TransactItem } from "../audit/outbox.js";
 import { decideSecondPersonApproval, type ApprovalDecision, type ApprovalDecisionInput } from "./second-person-approval.js";
 import { z } from "zod";
 
@@ -101,7 +102,11 @@ export interface SetupRecipeStore {
   /** Writes `next` and the audit entry together or neither, only while the stored revision is `expectedRevision` (null: no row yet). False when the row changed meanwhile. */
   commitRecipe(next: StoredRecipe, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
   getLocks(orgId: OrgId): Promise<StoredLocks | undefined>;
-  commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
+  /**
+   * As `commitRecipe`. `conditions` are the DynamoDB ConditionChecks of the approval evidence (org membership version, both people's live records): the adapter puts them in the SAME transaction as the write, and
+   * a failed one makes this return false (the caller then answers CHANGE_STALE). An approval is never committed without them.
+   */
+  commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry, conditions?: readonly TransactItem[]): Promise<boolean>;
 }
 
 // ---- company locks (M8: stricter only)
@@ -217,8 +222,11 @@ export interface SetupRecipeDeps {
    * The request never supplies this list. An empty list for a project refuses the share (a project with no repository has no setup to share).
    */
   repositoryNamesOf(orgId: OrgId, project?: string): Promise<readonly string[]>;
-  /** The server-side evidence `decideSecondPersonApproval` needs (complete membership history, owners, eligible admins, the last loss of an eligible person), read by the broker, never from the request. */
-  approvalEvidence(orgId: OrgId): Promise<Omit<ApprovalDecisionInput, "proposerId" | "approverId" | "nowMs">>;
+  /**
+   * The server-side evidence `decideSecondPersonApproval` needs, with the conditions that fence it at commit: wire `readSecondPersonApprovalEvidence` (org/second-person-evidence.ts) with `{ orgId, proposerId,
+   * approverId }`. The decision input must name these two people, or the approval is refused.
+   */
+  approvalEvidence(scope: { orgId: OrgId; proposerId: string; approverId: string }): Promise<{ decisionInput: ApprovalDecisionInput; conditions: TransactItem[] }>;
   /** The stored session record of the caller (`SESSION#<id>`), or undefined. Wire the same read as `requireFreshSignInForExport`. */
   readSession(sessionId: string): Promise<Pick<SessionRecord, "authTime" | "developerId" | "revokedAt"> | undefined>;
   /** The caller may maintain this project (wire the project role check). Throws FORBIDDEN. */
@@ -450,15 +458,17 @@ export async function approveLocksChange(deps: SetupRecipeDeps, caller: RecipeCa
   if (current.revision !== input.expectedRevision || current.pending.digest !== input.expectedDigest || locksDigest(current.pending.locks) !== current.pending.digest) throw stale();
   const proposerId = current.pending.proposedBy;
   if (proposerId === caller.developerId && current.locks.noSoleOwnerException === true) throw Object.assign(agentXError("FORBIDDEN", "Another admin must approve a change that loosens company locks."), { soleOwner: { available: false, availableAt: null, reasonCode: "EXCEPTION_OFF" } });
-  const evidence = await deps.approvalEvidence(caller.orgId);
-  const decision = decideSecondPersonApproval({ ...evidence, proposerId, approverId: caller.developerId, nowMs: deps.now().getTime() });
+  const evidence = await deps.approvalEvidence({ orgId: caller.orgId, proposerId, approverId: caller.developerId });
+  if (evidence.decisionInput.proposerId !== proposerId || evidence.decisionInput.approverId !== caller.developerId || evidence.conditions.length === 0) throw stale();
+  const decision = decideSecondPersonApproval(evidence.decisionInput);
   const revision = current.revision + 1;
   const next: StoredLocks = { orgId: caller.orgId, revision, locks: current.pending.locks, updatedBy: caller.developerId, updatedAt: iso(deps) };
   const entry: RecipeAuditEntry = {
     ...auditOf(deps, caller, "locks_change_approved", "fresh_sign_in"), revision, previousDigest: locksDigest(current.locks), nextDigest: current.pending.digest, loosened: true,
     approvalMode: decision.mode, membershipVersion: decision.membershipVersion,
   };
-  if (!await deps.store.commitLocks(next, current.revision, entry)) throw stale();
+  // The evidence conditions commit with the write: a second admin added, or either person changed, since the read refuses it.
+  if (!await deps.store.commitLocks(next, current.revision, entry, evidence.conditions)) throw stale();
   return next;
 }
 
