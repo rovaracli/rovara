@@ -68,61 +68,68 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
   if (mode === "off") return {};
   const candidateDigest = candidate.digest;
   const notRun = (reason: SecondOpinionUnavailableReason): SecondReviewStart => ({ record: { candidateDigest, notRun: { mode: mode === "on" ? "on" : "shadow", reason } } });
-  // Every build the task ran in every round, and the first reviewer's model: the second reviewer must differ in company from all of them. One that recorded nothing can never be shown to differ.
-  const operations = (await queryAllItems(dependencies, `WORKSPACE#${input.workspaceId}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.conversationId === input.conversationId);
-  const builds = operations.filter((item) => item.workflowMode === "IMPLEMENT" && item.status === "SUCCEEDED").map((item) => item.model as ModelIdentifier | undefined);
-  const against = againstModels({ buildRanModels: builds.map((model) => (model === undefined || typeof model !== "object" ? undefined : model)), firstReviewerRan: input.firstReviewerModel });
-  if (against === undefined) return notRun("no-candidate");
-  const forbidden = (await readGuardrails(dependencies, input.orgId)).forbiddenModels ?? [];
-  const sources = input.routing === undefined ? [] : await servableModels(input.routing, input.orgId, input.project);
-  const previous = settings.companyModels === undefined && settings.projectModels === undefined ? input.task?.secondOpinion : undefined;
-  const previousModel = previous?.opinion.choice === "default" && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
-  const plan = planSecondReview({
-    switchOn: true, mode, against, project: { approved: input.approved }, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
-    companyModels: settings.companyModels, projectModels: settings.projectModels, previousDefault: previousModel,
-    price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }; },
-  });
-  if (!plan.run) {
-    const reason = REASON_OF[plan.reason];
-    return reason === undefined ? {} : notRun(reason);
-  }
-  // Admission, the same as the first review's: the payer's budget floor and, in Enterprise, the spend ledger (both are read by `admitWork`). A refusal, or a room smaller than the estimate, is "budget".
-  if (dependencies.modelAccess !== undefined && input.task !== undefined) {
-    try {
-      const admitted = await admitWork(
-        { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true, ...(input.now === undefined ? {} : { now: input.now }) },
-        { orgId: input.orgId, project: input.project, payer: input.task.payer ?? { kind: "member", developerId: input.task.developerId }, agentId: input.task.agent?.agentId ?? "rovara-code", agentName: input.task.agent?.name ?? "Rovara Code", path: "TASK",
-          ...(input.task.origin === "test_run" ? { testRunBy: input.task.startedBy?.developerId ?? input.task.developerId } : {}) },
-      );
-      const price = listPricesPerMillion(plan.model);
-      const estimate = price === undefined ? 0 : estimateSecondReviewUsd({ inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }, { input: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input, maxOutput: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output });
-      const admission = admitSecondReview({ mode: plan.mode, estimateUsd: estimate, roomUsd: admitted.maxBudgetUsd, alreadyRan: false });
-      if (!admission.admit) return notRun(admission.reason);
-    } catch (error) {
-      if (!(error instanceof AgentXError) || !ADMISSION_REFUSALS.has(error.code)) throw error;
-      return notRun("budget");
+  // Everything below only ADDS an opinion to the review: an error while planning (a source that cannot be read, a model-source lookup, an admission read) must never fail the first review's dispatch. It is logged
+  // (the error's name only), and `on` flags that the second review did not run while shadow stays silent.
+  try {
+    // Every build the task ran in every round, and the first reviewer's model: the second reviewer must differ in company from all of them. One that recorded nothing can never be shown to differ.
+    const operations = (await queryAllItems(dependencies, `WORKSPACE#${input.workspaceId}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.conversationId === input.conversationId);
+    const builds = operations.filter((item) => item.workflowMode === "IMPLEMENT" && item.status === "SUCCEEDED").map((item) => item.model as ModelIdentifier | undefined);
+    const against = againstModels({ buildRanModels: builds.map((model) => (model === undefined || typeof model !== "object" ? undefined : model)), firstReviewerRan: input.firstReviewerModel });
+    if (against === undefined) return notRun("no-candidate");
+    const forbidden = (await readGuardrails(dependencies, input.orgId)).forbiddenModels ?? [];
+    const sources = input.routing === undefined ? [] : await servableModels(input.routing, input.orgId, input.project);
+    const previous = settings.companyModels === undefined && settings.projectModels === undefined ? input.task?.secondOpinion : undefined;
+    const previousModel = previous?.opinion.choice === "default" && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
+    const plan = planSecondReview({
+      switchOn: true, mode, against, project: { approved: input.approved }, forbidden, sources, verdicts: settings.verdicts, replayRuns: settings.replayRuns,
+      companyModels: settings.companyModels, projectModels: settings.projectModels, previousDefault: previousModel,
+      price: (model) => { const price = listPricesPerMillion(model); return price === undefined ? undefined : { inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }; },
+    });
+    if (!plan.run) {
+      const reason = REASON_OF[plan.reason];
+      return reason === undefined ? {} : notRun(reason);
     }
+    // Admission, the same as the first review's: the payer's budget floor and, in Enterprise, the spend ledger (both are read by `admitWork`). A refusal, or a room smaller than the estimate, is "budget".
+    if (dependencies.modelAccess !== undefined && input.task !== undefined) {
+      try {
+        const admitted = await admitWork(
+          { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true, ...(input.now === undefined ? {} : { now: input.now }) },
+          { orgId: input.orgId, project: input.project, payer: input.task.payer ?? { kind: "member", developerId: input.task.developerId }, agentId: input.task.agent?.agentId ?? "rovara-code", agentName: input.task.agent?.name ?? "Rovara Code", path: "TASK",
+            ...(input.task.origin === "test_run" ? { testRunBy: input.task.startedBy?.developerId ?? input.task.developerId } : {}) },
+        );
+        const price = listPricesPerMillion(plan.model);
+        const estimate = price === undefined ? 0 : estimateSecondReviewUsd({ inputUsdPerMTok: price.input, outputUsdPerMTok: price.output }, { input: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input, maxOutput: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output });
+        const admission = admitSecondReview({ mode: plan.mode, estimateUsd: estimate, roomUsd: admitted.maxBudgetUsd, alreadyRan: false });
+        if (!admission.admit) return notRun(admission.reason);
+      } catch (error) {
+        if (!(error instanceof AgentXError) || !ADMISSION_REFUSALS.has(error.code)) throw error;
+        return notRun("budget");
+      }
+    }
+    // Each model is reached the way the broker checks it: through its own proxy route. A model no usable route serves (or only a person's plan) is left out; with none left the review could not start.
+    const candidates: Array<{ model: ModelSelection; modelRoute?: InvocationModelRoute }> = [];
+    const aliases: string[] = [];
+    const routeAliases: Record<string, string> = {};
+    for (const model of plan.candidates) {
+      if (input.routing === undefined) { candidates.push({ model }); continue; }
+      const [route] = (await servingRoutes(input.routing, { orgId: input.orgId, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt" && entry.alias !== undefined);
+      if (route === undefined) continue;
+      const wire = routeOnWire(route, model);
+      candidates.push({ model, ...(wire === undefined ? {} : { modelRoute: wire }) });
+      aliases.push(route.alias!);
+      if (wire !== undefined) routeAliases[secondReviewModelKey(model)] = wire.alias;
+    }
+    if (candidates.length === 0) return notRun("no-candidate");
+    const kept = plan.candidates.filter((model) => candidates.some((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model)));
+    const field: SecondReviewerPayload = { candidates };
+    return {
+      field,
+      record: { candidateDigest, plan: { mode: plan.mode, company: plan.company, model: kept[0]!, candidates: kept, against: plan.against, choice: plan.choice,
+        ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), ...(plan.defaultChanged === true ? { defaultChanged: true as const } : {}) },
+        ...(aliases.length === 0 ? {} : { aliases }), ...(Object.keys(routeAliases).length === 0 ? {} : { routeAliases }) },
+    };
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "second_review.start_failed", errorName: error instanceof Error ? error.name : "unknown" }));
+    return mode === "on" ? notRun("no-candidate") : {};
   }
-  // Each model is reached the way the broker checks it: through its own proxy route. A model no usable route serves (or only a person's plan) is left out; with none left the review could not start.
-  const candidates: Array<{ model: ModelSelection; modelRoute?: InvocationModelRoute }> = [];
-  const aliases: string[] = [];
-  const routeAliases: Record<string, string> = {};
-  for (const model of plan.candidates) {
-    if (input.routing === undefined) { candidates.push({ model }); continue; }
-    const [route] = (await servingRoutes(input.routing, { orgId: input.orgId, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt" && entry.alias !== undefined);
-    if (route === undefined) continue;
-    const wire = routeOnWire(route, model);
-    candidates.push({ model, ...(wire === undefined ? {} : { modelRoute: wire }) });
-    aliases.push(route.alias!);
-    if (wire !== undefined) routeAliases[secondReviewModelKey(model)] = wire.alias;
-  }
-  if (candidates.length === 0) return notRun("no-candidate");
-  const kept = plan.candidates.filter((model) => candidates.some((entry) => secondReviewModelKey(entry.model) === secondReviewModelKey(model)));
-  const field: SecondReviewerPayload = { candidates };
-  return {
-    field,
-    record: { candidateDigest, plan: { mode: plan.mode, company: plan.company, model: kept[0]!, candidates: kept, against: plan.against, choice: plan.choice,
-      ...(plan.downgraded === undefined ? {} : { downgraded: plan.downgraded }), ...(plan.defaultChanged === true ? { defaultChanged: true as const } : {}) },
-      ...(aliases.length === 0 ? {} : { aliases }), ...(Object.keys(routeAliases).length === 0 ? {} : { routeAliases }) },
-  };
 }

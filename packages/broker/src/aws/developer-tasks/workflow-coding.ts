@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { secondReviewSendBackProblems } from "../../rovara-code/second-review-store.js";
 import { DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   CanvasCloseoutRetryRequestSchema,
@@ -406,7 +405,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
     resumeProgress: [],
   };
   // The problems are reviewer and check output, marked untrusted; the owner's note stays outside, as the instruction.
-  const problems = sendBackProblemsPromptSection([...sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), ...secondReviewSendBackProblems(task, workflow)], promptTagId(task, request.requestId));
+  const problems = sendBackProblemsPromptSection(sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), promptTagId(task, request.requestId));
   const prompt = (notes: string) => `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nOwner note (the owner's own instructions for this step): ${request.instructions}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   const queued = await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,

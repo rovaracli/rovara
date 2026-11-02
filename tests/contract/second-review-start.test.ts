@@ -9,12 +9,12 @@ import {
   SECOND_REVIEW_BLOCK_REASON, SECOND_REVIEW_RESULT_KEY, WORKFLOW_AUTO_SEND_BACK_LIMIT, classifyBlockedWorkflow, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewDidNotRunLine, secondReviewModelKey, workflowSendBackOffered,
   type ModelIdentifier, type SecondOpinion, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, returnWorkflowToImplementationAutomatically, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, openReviewFindings, resolveWorkflowReviewFindings, returnWorkflowToImplementationAutomatically, sendBackProblems, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { planSecondReview, secondOpinionUnavailable, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
 import { defaultModelLine, secondReviewPicker, secondReviewTrackRecord } from "../../packages/broker/src/rovara-code/second-review-picker.js";
-import { secondOpinionFromReviewResult, secondReviewSendBackProblems, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
+import { secondOpinionFromReviewResult, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -276,7 +276,7 @@ describe("key rule 2: shadow never blocks, never delays and never reaches the pu
     expect(out.stored!.opinion).toMatchObject({ mode: "shadow", blocked: false, wouldHaveBlocked: true });
     // The pull request carries nothing of a shadow opinion (and the task page says "not blocking").
     const task = { secondOpinion: out.stored };
-    expect(secondReviewSendBackProblems(task, out.next)).toEqual([]);
+    expect(sendBackProblems(out.next)).toEqual([]);
     expect(secondReviewTaskView(task, code.digest)!.lines[0]).toContain("Second opinion (not blocking)");
   });
 
@@ -305,7 +305,7 @@ describe("key rule 3: `on` and blocked sends back, within the same cap", () => {
     const out = await end({ plan: operationPlan("on"), first: ["PASS", "PASS"], secondResult: answer("FINDINGS", [BLOCKING]) });
     expect(workflowSendBackOffered(out.next)).toBe(true);
     expect(classifyBlockedWorkflow(out.next)).toEqual([{ class: "code", code: "review-findings" }]);
-    const problems = secondReviewSendBackProblems({ secondOpinion: out.stored }, out.next);
+    const problems = sendBackProblems(out.next).filter((problem) => problem.text.startsWith("second review:"));
     expect(problems).toEqual([{ source: "code review", text: `second review: ${BLOCKING.text}` }]);
   });
 
@@ -335,6 +335,68 @@ describe("key rule 3: `on` and blocked sends back, within the same cap", () => {
     expect(twice.decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(WORKFLOW_AUTO_SEND_BACK_LIMIT);
     const third = again(twice);
     expect(() => returnWorkflowToImplementationAutomatically(third, { expectedRevision: third.revision, reason: "and again", spend, now: NOW })).toThrow(/limit/u);
+  });
+});
+
+describe("the second review's block lives in the workflow (H1)", () => {
+  const FIRST = { text: "first reviewer: missing null check", origin: "INTRODUCED" as const };
+  const resolve = (workflow: WorkflowSnapshot, resolutions: Array<{ findingId: string; action: "ACCEPT" | "FIX"; note: string }>) =>
+    resolveWorkflowReviewFindings(workflow, { requestId: randomUUID(), expectedRevision: workflow.revision, candidateDigest: code.digest, resolutions }, { actorId: ownerId }, { now: NOW });
+  const accept = (ids: string[]) => ids.map((findingId) => ({ findingId, action: "ACCEPT" as const, note: "known and fine" }));
+
+  it("is set by the REVIEW end, with the findings, and a passing first review does not hide it", async () => {
+    const out = await end({ plan: operationPlan("on"), first: ["PASS", "PASS"], secondResult: answer("FINDINGS", [BLOCKING]) });
+    expect(out.next.secondReviewBlock).toEqual({ candidateDigest: code.digest, findings: [{ text: BLOCKING.text }] });
+    expect(openReviewFindings(out.next)).toEqual([expect.objectContaining({ role: "CRITIC", text: `second review: ${BLOCKING.text}` })]);
+    // A new review that does not block clears it again.
+    const db = new FakeDynamoDb();
+    const operationId = randomUUID();
+    // Retry reviews starts from the code with its earlier reviews cleared.
+    const { blockReason: _reason, reviews: _reviews, ...running } = out.next;
+    void _reason; void _reviews;
+    db.set({ ...taskKey(taskId), taskId, workflow: WorkflowSnapshotSchema.parse({ ...running, state: "RUNNING" }) });
+    const items = await completedWorkflowItems({ documentClient: db, tableName: "state" } as unknown as AwsBrokerDependencies, { id: operationId, kind: "task", workflowMode: "REVIEW", secondReviewPlan: operationPlan("on") } as never, { taskId } as never, "SUCCEEDED", NOW,
+      { workflowCandidateRepositories: code.repositories, workflowReviews: [review("CRITIC", operationId), review("SECURITY", operationId)], [SECOND_REVIEW_RESULT_KEY]: answer("PASS")(operationId) });
+    const after = (items[0] as { Update: { ExpressionAttributeValues: Record<string, unknown> } }).Update.ExpressionAttributeValues[":workflow"] as WorkflowSnapshot;
+    expect({ stage: after.stage, state: after.state, reason: after.blockReason }).toEqual({ stage: "PULL_REQUEST", state: "READY", reason: undefined });
+    expect(after.secondReviewBlock).toBeUndefined();
+  });
+
+  it("accepting the first review's findings does not clear a second-review block: every blocking finding must be answered, and the change cannot become ready with one open", async () => {
+    const out = await end({ plan: operationPlan("on"), first: ["FINDINGS", "PASS"], secondResult: answer("FINDINGS", [BLOCKING]) });
+    expect(out.next).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: "the code review did not pass" });
+    const open = openReviewFindings(out.next);
+    expect(open.map((finding) => finding.text).sort()).toEqual([FIRST.text, `second review: ${BLOCKING.text}`].sort());
+    const firstId = open.find((finding) => finding.text === FIRST.text)!.findingId;
+    expect(() => resolve(out.next, accept([firstId]))).toThrow(/choose what to do with every blocking finding/u);
+    // Even with the first review's findings accepted already, the second review's block holds the change at REVIEW, with the second review's reason.
+    const firstAccepted = WorkflowSnapshotSchema.parse({ ...out.next, acceptedFindings: [{ candidateDigest: code.digest, role: "CRITIC", fingerprint: firstId, text: FIRST.text, reason: "ok", actorId: ownerId, at: NOW }] });
+    const stillOpen = openReviewFindings(firstAccepted);
+    expect(stillOpen.map((finding) => finding.text)).toEqual([`second review: ${BLOCKING.text}`]);
+    expect(() => WorkflowSnapshotSchema.parse({ ...firstAccepted, stage: "PULL_REQUEST", state: "READY", blockReason: undefined })).toThrow();
+  });
+
+  it("the owner accepts the second review's finding the way a first review's is accepted, and only then is the change ready; sending it back lists it for the coder", async () => {
+    const out = await end({ plan: operationPlan("on"), first: ["PASS", "PASS"], secondResult: answer("FINDINGS", [BLOCKING]) });
+    const [finding] = openReviewFindings(out.next);
+    const fixed = resolve(out.next, [{ findingId: finding!.findingId, action: "FIX", note: "please fix" }]);
+    expect(fixed.stage).toBe("IMPLEMENT");
+    expect(sendBackProblems(fixed).map((problem) => problem.text)).toContain(`second review: ${BLOCKING.text}`);
+    const accepted = resolve(out.next, accept([finding!.findingId]));
+    expect(accepted).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+    expect(accepted.secondReviewBlock).toBeUndefined();
+    expect(accepted.acceptedFindings).toEqual([expect.objectContaining({ role: "CRITIC", fingerprint: finding!.findingId })]);
+    // The same finding is not blocking any more, anywhere.
+    expect(sendBackProblems(accepted)).toEqual([]);
+    expect(openReviewFindings(accepted)).toEqual([]);
+  });
+
+  it("with the first review passed and one of two second-review findings accepted, the change stays blocked with the second review's reason", async () => {
+    const two = [BLOCKING, { text: "second problem", origin: "INTRODUCED" as const }];
+    const out = await end({ plan: operationPlan("on"), first: ["PASS", "PASS"], secondResult: answer("FINDINGS", two) });
+    const ids = openReviewFindings(out.next).map((finding) => finding.findingId);
+    expect(ids).toHaveLength(2);
+    expect(() => resolve(out.next, accept([ids[0]!]))).toThrow(/every blocking finding/u);
   });
 });
 

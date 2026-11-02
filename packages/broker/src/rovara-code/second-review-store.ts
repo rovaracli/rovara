@@ -1,7 +1,7 @@
 // Second review by another AI company (SH34): what the broker keeps on the TASK RECORD about it, and the writes that keep it. Nothing here touches the workflow snapshot: a second review is an ADDED opinion, so
 // its operation's result never reaches `submitWorkflowReview`, `reviewCleared`, the latest-review-for-candidate lookup, the pull request's Reviews section or `requireCrossCompanyReview`. It lives beside the workflow
 // (as `reviewSameModel` does), keyed by the candidate it is about.
-import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, workflowFindingProblem, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type WorkflowSendBackProblem } from "@agentx/contracts";
+import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@agentx/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
 import { SECOND_REVIEW_OPERATION, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";
@@ -70,20 +70,6 @@ export function secondOpinionFromReviewResult(input: SecondOpinionFromResultInpu
   if (report === undefined || report.operationId !== input.operationId) return store(secondOpinionUnavailable(plan, "no-answer"));
   if (report.candidateDigest !== recorded.candidateDigest) return store(secondOpinionUnavailable(plan, "wrong-candidate"));
   return store(secondOpinionOf({ plan, report, currentCandidateDigest: input.currentCandidateDigest, accepted: input.accepted, routeAliases: recorded.routeAliases }));
-}
-
-/**
- * The problems a send-back hands the coder from the second review: the blocking findings of an `on` opinion that blocked, for the code the task holds now (the owner's accepted risks left out), each as a code
- * review problem marked as the second review's. None while `cr` is off, for a shadow opinion, or for one that did not run.
- */
-export function secondReviewSendBackProblems(task: { secondOpinion?: unknown }, workflow: { candidate?: { digest: string } | undefined; acceptedFindings?: readonly AcceptedFindingRef[] | undefined }, env: NodeJS.ProcessEnv = process.env): WorkflowSendBackProblem[] {
-  if (!secondReviewEnabled(env)) return [];
-  const opinion = secondOpinionOfTask(task, workflow.candidate?.digest);
-  if (opinion === undefined || !opinion.blocked || opinion.report === undefined) return [];
-  return blockingFindings(opinion.report, workflow.acceptedFindings).map((finding) => {
-    const problem = workflowFindingProblem("CRITIC", finding);
-    return { ...problem, text: `second review: ${problem.text}` };
-  });
 }
 
 /**
