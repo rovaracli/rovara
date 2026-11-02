@@ -27,10 +27,11 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   spec_choice: { ...base("spc1"), kind: "spec_choice", message: "The spec changed. Re-plan or keep?" },
   fix_setup: { ...base("fix1"), kind: "fix_setup", cause: "setup-failed-in-task", step: "Setup", taskCount: 2, knownFailingTests: 0, unconfirmedFailing: 0 },
   setup_host: { ...base("hst1"), kind: "setup_host", host: "artifactory.corp.example", from: { path: "pip.conf", line: 2 }, journalN: 3, staffStep: true },
+  second_review_notice: { ...base("srn1"), kind: "second_review_notice", message: "The second-opinion model your company chose no longer qualifies." },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
-  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium",
+  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low", fix_setup: "medium", setup_host: "medium", second_review_notice: "low",
 };
 const cardOf = (item: DecisionItem, locks = {}) => {
   const result = cardOfItem(item, locks);

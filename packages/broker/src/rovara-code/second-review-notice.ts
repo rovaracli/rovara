@@ -100,7 +100,7 @@ export async function markNoticeSeen(table: SettingsTable, orgId: string, key: s
 
 /** The words of a notice for the page and the card: the code's sentence, then each model with its reason. */
 export function noticeLines(notice: Pick<StoredNotice, "code" | "models">): string[] {
-  return [NOTICE_TEXT[notice.code], ...notice.models.slice(0, 5).map((entry) => `${entry.model.modelId}${entry.why === undefined ? "" : `: ${WHY_TEXT[entry.why as SecondReviewSkippedWhy] ?? "it no longer qualifies"}`}`)];
+  return [NOTICE_TEXT[notice.code], ...notice.models.slice(0, 5).map((entry) => `${entry.model.modelId}${entry.why === undefined ? "" : `: ${WHY_TEXT[entry.why] ?? "it no longer qualifies"}`}`)];
 }
 
 export interface NoticeCardPorts { table: SettingsTable; isAdmin(who: { orgId: string; developerId: string }): Promise<boolean> | boolean }

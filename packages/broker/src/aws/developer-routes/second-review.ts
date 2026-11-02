@@ -16,7 +16,7 @@
 //           { action: "withdraw", model }                   an owner or admin withdraws the verdict (the evidence) for a model: it stops blocking at once. Admins can only withdraw; staff write evidence (aws/broker/second-review-evidence-routes.ts).
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewMode, type SecondReviewModelRef } from "@agentx/contracts";
+import { SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewModelRef } from "@agentx/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -258,7 +258,7 @@ async function modeAction(deps: DeveloperRouteDependencies, caller: DeveloperCal
     if (!result.ok) throw modeRefusal(result.code);
     logDeveloperEvent({ event: "developer.second_review_mode_set", orgId: caller.orgId, status: result.status });
     if (result.status === "needs_approval") return new StatusReply(202, { status: "needs_approval", changeId: result.changeId });
-    return new StatusReply(200, { status: "applied", mode: result.mode as SecondReviewMode });
+    return new StatusReply(200, { status: "applied", mode: result.mode });
   }
   // Approving or withdrawing a proposal: it names its own scope, and the person must be allowed to act there (a company: an admin; a project: its maintainer or an admin).
   const change = await getModeChange(table, caller.orgId, body.changeId).catch(() => undefined);

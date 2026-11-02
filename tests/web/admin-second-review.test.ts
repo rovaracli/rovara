@@ -15,20 +15,24 @@ import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 
+// Narrow a found element to the kind the test reads, without a type assertion.
+const asSelect = (node: HTMLElement): HTMLSelectElement => { if (!(node instanceof HTMLSelectElement)) throw new Error("not a select"); return node; };
+const asOption = (node: HTMLElement): HTMLOptionElement => { if (!(node instanceof HTMLOptionElement)) throw new Error("not an option"); return node; };
+const asButton = (node: HTMLElement): HTMLButtonElement => { if (!(node instanceof HTMLButtonElement)) throw new Error("not a button"); return node; };
 const PATH = "/v1/app/org/second-review";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const GPT = { provider: "openrouter", modelId: "openai/gpt-5.5" }, GEMINI = { provider: "openrouter", modelId: "google/gemini-3" }, CLAUDE = { provider: "amazon-bedrock", modelId: "anthropic.claude-opus-4-1" };
 const entry = (model: { provider: string; modelId: string }, over: Record<string, unknown> = {}) => ({ model, company: "openai", costUsd: 0.2, eligible: true, notes: [], suggested: false, ...over });
-const base = () => ({
+const base = (): Record<string, unknown> => ({
   mode: "shadow", modes: { company: "shadow", project: null, effective: "shadow" }, fitKnown: false, pendingLowering: false, evidence: null, trackRecord: null, notice: null,
   context: "change_only", alsoSees: null,
   models: [entry(GPT, { suggested: true, suggestionReason: "top-tier strength; a different AI company than the one that wrote the code; medium cost (about $0.20 a review)" }), entry(GEMINI, { company: "google", costUsd: undefined, notes: ["the provider may train on the code sent to a free model"] }), entry(CLAUDE, { company: "anthropic", eligible: false, ineligibleWhy: "same-company" })],
   suggested: [GPT], typicalReview: { input: 60000, output: 4000 }, choice: null, projectNarrowing: null,
   current: { source: "default", models: [GPT], line: "Using default: openai/gpt-5.5 (change)" },
 });
-type State = ReturnType<typeof base> & Record<string, unknown>;
+type State = Record<string, unknown>;
 function mount(options: { state?: Partial<State>; respond?: (request: ApiRequest) => Promise<ApiResponse | undefined>; role?: "owner" | "admin" } = {}) {
-  const role = options.role ?? "owner", current: { state: State } = { state: { ...base(), ...options.state } as State };
+  const role = options.role ?? "owner", current: { state: State } = { state: { ...base(), ...options.state } };
   const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Omar", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
   const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Omar", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
   const f = fakeHost(async request => (await options.respond?.(request)) ?? { status: 200, body: request.path === "/v1/app/nav" ? nav : request.path === "/v1/app/me" ? me : request.path === PATH && request.method === "GET" ? current.state : { status: "applied" } });
@@ -80,10 +84,10 @@ it("shows what a model's name holds as plain text: markup is not markup and cont
 it("raises the mode with one request, and cannot pick On without evidence that holds", async () => {
   const f = mount({ state: { mode: "off", modes: { company: "off", project: null, effective: "off" } } });
   await screen.findByRole("heading", { name: "Mode" });
-  const select = screen.getByLabelText("Second opinion mode") as HTMLSelectElement;
-  expect((within(select).getByRole("option", { name: "On (can block)" }) as HTMLOptionElement).disabled).toBe(true);
+  const select = asSelect(screen.getByLabelText("Second opinion mode"));
+  expect(asOption(within(select).getByRole("option", { name: "On (can block)" })).disabled).toBe(true);
   expect(screen.getByText(/On needs a model with a trial record that holds/u)).toBeTruthy();
-  const save = screen.getByRole("button", { name: "Save mode" }) as HTMLButtonElement;
+  const save = asButton(screen.getByRole("button", { name: "Save mode" }));
   expect(save.disabled).toBe(true);
   fireEvent.change(select, { target: { value: "shadow" } });
   fireEvent.click(save);
@@ -97,8 +101,8 @@ it("On can be picked once the evidence holds; lowering is asked for and says it 
   const evidence = { model: GPT, holds: true, verdict: { recordedAt: "2026-10-21T00:00:00.000Z", withdrawn: false, shadowDays: 18, shadowFindings: 10, shadowAgreed: 5, shadowPassed: true }, replay: { tasks: 50, knownDefects: 30, plantedBugs: 20, baselineCaught: 20, bothCaught: 20, extraCatches: 6, dismissedBlocking: 0, passed: true, failures: [] } };
   const f = mount({ state: { mode: "on", modes: { company: "on", project: null, effective: "on" }, evidence }, respond: async request => (request.method === "POST" ? { status: 202, body: { status: "needs_approval", changeId: "chg_1" } } : undefined) });
   await screen.findByRole("heading", { name: "Mode" });
-  const select = screen.getByLabelText("Second opinion mode") as HTMLSelectElement;
-  expect((within(select).getByRole("option", { name: "On (can block)" }) as HTMLOptionElement).disabled).toBe(false);
+  const select = asSelect(screen.getByLabelText("Second opinion mode"));
+  expect(asOption(within(select).getByRole("option", { name: "On (can block)" })).disabled).toBe(false);
   fireEvent.change(select, { target: { value: "shadow" } });
   fireEvent.click(screen.getByRole("button", { name: "Save mode" }));
   await screen.findByText(/needs a different admin to approve it/u);
@@ -136,7 +140,7 @@ it("asks to sign in again when the approval is refused for an old sign-in", asyn
 it("chooses a primary and a backup in order, and goes back to the default", async () => {
   const f = mount();
   await screen.findByRole("table");
-  expect((screen.getByRole("button", { name: "Save choice" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(asButton(screen.getByRole("button", { name: "Save choice" })).disabled).toBe(true);
   expect(screen.queryByRole("button", { name: "Use the default" })).toBeNull();
   const key = (model: { provider: string; modelId: string }) => model.provider + "\u0000" + model.modelId;
   fireEvent.change(screen.getByLabelText("First choice"), { target: { value: key(GPT) } });
@@ -147,7 +151,7 @@ it("chooses a primary and a backup in order, and goes back to the default", asyn
   f.close();
   const chosen = mount({ state: { choice: { models: [GPT, GEMINI] }, current: { source: "company", models: [GPT, GEMINI], line: "Reviewed by openai/gpt-5.5 (company choice)" } } });
   await screen.findByText("Reviewed by openai/gpt-5.5 (company choice)");
-  expect((screen.getByLabelText("First choice") as HTMLSelectElement).value).toBe(key(GPT));
+  expect(asSelect(screen.getByLabelText("First choice")).value).toBe(key(GPT));
   fireEvent.click(screen.getByRole("button", { name: "Use the default" }));
   await waitFor(() => expect(posts(chosen)).toHaveLength(1));
   expect(posts(chosen)[0]!.body).toEqual({ action: "clear" });
