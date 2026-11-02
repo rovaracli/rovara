@@ -9,9 +9,11 @@
 //     and removes it again. The agent's sandbox is handed over as a bare `{ id, rootPath, dispose }`: it has no way to run a command, so the proof cannot be run in it by mistake.
 // Nothing here trusts the agent's words for a verdict: the Prove report is bound to the digest of the exact environment that was run, and the broker reads it again.
 import {
-  TestEnvironmentBodySchema, TestEnvironmentProposalSchema, formatCommandLine, observedSource, parseCommandLine, remoteCodeReason, testEnvDigest, testEnvIsProved,
+  TestEnvironmentBodySchema, TestEnvironmentProposalSchema, formatCommandLine, SETUP_PERSON_SOURCE, observedSource, parseCommandLine, remoteCodeReason, testEnvDigest, testEnvIsProved,
   type ProjectCommand, type SetupDraft, type SetupJournalEntry, type SetupProposal, type SetupReplacement, type TestEnvProveReport, type TestEnvValueSource, type TestEnvironmentProposal,
 } from "@agentx/contracts";
+import { realpath } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import type { EnvironmentDraft } from "./env-detect/propose.js";
 import { proveEnvironment, type ProvePorts } from "./prove.js";
 import { stepKeyOf } from "./setup-agent-journal.js";
@@ -36,21 +38,44 @@ export function ranCommand(entryCommand: string, line: string): boolean {
 
 type Fate = { failedAtN: number } | { workedAtN: number } | "not_run";
 
-/** What running `line` came to in the journal: the last failing run (when nothing worked after it), the first run that worked, or that it never ran. Only the agent's commands count. */
+/**
+ * How a journal command ran `line`, judged only from text the shell gives a trustworthy exit code for:
+ *   - `alone`: the line is the whole command (after `cd <dir> &&`, `NAME=value` words and `2>&1`), so its exit code is the line's own;
+ *   - `chain`: the line is one step of an `&&` chain, so an exit of 0 means every step worked, and a non-zero exit says nothing about this step;
+ *   - undefined: the line is not one whole step of the command. A step is what sits between `&&`, so a pipe (`... | tail`, whose exit is its last program's), `|| true`, `;`, a background `&`, a subshell or
+ *     a substitution makes the step something else than the line, and the line is not evidence.
+ */
+function evidenceOf(entryCommand: string, line: string): "alone" | "chain" | undefined {
+  const text = oneSpace(entryCommand.replace(/\s2>&1(?=\s|$)/gu, " "));
+  if (text.length > 2_000) return undefined;
+  const wanted = oneSpace(line);
+  if (wanted === "") return undefined;
+  const steps = text.split("&&").map((step) => step.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/u, "")).filter((step) => step !== "" && !/^cd\s+\S+$/u.test(step));
+  if (!steps.includes(wanted)) return undefined;
+  return steps.length === 1 ? "alone" : "chain";
+}
+
+/**
+ * What running `line` came to in the journal: the last failing run (when nothing worked after it), the first run that worked, or that it never ran. Only the agent's own, unflagged commands count:
+ * a command that downloads and runs code ran code nobody approved, so what it did or did not work is no evidence about the line (its `&& npm ci` may have worked only because of what it ran).
+ * A failure counts only when the line ran alone; a success counts alone or in an `&&` chain.
+ */
 function fateOf(journal: readonly SetupJournalEntry[], line: string): Fate {
   let failed: number | undefined;
   let worked: number | undefined;
   for (const entry of journal) {
-    if (entry.source !== "agent" || !ranCommand(entry.command, line)) continue;
-    if (entry.exitCode === 0 && !entry.timedOut) { worked = entry.n; failed = undefined; } else { failed = entry.n; worked = undefined; }
+    if (entry.source !== "agent" || entry.flagged) continue;
+    const how = evidenceOf(entry.command, line);
+    if (how === undefined) continue;
+    if (entry.exitCode === 0 && !entry.timedOut) { worked = entry.n; failed = undefined; } else if (how === "alone") { failed = entry.n; worked = undefined; }
   }
   if (worked !== undefined) return { workedAtN: worked };
   return failed !== undefined ? { failedAtN: failed } : "not_run";
 }
 
-/** The first run of `line` that worked, anywhere in the journal. */
+/** The first run of `line` that worked (see `fateOf` for what counts). */
 function firstWorked(journal: readonly SetupJournalEntry[], line: string): number | undefined {
-  return journal.find((entry) => entry.source === "agent" && entry.exitCode === 0 && !entry.timedOut && ranCommand(entry.command, line))?.n;
+  return journal.find((entry) => entry.source === "agent" && !entry.flagged && entry.exitCode === 0 && !entry.timedOut && evidenceOf(entry.command, line) !== undefined)?.n;
 }
 
 const sameProgram = (left: ProjectCommand, right: ProjectCommand): boolean => left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
@@ -98,11 +123,16 @@ export function mergeAgentFindings(detected: EnvironmentDraft, findings: AgentFi
   let leftOut = 0;
 
   /** The agent's lines for this repository that can be commands: one program, not flagged, not a download-and-run. */
-  const usable = (lines: readonly string[]): Array<{ line: string; command: ProjectCommand }> => lines.flatMap((line) => {
+  const usable = (lines: ReadonlyArray<{ line: string; place?: { path: string; line: number } }>): Array<{ line: string; command: ProjectCommand; place?: { path: string; line: number } }> => lines.flatMap(({ line, place }) => {
     if (flagged.has(oneSpace(line)) || remoteCodeReason(line) !== undefined) { leftOut += 1; return []; }
-    try { return [{ line, command: parseCommandLine(line, input.cwd, 900) }]; } catch { leftOut += 1; return []; }
+    try { return [{ line, command: parseCommandLine(line, input.cwd, 900), ...(place === undefined ? {} : { place }) }]; } catch { leftOut += 1; return []; }
   });
-  const agentLines = (items: SetupProposal["setup"]): string[] => items.filter((item) => item.value.repo === input.repo).flatMap((item) => item.value.commands);
+  /** The agent's command lines for this repository, each with the first file and line the item cited (kept when the line never ran, so the card still says where it came from). */
+  const agentLines = (items: SetupProposal["setup"]): Array<{ line: string; place?: { path: string; line: number } }> => items.filter((item) => item.value.repo === input.repo).flatMap((item) => {
+    const cited = item.from.find((place) => place.repo === input.repo && typeof place.path === "string" && typeof place.line === "number");
+    const place = cited === undefined ? undefined : { path: cited.path!, line: cited.line! };
+    return item.value.commands.map((line) => ({ line, ...(place === undefined ? {} : { place }) }));
+  });
   const otherRepos = [...findings.proposal.setup, ...findings.proposal.tests].filter((item) => item.value.repo !== input.repo).length;
   if (otherRepos > 0) notes.push("The setup run proposed commands for another repository; they are not part of this environment.");
 
@@ -112,13 +142,15 @@ export function mergeAgentFindings(detected: EnvironmentDraft, findings: AgentFi
    */
   function mergeList(
     current: Array<{ command: ProjectCommand; field: string }>,
-    proposed: Array<{ line: string; command: ProjectCommand }>,
+    proposed: Array<{ line: string; command: ProjectCommand; place?: { path: string; line: number } }>,
     replace: (at: number, command: ProjectCommand) => void,
     add: (command: ProjectCommand, source: TestEnvValueSource) => void,
     capacity: () => number,
     timeoutSeconds: number,
   ): void {
     const failed = current.flatMap((existing, at) => {
+      // A value a person set stays: the setup run never replaces, re-sources or re-cites it, whatever the journal says.
+      if (valueSources.some((entry) => entry.field === existing.field && entry.source === SETUP_PERSON_SOURCE)) return [];
       const fate = fateOf(journal, formatCommandLine(existing.command));
       return typeof fate === "object" && "failedAtN" in fate ? [{ at, failedAtN: fate.failedAtN }] : [];
     });
@@ -148,7 +180,7 @@ export function mergeAgentFindings(detected: EnvironmentDraft, findings: AgentFi
       const fate = fateOf(journal, candidate.line);
       if (typeof fate === "object" && "failedAtN" in fate) { leftOut += 1; return; }
       const workedAtN = firstWorked(journal, candidate.line);
-      add({ ...candidate.command, timeoutSeconds }, workedAtN === undefined ? "model" : observedSource(findings.runId, workedAtN));
+      add({ ...candidate.command, timeoutSeconds }, workedAtN !== undefined ? observedSource(findings.runId, workedAtN) : candidate.place ?? "model");
     });
   }
 
@@ -247,12 +279,14 @@ export async function proveAfterAgent(input: {
   signal: AbortSignal;
   /** The most the whole proof may take, in milliseconds. */
   deadlineMs: number;
+  /** Test seam for the workspace comparison. Default: the real path (links followed); a path that does not exist is compared as written. */
+  realPath?: (path: string) => Promise<string>;
 }): Promise<ProveAfterAgentResult> {
   const agentSandboxRemoved = await input.agent.dispose().then(() => true, () => false);
   let fresh: FreshSandbox | undefined;
   try {
     try { fresh = await input.makeFresh(); } catch { return { ok: false, reason: "fresh_sandbox_failed", agentSandboxRemoved }; }
-    if (fresh.id === input.agent.id || fresh.rootPath === input.agent.rootPath) return { ok: false, reason: "not_fresh", agentSandboxRemoved };
+    if (fresh.id === input.agent.id || await sharesWorkspace(fresh.rootPath, input.agent.rootPath, input.realPath ?? defaultRealPath)) return { ok: false, reason: "not_fresh", agentSandboxRemoved };
     try {
       // The digest is recomputed from the environment that is run, and an environment that does not read gets no proof.
       const digest = testEnvDigest(input.environment);
@@ -264,4 +298,15 @@ export async function proveAfterAgent(input: {
   } finally {
     await fresh?.dispose().catch(() => undefined);
   }
+}
+
+const defaultRealPath = (path: string): Promise<string> => realpath(path).catch(() => resolve(path));
+
+/**
+ * Whether two workspaces are the same folder, or one is inside the other, after links are followed and the paths are written out in full (a link, `..` or a trailing slash does not make a folder new).
+ * The agent's `.git/config`, hooks and untracked files live in its workspace, so a fresh sandbox must share none of it.
+ */
+async function sharesWorkspace(left: string, right: string, real: (path: string) => Promise<string>): Promise<boolean> {
+  const [a, b] = await Promise.all([real(left).then((path) => resolve(path)), real(right).then((path) => resolve(path))]);
+  return a === b || a.startsWith(b.endsWith(sep) ? b : `${b}${sep}`) || b.startsWith(a.endsWith(sep) ? a : `${a}${sep}`);
 }
