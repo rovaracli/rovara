@@ -185,6 +185,8 @@ import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKno
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
+import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
+import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
@@ -314,6 +316,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
+  // Company setup recipes and locks (switch `sp`): browser-only for reads and writes (off: the path is not found).
+  if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -531,6 +535,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testHealthReply !== undefined) return testHealthReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
+  const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
+  if (setupRecipesReply !== undefined) return setupRecipesReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);
   if (trackerPeopleReply !== undefined) return trackerPeopleReply;
   const knownFailingMarksReply = await routeKnownFailingMarks(deps, caller, request, url);

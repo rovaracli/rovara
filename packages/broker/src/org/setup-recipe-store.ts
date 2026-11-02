@@ -58,7 +58,7 @@ function recipeOf(raw: Row | undefined, orgId: OrgId): StoredRecipe | undefined 
   void _pk; void _sk; void _type; void _expiry;
   const parsed = StoredRecipeSchema.safeParse(rest);
   if (!parsed.success || parsed.data.orgId !== orgId || setupRecipeDigest(parsed.data.body) !== parsed.data.bodyDigest) return undefined;
-  return parsed.data;
+  return parsed.data as StoredRecipe;
 }
 
 const isLive = (status: RecipeStatus): boolean => status === "proposed" || status === "approved";
