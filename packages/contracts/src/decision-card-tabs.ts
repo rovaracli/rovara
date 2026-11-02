@@ -82,14 +82,21 @@ export const DecisionAnsweredSchema = z
 export type DecisionAnswered = z.infer<typeof DecisionAnsweredSchema>;
 
 /** `202`: the existing endpoint did not decide; the person decides on its confirmation page (a fresh sign-in). Nothing was approved, so no surface may say "Approved". */
+export const DECISION_MERGING_MAX = 20;
+/** What a merge press is about to merge, so the app can ask "Merge #N into <branch>?" before the person goes on to the confirmation page. Present only on a merge. */
+export const DecisionMergingSchema = z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().positive(), baseBranch: z.string().min(1).max(255) }).strict()).min(1).max(DECISION_MERGING_MAX);
 export const DecisionNeedsConfirmationSchema = z
-  .object({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link") })
+  .object({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link"), merging: DecisionMergingSchema.optional() })
   .strict();
 export type DecisionNeedsConfirmation = z.infer<typeof DecisionNeedsConfirmationSchema>;
 
 /** What an approve or a reject answers: decided, or waiting on a confirmation page. */
 export const DecisionOutcomeSchema = z.union([DecisionAnsweredSchema, DecisionNeedsConfirmationSchema]);
-export const DecisionOutcomeReaderSchema = z.union([DecisionAnsweredSchema, DecisionNeedsConfirmationSchema]);
+/** What the app reads: a field a newer server adds to either answer is kept, never a reason to refuse the answer (an older bundle's strict reader once refused `merging`). */
+export const DecisionOutcomeReaderSchema = z.union([
+  z.looseObject({ cardId: DecisionCardIdSchema, outcome: z.enum(["approved", "rejected"]), tab: DecisionTabIdSchema.optional(), remainingTabs: z.array(DecisionTabIdSchema).max(2) }),
+  z.looseObject({ cardId: DecisionCardIdSchema, outcome: z.literal("needs_confirmation"), confirmUrl: z.string().url().max(2048).refine((value) => value.startsWith("https://"), "an https link"), merging: DecisionMergingSchema.optional() }),
+]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
 
 /** The fixed reasons a performer refuses, and what each means to the person. */

@@ -53,12 +53,13 @@ export function mergeItemOf(task: DeveloperTaskRecord, workflow: WorkflowSnapsho
   const unaccepted = (workflow.reviews ?? []).filter((review) => review.candidateDigest === workflow.candidate?.digest && review.role === "SECURITY")
     .reduce((sum, review) => sum + review.findings.filter((finding) => !workflowFindingAccepted(workflow, review.role, finding)).length, 0);
   const heads = unmerged.map((item) => ({ repositoryId: item.repositoryId, number: item.number, headSha: item.headSha }));
+  const targets = unmerged.map((item) => ({ repositoryId: item.repositoryId, number: item.number, baseBranch: item.baseBranch }));
   return {
     kind: "merge", subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso,
     openPath: `/app/sessions/${sessionId}`,
     // What version of the thing decided on this is: the heads, the risk and the recorded checks. Any change makes an earlier "evidence opened" worthless.
     contentVersion: sha(JSON.stringify({ heads, risk, rev: workflow.revision, digest: workflow.candidate?.digest, ci })),
-    sessionId, heads, prRisk: risk.level, prReasons: risk.reasons,
+    sessionId, heads, targets, prRisk: risk.level, prReasons: risk.reasons,
     proof: { proven: 0, passed, failed, notTested: unknown },
     reviewVerdict: reviewVerdictOf(workflow), ci, securityFindingsHigh: unaccepted, fullSuitePending: false,
   };

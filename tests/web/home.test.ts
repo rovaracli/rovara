@@ -21,7 +21,7 @@ const cards = [
 ];
 function setup(body: unknown = HomeResponseSchema.parse({ cards, total: cards.length }), theme: "light" | "dark" = "light", initialStatus = 200, send?: (request: ApiRequest) => Promise<ApiResponse>) {
  let value = body, status = initialStatus;
- const f = fakeHost(async request => request.path === "/v1/app/home" ? { status, body: value } : send && request.method !== "GET" ? send(request) : { status: 200, body: { notices: [], next: "settled" } });
+ const f = fakeHost(async request => request.path === "/v1/app/home" ? { status, body: value } : request.path === "/v1/app/decisions" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } } : send && request.method !== "GET" ? send(request) : { status: 200, body: { notices: [], next: "settled" } });
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }), { theme });
  return { ...f, ...ui, query, answer(next: unknown, code = 200) { value = next;status = code; }, close() { ui.unmount();query.clear(); } };

@@ -328,7 +328,8 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  *
  * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges at once at low or medium risk: one click and the app's own confirm dialog, no email-code
  *   sign-in. The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Answers `200` with the pull requests merged. At HIGH risk it never merges
- *   on a click: it answers like a token press (below), so the person decides on the confirmation page with a fresh sign-in (owner decision 2026-10-30).
+ *   on a click: it answers like a token press (below), so the person decides on the confirmation page with a fresh sign-in (owner decision 2026-10-30). A press from a decision card (it names `expectedHeads`) does
+ *   the same at EVERY level (WEB-1, 2026-11-02).
  * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
  *   presser on the confirmation page (R66) with a fresh sign-in.
  */
@@ -386,7 +387,9 @@ export async function pressMerge(
   const current = riskOfTask(tracked.workflow, items).level;
   if (caller.browserSession === true && (seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
   // Owner decision 2026-10-30: a HIGH-risk change never merges on a click. Even a browser session decides it on the confirmation page, with a fresh sign-in (below, as for a token).
-  if (caller.browserSession === true && current !== "high") {
+  // WEB-1 (owner, 2026-11-02): a press that carries the heads a decision card showed (`expectedHeads`) is a card press, and a card press NEVER merges at once, at any risk level: it makes the same pending change
+  // a token press makes (202 and the confirmation link), which is the two steps Slack uses. Only the task page's own Merge button, which asks first in its own dialog, merges on one request.
+  if (caller.browserSession === true && current !== "high" && options.expectedHeads === undefined) {
     const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
   }
