@@ -24,6 +24,8 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { nightlyHealthEnabled } from "./health-switch.js";
+import { readHealthMark } from "./fix-setup-health.js";
+import { verifyResultsEnabled } from "../verification/switch.js";
 import type { NightlyRecorded } from "./nightly.js";
 import { testEnvironmentEnabled } from "./switch.js";
 
@@ -194,7 +196,10 @@ async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, pr
     const now = deps.now();
     const planned = plan(previous, now);
     if (planned === undefined) return previous;
-    const baseVersion = stored.kind === "ok" ? stored.health.version : stored.kind === "unreadable" ? (stored.rawVersion ?? 0) : 0;
+    const storedVersion = stored.kind === "ok" ? stored.health.version : stored.kind === "unreadable" ? (stored.rawVersion ?? 0) : 0;
+    // The Fix setup cards keep the highest version they have seen (while `vx` is on). The health item expires after 60 days or may be replaced, and then starts again at 1: a version below that mark would be refused
+    // by the cards for good. So the next version is above the stored one AND the mark.
+    const baseVersion = Math.max(storedVersion, verifyResultsEnabled() ? await readHealthMark(deps, orgId, project) : 0);
     const next = ProjectHealthSchema.parse({ ...planned.next, version: baseVersion + 1, updatedAt: iso(now) });
     let condition: { ConditionExpression: string; ExpressionAttributeValues?: Record<string, unknown> };
     if (stored.kind === "none") condition = { ConditionExpression: "attribute_not_exists(pk)" };

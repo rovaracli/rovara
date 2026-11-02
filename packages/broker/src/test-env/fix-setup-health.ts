@@ -27,7 +27,11 @@ export function recordCauseOfHealth(cause: string): string {
   return FIX_SETUP_CAUSES.find((code) => { const rule = RESULT_RULES[code]; return rule.kind === "environment" && rule.reason === cause; }) ?? cause;
 }
 
-async function readMark(store: FixSetupStore, orgId: OrgId, project: string): Promise<number> {
+/**
+ * The highest project-health version the Fix setup cards have seen. The health item expires or may be replaced, and its own counter then starts again at 1; the next version it writes must be above this
+ * (`applyPlan` in health.ts starts from max(stored, this) + 1), or every later call would be older than the mark and refused for good.
+ */
+export async function readHealthMark(store: Pick<FixSetupStore, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<number> {
   const found = await store.documentClient.send(new GetCommand({ TableName: store.tableName, Key: markKey(orgId, project), ConsistentRead: true })) as { Item?: { version?: unknown } };
   return typeof found.Item?.version === "number" && Number.isSafeInteger(found.Item.version) && found.Item.version >= 0 ? found.Item.version : 0;
 }
@@ -49,7 +53,7 @@ export function healthFixSetupCards(store: FixSetupStore, env: NodeJS.ProcessEnv
       const cause = recordCauseOfHealth(input.cause);
       const nowIso = new Date(store.now()).toISOString();
       for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
-        const seen = await readMark(store, input.orgId, input.project);
+        const seen = await readHealthMark(store, input.orgId, input.project);
         if (seen > input.version) return;
         const found = await readFixSetupRecord(store, input.orgId, input.project, cause);
         if (found === "unreadable") return;
@@ -70,7 +74,7 @@ export function healthFixSetupCards(store: FixSetupStore, env: NodeJS.ProcessEnv
       if (!verifyResultsEnabled(env)) return;
       const nowIso = new Date(store.now()).toISOString();
       for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
-        const seen = await readMark(store, input.orgId, input.project);
+        const seen = await readHealthMark(store, input.orgId, input.project);
         if (seen > input.version) return;
         const rows = (await store.documentClient.send(new QueryCommand({
           TableName: store.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": projectPk(input.orgId, input.project), ":prefix": "FIXSETUP#" }, ConsistentRead: true,

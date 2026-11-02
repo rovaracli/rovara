@@ -126,3 +126,58 @@ describe("resolving", () => {
     expect(left.map((item) => item.cause)).toEqual(["fails-on-original-code"]);
   });
 });
+
+// M1 (Opus re-check): the health item expires after 60 days (or is replaced) and its own counter starts again at 1. The cards' highest-seen version must not strand it.
+import { NightlyBaselineSchema, projectPk, type StoredNightlyHealth } from "@agentx/contracts";
+import { applyNightlyRecorded, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
+import { readHealthMark } from "../../packages/broker/src/test-env/fix-setup-health.js";
+import type { NightlyRecorded } from "../../packages/broker/src/test-env/nightly.js";
+
+describe("the health version after the health item expires (M1)", () => {
+  let slot = 0;
+  const night = (health: StoredNightlyHealth): NightlyRecorded => {
+    slot += 1;
+    const baseline = NightlyBaselineSchema.parse({
+      recordedAt: "2026-11-05T06:00:00.000Z", envRevision: 1, branch: "main", headSha: "a".repeat(40), finishedAt: "2026-11-05T06:00:00.000Z",
+      tests: { total: 100, passed: 100, failed: 0, skipped: 0 }, failed: [], flaky: [],
+    });
+    return { orgId: ORG, project: PROJECT, slotId: slot.toString(16).padStart(64, "0"), baseline, health };
+  };
+  const passed: StoredNightlyHealth = { class: "passed", ranFrom: "fresh" };
+  const broken: StoredNightlyHealth = { class: "environment", cause: "setup_failed", ranFrom: "fresh" };
+  const off = { proposeFixTask: false };
+
+  it("keeps opening and closing cards after the health item is gone and the mark is at 30", async () => {
+    const t = bench();
+    const ports: HealthPorts = { cards: t.cards, proposals: { propose: () => Promise.resolve() } };
+    const deps = { documentClient: t.db, tableName: "state", now: () => t.clock.now };
+    process.env.VERIFY_RESULTS_ENABLED = "1";
+    try {
+      // 30 changes of state: the health version, and with it the cards' mark, reaches 30.
+      for (let n = 0; n < 15; n += 1) {
+        await applyNightlyRecorded(deps, ports, night(broken), off);
+        await applyNightlyRecorded(deps, ports, night(passed), off);
+      }
+      expect((await readProjectHealth(deps, ORG, PROJECT))?.version).toBe(30);
+      expect(await readHealthMark(t.store, ORG, PROJECT)).toBe(30);
+      // The health item expires (the table's TTL) and the mark stays.
+      t.db.delete({ pk: projectPk(ORG, PROJECT), sk: "TESTENV#HEALTH" });
+      expect(await readProjectHealth(deps, ORG, PROJECT)).toBeUndefined();
+      await applyNightlyRecorded(deps, ports, night(broken), off);
+      const reborn = await readProjectHealth(deps, ORG, PROJECT);
+      expect(reborn?.version).toBe(31);
+      expect(await t.items(), "the card opens").toHaveLength(1);
+      await applyNightlyRecorded(deps, ports, night(passed), off);
+      expect((await readProjectHealth(deps, ORG, PROJECT))?.version).toBe(32);
+      expect(await t.items(), "and closes").toEqual([]);
+    } finally { delete process.env.VERIFY_RESULTS_ENABLED; }
+  });
+
+  it("with vx off the health version is its own and the cards' mark is not read", async () => {
+    const t = bench({});
+    const ports: HealthPorts = { cards: t.cards, proposals: { propose: () => Promise.resolve() } };
+    const deps = { documentClient: t.db, tableName: "state", now: () => t.clock.now };
+    await applyNightlyRecorded(deps, ports, night(broken), off);
+    expect((await readProjectHealth(deps, ORG, PROJECT))?.version).toBe(1);
+  });
+});
