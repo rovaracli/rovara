@@ -246,7 +246,7 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
  */
 export async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -254,6 +254,8 @@ export async function heldPreparationDispatch(
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, workspace.orgId);
+  // P1 (su): a setup run's heads are read again now and replace the pins its start kept on the operation (setup-pins.ts).
+  const pins = options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(workspace.orgId)) : undefined;
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
@@ -264,14 +266,19 @@ export async function heldPreparationDispatch(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...(pins === undefined ? {} : { pins }),
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId }),
     },
   };
+  const pinHeadsItem: TransactItems = pins === undefined ? [] : [{ Update: {
+    TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET preparePins = :pins",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":pins": pins },
+  } }];
   const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {
     TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET knowledgeCommit = :commit",
     ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":commit": metaPrepare.knowledgeCommit },
   } }];
-  return { workspace, items: [...pinKnowledge, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
+  return { workspace, items: [...pinKnowledge, ...pinHeadsItem, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**
