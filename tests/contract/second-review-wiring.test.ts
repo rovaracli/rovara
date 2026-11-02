@@ -3,13 +3,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createWorkflowSnapshot, createCandidateManifest, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { reviewCleared, workflowFindingFingerprint, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
-import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
 import { secondOpinionOfTask, secondReviewPullRequestLines, secondReviewTaskView } from "../../packages/broker/src/rovara-code/second-review-store.js";
-import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const NOW = "2026-11-02T12:00:00.000Z";
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
@@ -23,7 +20,6 @@ const ENABLED = { SECOND_REVIEW_ENABLED: "1" } as NodeJS.ProcessEnv;
 const review = (role: "CRITIC" | "SECURITY", more: Record<string, unknown> = {}) => ({
   operationId: randomUUID(), candidateDigest: code.digest, role, provider: "test", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: NOW, ...more,
 });
-const BLOCKING = { text: "off by one in the loop bound", origin: "INTRODUCED" as const };
 function workflowWith(extra: Record<string, unknown> = {}): WorkflowSnapshot {
   return WorkflowSnapshotSchema.parse({
     ...createWorkflowSnapshot({ taskId, ownerId, now: NOW, definitionVersion: "1.1.0" }),
@@ -41,18 +37,10 @@ const plan = () => {
   if (!planned.run) throw new Error("expected a plan");
   return planned;
 };
-const planned = plan();
 const secondReport = (operationId: string, status: WorkflowReviewReport["status"], findings: WorkflowReviewReport["findings"] = []): WorkflowReviewReport => ({
   operationId, candidateDigest: code.digest, role: "CRITIC", provider: "amazon-bedrock", version: "us.amazon.nova-premier-v1:0", status, findings, readOnly: true, recordedAt: NOW,
 });
 
-function harness(taskExtra: Record<string, unknown> = {}) {
-  const db = new FakeDynamoDb();
-  const workflow = workflowWith({ reviews: [review("CRITIC", { status: "FINDINGS", findings: [{ text: "first reviewer: missing null check", origin: "INTRODUCED" }] })] });
-  db.set({ ...taskKey(taskId), taskId, workflow, ...taskExtra });
-  const dependencies = { documentClient: db, tableName: "state" } as unknown as AwsBrokerDependencies;
-  return { db, dependencies, workflow };
-}
 
 const prBody = (task: Record<string, unknown>, workflow = workflowWith({ stage: "PULL_REQUEST", state: "READY", reviews: [review("CRITIC"), review("SECURITY")] })) =>
   workflowPullRequestBody({ title: "Add a retry flag", ...task } as never, workflow, "# Plan\n\n1. Add the flag.\n", "https://rovara.example/task", { changedFiles: { files: [{ repository: "payments", path: "src/a.ts", added: 3, removed: 1 }], complete: true } });

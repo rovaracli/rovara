@@ -2,6 +2,8 @@
 // used while nobody has chosen; a chosen model that stops qualifying is never swapped), the plan, and what the one REVIEW end does with the second report: it never clears or fails a first review, shadow never
 // blocks, `on` blocks in the same single Update as the workflow's own transition, and an unavailable second review is flagged and never blocks.
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   SECOND_REVIEW_BLOCK_REASON, SECOND_REVIEW_RESULT_KEY, WORKFLOW_AUTO_SEND_BACK_LIMIT, classifyBlockedWorkflow, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewDidNotRunLine, secondReviewModelKey, workflowSendBackOffered,
@@ -426,6 +428,19 @@ describe("key rule 5: stop, crash and close need no new path (one operation, one
     const taskUpdates = out.items.filter((item) => "Update" in item);
     expect(taskUpdates).toHaveLength(1);
     expect(JSON.stringify(out.items)).not.toMatch(/SECOND_REVIEW|secondReviewPending/u);
+  });
+});
+
+describe("key rule 5, by construction: nothing but the dispatch, the one REVIEW end and the key scope knows of a second review's plan", () => {
+  it("no stop, cancel, close, stale-operation or recovery code reads the plan or the result key", () => {
+    const walk = (directory: string): string[] => readdirSync(directory).flatMap((name) => {
+      const path = join(directory, name);
+      return statSync(path).isDirectory() ? (name === "node_modules" || name === "dist" ? [] : walk(path)) : /\.ts$/u.test(name) ? [path] : [];
+    });
+    const users = walk("packages/broker/src").filter((path) => /secondReviewPlan|workflowSecondReview\b|SECOND_REVIEW_RESULT_KEY/u.test(readFileSync(path, "utf8"))).map((path) => path.replace("packages/broker/src/", "")).sort();
+    expect(users).toEqual([
+      "aws/broker/model-access.ts", "aws/broker/task-operations.ts", "aws/cancellation.ts", "aws/broker/workflow-items.ts", "rovara-code/second-review-store.ts",
+    ].sort());
   });
 });
 

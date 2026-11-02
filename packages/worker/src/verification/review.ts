@@ -943,7 +943,7 @@ export async function runWorkflowReviews(input: {
     let last: (typeof reports)[number] | undefined;
     const refs = secondReviewer.candidates.map((candidate) => ({ provider: candidate.model.provider, modelId: candidate.model.modelId }));
     for (let ref = nextSecondReviewModel(refs, tries); ref !== undefined && !(input.signal?.aborted ?? false); ref = nextSecondReviewModel(refs, tries)) {
-      const chosen = secondReviewer.candidates.find((candidate) => secondReviewModelKey(candidate.model) === secondReviewModelKey(ref!))!;
+      const chosen = secondReviewer.candidates.find((candidate) => secondReviewModelKey(candidate.model) === secondReviewModelKey(ref))!;
       const number = tries.length + 1;
       let report: (typeof reports)[number] | undefined;
       try {

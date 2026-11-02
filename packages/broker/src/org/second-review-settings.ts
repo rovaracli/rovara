@@ -14,7 +14,7 @@ export const SECOND_REVIEW_SETTINGS_SK = "SECONDREVIEW#SETTINGS";
 const PROJECT_PREFIX = "SECONDREVIEW#PROJECT#";
 const VERDICT_PREFIX = "SECONDREVIEW#VERDICT#";
 const REPLAY_PREFIX = "SECONDREVIEW#REPLAY#";
-const orgPk = (orgId: string): string => orgMetaKey(orgId as never).pk;
+const orgPk = (orgId: string): string => orgMetaKey(orgId).pk;
 export const secondReviewProjectKey = (orgId: string, project: string) => ({ pk: orgPk(orgId), sk: `${PROJECT_PREFIX}${project.replace(/#/gu, "_")}` });
 
 export interface SecondReviewSettings {

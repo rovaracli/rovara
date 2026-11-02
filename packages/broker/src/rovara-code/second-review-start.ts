@@ -73,8 +73,8 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
   const builds = operations.filter((item) => item.workflowMode === "IMPLEMENT" && item.status === "SUCCEEDED").map((item) => item.model as ModelIdentifier | undefined);
   const against = againstModels({ buildRanModels: builds.map((model) => (model === undefined || typeof model !== "object" ? undefined : model)), firstReviewerRan: input.firstReviewerModel });
   if (against === undefined) return notRun("no-candidate");
-  const forbidden = (await readGuardrails(dependencies, input.orgId as never)).forbiddenModels ?? [];
-  const sources = input.routing === undefined ? [] : await servableModels(input.routing, input.orgId as never, input.project);
+  const forbidden = (await readGuardrails(dependencies, input.orgId)).forbiddenModels ?? [];
+  const sources = input.routing === undefined ? [] : await servableModels(input.routing, input.orgId, input.project);
   const previous = settings.companyModels === undefined && settings.projectModels === undefined ? input.task?.secondOpinion : undefined;
   const previousModel = previous?.opinion.choice === "default" && previous.opinion.report !== undefined ? { provider: previous.opinion.report.provider, modelId: previous.opinion.report.version } : undefined;
   const plan = planSecondReview({
@@ -91,7 +91,7 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
     try {
       const admitted = await admitWork(
         { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true, ...(input.now === undefined ? {} : { now: input.now }) },
-        { orgId: input.orgId as never, project: input.project, payer: input.task.payer ?? { kind: "member", developerId: input.task.developerId }, agentId: input.task.agent?.agentId ?? "rovara-code", agentName: input.task.agent?.name ?? "Rovara Code", path: "TASK",
+        { orgId: input.orgId, project: input.project, payer: input.task.payer ?? { kind: "member", developerId: input.task.developerId }, agentId: input.task.agent?.agentId ?? "rovara-code", agentName: input.task.agent?.name ?? "Rovara Code", path: "TASK",
           ...(input.task.origin === "test_run" ? { testRunBy: input.task.startedBy?.developerId ?? input.task.developerId } : {}) },
       );
       const price = listPricesPerMillion(plan.model);
@@ -109,7 +109,7 @@ export async function prepareSecondReview(input: SecondReviewStartInput): Promis
   const routeAliases: Record<string, string> = {};
   for (const model of plan.candidates) {
     if (input.routing === undefined) { candidates.push({ model }); continue; }
-    const [route] = (await servingRoutes(input.routing, { orgId: input.orgId as never, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt" && entry.alias !== undefined);
+    const [route] = (await servingRoutes(input.routing, { orgId: input.orgId, project: input.project, model })).filter((entry) => entry.sourceId !== "personal-chatgpt" && entry.alias !== undefined);
     if (route === undefined) continue;
     const wire = routeOnWire(route, model);
     candidates.push({ model, ...(wire === undefined ? {} : { modelRoute: wire }) });

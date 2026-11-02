@@ -47,7 +47,7 @@ async function listOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
   const routing = deps.agents?.modelRouting ?? {};
   const sources = await servableModels(routing, caller.orgId, project);
-  const forbidden = (await readGuardrails({ documentClient: deps.documentClient, tableName: deps.tableName } as never, caller.orgId)).forbiddenModels ?? [];
+  const forbidden = (await readGuardrails({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.orgId)).forbiddenModels ?? [];
   const settings = await readSecondReviewSettings(table, caller.orgId, project ?? "");
   const price = (model: ModelIdentifier) => { const found = listPricesPerMillion(model); return found === undefined ? undefined : { inputUsdPerMTok: found.input, outputUsdPerMTok: found.output }; };
   const picker = secondReviewPicker({ sources, project: {}, forbidden, against, price, verdicts: settings.verdicts, replayRuns: settings.replayRuns });

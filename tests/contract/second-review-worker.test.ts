@@ -36,7 +36,7 @@ async function repository() {
 }
 
 /** A model: `script` is its answers in order ("throw" = the session fails); `prompts` counts what it was asked. */
-function model(id: string, script: Array<string | "throw">, prompts: string[]): { model: { provider: string; modelId: string }; piAdapter: PiSessionAdapter } {
+function model(id: string, script: string[], prompts: string[]): { model: { provider: string; modelId: string }; piAdapter: PiSessionAdapter } {
   let next = 0;
   return {
     model: { provider: "test", modelId: id },

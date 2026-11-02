@@ -5,29 +5,23 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SECOND_REVIEW_OPERATION_TAG, SecondOpinionSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, canonicalModelName, configuredSecondReviewMode,
-  forbiddenModelMatcher, isSecondReviewOperation, lockSecondReviewLoweringNeedsSecondPerson, modelCompany, projectSecondReviewLoweringNeedsSecondPerson, secondReviewModelKey, secondReviewShadowPassed,
-  secondReviewVerdictHolds, stricterSecondReviewMode, summarizeSecondReviewReplay, workflowFindingFingerprint,
+  HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, configuredSecondReviewMode,
+  lockSecondReviewLoweringNeedsSecondPerson, projectSecondReviewLoweringNeedsSecondPerson, secondReviewModelKey, secondReviewShadowPassed,
+  stricterSecondReviewMode, summarizeSecondReviewReplay, workflowFindingFingerprint,
   type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport,
 } from "@agentx/contracts";
 import {
-  SECOND_REVIEW_OPERATION, admitSecondReview, againstModels, estimateSecondReviewUsd, planSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn,
+  admitSecondReview, againstModels, estimateSecondReviewUsd, planSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn,
   mergeWaitsForSecondReview, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewAlreadyRan, secondReviewBlocksWhenUnavailable,
-  secondReviewUnavailableDecision, type SecondReviewPlan, type SecondReviewPlanInput,
+  type SecondReviewPlan, type SecondReviewPlanInput,
 } from "../../packages/broker/src/rovara-code/second-review.js";
 
 const SONNET: ModelIdentifier = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
 const OPUS: ModelIdentifier = { provider: "anthropic", modelId: "claude-opus-4-6" };
 const GPT: ModelIdentifier = { provider: "openai", modelId: "gpt-5.5" };
 const NOVA_PRO: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };
-const NOVA_PRO_V2: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v2:0" };
 const NOVA_PREMIER: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-premier-v1:0" };
-const NOVA_LITE: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-lite-v1:0" };
 const BEDROCK_GPT_OSS: ModelIdentifier = { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b-1:0" };
-const BEDROCK_GEMMA: ModelIdentifier = { provider: "amazon-bedrock", modelId: "google.gemma-3-27b-it" };
-const BEDROCK_CLAUDE: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
-const GEMINI: ModelIdentifier = { provider: "openrouter", modelId: "google/gemini-3-pro" };
-const UNKNOWN_MAKER: ModelIdentifier = { provider: "openrouter", modelId: "x-ai/grok-9" };
 
 const plan = (overrides: Partial<SecondReviewPlanInput> = {}): SecondReviewPlan => planSecondReview({
   switchOn: true, mode: "shadow", against: [SONNET], project: {}, forbidden: [], sources: [SONNET, OPUS, GPT, NOVA_PRO, NOVA_PREMIER, BEDROCK_GPT_OSS],
@@ -309,5 +303,20 @@ describe("How we work: the second opinion row", () => {
     for (const mode of SECOND_REVIEW_MODES) expect(HowWeWorkStageSchema.safeParse(stage({ secondOpinion: mark(mode, true) })).success, mode).toBe(true);
     expect(HowWeWorkStageSchema.safeParse(stage({ secondOpinion: mark("maybe") })).success).toBe(false);
     expect(HowWeWorkStageSchema.safeParse(stage({ secondOpinion: { value: "on", source: "company", locked: true } })).success).toBe(false);
+  });
+});
+
+describe("the acknowledgement seam (an on review that did not run waits for the owner)", () => {
+  const flagged = secondOpinionUnavailable({ mode: "on", company: "openai" }, "no-answer");
+  it("never blocks the review itself, but the merge waits for the owner's acknowledgement of that candidate and reason", () => {
+    expect(secondReviewBlocksWhenUnavailable({ mode: "on", reason: "no-answer" })).toBe(false);
+    const ack = secondReviewAcknowledgement(flagged, digest);
+    if (!ack.required) throw new Error("expected an ask");
+    expect(ack.text).toBe("Second review did not run: the reviewer gave no usable answer after retrying. Acknowledge before merging.");
+    expect(mergeWaitsForSecondReview(flagged, digest, [])).toBe(true);
+    expect(mergeWaitsForSecondReview(flagged, digest, [ack.key])).toBe(false);
+    expect(mergeWaitsForSecondReview(flagged, "d".repeat(64), [ack.key])).toBe(true);
+    expect(mergeWaitsForSecondReview(secondOpinionUnavailable({ mode: "shadow", company: "openai" }, "no-answer"), digest, [])).toBe(false);
+    expect(mergeWaitsForSecondReview(undefined, digest, [])).toBe(false);
   });
 });
