@@ -116,8 +116,7 @@ export const BROKER_NAMES = {
   // Team record (wire-team-record; present only when the install is synthesised with `agentxTeamRecord=enabled`): the role the broker assumes, with a per-workspace session policy, for every vector call.
   teamRecordVectorsRole: { code: "vr", variable: "TEAM_RECORD_VECTORS_ROLE_ARN", kind: "roleArn" },
   // Team record, Enterprise: the customer's KMS key (its id; the broker builds the ARN in this account and region), named in each workspace's vector session policy.
-  // Team record: the dead-letter queue of the durable queue for removals and edits (listed on the health route as `team-record`).
-  teamRecordDeadLetters: { code: "tq", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "team-record" },
+  // (The Team record's dead-letter queue, listed on the health route as `team-record`, has a fixed name and is derived by the broker, not passed: `teamRecordOpsDeadLetterName`, ENV-ROOM. Code `tq` is retired.)
   teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 
@@ -174,6 +173,7 @@ export const BROKER_SETTINGS = {
   // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
   // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
+  // Passed only when it is not the default (amazon.titan-embed-text-v2:0): the broker reads an unset model as the default (team-record/runtime.ts), so the usual install passes nothing (ENV-ROOM).
   teamRecordEmbeddingModel: { code: "te", variable: "TEAM_RECORD_EMBEDDING_MODEL_ID" },
   teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },
   // Proof and evidence (wire-proof): the evidence of a task's checks is gathered, kept and shown (the PR's evidence lines and link, the task page's Evidence tab, the download route). Stack parameter ProofEvidenceEnabled, "0" by default: the broker reads it as PROOF_EVIDENCE_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).

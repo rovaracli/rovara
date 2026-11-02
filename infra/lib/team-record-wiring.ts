@@ -18,7 +18,7 @@ import { Duration, Token, aws_lambda_event_sources as eventSources, aws_schedule
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
-import type { TeamRecordContext } from "./team-record-edition.js";
+import { DEFAULT_EMBEDDING_MODEL_ID, type TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
 import { TeamRecordTable } from "./team-record-table.js";
 
@@ -106,7 +106,8 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   // The switch and the two install parameters the broker cannot derive from the environment's name. The names of the resources are derived (derived-names.ts).
   const settings = BrokerSettings.of(broker);
   settings.add("teamRecord", "1");
-  settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
+  // The default model is not passed: the broker reads an unset model as the default (team-record/runtime.ts), which keeps 36 bytes of the broker's 4 KB environment.
+  if (storage.parameters.embeddingModelId !== DEFAULT_EMBEDDING_MODEL_ID) settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
   settings.add("teamRecordLake", storage.lake === undefined ? "0" : "1");
   if (storage.vectors.dataRole !== undefined) BrokerNames.of(broker).add("teamRecordVectorsRole", storage.vectors.dataRole.roleName);
   // The customer's key (Enterprise) must be in this account and region: the broker builds its ARN from the key id, the region and the account.
@@ -126,7 +127,7 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   });
   broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
   ops.grantSendMessages(broker);
-  BrokerNames.of(broker).add("teamRecordDeadLetters", deadLetters.queueName);
+  // Not passed to the broker: its name is fixed (`teamRecordOpsDeadLetterName`) and the broker derives its URL for the health route (broker-environment.ts).
   // The hourly job deletes PUT messages out of the dead-letter queue (they hold a draft's text, TRW-5 S1): receive and delete on that one queue.
   deadLetters.grantConsumeMessages(broker);
   // A delete that neither the table nor the queue took is sent to the broker itself as an asynchronous Event (TRW-5 S2). A policy of its own, so the function does not wait on its own role (no cycle).

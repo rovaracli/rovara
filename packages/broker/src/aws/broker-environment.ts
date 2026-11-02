@@ -26,6 +26,7 @@ import {
   MODEL_PROXY_INFERENCE_PORT,
   decodeBrokerList,
   environmentRolePath,
+  teamRecordOpsDeadLetterName,
   type BrokerNameSpec,
   type BrokerSettingSpec,
 } from "@agentx/contracts";
@@ -197,9 +198,11 @@ export function hydrateBrokerEnvironment(env: MutableEnvironment): void {
     else if (!isSet(env[spec.variable])) env[spec.variable] = build(spec, value, env);
   }
   // The route lists the queues in the table's order, whatever order the names came in.
-  const listed = Object.values(BROKER_NAMES).flatMap((spec: BrokerNameSpec) => (queues.has(spec) ? [[spec.label ?? spec.code, queues.get(spec)!] as const] : []));
-  if (listed.length > 0 && !isSet(env.HEALTH_DEAD_LETTER_QUEUES)) env.HEALTH_DEAD_LETTER_QUEUES = JSON.stringify(Object.fromEntries(listed));
+  const listed: Array<readonly [string, string]> = Object.values(BROKER_NAMES).flatMap((spec: BrokerNameSpec) => (queues.has(spec) ? [[spec.label ?? spec.code, queues.get(spec)!] as const] : []));
   const name = env.AGENTX_ENV;
+  // The Team record's operations dead-letter queue has a fixed name (`teamRecordOpsDeadLetterName`), so it is derived, not passed (ENV-ROOM): listed last, as it always was, and only where the record is on.
+  if (env.TEAM_RECORD_ENABLED === "1" && isSet(name)) listed.push(["team-record", queueUrl(requiredScope(env, "HEALTH_DEAD_LETTER_QUEUES team-record"), teamRecordOpsDeadLetterName(name))]);
+  if (listed.length > 0 && !isSet(env.HEALTH_DEAD_LETTER_QUEUES)) env.HEALTH_DEAD_LETTER_QUEUES = JSON.stringify(Object.fromEntries(listed));
   if (!isSet(name)) return;
   for (const [variable, value] of derived(env, name)) {
     if (!isSet(env[variable])) env[variable] = value();

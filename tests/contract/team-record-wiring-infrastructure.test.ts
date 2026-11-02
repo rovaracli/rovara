@@ -112,10 +112,17 @@ describe("the switch on: Public cloud", () => {
     const variables = functionVariables(on, /^Broker[0-9A-F]{8}$/);
     const settings = brokerSettingsIn(variables);
     expect(settings.teamRecord).toBe("1");
-    expect(settings.teamRecordEmbeddingModel).toBe("amazon.titan-embed-text-v2:0");
+    // ENV-ROOM: the default embedding model is not passed (the broker reads an unset model as the default), and the record's dead-letter queue has a fixed name the broker derives.
+    expect(settings).not.toHaveProperty("teamRecordEmbeddingModel");
     expect(settings.teamRecordLake).toBe("1");
     expect(brokerNamesIn(variables).teamRecordVectorsRole).toStrictEqual({ Ref: expect.stringMatching(/^TeamRecordVectorsDataRole/) as string });
+    expect(Object.keys(BROKER_NAMES)).not.toContain("teamRecordDeadLetters");
     for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordEmbeddingModel, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
+  }, 180_000);
+
+  it("passes the embedding model in the packed settings when the install chooses another one", () => {
+    const other = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" });
+    expect(brokerSettingsIn(functionVariables(other, /^Broker[0-9A-F]{8}$/)).teamRecordEmbeddingModel).toBe("cohere.embed-english-v3");
   }, 180_000);
 
   it("schedules the hourly and the nightly job through the recovery role, with no retries, and nothing else", () => {
