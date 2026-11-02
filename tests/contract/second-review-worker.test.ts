@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { SECOND_REVIEWER_FEATURE, SecondReviewerSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, nextSecondReviewModel, secondReviewTryOutcome, type SecondReviewResult } from "../../packages/contracts/src/index.js";
+import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/index.js";
 import { runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { secondReviewerRuntimes } from "../../packages/worker/src/task-model.js";
@@ -70,7 +71,7 @@ function model(id: string, script: string[], prompts: string[], options: { delay
 const PASS = '{"findings":[]}';
 const FINDING = '{"findings":[{"text":"off by one in the loop bound","origin":"INTRODUCED"}]}';
 
-async function run(options: { first: ReturnType<typeof model>; candidates?: Array<ReturnType<typeof model>>; reviewers?: Array<"CRITIC" | "SECURITY">; timeoutMs?: number; context?: "change_only" | "same_as_first"; sources?: unknown; learnedBlock?: string }) {
+async function run(options: { first: ReturnType<typeof model>; candidates?: Array<ReturnType<typeof model>>; reviewers?: Array<"CRITIC" | "SECURITY">; timeoutMs?: number; context?: "change_only" | "same_as_first"; sources?: unknown; learnedBlock?: string; tools?: string[]; skills?: unknown[] }) {
   const { rootPath, repositories, candidate } = await repository();
   let second: SecondReviewResult | undefined;
   const started = Date.now();
@@ -78,7 +79,7 @@ async function run(options: { first: ReturnType<typeof model>; candidates?: Arra
     const reports = await runWorkflowReviews({
       ruleFileBaseCommits: [], operationId: OPERATION, rootPath, model: options.first.model, candidate, repositories, piAdapter: options.first.piAdapter, now: () => now,
       ...(options.reviewers === undefined ? {} : { reviewers: options.reviewers }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      ...(options.sources === undefined ? {} : { sources: options.sources as never }), ...(options.learnedBlock === undefined ? {} : { learnedBlock: options.learnedBlock }),
+      ...(options.sources === undefined ? {} : { sources: options.sources as never }), ...(options.learnedBlock === undefined ? {} : { learnedBlock: options.learnedBlock }), ...(options.tools === undefined ? {} : { tools: options.tools }), ...(options.skills === undefined ? {} : { skills: options.skills as never }),
       ...(options.candidates === undefined ? {} : { secondReviewer: { candidates: options.candidates, ...(options.context === undefined ? {} : { context: options.context }) }, onSecondReview: (result: SecondReviewResult) => { second = result; } }),
     });
     return { reports, second, elapsed: Date.now() - started };
@@ -202,6 +203,45 @@ describe("the second reviewer takes no extra wall time (M1)", () => {
     await run({ first: track("first-v1"), candidates: [track("second-a")], sources, learnedBlock: "LESSON-BLOCK", context: "same_as_first" });
     expect(seen).toContain("second-a:tools=1");
     expect(seen).toContain("second-a:lessons=true");
+  });
+});
+
+describe("the second reviewer stops with the run (N3, N2)", () => {
+  it("when a first review throws (base rule files that cannot be verified), the second reviewer's model call is stopped before the run ends", async () => {
+    const prompts: string[] = [];
+    let open = 0;
+    let started = 0;
+    const hanging = model("second-a", ["hang"], prompts);
+    const inner = hanging.piAdapter.create.bind(hanging.piAdapter);
+    hanging.piAdapter.create = async (input) => {
+      const session = await inner(input);
+      open += 1; started += 1;
+      const dispose = session.dispose.bind(session);
+      session.dispose = () => { open -= 1; dispose(); };
+      return session;
+    };
+    // The first review's session fails after the second reviewer is already asking its model.
+    const broken: ReturnType<typeof model> = { model: { provider: "test", modelId: "first-v1" }, piAdapter: { async create() { await new Promise((resolve) => setTimeout(resolve, 600)); throw new Error(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE); } } };
+    await expect(run({ first: broken, candidates: [hanging] })).rejects.toThrow(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
+    for (let waited = 0; open > 0 && waited < 3000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+    // It had started (so the stop is what ended it, not its own limit of minutes), and its session is closed.
+    expect(started).toBe(1);
+    expect(open).toBe(0);
+  });
+
+  it("the step's tool list still narrows the second reviewer's tools when it sees only the change; the sources, lessons, step instructions and skills are what it drops", async () => {
+    const seen: Array<{ who: string; tools: unknown; skills: unknown }> = [];
+    const track = (id: string) => {
+      const m = model(id, [PASS], []);
+      const inner = m.piAdapter.create.bind(m.piAdapter);
+      m.piAdapter.create = async (input) => { seen.push({ who: id, tools: (input as { agentTools?: unknown }).agentTools, skills: (input as { skills?: unknown }).skills }); return inner(input); };
+      return m;
+    };
+    const base = { sources: undefined, learnedBlock: undefined };
+    void base;
+    await run({ first: track("first-v1"), candidates: [track("second-a")], tools: ["read", "grep"], skills: [{ name: "s", content: "x" }] });
+    expect(seen.find((entry) => entry.who === "second-a")).toMatchObject({ tools: ["read", "grep"], skills: undefined });
+    expect(seen.find((entry) => entry.who === "first-v1")).toMatchObject({ tools: ["read", "grep"] });
   });
 });
 

@@ -269,11 +269,19 @@ export function reviewCleared(review: WorkflowReviewReport, accepted: readonly A
  * SR-1 (switch `cr`, `on` only): the second review's blocking findings for one candidate, kept IN the workflow so that nothing which reads the workflow can clear them by accident: accepting the first review's
  * findings does not clear this block, and each of these findings is accepted (or sent to coding) by the owner the same way a first review's is. Absent unless an `on` second review blocked.
  */
+export const WORKFLOW_SECOND_REVIEW_LINE_MAX = 10_000_000;
+
 export const WorkflowSecondReviewBlockSchema = z.object({
   candidateDigest: DigestSchema,
-  findings: z.array(z.object({ text: z.string().trim().min(1).max(600), file: z.string().max(500).optional(), line: z.number().int().positive().max(10_000_000).optional() }).strict()).min(1).max(20),
+  findings: z.array(z.object({ text: z.string().trim().min(1).max(600), file: z.string().max(500).optional(), line: z.number().int().positive().max(WORKFLOW_SECOND_REVIEW_LINE_MAX).optional() }).strict()).min(1).max(20),
 }).strict();
 export type WorkflowSecondReviewBlock = z.infer<typeof WorkflowSecondReviewBlockSchema>;
+
+/** A review finding as the block keeps it, always within the block's own limits (a model's absurd line number or long path can never make the workflow unreadable): the line is left out when it is over the cap, the path and text are cut. */
+export function secondReviewBlockFinding(finding: { text: string; file?: string | undefined; line?: number | undefined }): { text: string; file?: string; line?: number } {
+  return { text: finding.text.slice(0, 600), ...(finding.file === undefined ? {} : { file: finding.file.slice(0, 500) }),
+    ...(finding.line === undefined || finding.line > WORKFLOW_SECOND_REVIEW_LINE_MAX ? {} : { line: finding.line }) };
+}
 
 /** The second review's findings the owner has not accepted yet, for the code the workflow holds NOW. Role `CRITIC` is the namespace they are accepted under (a second review is a code review). */
 export function openSecondReviewFindings(workflow: { candidate?: { digest: string } | undefined; acceptedFindings?: readonly AcceptedFindingRef[] | undefined; secondReviewBlock?: { candidateDigest: string; findings: ReadonlyArray<{ text: string; file?: string | undefined; line?: number | undefined }> } | undefined }): Array<{ text: string; file?: string | undefined; line?: number | undefined }> {

@@ -856,7 +856,12 @@ export function completeWorkflowBuild(currentInput: unknown, now: string): Workf
   return WorkflowSnapshotSchema.parse({ ...withoutBlockReason, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY", programStepId: move.step.id, updatedAt: now });
 }
 
-export function submitWorkflowReview(currentInput: unknown, reportInput: unknown, now: string): WorkflowSnapshot {
+/**
+ * Records one review of the current code. `options.secondReviewBlocks` (SR-1, switch `cr`, `on`): a second review by another AI company blocked this code. When every review this step asked for has cleared, that
+ * block decides the move instead: without a program the step stays blocked with the second review's reason, and in a program the move is "findings" (back to the step the review sends findings to, the round counted,
+ * or blocked when the rounds are spent), exactly as a first review's findings would move it.
+ */
+export function submitWorkflowReview(currentInput: unknown, reportInput: unknown, now: string, options: { secondReviewBlocks?: boolean } = {}): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   const report = WorkflowReviewReportSchema.safeParse(reportInput);
   if (!report.success || current.stage !== "REVIEW" || current.candidate === undefined || current.verification === undefined) {
@@ -874,11 +879,13 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   const stored = current.definitionVersion === "1.1.0" ? report.data : withoutRisk;
   const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), stored];
   // A review also stands when the owner accepted every finding that blocked it, for this candidate.
-  const complete = roles.every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
+  const firstClear = roles.every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
+  const heldBySecond = options.secondReviewBlocks === true && firstClear;
+  const complete = firstClear && !heldBySecond;
   // The reviews that hold the change back, named as the owner knows them, whichever review was recorded last.
   const notCleared = roles.filter((role) => reviews.some((entry) => entry.role === role && !reviewCleared(entry, current.acceptedFindings)));
-  const failed = notCleared.length > 0;
-  const blockReason = reviewNotPassedReason(notCleared);
+  const failed = notCleared.length > 0 || heldBySecond;
+  const blockReason = heldBySecond ? SECOND_REVIEW_BLOCK_REASON : reviewNotPassedReason(notCleared);
   const { blockReason: _priorBlockReason, ...withoutBlockReason } = current;
   void _priorBlockReason;
   const program = current.program;
@@ -889,9 +896,9 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   const findingsOnly = failed && notCleared.every((role) => reviews.some((entry) => entry.role === role && entry.status === "FINDINGS"));
   if (program !== undefined && allIn && current.programStepId !== undefined && (complete || findingsOnly)) {
     const rounds = { ...(current.programRounds ?? {}), [current.programStepId]: Math.min((current.programRounds?.[current.programStepId] ?? 0) + 1, PROGRAM_ROUNDS_MAX) };
-    const move = complete ? nextProgramStep(program, current.programStepId, "done") : nextProgramStep(program, current.programStepId, "findings", rounds[current.programStepId], notCleared);
+    const move = complete ? nextProgramStep(program, current.programStepId, "done") : nextProgramStep(program, current.programStepId, "findings", rounds[current.programStepId], heldBySecond ? ["CRITIC"] : notCleared);
     const base = { ...withoutBlockReason, revision: current.revision + 1, reviews, programRounds: rounds, updatedAt: now };
-    if (move.kind === "blocked") return WorkflowSnapshotSchema.parse({ ...base, stage: "REVIEW", state: "BLOCKED", blockReason: move.reason });
+    if (move.kind === "blocked") return WorkflowSnapshotSchema.parse({ ...base, stage: "REVIEW", state: "BLOCKED", blockReason: heldBySecond ? SECOND_REVIEW_BLOCK_REASON : move.reason });
     const placed = move.kind === "end" ? programArrival({ ...current, reviews }, { stage: "CLOSED", complete: true })
       : programArrival({ ...current, reviews }, { stage: PROGRAM_STAGE_OF_STEP[move.step.kind], programStepId: move.step.id });
     return WorkflowSnapshotSchema.parse({ ...base, ...placed });
@@ -2762,4 +2769,4 @@ export function decideWorkflow(
 
 export { workflowCheckCommandText } from "./workflow-check-input.js";
 
-export { openSecondReviewFindings, WorkflowSecondReviewBlockSchema, type WorkflowSecondReviewBlock, ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowDecisionRecordSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_STAGES, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_ACTION_LIMIT, WorkflowAutoActionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+export { openSecondReviewFindings, secondReviewBlockFinding, WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, type WorkflowSecondReviewBlock, ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowDecisionRecordSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_STAGES, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_ACTION_LIMIT, WorkflowAutoActionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";

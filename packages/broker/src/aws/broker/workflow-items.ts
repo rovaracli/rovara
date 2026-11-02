@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, SECOND_REVIEW_BLOCK_REASON, blockingFindings, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@agentx/contracts";
+import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, SECOND_REVIEW_BLOCK_REASON, blockingFindings, secondReviewBlockFinding, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@agentx/contracts";
 import { resultsWithStoredArtifacts, storeWorkflowE2EArtifacts } from "../workflow-e2e-artifacts.js";
 import { queryAllItems } from "../admin-reads.js";
 import type { z } from "zod";
@@ -985,10 +985,18 @@ export async function completedWorkflowItems(
         // SR-1: a new review of this code starts without the earlier second review's block (the new opinion sets it again if it blocks).
         const { secondReviewBlock: _earlierSecondBlock, ...unblockedBySecond } = task.workflow;
         void _earlierSecondBlock;
+        // SR-1 (switch `cr`): the second reviewer ran INSIDE this operation. Its report is not among the reviews below (the worker writes it under its own result key), so it cannot clear or fail a first review. An `on`
+        // opinion that blocks is handed to the reviews' own transition, so it decides the move whenever the first reviews cleared, whatever stage comes next (without a program the step stays blocked with the second
+        // review's reason; in a program it moves as findings would). The opinion and the block are stored in this same write.
+        if (secondReviewEnabled()) {
+          secondOpinion = secondOpinionFromReviewResult({ recorded: operation.secondReviewPlan, operationId: operation.id, terminalStatus, result, currentCandidateDigest: task.workflow.candidate?.digest, accepted: task.workflow.acceptedFindings, now })
+            ?? (task.secondOpinion === undefined ? undefined : null);
+        }
+        const secondBlocks = secondOpinion?.opinion.blocked === true;
         // Validate every report's complete contract and provenance before deciding that a role is missing.
         for (const review of kept) {
           if (review.operationId !== operation.id) throw new Error("review result is stale, incomplete, or came from another operation");
-          submitWorkflowReview(unblockedBySecond, review, now);
+          submitWorkflowReview(unblockedBySecond, review, now, { secondReviewBlocks: secondBlocks });
         }
         // Exactly the reviews the step asks for (one code review and one security review, unless a custom sequence's review
         // step asks for fewer): two of one kind would leave the stage waiting for the other.
@@ -999,23 +1007,17 @@ export async function completedWorkflowItems(
           throw new Error("review result does not hold one code review and one security review");
         }
         next = unblockedBySecond;
-        for (const review of kept) next = submitWorkflowReview(next, review, now);
+        for (const review of kept) next = submitWorkflowReview(next, review, now, { secondReviewBlocks: secondBlocks });
         // The note about the model belongs to the reviews just taken: set for this code when they ran on the build's own model, cleared when an earlier review of it had left one.
         if (operation.reviewSameModel === true && next.candidate !== undefined) reviewSameModel = { candidateDigest: next.candidate.digest };
         else if (task.reviewSameModel !== undefined) reviewSameModel = null;
-        // SR-1 (switch `cr`): the second reviewer ran INSIDE this operation. Its report is not among the reviews above (the worker writes it under its own result key), so it cannot clear or fail a first review.
-        // An `on` opinion that blocks turns a passing review into a block with the second review's reason, in this same write; the opinion is stored beside it. A first review that already blocked stands as it is.
-        if (secondReviewEnabled()) {
-          secondOpinion = secondOpinionFromReviewResult({ recorded: operation.secondReviewPlan, operationId: operation.id, terminalStatus, result, currentCandidateDigest: task.workflow.candidate?.digest, accepted: task.workflow.acceptedFindings, now })
-            ?? (task.secondOpinion === undefined ? undefined : null);
-          const blockedReport = secondOpinion?.opinion.blocked === true ? secondOpinion.opinion.report : undefined;
-          if (blockedReport !== undefined) {
-            // The block is kept IN the workflow (secondReviewBlock), so accepting the first review's findings can never clear it. A first review that already blocked, or that a program sent back to coding, stands as it is.
-            if (next.state !== "BLOCKED" && next.stage !== "IMPLEMENT") next = blockWorkflow({ ...unblockedBySecond, ...(next.reviews === undefined ? {} : { reviews: next.reviews }) }, SECOND_REVIEW_BLOCK_REASON, now);
-            next = WorkflowSnapshotSchema.parse({ ...next, secondReviewBlock: { candidateDigest: candidate.digest, findings: blockingFindings(blockedReport, task.workflow.acceptedFindings).slice(0, 20).map((finding) => ({ text: finding.text.slice(0, 600), ...(finding.file === undefined ? {} : { file: finding.file }), ...(finding.line === undefined ? {} : { line: finding.line }) })) } });
-          }
+        const blockedReport = secondOpinion?.opinion.blocked === true ? secondOpinion.opinion.report : undefined;
+        if (blockedReport !== undefined) {
+          // The block is kept IN the workflow (secondReviewBlock), so accepting the first review's findings can never clear it.
+          next = WorkflowSnapshotSchema.parse({ ...next, secondReviewBlock: { candidateDigest: candidate.digest, findings: blockingFindings(blockedReport, task.workflow.acceptedFindings).slice(0, 20).map(secondReviewBlockFinding) } });
         }
       } catch {
+        secondOpinion = undefined;
         next = blockWorkflow(task.workflow, reviewFailure, now);
       }
     }
