@@ -130,7 +130,7 @@ describe("minors", () => {
     let reads = 0;
     const flipping: LearningSettingsReader = { read: async (): Promise<LearningSettings> => { reads += 1; return reads <= 1 ? { tier0Approval: "auto" } : { tier0Approval: "one" }; } };
     let n = 0;
-    const deps: ProcessDeps = { store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: flipping, newId: () => `les_fl${++n}` };
+    const deps: ProcessDeps = { store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), coldStartLessons: 0, facts: facts(), settings: flipping, newId: () => `les_fl${++n}` };
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, measured: true, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"] } }));
     expect(reads).toBeGreaterThan(1);
     expect(out.lesson).toMatchObject({ status: "pending", approvals: [] });

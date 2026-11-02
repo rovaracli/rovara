@@ -9,8 +9,8 @@ import { learningSalt } from "../learning/standing.js";
 import { NEGATED, compareSignatures, signatureOf, type Signature } from "../learning/similarity.js";
 import { readLearningPartition, type LearningDeps, type LearningScope } from "../learning/store.js";
 import { cleanForLearning } from "./guards.js";
-import type { CorrectionKind } from "./ports.js";
-import type { CorrectionMatcher, CorrectionRecord, CorrectionSource } from "./metric.js";
+import type { CorrectionKind, Embedder } from "./ports.js";
+import type { CorrectionMatcher, CorrectionRecord, CorrectionSource, EmbeddingBudget } from "./metric.js";
 
 const KIND: Record<string, CorrectionKind> = { send_back: "send_back", comment: "review_comment", pr_comment: "review_comment" };
 const PAGE = 200;
@@ -60,5 +60,31 @@ export function signatureMatcher(scope: Pick<LearningScope, "orgId" | "project" 
   return {
     async sameAsCorrection(earlier, later) { return sameSignature(need(earlier), need(later)); },
     async sameAsLesson(correction, lesson) { return sameSignature(need(correction), signatureOf(cleanForLearning(`${lesson.title}\n${lesson.description}\n${lesson.body}`, 1000), salt)); },
+  };
+}
+
+const cosine = (a: readonly number[], b: readonly number[]): number => {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i += 1) { dot += a[i]! * b[i]!; na += a[i]! * a[i]!; nb += b[i]! * b[i]!; }
+  return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
+};
+
+/**
+ * The curator's kind of matcher: two corrections, or a correction and a lesson, are the same advice when their embeddings are at least `threshold` alike and neither says "never" where the other
+ * does not. Every vector comes through the measurement's `EmbeddingBudget` (each distinct text once, a hard cap on calls). A correction whose text is gone cannot be embedded: it throws and the
+ * metric reports it as unjudged.
+ */
+export function embeddingMatcher(budget: EmbeddingBudget, embedder: Embedder, options: { threshold: number }): CorrectionMatcher {
+  const textOf = (c: CorrectionRecord): string => {
+    if (c.text === undefined || c.text.trim() === "") throw new Error("no text");
+    return cleanForLearning(c.text, 1000);
+  };
+  const negated = (text: string): boolean => /\b(never|don'?t|do not|must not|avoid)\b/iu.test(text);
+  const same = async (a: string, b: string): Promise<boolean> =>
+    negated(a) === negated(b) && cosine(await budget.embed(embedder, a), await budget.embed(embedder, b)) >= options.threshold;
+  return {
+    sameAsCorrection: (earlier, later) => same(textOf(earlier), textOf(later)),
+    sameAsLesson: (correction, lesson) => same(textOf(correction), cleanForLearning(`${lesson.title}\n${lesson.description}\n${lesson.body}`, 1000)),
   };
 }

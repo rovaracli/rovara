@@ -153,6 +153,20 @@ describe("the lessons runtime the broker builds", () => {
     await expect(runtime.routes.audit.emit({ action: "lesson.approved", workspaceId: A, project: "demo", lessonId: "les_aaaa1111", facts: {} })).rejects.toThrow();
   });
 
+  it("the install's directory follows a merged developer to the member they became (the author rules compare members)", async () => {
+    const db = new FakeDynamoDb();
+    const old = "a".repeat(64), survivor = "b".repeat(64);
+    db.set({ pk: `DEVELOPER#${old}`, sk: "META", developerId: old, mergedInto: survivor });
+    db.set({ pk: `DEVELOPER#${survivor}`, sk: "META", developerId: survivor });
+    const on = { documentClient: db, tableName: "t", developer: { signInTableName: "signin" }, teamRecord: { table: { documentClient: new FakeDynamoDb(), tableName: "record" } } } as { lessons?: { directory: { resolveMember?: (w: string, d: string) => Promise<string> } } };
+    installLessons(on as never);
+    const resolve = on.lessons!.directory.resolveMember!;
+    expect(await resolve(A, old)).toBe(survivor);
+    expect(await resolve(A, survivor)).toBe(survivor);
+    expect(await resolve(A, "c".repeat(64))).toBe("c".repeat(64));
+    await expect(resolve("not-an-org", old)).rejects.toThrow();
+  });
+
   it("the approver directory answers nobody when the roster cannot be read, and an empty identity for a company id that is not one", async () => {
     const runtime = input();
     expect(await runtime.directory.eligibility(A, "demo")).toMatchObject({ complete: false, eligibleIds: [], ownerIds: [] });

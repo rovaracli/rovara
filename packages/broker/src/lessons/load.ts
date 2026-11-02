@@ -11,6 +11,7 @@ import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible } from "./read-visible.js";
+import { memberView, type MemberOf, type MemberResolver } from "./members.js";
 import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js";
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
@@ -31,7 +32,7 @@ export interface LoadRequest {
   /** Only an eval-batch dispatch may ask for `off`; the broker route refuses it from production (design §4.13, task L8). */
   memory?: { mode: "off" | "live" };
 }
-export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons" | "access_unavailable";
+export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons" | "access_unavailable" | "members_unavailable";
 export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; skipped?: LoadSkip }
 
 export interface LoadDeps extends LessonDeps {
@@ -41,6 +42,11 @@ export interface LoadDeps extends LessonDeps {
    * removed from a channel stops getting its lessons. REQUIRED: a caller that cannot supply it gets no lessons (fail closed, with a log line), never the frozen snapshot alone.
    */
   access: AccessCheckPort;
+  /**
+   * Follows a merged developer to the member they became. The people a tier needs are counted as members, so two approvals given by two accounts that were merged into one person count once. Absent:
+   * ids are counted as they are. A lookup that fails loads nothing (fail closed).
+   */
+  resolveMember?: MemberResolver;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -73,31 +79,31 @@ export function wilsonLower(helpful: number, loaded: number): number {
  * has turned automatic go-live on (and `resolveLearning` reads "auto" as "one" while that is off). A lesson sent back to a person (`reviewRequired`) needs at least one person whatever its tier.
  * This is a second line behind the status: an old row, a hand edit or a bug that left a lesson `active` without its approvals does not reach an agent.
  */
-export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy): boolean {
-  const people = new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size;
-  if (lesson.tier === 2) return isTierTwoApproved(lesson);
+export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: MemberOf = normId): boolean {
+  const people = new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => member(a.by))).size;
+  if (lesson.tier === 2) return isTierTwoApproved(lesson, member);
   const needed = Math.max(approversRequired(lesson.tier, policy), lesson.reviewRequired === true ? 1 : 0);
   return people >= needed;
 }
 
 /** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
-const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+export const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
 
-const isTierTwoApproved = (lesson: Lesson): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
+const isTierTwoApproved = (lesson: Lesson, member: MemberOf = normId): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => member(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
 
 /** Which lesson types a stage may load (design §4.7). Reviewer stages get only tier-2-approved review checks. */
-function stageAllows(lesson: Lesson, stage: LessonStage): boolean {
+export function stageAllows(lesson: Lesson, stage: LessonStage, member: MemberOf = normId): boolean {
   if (!lesson.stages.includes(stage)) return false;
   switch (stage) {
     case "UNDERSTAND": case "PLAN": return lesson.type !== "review_check";
     case "IMPLEMENT": return lesson.type === "convention" || lesson.type === "pitfall" || (lesson.type === "fact" && lesson.citations.some((c) => c.kind === "code"));
-    case "PLAN_CRITIQUE": case "REVIEW": return lesson.type === "review_check" && isTierTwoApproved(lesson);
+    case "PLAN_CRITIQUE": case "REVIEW": return lesson.type === "review_check" && isTierTwoApproved(lesson, member);
   }
 }
 
 const scopeLabel = (lesson: Lesson): string => safeScopeLabel(lesson.scope);
 
-function toLearned(lesson: Lesson): LearnedLesson {
+export function toLearned(lesson: Lesson): LearnedLesson {
   return {
     id: lesson.id, version: lesson.version, type: lesson.type, title: lesson.title, description: lesson.description, body: lesson.body, scopeLabel: scopeLabel(lesson),
     citations: lesson.citations.filter((c): c is CodeCitation => c.kind === "code"),
@@ -122,7 +128,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   let active: Lesson[];
   try {
     setVersion = await deps.store.setVersion(key);
-    active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && approvedForUse(l, resolved.approval) && !hasStaleCitation(l));
+    active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && !hasStaleCitation(l));
     const text = cleanLessonText(`${request.intent}\n${request.planSummary ?? ""}`, 2000);
     const hits = await deps.vectors.query(key.workspaceId, key.project, await deps.embedder.embed(text), VECTOR_FETCH);
     similarity = new Map(hits.map((h) => [h.id, Math.max(0, Math.min(1, h.score))]));
@@ -131,6 +137,14 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     deps.metrics?.count("learning_load_skipped", { reason: "index_unreachable" });
     return empty("index_unreachable", setVersion);
   }
+
+  // The people a tier needs are counted as MEMBERS (a merged developer is the member they became); a merge record that cannot be read loads nothing.
+  const member = await memberView(deps.resolveMember, key.workspaceId, active.flatMap((l) => l.approvals.filter((a) => a.mode !== "auto").map((a) => a.by)));
+  if (member === undefined) {
+    deps.metrics?.count("learning_load_skipped", { reason: "members_unavailable" });
+    return empty("members_unavailable", setVersion);
+  }
+  active = active.filter((l) => approvedForUse(l, resolved.approval, member));
 
   // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
   if ((deps.access as AccessCheckPort | undefined) === undefined) {
@@ -142,7 +156,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
   let readable: Set<string>;
   try {
-    readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: active.filter((lesson) => stageAllows(lesson, stage)), where: "load", log: deps.log })).map((lesson) => lesson.id));
+    readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: active.filter((lesson) => stageAllows(lesson, stage, member)), where: "load", log: deps.log })).map((lesson) => lesson.id));
   } catch {
     deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
     return empty("access_unavailable", setVersion);
@@ -150,7 +164,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
 
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
   for (const lesson of active) {
-    if (!stageAllows(lesson, stage) || !readable.has(lesson.id)) continue;
+    if (!stageAllows(lesson, stage, member) || !readable.has(lesson.id)) continue;
     const match = scopeMatch(lesson, request);
     if (!match.matches) continue;
     const sim = similarity.get(lesson.id) ?? 0;

@@ -6,7 +6,7 @@ import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { CitationVerifier, CodeFacts } from "./ports.js";
 import { gatherMaterial } from "./material.js";
-import { attributableSources, clearSourcePause, isHeldBySource } from "./sources.js";
+import { attributableSources, clearSourcePause, coldSourcesOf, isHeldBySource, projectBrakeOn } from "./sources.js";
 import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
 import { isMeaningfulAnchor } from "@agentx/contracts";
@@ -15,7 +15,11 @@ import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";
 import { sameSource, type Lesson } from "./types.js";
 
-export interface ProcessDeps extends CurateDeps { verifier: CitationVerifier; facts: CodeFacts; settings: LearningSettingsReader }
+export interface ProcessDeps extends CurateDeps {
+  verifier: CitationVerifier; facts: CodeFacts; settings: LearningSettingsReader;
+  /** How many person-approved lessons a source needs before it may auto-apply one (default `AUTO_APPLY_GUARDS.coldStartLessons`). Only a test sets it lower. */
+  coldStartLessons?: number;
+}
 const VERIFY_TIMEOUT_MS = 3000;
 
 /**
@@ -90,11 +94,14 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     // A lesson from a source that spiked is collected but held: it is not queued for people or applied until a maintainer resumes the source.
     const held = isHeldBySource(flags, attributableSources(verified.provenance));
     const earned = earnedAttention(verified, decision.tier) && (!held || current.status === "pending");
+    // The project brake (L7-2): while the volume alert is fresh, a tier-0 lesson that WOULD have applied by itself is sent to a person instead, and stays with a person (no source is paused).
+    const autoOn = decision.tier === 0 && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply");
+    const braked = autoOn && projectBrakeOn(flags, deps.now());
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;
     const next: Lesson = {
       ...verified, ...(decision.tier === 0 && decision.rendered !== undefined ? { title: decision.rendered.title, description: decision.rendered.description, body: decision.rendered.body } : {}), version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
-      ...(options.noAutoApply === true || held || current.reviewRequired === true ? { reviewRequired: true } : {}),
+      ...(options.noAutoApply === true || held || braked || current.reviewRequired === true ? { reviewRequired: true } : {}),
       status: earned ? "pending" : "candidate", ...(earned ? { pendingExpiresAt: current.pendingExpiresAt ?? pendingExpiry(now) } : {}),
     };
     const result = await deps.store.commit(key, setVersion, [next], now);
@@ -107,6 +114,10 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
       // The policy is read AGAIN at the moment of go-live: a setting tightened while this settle ran wins.
       const now = await resolveLearning(deps.settings, key.workspaceId, key.project);
       if (approversRequired(0, now.approval) !== 0 || !modeAllows(now.mode, "auto_apply")) return deps.store.get(key, lessonId);
+      // The brake is read AGAIN too (an alert that fired while this settle ran), and the cold-start rule is asked of the sources that vouch for the lesson: both leave it with a person.
+      if (projectBrakeOn(await deps.store.flags(key), deps.now())) { deps.metrics?.count("learning_auto_apply_held", { reason: "project_brake" }); return deps.store.get(key, lessonId); }
+      const cold = await coldSourcesOf(deps.store, key, attributableSources(next.provenance), lessonId, deps.coldStartLessons);
+      if (cold.unattributed || cold.cold.length > 0) { deps.metrics?.count("learning_auto_apply_held", { reason: cold.unattributed ? "no_source" : "cold_start" }); return deps.store.get(key, lessonId); }
       try {
         const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied", { version: next.version, setVersion: result.setVersion });
         if (active !== undefined) return active;

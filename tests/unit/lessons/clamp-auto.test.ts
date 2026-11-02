@@ -50,7 +50,7 @@ describe("the clamp in resolveLearning", () => {
       const clock = new Clock();
       const deps: ProcessDeps = {
         store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now,
-        verifier: verifier("valid"), facts: facts(), settings: raw({ tier0Approval: "auto" }), newId: () => "les_0001",
+        verifier: verifier("valid"), coldStartLessons: 0, facts: facts(), settings: raw({ tier0Approval: "auto" }), newId: () => "les_0001",
       };
       return (await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, sourceKinds: ["send_back"], measured: true } }))).lesson;
     };

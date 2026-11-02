@@ -23,7 +23,7 @@ const strong = { measured: true, authors: ["mallory"], sources: ["member:mallory
 function pipeline(facts: CodeFacts = new FakeFacts()) {
   const store = new InMemoryLessonStore();
   let n = 0;
-  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts, settings: autoSettings(), newId: () => `les_r6${++n}` };
+  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), coldStartLessons: 0, facts, settings: autoSettings(), newId: () => `les_r6${++n}` };
   return { deps, store };
 }
 const attack = async (over: Partial<Parameters<typeof draft>[0]>, facts?: CodeFacts) => {

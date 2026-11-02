@@ -11,7 +11,7 @@
 // nothing, charges nothing, and returns counts only: no correction text and no lesson text leaves this module (so it can be shown to anyone who may see the project).
 // The matcher is a port: production hands it the curator's matcher; `metric-source.ts` has one that needs no text and no model.
 import { globToRegExp } from "./guards.js";
-import type { CorrectionKind } from "./ports.js";
+import type { CorrectionKind, Embedder } from "./ports.js";
 import type { LessonStore, LoadManifest, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -29,6 +29,11 @@ export const METRIC_MAX_EARLIER = 200;
 export const METRIC_MAX_LESSONS = 500;
 /** Matcher calls in one measurement; past it the rest of the corrections are unjudged and the answer says it was cut short. */
 export const METRIC_MAX_MATCHER_CALLS = 20_000;
+/**
+ * Embedding calls in one measurement: a HARD cap. Once the curator's embedding matcher is behind the port, 20,000 matcher calls could mean 20,000 embedding calls; each distinct text is embedded once
+ * (`EmbeddingBudget`), so a call is at most one per distinct correction or lesson text, and this caps even that. Past it the rest are unjudged and the answer says it was cut short.
+ */
+export const METRIC_MAX_EMBEDDING_CALLS = 3_000;
 
 export interface CorrectionRecord {
   /** The correction's own id (its record row). */
@@ -68,9 +73,34 @@ export interface CorrectionMatcher {
 /** The only parts of the lesson store this module can call. */
 export type MetricStore = Pick<LessonStore, "listAllHeads" | "versions" | "manifests">;
 
-export interface MetricDeps { corrections: CorrectionSource; matcher: CorrectionMatcher; store: MetricStore }
+/** Thrown by `EmbeddingBudget.embed` when the next call would pass the cap. */
+export class EmbeddingBudgetExhausted extends Error { constructor() { super("the embedding budget is used up"); } }
+
+/**
+ * The embedding calls of one measurement. A matcher that embeds text takes its vectors through `embed`: the same text is embedded once, a call that fails still counts, and the call that would pass
+ * `max` is refused before it is made. `used` is what the answer reports.
+ */
+export class EmbeddingBudget {
+  used = 0;
+  exhausted = false;
+  private readonly cache = new Map<string, number[]>();
+  constructor(readonly max: number) {}
+  async embed(embedder: Embedder, text: string): Promise<number[]> {
+    const known = this.cache.get(text);
+    if (known !== undefined) return known;
+    if (this.used >= this.max) { this.exhausted = true; throw new EmbeddingBudgetExhausted(); }
+    this.used += 1;
+    const vector = await embedder.embed(text);
+    this.cache.set(text, vector);
+    return vector;
+  }
+}
+
+/** The matcher, or a function that makes it from this measurement's embedding budget (so a matcher that embeds is held to the cap). */
+export type MatcherSource = CorrectionMatcher | ((budget: EmbeddingBudget) => CorrectionMatcher);
+export interface MetricDeps { corrections: CorrectionSource; matcher: MatcherSource; store: MetricStore }
 export interface MetricWindow { sinceMs: number; untilMs: number }
-export interface MetricLimits { maxCorrections?: number; maxEarlier?: number; maxLessons?: number; maxMatcherCalls?: number; lookbackDays?: number }
+export interface MetricLimits { maxCorrections?: number; maxEarlier?: number; maxLessons?: number; maxMatcherCalls?: number; maxEmbeddingCalls?: number; lookbackDays?: number }
 
 export interface SameMistakeTwice {
   window: MetricWindow;
@@ -86,6 +116,9 @@ export interface SameMistakeTwice {
   unjudged: number;
   /** Some input was cut to its limit: the answer is for what was read. */
   truncated: boolean;
+  /** Embedding calls this measurement made (0 for a matcher that does not embed), and the cap it was held to. */
+  embeddingCalls: number;
+  embeddingBudget: number;
 }
 
 /** A manifest entry counts as loaded only when the worker reported the lesson reached the prompt (the same rule the counters use). */
@@ -128,6 +161,8 @@ export async function sameMistakeTwice(deps: MetricDeps, key: ScopeKey, window: 
   const maxEarlier = limits.maxEarlier ?? METRIC_MAX_EARLIER;
   const maxLessons = limits.maxLessons ?? METRIC_MAX_LESSONS;
   const budget = new Budget(limits.maxMatcherCalls ?? METRIC_MAX_MATCHER_CALLS);
+  const embeddings = new EmbeddingBudget(limits.maxEmbeddingCalls ?? METRIC_MAX_EMBEDDING_CALLS);
+  const matcher: CorrectionMatcher = typeof deps.matcher === "function" ? deps.matcher(embeddings) : deps.matcher;
 
   const read = await deps.corrections.list(key, { since: window.sinceMs - lookback, until: window.untilMs }, maxCorrections + METRIC_MAX_EARLIER * 10);
   let truncated = read.truncated;
@@ -163,7 +198,7 @@ export async function sameMistakeTwice(deps: MetricDeps, key: ScopeKey, window: 
   };
 
   const result: SameMistakeTwice = {
-    window, corrections: 0, repeats: 0, rate: null, enoughData: false, split: { lessonLoaded: 0, lessonNotLoaded: 0, noLesson: 0 }, unjudged: 0, truncated: false,
+    window, corrections: 0, repeats: 0, rate: null, enoughData: false, split: { lessonLoaded: 0, lessonNotLoaded: 0, noLesson: 0 }, unjudged: 0, truncated: false, embeddingCalls: 0, embeddingBudget: embeddings.max,
   };
 
   for (const correction of counted) {
@@ -173,7 +208,7 @@ export async function sameMistakeTwice(deps: MetricDeps, key: ScopeKey, window: 
       const believed = correction.repeatOf === undefined ? undefined : byId.get(correction.repeatOf);
       let repeatsCorrection = believed !== undefined && believed.taskId !== correction.taskId && believed.at < correction.at;
       for (const candidate of repeatsCorrection ? [] : earlier.slice().reverse()) {
-        if (await ask(() => deps.matcher.sameAsCorrection(candidate, correction))) { repeatsCorrection = true; break; }
+        if (await ask(() => matcher.sameAsCorrection(candidate, correction))) { repeatsCorrection = true; break; }
       }
 
       // 2. The same thing as a lesson that was live when it was given. Lessons that were loaded for this task are asked first: one match among them settles it.
@@ -187,7 +222,7 @@ export async function sameMistakeTwice(deps: MetricDeps, key: ScopeKey, window: 
       const ordered = [...live.filter((l) => loaded.has(l.id)), ...live.filter((l) => !loaded.has(l.id))];
       let matched: Lesson | undefined;
       for (const lesson of ordered) {
-        if (await ask(() => deps.matcher.sameAsLesson(correction, lesson))) { matched = lesson; break; }
+        if (await ask(() => matcher.sameAsLesson(correction, lesson))) { matched = lesson; break; }
       }
 
       result.corrections += 1;
@@ -202,7 +237,8 @@ export async function sameMistakeTwice(deps: MetricDeps, key: ScopeKey, window: 
     }
   }
 
-  result.truncated = truncated || budget.exhausted;
+  result.truncated = truncated || budget.exhausted || embeddings.exhausted;
+  result.embeddingCalls = embeddings.used;
   result.enoughData = result.corrections >= METRIC_MIN_CORRECTIONS;
   result.rate = result.enoughData ? result.repeats / result.corrections : null;
   return result;

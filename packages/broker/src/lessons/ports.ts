@@ -59,6 +59,11 @@ export interface ApproverDirectory {
     groups?: Record<string, string[]>;
   }>;
   identity(workspaceId: string, developerId: string): Promise<IdentitySet>;
+  /**
+   * The member a (possibly merged-away) developer id stands for: the end of its `mergedInto` chain, or the id itself. The author rules (who may approve alone, who counts as a second
+   * person) compare these, so an author recorded under an id that was merged into another member is that member. Absent: ids are compared as they are. A failure is a refusal (fail closed).
+   */
+  resolveMember?(workspaceId: string, developerId: string): Promise<string>;
 }
 
 /** Publishes one paragraph as a How we work rule (the v1.2 accept path, `learning/decide.ts acceptSuggestion` through `publishDraft`). It inherits that path's own less-safe checks. */

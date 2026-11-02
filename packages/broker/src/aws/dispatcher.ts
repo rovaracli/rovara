@@ -12,6 +12,8 @@ import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { createEc2Delivery } from "./ec2-delivery.js";
+import { createLessonDelivery } from "../lessons/delivery-wiring.js";
+import { learnedLessonsEnabled } from "../lessons/switch.js";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionModelChoiceReader, createWorkflowE2EAdmissionNeedsModelFreeLimitsReader, createWorkflowE2EAdmissionSchemaReader } from "./workflow-e2e-admission-schema.js";
 import { appendOperationEvent } from "./operation-events.js";
 import { ProjectSetupSessionManager, SessionManager, workspaceBinding } from "./sessions.js";
@@ -669,6 +671,11 @@ const deliverEc2 = createEc2Delivery({
     workflowE2EAdmissionNeedsModelFreeLimits: createWorkflowE2EAdmissionNeedsModelFreeLimitsReader({ s3: new S3Client(awsClientConfiguration), bucket: process.env.ARTIFACT_BUCKET_NAME }),
   }),
   guardTaskDispatch: taskDispatchGuard,
+  // WL-6: a stage is queued with lesson ids and versions only; the lessons' text is built from the lesson store here, as it is at delivery (none where the Team record's table is not set).
+  ...((): { learnedFromRefs?: NonNullable<ReturnType<typeof createLessonDelivery>> } => {
+    const learnedFromRefs = createLessonDelivery({ documentClient, stateTable: tableName ?? process.env.STATE_TABLE_NAME ?? "", recordTable: process.env.TEAM_RECORD_TABLE_NAME, enabled: () => learnedLessonsEnabled(process.env), log: (event, fields) => console.log(JSON.stringify({ component: "dispatcher", event, ...fields })) });
+    return learnedFromRefs === undefined ? {} : { learnedFromRefs };
+  })(),
   applicationPlanNotNegotiated: createApplicationPlanNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   planQualityNotNegotiated: createPlanQualityNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   validateWorkflowE2EReadiness: createWorkflowE2EReadinessValidator({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),

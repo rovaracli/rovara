@@ -19,7 +19,7 @@ import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 import { LiveSteerPayloadSchema } from "./live-steer.js";
 import { PrepareMetaSchema } from "./meta-project.js";
 import { PREPARE_REGISTRIES_FEATURE, PrepareRegistriesSchema } from "./project-registries.js";
-import { LearnedContextSchema } from "./learned-context.js";
+import { LearnedContextSchema, LearnedRefsSchema } from "./learned-context.js";
 import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
 import { OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, PEEK_FEATURE } from "./live-interaction.js";
 import { DIAGNOSIS_WORKER_FEATURE, DiagnosisInvocationSchema } from "./live-diagnosis.js";
@@ -400,6 +400,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * "task.learnedContext.v1"; an older worker is sent none, which is safe (the task runs as without memory). Never carries a tool, a check, an approval or a limit.
          */
         learnedContext: LearnedContextSchema.optional(),
+        /**
+         * The stored and queued form of `learnedContext` (WL-6): lesson ids and versions only. The dispatcher turns it into `learnedContext` from the lesson store at delivery and never sends it on
+         * to a worker, so no lesson text sits in an outbox row, a queue message or a dead-letter copy.
+         */
+        learnedRefs: LearnedRefsSchema.optional(),
         /**
          * Live interaction, Stop & redirect (keep the plan): the owner's instruction that stopped the previous run of this coding step. The worker records it as taken from the owner (so the re-approval stop applies) and
          * puts it in the prompt, framed and untrusted. Implementation mode only. Sent only to a worker whose /ping lists "task.ownerRedirect.v1"; never dropped, because an older worker would run the step

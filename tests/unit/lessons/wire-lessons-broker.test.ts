@@ -2,7 +2,7 @@
 // Covers: the approved-only and stale-citation filters of the loader, the dispatch call (`learnedContextForOperation`), the old-worker fallback at delivery, the load report hook,
 // and the directory, audit sink and citation verifier the runtime is built from.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LearnedContextSchema, LEARNED_CONTEXT_FEATURE, LEARNED_LOAD_REPORT_FIELD, type LoadReport, type WorkerInvocation } from "../../../packages/contracts/src/index.js";
+import { LearnedRefsSchema, LEARNED_CONTEXT_FEATURE, LEARNED_LOAD_REPORT_FIELD, type LoadReport, type WorkerInvocation } from "../../../packages/contracts/src/index.js";
 import { withoutLearnedContext } from "../../../packages/broker/src/aws/ec2-delivery.js";
 import { LESSON_LOAD_DEADLINE_MS, learnedContextForOperation, lessonStageOf } from "../../../packages/broker/src/aws/broker/lessons-dispatch.js";
 import { afterWorkerEvents } from "../../../packages/broker/src/aws/broker/lessons-report.js";
@@ -67,9 +67,13 @@ describe("learnedContextForOperation", () => {
     const w = world();
     await seed(w.store, conv("les_approved1"), conv("les_unapproved", { approvals: [auto] }), conv("les_otherrepo", { scope: { repos: ["web"] } }));
     const result = await ask(w.host);
-    expect(LearnedContextSchema.safeParse(result.learnedContext).success).toBe(true);
-    expect(result.learnedContext?.lessons.map((l) => l.id)).toEqual(["les_approved1"]);
-    expect(result.learnedContext?.stage).toBe("IMPLEMENT");
+    expect(LearnedRefsSchema.safeParse(result.learnedRefs).success).toBe(true);
+    expect(result.learnedRefs?.lessons).toEqual([{ id: "les_approved1", version: 1 }]);
+    expect(result.learnedRefs?.stage).toBe("IMPLEMENT");
+    // WL-6: only ids and versions leave the loader for storage and the queue; no lesson text, and no `learnedContext`.
+    expect(result).not.toHaveProperty("learnedContext");
+    expect(JSON.stringify(result)).not.toContain(conv("les_approved1").body);
+    expect(JSON.stringify(result)).not.toContain(conv("les_approved1").title);
     expect(result.load).toEqual({ taskId: "task-1", project: PROJECT, stage: "IMPLEMENT", round: 4 });
     const manifests = await w.store.manifests(KEY, "task-1");
     expect(manifests).toHaveLength(1);
@@ -80,7 +84,7 @@ describe("learnedContextForOperation", () => {
   it("drops a lesson whose broker-side citation check is stale, and one that is not active", async () => {
     const w = world();
     await seed(w.store, conv("les_fresh0001"), conv("les_staleone1", { citationChecks: [{ index: 0, result: "stale", at: 1 }] }), conv("les_pending01", { status: "pending" }), conv("les_stalestat", { status: "stale" }));
-    expect((await ask(w.host)).learnedContext?.lessons.map((l) => l.id)).toEqual(["les_fresh0001"]);
+    expect((await ask(w.host)).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_fresh0001"]);
   });
 
   it("with learning Off for the project nothing is loaded, sent or recorded, and the store is not even read", async () => {
@@ -110,7 +114,7 @@ describe("learnedContextForOperation", () => {
   it("with the install switch off, nothing is loaded, recorded or sent even though lesson ports exist and an approved lesson matches", async () => {
     const w = world();
     await seed(w.store, conv("les_approved1"));
-    expect(await ask(w.host)).toMatchObject({ learnedContext: { lessons: [{ id: "les_approved1" }] } });
+    expect(await ask(w.host)).toMatchObject({ learnedRefs: { lessons: [{ id: "les_approved1" }] } });
     const before = (await w.store.manifests({ workspaceId: WS, project: PROJECT }, "task-1")).length;
     for (const value of [undefined, "0", "", "true", "yes", " 1", "01"]) {
       const env: NodeJS.ProcessEnv = value === undefined ? {} : { LEARNED_LESSONS_ENABLED: value };
@@ -129,7 +133,7 @@ describe("learnedContextForOperation", () => {
     const w = world();
     await seed(w.store, conv("les_approved1", { type: "convention", stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"] }));
     for (const mode of ["CHECKS", "SETUP_DRAFT", "SPEC_WRITE", "FEEDBACK_REVIEW", undefined, "constructor", "__proto__"]) expect(await ask(w.host, { workflowMode: mode }), String(mode)).toEqual({});
-    for (const mode of ["UNDERSTAND", "PLAN", "IMPLEMENT"]) expect((await ask(w.host, { workflowMode: mode })).learnedContext?.stage, mode).toBe(mode);
+    for (const mode of ["UNDERSTAND", "PLAN", "IMPLEMENT"]) expect((await ask(w.host, { workflowMode: mode })).learnedRefs?.stage, mode).toBe(mode);
     expect(lessonStageOf("PLAN_CRITIQUE")).toBe("PLAN_CRITIQUE");
     expect(lessonStageOf("REVIEW")).toBe("REVIEW");
     expect(lessonStageOf("hasOwnProperty")).toBeUndefined();
@@ -147,7 +151,7 @@ describe("learnedContextForOperation", () => {
     const secret = { ...base, provenance: { ...base.provenance, audience: restricted(["U-owner"]) } };
     const member = world({ identity: { principals: ["U-owner"], groups: [] } });
     await seed(member.store, secret);
-    expect((await ask(member.host, { task: task({ shared: false }) })).learnedContext?.lessons.map((l) => l.id)).toEqual(["les_restricted"]);
+    expect((await ask(member.host, { task: task({ shared: false }) })).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_restricted"]);
     expect(member.identityCalls).toEqual(["d".repeat(64)]);
     const stranger = world({ identity: { principals: ["U-other"], groups: [] } });
     await seed(stranger.store, secret);

@@ -2,7 +2,9 @@
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type OrgId } from "@agentx/contracts";
+import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
+import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
@@ -42,11 +44,14 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
     return codeRepositoriesOf(record.definition).map((repository) => repository.name);
   };
   const reader = codeFileReader(dependencies);
+  // The author rules compare members: a developer merged into another reads as that other (the sign-in table's `mergedInto`).
+  const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now });
   const audit = recordAuditSinkOf(dependencies.audit, dependencies.documentClient);
   return createLessonsRuntime({
     table: teamRecord.table, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
     ...(audit === undefined ? {} : { audit }), reader, repositoriesOf,
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
+    resolveMember: (_orgId, developerId) => followMerges(merges, developerId),
     linkedAccounts: async (orgId, developerId) => {
       const item = ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: memberGithubKey(orgId, developerId), ConsistentRead: true }))) as { Item?: { githubUserId?: unknown } }).Item;
       return typeof item?.githubUserId === "string" ? [item.githubUserId] : [];
