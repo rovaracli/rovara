@@ -4,7 +4,7 @@
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -504,6 +504,57 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     expect(everything(db)).not.toContain(MARKER);
   });
 
+  // ---- TRW-3 R4: a queued put holds text. It must not sit in the dead-letter queue, nor wait past a day for a consumer.
+  it("a put that fails is queued with the time it was queued; the drain applies it once the table is back", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    expect(await runtime.sink.put(githubDraft({ retention: "C", scope: "github:repo/9", text: `queued ${MARKER}` }))).toMatchObject({ status: "queued" });
+    expect(sent.map((op) => op.op)).toStrictEqual(["put"]);
+    expect(typeof sent[0]!.queuedAt).toBe("string");
+    down.on = false;
+    expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).toContain(MARKER);
+  });
+
+  it("a queued put that still cannot be applied at its LAST delivery is dropped (acknowledged), never dead-lettered with its text; a removal is still retried to the dead-letter queue", async () => {
+    const db = dbOf();
+    const down = { on: false };
+    // Every storage call fails while it is down (the flaky client above fails only the deletes and updates).
+    const client = { send: async (command: unknown) => { if (down.on) throw new Error("table down"); return db.send(command as never); } };
+    const { sent, queue } = queueOf();
+    const logs: Array<Record<string, unknown>> = [];
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue, log: (entry: Record<string, unknown>) => logs.push(entry) });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    await runtime.sink.put(githubDraft({ retention: "C", scope: "github:repo/9", text: `queued ${MARKER}` }));
+    await runtime.sink.tombstone({ workspaceId: ORG_A, system: "github.com", scope: "github:repo/9", cause: "source_deleted" });
+    expect(sent.map((op) => op.op)).toStrictEqual(["put", "tombstone"]);
+    const at = (receiveCount: number) => asRecords(sent).map((record) => ({ ...record, receiveCount }));
+    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES - 1))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m0" }, { itemIdentifier: "m1" }] });
+    expect(await runtime.drain(at(TEAM_RECORD_OPS_MAX_RECEIVES))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(JSON.stringify(logs)).not.toContain(MARKER);
+    expect(logs.map((entry) => entry.event)).toContain("record.put_dropped");
+  });
+
+  it("a queued put older than a day, or with no time on it, is dropped unapplied: its text does not outlive the day, and an erase in between is never raced", async () => {
+    const db = dbOf();
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { opsQueue: queue });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    const draft = githubDraft({ retention: "C", scope: "github:repo/9", text: `old ${MARKER}` });
+    const stale = new Date(T0 - TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS - 60_000).toISOString();
+    for (const queuedAt of [stale, undefined]) {
+      const body = JSON.stringify({ v: 1, op: "put", draft, ...(queuedAt === undefined ? {} : { queuedAt }) });
+      expect(await runtime.drain([{ messageId: "m1", body, receiveCount: 1 }])).toStrictEqual({ batchItemFailures: [] });
+    }
+    expect(everything(db)).not.toContain(MARKER);
+    expect(sent).toStrictEqual([]);
+  });
+
   it("a failed write with no queue is rethrown to the caller (never swallowed), and a Public Slack message is never queued", async () => {
     const db = dbOf();
     const { client, down } = flaky(db);
@@ -547,9 +598,11 @@ describe("an erase that does not finish is resumed, and a company stays in the d
   const orgMeta = (db: FakeDynamoDb, extra: Record<string, unknown>) => db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, ...extra });
   const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
   const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
+  const queueOf = () => { const sent: Array<Record<string, unknown>> = []; return { sent, queue: { send: async (op: Record<string, unknown>) => { sent.push(op); } } }; };
+  const asRecords = (sent: Array<Record<string, unknown>>) => sent.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 }));
 
-  async function company(extra: Partial<Parameters<typeof createTeamRecordRuntime>[0]> = {}) {
-    const db = dbOf();
+  async function company(extra: Partial<Parameters<typeof createTeamRecordRuntime>[0]> = {}, existing?: FakeDynamoDb) {
+    const db = existing ?? dbOf();
     const aws = fakeAws();
     const runtime = build(db, { ...ON, ...LAKE, ROVARA_EDITION: "enterprise" }, { sdk: aws.sdk, sts: aws.sts, ...extra });
     db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
@@ -611,6 +664,61 @@ describe("an erase that does not finish is resumed, and a company stays in the d
     await runtime.erase.project(ORG_A, "web", "project_archived");
     expect(jobs(db)).toHaveLength(0);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+  });
+
+  // ---- TRW-3 R5: the erase marker is the only thing the hourly job resumes. If writing it fails there must still be something durable that does.
+  describe("a failed marker write on a project archive is not lost", () => {
+    const markerDown = (db: FakeDynamoDb) => {
+      const state = { on: true };
+      return { state, client: { send: async (command: unknown) => {
+        const input = (command as { input?: { Item?: { entityType?: string } } }).input;
+        if (state.on && input?.Item?.entityType === "TEAM_RECORD_ERASE_JOB") throw new Error("marker table down");
+        return db.send(command as never);
+      } } };
+    };
+    const archived = (db: FakeDynamoDb) => db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z" });
+
+    it("hands the archive to the durable queue (ids only); the queue's consumer erases the project once the table is back, and the marker goes", async () => {
+      const db = dbOf();
+      const { state, client } = markerDown(db);
+      const { sent, queue } = queueOf();
+      const { runtime } = await company({ documentClient: client, opsQueue: queue }, db);
+      archived(db);
+      await runtime.erase.project(ORG_A, "web", "project_archived");
+      expect(sent).toStrictEqual([{ v: 1, op: "erase_project", workspaceId: ORG_A, project: "web", cause: "project_archived" }]);
+      expect(jobs(db)).toStrictEqual([]);
+      expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+      state.on = false;
+      expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+      expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+      expect(jobs(db)).toStrictEqual([]);
+    });
+
+    it("the consumer retries (leaves the message) while the marker still cannot be written", async () => {
+      const db = dbOf();
+      const { client } = markerDown(db);
+      const { sent, queue } = queueOf();
+      const { runtime } = await company({ documentClient: client, opsQueue: queue }, db);
+      archived(db);
+      await runtime.erase.project(ORG_A, "web", "project_archived");
+      expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m0" }] });
+    });
+
+    it("a project that is no longer archived, or an org id that is not one, is dropped without erasing", async () => {
+      const { db, runtime } = await company();
+      db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "x", createdBy: "y" });
+      const body = (workspaceId: string) => JSON.stringify({ v: 1, op: "erase_project", workspaceId, project: "web", cause: "project_archived" });
+      expect(await runtime.drain([{ messageId: "a", body: body(ORG_A), receiveCount: 1 }, { messageId: "b", body: body("not-an-org"), receiveCount: 1 }])).toStrictEqual({ batchItemFailures: [] });
+      expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+      expect(jobs(db)).toStrictEqual([]);
+    });
+
+    it("with no queue, a marker that cannot be written is rethrown to the archive (which logs it), never swallowed", async () => {
+      const db = dbOf();
+      const { client } = markerDown(db);
+      const { runtime } = await company({ documentClient: client }, db);
+      await expect(runtime.erase.project(ORG_A, "web", "project_archived")).rejects.toThrow();
+    });
   });
 
   it("a company marker for a company that is still open is stale and is dropped without erasing anything (the close did not happen)", async () => {

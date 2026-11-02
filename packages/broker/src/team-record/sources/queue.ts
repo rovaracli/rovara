@@ -8,11 +8,13 @@
 //    queue holds a message for 15 minutes at most, is encrypted, and has NO dead-letter queue: after three tries the consumer drops the message and logs a
 //    fixed code. (CDK for both queues belongs with the storage lane's `infra/lib/team-record.ts`; the properties are in the lane report.)
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS } from "@agentx/contracts";
 import type { CodeHostTapDependencies, HumanEditJob } from "./codehost.js";
 import type { Audience, RecordDraft, RecordSinkPort, TapLog, TombstoneCause, TransientDistillerPort } from "./ports.js";
 
 export type RecordOp =
-  | { v: 1; op: "put"; draft: RecordDraft }
+  /** `queuedAt`: when the put was queued (ISO). The draft holds text, so the consumer drops a put older than a day, and one that fails at its last delivery (never dead-lettered with its text). */
+  | { v: 1; op: "put"; draft: RecordDraft; queuedAt?: string }
   | { v: 1; op: "tombstone"; workspaceId: string; system: string; sourceIds?: string[]; scope?: string; cause: TombstoneCause }
   | { v: 1; op: "principals"; workspaceId: string; scope: string; add?: string[]; remove?: string[]; at: string }
   | { v: 1; op: "audience"; workspaceId: string; scope: string; audience: Audience; at: string }
@@ -60,10 +62,10 @@ export const TRANSIENT_MAX_RECEIVES = 3;
  * A `RecordSinkPort` that queues. Ordinary writes always go to the queue. Control operations (a delete, an ACL change) try `immediate` first when one is given, so
  * a delete hides at once, and fall back to the queue if that fails: a delete is never dropped because the table was down for a moment.
  */
-export function createQueuedSink(queue: RecordOpQueue, immediate?: Pick<RecordSinkPort, "tombstone" | "changePrincipals" | "replaceScopeAudience" | "ensureAccessSeed">): RecordSinkPort {
+export function createQueuedSink(queue: RecordOpQueue, immediate?: Pick<RecordSinkPort, "tombstone" | "changePrincipals" | "replaceScopeAudience" | "ensureAccessSeed">, now: () => number = Date.now): RecordSinkPort {
   return {
     async put(draft) {
-      await queue.send({ v: 1, op: "put", draft });
+      await queue.send({ v: 1, op: "put", draft, queuedAt: new Date(now()).toISOString() });
       return { status: "queued" };
     },
     async tombstone(input) {
@@ -141,6 +143,8 @@ export interface OpConsumerDependencies {
   /** Runs a human-edit read: `(job) => runHumanEdit({ ...deps, diffs }, job)`. Absent: such jobs are dropped. */
   humanEdit?: (job: HumanEditJob) => Promise<unknown>;
   log?: TapLog;
+  /** Milliseconds, for the age of a queued put. Default `Date.now`. */
+  now?: () => number;
 }
 
 export interface QueueRecord {
@@ -167,6 +171,7 @@ function parseOp(body: string): RecordOp | undefined {
  */
 export function createOpConsumer(deps: OpConsumerDependencies): { processBatch(records: readonly QueueRecord[]): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> } {
   const log: TapLog = deps.log ?? (() => undefined);
+  const now = deps.now ?? Date.now;
   async function apply(op: RecordOp): Promise<void> {
     switch (op.op) {
       case "put": await deps.sink.put(op.draft); return;
@@ -186,11 +191,21 @@ export function createOpConsumer(deps: OpConsumerDependencies): { processBatch(r
           log("record.op_invalid", {});
           continue;
         }
+        // A put holds text. One that has waited more than a day (or has no time on it) is dropped unapplied.
+        if (op.op === "put" && !(typeof op.queuedAt === "string" && now() - Date.parse(op.queuedAt) <= TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS)) {
+          log("record.put_dropped", { why: "too_old" });
+          continue;
+        }
         try {
           await apply(op);
         } catch {
           if (op.op === "distill" && record.receiveCount >= TRANSIENT_MAX_RECEIVES) {
             log("record.transient_dropped", {});
+            continue;
+          }
+          // The queue's next failure would dead-letter the message for 14 days with the draft's text in it. A put is not a delete: dropping it loses a row, never a removal.
+          if (op.op === "put" && record.receiveCount >= TEAM_RECORD_OPS_MAX_RECEIVES) {
+            log("record.put_dropped", { why: "failed" });
             continue;
           }
           log("record.op_failed", { op: op.op, receiveCount: record.receiveCount });

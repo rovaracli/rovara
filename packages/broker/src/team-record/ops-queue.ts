@@ -7,7 +7,9 @@ import type { RecordOp } from "./sources/queue.js";
 
 /** A Slack event that only removes or hides (a deleted message or channel, an uninstall): the ingress strips it to ids and sends it here without any Slack lookup. */
 export type SlackRemovalOp = { v: 1; op: "slack_removal"; payload: Record<string, unknown> };
-export type QueuedOp = RecordOp | SlackRemovalOp;
+/** A project archive whose erase marker could not be written: ids and fixed words only. The consumer writes the marker and erases the project, if it is still archived (runtime.ts `drain`). */
+export type EraseProjectOp = { v: 1; op: "erase_project"; workspaceId: string; project: string; cause: "project_archived" | "org_closed" };
+export type QueuedOp = RecordOp | SlackRemovalOp | EraseProjectOp;
 export const OPS_MESSAGE_MAX_BYTES = 200_000;
 
 export interface OpsQueue { send(op: QueuedOp): Promise<void> }

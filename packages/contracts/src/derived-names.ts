@@ -35,6 +35,10 @@ export function auditIntakeQueueName(env: string): string {
 export const teamRecordNamePrefix = (env: string): string => `agentx-${env}`;
 export const teamRecordTableName = (env: string): string => `agentx-${env}-team-record`;
 export const teamRecordOpsQueueName = (env: string): string => `agentx-${env}-team-record-ops`;
+/** The durable queue's redrive limit (CDK sets it; the consumer drops a text-carrying put at this delivery instead of letting it be dead-lettered with its text). */
+export const TEAM_RECORD_OPS_MAX_RECEIVES = 5;
+/** A queued put (it holds text) is dropped unapplied once it is older than this, so its text does not wait for a consumer past a day. */
+export const TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const teamRecordOpsDeadLetterName = (env: string): string => `agentx-${env}-team-record-ops-dead`;
 export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
