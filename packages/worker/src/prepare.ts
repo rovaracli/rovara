@@ -140,6 +140,8 @@ export interface PrepareWorkspaceOptions {
   taskShell?: TaskShellSelection;
   /** Where preparation reports what it does not fail on. Messages arrive redacted. Default: the worker's log. */
   onDiagnostic?: (message: string) => void;
+  /** P1: the default-branch head the broker read for each repository (a setup run). The preparation is refused if a repository's own resolution is not exactly its pin, or it has none. */
+  pins?: ReadonlyArray<{ repository: string; commit: string }>;
   /** Internal worker-only trust anchor for the fixed top-level verifier backing directory. */
   trustedRuntimeBackingOwner?: Readonly<{ uid: number; gid: number }>;
   /** Where a virtual environment's interpreter links may point (see workspace-links.ts). Default: /usr/bin, /usr/local/bin and uv's managed Pythons, from the environment. */
@@ -287,6 +289,13 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     if (manifest.meta === undefined) throw new Error("the workspace was prepared without the meta repository");
     if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
   }
+  // P1: a finished workspace is reused as it is only if it holds each repository at the commit the broker pinned for this preparation (not only by relying on the broker having asked for a new one).
+  if (options.pins !== undefined && manifest.complete) {
+    for (const repository of project.repositories) {
+      const held = manifest.repositories.find((entry) => entry.name === repository.name);
+      if (held === undefined || options.pins.find((pin) => pin.repository === repository.name)?.commit !== held.resolvedCommit) throw new Error(`the workspace holds ${repository.name} at another commit than the control plane pinned; try again`);
+    }
+  }
   if (manifest.complete) {
     await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner, options.venvLinkPolicy);
     return manifest;
@@ -322,6 +331,9 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
         }
       }
       const resolvedCommit = await resolveDefaultBranch(destination, repository.defaultBranch);
+      if (options.pins !== undefined && options.pins.find((pin) => pin.repository === repository.name)?.commit !== resolvedCommit) {
+        throw new Error(`the default branch of ${repository.name} is not at the commit the control plane pinned; try again`);
+      }
       const head = await gitHead(destination);
       let checkedOut: { pullRequest: number; headSha: string } | undefined;
       if (existing === "missing") {
@@ -822,6 +834,6 @@ function withoutFailure(manifest: PreparationManifest): PreparationManifest {
 export function preparedBaseResult(manifest: PreparationManifest): { preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }>; knowledgeCommit?: string } {
   // Meta repo lane A3: the meta repo's commit, reported beside the code bases (the broker keeps it as the task's `knowledgeCommit`).
   const knowledge = manifest.meta !== undefined && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(manifest.meta.resolvedCommit) ? { knowledgeCommit: manifest.meta.resolvedCommit } : {};
-  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^[a-f0-9]{40}$/.test(repository.resolvedCommit))) return knowledge;
+  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(repository.resolvedCommit))) return knowledge;
   return { preparedBase: manifest.repositories.map((repository) => ({ repositoryId: repository.name, baseCommitSha: repository.resolvedCommit })), ...knowledge };
 }

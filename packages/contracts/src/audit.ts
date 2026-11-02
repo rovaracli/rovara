@@ -281,6 +281,11 @@ export const AUDIT_ACTIONS = [
   // Setup agent website asks (sh-setup-wire, SH12): the ask raised by a setup run (system, on behalf of the person who started it) and an admin's refusal. Ids, a journal position and a fixed reason code only; the host and the people go in `details`.
   "setup.host_asked",
   "setup.host_refused",
+  // Setup run limits (sh-su-musts): a project's own limits, and the company's locks (a loosening waits for a second admin, then is approved). Ids, digests, counts and fixed words only.
+  "setup.limits_changed",
+  "setup.locks_changed",
+  "setup.locks_change_proposed",
+  "setup.locks_change_approved",
   // Company sign-in (Enterprise foundations I1): ids, fixed words and counts only. The rule ids a sign-in matched go in `details`, never in a fact.
   "sso.sign_in",
   "sso.sign_in_refused",
@@ -552,6 +557,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "diagnosis.bundle_prepared": ["errorKind"],
   "setup.host_asked": ["askId", "taskId", "journalN"],
   "setup.host_refused": ["askId", "refusal"],
+  "setup.limits_changed": ["revision", "previousDigest", "nextDigest", "commands", "sameStepTries", "wallClockMin", "budgetCents", "hostAsks"],
+  "setup.locks_changed": ["revision", "previousDigest", "nextDigest", "loosened", "defaulted"],
+  "setup.locks_change_proposed": ["revision", "previousDigest", "nextDigest", "loosened"],
+  "setup.locks_change_approved": ["revision", "previousDigest", "nextDigest", "loosened", "approvalMode", "membershipVersion"],
   // `source` is `mapping` or `break_glass`; `refusal` one of the fixed refusal words (GROUP_MAPPING_REFUSALS, or `break_glass_not_fresh`); `rules` and `owners` are counts.
   "sso.sign_in": ["source", "role", "rules"],
   "sso.sign_in_refused": ["refusal"],

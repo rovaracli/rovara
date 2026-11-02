@@ -37,13 +37,15 @@ export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
 
 export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; cloud?: boolean; modelProxy?: boolean; /** Files the code host holds at any commit, by path (what the broker re-reads a citation from). */ files?: Record<string, string | Error>; /** TE-2: by default a Prove first finds a passing candidate check for the digest (an older suite is about approval, not about where the Prove reads from); `false` leaves every check to the test. */ autoCandidate?: boolean ; /** The Team record's tracker-people calls (the mapping page), when a test reaches them. */ trackerPeople?: unknown } = {}) {
   const teamDb = new FakeDynamoDb();
+  /** The default-branch head the code host answers (the broker pins it for a setup run). */
+  const githubHead = vi.fn(async (): Promise<string> => "c".repeat(40));
   const h = await createDeveloperTaskBroker({
     register: false,
     ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
       ...(options.modelProxy === true ? { modelAccess: { access: fakeModelAccess(), proxyUrl: "http://internal-proxy.example.test:4000" } } : {}),
       cloud: options.cloud ?? true, agents: options.agents === false ? undefined : {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
-      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async (_url: string, path: string) => { const file = options.files?.[path]; if (file instanceof Error) throw file; return file; }), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
+      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(async (_url: string, path: string) => { const file = options.files?.[path]; if (file instanceof Error) throw file; return file; }), getDefaultBranchHead: githubHead },
       checkRepositoryAccess: vi.fn(async () => undefined),
       // The Team record is on (its table is separate from the State table) unless the test says otherwise. Only its table is used by the test-environment code; the rest is what other callers would find missing.
       ...(options.teamRecord === false ? {} : { teamRecord: { table: { documentClient: teamDb, tableName: TEAM_RECORD_TABLE }, taps: {}, erase: {}, jobs: {}, ...(options.trackerPeople === undefined ? {} : { trackerPeople: options.trackerPeople }) } }),
@@ -148,7 +150,7 @@ export async function setupWizardBench(options: { agents?: boolean; teamRecord?:
   };
   const withChecks = { dev: (who: Developer, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Reply> => { checkBeforeProve(method, path, body); return h.dev(who, method, path, body, headers); } };
   const webChecked: typeof web = async (who, method, path, body) => { checkBeforeProve(method, path, body); return web(who, method, path, body); };
-  return { ...h, dev: withChecks.dev, teamDb, person, ask, drafted, candidatePassed: candidatePassedFor, web: webChecked, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
+  return { ...h, githubHead, dev: withChecks.dev, teamDb, person, ask, drafted, candidatePassed: candidatePassedFor, web: webChecked, ageSignIn, state, approveFirst, approvals, confirmCard, operations };
 }
 export type Bench = Awaited<ReturnType<typeof setupWizardBench>>;
 

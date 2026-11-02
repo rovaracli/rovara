@@ -36,6 +36,7 @@ import { requesterOf } from "./thread-workspaces.js";
 import { metaPrepareFor, needsMetaCheckout, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
 import { canReadBaseBranchHead, hostOfRepository } from "./repository-hosts.js";
 import { githubScope } from "./scope-helpers.js";
+import { setupPinsOf } from "./setup-pins.js";
 
 /** Meta repo lane A: reads a meta repository's default-branch head through the code host the repository's record names (P6: the port's `baseBranchHead`). Undefined where that host cannot be asked (a project with a meta repo is then refused). */
 export function metaHeadReaderOf(dependencies: AwsBrokerDependencies, host: CodeHost): MetaHeadReader | undefined {
@@ -106,13 +107,15 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; grantedBy?: unknown } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean; grantedBy?: unknown } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
   // Meta repo lane A: read before anything is written, so a meta repo that cannot be read refuses the start.
   // A setup draft reads the meta repo whole, as an ordinary read-only checkout of the project (so no sparse `meta` request, no head to read, no `prepare.metaRepo` needed).
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
+  // P1 (su): a setup run's heads are read by the broker and pinned (setup-pins.ts), before anything is written.
+  const pins = options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(identity.orgId)) : undefined;
   const now = new Date().toISOString();
   const workspaceId = randomUUID();
   const operationId = randomUUID();
@@ -144,6 +147,7 @@ export async function newWorkspacePreparation(
     ...requesterOf(identity),
   });
   if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
+  if (pins !== undefined) operation.preparePins = pins;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -166,6 +170,7 @@ export async function newWorkspacePreparation(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...(pins === undefined ? {} : { pins }),
       // N9 (INTG2): the project's registries (where, never a credential), only for a run that runs the project's code.
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: requireOrgId(identity.orgId) }),
     },
@@ -241,7 +246,7 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
  */
 export async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; pinHeads?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -249,6 +254,8 @@ export async function heldPreparationDispatch(
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
   const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, workspace.orgId);
+  // P1 (su): a setup run's heads are read again now and replace the pins its start kept on the operation (setup-pins.ts).
+  const pins = options.pinHeads === true ? await setupPinsOf(dependencies, project, requireOrgId(workspace.orgId)) : undefined;
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
@@ -259,14 +266,19 @@ export async function heldPreparationDispatch(
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
       ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
+      ...(pins === undefined ? {} : { pins }),
       ...registriesPrepareOf(dependencies, project, { readOnly: options.readOnly === true, orgId: workspace.orgId }),
     },
   };
+  const pinHeadsItem: TransactItems = pins === undefined ? [] : [{ Update: {
+    TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET preparePins = :pins",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":pins": pins },
+  } }];
   const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {
     TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET knowledgeCommit = :commit",
     ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":commit": metaPrepare.knowledgeCommit },
   } }];
-  return { workspace, items: [...pinKnowledge, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
+  return { workspace, items: [...pinKnowledge, ...pinHeadsItem, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**
