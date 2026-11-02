@@ -62,7 +62,7 @@ import {
   retiredClaimIdList,
 } from "./workflow-inputs.js";
 import { ciFixRetryKey, planCheckRetryKey, queueWorkflowCoding, retryCiFix, retryPlanCritique, retryWorkflowImplementation } from "./workflow-coding.js";
-import { carriedRedirect } from "./redirect-carry.js";
+import { REDIRECT_DROPPED_RETRY_NOTE, carriedRedirect } from "./redirect-carry.js";
 import { framedPlanningInstruction } from "./redirect-frame.js";
 import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } from "./workflow-starts.js";
 import { fedThroughUpdate, withCurrentThreadNotes } from "./thread-notes.js";
@@ -383,7 +383,9 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") {
     // A run a redirect restarted that failed: a plain Retry gives the owner's instruction again (LR-2); it starts a new cap window as any Retry does.
     const carried = await carriedRedirect(deps, task);
-    return retryWorkflowImplementation(deps, caller, access, request, carried === undefined ? undefined : { ownerRedirect: carried.ownerRedirect, skipNoteIds: [carried.record.messageId], keepWindow: false });
+    // An instruction whose author may no longer redirect is dropped, and the run note says so (S1).
+    return retryWorkflowImplementation(deps, caller, access, carried?.kind === "dropped" ? { ...request, instructions: `${request.instructions} ${REDIRECT_DROPPED_RETRY_NOTE}` } : request,
+      carried?.kind === "carry" ? { ownerRedirect: carried.ownerRedirect, skipNoteIds: [carried.record.messageId], keepWindow: false } : undefined);
   }
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
@@ -403,7 +405,7 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   const retired = await retiredClaimIdList(deps, task.workflow);
   // A planning run a redirect restarted that failed: a plain Retry gives the owner's instruction again, framed as data as the restart framed it (LR-2).
   const carried = await carriedRedirect(deps, task);
-  const carriedInstruction = carried === undefined ? "" : `\n\n${framedPlanningInstruction(task, carried.record.requestId, carried.text)}`;
+  const carriedInstruction = carried === undefined ? "" : carried.kind === "dropped" ? `\n\n${REDIRECT_DROPPED_RETRY_NOTE}` : `\n\n${framedPlanningInstruction(task, carried.record.requestId, carried.text)}`;
   // An unreadable answer is retried with what was wrong in it (the planning prompt adds the format instructions).
   const unreadable = task.planUnreadable;
   const retryInstructions = unreadable !== undefined && task.workflow.blockReason === WORKFLOW_BLOCK_REASONS.planUnreadable && unreadable.workflowRevision === task.workflow.revision
@@ -460,7 +462,7 @@ async function retryWorkflowUnderstand(
     const carried = await carriedRedirect(deps, task);
     await queueWorkflowUnderstand(deps, task, {
       requestId: request.requestId, access, actor: caller, cap, request: request.instructions, response: "Restarting the understanding step",
-      ...(carried === undefined ? {} : { redirect: { instruction: framedPlanningInstruction(task, carried.record.requestId, carried.text), skipNoteIds: [carried.record.messageId] } }),
+      ...(carried === undefined ? {} : { redirect: carried.kind === "dropped" ? { instruction: REDIRECT_DROPPED_RETRY_NOTE, skipNoteIds: [] } : { instruction: framedPlanningInstruction(task, carried.record.requestId, carried.text), skipNoteIds: [carried.record.messageId] } }),
     });
   } catch (error) {
     if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "retry");

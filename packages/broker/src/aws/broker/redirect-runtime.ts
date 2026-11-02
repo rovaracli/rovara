@@ -5,7 +5,7 @@
 //     person who redirected;
 //   - the sweep that closes a redirect nobody finished.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
+import { AgentXError, agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
 import { continueRedirect, sweepStoppingRedirects, type RedirectContinueDependencies, type RedirectRestartHost } from "../../agent-sessions/redirect-continue.js";
 import { registerRedirectContinuation } from "../../agent-sessions/redirect-hook.js";
 import { redirectRestartingCheck } from "../../agent-sessions/redirect-state.js";
@@ -34,6 +34,9 @@ export async function workspaceWorkerFeatures(dependencies: Pick<AwsBrokerDepend
   return listed;
 }
 
+/** What a person who is no longer a member, or whose sign-in was revoked, is told: not retryable (N4). */
+const REDIRECT_AUTHOR_GONE = "You can't redirect this task: you are no longer a member of this organization, or your access was ended.";
+
 /**
  * The person who redirected, as a task caller: their live org role and their name and Slack identity as the sign-in record keeps them. A person who is no longer a member of the org is no caller: the restart throws, and
  * the redirect ends with the step left stopped.
@@ -41,11 +44,11 @@ export async function workspaceWorkerFeatures(dependencies: Pick<AwsBrokerDepend
 async function redirectCaller(dependencies: AwsBrokerDependencies, record: Pick<RedirectRecord, "orgId" | "actorId">): Promise<DeveloperCaller> {
   const member = ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(record.orgId, record.actorId), ConsistentRead: true }))) as { Item?: { role?: unknown } }).Item;
   const role = member?.role;
-  if (role !== "owner" && role !== "admin" && role !== "member") throw new Error("the person who redirected is not a member of the organization any more");
+  if (role !== "owner" && role !== "admin" && role !== "member") throw agentXError("FORBIDDEN", REDIRECT_AUTHOR_GONE);
   const developer = dependencies.developer === undefined ? undefined
     : ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${record.actorId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: { displayName?: unknown; provider?: unknown; slackUserId?: unknown; revoked?: unknown } }).Item;
   // A person whose sign-in was revoked is no caller, as `callerFor` of the agent runs counts them (SB-1): the restart throws and the redirect ends with the step left stopped.
-  if (developer?.revoked === true) throw new Error("the person who redirected has been revoked");
+  if (developer?.revoked === true) throw agentXError("FORBIDDEN", REDIRECT_AUTHOR_GONE);
   const provider: DeveloperSignInMethod = developer?.provider === "slack" || developer?.provider === "cloud" || developer?.provider === "github" || developer?.provider === "saml" ? developer.provider : "oidc";
   return {
     developerId: record.actorId, sessionId: "redirect", amr: provider, name: safeDisplayName(typeof developer?.displayName === "string" ? developer.displayName : "", record.actorId), orgId: record.orgId, orgRole: role,
@@ -98,7 +101,9 @@ function redirectProbe(dependencies: AwsBrokerDependencies): Pick<RedirectConfig
       let restart: Awaited<ReturnType<typeof restartDependencies>>;
       try {
         restart = await restartDependencies(dependencies, { orgId: who.orgId, actorId: who.developerId });
-      } catch {
+      } catch (error) {
+        // A person who is gone or revoked is refused for good; anything else is a fault to try again (N4).
+        if (error instanceof AgentXError && error.code === "FORBIDDEN") throw error;
         throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
       }
       await requireProjectSendBackRole(sharedAccessCheck(restart.deps), task, restart.caller);

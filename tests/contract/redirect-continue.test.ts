@@ -11,6 +11,7 @@ import {
   WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
   WORKFLOW_REDIRECT_SEND_BACK_REASON,
   agentSessionKey,
+  orgMemberKey,
   projectMemberKey,
   workspaceSessionKey,
 } from "../../packages/contracts/src/index.js";
@@ -20,8 +21,9 @@ import { readOpenRedirect, readRedirect, redirectKey } from "../../packages/brok
 import { registerRedirectContinuation, continueRedirectAfterStop } from "../../packages/broker/src/agent-sessions/redirect-hook.js";
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
-import { redirectRestartHost, redirectSweepBudgetMs, redirectSweepReserveMs } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
+import { redirectFromEnvironment, redirectRestartHost, redirectSweepBudgetMs, redirectSweepReserveMs } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
 import { redirectRestartRequestId } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
+import { REDIRECT_DROPPED_RETRY_NOTE, carriedRedirect } from "../../packages/broker/src/aws/developer-tasks/redirect-carry.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
@@ -871,6 +873,62 @@ describe("a plain Retry after a failed restarted run keeps the owner's instructi
     expect(t.outbox(lastCoding(t, workspaceId).id)!.payload["ownerRedirect"]).toBeUndefined();
   });
 
+  /** A restarted coding run that failed, for the tests of who may still have their words repeated (S1). */
+  const failedRestart = async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    await t.stopLands(workspaceId);
+    await t.finish(workspaceId, lastCoding(t, workspaceId).id, "FAILED", { error: "the model stopped" });
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const deps = () => ({ documentClient: t.db, tableName: "state", now: Date.now, signInTableName: (t.brokerInput as unknown as { developer: { signInTableName: string } }).developer.signInTableName });
+    return { t, taskId, workspaceId, requestId, deps };
+  };
+
+  it("drops the words, and the run note says so, once a take-over made someone else the owner (S1)", async () => {
+    const { t, taskId, workspaceId } = await failedRestart();
+    grantProject(t.db, OMAR);
+    t.db.set({ ...t.task(taskId), currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: new Date().toISOString() } });
+    t.db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [{ developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: OMAR.name, role: "owner" }] });
+    const retried = await t.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Carry on.", expectedRevision: t.task(taskId).workflow.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    const invocation = t.outbox(lastCoding(t, workspaceId).id)!;
+    expect(invocation.payload["ownerRedirect"]).toBeUndefined();
+    expect(JSON.stringify(invocation.payload)).not.toContain("REDIRECT-TEXT-7781");
+    expect(String(invocation.payload["prompt"])).toContain(REDIRECT_DROPPED_RETRY_NOTE);
+  });
+
+  it("drops the words when the author's sign-in was revoked, when they are no longer a member of the org, or when a co-owner was taken off the People list; keeps them when nothing changed (S1)", async () => {
+    const control = await failedRestart();
+    expect(await carriedRedirect(control.deps(), control.t.task(control.taskId) as never)).toMatchObject({ kind: "carry" });
+    const revoked = await failedRestart();
+    const signIn = revoked.t.db.get(`DEVELOPER#${MAYA.developerId}`, "META") ?? { pk: `DEVELOPER#${MAYA.developerId}`, sk: "META", provider: "slack", displayName: MAYA.name };
+    revoked.t.db.set({ ...signIn, revoked: true });
+    expect(await carriedRedirect(revoked.deps(), revoked.t.task(revoked.taskId) as never)).toEqual({ kind: "dropped" });
+    const removed = await failedRestart();
+    removed.t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    expect(await carriedRedirect(removed.deps(), removed.t.task(removed.taskId) as never)).toEqual({ kind: "dropped" });
+    const listed = await failedRestart();
+    // Maya is not the effective owner here (Omar is), and Maya is no owner on the People list.
+    listed.t.db.set({ ...listed.t.task(listed.taskId), currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: new Date().toISOString() } });
+    expect(await carriedRedirect(listed.deps(), listed.t.task(listed.taskId) as never)).toEqual({ kind: "dropped" });
+    // An unreadable sign-in table name fails closed.
+    const unknown = await failedRestart();
+    expect(await carriedRedirect({ ...unknown.deps(), signInTableName: undefined as never }, unknown.t.task(unknown.taskId) as never)).toEqual({ kind: "dropped" });
+  });
+
+  it("chooses the newest redirect whichever order the table lists them in, over more than one page (N2)", async () => {
+    const { t, taskId, requestId, deps } = await failedRestart();
+    const record = t.record(taskId, requestId)!;
+    // 120 older, ended redirects whose request ids sort around the real one's.
+    for (let index = 0; index < 120; index += 1) {
+      const id = randomUUID();
+      t.db.set({ ...record, sk: `REDIRECT#${id}`, requestId: id, state: "left_blocked", createdAt: new Date(Date.now() - (index + 1) * 60_000 - 3_600_000).toISOString() });
+    }
+    expect(await carriedRedirect(deps(), t.task(taskId) as never)).toMatchObject({ kind: "carry", record: { requestId } });
+  });
+
   it("coding: a redirect that was refused leaves nothing to give: the Retry carries no ownerRedirect", async () => {
     const t = await setup({ features: [] });
     const { taskId, sessionId, workspaceId } = await t.runningCoding();
@@ -985,7 +1043,7 @@ describe("the checks and the review restart coding, as a send-back does", () => 
     const signIn = t.db.get(`DEVELOPER#${OMAR.developerId}`, "META") as Item | undefined;
     t.db.set({ ...(signIn ?? { pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", provider: "oidc", displayName: OMAR.name }), revoked: true });
     const before = t.everything();
-    await expect(sendBackAsOmar(t, prepared)).rejects.toThrow(/revoked/);
+    await expect(sendBackAsOmar(t, prepared)).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(t.everything()).toBe(before);
   });
 });
@@ -1019,6 +1077,24 @@ describe("phase 1 asks the send-back gate before it stops a check or review (SB-
     expect(t.everything()).toBe(before);
     expect(t.operations(workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
     expect(t.open(taskId)).toBeUndefined();
+  });
+
+  it("a person who is gone or revoked is refused for good (FORBIDDEN), not told to try again; an unreadable role still is (N4)", async () => {
+    const { t, taskId } = await runningReviewWithOmar();
+    grantProject(t.db, OMAR);
+    const config = redirectFromEnvironment(t.brokerInput as never, { LIVE_REDIRECT_ENABLED: "1" })!;
+    const task = t.task(taskId) as never;
+    const who = { orgId: TEST_ORG, developerId: OMAR.developerId };
+    await expect(config.sendBackAllowed(task, who as never)).resolves.toBeUndefined();
+    const signIn = t.db.get(`DEVELOPER#${OMAR.developerId}`, "META") ?? { pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", provider: "oidc", displayName: OMAR.name };
+    t.db.set({ ...signIn, revoked: true });
+    await expect(config.sendBackAllowed(task, who as never)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    t.db.set({ ...signIn, revoked: false });
+    const member = t.db.get(orgMemberKey(TEST_ORG, OMAR.developerId))!;
+    t.db.delete(orgMemberKey(TEST_ORG, OMAR.developerId));
+    await expect(config.sendBackAllowed(task, who as never)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    t.db.set(member);
+    await expect(config.sendBackAllowed(task, who as never)).resolves.toBeUndefined();
   });
 
   it("a co-owner who holds a contributor grant is accepted and the review is stopped", async () => {

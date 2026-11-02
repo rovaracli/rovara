@@ -199,15 +199,26 @@ export const hourlyRedirects = (deps: RedirectStateDependencies, orgId: OrgId, t
  */
 export const stepRedirects = (deps: RedirectStateDependencies, orgId: OrgId, taskId: string, step: string, attempt: number, limit: number) => counterStep(deps, STEP_COUNTER(taskId, step, attempt), orgId, limit, deps.now(), undefined);
 
-/** The most redirect records of one task a read looks at (a task gets 5 an hour, and each record lives a few days). */
-const RECORDS_PAGE = 50;
+/** The most pages (of 50) of a task's redirect records one read looks at; a task gets 3 redirects per step attempt, so this is far more than are ever live. */
+const RECORD_PAGES_MAX = 10;
 
-/** The task's redirect records that read, newest first. For the Retry that keeps a redirect's instruction (LR-2). */
+/**
+ * The task's redirect records that read, newest first. The keys are by request id (random), so every page is read, not the first, and the newest is then exact (N2). For the Retry that keeps a redirect's
+ * instruction (LR-2).
+ */
 export async function listTaskRedirects(deps: RedirectStateDependencies, taskId: string): Promise<RedirectRecord[]> {
-  const answer = await deps.documentClient.send(new QueryCommand({
-    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": "REDIRECT#" }, Limit: RECORDS_PAGE, ConsistentRead: true,
-  })) as { Items?: Item[] };
-  return (answer.Items ?? [])
+  const items: Item[] = [];
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < RECORD_PAGES_MAX; page += 1) {
+    const answer = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": "REDIRECT#" }, Limit: 50, ConsistentRead: true,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    items.push(...(answer.Items ?? []));
+    start = answer.LastEvaluatedKey;
+    if (start === undefined) break;
+  }
+  return items
     .map((item) => RedirectRecordSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([key]) => !HOUSEKEEPING.has(key)))))
     .flatMap((parsed) => (parsed.success && parsed.data.taskId === taskId ? [parsed.data] : []))
     .sort((left, right) => (left.createdAt < right.createdAt ? 1 : left.createdAt > right.createdAt ? -1 : 0));

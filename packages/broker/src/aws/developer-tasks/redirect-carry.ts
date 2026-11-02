@@ -4,11 +4,13 @@
 // In force means all of these, read from the table now: the task's latest redirect restarted its step (not left it stopped, which the Retry's thread notes already cover); the workflow is blocked at the stage
 // that restart leaves it at, after the restart; and no decision has been made since the restart except the restart's own send-back (an approval, a send-back or an automatic retry starts a new attempt, for
 // which the instruction was not meant). The text is read from the owner's own steer message, only if it is still theirs and still there, as the restart reads it.
-import { REDIRECT_TEXT_MAX_CHARS, redactText, type OwnerRedirectInvocation, type RedirectRecord } from "@agentx/contracts";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { REDIRECT_TEXT_MAX_CHARS, orgMemberKey, redactText, type OwnerRedirectInvocation, type RedirectRecord } from "@agentx/contracts";
+import { mayRedirectTask } from "../../agent-sessions/redirect.js";
 import { livePersonLabel } from "../../agent-sessions/live-steer.js";
 import { listTaskRedirects } from "../../agent-sessions/redirect-state.js";
 import { readSteerMessage } from "../../agent-sessions/steer.js";
-import type { DeveloperTaskRecord } from "../../developer/task-records.js";
+import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { redirectRestartRequestId } from "./redirect-frame.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 
@@ -19,7 +21,14 @@ function restartedStage(record: Pick<RedirectRecord, "step" | "mode">): string |
   return record.step === "IMPLEMENT" && record.mode === "keep_plan" ? "IMPLEMENT" : undefined;
 }
 
+/** The line a Retry carries when it does not repeat a redirect's words because their author may no longer redirect this task (fixed words, never the instruction). */
+export const REDIRECT_DROPPED_RETRY_NOTE = "An earlier redirect instruction for this step was not repeated, because the person who gave it can no longer redirect this task." as const;
+
+/** The redirect was in force, but its author may no longer redirect the task: the Retry drops the instruction and says so. */
+export interface DroppedRedirect { kind: "dropped" }
+
 export interface CarriedRedirect {
+  kind: "carry";
   record: RedirectRecord;
   /** The owner's words, as the restart read them. */
   text: string;
@@ -27,8 +36,25 @@ export interface CarriedRedirect {
   ownerRedirect: OwnerRedirectInvocation;
 }
 
-/** The redirect instruction still in force for the task's blocked step, or undefined. Never throws: a read that fails carries nothing (the Retry then behaves as it always did). */
-export async function carriedRedirect(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now">, task: DeveloperTaskRecord): Promise<CarriedRedirect | undefined> {
+/**
+ * Whether the person who redirected may still redirect this task, asked as phase 2 asks before every restart (S1): still the task's effective owner or a co-owner (a take-over or a removal from the People list
+ * ends it), still a member of the org, and their sign-in not revoked. Anything that cannot be read is no.
+ */
+async function authorStands(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "signInTableName">, task: DeveloperTaskRecord, record: RedirectRecord): Promise<boolean> {
+  if (deps.signInTableName === undefined) return false;
+  const owner = tryEffectiveTaskOwner(task)?.developerId;
+  if (!await mayRedirectTask(deps, task, record.actorId, owner === record.actorId)) return false;
+  const member = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(record.orgId, record.actorId), ConsistentRead: true }))) as { Item?: { role?: unknown } }).Item;
+  if (member?.role !== "owner" && member?.role !== "admin" && member?.role !== "member") return false;
+  const signIn = ((await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: { pk: `DEVELOPER#${record.actorId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: { revoked?: unknown } }).Item;
+  return signIn !== undefined && signIn.revoked !== true;
+}
+
+/**
+ * The redirect instruction still in force for the task's blocked step, `dropped` when it is but its author may no longer redirect (S1), or undefined. Never throws: a read that fails carries nothing (the Retry
+ * then behaves as it always did).
+ */
+export async function carriedRedirect(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now" | "signInTableName">, task: DeveloperTaskRecord): Promise<CarriedRedirect | DroppedRedirect | undefined> {
   try {
     const workflow = task.workflow;
     if (workflow === undefined || workflow.state !== "BLOCKED") return undefined;
@@ -42,7 +68,8 @@ export async function carriedRedirect(deps: Pick<DeveloperTaskRouteDependencies,
     if (message === undefined || message.author.developerId !== latest.actorId || message.deletedAt !== undefined) return undefined;
     const text = redactText(message.text).trim().slice(0, REDIRECT_TEXT_MAX_CHARS).trim();
     if (text === "") return undefined;
-    return { record: latest, text, ownerRedirect: { messageId: latest.messageId, sender: livePersonLabel(latest.actorId), text } };
+    if (!await authorStands(deps, task, latest)) return { kind: "dropped" };
+    return { kind: "carry", record: latest, text, ownerRedirect: { messageId: latest.messageId, sender: livePersonLabel(latest.actorId), text } };
   } catch {
     return undefined;
   }
