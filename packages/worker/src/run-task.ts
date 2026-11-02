@@ -30,6 +30,7 @@ import type { FileOpsTarget } from "./file-ops-exec.js";
 import { sweepFileOps } from "./sandbox-file-tools.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import { runSetupAgentInvocation } from "./setup-agent-invocation.js";
+import { runNightlyInvocation } from "./nightly-invocation.js";
 import { EventBatcher, redactCredentials, type EventAppendOptions, type EventBatchSink, type WorkerEvent } from "./events.js";
 import {
   CANCEL_FLUSH_MAX_MS, ModelCallMonitor, PLANNING_ABORT_CONFIRM_MS, PLANNING_STALL_MS, expiryNote, logEventsRefused, logModelCallNote,
@@ -143,6 +144,8 @@ export interface TaskInvocationDependencies {
   cancellationController?: WorkerCancellationController;
   /** SH14: the broker's setup callback with this invocation's own capability (callback-client.ts `setupAgent`). A setup run does not run without it. */
   setupAgent?: (body: unknown) => Promise<unknown>;
+  /** NH-1: the broker's nightly action with this invocation's own capability (callback-client.ts `nightlyResult`). A nightly run does not run without it. */
+  nightlyResult?: (body: { result: unknown; coverageMap?: unknown }) => Promise<unknown>;
   devcontainerCli?: DevcontainerCli;
   /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
   checkRunners?: CheckRunners;
@@ -430,6 +433,17 @@ async function runTask(
     }
   }
 
+  // NH-1 (the broker sends `nightlyRun` only while `nh` is on, and only to a worker that lists "task.nightlyRun.v1"): the nightly run is the Prove sequence over the approved environment, with its own module; the checks below do not apply to it.
+  if (invocation.payload.nightlyRun !== undefined) {
+    return runNightlyInvocation(invocation, {
+      rootPath: canonicalRoot, eventSink: dependencies.eventSink, cancellationController: dependencies.cancellationController, nightlyResult: dependencies.nightlyResult,
+      runners: dependencies.checkRunners ?? createCheckRunners({
+        rootPath: canonicalRoot,
+        ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
+        ...(bashOperations === undefined ? {} : { bashOperations }), ...(sandbox === undefined ? {} : { sandbox }), ...(localShell ? { local: true } : {}),
+      }),
+    }, manifest);
+  }
   // Spec 051 Ruling L: the check history as it was before the agent ran. The agent can write to .agentx, so every
   // round plans from this snapshot, and the final round's outcomes are merged over it.
   const checkHistory = await readCheckHistory(canonicalRoot, manifest);

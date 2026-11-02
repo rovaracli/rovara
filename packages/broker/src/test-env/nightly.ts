@@ -134,7 +134,7 @@ export async function syncNightlySchedule(deps: NightlyScheduleDependencies, inp
 // ---- one fire
 
 /** The spend refusals a nightly can meet (the ledger's own codes for a full budget): the night is skipped, not retried. */
-const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
+export const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
 /** At most one nightly run per project in this long, whatever the cron says: a cron of `* * * * *` or a busy repo cannot make more. */
 export const NIGHTLY_MIN_GAP_MS = 20 * HOUR_MS;
 
@@ -146,8 +146,11 @@ export interface NightlyRunPort {
   admit(input: { orgId: OrgId; project: string; purpose: "nightly_baseline" }): Promise<void>;
   /** The branch's head commit now, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
-  /** Starts the full run (CHECKS mode on the default branch). Throws when it cannot be started. */
-  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string; payer: { kind: "project"; project: string }; source: "nightly_baseline" }): Promise<void>;
+  /**
+   * Starts the full run (CHECKS mode on the default branch). Throws when it cannot be started for a reason that may pass; answers `{ skipped }` when the night cannot run at all today (nobody to run it as, no
+   * workspace room, a budget with no room): the claims are then given back and the scheduler is not asked to retry.
+   */
+  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string; payer: { kind: "project"; project: string }; source: "nightly_baseline" }): Promise<void | { skipped: NightlySkipReason }>;
 }
 
 export interface NightlyDeps extends TestEnvDeps { runs: NightlyRunPort }
@@ -240,12 +243,19 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
     }
     throw error;
   }
+  let refused: { skipped: NightlySkipReason } | undefined;
   try {
-    await deps.runs.startRun({ orgId, project, branch, headSha: head, envRevision: env.revision, slotId, payer: { kind: "project", project }, source: "nightly_baseline" });
+    const started = await deps.runs.startRun({ orgId, project, branch, headSha: head, envRevision: env.revision, slotId, payer: { kind: "project", project }, source: "nightly_baseline" });
+    if (started !== undefined) refused = started;
   } catch (error) {
     // The run did not start: let the scheduler's retry try again (the slot claim stays, so a retry would be "already handled"; release both).
     await releaseNightly(deps, orgId, project, slotId, true);
     throw error;
+  }
+  // The night cannot run today and nothing was started: every claim is given back, so tomorrow's fire (or a later one today) is not shut out by it.
+  if (refused !== undefined) {
+    await releaseNightly(deps, orgId, project, slotId, true);
+    return skip(refused.skipped);
   }
   return { outcome: "started", slotId };
 }

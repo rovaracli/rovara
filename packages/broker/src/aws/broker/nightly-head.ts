@@ -10,20 +10,23 @@ import { canReadBaseBranchHead, hostOfRepository } from "./repository-hosts.js";
 import { requireLatestProject } from "./records.js";
 import { githubScope } from "./scope-helpers.js";
 
+/** The head of a branch of a one-repository project, as the code host of the repository's record says; undefined for anything else, and for any failure. NH-1 uses it for the nightly run (no switch of its own here). */
+export async function defaultBranchHeadOf(dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, branch: string): Promise<string | undefined> {
+  try {
+    const repositories = (await requireLatestProject(dependencies, orgId, project)).definition.repositories;
+    if (repositories.length !== 1) return undefined;
+    const repository = repositories[0]!;
+    const host = hostOfRepository(dependencies, repository);
+    if (!canReadBaseBranchHead(dependencies, host)) return undefined;
+    return await host.baseBranchHead({ url: repository.url }, branch, githubScope(dependencies, orgId));
+  } catch {
+    return undefined;
+  }
+}
+
 export function nightlyHeadReaderOf(dependencies: AwsBrokerDependencies, env: NodeJS.ProcessEnv = process.env): NightlyHeadReader | undefined {
   if (!verifyResultsEnabled(env)) return undefined;
-  return (orgId: OrgId, project: string) => async (branch: string) => {
-    try {
-      const repositories = (await requireLatestProject(dependencies, orgId, project)).definition.repositories;
-      if (repositories.length !== 1) return undefined;
-      const repository = repositories[0]!;
-      const host = hostOfRepository(dependencies, repository);
-      if (!canReadBaseBranchHead(dependencies, host)) return undefined;
-      return await host.baseBranchHead({ url: repository.url }, branch, githubScope(dependencies, orgId));
-    } catch {
-      return undefined;
-    }
-  };
+  return (orgId: OrgId, project: string) => (branch: string) => defaultBranchHeadOf(dependencies, orgId, project, branch);
 }
 
 /** The route dependency: the reader, or NOTHING while `vx` is off. Spread beside `evidenceRouteDependencies`. */

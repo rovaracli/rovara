@@ -1,0 +1,116 @@
+// The nightly run as the worker receives it (NH-1): builds the real ports of `runNightly` from the task invocation's dependencies, runs the night and reports its result through the broker's ONE nightly action.
+// `run-task.ts` calls it from one early hunk, for a verification-mode (CHECKS) operation whose payload carries `nightlyRun`, after the workspace and the task sandbox are ready. Everything that touches the outside (the
+// project's commands, the report files, the broker) is a port, so the whole night is tested without a machine.
+//
+// What this module guarantees (each is a test):
+//   - ED-1: the workspace is the one the BROKER prepared at the commit it resolved for the default branch. A workspace with a pull request head checked out, more than one repository, or a commit that is not the one the run was
+//     started for (the branch moved between the broker's read and the clone) is refused and nothing is reported: a night is never recorded for code it did not test;
+//   - the environment is the APPROVED one the broker sent; one with services is refused until a worker can start them (below): a false "boot failed" would send the project to "Setup needs repair";
+//   - the report files are read through the contained reader (no link, nothing outside the workspace) and the coverage data through the same;
+//   - the result goes to the broker once; a broker that refuses it fails the night (nothing else changes), a stop or the wall clock sends nothing.
+//
+// NOT here (deferred to the staging real-run checks, listed in the lane report): starting service mocks and probing pre-prod from a worker (they need the verifier's mock host, which needs Docker), the saved image
+// (`update`, `ranFrom: saved_image`), and a coverage map for anything but coverage.py contexts.
+import { NIGHTLY_RUN_WALL_CLOCK_MS, agentXError, type NightlyResultCallbackBody, type NightlyRunPayload, type WorkerInvocation, type TestEnvCheck } from "@agentx/contracts";
+import { EventBatcher, type EventBatchSink } from "./events.js";
+import type { WorkerCancellationController } from "./cancel.js";
+import type { PreparationManifest } from "./prepare.js";
+import { coverageMapFromContexts, reportLocation, runNightly, type NightlyPorts } from "./nightly-run.js";
+import { setupRepositoriesOf } from "./setup-agent-run.js";
+import type { CheckRunners } from "./verification/checks.js";
+import { readContainedReport } from "./verification/report-file.js";
+import { readTestReportAt } from "./verification/test-report-folder.js";
+
+/** The most bytes of coverage data read for a map (coverage.py's JSON with contexts is large). */
+const CONTEXTS_MAX_BYTES = 64 * 1_048_576;
+const CONTEXTS_FILE = ".agentx-nightly-contexts.json";
+
+export interface NightlyInvocationDependencies {
+  /** The canonical workspace root. */
+  rootPath: string;
+  eventSink: EventBatchSink;
+  cancellationController?: WorkerCancellationController | undefined;
+  /** The broker's nightly action with this invocation's own capability (callback-client.ts `nightlyResult`). A nightly does not run without it. */
+  nightlyResult?: ((body: NightlyResultCallbackBody) => Promise<unknown>) | undefined;
+  /** The runners the project's commands go through: the task sandbox (or the dev container), as a task's checks do. */
+  runners: CheckRunners;
+  now?: (() => number) | undefined;
+  /** Test seam: the ports a night uses instead of the real ones. */
+  ports?: NightlyPorts | undefined;
+}
+
+/** The result a nightly operation ends with (the broker's terminal result is not the nightly result: that went through the action). */
+export interface NightlyInvocationResult { conversationId: string; reopened: false; workflowMode: "CHECKS" }
+
+/** The environment's services need a mock host (the verifier's, on Docker) and pre-prod access, neither of which a worker has yet. */
+export const NIGHTLY_SERVICES_UNAVAILABLE = "this worker cannot start an environment's services yet, so the nightly run did not start";
+
+function productionPorts(deps: NightlyInvocationDependencies, startedAtMs: number, now: () => number, coverageCheck: TestEnvCheck | undefined): NightlyPorts {
+  const unavailable = async (): Promise<never> => { throw agentXError("RUNTIME_UNAVAILABLE", NIGHTLY_SERVICES_UNAVAILABLE); };
+  return {
+    runCommand: (command, signal) => deps.runners.runProjectCommand(command, signal),
+    startMock: unavailable,
+    probePreprod: unavailable,
+    mockUnmatched: async () => [],
+    async readReport(check: TestEnvCheck, command) {
+      if (check.reportPath === undefined) return undefined;
+      return (await readTestReportAt(deps.rootPath, reportLocation(command, check.reportPath))).report;
+    },
+    async buildCoverageMap(signal) {
+      // coverage.py with contexts: `coverage json --show-contexts` over the data the suite just wrote, in the directory of the first test check that approves a coverage report.
+      const check = coverageCheck;
+      if (check === undefined) return undefined;
+      const command = { cwd: check.command.cwd, executable: "python", args: ["-m", "coverage", "json", "--show-contexts", "-o", CONTEXTS_FILE], timeoutSeconds: 600 };
+      const ran = await deps.runners.runProjectCommand(command, signal);
+      if (ran.exitCode !== 0 || ran.timedOut) return undefined;
+      const read = await readContainedReport({ root: deps.rootPath, cwd: command.cwd, argument: CONTEXTS_FILE, maxBytes: CONTEXTS_MAX_BYTES, notBeforeMs: startedAtMs });
+      if (!read.ok) return undefined;
+      return coverageMapFromContexts(read.bytes.toString("utf8"), new Date(now()).toISOString(), check.command.cwd === "." ? {} : { sourceRoot: check.command.cwd });
+    },
+    now,
+  };
+}
+
+export async function runNightlyInvocation(
+  invocation: Extract<WorkerInvocation, { kind: "task" }>,
+  deps: NightlyInvocationDependencies,
+  manifest: Pick<PreparationManifest, "repositories">,
+): Promise<NightlyInvocationResult> {
+  const run: NightlyRunPayload | undefined = invocation.payload.nightlyRun;
+  if (run === undefined) throw agentXError("CONFIG_INVALID", "a nightly run carries what it was started to run");
+  if (deps.nightlyResult === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach the control plane's nightly callback");
+  // ED-1: the broker's commit for the default branch, in the workspace the broker prepared, and nothing else.
+  if (manifest.repositories.length !== 1) throw agentXError("CONFIG_INVALID", "a nightly run needs exactly one prepared repository");
+  const [repository] = setupRepositoriesOf(deps.rootPath, manifest.repositories);
+  if (repository!.resolvedCommit !== run.headSha) throw agentXError("WORKSPACE_NOT_READY", "the workspace is not at the commit this nightly run was started for");
+  if (run.environment.services.length > 0) throw agentXError("RUNTIME_UNAVAILABLE", NIGHTLY_SERVICES_UNAVAILABLE);
+
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const conversationId = invocation.payload.conversationId;
+  const events = new EventBatcher(deps.eventSink);
+  const stop = new AbortController();
+  const unregister = deps.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
+  // The check whose coverage data the map is built from: the first test check that approves a coverage report.
+  const coverageCheck = run.environment.repos.flatMap((repo) => repo.checks).find((check) => check.kind === "test" && check.coveragePath !== undefined);
+  try {
+    // The broker reads the operation as RUNNING from this event, and its nightly action is accepted only then.
+    await events.append("lifecycle", { status: "RUNNING", conversationId });
+    await events.flush();
+    await events.append("progress", { message: "Rovara is running the project's whole test suite on the default branch for the nightly baseline. It makes no code changes." });
+    const { result, coverageMap } = await runNightly({
+      environment: run.environment, run: { slotId: run.slotId, envRevision: run.envRevision, branch: run.branch, headSha: run.headSha },
+      ports: deps.ports ?? productionPorts(deps, startedAt, now, coverageCheck), signal: stop.signal, deadlineMs: NIGHTLY_RUN_WALL_CLOCK_MS, startedAtMs: startedAt,
+    });
+    await deps.nightlyResult({ result, ...(coverageMap === undefined ? {} : { coverageMap }) });
+    await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "CHECKS" });
+    await events.flush();
+    return { conversationId, reopened: false, workflowMode: "CHECKS" };
+  } catch (error) {
+    await events.append("error", { message: error instanceof Error ? error.message.slice(0, 300) : "the nightly run failed" }).catch(() => undefined);
+    await events.flush().catch(() => undefined);
+    throw error;
+  } finally {
+    unregister?.();
+  }
+}

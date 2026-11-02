@@ -170,7 +170,7 @@ function resumeRequestId(spendRequestId: string, what: string): string {
 export function heldPreparationOptions(task: Pick<DeveloperTaskRecord, "purpose">, held: NonNullable<NonNullable<DeveloperTaskRecord["budgetPause"]>["firstDispatch"]>) {
   return {
     ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true as const } : {}),
-    ...(task.purpose === "setup_draft" || task.purpose === "setup_agent" || task.purpose === "diagnosis" ? { setupDraft: true as const } : {}),
+    ...(task.purpose === "setup_draft" || task.purpose === "setup_agent" || task.purpose === "nightly_run" || task.purpose === "diagnosis" ? { setupDraft: true as const } : {}),
   };
 }
 
