@@ -81,7 +81,42 @@ export function modelKey(model: ModelIdentifier): string {
 
 export type ModelCompany = "anthropic" | "openai" | "google" | "other";
 
-const BEDROCK_REGION_PREFIX = /^(?:us|eu|apac|global)\./;
+/**
+ * The geographies Amazon Bedrock's cross-region inference profiles put in front of a model id (`jp.anthropic.claude-opus-5`). One closed list, checked against the pinned catalog by a contract test:
+ * a prefix missing here would let a forbidden model, a "different model" rule or a price miss the same model on another geography.
+ */
+export const BEDROCK_REGION_PREFIXES = ["us-gov", "us", "eu", "apac", "global", "au", "jp", "in", "ca"] as const;
+
+/** The model makers whose ids Bedrock lists without a geography (`anthropic.claude-opus-5`, `deepseek.v3.2`), as the pinned catalog names them. */
+export const BEDROCK_VENDOR_PREFIXES = [
+  "ai21", "amazon", "anthropic", "cohere", "deepseek", "google", "luma", "meta", "minimax", "mistral", "moonshot", "moonshotai", "nvidia", "openai", "qwen", "stability", "twelvelabs", "writer", "xai", "zai",
+] as const;
+
+const BEDROCK_REGION_PREFIX = new RegExp(`^(?:${BEDROCK_REGION_PREFIXES.join("|")})\\.`);
+const bedrockWithoutRegion = (modelId: string): string => modelId.toLowerCase().replace(BEDROCK_REGION_PREFIX, "");
+const isBedrock = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "amazon-bedrock";
+
+/**
+ * Whether `model` is a Bedrock id shaped `<segment>.<known vendor>.*` whose first segment is neither a listed geography nor a vendor: a geography Rovara has not learned. Its model cannot be read,
+ * so callers fail closed: refuse it whenever any model is forbidden, and never take it as a different model from another.
+ */
+export function isUnrecognisedBedrockModel(model: ModelIdentifier): boolean {
+  if (!isBedrock(model)) return false;
+  const [first, second, ...rest] = model.modelId.toLowerCase().split(".");
+  if (first === undefined || second === undefined || rest.length === 0) return false;
+  return !(BEDROCK_REGION_PREFIXES as readonly string[]).includes(first) && !(BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(first) && (BEDROCK_VENDOR_PREFIXES as readonly string[]).includes(second);
+}
+
+/** Whether a model is forbidden: it has a forbidden entry's canonical name, or it is an unrecognised Bedrock id and anything at all is forbidden. Build once per list. */
+export function forbiddenModelMatcher(forbidden: readonly ModelIdentifier[]): (model: ModelIdentifier) => boolean {
+  const names = new Set(forbidden.map(canonicalModelName));
+  return (model) => forbidden.length > 0 && (names.has(canonicalModelName(model)) || isUnrecognisedBedrockModel(model));
+}
+
+/** Whether two models read as the same one for an independence rule: equal canonical names, or either is an unrecognised Bedrock id, which can never be shown to differ. */
+export function sameModelOrUnrecognised(left: ModelIdentifier, right: ModelIdentifier): boolean {
+  return canonicalModelName(left) === canonicalModelName(right) || isUnrecognisedBedrockModel(left) || isUnrecognisedBedrockModel(right);
+}
 
 /**
  * The company that trained a model, whichever route reaches it: an Anthropic id over Bedrock or OpenRouter is
@@ -93,7 +128,7 @@ export function modelCompany(model: ModelIdentifier): ModelCompany {
   const id = model.modelId.toLowerCase();
   if (provider === "anthropic") return "anthropic";
   if (provider === "openai") return "openai";
-  if (provider === "amazon-bedrock" && id.replace(BEDROCK_REGION_PREFIX, "").startsWith("anthropic.")) return "anthropic";
+  if (provider === "amazon-bedrock" && bedrockWithoutRegion(id).startsWith("anthropic.")) return "anthropic";
   if (provider === "openrouter") {
     if (id.startsWith("anthropic/")) return "anthropic";
     if (id.startsWith("openai/")) return "openai";
@@ -110,7 +145,7 @@ export function modelCompany(model: ModelIdentifier): ModelCompany {
  */
 export function canonicalModelName(model: ModelIdentifier): string {
   let id = model.modelId;
-  if (model.provider === "amazon-bedrock") id = id.replace(BEDROCK_REGION_PREFIX, "").replace(/^anthropic\./, "");
+  if (isBedrock(model)) id = bedrockWithoutRegion(id).replace(/^anthropic\./, "");
   if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "");
   return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
 }

@@ -14,6 +14,7 @@ import {
   agentGuardrailsKey,
   agentXError,
   canonicalModelName,
+  forbiddenModelMatcher,
   isBuiltinAgentId,
   modelCompany,
   recipeProblems,
@@ -176,7 +177,7 @@ export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId:
   const guardrails = await readGuardrails(deps, orgId);
   const servable = await (deps.servableModels?.(orgId) ?? Promise.resolve(rovaraCatalogModels()));
   const servableNames = new Set(servable.map(canonicalModelName));
-  const forbiddenNames = new Set(guardrails.forbiddenModels.map(canonicalModelName));
+  const isForbidden = forbiddenModelMatcher(guardrails.forbiddenModels);
 
   recipe.steps.forEach((step, index) => {
     const found = step.settings as StepModels;
@@ -184,7 +185,7 @@ export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId:
       const model = found[key];
       if (model === undefined || model === null) continue;
       const name = canonicalModelName(model);
-      if (forbiddenNames.has(name)) add(`steps.${String(index)}.settings.${key}`, `${modelLabel(model)} is forbidden in your company; pick another model`);
+      if (isForbidden(model)) add(`steps.${String(index)}.settings.${key}`, `${modelLabel(model)} is forbidden in your company; pick another model`);
       else if (!servableNames.has(name)) add(`steps.${String(index)}.settings.${key}`, `${modelLabel(model)} isn't served by any AI source your company can use; pick a model one of them serves`);
     }
     if (typeof found.stepBudgetUsd === "number" && guardrails.maxStepBudgetUsd !== undefined && found.stepBudgetUsd > guardrails.maxStepBudgetUsd) {
@@ -195,7 +196,7 @@ export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId:
 
   if (guardrails.requireCrossCompanyReview) {
     // Only a recognised company the company can actually choose counts: a forbidden model, or one of an unrecognised company, can't be the second.
-    const usable = new Set<ModelCompany>(servable.filter((model) => !forbiddenNames.has(canonicalModelName(model))).map(modelCompany));
+    const usable = new Set<ModelCompany>(servable.filter((model) => !isForbidden(model)).map(modelCompany));
     usable.delete("other");
     const secondCompany = usable.size >= 2;
     const requireDifferent = (path: string, step: ResolvedStep, other: ResolvedStep) => {

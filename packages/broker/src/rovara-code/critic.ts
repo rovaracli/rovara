@@ -3,7 +3,7 @@
 // plan, possibly from the same company (owner decision 10, 2026-10-22). There is no "different AI company" requirement. What the critic writes is untrusted advice: it reaches a
 // planner only inside a labelled block, bounded and redacted, and it can never approve a plan.
 import {
-  AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, modelCompany, redactText,
+  AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, forbiddenModelMatcher, modelCompany, redactText, sameModelOrUnrecognised,
   type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique,
 } from "@agentx/contracts";
 import { modelNotAllowedText } from "../model-sources/routing.js";
@@ -69,7 +69,7 @@ export interface CriticModelLimits {
 
 /** Whether `model` is one the limits allow: not forbidden (by canonical name, so another route to a forbidden model is forbidden too) and, when the project lists models, one of them. */
 function allowed(limits: CriticModelLimits, model: ModelIdentifier): boolean {
-  return !(limits.forbidden ?? []).some((other) => sameModel(other, model)) && (limits.approved === undefined || limits.approved.some((other) => sameModel(other, model)));
+  return !forbiddenModelMatcher(limits.forbidden ?? [])(model) && (limits.approved === undefined || limits.approved.some((other) => sameModel(other, model)));
 }
 
 /** Whether an earlier plan check already found `model` unusable for this account. */
@@ -131,7 +131,7 @@ function failedTiersLast(limits: CriticModelLimits, ranked: readonly ModelIdenti
  */
 export function recommendCriticModel(limits: CriticModelLimits, planModel: ModelIdentifier | undefined, sources: readonly ModelIdentifier[]): { model: ModelIdentifier; sameModelAsPlanner: boolean } | undefined {
   const candidates = candidatesOf(limits, sources);
-  const different = planModel === undefined ? candidates[0] : candidates.find((model) => !sameModel(model, planModel));
+  const different = planModel === undefined ? candidates[0] : candidates.find((model) => !sameModelOrUnrecognised(model, planModel));
   if (different !== undefined) return { model: different, sameModelAsPlanner: false };
   const only = candidates[0];
   return only === undefined ? undefined : { model: only, sameModelAsPlanner: true };

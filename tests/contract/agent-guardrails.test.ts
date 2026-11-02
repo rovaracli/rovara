@@ -536,6 +536,22 @@ describe("validateRecipeForOrg", () => {
     expect(await check(recipeOf([agentStepOf("work", { model: SONNET })]), { guardrails: forbidding })).toEqual([]);
   });
 
+  it("refuses a forbidden model reached through any Bedrock geography, and an id with a geography nobody listed whenever a model is forbidden", async () => {
+    const forbidding = guardrails({ forbiddenModels: [claude("claude-opus-5")] });
+    for (const geography of ["jp", "au", "in", "ca", "us-gov", "US", "eu", "apac", "global"]) {
+      const model: ModelIdentifier = { provider: "amazon-bedrock", modelId: `${geography}.anthropic.claude-opus-5` };
+      expect(await check(recipeOf([agentStepOf("work", { model })]), { guardrails: forbidding, servable: [model] }), geography).toEqual([
+        { path: "steps.0.settings.model", message: `amazon-bedrock/${model.modelId} is forbidden in your company; pick another model` },
+      ]);
+    }
+    const unknown: ModelIdentifier = { provider: "amazon-bedrock", modelId: "zz.anthropic.claude-opus-5" };
+    expect(await check(recipeOf([agentStepOf("work", { model: unknown })]), { guardrails: forbidding, servable: [unknown] })).toEqual([
+      { path: "steps.0.settings.model", message: "amazon-bedrock/zz.anthropic.claude-opus-5 is forbidden in your company; pick another model" },
+    ]);
+    // Nothing forbidden: the unknown id is judged only by what the sources serve.
+    expect(await check(recipeOf([agentStepOf("work", { model: unknown })]), { servable: [unknown] })).toEqual([]);
+  });
+
   it("refuses a model no source serves, and accepts it once a source does", async () => {
     const recipe = recipeOf([agentStepOf("work", { model: GPT })]);
     expect(await check(recipe)).toEqual([
