@@ -2,10 +2,11 @@
 // code is, between markers that Rovara rewrites after every fix or sync, and it ends with the line that says a person approves and a person merges. The description is public to the repository's
 // readers: every line that a model, a file name or a branch name wrote goes through `inertLine` (redacted, one line, no mention, link, image, cross-reference or hidden comment), every list is bounded,
 // and the whole body stays under the byte cap with its markers, risk and closing line intact so it can always be regenerated in place.
-import { attributionBodyLines, type ActingAttribution, type RiskAssessment, type VerificationReport, type WorkflowSnapshot } from "@agentx/contracts";
+import { attributionBodyLines, TESTING_RESULT_LABELS, type ActingAttribution, type RiskAssessment, type TestingView, type VerificationReport, type WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
 import { reviewModelLines } from "./review-model-lines.js";
+import { testingSectionLines } from "./testing-section.js";
 import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { PROOF_LEVEL_LAST, proofSection, type ProofContext } from "./proof-section.js";
 import { testProofLinesOf } from "./proof-table.js";
@@ -54,6 +55,11 @@ export interface PullRequestBodyContext {
   evidenceRisk?: EvidenceRiskSignal | undefined;
   /** I3: who asked for the work and who approved its plan, built by the broker from its own records (`broker/src/attribution`). Lines outside the marked block, so a status rewrite leaves them. */
   attribution?: ActingAttribution | undefined;
+  /**
+   * Setup and test health SH18 (only while `vx` is on; the caller builds it with `testingViewOf` and leaves it out otherwise): the Testing view of this code. Present, the description says `## Testing - <result>`
+   * with one row per check instead of the `## Tests` lists, and the Proof table starts with the result. Absent, the description is exactly what it was.
+   */
+  testing?: TestingView | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -157,6 +163,20 @@ function testedCommitLine(workflow: WorkflowSnapshot, report: VerificationReport
 /** A test-proof line: its quoted names are cut already, so this only bounds the whole line. */
 const PROOF_LINE_MAX = 600;
 
+/** The lines of the old Tests section that the Testing section keeps: the tested commit, the tests added and the test proof. */
+function testingExtraLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, limit: number): string[] {
+  const report: VerificationReport = verificationReport(workflow, context.changedFiles?.files ?? [], { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) });
+  const lines: string[] = [];
+  const tested = testedCommitLine(workflow, report);
+  if (tested !== undefined) lines.push(tested);
+  const added = report.testsAdded.map((item) => item.path);
+  if (context.changedFiles === undefined) lines.push("- Tests added: Rovara couldn't list the changed files, so it can't say.");
+  else if (added.length === 0) lines.push(`- Tests added: none${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
+  else lines.push(`- Tests added: ${joined(added, limit)}${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
+  for (const line of context.proofLines ?? testProofLinesOf(context.proof?.testProof, workflow.candidate?.digest)) lines.push(`- ${inertLine(line, PROOF_LINE_MAX)}`);
+  return lines;
+}
+
 function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, limit: number): string[] {
   const report: VerificationReport = verificationReport(workflow, context.changedFiles?.files ?? [], { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) });
   const base = context.baseBranch === undefined || context.baseBranch.trim() === "" ? "the base branch" : inertLine(context.baseBranch, 100);
@@ -185,14 +205,15 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
   const risk = riskShown(workflow, context);
   const linearKey = normalizeIssueKey(context.linearIssueKey);
   let lines: string[] = [];
-  const proof = proofSection(workflow, context.proof);
+  const proof = proofSection(workflow, context.proof, context.testing === undefined ? undefined : TESTING_RESULT_LABELS[context.testing.result]);
+  const testing = context.testing;
   // The Proof section shrinks with the lists: its evidence text first, then its proven and passed rows, never a failed row or a not-tested item. One more step after the lists are empty shortens it again.
   const steps = [...LIST_LIMITS.map((limit, index) => ({ limit, proofLevel: Math.min(index, 3) })), { limit: 0, proofLevel: PROOF_LEVEL_LAST }];
-  for (const { limit, proofLevel } of steps) {
+  for (const [level, { limit, proofLevel }] of steps.entries()) {
     // The last guard: whatever a path let through, no line has a Linear magic word before a key but Rovara's own Fixes line.
     lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
-      "## Tests", ...testLines(workflow, context, limit), "",
+      ...(testing === undefined ? ["## Tests", ...testLines(workflow, context, limit)] : testingSectionLines(testing, level, testingExtraLines(workflow, context, limit))), "",
       ...(proof === undefined ? [] : [...proof(proofLevel), ""]),
       "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow, context.reviewSameModel === true).map((line) => inertLine(line, ITEM_MAX)), ...(context.secondReviewLines ?? []), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),

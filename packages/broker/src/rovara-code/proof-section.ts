@@ -86,7 +86,7 @@ function provenTestNames(testProof: unknown, candidateDigest: string | undefined
  * The section's builder, or undefined when there is no approved plan with claims (the section is then left out and the description is exactly as it was). The table is computed once; call the
  * returned function with a shrink level (0..PROOF_LEVEL_LAST) for the lines at that level, without the blank line that separates the section from Tests.
  */
-export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | undefined): ((level: number) => string[]) | undefined {
+export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | undefined, resultLabel?: string): ((level: number) => string[]) | undefined {
   if (proof?.stale === true) return () => ["### Proof", "", PROOF_STALE_LINE];
   const plan = proof?.plan;
   if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
@@ -95,7 +95,8 @@ export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | u
     const requirementMax = level >= 4 ? 60 : level >= 3 ? 120 : level >= 2 ? 160 : level === 1 ? 200 : 300;
     const folded = level >= 3 ? table.rows.filter((row) => row.result === "proven" || row.result === "passed") : [];
     const shown = table.rows.filter((row) => !folded.includes(row));
-    const lines = ["### Proof", ""];
+    // Setup and test health SH18: with the four results on, the table starts with the result (one of four fixed words), the same as the Testing section's heading.
+    const lines = ["### Proof", "", ...(resultLabel === undefined ? [] : [`Result: ${resultLabel}`, ""])];
     if (shown.length > 0) {
       lines.push("| Requirement | Evidence | Result |", "| --- | --- | --- |",
         ...shown.map((row) => `| ${cell(`${row.claimId}: ${cut(row.requirement, requirementMax)}`)} | ${cell(evidenceCell(row, level))} | ${RESULT_WORDS[row.result]} |`));
