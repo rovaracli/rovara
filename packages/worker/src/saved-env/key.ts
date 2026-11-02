@@ -16,9 +16,9 @@ import { globRegExp } from "../verification/selection.js";
 /** Files whose content decides what a saved environment contains, in every language Rovara knows and a few it does not detect yet. A glob without a slash matches that name in any directory. */
 export const SAVED_ENV_FIXED_KEY_GLOBS: readonly string[] = [
   // Node
-  ".pnpmfile.cjs", ".yarn/releases/**", "patches/**", "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb", ".npmrc", ".yarnrc", ".yarnrc.yml", ".nvmrc", ".node-version",
+  ".pnpmfile.cjs", "**/.yarn/releases/**", "**/patches/**", "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb", ".npmrc", ".yarnrc", ".yarnrc.yml", ".nvmrc", ".node-version",
   // Python
-  "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "Pipfile.lock", "poetry.lock", "uv.lock", "requirements*.txt", "requirements/**", ".python-version",
+  "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "Pipfile.lock", "poetry.lock", "uv.lock", "requirements*.txt", "**/requirements/**", ".python-version",
   // Java
   "pom.xml", "mvnw", ".mvn/**", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "gradle.lockfile", "gradle/libs.versions.toml", "gradle/wrapper/gradle-wrapper.properties", "gradlew", ".java-version", ".sdkmanrc",
   // Go, Rust, Ruby, PHP

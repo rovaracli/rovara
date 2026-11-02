@@ -65,6 +65,14 @@ describe("fix round 1: more key files, anchored exclusions, dev container refere
     expect(keyFilePaths(paths, [])).toEqual([".pnpmfile.cjs", ".yarn/releases/yarn-4.1.0.cjs", "patches/left-pad+1.0.0.patch", "requirements/base.txt", "requirements/dev/extra.txt"]);
   });
 
+  it("counts those directories at any depth, so a workspace package's files change the key", async () => {
+    const paths = ["svc/requirements/base.txt", "web/.yarn/releases/yarn-4.cjs", "web/patches/a.patch", "svc/docs/patches-notes.md", "svc/src/requirements.py"];
+    expect(keyFilePaths(paths, [])).toEqual(["svc/requirements/base.txt", "web/.yarn/releases/yarn-4.cjs", "web/patches/a.patch"]);
+    const files: Files = { "package.json": "{}", "svc/requirements/base.txt": "a", "web/.yarn/releases/yarn-4.cjs": "b", "web/patches/a.patch": "c" };
+    const before = await keyString(files);
+    for (const name of ["svc/requirements/base.txt", "web/.yarn/releases/yarn-4.cjs", "web/patches/a.patch"]) expect(await keyString({ ...files, [name]: "changed" }), name).not.toBe(before);
+  });
+
   it("excludes target and vendor only beside the build file that makes them", () => {
     // Counted: no build file beside the directory.
     expect(keyFilePaths(["vendor/left-pad/package.json", "services/target/pom.xml", "target/package.json"], [])).toEqual(["services/target/pom.xml", "target/package.json", "vendor/left-pad/package.json"]);
