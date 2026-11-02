@@ -174,7 +174,7 @@ describe("review M10: the stores can list and remove", () => {
     await expect(store.remove!(`${hash("1")}/../x`)).rejects.toThrow();
     expect(removed).toHaveLength(1);
     // an object api that cannot list or remove gives a store that cannot either
-    const plain = objectBundleStore({ put: async () => undefined, get: async () => undefined, head: async () => false } as BundleObjectApi, { stagingDirectory: join(work, "s2") });
+    const plain = objectBundleStore({ put: async () => undefined, get: async () => undefined, head: async () => false }, { stagingDirectory: join(work, "s2") });
     expect(plain.list).toBeUndefined();
     expect(plain.remove).toBeUndefined();
   });

@@ -109,7 +109,7 @@ describe("controller main: the registry", () => {
     for (const status of ["approved", "disabled"] as const) expect(await registry(entry({ status, hasSecret: true, transport: { kind: "stdio", spec: withSecret } })).probeSecret!("mcpsim000001", own), status).toBeUndefined();
   });
   it("review M10: names the bundle of every package-run entry, whatever its status, and refuses to answer when an entry cannot be read", async () => {
-    const other = (id: string, status: McpServerEntry["status"], bundle: string | undefined): McpServerEntry => entry({ serverId: id, status, transport: { kind: "stdio", spec: { ...spec, ...(bundle === undefined ? { bundleHash: undefined as never } : { bundleHash: bundle }) } } });
+    const other = (id: string, status: McpServerEntry["status"], bundle: string): McpServerEntry => entry({ serverId: id, status, transport: { kind: "stdio", spec: { ...spec, bundleHash: bundle } } });
     const entries: McpServerEntry[] = [
       other("mcpone0000001", "approved", "1".repeat(64)), other("mcptwo0000001", "awaiting_approval", "2".repeat(64)), other("mcpthree00001", "changed_needs_review", "3".repeat(64)),
       other("mcpfour000001", "disabled", "4".repeat(64)), entry({ serverId: "mcphttp000001", transport: { kind: "http", address: "https://mcp.corp.example/mcp" } }),
@@ -147,7 +147,7 @@ describe("controller main: the registry", () => {
     const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
     const http = entry({ status: "awaiting_approval", hasSecret: true, transport: { kind: "http", address: "https://mcp.corp.example/mcp" } });
     expect(await registry(http).probeSecret!("mcpsim000001")).toBeUndefined();
-    expect(await registry({ ...http, status: "changed_needs_review" } as McpServerEntry).probeSecret!("mcpsim000001")).toBeUndefined();
+    expect(await registry({ ...http, status: "changed_needs_review" }).probeSecret!("mcpsim000001")).toBeUndefined();
     expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
     expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
   });
