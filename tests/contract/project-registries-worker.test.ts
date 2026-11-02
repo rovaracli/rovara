@@ -36,10 +36,10 @@ async function sourceRepository(): Promise<{ root: string; source: string }> {
   return { root, source };
 }
 
-function project(setup: string[], readiness: string[] = [], devcontainer = false) {
+function project(setup: string[], readiness: string[] = [], devcontainer = false, revision = 1) {
   const command = (script: string) => ({ cwd: "repo/api", executable: "sh", args: ["-c", script], timeoutSeconds: 60 });
   return StoredProjectDefinitionSchema.parse({
-    name: "payments", revision: 1,
+    name: "payments", revision,
     repositories: [{ name: "api", url: "https://github.com/acme/api.git", path: "repo/api", defaultBranch: "main", credentialRef: "github-app" }],
     setup: setup.map(command), readiness: readiness.map(command), orchestratorInstructions: "x",
     ...(devcontainer ? { devcontainer: { repository: "api", configPath: ".devcontainer/devcontainer.json" } } : {}),
@@ -302,12 +302,33 @@ describe("a preparation with registries", () => {
     ])("finds %s (anything the agent can read counts)", async (_name, script) => {
       const f = await fixture();
       const rootPath = await f.workspace();
-      const token = fakeToken("i");
+      // Characters a URL must encode, so the pip.conf spelling differs from the raw one.
+      const token = `${fakeToken("i")}+/=${fakeToken("i")}`;
       await expect(prepareWorkspace({
         rootPath, materializer: f.materializer, commandRunner: f.commandRunner, creationIdentity: "op", project: project([script]),
-        registries: registries(CA, CA_PIP), registryCredentialProvider: providerOf({ "internal-npm": token, "internal-pypi": fakeToken("k") }),
+        registries: registries(CA, CA_PIP), registryCredentialProvider: providerOf({ "internal-npm": fakeToken("k"), "internal-pypi": token }),
       })).rejects.toThrow(/left a package registry token/);
       expect(await tainted(rootPath)).toBe(true);
+    });
+
+    it("a tainted workspace is wiped even when the project moved to a newer revision since", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      await expect(prepareWorkspace({ rootPath, materializer: f.materializer, commandRunner: f.commandRunner, creationIdentity: "op", project: project(['cp "$NPM_CONFIG_USERCONFIG" .npmrc']), registries: registries(CA), registryCredentialProvider: providerOf({ "internal-npm": fakeToken("a") }) })).rejects.toThrow(/left a package registry token/);
+      const next = await prepareWorkspace({ rootPath, materializer: f.materializer, commandRunner: f.commandRunner, creationIdentity: "op", project: project(["test ! -e .npmrc"], [], false, 2), registries: registries(CA), registryCredentialProvider: providerOf({ "internal-npm": fakeToken("b") }) });
+      expect(next).toMatchObject({ complete: true, projectRevision: 2 });
+    });
+
+    it.skipIf(process.getuid?.() === 0)("a search that cannot finish is not a clean one: an unreadable folder stops the preparation", async () => {
+      const f = await fixture();
+      const rootPath = await f.workspace();
+      try {
+        const failure = await attempt(f, rootPath, fakeToken("l"), ["mkdir ../../locked && chmod 000 ../../locked"]).then(() => undefined, (error: Error) => error);
+        expect(failure?.message).toMatch(/could not finish checking/);
+        expect(await tainted(rootPath)).toBe(true);
+      } finally {
+        await chmod(join(rootPath, "locked"), 0o700).catch(() => undefined);
+      }
     });
 
     it("once a leak is found no later command runs (it could read the copy)", async () => {
