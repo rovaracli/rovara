@@ -9,9 +9,9 @@ import { OrgConnectionStore } from "../../../packages/broker/src/connections/sto
 import { OrgSecrets } from "../../../packages/broker/src/connections/org-secrets.js";
 import { companyDomainsPort } from "../../../packages/broker/src/org/company-domains/port.js";
 import type { TxtLookup, TxtResolver } from "../../../packages/broker/src/org/company-domains/resolver.js";
-import { addCompanyDomain, checkClaim, getClaim, recordValue, isVerifiedCompanyDomain } from "../../../packages/broker/src/org/company-domains/store.js";
+import { addCompanyDomain, checkCompanyDomain, getClaim, recordValue, isVerifiedCompanyDomain } from "../../../packages/broker/src/org/company-domains/store.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
-import { emailDomain } from "../../../packages/broker/src/team-record/tracker-autolink.js";
+import { emailDomain, exactAutoLinkEmail } from "../../../packages/broker/src/team-record/tracker-autolink.js";
 import { connectedTrackersOf } from "../../../packages/broker/src/team-record/tracker-connections.js";
 import { MANAGED_PAGES_MAX, atlassianManagedAccountsReader, jiraUsersReader, type ConnectedTracker, type TrackerUser } from "../../../packages/broker/src/team-record/tracker-directory.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -46,10 +46,10 @@ function world(options: { users?: TrackerUser[]; switchOn?: boolean } = {}) {
   const port = companyDomainsPort(domainDeps);
   const verifiedDomains = { domainsOf: async (orgId: OrgId) => { reads.count += 1; return port.domainsOf(orgId); } };
   const verify = async (domain: string, orgId: OrgId = ORG_A) => {
-    const { claim } = await addCompanyDomain(domainDeps, { orgId, by: "a".repeat(64), domain });
-    dns.set(`_rovara-verify.${domain}`, { kind: "records", records: [recordValue(claim.token)] });
-    await checkClaim(domainDeps, claim, resolver, "a".repeat(64));
-    return claim;
+    const { entry: { own } } = await addCompanyDomain(domainDeps, { orgId, by: "a".repeat(64), domain });
+    dns.set(`_rovara-verify.${domain}`, { kind: "records", records: [recordValue(own.token)] });
+    await checkCompanyDomain(domainDeps, { orgId, by: "a".repeat(64), domain, resolver });
+    return own;
   };
   const trackers = options.users === undefined ? undefined : { list: async (orgId: OrgId) => (orgId === ORG_A ? [fakeTracker(options.users!)] : []), get: async (orgId: OrgId) => (orgId === ORG_A ? fakeTracker(options.users!) : undefined) };
   const runtime = createTeamRecordRuntime({ env: ON, documentClient: db, stateTableName: "State", now: () => clock.at, verifiedDomains, ...(trackers === undefined ? {} : { trackers }) }) as TeamRecordRuntime;
@@ -80,15 +80,14 @@ describe("Linear: the verified domain, SAML, not a guest, an exact member email"
     w.dns.delete("_rovara-verify.acme.test");
     for (let day = 0; day < 4; day += 1) {
       w.clock.at += DAY;
-      const current = (await getClaim(w.domainDeps, "acme.test"))!;
-      await checkClaim(w.domainDeps, current, w.resolver, "system");
+      await checkCompanyDomain(w.domainDeps, { orgId: ORG_A, by: "system", domain: "acme.test", resolver: w.resolver });
     }
     expect((await getClaim(w.domainDeps, "acme.test"))?.state).toBe("lost");
     await w.sync();
     expect(linksOf(w.db)).toStrictEqual([]);
     expect(reasonsOf(w.db)["lin-priya"]).toBe("no_verified_domains");
     w.dns.set("_rovara-verify.acme.test", { kind: "records", records: [recordValue(claim.token)] });
-    await checkClaim(w.domainDeps, (await getClaim(w.domainDeps, "acme.test"))!, w.resolver, "system");
+    await checkCompanyDomain(w.domainDeps, { orgId: ORG_A, by: "system", domain: "acme.test", resolver: w.resolver });
     w.clock.at += 1000;
     await w.sync();
     expect(linksOf(w.db)).toStrictEqual([["lin-priya", "dev-priya"]]);
@@ -116,6 +115,29 @@ describe("Linear: the verified domain, SAML, not a guest, an exact member email"
     await w.sync();
     expect(linksOf(w.db)).toStrictEqual([["lin-priya", "dev-priya"]]);
     expect(reasonsOf(w.db)).toStrictEqual({ "lin-xavi": "domain_not_verified", "lin-cyr": "domain_not_verified", "lin-wide": "domain_not_verified", "lin-evil": "domain_not_verified" });
+  });
+
+  it("does not link by an email that only looks exact: the Kelvin sign for K, accented, full-width or case-folded characters, a domain not in stored form; plain ASCII case variants do link", async () => {
+    const w = world({ users: [
+      USER({ sourceId: "lin-kelvin", email: "\u212Aate@acme.test" }),
+      USER({ sourceId: "lin-fullwidth", email: "\uFF53am@acme.test" }), USER({ sourceId: "lin-accent", email: "s\u00E4m@acme.test" }),
+      USER({ sourceId: "lin-twoat", email: "sam@acme.test@acme.test" }), USER({ sourceId: "lin-sam", email: "SAM@ACME.test" }),
+    ] });
+    // members whose sign-in emails are the ASCII ones the look-alikes would fold onto
+    w.db.set({ ...developerOrgKey("dev-kate"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
+    w.db.set({ ...orgEmailKey("kate@acme.test"), entityType: "ORG_EMAIL", developerId: "dev-kate", orgId: ORG_A });
+    await w.verify("acme.test");
+    await w.sync();
+    expect(linksOf(w.db)).toStrictEqual([["lin-sam", "dev-sam"]]);
+    expect(reasonsOf(w.db)).toStrictEqual({ "lin-kelvin": "email_not_exact", "lin-fullwidth": "email_not_exact", "lin-accent": "email_not_exact", "lin-twoat": "email_not_exact" });
+  });
+
+  it("exactAutoLinkEmail: plain ASCII only, ASCII lower-casing, one @, a stored-form domain", () => {
+    expect(exactAutoLinkEmail("  Kate@ACME.test ")).toBe("kate@acme.test");
+    for (const bad of ["\u212Aate@acme.test", "kate@acme.test\u212A", "k\u00E4te@acme.test", "kate@b\u00FCcher.test", "kate@\u0430cme.test", "a@b@acme.test", "@acme.test", "kate@", "kate@com", "kate", "ka te@acme.test", ""]) {
+      expect(exactAutoLinkEmail(bad), JSON.stringify(bad)).toBeUndefined();
+    }
+    expect(exactAutoLinkEmail("kate@xn--bcher-kva.test")).toBe("kate@xn--bcher-kva.test");
   });
 
   it("does not link a guest, or an account the workspace's sign-in does not control, even at a verified domain with an exact match", async () => {
@@ -186,6 +208,20 @@ describe("the Atlassian organization admin API reader", () => {
       expect((call.init.headers as Record<string, string>).authorization).toBe("Bearer adm-key-123");
       expect(call.init.method).toBe("GET");
       expect(call.init.redirect).toBe("error");
+    }
+  });
+
+  it("follows a next link given as a full URL, a path, a query or a bare cursor, always to the same address", async () => {
+    for (const next of [`${URL1}?cursor=c2`, `/admin/v1/orgs/${ORG}/users?cursor=c2`, "?cursor=c2", "c2"]) {
+      const urls: string[] = [];
+      const fetcher = (async (url: string) => {
+        urls.push(url);
+        return json(urls.length === 1 ? { data: [{ account_id: "a1", account_type: "atlassian", account_status: "active" }], links: { next } } : { data: [{ account_id: "a2", account_type: "atlassian", account_status: "active" }], links: {} });
+      }) as unknown as typeof fetch;
+      const result = await atlassianManagedAccountsReader({ fetch: fetcher, atlassianOrgId: ORG, apiKey: "k" })();
+      expect([...result!.ids], next).toStrictEqual(["a1", "a2"]);
+      expect(result?.complete, next).toBe(true);
+      expect(urls, next).toStrictEqual([URL1, `${URL1}?cursor=c2`]);
     }
   });
 
@@ -265,7 +301,7 @@ describe("a saved Jira connection with an organization admin key: the full path"
     const store = new OrgConnectionStore({ ...deps, checkEndpoint: async () => undefined });
     await store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "jira", label: "Jira", access: "read", siteUrl: "https://acme.atlassian.net" }, secret, by: "a".repeat(64) });
     await w.verify("acme.test");
-    return { w, runtime, seen, logs, fake, trackers };
+    return { w, runtime, seen, logs, fake, trackers, store, connection: { connectionId: CON, type: "jira", label: "Jira", access: "read", siteUrl: "https://acme.atlassian.net" } };
   }
   const KEY = "ATAdminKey-0123456789";
   const full = { email: "svc@acme.test", apiToken: "jira-token-xyz", orgAdminKey: KEY, atlassianOrgId: "org-id-1234" };
@@ -305,13 +341,42 @@ describe("a saved Jira connection with an organization admin key: the full path"
     expect(reasonsOf(w.db)).toStrictEqual({ m1: "company_control_unavailable", x1: "company_control_unavailable" });
   });
 
-  it("a key without the organization id (or the reverse) is not used", async () => {
-    for (const partial of [{ email: "svc@acme.test", apiToken: "t", orgAdminKey: KEY }, { email: "svc@acme.test", apiToken: "t", atlassianOrgId: "org-id-1234" }]) {
-      const { runtime, seen, w } = await jiraWorld(partial, list);
-      await runtime.trackerPeople.syncConnection(ORG_A, CON);
-      expect(seen.some((call) => call.url.startsWith("https://api.atlassian.com/"))).toBe(false);
-      expect(linksOf(w.db)).toStrictEqual([]);
+  it("a key without the organization id (or the reverse) is refused when it is saved, so it is never half used", async () => {
+    const w = world();
+    const fake = new FakeOrgSecrets({ env: "staging", now: () => T0 });
+    const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => T0 });
+    const store = new OrgConnectionStore({ documentClient: w.db, tableName: "State", env: "staging", secrets, now: () => T0, checkEndpoint: async () => undefined });
+    const connection = { connectionId: CON, type: "jira", label: "Jira", access: "read", siteUrl: "https://acme.atlassian.net" };
+    for (const partial of [{ email: "svc@acme.test", apiToken: "t", orgAdminKey: KEY }, { email: "svc@acme.test", apiToken: "t", atlassianOrgId: "org-id-1234" }, { ...full, clearOrgAdmin: true }]) {
+      await expect(store.put({ orgId: ORG_A, connection, secret: partial, by: "a".repeat(64) }), JSON.stringify(Object.keys(partial))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     }
+  });
+
+  it("a later save that leaves the key out keeps the stored key and organization id; clearOrgAdmin removes them; a new pair replaces them", async () => {
+    const adminCalls = (seen: Array<{ url: string; authorization: string }>) => seen.filter((call) => call.url.startsWith("https://api.atlassian.com/")).map((call) => [call.url, call.authorization]);
+    // the web and the CLI save only the email and token: the pair stays
+    const kept = await jiraWorld(full, list);
+    await kept.store.put({ orgId: ORG_A, connection: kept.connection, secret: { email: "svc@acme.test", apiToken: "rotated-token" }, by: "a".repeat(64) });
+    await kept.runtime.trackerPeople.syncConnection(ORG_A, CON);
+    expect(adminCalls(kept.seen)).toStrictEqual([["https://api.atlassian.com/admin/v1/orgs/org-id-1234/users", `Bearer ${KEY}`]]);
+    expect(linksOf(kept.w.db)).toStrictEqual([["m1", "dev-priya"]]);
+    expect(kept.seen.some((call) => call.authorization === `Basic ${Buffer.from("svc@acme.test:rotated-token").toString("base64")}`)).toBe(true);
+    // explicitly cleared: no key is used and nobody links
+    const cleared = await jiraWorld(full, list);
+    await cleared.store.put({ orgId: ORG_A, connection: cleared.connection, secret: { email: "svc@acme.test", apiToken: "t2", clearOrgAdmin: true }, by: "a".repeat(64) });
+    await cleared.runtime.trackerPeople.syncConnection(ORG_A, CON);
+    expect(adminCalls(cleared.seen)).toStrictEqual([]);
+    expect(linksOf(cleared.w.db)).toStrictEqual([]);
+    // the flag is never stored
+    // (the secret store keeps the previous version for recovery, as AWS does: it is the CURRENT version that has no key)
+    const current = [...cleared.fake.secrets.values()].map((secret) => secret.value).join("") + JSON.stringify([...cleared.w.db.items.values()]);
+    expect(current).not.toContain("clearOrgAdmin");
+    expect(current).not.toContain(KEY);
+    // a new pair replaces the old
+    const replaced = await jiraWorld(full, list);
+    await replaced.store.put({ orgId: ORG_A, connection: replaced.connection, secret: { email: "svc@acme.test", apiToken: "t3", orgAdminKey: "ATAdminKey-NEWNEWNEW", atlassianOrgId: "org-id-9999" }, by: "a".repeat(64) });
+    await replaced.runtime.trackerPeople.syncConnection(ORG_A, CON);
+    expect(adminCalls(replaced.seen)).toStrictEqual([["https://api.atlassian.com/admin/v1/orgs/org-id-9999/users", "Bearer ATAdminKey-NEWNEWNEW"]]);
   });
 
   it("the secret schema refuses a malformed organization id and an unknown field", async () => {

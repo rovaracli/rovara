@@ -4,7 +4,7 @@ import { COMPANY_DOMAINS_PER_MINUTE, DOMAIN_REFUSAL_MESSAGES, routeCompanyDomain
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import type { TxtLookup, TxtResolver } from "../../packages/broker/src/org/company-domains/resolver.js";
-import { addCompanyDomain, claimKey, getClaim, recordValue } from "../../packages/broker/src/org/company-domains/store.js";
+import { addCompanyDomain, getClaim, getOwn, ownKey, recordValue } from "../../packages/broker/src/org/company-domains/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -89,7 +89,7 @@ describe("POST add", () => {
     w.signIn(owner, 1);
     const reply = await w.call(owner, "POST", BASE, { domain: "  ACME.Example. " }) as { domain: { domain: string; state: string; record: { value: string } } };
     expect(reply.domain).toMatchObject({ domain: "acme.example", state: "pending" });
-    expect(await getClaim({ documentClient: w.db, tableName: "state", now: w.deps.now }, "acme.example")).toMatchObject({ orgId: ORG_A, claimedBy: owner.developerId });
+    expect(await getOwn({ documentClient: w.db, tableName: "state", now: w.deps.now }, ORG_A, "acme.example")).toMatchObject({ orgId: ORG_A, claimedBy: owner.developerId });
     expect(w.capture.recordedBy("company_domain.added")).toHaveLength(1);
   });
 
@@ -98,7 +98,7 @@ describe("POST add", () => {
     const owner = w.caller(ORG_A, "owner", { browser: false });
     w.signIn(owner, 0);
     await expect(w.call(owner, "POST", BASE, { domain: "acme.example" })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(w.db.get(claimKey("acme.example"))).toBeUndefined();
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toBeUndefined();
   });
 
   it("needs a fresh sign-in, and makes no change without one", async () => {
@@ -110,7 +110,7 @@ describe("POST add", () => {
     }
     w.db.delete(`SESSION#${owner.sessionId}`, "META");
     await expect(w.call(owner, "POST", BASE, { domain: "acme.example" })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
-    expect(w.db.get(claimKey("acme.example"))).toBeUndefined();
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toBeUndefined();
     expect(w.capture.recordedBy("company_domain.added")).toEqual([]);
   });
 
@@ -119,7 +119,7 @@ describe("POST add", () => {
     const owner = w.caller(ORG_A);
     w.signIn(owner, 0);
     await expect(w.call(owner, "POST", BASE, { domain: "acme.example" })).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
-    expect(w.db.get(claimKey("acme.example"))).toBeUndefined();
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toBeUndefined();
   });
 
   it("refuses what is not a company domain with a fixed sentence that does not repeat the input", async () => {
@@ -145,16 +145,31 @@ describe("POST add", () => {
     for (const body of [{ domain: "acme.example", orgId: ORG_B }, {}, { domain: 5 }, { domain: "" }, []]) await expect(w.call(owner, "POST", BASE, body), JSON.stringify(body)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
-  it("refuses a domain another company holds without saying whose", async () => {
+  it("lets another company add the same domain: each gets its own record, and neither learns of the other", async () => {
     const w = world();
     const owner = w.caller(ORG_A);
     const other = w.caller(ORG_B);
     w.signIn(owner, 0); w.signIn(other, 0);
-    await w.call(owner, "POST", BASE, { domain: "acme.example" });
-    const error = await w.call(other, "POST", BASE, { domain: "ACME.example" }).catch((caught: unknown) => caught as Error);
-    expect(error).toMatchObject({ code: "COMPANY_DOMAIN_TAKEN" });
-    expect((error as Error).message).not.toContain(ORG_A);
-    expect(await getClaim({ documentClient: w.db, tableName: "state", now: w.deps.now }, "acme.example")).toMatchObject({ orgId: ORG_A });
+    const first = await w.call(owner, "POST", BASE, { domain: "acme.example" }) as { domain: { record: { value: string } } };
+    const second = await w.call(other, "POST", BASE, { domain: "ACME.example" }) as { domain: { state: string; record: { value: string } } };
+    expect(second.domain.state).toBe("pending");
+    expect(second.domain.record.value).not.toBe(first.domain.record.value);
+    expect(JSON.stringify(second)).not.toContain(ORG_A);
+    expect(await getClaim({ documentClient: w.db, tableName: "state", now: w.deps.now }, "acme.example")).toBeUndefined();
+  });
+
+  it("a company whose record is found while another company holds the domain is told it is held, and nothing moves", async () => {
+    const w = world();
+    const owner = w.caller(ORG_A);
+    const other = w.caller(ORG_B);
+    w.signIn(owner, 0); w.signIn(other, 0);
+    const mine = await w.call(owner, "POST", BASE, { domain: "acme.example" }) as { domain: { record: { value: string } } };
+    const theirs = await w.call(other, "POST", BASE, { domain: "acme.example" }) as { domain: { record: { value: string } } };
+    w.dns.script.set("_rovara-verify.acme.example", { kind: "records", records: [mine.domain.record.value] });
+    expect(await w.call(owner, "POST", `${BASE}/check`, { domain: "acme.example" })).toMatchObject({ result: "found", domain: { state: "verified" } });
+    w.dns.script.set("_rovara-verify.acme.example", { kind: "records", records: [theirs.domain.record.value] });
+    expect(await w.call(other, "POST", `${BASE}/check`, { domain: "acme.example" })).toMatchObject({ result: "held", domain: { state: "pending" } });
+    expect(await getClaim({ documentClient: w.db, tableName: "state", now: w.deps.now }, "acme.example")).toMatchObject({ orgId: ORG_A, state: "verified" });
   });
 
   it("is rate limited", async () => {
@@ -172,7 +187,7 @@ describe("POST check", () => {
     const owner = w.caller(ORG_A);
     w.signIn(owner, 90);
     // claimed earlier, by a path that had a ledger
-    const { claim } = await addCompanyDomain({ documentClient: w.db, tableName: "state", now: w.deps.now }, { orgId: ORG_A, by: owner.developerId, domain: "acme.example" });
+    const { entry: { own: claim } } = await addCompanyDomain({ documentClient: w.db, tableName: "state", now: w.deps.now }, { orgId: ORG_A, by: owner.developerId, domain: "acme.example" });
     expect(await w.call(owner, "POST", `${BASE}/check`, { domain: "acme.example" })).toMatchObject({ result: "not_found", domain: { state: "pending" } });
     w.dns.script.set("_rovara-verify.acme.example", { kind: "records", records: [recordValue(claim.token)] });
     expect(await w.call(owner, "POST", `${BASE}/check`, { domain: "ACME.example" })).toMatchObject({ result: "found", domain: { state: "verified" } });
@@ -217,7 +232,7 @@ describe("POST remove", () => {
     w.signIn(owner, 1);
     await w.call(owner, "POST", BASE, { domain: "acme.example" });
     expect(await w.call(owner, "POST", `${BASE}/remove`, { domain: "acme.example" })).toEqual({ removed: true });
-    expect(w.db.get(claimKey("acme.example"))).toBeUndefined();
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toBeUndefined();
     expect(w.capture.recordedBy("company_domain.removed")).toHaveLength(1);
   });
 
@@ -230,13 +245,13 @@ describe("POST remove", () => {
     await expect(w.call(owner, "POST", `${BASE}/remove`, { domain: "acme.example" })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
     w.signIn(owner, 1);
     await expect(w.call(w.caller(ORG_A, "owner", { browser: false, sessionId: owner.sessionId }), "POST", `${BASE}/remove`, { domain: "acme.example" })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(w.db.get(claimKey("acme.example"))).toBeDefined();
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toBeDefined();
     const noLedger = world({ ledger: false });
     const same = noLedger.caller(ORG_A);
     noLedger.signIn(same, 0);
-    noLedger.db.set({ ...w.db.get(claimKey("acme.example"))! });
+    noLedger.db.set({ ...w.db.get(ownKey(ORG_A, "acme.example"))! });
     await expect(noLedger.call(same, "POST", `${BASE}/remove`, { domain: "acme.example" })).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
-    expect(noLedger.db.get(claimKey("acme.example"))).toBeDefined();
+    expect(noLedger.db.get(ownKey(ORG_A, "acme.example"))).toBeDefined();
   });
 
   it("cannot remove another company's domain", async () => {
@@ -246,6 +261,6 @@ describe("POST remove", () => {
     w.signIn(owner, 0); w.signIn(other, 0);
     await w.call(owner, "POST", BASE, { domain: "acme.example" });
     await expect(w.call(other, "POST", `${BASE}/remove`, { domain: "acme.example" })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    expect(w.db.get(claimKey("acme.example"))).toMatchObject({ orgId: ORG_A });
+    expect(w.db.get(ownKey(ORG_A, "acme.example"))).toMatchObject({ orgId: ORG_A });
   });
 });

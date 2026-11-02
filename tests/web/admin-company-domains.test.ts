@@ -20,7 +20,7 @@ const features = { localAgents: false, admin: true, usage: false, chains: false,
 const TOKEN = "c".repeat(40);
 const when = "2026-11-02T09:00:00.000Z";
 const view = (overrides: Record<string, unknown> = {}) => ({
- domain: "acme.example", state: "pending", addedAt: when, expiresAt: "2026-11-09T09:00:00.000Z",
+ domain: "acme.example", state: "pending", addedAt: when,
  record: { type: "TXT", name: "_rovara-verify.acme.example", value: `rovara-verify=${TOKEN}` }, ...overrides,
 });
 const refuse = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
@@ -75,7 +75,7 @@ describe("Company domains", () => {
  });
 
  it("shows a verified domain without the record, and a lost one with it and the way back", async () => {
-  mount({ domains: [view({ domain: "ok.example", state: "verified", verifiedAt: when, expiresAt: undefined }), view({ domain: "gone.example", state: "lost", lostAt: when, expiresAt: undefined })] });
+  mount({ domains: [view({ domain: "ok.example", state: "verified", verifiedAt: when }), view({ domain: "gone.example", state: "lost", lostAt: when })] });
   const ok = within(await screen.findByRole("listitem", { name: "ok.example" }));
   expect(ok.getByText("Verified")).toBeTruthy();
   expect(ok.queryByText("TXT")).toBeNull();
@@ -86,7 +86,7 @@ describe("Company domains", () => {
  });
 
  it("says when a verified domain's record has gone missing and how long it has", async () => {
-  mount({ domains: [view({ domain: "ok.example", state: "verified", verifiedAt: when, missingSince: "2026-11-01T09:00:00.000Z", expiresAt: undefined })] });
+  mount({ domains: [view({ domain: "ok.example", state: "verified", verifiedAt: when, missingSince: "2026-11-01T09:00:00.000Z" })] });
   expect(await screen.findByText(/has not been found since Nov 1, 2026 UTC/u)).toBeTruthy();
   expect(screen.getByText(/lost if it stays gone for 3 days in a row/u)).toBeTruthy();
  });

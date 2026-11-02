@@ -534,9 +534,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
   "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
-  // Company domains: `tookOver` is true when the claim replaced another company's lost or expired one; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
-  "company_domain.added": ["tookOver"],
-  "company_domain.verified": ["wasState"],
+  // Company domains: `tookOver` is true when the proof moved the domain from another company's lost claim; `wasState` is the state before (pending, verified or lost); `missingDays` the whole days the record was gone.
+  "company_domain.added": [],
+  "company_domain.verified": ["wasState", "tookOver"],
   "company_domain.lost": ["missingDays"],
   "company_domain.removed": ["wasState"],
 };

@@ -831,8 +831,8 @@ describe("I4: the builders", () => {
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
     ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
     // Company domain verification
-    ["auditCompanyDomainAdded", (occurrence) => builders.auditCompanyDomainAdded({ ...base, occurrence, details, domain: "acme.example", tookOver: false })],
-    ["auditCompanyDomainVerified", (occurrence) => builders.auditCompanyDomainVerified({ ...base, occurrence, details, domain: "acme.example", wasState: "pending" })],
+    ["auditCompanyDomainAdded", (occurrence) => builders.auditCompanyDomainAdded({ ...base, occurrence, details, domain: "acme.example" })],
+    ["auditCompanyDomainVerified", (occurrence) => builders.auditCompanyDomainVerified({ ...base, occurrence, details, domain: "acme.example", wasState: "pending", tookOver: false })],
     ["auditCompanyDomainLost", (occurrence) => builders.auditCompanyDomainLost({ ...base, occurrence, details, domain: "acme.example", missingDays: 3 })],
     ["auditCompanyDomainRemoved", (occurrence) => builders.auditCompanyDomainRemoved({ ...base, occurrence, details, domain: "acme.example", wasState: "verified" })],
     // Setup agent website asks (SH12)

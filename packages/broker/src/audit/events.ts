@@ -768,14 +768,14 @@ export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on
 type DomainEventInput = AuditBuilderBase & { domain: string };
 const domainDetails = (input: DomainEventInput): AuditDetailPart[] => [...(input.details ?? []), { subject: "org", fields: { domain: input.domain } }];
 
-/** `occurrence`: `auditOccurrence(domain, claimedAt)`. A domain claimed by the company. `tookOver` is true when it replaced another company's lost or unconfirmed claim. The domain is a detail. */
-export function auditCompanyDomainAdded(input: DomainEventInput & { tookOver: boolean }): AuditEventInput {
-  return build("company_domain.added", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { tookOver: input.tookOver });
+/** `occurrence`: `auditOccurrence(domain, claimedAt)`. A domain the company added (not yet proven; any number of companies may add the same one). The domain is a detail. */
+export function auditCompanyDomainAdded(input: DomainEventInput): AuditEventInput {
+  return build("company_domain.added", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, {});
 }
 
-/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The check found the company's token (the actor is the person who pressed Check now, or the system for the daily re-check). */
-export function auditCompanyDomainVerified(input: DomainEventInput & { wasState: "pending" | "lost" }): AuditEventInput {
-  return build("company_domain.verified", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState });
+/** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The check found the company's token (the actor is the person who pressed Check now, or the system for the daily re-check). `tookOver`: the proof moved the domain from another company's lost claim. */
+export function auditCompanyDomainVerified(input: DomainEventInput & { wasState: "pending" | "lost"; tookOver?: boolean }): AuditEventInput {
+  return build("company_domain.verified", { ...input, details: domainDetails(input) }, { kind: "org", id: input.orgId }, { wasState: input.wasState, tookOver: input.tookOver === true });
 }
 
 /** `occurrence`: `auditOccurrence(domain, claimedAt, checkedAt)`. The record has been gone for the whole grace period; the domain stops counting (the actor is the system). */

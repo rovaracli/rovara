@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { orgMetaKey, type OrgId } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
-import { addCompanyDomain, claimKey, pointerKey } from "../../packages/broker/src/org/company-domains/store.js";
+import { runCompanyDomainRecheck, DOMAIN_RECHECK_LIMIT } from "../../packages/broker/src/org/company-domains/recheck.js";
+import type { TxtResolver } from "../../packages/broker/src/org/company-domains/resolver.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { addCompanyDomain, ownKey } from "../../packages/broker/src/org/company-domains/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -11,6 +14,7 @@ import { TEST_ORG } from "../support/orgs.js";
 
 const ORIGIN = new URL(DEV_ISSUER).origin;
 const DAY = 86_400_000;
+const ORG_FIRST: OrgId = "org_aaaaaaaaaaaaaaaaaaaa";
 
 async function world() {
   const capture = capturingAuditDeps();
@@ -48,7 +52,7 @@ describe("the Company domains routes through the handler", () => {
     const stale = await web(OMAR, "POST", "/v1/app/org/domains", { domain: "acme.example" }, 90);
     expect(stale.status).toBe(403);
     expect(JSON.stringify(stale.body)).toContain("Sign in again");
-    expect(h.db.get(claimKey("acme.example"))).toBeUndefined();
+    expect(h.db.get(ownKey(TEST_ORG, "acme.example"))).toBeUndefined();
 
     const added = await web(OMAR, "POST", "/v1/app/org/domains", { domain: "Acme.Example" });
     expect(added.status).toBe(200);
@@ -74,12 +78,11 @@ describe("the daily re-check on the every-minute recovery run", () => {
     const closed = "org_cccccccccccccccccccc" as OrgId;
     h.db.set({ ...orgMetaKey(closed), entityType: "ORG", orgId: closed, closedAt: new Date().toISOString() });
     await addCompanyDomain({ documentClient: h.db, tableName: "state", now: () => Date.now() - 2 * DAY }, { orgId: closed, by: "a".repeat(64), domain: "gone.example" });
-    expect(h.db.get(claimKey("gone.example"))).toBeDefined();
+    expect(h.db.get(ownKey(closed, "gone.example"))).toBeDefined();
     const tick = await h.handler({ source: "agentx.workflow-merge-recovery" });
     expect(tick.statusCode).toBe(200);
     expect(JSON.parse(tick.body)).toMatchObject({ domains: { released: 1 } });
-    expect(h.db.get(claimKey("gone.example"))).toBeUndefined();
-    expect(h.db.get(pointerKey(closed, "gone.example"))).toBeUndefined();
+    expect(h.db.get(ownKey(closed, "gone.example"))).toBeUndefined();
   });
 
   it("finds nothing due on a quiet tick and still answers 200", async () => {
@@ -87,5 +90,30 @@ describe("the daily re-check on the every-minute recovery run", () => {
     const tick = await h.handler({ source: "agentx.workflow-merge-recovery" });
     expect(tick.statusCode).toBe(200);
     expect(JSON.parse(tick.body)).toMatchObject({ domains: { checked: 0, released: 0 } });
+  });
+});
+
+describe("the re-check has its own bounded slot in the recovery tick", () => {
+  async function dueWorld(count: number) {
+    const db = new FakeDynamoDb();
+    const looked: string[] = [];
+    const resolver: TxtResolver = { lookupTxt: async (name) => { looked.push(name); return { kind: "absent" }; } };
+    const clock = { at: Date.now() - 2 * DAY };
+    const deps = { documentClient: db, tableName: "state", now: () => clock.at };
+    for (let index = 0; index < count; index += 1) await addCompanyDomain(deps, { orgId: ORG_FIRST, by: "a".repeat(64), domain: `d${String(index)}.example` });
+    clock.at = Date.now();
+    return { deps, resolver, looked };
+  }
+
+  it("looks at nothing when the tick has less than a lookup's deadline plus a second to spare", async () => {
+    const { deps, resolver, looked } = await dueWorld(3);
+    for (const remainingMs of [26_000 - 25_000, 7_999, 0, -5]) expect(await runCompanyDomainRecheck(deps, { remainingMs, resolver }), String(remainingMs)).toMatchObject({ checked: 0 });
+    expect(looked).toEqual([]);
+  });
+
+  it("looks at no more than its limit a tick, and only from the time that is left", async () => {
+    const { deps, resolver, looked } = await dueWorld(5);
+    expect(await runCompanyDomainRecheck(deps, { remainingMs: 20_000, resolver })).toMatchObject({ checked: DOMAIN_RECHECK_LIMIT });
+    expect(looked).toHaveLength(DOMAIN_RECHECK_LIMIT);
   });
 });

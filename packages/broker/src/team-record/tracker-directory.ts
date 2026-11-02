@@ -6,7 +6,7 @@ import { z } from "zod";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
 import { isErasedActor } from "./erased.js";
-import { AUTOLINK_LINKED_WHY, autoLinkRefusal, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
+import { AUTOLINK_LINKED_WHY, autoLinkRefusal, exactAutoLinkEmail, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { clearUnmatchedTrackerUser, developerOfTrackerAuthor, isAutoLinkSuppressed, noteUnmatchedTrackerUser, pruneUnmatchedTrackerUsers, shownName } from "./identity-links.js";
 import type { RecordLog, TeamRecordTable } from "./types.js";
 
@@ -122,9 +122,12 @@ export function atlassianManagedAccountsReader(input: { fetch: typeof fetch; atl
       for (const account of page.data) if (account.account_type === "atlassian" && account.account_status === "active") ids.add(account.account_id);
       const next: string | null | undefined = page.links?.next;
       if (typeof next !== "string" || next === "") break;
-      // Only this organization's own user list, on this host, is ever followed.
+      // `links.next` is a full URL, a path or a bare cursor (the docs do not say which): a URL or path is followed only on this host, for this organization's own user list; a bare cursor is added to that same address.
       let target: URL;
-      try { target = new URL(next, ATLASSIAN_ADMIN_ORIGIN); } catch { return { ids, complete: false }; }
+      try {
+        if (/^[A-Za-z0-9_\-=.~+/]{1,500}$/u.test(next) && !next.startsWith("/") && !next.includes("://")) target = new URL(`${ATLASSIAN_ADMIN_ORIGIN}${path}?cursor=${encodeURIComponent(next)}`);
+        else target = new URL(next, `${ATLASSIAN_ADMIN_ORIGIN}${path}`);
+      } catch { return { ids, complete: false }; }
       if (target.origin !== ATLASSIAN_ADMIN_ORIGIN || target.pathname !== path || target.username !== "" || target.password !== "") return { ids, complete: false };
       url = target.href;
     }
@@ -227,8 +230,9 @@ export async function syncTrackerUsers(deps: SyncDependencies, orgId: OrgId, tra
         const { enabled, domains } = await autoLinkState();
         let reason: AutoLinkReason | undefined = autoLinkRefusal({ enabled, email: user.email, domains, guest: user.guest === true, control: user.control, suppressed: enabled && await isAutoLinkSuppressed(deps.table, orgId, link) });
         let linked = false;
-        if (reason === undefined && user.email !== undefined) {
-          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: user.email, emailVerified: true, displayName: user.displayName, via: "auto", why: AUTOLINK_LINKED_WHY }); } catch { linked = false; }
+        const exact = user.email === undefined ? undefined : exactAutoLinkEmail(user.email);
+        if (reason === undefined && exact !== undefined) {
+          try { linked = await deps.linkByVerifiedEmail(orgId, { ...link, email: exact, emailVerified: true, displayName: user.displayName, via: "auto", why: AUTOLINK_LINKED_WHY }); } catch { linked = false; }
           if (!linked) reason = "no_matching_member";
         }
         if (linked) { result.linked += 1; await clearUnmatchedTrackerUser(deps.table, orgId, link); } else { result.unmatched += 1; await noteUnmatchedTrackerUser(deps.table, orgId, { ...link, displayName: user.displayName, at: new Date(deps.now()).toISOString(), ...(reason === undefined ? {} : { reason }) }); }

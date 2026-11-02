@@ -332,11 +332,6 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "evidence.erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { pending: 0, finished: 0 };
         });
-        // Company domain verification: the daily re-check of the domains that are due (a few at most, in a small share of time; most runs find none).
-        const domains = await runCompanyDomainRecheck({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }).catch((error: unknown) => {
-          console.log(JSON.stringify({ component: "broker", event: "company_domain.recheck_run_failed", error: error instanceof Error ? error.name : "unknown" }));
-          return { checked: 0, verified: 0, lost: 0, released: 0, skipped: 0 };
-        });
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
@@ -350,6 +345,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         });
         // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
         const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
+        // Company domain verification: the daily re-check, LAST and only from the time the other passes left (a lookup may run past its share by its own deadline, so it is started only with that much to spare).
+        const domains = await runCompanyDomainRecheck({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }, { remainingMs: SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt) }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "company_domain.recheck_run_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { checked: 0, verified: 0, lost: 0, released: 0, skipped: 0 };
+        });
         return json({ ...result, tracking, woken, evidence, domains }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));

@@ -61,9 +61,12 @@ const AtlassianOrgId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "must be the At
  */
 export const ConnectionSecretSchemas = {
   linear: z.object({ apiKey: SecretText }).strict(),
-  // `orgAdminKey` and `atlassianOrgId` are optional and go together: a READ-ONLY Atlassian organization admin API key (scope read:accounts:admin) and the organization's id, so Rovara can read which accounts the
-  // company manages (tracker linking, opt-in). Like the token they are write-only: nothing returns them. Without them no Jira person is linked automatically.
-  jira: z.object({ email: AtlassianEmail, apiToken: SecretText, orgAdminKey: SecretText.optional(), atlassianOrgId: AtlassianOrgId.optional() }).strict(),
+  // `orgAdminKey` and `atlassianOrgId` are optional and go TOGETHER (both or neither): a READ-ONLY Atlassian organization admin API key (scope read:accounts:admin) and the organization's id, so Rovara can read which
+  // accounts the company manages (tracker linking, opt-in). Like the token they are write-only: nothing returns them. A save that leaves them out keeps the stored pair; `clearOrgAdmin: true` removes it.
+  // Without them no Jira person is linked automatically.
+  jira: z.object({ email: AtlassianEmail, apiToken: SecretText, orgAdminKey: SecretText.optional(), atlassianOrgId: AtlassianOrgId.optional(), clearOrgAdmin: z.literal(true).optional() }).strict()
+    .refine((secret) => (secret.orgAdminKey === undefined) === (secret.atlassianOrgId === undefined), { message: "orgAdminKey and atlassianOrgId go together" })
+    .refine((secret) => secret.clearOrgAdmin !== true || secret.orgAdminKey === undefined, { message: "clearOrgAdmin cannot come with a key" }),
   mcp: z.object({ token: SecretText }).strict(),
   ...ObservabilitySecretSchemas,
 } as const;

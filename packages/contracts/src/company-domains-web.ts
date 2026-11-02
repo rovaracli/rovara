@@ -12,16 +12,23 @@ export const COMPANY_DOMAIN_RECORD_LABEL = "_rovara-verify";
 export const COMPANY_DOMAIN_TXT_PREFIX = "rovara-verify=";
 /** A verified domain whose record has been gone for this many days running is lost, and stops counting. */
 export const COMPANY_DOMAIN_LOST_AFTER_DAYS = 3;
-/** A claim nobody has verified in this many days may be claimed by another company. */
+/** A claim nobody has verified is looked at once a day for this many days (Check now always works). A claim that is not verified blocks nobody: any number of companies may hold one for the same domain. */
 export const COMPANY_DOMAIN_PENDING_DAYS = 7;
+/** A lost domain keeps being looked at (the company that held it can verify it again by putting the record back) for this many days. */
+export const COMPANY_DOMAIN_LOST_WATCH_DAYS = 30;
+/** Another company takes a lost domain over only after its record, and only its record, has been in DNS for this long between two looks. */
+export const COMPANY_DOMAIN_TAKEOVER_CONFIRM_MS = 3_600_000;
 /** The most domains one company holds. */
 export const COMPANY_DOMAIN_MAX_PER_ORG = 20;
 
 export const CompanyDomainStateSchema = z.enum(["pending", "verified", "lost"]);
 export type CompanyDomainState = z.infer<typeof CompanyDomainStateSchema>;
 
-/** What the last look at the name found: the token, no token, a CNAME where the record must be, or the lookup itself failed (which never counts against a domain). */
-export const CompanyDomainCheckResultSchema = z.enum(["found", "not_found", "indirect", "unavailable"]);
+/**
+ * What the last look at the name found: the token, no token, a CNAME where the record must be, the lookup itself failed (which never counts against a domain), or the company's record was
+ * found but another company holds the domain and the rules for moving it have not been met ("held").
+ */
+export const CompanyDomainCheckResultSchema = z.enum(["found", "not_found", "indirect", "unavailable", "held"]);
 export type CompanyDomainCheckResult = z.infer<typeof CompanyDomainCheckResultSchema>;
 
 export const CompanyDomainViewSchema = z.object({
@@ -30,8 +37,6 @@ export const CompanyDomainViewSchema = z.object({
   /** The record to add: the name, the type and the exact value. */
   record: z.object({ type: z.literal("TXT"), name: z.string().max(300), value: z.string().max(200) }).strict(),
   addedAt: z.string().datetime(),
-  /** A claim nobody verified by then may be claimed by another company. Only for a pending domain. */
-  expiresAt: z.string().datetime().optional(),
   verifiedAt: z.string().datetime().optional(),
   lastCheckedAt: z.string().datetime().optional(),
   lastResult: CompanyDomainCheckResultSchema.optional(),

@@ -12,7 +12,7 @@ import { takeRateAt } from "../../developer/page-comments.js";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import { normalizeCompanyDomain, type DomainRefusal } from "../../org/company-domains/normalize.js";
 import { nodeTxtResolver, type TxtResolver } from "../../org/company-domains/resolver.js";
-import { addCompanyDomain, checkCompanyDomain, listClaims, removeCompanyDomain, toView } from "../../org/company-domains/store.js";
+import { addCompanyDomain, checkCompanyDomain, listEntries, removeCompanyDomain, toView } from "../../org/company-domains/store.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { getSignIn } from "./authentication.js";
 import { jsonBody } from "./organization.js";
@@ -70,7 +70,7 @@ export async function routeCompanyDomains(deps: DeveloperRouteDependencies, call
   const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.audit };
 
   if (isGet) {
-    return { domains: (await listClaims(store, caller.orgId)).map(toView), max: COMPANY_DOMAIN_MAX_PER_ORG, lostAfterDays: COMPANY_DOMAIN_LOST_AFTER_DAYS };
+    return { domains: (await listEntries(store, caller.orgId)).map(toView), max: COMPANY_DOMAIN_MAX_PER_ORG, lostAfterDays: COMPANY_DOMAIN_LOST_AFTER_DAYS };
   }
 
   if (pathname === CHECK_PATH) {
@@ -78,7 +78,7 @@ export async function routeCompanyDomains(deps: DeveloperRouteDependencies, call
     const domain = parseBody(request);
     await throttle(deps, caller);
     const outcome = await checkCompanyDomain(store, { orgId: caller.orgId, by: caller.developerId, domain, resolver: resolverOf(deps) });
-    return { domain: toView(outcome.claim), result: outcome.result };
+    return { domain: toView(outcome.entry), result: outcome.result };
   }
 
   // Add and remove: a fresh sign-in, and a ledger to record the change in. A change that could not be recorded is not made.
@@ -91,5 +91,5 @@ export async function routeCompanyDomains(deps: DeveloperRouteDependencies, call
     return { removed: true };
   }
   const added = await addCompanyDomain(store, { orgId: caller.orgId, by: caller.developerId, domain });
-  return { domain: toView(added.claim) };
+  return { domain: toView(added.entry) };
 }

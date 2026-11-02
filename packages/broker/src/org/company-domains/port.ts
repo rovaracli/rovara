@@ -2,13 +2,13 @@
 // company holds, is not in it), each in its stored form, so a person's email domain is compared after `normalizeEmailDomain`.
 import type { OrgId } from "@agentx/contracts";
 import type { VerifiedDomainsPort } from "../../team-record/tracker-autolink.js";
-import { listClaims, type CompanyDomainDeps } from "./store.js";
+import { listEntries, type CompanyDomainDeps } from "./store.js";
 
 export function companyDomainsPort(deps: Pick<CompanyDomainDeps, "documentClient" | "tableName"> & { now?: () => number }): VerifiedDomainsPort {
   return {
     async domainsOf(orgId: OrgId) {
-      const claims = await listClaims({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, orgId);
-      return new Set(claims.filter((claim) => claim.state === "verified").map((claim) => claim.domain));
+      const entries = await listEntries({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, orgId);
+      return new Set(entries.filter((entry) => entry.holder?.state === "verified").map((entry) => entry.own.domain));
     },
   };
 }

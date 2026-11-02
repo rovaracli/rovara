@@ -101,8 +101,6 @@ export const AgentXErrorCodeSchema = z.enum([
   // The company's master suggestions switch: a stale revision of the switch, and a suggestion decision while it is off.
   "LEARNING_SETTINGS_CHANGED",
   "LEARNING_SUGGESTIONS_OFF",
-  // Company domain verification: the domain is already held by another company.
-  "COMPANY_DOMAIN_TAKEN",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
@@ -126,9 +124,6 @@ export const projectArchivedMessage = (name: string): string => `Project \`${nam
 
 /** What INVITE_WRONG_EMAIL (409) says: an email-targeted invite was presented by a sign-in whose verified email is another address. */
 export const INVITE_WRONG_EMAIL_MESSAGE = "This invite is for a different email address. Sign in with the address it was sent to, or ask for an invite to yours.";
-
-/** What COMPANY_DOMAIN_TAKEN (409) says: another company holds the domain. It does not say which, or whether the claim is verified. */
-export const COMPANY_DOMAIN_TAKEN_MESSAGE = "Another company has already claimed this domain. If it is yours, ask them to remove it, or write to Rovara support.";
 
 /** What GITHUB_INSTALLATION_TAKEN (409) says: the GitHub account's installation is bound to another Rovara organization. */
 export const GITHUB_INSTALLATION_TAKEN_MESSAGE = "This GitHub account is already connected to another Rovara organization.";

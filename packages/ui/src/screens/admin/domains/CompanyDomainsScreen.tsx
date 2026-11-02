@@ -16,6 +16,7 @@ const RESULT_WORDS: Readonly<Record<string, string>> = {
  found: "The record was found.",
  not_found: "The record was not found. DNS changes can take a while to spread; check again later.",
  indirect: "The name is an alias (a CNAME). Put the record directly on this name, not behind an alias.",
+ held: "Your record was found, but another company currently holds this domain. It moves to you only after their record has been gone for 3 days and yours has stayed the only one in DNS for at least an hour between two checks.",
  unavailable: "The record could not be looked up just now. This does not count against a verified domain. Check again later.",
 };
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" }) + " UTC";
@@ -60,7 +61,7 @@ function Domains({ orgId, developerId }: { orgId: string; developerId: string })
     <p><strong>{STATE_WORDS[entry.state] ?? "Unknown"}</strong>{entry.state === "verified" && entry.verifiedAt !== undefined && <> since {day(entry.verifiedAt)}</>}</p>
     {entry.state === "verified" && entry.missingSince !== undefined && <p role="status">The record has not been found since {day(entry.missingSince)}. The domain is lost if it stays gone for {read.data.lostAfterDays} days in a row.</p>}
     {entry.state === "lost" && <p role="status">The record was gone for {read.data.lostAfterDays} days, so this domain no longer counts. Put the record back and press Check now to verify it again.</p>}
-    {entry.state === "pending" && entry.expiresAt !== undefined && <p className="rv-muted">Unverified claims can be taken by another company after {day(entry.expiresAt)}.</p>}
+    {entry.state === "pending" && <p className="rv-muted">Adding a domain does not stop anyone else from adding it. The domain is yours once your record is found in DNS.</p>}
     {entry.state !== "verified" && <>
      <p>Add this DNS record:</p>
      <dl className="rv-admin-record"><dt>Type</dt><dd><code>{entry.record.type}</code></dd><dt>Name</dt><dd><code>{entry.record.name}</code></dd><dt>Value</dt><dd><code>{entry.record.value}</code></dd></dl>
