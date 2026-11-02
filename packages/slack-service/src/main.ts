@@ -27,6 +27,7 @@ import { createSignedServiceFetch } from "./signing-fetch.js";
 import { createSlackUserNames } from "./user-names.js";
 import { createAskApi, createDiagnosisApi, createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
 import { handleAsk } from "./ask-question.js";
+import { createAskGlue } from "./ask-glue.js";
 import { handleDiagnosis } from "./diagnosis-question.js";
 import { SlackApiError, runEvalBatchWatcher } from "./eval-batch-watcher.js";
 import { HANDOFF_MILLISECONDS, activeTurnFromItem, turnNoteFromItem } from "./interrupted-turn.js";
@@ -178,17 +179,13 @@ const proxiedModels = modelProxyEnabled ? createProxiedModels({
 
 // Live interaction A3: an Ask about a task has no Slack thread or member. Its turn is keyed by the queue event's id; the Ask it belongs to is remembered here while the turn runs, so the model key is asked
 // for on the Ask's own broker route (which names the Ask and checks the asker still "can use" the session) and never on a Slack thread's.
-const askTurns = new Map<string, AskRef>();
+const askGlue = createAskGlue({ runTurn: (input, ask) => runTurn(input, ask) });
 const askProxiedModels = modelProxyEnabled ? createProxiedModels({
   controlPlaneUrl,
   signedFetchFor: () => createSignedServiceFetch({ region, credentials }),
   classifierModel, orchestratorModel: model, classifierTimeoutMs: gateClassifierTimeoutMs, log,
   createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
-  accessRouteFor: (message) => {
-    const ref = askTurns.get(message.eventId);
-    if (ref === undefined) throw new Error("no ask is running for this turn");
-    return { orgId: ref.orgId, path: "/v1/asks/model-access", body: { sessionId: ref.sessionId, askId: ref.askId } };
-  },
+  accessRouteFor: (message) => askGlue.accessRouteFor(message),
 }) : undefined;
 
 // Live interaction F2: a light diagnosis, like an Ask, has no Slack thread or member. Its turn is keyed by the queue event's id; the diagnosis it belongs to is remembered here while the turn runs, so
@@ -500,20 +497,7 @@ await runConsumer(queue, (message, { route, taskQuestion, ...context }) => taskQ
     const askApi = createAskApi({ controlPlaneUrl, signedFetch: createSignedServiceFetch({ region, credentials }) });
     return handleAsk(message, {
       api: askApi,
-      runTurn: async ({ ref, question, eventId, turn }) => {
-        // The turn needs a message-shaped record for its models and logs; its ids are placeholders, used nowhere that reaches Slack or the broker.
-        const placeholder = SlackRequestMessageSchema.parse({ version: 1, eventId, thread: { teamId: "T0000000000", channelId: "C0000000000", threadTs: "1700000000.000000" }, userId: "U0000000000", text: question, receivedAt: new Date().toISOString() });
-        askTurns.set(eventId, ref);
-        try {
-          return await runTurn({
-            message: placeholder, subject: `ask:${ref.askId}`, workspaceId: turn.workspaceId, conversationId: deterministicUuid(`${ref.askId}:ask-conversation`),
-            orchestratorInstructions: turn.orchestratorInstructions, requestId: requestIdSequence(eventId), turnNote: turn.taskContext, answerOnly: true,
-            ...(handoff === undefined ? {} : { signal: handoff }),
-          }, ref);
-        } finally {
-          askTurns.delete(eventId);
-        }
-      },
+      runTurn: askGlue.runTurn(handoff),
       log,
     });
   },
