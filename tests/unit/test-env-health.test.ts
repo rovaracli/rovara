@@ -391,6 +391,36 @@ describe("a proposed fix task from failing tests (off by default per project)", 
     expect(h.calls.propose).toHaveLength(1);
   });
 
+  it("L1: a replay of a request writes nothing and audits nothing, even after another change: on(X), off(Y), on(X) leaves it off", async () => {
+    const h = harness();
+    const set = (enabled: boolean, requestId: string) => setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled, requestId });
+    expect(await set(true, "request-xxxxxxxx")).toEqual({ proposeFixTask: true });
+    expect(await set(false, "request-yyyyyyyy")).toEqual({ proposeFixTask: false });
+    const before = h.db.find((entry) => entry.sk === "TESTENV#HEALTH#SETTINGS")[0];
+    expect(await set(true, "request-xxxxxxxx")).toEqual({ proposeFixTask: false });
+    expect(await readProposeFixTask(h.deps, ORG, PROJECT)).toBe(false);
+    expect(h.db.find((entry) => entry.sk === "TESTENV#HEALTH#SETTINGS")[0]).toEqual(before);
+    expect(h.capture.recordedBy("project.test_health_setting_changed")).toHaveLength(2);
+    // A new request still changes it.
+    expect(await set(true, "request-zzzzzzzz")).toEqual({ proposeFixTask: true });
+  });
+
+  it("L1: two changes read together do not both land: the later one is retried from what is stored, not lost", async () => {
+    const h = harness();
+    const set = (enabled: boolean, requestId: string) => setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled, requestId });
+    await set(true, "request-00000000");
+    await Promise.all([set(true, "request-aaaaaaaa"), set(false, "request-bbbbbbbb")]);
+    const stored = h.db.find((entry) => entry.sk === "TESTENV#HEALTH#SETTINGS")[0]!;
+    expect((stored.requestIds as string[]).sort()).toEqual(["request-00000000", "request-aaaaaaaa", "request-bbbbbbbb"]);
+  });
+
+  it("L1: the audit event names the project, so the same request id in two projects is two events", async () => {
+    const h = harness();
+    await setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_a", enabled: true, requestId: "request-samesame" });
+    await setProposeFixTask(h.deps, { orgId: ORG, project: "other-project", role: "maintainer", changedBy: "dev_a", enabled: true, requestId: "request-samesame" });
+    expect(h.capture.recordedBy("project.test_health_setting_changed").map((event) => (event.target as { name?: string }).name).sort()).toEqual(["other-project", PROJECT].sort());
+  });
+
   it("is a maintainer's setting; anyone else is refused, and an unreadable setting is off", async () => {
     const h = harness();
     const change = (role: Parameters<typeof setProposeFixTask>[1]["role"], enabled = true) => setProposeFixTask(h.deps, { orgId: ORG, project: PROJECT, role, changedBy: "dev_a", enabled, requestId: `request-${(requestCounter += 1)}` });
@@ -527,6 +557,19 @@ describe("review fixes F1, F2, F3, F6", () => {
     h.db.set({ ...item, pk: item.pk, health: null });
     await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
     expect(await readProjectHealth(h.deps, ORG, PROJECT)).toMatchObject({ state: "healthy", version: 1 });
+  });
+
+  it("L5: a damaged item whose counter is a string, a fraction, negative, huge or missing is replaced too, and never jams", async () => {
+    for (const counter of ["abc", 1.5, -4, 9e15, undefined, null, { a: 1 }]) {
+      const h = harness();
+      await applyNightlyRecorded(h.deps, h.ports, night(passed), off);
+      const item = h.db.find((entry) => entry.sk === "TESTENV#HEALTH")[0]!;
+      const damaged: Record<string, unknown> = { ...item, health: "garbage" };
+      if (counter === undefined) delete damaged.version; else damaged.version = counter;
+      h.db.set(damaged);
+      await applyNightlyRecorded(h.deps, h.ports, night(environment("setup_failed"), { recordedAt: new Date(T0 + 1_000).toISOString() }), off);
+      expect(await readProjectHealth(h.deps, ORG, PROJECT), JSON.stringify(counter) ?? "missing").toMatchObject({ state: "needs_repair" });
+    }
   });
 
   it("F3: an item written by a newer release is left alone: nothing is written, no card is touched", async () => {

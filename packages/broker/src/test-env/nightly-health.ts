@@ -111,7 +111,7 @@ export function classifyNightlyHealth(input: unknown): NightlyHealth {
   }
 
   // 4. real assertion failures next to tests that passed
-  if (tests.failures > 0 && tests.passed > 0) return { class: "tests", setupProved: checks.length > 0 && codeInPlace && testStepsRan };
+  if (tests.failures > 0 && tests.passed > 0) return { class: "tests", setupProved: checks.length > 0 && codeInPlace && testStepsRan && tests.errors === 0 };
 
   // 5. anything else
   if (tests.failures > 0) return { class: "unclear", cause: "all_tests_failed" };

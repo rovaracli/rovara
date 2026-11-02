@@ -35,11 +35,12 @@ export function nightlyScheduleDependencies(env: NodeJS.ProcessEnv = process.env
 /** After an approval: make the project's nightly schedule match the approved environment, and (SH28, only while `nh` is on) end a repair state: an approved revision is a proved one. */
 export function nightlyHooks(deps: { scheduling?: NightlyScheduleDependencies | undefined; /** The store the project health is kept in. */ health?: TestEnvDeps | undefined } = {}, env: NodeJS.ProcessEnv = process.env): TestEnvRouteHooks {
   return {
-    async onApproved(orgId: OrgId, project: string, approved: TestEnvironment) {
+    async onApproved(orgId: OrgId, project: string, approved: TestEnvironment, approval?: { replayed: boolean }) {
       if (!testEnvironmentEnabled(env)) return;
       // Neither step keeps the other from running; the first failure is thrown after both (the route logs it and never undoes the approval).
       let failure: Error | undefined;
-      const proved = deps.health === undefined ? undefined : setupProvedHook(deps.health, env);
+      // A replay of an approval that already stood proves nothing new: it must not end a repair state that came after it.
+      const proved = deps.health === undefined || approval?.replayed === true ? undefined : setupProvedHook(deps.health, env);
       if (proved !== undefined) {
         try { await proved(orgId, project); } catch (error) { failure = error instanceof Error ? error : new Error("health update failed"); }
       }

@@ -8,6 +8,8 @@ import {
   TEST_ENV_DETECT_FEATURE, TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey,
   projectMemberKey, projectMetaKey, projectRevisionKey, testEnvDigest, type GithubInstallationRecord, type TestEnvDraft,
 } from "../../packages/contracts/src/index.js";
+import { noteBlockedTask, readProjectHealth } from "../../packages/broker/src/test-env/health.js";
+import { healthPortsOf } from "../../packages/broker/src/test-env/health-wiring.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -167,8 +169,16 @@ describe("with the switch on", () => {
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
       expect(approved.body).toMatchObject({ revision: 1, digest, replayed: false });
       expect((approved.body.state as { approved?: { revision: number; digest: string } }).approved).toMatchObject({ revision: 1, digest });
-      const again = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId });
-      expect(again.body).toMatchObject({ revision: 1, replayed: true });
+      // SH28: the project then needs repair (three tasks blocked by the same cause). A REPLAY of the approval that already stood proves nothing new: it leaves "Setup needs repair" as it is.
+      process.env.NIGHTLY_HEALTH_ENABLED = "1";
+      try {
+        const store = { documentClient: t.db, tableName: "state", now: () => Date.now() };
+        for (const id of ["task_1", "task_2", "task_3"]) await noteBlockedTask(store, healthPortsOf(store), { orgId: TEST_ORG, project: NAME, taskId: id, reason: "host_blocked" });
+        expect((await readProjectHealth(store as never, TEST_ORG, NAME))?.state).toBe("needs_repair");
+        const again = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId });
+        expect(again.body).toMatchObject({ revision: 1, replayed: true });
+        expect((await readProjectHealth(store as never, TEST_ORG, NAME))?.state).toBe("needs_repair");
+      } finally { delete process.env.NIGHTLY_HEALTH_ENABLED; }
       expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#REV#"))).toHaveLength(1);
     });
   });

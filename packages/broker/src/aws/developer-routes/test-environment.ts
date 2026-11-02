@@ -64,7 +64,7 @@ export const TEST_ENV_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-environment(?:
 export const isTestEnvironmentPath = (pathname: string): boolean => TEST_ENV_PATH.test(pathname);
 
 /** What the routes do after an approval (the nightly schedule follows the approved environment). A failure here never undoes the approval. */
-export interface TestEnvRouteHooks { onApproved?(orgId: OrgId, project: string, approved: TestEnvironment): Promise<void> }
+export interface TestEnvRouteHooks { onApproved?(orgId: OrgId, project: string, approved: TestEnvironment, approval?: { replayed: boolean }): Promise<void> }
 
 export function testEnvStoreOf(deps: DeveloperRouteDependencies): TestEnvDeps {
   return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
@@ -317,7 +317,7 @@ export async function approveChecked(
   if (hooks.onApproved !== undefined) {
     try {
       const approved = await readApprovedTestEnvironment(store, caller.orgId, name, approvedNow.revision);
-      if (approved !== undefined) await hooks.onApproved(caller.orgId, name, approved);
+      if (approved !== undefined) await hooks.onApproved(caller.orgId, name, approved, { replayed: approvedNow.replayed });
     } catch (error) {
       logDeveloperEvent({ event: "developer.test_env_after_approval_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
     }

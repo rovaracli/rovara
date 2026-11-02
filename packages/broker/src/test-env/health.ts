@@ -39,6 +39,8 @@ export const BLOCKED_TASKS_FOR_REPAIR = 3;
 const BLOCKED_KEPT_MAX = 20;
 const PROPOSED_TEST_IDS_MAX = 20;
 const WRITE_ATTEMPTS = 4;
+/** The request ids of a project's setting changes that are remembered, so a replay of any of them is recognised. */
+const SETTING_REQUESTS_KEPT = 20;
 /** The health item expires this long after it was last written, so a project nobody checks any more does not keep a repair state for ever. A nightly run writes it at least every few days. */
 const HEALTH_TTL_MS = 60 * 24 * HOUR_MS;
 
@@ -120,8 +122,8 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 type Stored =
   | { kind: "none" }
   | { kind: "ok"; health: ProjectHealth }
-  /** The item is there but is not a health of this version. `rawVersion` is its own write counter when it has a sane one. */
-  | { kind: "unreadable"; rawVersion: number | undefined }
+  /** The item is there but is not a health of this version. `rawVersion` is its own write counter when it has a sane one; `rawCounter` is whatever its `version` attribute holds, of any type (undefined: it has none), so the replacing write can be conditioned on it exactly. */
+  | { kind: "unreadable"; rawVersion: number | undefined; rawCounter: unknown }
   /** Written by a newer release (schemaVersion above 1): this release leaves it alone. */
   | { kind: "newer" };
 
@@ -132,7 +134,7 @@ async function readStored(deps: ReadDeps, orgId: OrgId, project: string): Promis
   if (typeof written?.schemaVersion === "number" && written.schemaVersion > 1) return { kind: "newer" };
   const parsed = ProjectHealthSchema.safeParse(item.health);
   if (parsed.success) return { kind: "ok", health: parsed.data };
-  return { kind: "unreadable", rawVersion: typeof item.version === "number" && Number.isInteger(item.version) && item.version >= 0 && item.version < 1_000_000_000 ? item.version : undefined };
+  return { kind: "unreadable", rawVersion: typeof item.version === "number" && Number.isInteger(item.version) && item.version >= 0 && item.version < 1_000_000_000 ? item.version : undefined, rawCounter: item.version };
 }
 
 /** The project's stored health, or undefined when none was ever recorded. A stored item this release cannot read is an error: damaged health is never "no health" and never "healthy". */
@@ -198,7 +200,8 @@ async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, pr
     let condition: { ConditionExpression: string; ExpressionAttributeValues?: Record<string, unknown> };
     if (stored.kind === "none") condition = { ConditionExpression: "attribute_not_exists(pk)" };
     else if (stored.kind === "ok") condition = { ConditionExpression: "version = :version", ExpressionAttributeValues: { ":version": stored.health.version } };
-    else if (stored.rawVersion !== undefined) condition = { ConditionExpression: "version = :version", ExpressionAttributeValues: { ":version": stored.rawVersion } };
+    // Whatever the damaged counter holds (a string, a fraction, a negative or huge number), the replacing write is conditioned on exactly that value, so it can never jam on it.
+    else if (stored.rawCounter !== undefined) condition = { ConditionExpression: "version = :version", ExpressionAttributeValues: { ":version": stored.rawCounter } };
     else condition = { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(version)" };
     try {
       await deps.documentClient.send(new PutCommand({
@@ -237,24 +240,45 @@ export async function readProposeFixTask(deps: ReadDeps, orgId: OrgId, project: 
 export async function setProposeFixTask(deps: TestEnvDeps, input: { orgId: OrgId; project: string; role: ProjectRole | undefined; changedBy: string; enabled: boolean; requestId: string }): Promise<{ proposeFixTask: boolean }> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change whether failing tests propose a fix task");
   if (!/^[A-Za-z0-9_-]{8,64}$/u.test(input.requestId)) throw agentXError("CONFIG_INVALID", "requestId: a request id of 8 to 64 letters, digits, - or _");
-  const at = iso(deps.now());
   const enabled = input.enabled === true;
-  const event = await tryAuditEvent(deps, () => auditProjectTestHealthSettingChanged({
-    orgId: input.orgId, actor: { kind: "member", id: input.changedBy }, occurredAt: at, occurrence: auditOccurrence(input.requestId, String(enabled)), projectName: input.project, setting: "propose_fix_task", enabled,
-  }));
-  await deps.documentClient.send(new TransactWriteCommand({
-    TransactItems: [
-      {
-        Put: {
-          TableName: deps.tableName,
-          Item: { ...keyOf(input.orgId, input.project, SETTINGS_SK), entityType: "TEST_ENV_HEALTH_SETTINGS", orgId: input.orgId, project: input.project, proposeFixTask: enabled, changedBy: input.changedBy, changedAt: at },
-        },
-      },
-      ...(event === undefined ? [] : auditPending(deps, event)),
-    ],
-  }));
-  if (event !== undefined) await flushAuditEvents(deps, [event]);
-  return { proposeFixTask: enabled };
+  for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
+    const stored = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: keyOf(input.orgId, input.project, SETTINGS_SK), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+    const seen = Array.isArray(stored?.requestIds) ? stored.requestIds.filter((id): id is string => typeof id === "string") : [];
+    // A request id already applied is a replay, whatever came after it: on(X), off(Y), on(X) leaves it off, writes nothing and audits nothing.
+    if (seen.includes(input.requestId)) return { proposeFixTask: stored?.proposeFixTask === true };
+    const at = iso(deps.now());
+    const event = await tryAuditEvent(deps, () => auditProjectTestHealthSettingChanged({
+      orgId: input.orgId, actor: { kind: "member", id: input.changedBy }, occurredAt: at, occurrence: auditOccurrence(input.project, input.requestId, String(enabled)), projectName: input.project, setting: "propose_fix_task", enabled,
+    }));
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: deps.tableName,
+              Item: {
+                ...keyOf(input.orgId, input.project, SETTINGS_SK), entityType: "TEST_ENV_HEALTH_SETTINGS", orgId: input.orgId, project: input.project, proposeFixTask: enabled, changedBy: input.changedBy, changedAt: at,
+                lastRequestId: input.requestId, requestIds: [...seen, input.requestId].slice(-SETTING_REQUESTS_KEPT),
+              },
+              // Written only if no other change landed since it was read.
+              ...(stored === undefined
+                ? { ConditionExpression: "attribute_not_exists(pk)" }
+                : typeof stored.lastRequestId === "string"
+                  ? { ConditionExpression: "lastRequestId = :last", ExpressionAttributeValues: { ":last": stored.lastRequestId } }
+                  : { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(lastRequestId)" }),
+            },
+          },
+          ...(event === undefined ? [] : auditPending(deps, event)),
+        ],
+      }));
+    } catch (error) {
+      if (errorName(error) === "TransactionCanceledException") continue;
+      throw error;
+    }
+    if (event !== undefined) await flushAuditEvents(deps, [event]);
+    return { proposeFixTask: enabled };
+  }
+  throw agentXError("CHANGE_STALE", "the setting changed while it was being updated; try again");
 }
 
 // ---- events

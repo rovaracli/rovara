@@ -89,6 +89,15 @@ describe("an approved revision ends a repair state", () => {
     expect(await stateOf(h)).toBe("healthy");
   });
 
+  it("M1: a replay of an approval that already stood leaves 'Setup needs repair' as it is; the same approval, not replayed, ends it", async () => {
+    const h = harness();
+    await inRepair(h);
+    await nightlyHooks({ health: h.deps }, ON).onApproved!(ORG, PROJECT, approved(), { replayed: true });
+    expect(await stateOf(h)).toBe("needs_repair");
+    await nightlyHooks({ health: h.deps }, ON).onApproved!(ORG, PROJECT, approved(), { replayed: false });
+    expect(await stateOf(h)).toBe("healthy");
+  });
+
   it("with nh off the approval changes nothing about health, and the hook is undefined", async () => {
     const h = harness();
     await inRepair(h);

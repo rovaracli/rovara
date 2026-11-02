@@ -103,7 +103,7 @@ describe("row 3: every failure is an error and it touches more than a fifth of t
   });
 
   it("needs no assertion failure at all: one real failure among the errors is not an environment row", () => {
-    expect(classifyNightlyHealth(run({ tests: counts(60, 1, 39) }))).toEqual({ class: "tests", setupProved: true });
+    expect(classifyNightlyHealth(run({ tests: counts(60, 1, 39) }))).toEqual({ class: "tests", setupProved: false });
     expect(classifyNightlyHealth(run({ tests: counts(0, 1, 99) }))).toEqual({ class: "unclear", cause: "all_tests_failed" });
   });
 });
@@ -112,7 +112,7 @@ describe("row 4: assertion failures while others passed are the tests", () => {
   it("is tests for any number of failures with some passing", () => {
     expect(classifyNightlyHealth(run({ tests: counts(99, 1, 0) }))).toEqual({ class: "tests", setupProved: true });
     expect(classifyNightlyHealth(run({ tests: counts(1, 99, 0) }))).toEqual({ class: "tests", setupProved: true });
-    expect(classifyNightlyHealth(run({ tests: counts(10, 5, 2, 3) }))).toEqual({ class: "tests", setupProved: true });
+    expect(classifyNightlyHealth(run({ tests: counts(10, 5, 2, 3) }))).toEqual({ class: "tests", setupProved: false });
   });
 
   it("says the setup is proved only with the evidence a passing night needs: a check, the code in place, both test steps run (F1)", () => {
@@ -126,6 +126,9 @@ describe("row 4: assertion failures while others passed are the tests", () => {
     const skippedSetup = NIGHTLY_HEALTH_SETUP_STEPS.map((step) => ({ step, status: "skipped" }));
     expect(classifyNightlyHealth(run({ steps: [...skippedSetup, ...testSteps], tests: failing }))).toEqual({ class: "tests", setupProved: false });
     expect(classifyNightlyHealth(run({ steps: [...skippedSetup.map((entry) => (entry.step === "build" ? { ...entry, status: "passed" } : entry)), ...testSteps], tests: failing }))).toEqual({ class: "tests", setupProved: true });
+    // L3: collection errors in the night mean the setup is not proved, the same as for "passed".
+    expect(classifyNightlyHealth(run({ tests: counts(60, 39, 1) }))).toEqual({ class: "tests", setupProved: false });
+    expect(classifyNightlyHealth(run({ tests: counts(60, 40, 0) }))).toEqual({ class: "tests", setupProved: true });
     // A failed test step still ran; a setup step that failed is the environment, never tests.
     expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "failed"), tests: failing }))).toEqual({ class: "tests", setupProved: true });
   });
