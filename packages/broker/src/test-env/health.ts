@@ -187,7 +187,7 @@ async function runEffects(deps: ReadDeps, ports: HealthPorts, orgId: OrgId, proj
  *   - an item this release cannot read (damaged, schemaVersion 1): it is replaced by a Put conditioned on its raw version, and the plan starts from NOTHING: a blocked-task tally is never built on damaged data;
  *   - an item from a newer release: logged and left alone, nothing is written.
  */
-async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, project: string, plan: (previous: ProjectHealth | undefined, now: number) => Plan | undefined): Promise<ProjectHealth | undefined> {
+async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, project: string, env: NodeJS.ProcessEnv, plan: (previous: ProjectHealth | undefined, now: number) => Plan | undefined): Promise<ProjectHealth | undefined> {
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
     const stored = await readStored(deps, orgId, project);
     if (stored.kind === "newer") { logHealth("project_health.newer_schema_skipped", orgId, project); return undefined; }
@@ -199,7 +199,7 @@ async function applyPlan(deps: TestEnvDeps, ports: HealthPorts, orgId: OrgId, pr
     const storedVersion = stored.kind === "ok" ? stored.health.version : stored.kind === "unreadable" ? (stored.rawVersion ?? 0) : 0;
     // The Fix setup cards keep the highest version they have seen (while `vx` is on). The health item expires after 60 days or may be replaced, and then starts again at 1: a version below that mark would be refused
     // by the cards for good. So the next version is above the stored one AND the mark.
-    const baseVersion = Math.max(storedVersion, verifyResultsEnabled() ? await readHealthMark(deps, orgId, project) : 0);
+    const baseVersion = Math.max(storedVersion, verifyResultsEnabled(env) ? await readHealthMark(deps, orgId, project) : 0);
     const next = ProjectHealthSchema.parse({ ...planned.next, version: baseVersion + 1, updatedAt: iso(now) });
     let condition: { ConditionExpression: string; ExpressionAttributeValues?: Record<string, unknown> };
     if (stored.kind === "none") condition = { ConditionExpression: "attribute_not_exists(pk)" };
@@ -296,12 +296,12 @@ const proposalTitle = (count: number, branch: string, sinceDay: string): string 
  * A night was recorded (bind this to `recordNightlyResult`'s listener with `nightlyHealthListener`). See the file header for what each class does. Nights are ordered by the BROKER's clock (`recordedAt`); a night
  * recorded before the one on record changes nothing. The card and the proposed task are done after the state is stored and follow from the state, so the worker's retry of a failed attempt does them again.
  */
-export async function applyNightlyRecorded(deps: TestEnvDeps, ports: HealthPorts, event: NightlyRecorded, options: { proposeFixTask: boolean }): Promise<ProjectHealth | undefined> {
+export async function applyNightlyRecorded(deps: TestEnvDeps, ports: HealthPorts, event: NightlyRecorded, options: { proposeFixTask: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<ProjectHealth | undefined> {
   const night: StoredNightlyHealth | undefined = event.health;
   if (night === undefined) return undefined;
   const { orgId, project } = event;
   const lastNightly = { slotId: event.slotId, finishedAt: event.baseline.finishedAt, recordedAt: event.baseline.recordedAt, headSha: event.baseline.headSha };
-  return applyPlan(deps, ports, orgId, project, (previous, now) => {
+  return applyPlan(deps, ports, orgId, project, env, (previous, now) => {
     if (previous?.lastNightly !== undefined && Date.parse(previous.lastNightly.recordedAt) > Date.parse(lastNightly.recordedAt)) return undefined;
     const blocked = previous?.blocked ?? [];
     const changed = (state: ProjectHealthState, cause: string | undefined): string => (previous?.state === state && previous.cause === cause ? previous.since : iso(now));
@@ -354,12 +354,12 @@ export async function applyNightlyRecorded(deps: TestEnvDeps, ports: HealthPorts
  * other reason changes nothing. A task counts once per cause. When the project already needs repair for this cause, the task joins the open card. A caller retries an error from this: the state may be stored
  * and the card not yet opened, and a repeat does the card again.
  */
-export async function noteBlockedTask(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string; taskId: string; reason: TestingBlockedReason }): Promise<ProjectHealth | undefined> {
+export async function noteBlockedTask(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string; taskId: string; reason: TestingBlockedReason }, env: NodeJS.ProcessEnv = process.env): Promise<ProjectHealth | undefined> {
   const taskId = TaskId.safeParse(input.taskId);
   if (!taskId.success || BLOCKED_REASON_POINTS_AT_SETUP[input.reason] !== true) return undefined;
   const { orgId, project } = input;
   const cause = input.reason;
-  return applyPlan(deps, ports, orgId, project, (previous, now) => {
+  return applyPlan(deps, ports, orgId, project, env, (previous, now) => {
     const recent = (previous?.blocked ?? []).filter((entry) => now - Date.parse(entry.at) < BLOCKED_WINDOW_MS && !(entry.taskId === taskId.data && entry.cause === cause));
     const blocked = [...recent, { taskId: taskId.data, cause, at: iso(now) }].slice(-BLOCKED_KEPT_MAX);
     const same = blocked.filter((entry) => entry.cause === cause);
@@ -383,9 +383,9 @@ export async function noteBlockedTask(deps: TestEnvDeps, ports: HealthPorts, inp
 const PROVED_REPLAY_MS = 10 * 60_000;
 
 /** A setup was newly proved (a new approved environment revision). A project that needs repair is healthy again and its cards close; the blocked tasks before it no longer count. Anything else is left as it is. */
-export async function noteSetupProved(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string }): Promise<ProjectHealth | undefined> {
+export async function noteSetupProved(deps: TestEnvDeps, ports: HealthPorts, input: { orgId: OrgId; project: string }, env: NodeJS.ProcessEnv = process.env): Promise<ProjectHealth | undefined> {
   const { orgId, project } = input;
-  return applyPlan(deps, ports, orgId, project, (previous, now) => {
+  return applyPlan(deps, ports, orgId, project, env, (previous, now) => {
     if (previous === undefined) return undefined;
     if (previous.state === "healthy" && previous.source === "setup_proved" && now - Date.parse(previous.since) < PROVED_REPLAY_MS) return { next: previous, effects: [{ kind: "resolve_cards", reason: "setup_proved" }] };
     if (previous.state !== "needs_repair") return previous.blocked.length === 0 ? undefined : { next: { ...previous, blocked: [] }, effects: [] };
@@ -423,6 +423,6 @@ export function nightlyHealthListener(deps: TestEnvDeps, ports: HealthPorts, env
   if (!nightlyHealthEnabled(env) || !testEnvironmentEnabled(env)) return undefined;
   return async (event) => {
     const proposeFixTask = await readProposeFixTask(deps, event.orgId, event.project);
-    await applyNightlyRecorded(deps, ports, event, { proposeFixTask });
+    await applyNightlyRecorded(deps, ports, event, { proposeFixTask }, env);
   };
 }

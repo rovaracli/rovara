@@ -180,4 +180,20 @@ describe("the health version after the health item expires (M1)", () => {
     await applyNightlyRecorded(deps, ports, night(broken), off);
     expect((await readProjectHealth(deps, ORG, PROJECT))?.version).toBe(1);
   });
+
+  // Fix round (LOW): the passed env decides, not process.env.
+  it("reads the cards' mark when the PASSED env has vx on, whatever process.env says, and not when it is off", async () => {
+    for (const [passedEnv, processValue, expected] of [[{ VERIFY_RESULTS_ENABLED: "1" }, undefined, 31], [{}, "1", 1]] as const) {
+      const t = bench({});
+      const ports: HealthPorts = { cards: t.cards, proposals: { propose: () => Promise.resolve() } };
+      const deps = { documentClient: t.db, tableName: "state", now: () => t.clock.now };
+      t.db.set({ pk: projectPk(ORG, PROJECT), sk: "FIXSETUPMARK#HEALTH", entityType: "FIX_SETUP_HEALTH_MARK", orgId: ORG, project: PROJECT, version: 30 });
+      if (processValue !== undefined) process.env.VERIFY_RESULTS_ENABLED = processValue;
+      try {
+        expect(await readHealthMark(t.store, ORG, PROJECT)).toBe(30);
+        await applyNightlyRecorded(deps, ports, night(broken), off, passedEnv);
+        expect((await readProjectHealth(deps, ORG, PROJECT))?.version).toBe(expected);
+      } finally { delete process.env.VERIFY_RESULTS_ENABLED; }
+    }
+  });
 });
