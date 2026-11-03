@@ -13,17 +13,22 @@ interface RawEntry {
   sbomRef?: unknown;
   scan?: unknown;
   process?: unknown;
-  image: { repository: unknown; digest?: unknown; platforms: unknown };
-  run: { user: unknown; readOnlyRoot: unknown; tmpfs: unknown; ports: unknown; extraArgs: unknown };
+  image: { repository: unknown; digest?: unknown; platforms: unknown; [key: string]: unknown };
+  run: { user: unknown; readOnlyRoot: unknown; tmpfs: unknown; ports: unknown; extraArgs: unknown; [key: string]: unknown };
   health: unknown;
-  resources: unknown;
+  resources: Record<string, unknown>;
   connect: { templates: Record<string, string>; defaultAliases: unknown };
   reset: { kind: unknown };
-  emulator?: { services: Record<string, string[]>; iamEnforced: unknown; storage: unknown };
+  emulator?: { services: { supported: string[]; functions: string[]; model_endpoint_front: string[]; available: string[]; [key: string]: string[] }; iamEnforced: unknown; storage: unknown } | undefined;
   [key: string]: unknown;
 }
 interface RawCatalog { pinned: boolean; entries: RawEntry[]; [key: string]: unknown }
 const raw = (): RawCatalog => JSON.parse(readFileSync(FILE, "utf8")) as RawCatalog;
+const entryAt = (data: RawCatalog, index: number): RawEntry => {
+  const found = data.entries[index];
+  if (found === undefined) throw new Error(`no entry at ${String(index)}`);
+  return found;
+};
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const entryOf = (id: string): RawEntry => {
   const found = raw().entries.find((entry) => entry.id === id);
@@ -273,7 +278,7 @@ describe("the catalog as a whole", () => {
   };
   it("lists an id once and gives a family one default", () => {
     const duplicated = file();
-    duplicated.entries.push(clone(duplicated.entries[0]));
+    duplicated.entries.push(clone(entryAt(duplicated, 0)));
     expect(catalogOk(duplicated)).toBe(false);
     const twoDefaults = file();
     entryIn(twoDefaults, "postgres@15").status = "default";
@@ -296,7 +301,7 @@ describe("the catalog as a whole", () => {
     it("refuses a digest, an SBOM, a scan or a process artifact in an unpinned file", () => {
       const unpinned = (change: (entry: RawEntry) => void) => {
         const data = file();
-        change(data.entries[0]);
+        change(entryAt(data, 0));
         return data;
       };
       expect(catalogOk(unpinned((entry) => { entry.image.digest = sha("a"); }))).toBe(false);
@@ -314,15 +319,16 @@ describe("the catalog as a whole", () => {
       expect(catalogOk(pinned())).toBe(true);
       for (const drop of ["digest", "sbomRef", "scan"]) {
         const data = pinned();
-        if (drop === "digest") delete data.entries[1].image.digest;
-        else delete data.entries[1][drop];
+        if (drop === "digest") delete entryAt(data, 1).image.digest;
+        else delete entryAt(data, 1)[drop];
         expect(catalogOk(data), drop).toBe(false);
       }
       const retired = pinned();
-      retired.entries[0].status = "retired";
-      delete retired.entries[0].image.digest;
-      delete retired.entries[0].sbomRef;
-      delete retired.entries[0].scan;
+      const first = entryAt(retired, 0);
+      first.status = "retired";
+      delete first.image.digest;
+      delete first.sbomRef;
+      delete first.scan;
       expect(catalogOk(retired)).toBe(true);
     });
     it("refuses a scan with a critical finding open, and a malformed digest", () => {
