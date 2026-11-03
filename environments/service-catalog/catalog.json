@@ -493,7 +493,7 @@
       "health": {
         "kind": "http",
         "port": 4566,
-        "path": "/__rovara/health",
+        "path": "/_rovara/health",
         "startTimeoutS": 30
       },
       "resources": {

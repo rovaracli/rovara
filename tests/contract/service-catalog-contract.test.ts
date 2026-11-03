@@ -83,7 +83,7 @@ describe("the v1 data file", () => {
       expect(entry.run.readOnlyRoot, entry.id).toBe(true);
       expect(entry.run.user.split(":").every((part) => Number(part) > 0), entry.id).toBe(true);
     }
-    expect(catalog.entries.find((entry) => entry.id === "local-aws@r1")!.health).toMatchObject({ kind: "http", path: "/__rovara/health", startTimeoutS: 30 });
+    expect(catalog.entries.find((entry) => entry.id === "local-aws@r1")!.health).toMatchObject({ kind: "http", path: "/_rovara/health", startTimeoutS: 30 });
   });
   it("gives the database entries a template database reset and the cache a flush", () => {
     const reset = (id: string) => catalog.entries.find((entry) => entry.id === id)!.reset.kind;
