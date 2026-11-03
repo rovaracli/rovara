@@ -91,7 +91,11 @@ export type SessionView = z.infer<typeof SessionViewSchema>;
 export const SessionViewReaderSchema = forwardReader(SessionViewSchema);
 
 /** `GET /v1/app/sessions/{id}`. */
-export const SessionResponseSchema = z.object({ session: SessionViewSchema }).strict();
+export const SessionResponseSchema = z.object({
+  session: SessionViewSchema,
+  /** Only on a Stop's answer: `NOTHING_RUNNING` when the stop found nothing to stop, so the page does not say "Stop requested". */
+  stop: z.literal("NOTHING_RUNNING").optional(),
+}).strict();
 
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
 

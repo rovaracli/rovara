@@ -131,6 +131,13 @@ it("posts stop only after explicit confirmation and refreshes the session", asyn
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();
 });
 
+it("never says a stop was requested when the broker answered that nothing was running", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture(), stop: "NOTHING_RUNNING" } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Stop" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));
+ await screen.findByText("Nothing was running to stop.");expect(screen.queryByText("Stop requested.")).toBeNull();
+ expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();
+});
+
 it("does not carry a pending takeover into a different already-cached session", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } }), async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
  fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");

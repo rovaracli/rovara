@@ -32,10 +32,10 @@ function world(options: { audit?: boolean } = {}) {
     chainCancel: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>, chainRetry: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>,
     admissions: [] as Array<{ payer: Payer; project: string }>, paths: [] as string[], published: [] as Array<{ channel: string; events: string[] }>,
   };
-  const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined };
+  const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined, nothingRunning: false };
   const started = new Map<string, StartedRun>();
   const control: SessionControlHost = {
-    cancelTask: async (task, requestId) => { calls.cancel.push({ taskId: task.taskId, requestId }); if (live.cancelFailure !== undefined) throw live.cancelFailure; },
+    cancelTask: async (task, requestId) => { calls.cancel.push({ taskId: task.taskId, requestId }); if (live.cancelFailure !== undefined) throw live.cancelFailure; return { nothingRunning: live.nothingRunning }; },
     retryWorkflow: async (task, requestId) => { calls.workflow.push({ taskId: task.taskId, requestId }); },
     // Plan 3's start, as far as a retry sees it: one run per request id, another owner's use of the id is a conflict, and the start writes the new task and its session.
     startAgentRun: async (request) => {
@@ -159,6 +159,20 @@ describe("stopping a session", () => {
     expect(again.session.sessionId).toBe(sessionId);
     // The same id for a retry is another action.
     expect(await code(w.retry(MAX, sessionId, requestId))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  it("says NOTHING_RUNNING in the answer when the cancel found nothing to stop, and answers the same to a repeat of the request; a stop that stopped something says nothing of the kind", async () => {
+    const w = world();
+    const { sessionId } = w.blocked();
+    const requestId = randomUUID();
+    expect((await w.stop(MAX, sessionId, randomUUID())).stop).toBeUndefined();
+    w.live.nothingRunning = true;
+    const idle = await w.stop(MAX, sessionId, requestId);
+    expect(idle.stop).toBe("NOTHING_RUNNING");
+    expect(SessionResponseReaderSchema.safeParse(idle).success).toBe(true);
+    const again = await w.stop(MAX, sessionId, requestId);
+    expect(again.stop).toBe("NOTHING_RUNNING");
+    expect(w.calls.cancel).toHaveLength(2);
   });
 
   it("answers a repeat after the stop ended the session with the stored answer, and a new request on an ended session with SESSION_ENDED", async () => {

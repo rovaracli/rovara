@@ -11,14 +11,15 @@ import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 type Item = Record<string, unknown>;
 
 beforeAll(async () => { await loadSlackBroker(); });
 
-async function setup() {
-  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} } });
+async function setup(options: { audit?: AuditCapture } = {}) {
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} }, ...(options.audit === undefined ? {} : { audit: options.audit }) });
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; fence: number; status: string }>;
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; sessionId?: string };
   const session = (sessionId: string) => ({
@@ -202,6 +203,36 @@ describe("a Rovara Code task, through the real broker", () => {
     const approve = await t.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: 2, decision: "APPROVE", reason: "Looks right", artifactDigest: digest });
     expect(approve.status).toBeGreaterThanOrEqual(400);
     expect(t.steps(task.workspaceId).filter((operation) => operation.status !== "SUCCEEDED")).toEqual([]);
+    // The same request again changes nothing.
+    const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(again.status).toBe(200);
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toHaveLength(1);
+  });
+
+  it("ends a session whose workflow is blocked when it is stopped, with a stopped event and an audit item, and says so in the answer (staging: it said Nothing was running)", async () => {
+    const audit = capturingAuditDeps();
+    const t = await setup({ audit });
+    const task = await startWorkflow(t);
+    grantProject(t.db, OMAR);
+    expect((await t.share(task.sessionId)).status).toBe(200);
+    await t.finish(task.workspaceId, t.steps(task.workspaceId)[0]!.id, "FAILED", { error: "the planner stopped" });
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "PLAN", state: "BLOCKED" } });
+    await refreshSessionSummary({ documentClient: t.db, tableName: "state", now: Date.now }, TEST_ORG, task.sessionId);
+    const requestId = randomUUID();
+    const stopped = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    // Something was ended, so this is not the "nothing was running" answer.
+    expect(stopped.body.stop).toBeUndefined();
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED" } });
+    expect((t.meta(task.taskId) as Item & { workflow: { blockReason?: string } }).workflow.blockReason).toBeUndefined();
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toEqual([{ type: "stopped", text: "Omar Diaz stopped this session." }]);
+    expect(t.session(task.sessionId)).toMatchObject({ record: { summary: { status: "cancelled" } }, open: false });
+    // The stop is audited, and a Retry of the closed task is refused.
+    expect(audit.recordedBy("session.stopped")).toHaveLength(1);
+    // The task's own record says what the stop did.
+    expect(t.db.find((item) => JSON.stringify(item).includes("Stopped while the work was blocked.")).length).toBeGreaterThan(0);
+    const retry = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/retry`, { requestId: randomUUID() });
+    expect(retry.status).toBeGreaterThanOrEqual(400);
     // The same request again changes nothing.
     const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
     expect(again.status).toBe(200);

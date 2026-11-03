@@ -357,7 +357,7 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
     }),
     // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
     control: {
-      cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      cancelTask: async (task, requestId) => { const { nothingRunning } = await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); return { nothingRunning }; },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
       // Stop & redirect while the plan waits for approval: the caller's own request for changes, through the task's decision (their authority as a task owner is checked there).
       requestPlanChanges: async (task, input) => {

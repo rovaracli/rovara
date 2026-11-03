@@ -29,7 +29,7 @@ export function SessionControls({ id, agent, actions, following, onChanged, resp
     const result = await (action === "stop" ? api.stop(id) : action === "retry" ? api.retry(id) : api.takeOver(id));
     if (result.kind !== "done") { if (action === "take_over") { setPending(result);return; }throw new ApiError(409, "PENDING", "This action is waiting for confirmation. Open the session to continue."); }
     if (action === "retry") { await onChanged();host.navigate("/s/" + SessionIdSchema.parse(result.value.session.sessionId));return; }
-    if (action === "stop") { setStopOpen(false);setMessage("Stop requested."); }
+    if (action === "stop") { setStopOpen(false);setMessage((result.value as { stop?: string }).stop === "NOTHING_RUNNING" ? "Nothing was running to stop." : "Stop requested."); }
    }
    await query.invalidateQueries({ queryKey: key });await onChanged();
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't change this session. Try again."); }
