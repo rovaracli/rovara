@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ServiceCatalogSchema, type ServiceCatalog } from "../../packages/contracts/src/service-catalog.js";
-import { testAccountApprovalDigest, testAccountSecretRef, TestAccountSchema, type TestAccount } from "../../packages/contracts/src/test-account.js";
+import { testAccountApprovalDigest, testAccountExternalId, testAccountSecretRef, TestAccountSchema, type TestAccount } from "../../packages/contracts/src/test-account.js";
 import {
   BACKING_ORDER, BACKING_PLACES, BACKING_REASONS, BACKING_REASON_WORDS, DEFAULT_ALLOWED_BACKINGS, SKIP_REASONS, SKIP_REASON_WORDS, chooseBacking, effectiveAllowedBackings,
   type AllowedBackings, type BackingChoiceInput, type FixtureFact,
@@ -34,14 +34,14 @@ function account(over: Record<string, unknown> = {}): TestAccount {
   const base: Record<string, unknown> = {
     id: "payments-test", orgId: ORG, projectIds: ["orders"], family: "http:api.example-pay.com", label: "Payments test mode", kind: "api_key",
     secretRef: testAccountSecretRef("staging", ORG, "payments-test", "apiKey"), hosts: ["api.example-pay.com"], envNames: ["PAYMENTS_API_KEY"],
-    limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 }, approvals: [approval("a"), approval("b")], status: "active", expiresAt: "2027-01-30T10:00:00.000Z", ...over,
+    limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 }, approvals: [approval("a"), approval("b")], status: "active", expiresAt: "2027-01-30T10:00:00.000Z", ...over,
   };
   const digest = testAccountApprovalDigest(base as never);
   return TestAccountSchema.parse({ ...base, approvals: (base.approvals as Array<Record<string, unknown>>).map((each) => ({ ...each, approvedDigest: digest })) });
 }
 const dynamoAccount = (over: Record<string, unknown> = {}) => account({
   id: "orders-dev", family: "aws:dynamodb", label: "Dev AWS (orders)", kind: "aws_role", secretRef: undefined, envNames: [], hosts: ["dynamodb.us-west-2.amazonaws.com"],
-  aws: { roleArn: "arn:aws:iam::222233334444:role/rovara-test", externalId: "ext-0123456789", region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: ["arn:aws:dynamodb:us-west-2:222233334444:table/orders-test"] }, ...over,
+  aws: { roleArn: "arn:aws:iam::222233334444:role/rovara-test", externalId: testAccountExternalId(ORG, typeof over.id === "string" ? over.id : "orders-dev"), region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: ["arn:aws:dynamodb:us-west-2:222233334444:table/orders-test"] }, ...over,
 });
 
 const fixture = (ref: string, over: Partial<FixtureFact> = {}): FixtureFact => ({ ref, family: "http:api.example-pay.com", origin: "recorded", unmatched: "fail", ...over });
@@ -321,7 +321,7 @@ describe("the working sandbox swap (owner Q2)", () => {
   });
   it("services that run for real are the same while coding", () => {
     expect(chooseBacking(input({ place: "working" })).backing.kind).toBe("local");
-    expect(chooseBacking(s3({ place: "working", accounts: [dynamoAccount({ family: "aws:s3", id: "orders-s3", hosts: ["s3.us-west-2.amazonaws.com"], aws: { roleArn: "arn:aws:iam::222233334444:role/rovara-test", externalId: "ext-0123456789", region: "us-west-2", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::orders-test-bucket/*"] } })] })).backing.kind).toBe("emulated");
+    expect(chooseBacking(s3({ place: "working", accounts: [dynamoAccount({ family: "aws:s3", id: "orders-s3", hosts: ["s3.us-west-2.amazonaws.com"], aws: { roleArn: "arn:aws:iam::222233334444:role/rovara-test", externalId: testAccountExternalId(ORG, "orders-s3"), region: "us-west-2", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::orders-test-bucket/*"] } })] })).backing.kind).toBe("emulated");
   });
 });
 
