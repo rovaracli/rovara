@@ -10,8 +10,12 @@
 //      the contract accepts (`hostProblem`), or when it looks like a key in either case (`looksLikeSecretValue`);
 //   3. adds the counts up per registrable domain and keeps at most USAGE_UNKNOWN_DOMAINS_MAX of them, most asked first. Everything else (single-label names, withheld names, the rest over the cap, the name server's own
 //      `dropped` and `unrecorded` counts) is added to `otherCount`, which names nothing.
-// Residual, accepted: a program that wants to leak a value can still encode it in WHICH registrable domains it asks for (a handful of short domains); a per-run password of a database that is removed when the run ends is
-// not worth more than that, and the cap bounds it.
+//   4. reports every count as a COARSE BUCKET (`bucketCount`: 1, 2-5, 6-20, 21+, each shown as its lower bound, so "2" reads "2 to 5"), and orders the domains by bucket and then by name. A program that picks how often it
+//      asks for a name could otherwise carry about 30 bits in each of 50 counts, and in the order of the list.
+// Residual, accepted for a per-run database password (TS-SEAL-1 bandwidth, DEFERRED-CHECKS): a program can still encode a value in the LABEL under a registrable domain that no redaction spelling covers (hex, base32,
+// reversed, split): about 5 bits a character, up to 63 characters a domain, 50 domains, so about 2 KB, plus about 2 bits a bucketed count (about 13 bytes); and anything it prints, which reaches the check's output
+// tail (64 KiB a check) through the same spelling-based redactor. That is why this record, and the sealed round's output, must NEVER be fed back to the agent or a model (the tests guard the agent-facing modules),
+// and why a long-lived secret (a test account's key) must not enter a sealed round on this design: see check-round-runners.ts.
 //
 // The record is the broker contract's `TestServicesUsageRecord` (contracts/src/test-services-usage.ts, s1-broker T1); the tests parse every record this module builds with `TestServicesUsageRecordSchema`.
 import {
@@ -52,6 +56,14 @@ export interface ServiceUsageRecordInput {
   healthLimitMs?: number;
 }
 
+/** The coarse buckets of a count, as lower bounds: 1, 2 (2-5), 6 (6-20), 21 (21 or more). */
+export const USAGE_COUNT_BUCKETS: readonly number[] = [1, 2, 6, 21];
+/** The lower bound of the bucket `count` falls in; 0 stays 0. */
+export function bucketCount(count: number): number {
+  if (!(count >= 1)) return 0;
+  return USAGE_COUNT_BUCKETS.reduce((bucket, lower) => (count >= lower ? lower : bucket), 1);
+}
+
 const clamp = (value: number | undefined, max: number): number => (value !== undefined && Number.isFinite(value) && value > 0 ? Math.min(Math.round(value), max) : 0);
 
 /**
@@ -83,11 +95,12 @@ export function reduceUnknownNames(record: SealedDnsRecord, redactor: ServiceRed
     }
     counts.set(domain, (counts.get(domain) ?? 0) + queries);
   }
-  const ranked = [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
-  for (const [, count] of ranked.slice(USAGE_UNKNOWN_DOMAINS_MAX)) other += count;
+  // Bucket first, then order and cut by bucket and name, so neither the order nor the cut carries a raw count.
+  const ranked = [...counts].map(([domain, count]) => [domain, bucketCount(count), count] as const).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  for (const [, , count] of ranked.slice(USAGE_UNKNOWN_DOMAINS_MAX)) other += count;
   return {
-    domains: ranked.slice(0, USAGE_UNKNOWN_DOMAINS_MAX).map(([domain, count]) => ({ domain, count: Math.min(count, USAGE_LIMITS.count) })),
-    otherCount: Math.min(other, USAGE_LIMITS.count),
+    domains: ranked.slice(0, USAGE_UNKNOWN_DOMAINS_MAX).map(([domain, bucket]) => ({ domain, count: bucket })),
+    otherCount: bucketCount(Math.min(other, USAGE_LIMITS.count)),
   };
 }
 

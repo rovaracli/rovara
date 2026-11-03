@@ -1,8 +1,8 @@
 // Build-time check that the worker's compiled output holds the detector thread's entry file (scripts/check-worker-dist.ts), and that the build runs it.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const script = new URL("../../scripts/check-worker-dist.ts", import.meta.url).pathname;
@@ -47,10 +47,20 @@ describe("scripts/check-worker-dist.ts", () => {
     build(root, { detector: DETECTOR_FILES, services: TEST_SERVICE_FILES, empty: [empty] });
     expect(run(root).status).toBe(1);
   });
+  it("still checks when it is started through a link or a spelled-out path (it cannot skip itself)", () => {
+    const root = fresh();
+    const link = join(root, "link-to-script.ts");
+    symlinkSync(script, link);
+    for (const spelling of [link, join(dirname(script), "..", "scripts", "check-worker-dist.ts")]) {
+      const result = spawnSync(process.execPath, [spelling, root], { encoding: "utf8" });
+      expect(result.status, spelling).toBe(1);
+      expect(result.stderr).toContain("service-probe.js");
+    }
+  });
   it("requires exactly the entries the helper launcher and the sealed sandbox run from", async () => {
     const { PROBE_ENTRY } = await import("../../packages/worker/src/service-helpers.js");
     const { SEALED_DNS_HELPER_ENTRY } = await import("../../packages/worker/src/check-sandbox.js");
-    const { REQUIRED_WORKER_DIST_FILES } = await import("../../scripts/check-worker-dist.js");
+    const { REQUIRED_WORKER_DIST_FILES } = await import("../../scripts/worker-dist-files.js");
     const inImage = (path: string) => path.replace("/opt/agentx/", "");
     expect(REQUIRED_WORKER_DIST_FILES).toContain(inImage(PROBE_ENTRY));
     expect(REQUIRED_WORKER_DIST_FILES).toContain(inImage(SEALED_DNS_HELPER_ENTRY));

@@ -21,9 +21,31 @@ import { withDetachedWorking, type CheckSandboxPlan } from "./check-sandbox.js";
 import { withServiceEnvFile, type ServiceEnvironment, type ServiceRedactor } from "./service-env.js";
 import type { HelperFiles } from "./service-helpers.js";
 import type { DockerCli } from "./swebench/containers.js";
-import { createCheckRunners, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
+import { createCheckRunners, mintSealedCheckOptions, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
 
 const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
+/** A variable name a shell and `docker exec --env` both read as a name (POSIX): a command's own `env` may hold no other (no `=`, no space, no `-`). */
+const POSIX_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+/** The plans with a sealed round running (TS-SEAL-3): one round at a time on a plan. Module-private. */
+const ACTIVE_PLANS = new Set<string>();
+const planKey = (plan: Pick<CheckSandboxPlan, "network" | "sandboxName">): string => `${plan.network.name}|${plan.sandboxName}`;
+
+/** The fixed sentence for a project the test services cannot serve yet. */
+export const TEST_SERVICES_DEVCONTAINER_SENTENCE = "Test services are not available yet for a project that uses a dev container.";
+
+/**
+ * Test services run the checks in the worker's own sealed sandbox, not in the project's dev container, so a project with a dev container would be checked somewhere its tests were never meant to run. The worker calls this
+ * BEFORE it starts any dependency (and `withSealedCheckRound` calls it again before any Docker call): a plan with dependencies for a project with a dev container is refused with the same fixed sentence at approval
+ * (the broker's side) and here. Nothing is started and nothing is written.
+ */
+export function refuseTestServicesWithDevcontainer(input: { dependencies: number | readonly unknown[]; devcontainer: boolean }): void {
+  const count = typeof input.dependencies === "number" ? input.dependencies : input.dependencies.length;
+  if (input.devcontainer && count > 0) throw agentXError("CONFIG_INVALID", TEST_SERVICES_DEVCONTAINER_SENTENCE);
+}
+
+const NETWORK_CALL_TIMEOUT_MS = 60_000;
+/** The exec inputs `withSealedCheckRound` made (TS-SEAL-3). Module-private: `sealedContainerExec` refuses any other. */
+const ROUND_EXEC_INPUTS = new WeakSet<object>();
 
 export interface SealedExecInput {
   docker: DockerCli;
@@ -39,9 +61,10 @@ export interface SealedExecInput {
 
 /**
  * `docker exec [--env-file F] [--env K=V ...] <check sandbox> <command>`. A name in `environment` is taken out of the command's own `env` first, so the run's value is the only one the exec gets.
- * Rejects (fixed sentence) when the round is over.
+ * Rejects (fixed sentence) when the round is over. Refuses an input that `withSealedCheckRound` did not make: it is exported for the round's own tests and nothing else (a source guard allows no other caller).
  */
 export function sealedContainerExec(input: SealedExecInput): ContainerExec {
+  if (!ROUND_EXEC_INPUTS.has(input)) throw agentXError("CONFIG_INVALID", "a sealed exec is made only by a sealed check round");
   if (!CONTAINER_NAME.test(input.container)) throw agentXError("CONFIG_INVALID", "not a plan of a sealed check sandbox");
   const owned = new Set(input.environment.entries.map(([name]) => name));
   const prefix = randomUUID().replace(/-/gu, "").slice(0, 16);
@@ -49,7 +72,10 @@ export function sealedContainerExec(input: SealedExecInput): ContainerExec {
   return async (command, options) => {
     if (!input.live()) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check sandbox is not running");
     counter += 1;
-    const own = Object.entries(options.env ?? {}).filter(([name]) => !owned.has(name));
+    const entries = Object.entries(options.env ?? {});
+    // Checked before the channel's names are taken out, so a bad name is refused, not hidden behind one that is dropped.
+    for (const [name, value] of entries) if (!POSIX_ENV_NAME.test(name) || typeof value !== "string" || value.includes("\0")) throw agentXError("CONFIG_INVALID", "a command's variable has a name or a value the sealed exec does not pass");
+    const own = entries.filter(([name]) => !owned.has(name));
     return withServiceEnvFile(input.files, `chk-${prefix}-${String(counter)}`, input.environment, (envFileArgs) => input.docker.run([
       "exec",
       ...envFileArgs,
@@ -64,8 +90,43 @@ export function sealedContainerExec(input: SealedExecInput): ContainerExec {
   };
 }
 
+/** One member of a Docker network as `docker network inspect --format '{{json .Containers}}'` lists it. */
+interface NetworkMember { Name?: unknown; IPv4Address?: unknown }
+
+/**
+ * TS-SEAL-3, from the network's side: reads who is on the run's services network NOW, with a `docker network inspect` of the network itself, so the proof does not rest on the working sandbox's name (which the caller
+ * gives and `detachWorkingSandbox` takes at its word). Before the check sandbox starts the members must be the DNS helper (present) and the run's helpers (at their own addresses) and nothing else; after it starts, also the
+ * check sandbox, once, at .4. Anything else (the working sandbox at .3 under any name, an unknown container, a helper-shaped name at the wrong address, a list that cannot be read) throws and nothing runs.
+ */
+export async function assertSealedNetworkMembers(docker: DockerCli, plan: CheckSandboxPlan, phase: "before_start" | "after_start"): Promise<void> {
+  const refuse = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", "the run's services network holds a container the sealed check round does not expect"); };
+  const inspected = await docker.run(["network", "inspect", "--format", "{{json .Containers}}", plan.network.name], { timeoutMs: NETWORK_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (inspected === undefined || inspected.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the run's services network could not be read");
+  let parsed: unknown;
+  try { parsed = JSON.parse(inspected.stdout.trim()); } catch { return refuse(); }
+  if (parsed === null) parsed = {};
+  if (typeof parsed !== "object" || Array.isArray(parsed)) return refuse();
+  const helperNames = new Map(plan.names.map((entry) => [entry.address, entry.alias]));
+  const helperName = new RegExp(`^${plan.network.name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}-h[0-9a-f]{10}$`, "u");
+  let dnsHelper = 0;
+  let checkSandbox = 0;
+  for (const member of Object.values(parsed as Record<string, NetworkMember>)) {
+    const name = typeof member?.Name === "string" ? member.Name : undefined;
+    const address = typeof member?.IPv4Address === "string" ? member.IPv4Address.split("/")[0] : undefined;
+    if (name === undefined || address === undefined) return refuse();
+    if (name === plan.dnsHelperName) dnsHelper += 1;
+    else if (name === plan.sandboxName) {
+      if (phase !== "after_start" || address !== plan.network.ip) return refuse();
+      checkSandbox += 1;
+    } else if (!(helperName.test(name) && helperNames.has(address))) return refuse();
+  }
+  if (dnsHelper !== 1 || checkSandbox !== (phase === "after_start" ? 1 : 0)) return refuse();
+}
+
 export interface SealedCheckRoundInput {
   docker: DockerCli;
+  /** True when the project has a dev container: the round is then refused ("not available yet") before any Docker call. The caller states it, so it cannot be left out. */
+  hasDevcontainer: boolean;
   /** `checkSandboxPlan(...)`: the sandbox, its names and files. The caller has written the plan's files (`writeCheckSandboxFiles`) and started the DNS helper. */
   plan: CheckSandboxPlan;
   /** The workspace root the checks run in (the same as the plan's `rootPath`). */
@@ -87,12 +148,30 @@ export interface SealedCheckRoundInput {
  * Throws when the working sandbox cannot be detached or the check sandbox cannot start or be removed (then `round` is not run, or the working sandbox stays detached): a round that cannot be sealed is not run unsealed.
  */
 export async function withSealedCheckRound<T>(input: SealedCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<T> {
+  refuseTestServicesWithDevcontainer({ dependencies: 1, devcontainer: input.hasDevcontainer });
+  const key = planKey(input.plan);
+  // One round at a time on a plan: two would share one check sandbox name, and the first one's removal would pull the sandbox out from under the other.
+  if (ACTIVE_PLANS.has(key)) throw agentXError("RUNTIME_UNAVAILABLE", "a sealed check round is already running on this plan");
+  ACTIVE_PLANS.add(key);
+  try {
+    return await sealedRound(input, round);
+  } finally {
+    ACTIVE_PLANS.delete(key);
+  }
+}
+
+async function sealedRound<T>(input: SealedCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<T> {
   return withDetachedWorking(input.docker, input.plan, async (start) => {
+    // The network is looked at itself, before and after the start; any surprise throws, and `withDetachedWorking` removes the sandbox and attaches the working sandbox again.
+    await assertSealedNetworkMembers(input.docker, input.plan, "before_start");
     await start();
+    await assertSealedNetworkMembers(input.docker, input.plan, "after_start");
     let live = true;
-    const exec = sealedContainerExec({ docker: input.docker, container: input.plan.sandboxName, files: input.files, environment: input.environment, live: () => live });
+    const execInput: SealedExecInput = { docker: input.docker, container: input.plan.sandboxName, files: input.files, environment: input.environment, live: () => live };
+    ROUND_EXEC_INPUTS.add(execInput);
+    const exec = sealedContainerExec(execInput);
     const runners: CheckRunners = {
-      ...createCheckRunners({ rootPath: input.rootPath, sealed: { exec, redact: (text) => input.redactor.text(text) } }),
+      ...createCheckRunners({ rootPath: input.rootPath, sealed: mintSealedCheckOptions({ exec, redact: (text) => input.redactor.text(text) }) }),
       ...(input.freshServices === undefined ? {} : { freshServices: input.freshServices }),
       ...(input.resetBetweenChecks === undefined ? {} : { resetBetweenChecks: input.resetBetweenChecks }),
     };

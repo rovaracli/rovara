@@ -342,6 +342,19 @@ export interface SealedCheckOptions {
   redact(text: string): string;
 }
 
+/** The sealed options `withSealedCheckRound` made (TS-SEAL-3): only these are accepted by `createCheckRunners`. Module-private, as check-sandbox.ts keeps its detach proofs. */
+const MINTED_SEALED_OPTIONS = new WeakSet<object>();
+
+/**
+ * Makes the one kind of `SealedCheckOptions` `createCheckRunners` accepts. ONLY `withSealedCheckRound` (check-round-runners.ts) calls this, while the check sandbox is up inside `withDetachedWorking`; a source guard in
+ * the tests fails on any other caller. A hand-built `{ exec, redact }` is refused, so no check can be pointed at a sandbox that was started some other way.
+ */
+export function mintSealedCheckOptions(options: SealedCheckOptions): SealedCheckOptions {
+  const minted = Object.freeze({ exec: options.exec, redact: (text: string) => options.redact(text) });
+  MINTED_SEALED_OPTIONS.add(minted);
+  return minted;
+}
+
 export interface CheckRunnerOptions {
   /** The workspace root: the agent's shell starts here, and a replayed `cd` may not leave it. */
   rootPath: string;
@@ -370,6 +383,7 @@ export interface CheckRunnerOptions {
 /** The real runners: readiness as preparation runs it, and agent commands as the agent's own shell runs them. */
 export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
   if (options.sealed !== undefined) {
+    if (!MINTED_SEALED_OPTIONS.has(options.sealed)) throw new Error("sealed checks are made only by a sealed check round");
     if (options.devcontainer !== undefined || options.sandbox !== undefined || options.bashOperations !== undefined || options.local === true) {
       throw new Error("sealed checks run in the check sandbox alone: no devcontainer, task sandbox, shell or local option may be given with them");
     }

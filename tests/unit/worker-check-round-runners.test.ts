@@ -7,12 +7,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkSandboxPlan, type CheckSandboxInput, type CheckSandboxPlan } from "../../packages/worker/src/check-sandbox.js";
 import { sealedContainerExec, runSealedCheckRound, withSealedCheckRound } from "../../packages/worker/src/check-round-runners.js";
+import { TEST_SERVICES_DEVCONTAINER_SENTENCE, assertSealedNetworkMembers, refuseTestServicesWithDevcontainer } from "../../packages/worker/src/check-round-runners.js";
 import { runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
 import { buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, type ServiceEnvironment } from "../../packages/worker/src/service-env.js";
-import type { HelperFiles } from "../../packages/worker/src/service-helpers.js";
+import { helperContainerName, type HelperFiles } from "../../packages/worker/src/service-helpers.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../../packages/worker/src/git.js";
-import { createCheckRunners, planChecks, runChecks } from "../../packages/worker/src/verification/checks.js";
+import { createCheckRunners, mintSealedCheckOptions, planChecks, runChecks } from "../../packages/worker/src/verification/checks.js";
 
 const RUN = "22222222-2222-4222-8222-222222222222";
 const SLOT = 7;
@@ -43,6 +44,9 @@ function environment(): ServiceEnvironment {
   });
 }
 function plan(): CheckSandboxPlan {
+  return checkSandboxPlan(planInput());
+}
+function planInput(): CheckSandboxInput {
   const addresses = runNetworkAddresses(SLOT);
   const input: CheckSandboxInput = {
     net: {
@@ -52,7 +56,7 @@ function plan(): CheckSandboxPlan {
     taskId: "t1", image: "worker:img", rootPath, maskedPaths: [], filesDir: files.directory, helpers: [{ alias: "postgres", address: runNetworkHelperIp(SLOT, 1) }], sinkholeIp: runNetworkHelperIp(SLOT, 0),
     workingSandboxName: WORK,
   };
-  return checkSandboxPlan(input);
+  return input;
 }
 
 interface ExecSeen { args: string[]; envFile?: { path: string; text: string; mode: number }; command: string[]; envFlags: string[] }
@@ -61,18 +65,38 @@ interface FakeOptions {
   answer?: (seen: ExecSeen) => { exitCode: number; stdout?: string; stderr?: string } | Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
   removeFails?: boolean;
   startExit?: number;
+  /** Containers on the services network besides the DNS helper, the helper and the check sandbox: name and address. */
+  extraMembers?: Array<{ name: string; address: string }>;
+  /** What `network inspect` says instead of the real membership (an unreadable answer). */
+  inspectAnswer?: { exitCode: number; stdout: string };
+  /** The extra members only appear once the check sandbox is up. */
+  extraAfterStart?: boolean;
+  /** A check sandbox that is on the network at the wrong address. */
+  sandboxAddress?: string;
 }
 /** A docker that remembers the working sandbox's networks and whether the check sandbox is up, and logs every call in order. */
 function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
   const calls: string[][] = [];
   const execs: ExecSeen[] = [];
   const state = { workingNetworks: [NET, "agentx-task"], sandboxUp: false };
+  const members = (): Record<string, { Name: string; IPv4Address: string }> => {
+    const addresses = runNetworkAddresses(SLOT);
+    const out: Record<string, { Name: string; IPv4Address: string }> = {
+      dns: { Name: `${NET}-dns`, IPv4Address: `${addresses.dnsHelperIp}/24` },
+      pg: { Name: helperContainerName({ name: NET }, "postgres"), IPv4Address: `${runNetworkHelperIp(SLOT, 1)}/24` },
+    };
+    if (state.workingNetworks.includes(NET)) out["work"] = { Name: WORK, IPv4Address: `${addresses.workingSandboxIp}/24` };
+    if (state.sandboxUp) out["check"] = { Name: sandboxName, IPv4Address: `${options.sandboxAddress ?? addresses.checkSandboxIp}/24` };
+    for (const [index, extra] of (options.extraAfterStart === true && !state.sandboxUp ? [] : options.extraMembers ?? []).entries()) out[`x${String(index)}`] = { Name: extra.name, IPv4Address: `${extra.address}/24` };
+    return out;
+  };
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
       const [verb, second] = args;
       if (verb === "network" && second === "disconnect") { state.workingNetworks = state.workingNetworks.filter((name) => name !== args[2]); return { exitCode: 0, stdout: "", stderr: "" }; }
       if (verb === "network" && second === "connect") { state.workingNetworks = [...state.workingNetworks, args[args.length - 2]!]; return { exitCode: 0, stdout: "", stderr: "" }; }
+      if (verb === "network" && second === "inspect") return options.inspectAnswer === undefined ? { exitCode: 0, stdout: JSON.stringify(members()), stderr: "" } : { ...options.inspectAnswer, stderr: "" };
       if (verb === "inspect") return { exitCode: 0, stdout: JSON.stringify(Object.fromEntries(state.workingNetworks.map((name) => [name, {}]))), stderr: "" };
       if (verb === "run") { state.sandboxUp = (options.startExit ?? 0) === 0; return { exitCode: options.startExit ?? 0, stdout: "sandbox-id\n", stderr: "" }; }
       if (verb === "rm") { if (options.removeFails !== true) state.sandboxUp = false; return { exitCode: 0, stdout: "", stderr: "" }; }
@@ -102,7 +126,7 @@ function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
 const verbs = (calls: string[][]) => calls.map((call) => (call[0] === "network" ? `network ${call[1]}` : call[0] === "container" ? "container inspect" : call[0]!));
 
 function roundInput(docker: DockerCli, p: CheckSandboxPlan, extra: Partial<Parameters<typeof withSealedCheckRound>[0]> = {}): Parameters<typeof withSealedCheckRound>[0] {
-  return { docker, plan: p, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
+  return { docker, plan: p, hasDevcontainer: false, rootPath, files, environment: environment(), redactor: createServiceRedactor([PASSWORD]), ...extra };
 }
 const command = (executable: string, args: string[] = [], env?: Record<string, string>) => ({ cwd: ".", executable, args, timeoutSeconds: 60, ...(env === undefined ? {} : { env }) });
 
@@ -204,7 +228,141 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     const seen: string[] = [];
     const input = roundInput(docker, p, { freshServices: () => { seen.push(verbs(calls).join(",")); return Promise.resolve(); } });
     await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
-    expect(seen).toEqual(["network disconnect,inspect,inspect,run"]);
+    expect(seen).toEqual(["network disconnect,inspect,network inspect,inspect,run,network inspect"]);
+  });
+
+  it("looks at the services network itself before and after the start", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    await runSealedCheckRound(roundInput(docker, p), planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+    const order = verbs(calls);
+    const inspects = order.flatMap((verb, index) => (verb === "network inspect" ? [index] : []));
+    expect(inspects).toHaveLength(2);
+    expect(inspects[0]!).toBeLessThan(order.indexOf("run"));
+    expect(inspects[1]!).toBeGreaterThan(order.indexOf("run"));
+    expect(inspects[1]!).toBeLessThan(order.indexOf("exec"));
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "inspect")[0]).toEqual(["network", "inspect", "--format", "{{json .Containers}}", NET]);
+  });
+
+  it("does not trust the name the caller gave for the working sandbox: the real one still on the network stops the round before the check sandbox starts", async () => {
+    const p = checkSandboxPlan({ ...planInput(), workingSandboxName: "some-other-container" });
+    const { docker, calls, state } = fakeDocker(p.sandboxName, { extraMembers: [{ name: WORK, address: runNetworkAddresses(SLOT).workingSandboxIp }] });
+    state.workingNetworks = ["agentx-task"];
+    let ran = false;
+    await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); })).rejects.toThrow(/does not expect/u);
+    expect(ran).toBe(false);
+    expect(calls.filter((call) => call[0] === "run")).toEqual([]);
+    expect(calls.filter((call) => call[0] === "rm")).toHaveLength(1);
+  });
+
+  it("fails closed and tears down when something else is on the network, before the start or after it", async () => {
+    const p = plan();
+    const extras = [{ name: "squatter", address: "172.30.7.99" }, { name: WORK, address: runNetworkAddresses(SLOT).workingSandboxIp }, { name: `${NET}-h0123456789`, address: "172.30.7.200" }];
+    for (const extraAfterStart of [false, true]) {
+      for (const extra of extras) {
+        const { docker, calls, state } = fakeDocker(p.sandboxName, { extraMembers: [extra], extraAfterStart });
+        let ran = false;
+        await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); }), `${extra.name} ${String(extraAfterStart)}`).rejects.toThrow(/does not expect/u);
+        expect(ran).toBe(false);
+        // Before the start nothing was run; after it the sandbox is removed. Either way the working sandbox is attached again, last.
+        expect(calls.filter((call) => call[0] === "run")).toHaveLength(extraAfterStart ? 1 : 0);
+        expect(state.sandboxUp).toBe(false);
+        expect(state.workingNetworks).toContain(NET);
+        expect(verbs(calls).at(-1)).toBe("network connect");
+      }
+    }
+  });
+
+  it("assertSealedNetworkMembers: the exact membership passes; a missing DNS helper, a doubled or misplaced check sandbox, and an unreadable list do not", async () => {
+    const p = plan();
+    const ok = fakeDocker(p.sandboxName);
+    ok.state.workingNetworks = ["agentx-task"];
+    await expect(assertSealedNetworkMembers(ok.docker, p, "before_start")).resolves.toBeUndefined();
+    await expect(assertSealedNetworkMembers(ok.docker, p, "after_start")).rejects.toThrow(/does not expect/u);
+    ok.state.sandboxUp = true;
+    await expect(assertSealedNetworkMembers(ok.docker, p, "after_start")).resolves.toBeUndefined();
+    // The check sandbox before its start is not expected.
+    await expect(assertSealedNetworkMembers(ok.docker, p, "before_start")).rejects.toThrow(/does not expect/u);
+    const wrongAddress = fakeDocker(p.sandboxName, { sandboxAddress: "172.30.7.77" });
+    wrongAddress.state.sandboxUp = true;
+    await expect(assertSealedNetworkMembers(wrongAddress.docker, p, "after_start")).rejects.toThrow(/does not expect/u);
+    for (const answer of [{ exitCode: 1, stdout: "" }, { exitCode: 0, stdout: "not json" }, { exitCode: 0, stdout: "[]" }, { exitCode: 0, stdout: "null" }, { exitCode: 0, stdout: "{\"a\":{\"Name\":1}}" }]) {
+      const { docker } = fakeDocker(p.sandboxName, { inspectAnswer: answer });
+      await expect(assertSealedNetworkMembers(docker, p, "before_start"), JSON.stringify(answer)).rejects.toThrow();
+    }
+  });
+
+  it("refuses a second round on a plan while the first runs, and allows one again afterwards (also after a failure)", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    let release: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => { release = resolve; });
+    let inside: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { inside = resolve; });
+    const first = withSealedCheckRound(roundInput(docker, p), async () => { inside(); await holding; return "first"; });
+    await entered;
+    const before = calls.length;
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("second"))).rejects.toThrow(/already running on this plan/u);
+    expect(calls.length).toBe(before);
+    release();
+    await expect(first).resolves.toBe("first");
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("third"))).resolves.toBe("third");
+  });
+
+  it("a plan in use does not block another plan (another run)", async () => {
+    const p = plan();
+    const other = checkSandboxPlan({ ...planInput(), taskId: "t2", net: { ...planInput().net, name: runNetworkName("33333333-3333-4333-8333-333333333333") } });
+    expect(other.sandboxName).not.toBe(p.sandboxName);
+    const a = fakeDocker(p.sandboxName);
+    let release: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => { release = resolve; });
+    let inside: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { inside = resolve; });
+    const first = withSealedCheckRound(roundInput(a.docker, p), async () => { inside(); await holding; });
+    await entered;
+    // A different plan reaches its own checks (its fake network is not this run's, so it stops at the network look, not at the lock).
+    await expect(withSealedCheckRound(roundInput(fakeDocker(other.sandboxName).docker, other), () => Promise.resolve())).rejects.not.toThrow(/already running/u);
+    release();
+    await first;
+  });
+
+  it("refuses a project with a dev container before any Docker call (not available yet)", async () => {
+    const p = plan();
+    const { docker, calls } = fakeDocker(p.sandboxName);
+    await expect(withSealedCheckRound(roundInput(docker, p, { hasDevcontainer: true }), () => Promise.resolve())).rejects.toThrow(TEST_SERVICES_DEVCONTAINER_SENTENCE);
+    expect(calls).toEqual([]);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: [{}], devcontainer: true })).toThrow(TEST_SERVICES_DEVCONTAINER_SENTENCE);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: 2, devcontainer: true })).toThrow(/not available yet/u);
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: [], devcontainer: true })).not.toThrow();
+    expect(() => refuseTestServicesWithDevcontainer({ dependencies: 3, devcontainer: false })).not.toThrow();
+    // And the lock is not taken by a refused round.
+    await expect(withSealedCheckRound(roundInput(docker, p), () => Promise.resolve("ok"))).resolves.toBe("ok");
+  });
+
+  it("a source guard: the check sandbox, the sealed exec and the sealed options are made in one place each (TS-SEAL-3)", async () => {
+    const root = new URL("../../packages/worker/src/", import.meta.url).pathname;
+    const rules: Array<[RegExp, string[]]> = [
+      [/\bstartCheckSandbox\(/u, ["check-sandbox.ts"]],
+      [/\bsealedContainerExec\(/u, ["check-round-runners.ts"]],
+      [/\bmintSealedCheckOptions\(/u, ["verification/checks.ts", "check-round-runners.ts"]],
+      [/\bsealed:\s/u, ["verification/checks.ts", "check-round-runners.ts"]],
+    ];
+    const found = new Map<string, string[]>(rules.map(([pattern]) => [pattern.source, []]));
+    const walk = async (folder: string): Promise<void> => {
+      for (const entry of await readdir(folder, { withFileTypes: true })) {
+        const path = join(folder, entry.name);
+        if (entry.isDirectory()) { await walk(path); continue; }
+        if (!entry.name.endsWith(".ts")) continue;
+        const text = await readFile(path, "utf8");
+        for (const [pattern] of rules) if (pattern.test(text)) found.get(pattern.source)!.push(path.slice(root.length));
+      }
+    };
+    await walk(root);
+    for (const [pattern, allowed] of rules) expect(found.get(pattern.source)!.sort(), pattern.source).toEqual([...allowed].sort().filter((file) => found.get(pattern.source)!.includes(file)));
+    // And each is made somewhere: the guard is not passing on an empty search.
+    expect(found.get(rules[0]![0].source)).toEqual(["check-sandbox.ts"]);
+    expect(found.get(rules[1]![0].source)).toEqual(["check-round-runners.ts"]);
   });
 
   it("a source guard: nothing but check-sandbox.ts reads a plan's sandboxRunArgs", async () => {
@@ -249,6 +407,19 @@ describe("the sealed exec: the run's variables are a file, last, and never on th
     expect(seen.envFile!.text).toContain("DATABASE_URL=postgres://app:");
   });
 
+  it("refuses a command's variable whose name is not a POSIX name, so an `=` or a flag cannot be smuggled into the exec", async () => {
+    const p = plan();
+    for (const name of ["A=B", "--privileged", "A B", "1ABC", "", "A-B", "É", "A\nB"]) {
+      const { docker, execs } = fakeDocker(p.sandboxName);
+      const round = await runSealedCheckRound(roundInput(docker, p), planChecks([command("pytest", [], { [name]: "x" })], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+      expect(round.entries[0], JSON.stringify(name)).toMatchObject({ after: "failed" });
+      expect(execs, JSON.stringify(name)).toEqual([]);
+    }
+    const { docker, execs } = fakeDocker(p.sandboxName);
+    await runSealedCheckRound(roundInput(docker, p), planChecks([command("pytest", [], { _OK_1: "x", lower_ok: "y" })], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+    expect(execs[0]!.envFlags).toEqual(expect.arrayContaining(["_OK_1=x", "lower_ok=y"]));
+  });
+
   it("does not copy the worker's own environment into the agent's replay", async () => {
     const p = plan();
     const { docker, execs } = fakeDocker(p.sandboxName);
@@ -274,9 +445,10 @@ describe("the sealed exec: the run's variables are a file, last, and never on th
     expect(calls.length).toBe(before);
   });
 
-  it("refuses a sandbox name that is not a container name", () => {
-    expect(() => sealedContainerExec({ docker: fakeDocker("x").docker, container: "--privileged x", files, environment: environment(), live: () => true })).toThrow();
-    expect(() => sealedContainerExec({ docker: fakeDocker("x").docker, container: "-v", files, environment: environment(), live: () => true })).toThrow();
+  it("refuses an exec input the sealed round did not make (TS-SEAL-3)", () => {
+    for (const container of [plan().sandboxName, "--privileged x", "-v"]) {
+      expect(() => sealedContainerExec({ docker: fakeDocker("x").docker, container, files, environment: environment(), live: () => true })).toThrow(/only by a sealed check round/u);
+    }
   });
 
   it("an empty environment passes no env file", async () => {
@@ -312,13 +484,20 @@ describe("the sealed runners keep the run's secrets out of what they report", ()
 });
 
 describe("createCheckRunners with `sealed` has no unsealed fallback", () => {
-  const sealed = { exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text };
+  const sealed = mintSealedCheckOptions({ exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text });
   it("throws when given a devcontainer, a task sandbox, bash operations or the local shell as well", () => {
     const cli = { run: () => Promise.reject(new Error("unused")) } as never;
     expect(() => createCheckRunners({ rootPath, sealed, devcontainer: { cli, target: { rootPath } as never } })).toThrow(/check sandbox alone/u);
     expect(() => createCheckRunners({ rootPath, sealed, sandbox: {} as never })).toThrow(/check sandbox alone/u);
     expect(() => createCheckRunners({ rootPath, sealed, bashOperations: { exec: () => Promise.reject(new Error("unused")) } })).toThrow(/check sandbox alone/u);
     expect(() => createCheckRunners({ rootPath, sealed, local: true })).toThrow(/check sandbox alone/u);
+    expect(() => createCheckRunners({ rootPath, sealed })).not.toThrow();
+  });
+
+  it("refuses sealed options that a sealed round did not make: hand-built, copied or spread", () => {
+    const handBuilt = { exec: () => Promise.reject(new Error("unused")), redact: (text: string) => text };
+    expect(() => createCheckRunners({ rootPath, sealed: handBuilt })).toThrow(/only by a sealed check round/u);
+    expect(() => createCheckRunners({ rootPath, sealed: { ...sealed } })).toThrow(/only by a sealed check round/u);
     expect(() => createCheckRunners({ rootPath, sealed })).not.toThrow();
   });
 
