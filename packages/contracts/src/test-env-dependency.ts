@@ -15,7 +15,8 @@
 import { z } from "zod";
 import type { DecisionRisk } from "./decision-cards.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema } from "./project.js";
-import { TestEnvValueSourceSchema, type TestEnvService } from "./test-environment.js";
+import type { TestEnvService } from "./test-environment.js";
+import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { TestServiceHostSchema, looksLikeSecretValue, reservedDependencyEnvName } from "./test-services-shared.js";
 import { sha256Hex } from "./web-hash.js";
 

@@ -15,9 +15,13 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
-import { SetupValueSourceSchema } from "./setup-run.js";
+import { TestEnvDependenciesSchema } from "./test-env-dependency.js";
+import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
+
+// Moved to ./test-env-value-source.ts (so the dependency contract can use it without a cycle); still exported from here.
+export { TestEnvValueSourceSchema, type TestEnvValueSource } from "./test-env-value-source.js";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 function line(max: number, min = 1) {
@@ -136,6 +140,12 @@ export const TestEnvironmentBodySchema = z
       .strict(),
     nightly: z.object({ enabled: z.boolean(), cronUtc: z.string().regex(/^[0-9*/,-]+(?: [0-9*/,-]+){4}$/u).max(64), branch: GitBranchNameSchema }).strict(),
     services: z.array(TestEnvServiceSchema).max(32),
+    /**
+     * Test services (slice 1): what the code talks to besides itself and what Rovara puts behind each for a run (design test-services.md 2.2). Optional, and ABSENT unless a person approved at least one: a body
+     * without it parses to a value with no such key, so `testEnvDigest` is the digest it always was (golden test). Replaces `services` for the dependencies below; v1 `services` are unchanged and still refused
+     * with the switch `tx` on (`environmentUnusedReason`). Nothing reads this field while `tx` is off.
+     */
+    dependencies: TestEnvDependenciesSchema.optional(),
     /** Synthetic data only: seeded so a run repeats. A seed is a command or a fixture file inside the repository. */
     data: z
       .object({ seeds: z.array(z.union([z.object({ command: ProjectCommandSchema }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema }).strict()])).max(20), generator: z.literal("faker_seeded"), seed: z.number().int().min(0).max(2_147_483_647) })
@@ -348,12 +358,6 @@ export function testEnvApprovalRisk(env: TestEnvironmentBody): DecisionRisk {
 
 // ---- the proposal and the Prove run
 
-/**
- * Where a proposed value came from: a file and line, a code detector, the setup agent's own reading, or (setup run, SH2) a command the run observed working (`observed:<run>#<n>`),
- * a company recipe (`recipe:<id>@<rev>`) or a person. Replaces: the three-member union; the new members are additions, so every stored proposal still parses.
- */
-export const TestEnvValueSourceSchema = z.union([z.object({ path: line(500), line: z.number().int().min(1).max(10_000_000) }).strict(), z.literal("model"), z.string().regex(/^detector:[a-z0-9_-]{1,40}$/u), SetupValueSourceSchema]);
-export type TestEnvValueSource = z.infer<typeof TestEnvValueSourceSchema>;
 
 /** The setup agent's proposal: today's `SetupDraft` (and its flagged commands, which stay flagged) plus the test environment it proposes and the source of each value. A proposal, nothing more. */
 export const TestEnvironmentProposalSchema = SetupDraftSchema.extend({
@@ -363,9 +367,13 @@ export const TestEnvironmentProposalSchema = SetupDraftSchema.extend({
 });
 export type TestEnvironmentProposal = z.infer<typeof TestEnvironmentProposalSchema>;
 
-export const TEST_ENV_PROVE_STEPS = ["setup", "build", "boot", "smoke", "full_suite", "mocks", "preprod_probe"] as const;
+/** The Prove steps that exist with no test services: a report built with the switch `tx` off carries exactly these (a worker that maps over `TEST_ENV_PROVE_STEPS` must skip the two below unless it ran them). */
+export const TEST_ENV_BASE_PROVE_STEPS = ["setup", "build", "boot", "smoke", "full_suite", "mocks", "preprod_probe"] as const;
+/** Test services (design 8.2): "start dependencies" (the helpers start, are healthy and their seeds and readiness commands pass) and "dependency usage check" (the sealed test checks called nothing Rovara did not start). Derived by the broker from the candidate check's usage record; they replace the mocks and pre-prod probe steps for a dependency (those two stay for v1 `services`). */
+export const TEST_ENV_DEPENDENCY_PROVE_STEPS = ["dependencies", "dependency_usage"] as const;
+export const TEST_ENV_PROVE_STEPS = [...TEST_ENV_BASE_PROVE_STEPS, ...TEST_ENV_DEPENDENCY_PROVE_STEPS] as const;
 /** Why a Prove step failed, in fixed words (never the command's own text; the redacted tail is separate). */
-export const TEST_ENV_PROVE_FAILURES = ["setup_failed", "build_failed", "boot_failed", "health_timeout", "smoke_failed", "tests_failed", "round_budget_exceeded", "mock_unmatched", "preprod_unreachable", "coverage_unreadable", "infrastructure"] as const;
+export const TEST_ENV_PROVE_FAILURES = ["setup_failed", "build_failed", "boot_failed", "health_timeout", "smoke_failed", "tests_failed", "round_budget_exceeded", "mock_unmatched", "preprod_unreachable", "coverage_unreadable", "infrastructure", "dependency_start_failed", "dependency_unexpected_call"] as const;
 
 export const TestEnvProveReportSchema = z
   .object({
