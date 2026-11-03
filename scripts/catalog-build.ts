@@ -537,7 +537,7 @@ async function main(argv: string[]): Promise<void> {
       ports: {
         mirror: skopeoMirrorPort({ commands, registry, authFile, copyTimeoutMs }),
         sbom: syftSbomPort({ commands, registry, authDir, timeoutMs: copyTimeoutMs }),
-        scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand, DescribeImagesCommand } }),
+        scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand } }),
         registryServes: ecrServesPort({ client: ecr, commands: { DescribeImagesCommand } }),
         signer,
       },
