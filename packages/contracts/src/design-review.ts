@@ -295,7 +295,7 @@ export const DESIGN_REVIEW_STATUSES = ["estimating", "waiting_cost", "running", 
  * `rearm_limit`: a person sent the design back more often than the re-review bound allows; they raise the cap or pick a lower tier to review again.
  * `skipped`: a person chose Skip on the spend card (`skipDesignReview`); the review is not retried, re-armed or reopened by a raise or a lower tier.
  */
-export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified", "rearm_limit", "skipped", "cancelled", "task_limit"] as const;
+export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified", "rearm_limit", "skipped", "cancelled", "task_limit", "switched_off"] as const;
 
 /** Re-reviews after a person sent a design back (REQUEST_CHANGES) before a person must raise the cap or pick a lower tier; and retries of a review that did not run. Both reset on such a change. */
 export const DESIGN_REVIEW_REARMS_MAX = 2;

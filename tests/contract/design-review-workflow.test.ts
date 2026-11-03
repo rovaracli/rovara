@@ -1093,7 +1093,9 @@ describe("money N1: the spend gate and the workflow agree on what fits", () => {
     const lower = applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "lower_tier", tier: "light" } }, { expectedRevision: hold.revision, estimateUsd: 4, now: LATER });
     expect(lower.designReview).toMatchObject({ tier: "light", approvals: [{ kind: "lower_tier" }] });
     const noPrice = holdDesignReviewForCost(designSubmitted(), { expectedRevision: designSubmitted().revision, now: NOW });
-    const unpriced = applyDesignSpendChoice(noPrice, { actorId: PERSON, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 10 } }, { expectedRevision: noPrice.revision, now: LATER });
+    // B2-m5: the pure `run_unpriced` move is unusable on its own: it would put the task at RUNNING with no operation. It throws; the commit port goes through `designSpendCommitItems` (e2e), and the contract's own start still holds the approval.
+    expect(() => applyDesignSpendChoice(noPrice, { actorId: PERSON, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 10 } }, { expectedRevision: noPrice.revision, now: LATER })).toThrow(/designSpendCommitItems/);
+    const unpriced = startDesignReview(noPrice, { expectedRevision: noPrice.revision, costApproved: { by: { actorId: PERSON } }, now: LATER });
     expect(unpriced).toMatchObject({ state: "RUNNING", designReview: { status: "running", approvals: [{ kind: "spend", by: { actorId: PERSON } }] } });
     expect(() => applyDesignSpendChoice(hold, { actorId: PERSON, applied: { choice: "skip" } }, { expectedRevision: hold.revision - 1, now: LATER })).toThrow(/stale/);
   });

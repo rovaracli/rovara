@@ -64,6 +64,7 @@ import { requireTaskStopWindowContext, taskStopKeyActorChecks, withAdmittedTaskS
 import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
 import { designReviewSlotOf, isSlotRefusal, resolveSlotAsk } from "./design-review-slot-access.js";
+import { plannerRunRoomUsd } from "../../design-review/resolve-budget.js";
 
 /**
  * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
@@ -345,9 +346,13 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
       const chainRun = payment === undefined || task.chain === undefined ? undefined
         : await unreadable("chain_run", () => getItem<{ chainId?: string }>(dependencies, chainRunKey(taskOrg, task.chain!.chainRunId, "META")));
       const chainTag = chainRun?.chainId === undefined || task.chain === undefined ? undefined : { chainId: chainRun.chainId, chainRunId: task.chain.chainRunId };
+      // B2-M1: the planner's resolve run for a design review is held to what is left under the review's cap (its measured spend is added to the review's total when it ends). No room, no key.
+      const plannerRoomUsd = plannerRunRoomUsd(task.workflow, current);
+      if (plannerRoomUsd !== undefined && !(plannerRoomUsd > 0)) throw agentXError("BUDGET_EXCEEDED", "The design review has no budget left for the planner's answer.");
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
+        ...(plannerRoomUsd === undefined ? {} : { budgetCeilingUsd: plannerRoomUsd }),
         ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
         ...(funding === undefined ? {} : { taskStopExempt: true, guardRecord: (items: readonly TransactItem[]) => {
           const guarded = guardModelKeyOperation(current, [...items]), key = taskKey(task.taskId);

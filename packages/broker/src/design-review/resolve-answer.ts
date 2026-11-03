@@ -5,7 +5,7 @@
 //
 // The planner's run itself (the prompt, the revised design's storage) is not here: this takes the answer and the stored revised design and decides what they mean.
 import {
-  WorkflowTransitionError, askDesignQuestions, closeDesignReview, readDesignResolve, resolutionOf, resolveDesignReview,
+  DESIGN_REVIEW_ROUNDS_MAX, WorkflowTransitionError, askDesignQuestions, closeDesignReview, readDesignResolve, resolutionOf, resolveDesignReview,
   type CitablePacketItem, type PinnedCommits, type ReviewerRole, type WorkflowArtifact, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { checkPlannerEvidence } from "./citations.js";
@@ -40,13 +40,17 @@ export function applyPlannerResolve(input: PlannerResolveInput): WorkflowSnapsho
   if (!read.ok) return unusable();
   const checked = checkPlannerEvidence({ resolutions: read.resolutions, questions: read.questions, packets: roundItemsOf(workflow), pins: input.pins });
   if (!checked.ok) return unusable();
+  // B2-m1: the last round does not ask, and only fixes or contests. The prompt says so (`designResolvePrompt`); a planner that asks anyway (or declines) does not lose its fixes and contests: those findings stay open,
+  // listed for the person as unresolved, and its questions are not put to anyone.
+  const lastRound = (workflow.designReview?.rounds.length ?? 0) >= DESIGN_REVIEW_ROUNDS_MAX;
+  const leaveOpen = lastRound ? checked.resolutions.filter((resolution) => resolution.action === "asked" || resolution.action === "declined").map((resolution) => resolution.findingId) : [];
   try {
     // A question card first when the planner needs a person and this round has not asked: the resolutions wait for the answers, and the planner answers again with them.
-    if (checked.questions.length > 0 && round.questions === undefined) return askDesignQuestions(workflow, { expectedRevision, questions: checked.questions, now: input.now });
+    if (!lastRound && checked.questions.length > 0 && round.questions === undefined) return askDesignQuestions(workflow, { expectedRevision, questions: checked.questions, now: input.now });
     return resolveDesignReview(workflow, {
-      expectedRevision, now: input.now, ...(input.revisedDesign === undefined ? {} : { artifact: input.revisedDesign }),
+      expectedRevision, now: input.now, ...(input.revisedDesign === undefined ? {} : { artifact: input.revisedDesign }), ...(leaveOpen.length === 0 ? {} : { leaveOpen }),
       // `settled` is set by code in the move; the planner's value would be ignored.
-      resolutions: checked.resolutions.map((resolution) => ({ ...resolution, settled: false })),
+      resolutions: checked.resolutions.filter((resolution) => !leaveOpen.includes(resolution.findingId)).map((resolution) => ({ ...resolution, settled: false })),
     });
   } catch (error) {
     if (error instanceof WorkflowTransitionError) return unusable();
