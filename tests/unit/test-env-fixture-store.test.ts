@@ -387,7 +387,7 @@ describe("the scan sees keys and numbers, not only strings (M1)", () => {
     expect(ports.objects.dump().size).toBe(0);
   });
   it("lists the findings in a bare walker: keys and numbers are texts, a digest and a timestamp are not", () => {
-    expect(fixtureTexts({ [akia]: 5, nested: [{ "x@y.com": 4_111_111_111_111_111 }], hash: "a".repeat(64), at: "2026-11-02T00:00:00Z" })).toEqual([akia, "5", "nested", "x@y.com", "4111111111111111", "hash", "at"]);
+    expect(fixtureTexts({ [akia]: 5, nested: [{ "x@y.com": Number(card) }], hash: "a".repeat(64), at: "2026-11-02T00:00:00Z" })).toEqual([akia, "5", "nested", "x@y.com", "4111111111111111", "hash", "at"]);
     expect(fixtureSetFindings({ minimum: Number(card) }, DENY)).not.toEqual([]);
     expect(fixtureSetFindings({ minimum: 200 }, DENY)).toEqual([]);
   });
