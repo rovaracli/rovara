@@ -29,7 +29,7 @@ export const DESIGN_META_SOURCES_MAX = 40;
 
 // eslint-disable-next-line no-control-regex -- control characters are what this removes
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu;
-const BIDI_CONTROLS = /[؜​-‏‪-‮⁦-⁩﻿]/gu;
+const BIDI_CONTROLS = /[\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
 const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 const PLAIN_ID = /^[A-Za-z0-9._-]{1,32}$/u;
 

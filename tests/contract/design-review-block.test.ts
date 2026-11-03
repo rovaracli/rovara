@@ -2,13 +2,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DESIGN_REVIEW_FINDINGS_MAX, DesignFindingSchema, checkDesignMerge, findingRestsOnSourceAlone, mergeDesignFindings, mergeDesignFindingsByCode, readDesignMerge, readDesignMeta, readDesignResolve,
-  readDesignReview, type RawDesignFinding,
+  readDesignReview, type DesignCitation, type RawDesignFinding,
 } from "../../packages/contracts/src/index.js";
 
+const contains = (text: string): string => expect.stringContaining(text) as string;
 const fence = (info: string, body: unknown): string => `Some reasoning.\n\`\`\`${info}\n${typeof body === "string" ? body : JSON.stringify(body)}\n\`\`\`\n`;
-const design = { kind: "design", section: "§3" };
-const code = { kind: "code", repo: "app", path: "src/a.ts", startLine: 3, endLine: 9, anchor: "retry(", commit: "a".repeat(40) };
-const source = { kind: "source", ref: "linear:ENG-1", digest: "c".repeat(64) };
+const design: DesignCitation = { kind: "design", section: "§3" };
+const code: DesignCitation = { kind: "code", repo: "app", path: "src/a.ts", startLine: 3, endLine: 9, anchor: "retry(", commit: "a".repeat(40) };
+const source: DesignCitation = { kind: "source", ref: "linear:ENG-1", digest: "c".repeat(64) };
 const item = (id: string, extra: Record<string, unknown> = {}) => ({ id, severity: "major", section: "§3", text: `Problem ${id}.`, citations: [design], ...extra });
 const review = (findings: unknown[], extra: Record<string, unknown> = {}) => fence("rovara-design-review", { findings, ...extra });
 const paraphrase = { proposes: "It adds webhooks.", today: "Events go to Slack only." };
@@ -28,9 +29,9 @@ describe("reviewer block reader", () => {
   });
 
   it("refuses a missing, unclosed or unreadable block, and a wrong top-level shape", () => {
-    expect(readDesignReview("no block here", "critic")).toMatchObject({ ok: false, error: expect.stringContaining("no rovara-design-review block") });
-    expect(readDesignReview("```rovara-design-review\n{\"findings\":[]}", "critic")).toMatchObject({ ok: false, error: expect.stringContaining("not closed") });
-    expect(readDesignReview(fence("rovara-design-review", "{not json"), "critic")).toMatchObject({ ok: false, error: expect.stringContaining("not valid JSON") });
+    expect(readDesignReview("no block here", "critic")).toMatchObject({ ok: false, error: contains("no rovara-design-review block") });
+    expect(readDesignReview("```rovara-design-review\n{\"findings\":[]}", "critic")).toMatchObject({ ok: false, error: contains("not closed") });
+    expect(readDesignReview(fence("rovara-design-review", "{not json"), "critic")).toMatchObject({ ok: false, error: contains("not valid JSON") });
     expect(readDesignReview(fence("rovara-design-review", "[]"), "critic")).toMatchObject({ ok: false });
     expect(readDesignReview(fence("rovara-design-review", {}), "critic")).toMatchObject({ ok: false });
   });
@@ -38,11 +39,11 @@ describe("reviewer block reader", () => {
   it("refuses more than 15 findings, and takes 15", () => {
     const many = (count: number) => Array.from({ length: count }, (_, index) => item(String(index + 1)));
     expect(readDesignReview(review(many(15)), "critic")).toMatchObject({ ok: true });
-    expect(readDesignReview(review(many(16)), "critic")).toMatchObject({ ok: false, error: expect.stringContaining("too big") });
+    expect(readDesignReview(review(many(16)), "critic")).toMatchObject({ ok: false, error: contains("too big") });
   });
 
   it("refuses a finding with no citation, too many citations, a bad citation, or an unknown section or severity", () => {
-    expect(readDesignReview(review([item("1", { citations: [] })]), "critic")).toMatchObject({ ok: false, error: expect.stringContaining("findings.0.citations") });
+    expect(readDesignReview(review([item("1", { citations: [] })]), "critic")).toMatchObject({ ok: false, error: contains("findings.0.citations") });
     expect(readDesignReview(review([{ id: "1", severity: "major", section: "§3", text: "x" }]), "critic")).toMatchObject({ ok: false });
     expect(readDesignReview(review([item("1", { citations: Array.from({ length: 6 }, () => design) })]), "critic")).toMatchObject({ ok: false });
     expect(readDesignReview(review([item("1", { citations: [{ kind: "code", repo: "a", path: "b" }] })]), "critic")).toMatchObject({ ok: false });
@@ -64,7 +65,7 @@ describe("reviewer block reader", () => {
   });
 
   it("refuses a repeated finding id", () => {
-    expect(readDesignReview(review([item("1"), item("1", { text: "Other." })]), "critic")).toMatchObject({ ok: false, error: expect.stringContaining("own id") });
+    expect(readDesignReview(review([item("1"), item("1", { text: "Other." })]), "critic")).toMatchObject({ ok: false, error: contains("own id") });
   });
 
   it("redacts, flattens and cuts finding text", () => {
@@ -73,15 +74,15 @@ describe("reviewer block reader", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const read = result.findings[0]!.text;
-    expect(read).not.toMatch(/[\n\u0000]/);
+    expect(read.includes("\n") || read.includes("\u0000")).toBe(false);
     expect(read).not.toContain("ghp_");
     expect(Array.from(read).length).toBeLessThanOrEqual(500);
     expect(read.startsWith("Line one line two")).toBe(true);
   });
 
   it("needs the comprehension reviewer's paraphrase, and refuses one from anyone else", () => {
-    expect(readDesignReview(review([]), "comprehension")).toMatchObject({ ok: false, error: expect.stringContaining("needs a paraphrase") });
-    expect(readDesignReview(review([], { paraphrase }), "critic")).toMatchObject({ ok: false, error: expect.stringContaining("Only the comprehension") });
+    expect(readDesignReview(review([]), "comprehension")).toMatchObject({ ok: false, error: contains("needs a paraphrase") });
+    expect(readDesignReview(review([], { paraphrase }), "critic")).toMatchObject({ ok: false, error: contains("Only the comprehension") });
     const read = readDesignReview(review([item("1")], { paraphrase }), "comprehension");
     expect(read).toMatchObject({ ok: true, paraphrase: "Proposes: It adds webhooks. Today, per the design: Events go to Slack only." });
     if (read.ok) expect(read.paraphrase!.length).toBeLessThanOrEqual(1500);
@@ -104,12 +105,12 @@ describe("design meta block reader", () => {
     expect(readDesignMeta(`# Design\n\n${fence("rovara-design-meta", meta)}`)).toEqual({ ok: true, meta });
   });
   it("refuses a missing or unreadable block, unknown fields, unknown reasons, wrong kinds and repeats", () => {
-    expect(readDesignMeta("# Design")).toMatchObject({ ok: false, error: expect.stringContaining("no rovara-design-meta block") });
+    expect(readDesignMeta("# Design")).toMatchObject({ ok: false, error: contains("no rovara-design-meta block") });
     expect(readDesignMeta(fence("rovara-design-meta", "{"))).toMatchObject({ ok: false });
     expect(readDesignMeta(fence("rovara-design-meta", { ...meta, risk: "low" }))).toMatchObject({ ok: false });
     expect(readDesignMeta(fence("rovara-design-meta", { ...meta, touches: ["safe"] }))).toMatchObject({ ok: false });
     expect(readDesignMeta(fence("rovara-design-meta", { ...meta, sources: [{ kind: "shell", ref: "rm -rf /" }] }))).toMatchObject({ ok: false });
-    expect(readDesignMeta(fence("rovara-design-meta", { ...meta, services: ["a", "a"] }))).toMatchObject({ ok: false, error: expect.stringContaining("twice") });
+    expect(readDesignMeta(fence("rovara-design-meta", { ...meta, services: ["a", "a"] }))).toMatchObject({ ok: false, error: contains("twice") });
     expect(readDesignMeta(fence("rovara-design-meta", { ...meta, services: Array.from({ length: 21 }, (_, index) => `s${index}`) }))).toMatchObject({ ok: false });
     expect(readDesignMeta(fence("rovara-design-meta", { ...meta, repositories: ["a\u0000b"] }))).toMatchObject({ ok: false });
   });
@@ -234,12 +235,12 @@ describe("resolve block reader", () => {
   });
   it("refuses a missing, repeated or unknown finding, a contest with no readable evidence, an ask with no question, a severity field and unknown fields", () => {
     const read = (resolutions: unknown[], questions: unknown[] = [question]) => readDesignResolve(fence("rovara-design-resolve", { resolutions, questions }), ids);
-    expect(read(answers.slice(0, 3))).toMatchObject({ ok: false, error: expect.stringContaining("Every finding") });
+    expect(read(answers.slice(0, 3))).toMatchObject({ ok: false, error: contains("Every finding") });
     expect(read([...answers, answers[0]])).toMatchObject({ ok: false });
     expect(read([...answers, { findingId: "m9", action: "fixed", note: "x" }])).toMatchObject({ ok: false });
-    expect(read(answers.map((entry) => (entry.action === "contested" ? { ...entry, evidence: undefined } : entry)))).toMatchObject({ ok: false, error: expect.stringContaining("evidence") });
-    expect(read(answers.map((entry) => (entry.action === "contested" ? { ...entry, evidence: [source] } : entry)))).toMatchObject({ ok: false, error: expect.stringContaining("design or the code") });
-    expect(read(answers, [])).toMatchObject({ ok: false, error: expect.stringContaining("question") });
+    expect(read(answers.map((entry) => (entry.action === "contested" ? { ...entry, evidence: undefined } : entry)))).toMatchObject({ ok: false, error: contains("evidence") });
+    expect(read(answers.map((entry) => (entry.action === "contested" ? { ...entry, evidence: [source] } : entry)))).toMatchObject({ ok: false, error: contains("design or the code") });
+    expect(read(answers, [])).toMatchObject({ ok: false, error: contains("question") });
     expect(read(answers.map((entry) => (entry.action === "fixed" ? { ...entry, severity: "nit" } : entry)))).toMatchObject({ ok: false });
     expect(read(answers.map((entry) => (entry.action === "fixed" ? { ...entry, questionId: "q1" } : entry)))).toMatchObject({ ok: false });
   });
