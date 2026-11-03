@@ -2,9 +2,12 @@
 //   GET                 anyone who can see the project: its health (state, cause, since), whether failing tests propose a fix task, and the proposed tasks.
 //   POST (set)          a maintainer turns `nightly.proposeFixTask` on or off: { action: "set_propose_fix_task", enabled, requestId }. Audited.
 //   POST (dismiss)      a maintainer puts one proposed task away: { action: "dismiss_proposed_task", key }.
+//   POST (cap)          a maintainer sets the monthly cap on the project's automatic runs: { action: "set_automatic_runs_cap", cap, requestId }. Audited. The GET carries `automaticRuns` (runs, the line, the pause, the reminder).
 // Every answer is fixed words, a count, test ids and a day: no output and no message text.
 import { z } from "zod";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, type OrgId } from "@agentx/contracts";
+import { setAutomaticRunsCap } from "../../automatic-runs/cap.js";
+import { automaticRunsView } from "../../automatic-runs/view.js";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { dismissProposedFixTask, listProposedFixTasks } from "../../test-env/proposed-tasks.js";
 import { readProjectHealth, readProposeFixTask, setProposeFixTask } from "../../test-env/health.js";
@@ -22,6 +25,7 @@ export const TEST_HEALTH_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-health$/u;
 const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_propose_fix_task"), enabled: z.boolean(), requestId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/u) }).strict(),
   z.object({ action: z.literal("dismiss_proposed_task"), key: z.string().regex(/^[a-f0-9]{64}$/u) }).strict(),
+  z.object({ action: z.literal("set_automatic_runs_cap"), cap: z.number().int().min(0).max(MAX_AUTOMATIC_RUNS_PER_MONTH), requestId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/u) }).strict(),
 ]);
 
 async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string) {
@@ -33,6 +37,9 @@ async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
     // The latest night that left no result, in fixed words: it did not finish (branch moved, out of time, the machine could not run it, Rovara's side) or cannot run at all today (services, private registries, a
     // branch that is not the default). Never "needs repair": none of these is a fault of the project's setup.
     ...await readLatestNight(store, orgId, name).then((night) => (night === undefined ? {} : { lastNight: { status: night.status, reason: night.reason, at: night.at, words: night.words } }), () => ({})),
+    // The project's automatic runs (owner decision 2026-11-02): the runs Rovara started by itself ("Started by Rovara (nightly)"), its own "Automatic runs" line against the monthly cap, whether the cap has paused them, and
+    // the reminder to review the setup when the person who approved it has left. Read failure leaves the block out; it never reads as "nothing is paused".
+    ...await automaticRunsView(store, orgId, name).then((automaticRuns) => ({ automaticRuns }), () => ({})),
     proposeFixTask: await readProposeFixTask(store, orgId, name),
     proposedTasks: await listProposedFixTasks(store, orgId, name).catch(() => []),
   };
@@ -53,7 +60,10 @@ export async function routeTestHealth(deps: DeveloperRouteDependencies, caller: 
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const store = testEnvStoreOf(deps);
-  if (parsed.data.action === "set_propose_fix_task") {
+  if (parsed.data.action === "set_automatic_runs_cap") {
+    await setAutomaticRunsCap(store, { orgId: caller.orgId, project: name, role, changedBy: caller.developerId, cap: parsed.data.cap, requestId: parsed.data.requestId });
+    logDeveloperEvent({ event: "developer.automatic_runs_cap_changed", orgId: caller.orgId, project: name });
+  } else if (parsed.data.action === "set_propose_fix_task") {
     await setProposeFixTask(store, { orgId: caller.orgId, project: name, role, changedBy: caller.developerId, enabled: parsed.data.enabled, requestId: parsed.data.requestId });
     logDeveloperEvent({ event: "developer.test_health_setting_changed", orgId: caller.orgId, project: name, enabled: String(parsed.data.enabled) });
   } else {

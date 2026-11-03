@@ -10,7 +10,7 @@ import { auditAutomaticRunStarted, auditOccurrence } from "../audit/events.js";
 import { auditTransact, tryAuditEvent } from "../audit/outbox.js";
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
-import { claimAutomaticRun, releaseAutomaticRun } from "./cap.js";
+import { AUTOMATIC_RUNS_STARTED_PREFIX, claimAutomaticRun, releaseAutomaticRun } from "./cap.js";
 
 export interface AutomaticRunDependencies extends TestEnvDeps {
   /** The shared run start (`startAgentRun` bound to the install's starter). */
@@ -54,20 +54,20 @@ export async function startAutomaticRun(deps: AutomaticRunDependencies, input: A
     await releaseAutomaticRun(deps, { orgId: input.orgId, project: input.project, requestId: input.requestId }).catch(() => undefined);
     throw error;
   }
-  await recordStart(deps, input, claim.used, claim.cap).catch(() => undefined);
+  await recordStart(deps, input, claim.used, claim.cap, started.taskId).catch(() => undefined);
   return { started };
 }
 
 /** The audit record of the start, once per request id: the actor is Rovara (the system), the facts name the job and the person who approved the setup. Best effort: the run does not wait on its audit trail. */
-async function recordStart(deps: AutomaticRunDependencies, input: AutomaticRunInput, used: number, cap: number): Promise<void> {
+async function recordStart(deps: AutomaticRunDependencies, input: AutomaticRunInput, used: number, cap: number, taskId: string): Promise<void> {
   const at = new Date(deps.now()).toISOString();
   const event = await tryAuditEvent(deps, () => auditAutomaticRunStarted({
     orgId: input.orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence: auditOccurrence(input.project, input.requestId), projectName: input.project, job: input.job, setupApprovedBy: input.setupApprovedBy, runsThisMonth: used, cap,
   }));
   if (event === undefined) return;
-  const marker = { pk: projectPk(input.orgId, input.project), sk: `AUTOMATIC_RUNS#STARTED#${createHash("sha256").update(input.requestId).digest("hex").slice(0, 32)}` };
+  const marker = { pk: projectPk(input.orgId, input.project), sk: `${AUTOMATIC_RUNS_STARTED_PREFIX}${createHash("sha256").update(input.requestId).digest("hex").slice(0, 32)}` };
   try {
-    await auditTransact(deps, { Put: { TableName: deps.tableName, Item: { ...marker, entityType: "AUTOMATIC_RUN_STARTED", orgId: input.orgId, project: input.project, job: input.job, at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((deps.now() + 62 * 86_400_000) / 1000) }, ConditionExpression: "attribute_not_exists(pk)" } }, [event]);
+    await auditTransact(deps, { Put: { TableName: deps.tableName, Item: { ...marker, entityType: "AUTOMATIC_RUN_STARTED", orgId: input.orgId, project: input.project, job: input.job, taskId, at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((deps.now() + 62 * 86_400_000) / 1000) }, ConditionExpression: "attribute_not_exists(pk)" } }, [event]);
   } catch (error) {
     // The marker is there: this start was recorded already (a retry).
     if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;

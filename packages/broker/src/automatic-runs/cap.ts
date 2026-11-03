@@ -7,6 +7,7 @@
 //   AUTOMATIC_RUNS#SETTINGS            the cap a maintainer set, who and when, and the request ids already applied (a replay changes nothing)
 //   AUTOMATIC_RUNS#MONTH#YYYY-MM       the month's count of runs started
 //   AUTOMATIC_RUNS#RUN#<requestId>     one per run claimed, so a retried start counts once and a run that never started gives its place back
+//   AUTOMATIC_RUNS#STARTED#<hash>      one per run that started (job, when, its task), for the project page
 //   AUTOMATIC_RUNS#PAUSED#YYYY-MM      written once, with the pause's audit event, when the cap is first reached in the month
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, INDEX_EXPIRY_ATTRIBUTE, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, projectAllows, projectPk, type AutomaticJob, type OrgId, type ProjectRole } from "@agentx/contracts";
@@ -17,6 +18,8 @@ import type { TestEnvDeps } from "../org/test-environment.js";
 
 const DAY_MS = 86_400_000;
 const SETTINGS_SK = "AUTOMATIC_RUNS#SETTINGS";
+/** The prefix of the item kept for each run that started (its job, when, and its task), for the project page. */
+export const AUTOMATIC_RUNS_STARTED_PREFIX = "AUTOMATIC_RUNS#STARTED#";
 const SETTING_REQUESTS_KEPT = 20;
 const WRITE_ATTEMPTS = 3;
 const monthSk = (month: string) => `AUTOMATIC_RUNS#MONTH#${month}`;
