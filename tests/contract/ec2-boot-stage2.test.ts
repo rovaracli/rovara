@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
 
 // Task 10: a named environment's boot is two files. boot.sh is user data and stops after it pulls the worker image; the rest, boot-stage2.sh, is
@@ -281,11 +281,15 @@ function liveResponders(dirs: string[]): number[] {
 function reapResponders(dirs: string[], pidFiles: string[]): number[] {
   // The pid file lives in the run's directory, so it has to be read before the directory is removed.
   for (const pidFile of pidFiles) {
-    try { process.kill(Number(readFileSync(pidFile, "utf8").trim())); } catch { /* never started, or already gone */ }
+    try {
+      // An empty pid file reads as 0, and kill(0) signals the whole process group (the test runner included); 1 is init. Only a real child's pid is signalled.
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 1) process.kill(pid);
+    } catch { /* never started, or already gone */ }
   }
   const found = liveResponders(dirs);
   for (const pid of found) {
-    try { process.kill(pid, "SIGKILL"); } catch { /* gone already */ }
+    try { if (Number.isInteger(pid) && pid > 1) process.kill(pid, "SIGKILL"); } catch { /* gone already */ }
   }
   return found;
 }
@@ -422,6 +426,23 @@ describe("the failure responder does not outlive its test", () => {
     expect(liveResponders([run.directory])).toHaveLength(1);
     expect(reapResponders([run.directory], [])).toHaveLength(1);
     expect(survivors([run.directory])).toEqual([]);
+  });
+
+  it("signals no process for an empty, zero, one or unreadable pid file (kill(0) would signal the whole process group)", () => {
+    const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
+    directories.push(directory);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const files = Object.entries({ empty: "", zero: "0\n", one: "1\n", words: "not a pid", negative: "-5" }).map(([name, body]) => { const file = join(directory, name); writeFileSync(file, body); return file; });
+      reapResponders([], [...files, join(directory, "missing")]);
+      expect(kill).not.toHaveBeenCalled();
+      const real = join(directory, "real");
+      writeFileSync(real, "424242\n");
+      reapResponders([], [real]);
+      expect(kill).toHaveBeenCalledExactlyOnceWith(424242);
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("finds a stray BootFailed server by the run's failure file even with no pid file", () => {
