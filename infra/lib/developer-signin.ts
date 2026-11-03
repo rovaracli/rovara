@@ -1,7 +1,6 @@
 // Spec 025 phase 25a: the control plane as the developers' sign-in server. Named environments only
 // (R3): the legacy deployment must not change.
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
-import { DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DIAGNOSIS_ROVARA_PAID_GLOBAL_MAX_CENTS } from "@agentx/contracts";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
@@ -37,8 +36,6 @@ export interface DeveloperSignInParameters {
   liveAskEnabled: CfnParameter;
   /** Live interaction F2 to F4: Fix with agent. "0" (the default) answers NOT_FOUND on every diagnosis route; "1" turns it on. Turn it on only after the chat service that carries the diagnosis route is deployed. */
   liveFixEnabled: CfnParameter;
-  /** DG-3: the most Rovara pays for Fix with agent's light diagnoses across all companies of this install in a UTC day, in cents (10000 = $100). 0 pauses them. Counted by the broker; an alarm fires at 80 percent. */
-  liveFixRovaraPaidDailyCents: CfnParameter;
   /** Proof and evidence: the evidence of a task's checks is gathered, kept and shown. "0" (the default) gathers, posts and serves nothing new; "1" turns it on. Turn it on only after the worker image that carries `task.evidenceCapture.v1` is deployed. */
   proofEvidenceEnabled: CfnParameter;
   /** Decision cards: "0" (the default) mounts no card route and answers no Slack card press; "1" turns them on. */
@@ -88,7 +85,6 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
     liveSteerEnabled: new CfnParameter(stack, "LiveSteerEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a person's message to a running step is given to it live (only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step (agentx config set liveSteer.enabled 1)" }),
     liveAskEnabled: new CfnParameter(stack, "LiveAskEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: Ask about this task is on (only after the chat service that carries the Ask route is deployed); 0: every Ask route answers not found (agentx config set liveAsk.enabled 1)" }),
-    liveFixRovaraPaidDailyCents: new CfnParameter(stack, "LiveFixRovaraPaidDailyCents", { type: "Number", default: DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, minValue: 0, maxValue: DIAGNOSIS_ROVARA_PAID_GLOBAL_MAX_CENTS, description: "The most Rovara pays, in cents, for Fix with agent's light diagnoses across every company of this install in one UTC day (10000 = $100). 0 pauses them for the day. Each company is also limited to its own $15 a day; an alarm fires when the day reaches 80 percent of this ceiling (agentx config set liveFix.rovaraPaidDailyCents 10000)" }),
     liveFixEnabled: new CfnParameter(stack, "LiveFixEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: Fix with agent is on (only after the chat service that carries the diagnosis route is deployed); 0: every diagnosis route answers not found (agentx config set liveFix.enabled 1)" }),
     proofEvidenceEnabled: new CfnParameter(stack, "ProofEvidenceEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: the evidence of a task's checks is gathered, kept and shown (only after the worker image that carries task.evidenceCapture.v1 is deployed); 0: nothing new is gathered, posted to a pull request or served (agentx config set proofEvidence.enabled 1)" }),
     decisionCardsEnabled: new CfnParameter(stack, "DecisionCardsEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: decision cards are on (the card routes and the Slack card press); 0: no card route exists and a Slack card press is answered as gone (agentx config set decisionCards.enabled 1)" }),
@@ -456,7 +452,7 @@ export class DeveloperSignIn extends Construct {
       BrokerNames.of(broker).add("cloudUserPool", cloud.userPoolId);
       broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
       // Whether GitHub tokens are accepted (developerClaims checks the method is on); the client id is not a secret, the secret stays with the sign-in function.
-      broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
+      BrokerSettings.of(broker).add("developerGithubClientId", cloud.githubClientId.valueAsString);
       // Plan 3, Task 21a-presence (PF9): the confirmation page's session is read, claimed once (UpdateItem) and ended (DeleteItem) by the
       // broker; a ticket for a token's member is minted with PutItem, and its counters and "one live ticket" pointer with UpdateItem. Each
       // statement is narrowed to its own prefixes by leading keys; nothing else on the sign-in table is added.

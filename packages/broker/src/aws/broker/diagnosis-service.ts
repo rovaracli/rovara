@@ -1,10 +1,9 @@
 // Live interaction F2: the broker's wiring for Fix with agent's light tier, and the three service routes the chat service calls (`/v1/service/diagnoses/*`, the orchestrator role only).
 //
 //   POST /v1/service/diagnoses/turn           the waiting diagnosis's context, after its requester's right to the error was read again.
-//   POST /v1/service/diagnoses/model-access   the turn's model key. WHO PAYS is decided here, from the edition and the tier, and never from a request:
-//                                               Public light diagnosis    Rovara pays (support): a key for Rovara's own AI, a fixed small cap, counted against none of the customer's budgets;
-//                                               Enterprise light          the customer's own Bedrock and limits: paid like any chat turn of the project, in the requester's name.
-//                                             (A deep diagnosis is a task, started and paid like any task; it never comes through here.)
+//   POST /v1/service/diagnoses/model-access   the turn's model key. The company pays, on the company's own AI provider (2026-11-03: Rovara pays for no diagnosis): paid like any chat turn of the project,
+//                                             in the requester's name, a key capped at DIAGNOSIS_LIGHT_BUDGET_USD, routed among the sources billed to the company (its own, or Rovara's metered one). With no usable provider the call is refused in fixed words
+//                                             and nothing is minted. (A deep diagnosis is a task, started and paid like any task; it never comes through here.)
 //   POST /v1/service/diagnoses/answered       the answer (or that there is none): read again, stored and audited once.
 //
 // The service names a diagnosis by its org and id; it can name only one the broker queued itself, and everything that decides what the turn may know or cost (the error, the project, the person)
@@ -57,9 +56,6 @@ export function diagnosisDefaultBranchFileRoute(dependencies: AwsBrokerDependenc
   };
 }
 
-/** Whether Rovara pays for a light diagnosis: Public only (the customer's own account pays in Enterprise). The only place this is decided. */
-export const rovaraPaysForLight = (edition: "enterprise" | "public"): boolean => edition === "public";
-
 /**
  * The service routes. Answers undefined for a path that is not a diagnosis route (the caller goes on). Needs the orchestrator role. With the switch off, every diagnosis route is NOT_FOUND.
  */
@@ -77,7 +73,6 @@ export async function handleDiagnosisServiceRoute(
   const { turnId, model, classifierModel, ...ref } = parsed.data;
   const waiting = await waitingForKey(diagnosis, DiagnosisRefSchema.parse(ref));
   if (waiting === undefined) throw agentXError("NOT_FOUND", "route not found");
-  const edition = dependencies.editionPolicy?.edition ?? "public";
-  const requester: OperationRequester | undefined = rovaraPaysForLight(edition) ? undefined : { kind: "developer", developerId: waiting.requester, provider: "oidc" };
-  return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, rovaraPaysForLight(edition) ? { rovaraPays: { claimKey: () => claimDiagnosisKey(diagnosis, waiting.orgId, waiting.diagnosisId) } } : {}), request.requestId);
+  const requester: OperationRequester = { kind: "developer", developerId: waiting.requester, provider: "oidc" };
+  return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, { diagnosis: { claimKey: () => claimDiagnosisKey(diagnosis, waiting.orgId, waiting.diagnosisId) } }), request.requestId);
 }

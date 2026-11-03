@@ -95,7 +95,6 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.LiveAskEnabled;
   // Live interaction F2 to F4: the Fix with agent switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.LiveFixEnabled;
-  delete remainder.Parameters?.LiveFixRovaraPaidDailyCents;
   // Proof and evidence, and decision cards (wire-proof): two switches, parameters and packed settings, no part of the proof-only addition.
   delete remainder.Parameters?.ProofEvidenceEnabled;
   delete remainder.Parameters?.DecisionCardsEnabled;
@@ -121,8 +120,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
   for (const id of Object.keys(resources)) if (id.startsWith("TaskPersonProof")) delete resources[id];
-  // DG-3: the install-wide Rovara-paid diagnosis ceiling's metric filter and 80 percent alarm (named environments only) are no part of the proof-only addition; taken out so the pinned digests below still hold.
-  for (const id of Object.keys(resources)) if (id.startsWith("DiagnosisRovaraPaidGlobalAlarm") || id.startsWith("BrokerLogsDiagnosisRovaraPaidGlobalPercentMetric")) delete resources[id];
+  // (2026-11-03: the Rovara-paid diagnosis ceiling's parameter, packed setting, metric filter and alarm were removed; nothing of them is left to take out here, and the pinned digests below did not move.)
   // Plan 3 Task 30's spend settlement schedule is no part of the proof-only addition either.
   const spendSchedules = Object.keys(resources).filter((id) => id.startsWith("SpendSettlementSchedule"));
   // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
@@ -151,7 +149,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "liveFixRovaraPaidCents", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -362,18 +360,24 @@ describe("the named TEST proof-only installation gate", () => {
     // permissions gained `secretsmanager:UpdateSecretVersionStage` (the store purpose only, same org and use tags; denied to resolve) for rotation's pending-then-promote. No role was added, so the boundary did not change.
     // 2026-11-03, merge of lane ts-accounts onto the test-services chain (ts-images-on-next-v2, b638814f5): the four named and foreign digests were retaken from the values the digest test itself reports for the merged template
     // (nothing hand-computed); the only template additions are ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. The legacy digests did not move.
+    // 2026-11-03, integration tip fixes (ENV-ROOM): the four named and foreign digests were retaken once more, from the values the digest test itself reports. The broker's GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID and WEB_FEATURES
+    // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
+    // 2026-11-04, merge of cloud/next cf34811c6 (env packing, usable models) with the test-services chain and lane ts-accounts: the named and foreign digests were retaken from the values the digest test itself reports for the merged
+    // template (nothing hand-computed). The legacy digests did not move.
+    // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
+    // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "07d4aa8737e1689a3abc2025e60b4db97d6084911e88788475347f56274f4e89",
-        withoutRoute: "9d827b95170ef706365a1370185e13f9b5203bdf512bbd9ec069cd1b242d62ec",
+        withRoute: "323b4c96ab550689b0eb4f18ffde1557c7848ea1c5fe81ca861b0ee890e1b3ae",
+        withoutRoute: "96670571232bc6f0cff1b189897cef484edc465c9ced76b3c8e2a2ab9318cc53",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "cdb75793e2f1594d01f32005711cfe2055e954075875540c11572c56a0592949",
-        withoutRoute: "8480dc34a3f5da197ff97730c2972623bb4f7d4d8fcc261632075e563085167f",
+        withRoute: "a94ddec5dcada1f81beb0e2b0e559bd27349483ab61fe60bb2d23ef3e3781998",
+        withoutRoute: "affa08b6e6170e0f29e3862357219d01ea30306cbc436014f76b069b06cb642e",
       },
       {
         label: "legacy",

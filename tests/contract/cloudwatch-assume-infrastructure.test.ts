@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { brokerRoleName } from "@agentx/contracts";
-import { brokerNamesIn } from "../support/broker-names-template.js";
+import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -83,10 +83,15 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
   });
 
   it("turns on the company admin console in the web app for a cloud environment only, and no placeholder page", () => {
-    const featuresOf = (template: Template) => Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
-      .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables?.["WEB_FEATURES"];
-    expect(featuresOf(cloud)).toBe("admin");
-    for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "WebFeaturesLegacy"))]) expect(featuresOf(template)).toBeUndefined();
+    const variablesOf = (template: Template) => Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+      .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables;
+    // WEB_FEATURES is one of the broker's packed settings (ENV-ROOM), never a variable of its own in a named environment.
+    expect(variablesOf(cloud)?.["WEB_FEATURES"]).toBeUndefined();
+    expect(brokerSettingsIn(variablesOf(cloud) as Parameters<typeof brokerSettingsIn>[0]).webFeatures).toBe("admin");
+    for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "WebFeaturesLegacy"))]) {
+      expect(brokerSettingsIn(variablesOf(template) as Parameters<typeof brokerSettingsIn>[0]).webFeatures).toBeUndefined();
+      expect(variablesOf(template)?.["WEB_FEATURES"]).toBeUndefined();
+    }
   });
 
   it("does not exist on a named environment without the cloud, nor on the legacy install", () => {

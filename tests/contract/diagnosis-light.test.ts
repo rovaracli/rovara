@@ -311,62 +311,62 @@ describe("erasing the person", () => {
   });
 });
 
-describe("DG-1 S1: an organization-wide daily ceiling on the light diagnoses Rovara pays for", () => {
+describe("2026-11-03: the company pays for a diagnosis, on the company's own AI provider (Rovara keeps no money counter and pays for none)", () => {
   const errorRef = (n: number) => ErrorRefSchema.parse({ kind: "operation_failed", code: `TASK_FAILED_${String(n)}`, subject: { taskId: randomUUID() }, at: "2026-10-22T09:00:00.000Z" });
   const people = Array.from({ length: 12 }, (_, index) => `${String(index % 10)}${String(index)}`.padEnd(64, "a"));
-  const admit = (w: DiagnosisWorld, n: number, who: string, project: string, rovaraPaid?: { turnsPerDay: number; centsPerDay: number }) =>
-    admitDiagnosis(w.diagnosis, { orgId: ORG_A, developerId: who, requestId: randomUUID(), tier: "light", errorRef: errorRef(n), project, ...(rovaraPaid === undefined ? {} : { rovaraPaid }) });
-  const orgCounter = (w: DiagnosisWorld) => w.w.db.get({ pk: `ORG#${ORG_A}#DIAGNOSISRATE`, sk: "light_org#all" }) ?? [...w.w.db.items.entries()].find(([key]) => key.includes("light_org#all"))?.[1];
+  const admit = (w: DiagnosisWorld, n: number, who: string, project: string) =>
+    admitDiagnosis(w.diagnosis, { orgId: ORG_A, developerId: who, requestId: randomUUID(), tier: "light", errorRef: errorRef(n), project });
+  const moneyCounters = (w: DiagnosisWorld) => [...w.w.db.items.keys()].filter((key) => key.includes("light_org#all") || key.includes("DIAGNOSISGLOBAL"));
 
-  it("many people on many projects cannot pass the org's turns for the day, whatever the person and project limits allow; the next day starts again", async () => {
-    const w = diagnosisWorld();
-    const cap = { turnsPerDay: 5, centsPerDay: 10_000 };
-    for (let n = 0; n < 5; n += 1) await admit(w, n, people[n]!, `project-${String(n)}`, cap);
-    await expect(admit(w, 50, people[6]!, "project-9", cap)).rejects.toThrow("Fix with agent has reached today's limit for your company.");
-    await expect(admit(w, 51, people[7]!, "project-8", cap)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
-    w.w.clock.now += 86_400_000;
-    await expect(admit(w, 52, people[6]!, "project-9", cap)).resolves.toMatchObject({ created: true });
+  it("many people on many projects are limited by the person and the project only: there is no organization or install-wide counter in either edition, and the money is the company's own budgets'", async () => {
+    for (const edition of ["public", "enterprise"] as const) {
+      const w = diagnosisWorld({ edition });
+      for (let n = 0; n < 8; n += 1) await admit(w, n, people[n]!, `project-${String(n)}`);
+      await start(w, PRIYA);
+      expect(moneyCounters(w), edition).toEqual([]);
+    }
   });
 
-  it("the dollar ceiling holds on its own: each Rovara-paid turn is counted at the key's cap (25 cents), so 60 cents allows two turns, and the counter is Rovara's own record of the spend", async () => {
+  it("the person's and the project's own limits are answered in their own words when they are the full ones", async () => {
     const w = diagnosisWorld();
-    const cap = { turnsPerDay: 1_000, centsPerDay: 60 };
-    await admit(w, 1, people[0]!, "a", cap);
-    await admit(w, 2, people[1]!, "b", cap);
-    expect(orgCounter(w)).toMatchObject({ count: 2, cents: 50 });
-    await expect(admit(w, 3, people[2]!, "c", cap)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
-    expect(orgCounter(w)).toMatchObject({ count: 2, cents: 50 });
+    for (let n = 0; n < DIAGNOSIS_RATE.lightPerPersonPerHour; n += 1) await admit(w, n, PRIYA, "web");
+    await expect(admit(w, 99, PRIYA, "web")).rejects.toThrow("You've asked for a lot of diagnoses lately.");
   });
 
-  it("an open diagnosis of the same error and a repeat of a request spend nothing against it", async () => {
+  it("with no usable AI provider the diagnosis is not offered: one fixed sentence, in either edition, and nothing is written, queued or spent", async () => {
+    for (const edition of ["public", "enterprise"] as const) {
+      const w = diagnosisWorld({ edition, provider: false });
+      const before = snapshot(w);
+      const error = await start(w, PRIYA).then(() => undefined, (caught: unknown) => caught as { code: string; message: string });
+      expect(error, edition).toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+      expect(error?.message).toContain("Diagnosis uses your company's AI provider. Connect one in Settings to turn it on.");
+      expect(snapshot(w), edition).toBe(before);
+      expect(w.sent).toHaveLength(0);
+    }
+  });
+
+  it("the person's right comes first: someone who may not diagnose the error hears that, not about the provider", async () => {
+    const w = diagnosisWorld({ provider: false });
+    await expect(start(w, ZED)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("fails closed: no way to ask about the provider reads as no provider, and a company whose sources can't be read gets the ordinary \"couldn't diagnose now\" and nothing is written", async () => {
+    const absent = diagnosisWorld();
+    absent.diagnosis.providerUsable = undefined;
+    await expect(start(absent, PRIYA)).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+    const unreadable = diagnosisWorld({ provider: "unreadable" });
+    const before = snapshot(unreadable);
+    await expect(start(unreadable, PRIYA)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(snapshot(unreadable)).toBe(before);
+    expect(unreadable.sent).toHaveLength(0);
+  });
+
+  it("an open diagnosis of the same error is still answered (nothing spent) while a provider is connected, and a repeat of a request too", async () => {
     const w = diagnosisWorld({ edition: "public" });
     const first = await start(w, PRIYA);
     await start(w, ARJUN);
     await start(w, PRIYA);
     expect(first.state).toBe("queued");
-    expect(orgCounter(w)).toMatchObject({ count: 1, cents: 25 });
-  });
-
-  it("Public counts its turns by default, with the contract's limits; Enterprise (the customer pays) counts none", async () => {
-    const pub = diagnosisWorld({ edition: "public" });
-    await start(pub, PRIYA);
-    expect(orgCounter(pub)).toMatchObject({ count: 1, cents: 25 });
-    const ent = diagnosisWorld({ edition: "enterprise" });
-    await start(ent, PRIYA);
-    expect(orgCounter(ent)).toBeUndefined();
-    // The deployment's own ceiling is read from the dependencies, and a full day refuses the start in the org's words and queues nothing.
-    const small = diagnosisWorld({ edition: "public" });
-    small.diagnosis.rovaraPaidLimits = { turnsPerDay: 1, centsPerDay: 1_000 };
-    await start(small, PRIYA);
-    small.retried();
-    await expect(start(small, ARJUN)).rejects.toThrow("Fix with agent has reached today's limit for your company.");
-    expect(small.sent).toHaveLength(1);
-  });
-
-  it("the person's and the project's own limits are still answered in their own words when they are the full ones", async () => {
-    const w = diagnosisWorld();
-    const cap = { turnsPerDay: 1_000, centsPerDay: 100_000 };
-    for (let n = 0; n < DIAGNOSIS_RATE.lightPerPersonPerHour; n += 1) await admit(w, n, PRIYA, "web", cap);
-    await expect(admit(w, 99, PRIYA, "web", cap)).rejects.toThrow("You've asked for a lot of diagnoses lately.");
+    expect(w.sent).toHaveLength(1);
   });
 });

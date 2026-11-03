@@ -252,6 +252,9 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // issue 195's stuck-cancel alarm, the false-default Task People controls and the Audit Ledger's
 // storage, each checked and taken out above. The snapshot was retaken for TS19 (test services image catalog): nine ECR repositories and one KMS key in the control plane, UNCONDITIONAL (fixed names, retained: a
 // condition on TestServicesEnabled would break turning it on, off and on again; service-catalog-images-infrastructure.test.ts checks them), and nothing else.
+// 2026-11-03 (fix/ecr-template-slr): the agentx-staging-access snapshot was re-recorded for one added statement in the CloudFormation service role, EcrTemplateServiceLinkedRole
+// (iam:CreateServiceLinkedRole for exactly AWSServiceRoleForECRTemplate, condition iam:AWSServiceName = ecr.amazonaws.com). The 0.5.1 staging upgrade rolled back without it.
+// No other snapshot moved.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

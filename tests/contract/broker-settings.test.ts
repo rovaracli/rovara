@@ -36,8 +36,9 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
   const ALL: Record<BrokerSettingKey, string> = {
     memberWorkspaceLimit: "3", organizationWorkspaceLimit: "20",
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
-    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", liveFixRovaraPaidCents: "10000", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
+    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
     teamRecord: "0", teamRecordEmbeddingModel: "amazon.titan-embed-text-v2:0", teamRecordLake: "0", projectRegistries: "0", setupAgent: "0", savedEnv: "0", testServices: "0", testAccounts: "0", projectImages: "0",
+    githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin",
   };
 
   it("puts every setting back under the variable the broker reads, to the text it was given", () => {
@@ -130,7 +131,6 @@ describe("the control plane wires each setting and name to what it came from", (
       liveRedirect: { Ref: "LiveRedirectEnabled" },
       liveAsk: { Ref: "LiveAskEnabled" },
       liveFix: { Ref: "LiveFixEnabled" },
-      liveFixRovaraPaidCents: { Ref: "LiveFixRovaraPaidDailyCents" },
       proofEvidence: { Ref: "ProofEvidenceEnabled" },
       decisionCards: { Ref: "DecisionCardsEnabled" },
       testEnvironment: { Ref: "TestEnvironmentEnabled" },
@@ -145,6 +145,11 @@ describe("the control plane wires each setting and name to what it came from", (
       testAccounts: { Ref: "TestAccountsEnabled" },
       projectImages: { Ref: "ProjectImagesEnabled" },
       learningSuggestionsDefault: { Ref: "LearningSuggestionsDefault" },
+      // Moved out of the broker's own variables to keep its 400 bytes of room (ENV-ROOM): the parameters admit plain text only in a named environment.
+      githubAppCredentialRef: { Ref: "GitHubAppCredentialRef" },
+      githubAppId: { Ref: "GitHubAppId" },
+      developerGithubClientId: { Ref: "GitHubClientId" },
+      webFeatures: "admin",
     });
     for (const spec of Object.values(BROKER_SETTINGS)) expect(cloud, spec.variable).not.toHaveProperty(spec.variable);
   });

@@ -22,7 +22,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { auditDiagnosis } from "./audit.js";
 import { diagnosisSubjectFor } from "./authority.js";
 import { currentFacts, diagnosisDataText, nonceFor } from "./context.js";
-import { DEEP_DIAGNOSIS_FAILED_MESSAGE, statusOf, type DiagnosisDependencies } from "./light.js";
+import { DEEP_DIAGNOSIS_FAILED_MESSAGE, requireProvider, statusOf, type DiagnosisDependencies } from "./light.js";
 import { sanitizeDiagnosis } from "./sanitize.js";
 import { admitDiagnosis, diagnosisIdFor, openDiagnosisFor, readDiagnosisRecord, readDiagnosisRequest, settleDiagnosis } from "./store.js";
 
@@ -66,6 +66,8 @@ export async function startDeepDiagnosis(
     if (existing !== undefined) return statusOf(deps, orgId, existing);
   }
 
+  // 2026-11-03: the deep tier is a task on the company's own AI provider as well; with none, it is not offered (before anything is spent or started).
+  await requireProvider(deps, orgId, subject.project);
   const facts = await currentFacts(deps.context, caller, light.errorRef, subject);
   if (facts === undefined) throw agentXError("CONFIG_INVALID", DIAGNOSIS_REFUSALS.notCurrent);
   const diagnosisId = diagnosisIdFor(orgId, caller.developerId, body.data.requestId, tier);

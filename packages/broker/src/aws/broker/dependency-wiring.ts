@@ -153,7 +153,7 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
     ...(dependencies.chatgpt === undefined ? {} : { stageChatgpt: dependencies.chatgpt }),
     modelSignInTableName: developer.signInTableName,
     ...(dependencies.teamRecord === undefined ? {} : { teamRecordTable: dependencies.teamRecord.table }),
-    ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
+    ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels({ ...routing, usableModels: undefined }, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
     ...(dependencies.modelAccess === undefined ? {} : {
