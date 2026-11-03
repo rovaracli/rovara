@@ -153,7 +153,7 @@ describe("the standing of a system owner replaces a person's membership", () => 
 describe("an automatic run asks nobody for more money", () => {
   it("a system-owned task that is paused at a limit makes no spend request: there is no person to ask for", async () => {
     const w = world();
-    w.db.set({ ...systemTask(), budgetPause: { scope: { kind: "task", taskId: TASK_ID }, at: "2026-11-02T10:30:00.000Z" } } as unknown as Record<string, unknown>);
+    w.db.set({ ...systemTask(), budgetPause: { scope: { kind: "task", taskId: TASK_ID }, at: "2026-11-02T10:30:00.000Z" } });
     expect(await requestForPausedTask({ documentClient: w.db, tableName: "state", now: Date.now } as never, TASK_ID)).toBeUndefined();
     expect(w.db.find((item) => String(item.entityType).includes("SPEND_REQUEST"))).toHaveLength(0);
   });
