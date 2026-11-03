@@ -20,17 +20,10 @@ describe("the run network adds no firewall rule", () => {
 
   const INPUT_LOOP = 'for i in rvb+ rvi+; do f iptables INPUT -i $i -j DROP; ! command -v ip6tables >/dev/null || f ip6tables INPUT -i $i -j DROP || echo "ip6tables $i rule failed" >&2; done';
   const rviLines = (name: keyof typeof scripts) => firewallOf(scripts[name]).split("\n").map((line) => line.trim()).filter((line) => !line.startsWith("#") && mentionsRvi(line));
-  it("boot.sh: the only firewall lines that name an rvi bridge are the existing DROPs and the one rvi-to-rvi isolation DROP (IPv4, and IPv6 where Docker has the chain)", () => {
-    expect(rviLines("boot.sh")).toEqual([
-      "f iptables DOCKER-USER -i rvi+ ! -o rvi+ -j DROP",
-      "f iptables DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP",
-      '! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || f ip6tables DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP || echo "ip6tables rvi isolation rule failed" >&2',
-      INPUT_LOOP,
-    ]);
-  });
-  it("boot-legacy.sh is the frozen pre-split script (pinned byte for byte in ec2-boot-stage2.test.ts, and the switches exist only in named environments): it keeps only the two original rvi DROPs", () => {
-    expect(rviLines("boot-legacy.sh")).toEqual(["f iptables DOCKER-USER -i rvi+ ! -o rvi+ -j DROP", INPUT_LOOP]);
-    expect(scripts["boot-legacy.sh"]).not.toContain("default-address-pools");
+  it("boot.sh and boot-legacy.sh: the only firewall-unit lines that name an rvi bridge are the two original DROPs (the rvi-to-rvi wall is in stage 2, not in user data)", () => {
+    for (const name of ["boot.sh", "boot-legacy.sh"] as const) expect(rviLines(name), name).toEqual(["f iptables DOCKER-USER -i rvi+ ! -o rvi+ -j DROP", INPUT_LOOP]);
+    for (const name of ["boot.sh", "boot-legacy.sh"] as const) expect(scripts[name], name).not.toContain("default-address-pools");
+    for (const name of ["boot.sh", "boot-legacy.sh"] as const) expect(scripts[name], name).not.toContain("--physdev-is-bridged");
   });
 
   for (const name of ["boot.sh", "boot-legacy.sh", "boot-stage2.sh"] as const) {
@@ -42,11 +35,16 @@ describe("the run network adds no firewall rule", () => {
     });
   }
 
-  it("boot-stage2.sh (the setup launcher's rules) names no rvi bridge at all: its exceptions are for rvbs bridges and 172.29 only", () => {
+  /** The non-comment lines of one top-level function of stage 2. */
+  const fn = (name: string) => (new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(scripts["boot-stage2.sh"])?.[0] ?? "").split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  it("boot-stage2.sh: the setup launcher's rules (block_imds) name no rvi bridge, and the only other lines that do are the one wall function's", () => {
     const stage2 = scripts["boot-stage2.sh"].split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
-    expect(stage2.split("\n").filter(mentionsRvi)).toEqual([]);
-    const block = /^block_imds\(\) \{\n[\s\S]*?^\}$/mu.exec(stage2)?.[0] ?? "";
+    const wall = fn("wall_between_run_networks");
+    expect(wall).toContain("-i rvi+ -o rvi+");
+    expect(stage2.split("\n").filter(mentionsRvi)).toEqual(wall.split("\n").filter(mentionsRvi));
+    const block = fn("block_imds");
     expect(block).toContain("rvbs+");
+    expect(block).not.toMatch(/\brvi\b/u);
     for (const range of block.match(/\b\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?/gu) ?? []) expect(range.startsWith("172.30."), range).toBe(false);
   });
 
@@ -82,7 +80,7 @@ case $op in
   *) exit 2 ;;
 esac
 `;
-  const applied = (name: "boot.sh" | "boot-legacy.sh", withStage2: boolean) => {
+  const applied = (name: "boot.sh" | "boot-legacy.sh", stage2Steps: Array<"wall" | "launcher">) => {
     const directory = mkdtempSync(join(tmpdir(), "rovara-walls-"));
     const bin = join(directory, "bin");
     spawnSync("mkdir", ["-p", bin]);
@@ -90,30 +88,39 @@ esac
     const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory };
     const unit = spawnSync("/bin/bash", ["-c", firewallOf(scripts[name])], { env, encoding: "utf8" });
     expect(unit.status, unit.stderr).toBe(0);
-    if (withStage2) {
-      const block = /^block_imds\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "";
-      const launcher = spawnSync("/bin/bash", ["-c", `${block}\nblock_imds`], { env, encoding: "utf8" });
-      expect(launcher.status, launcher.stderr).toBe(0);
+    // Stage 2, in its own order: the wall (stage2_main), then the launcher's block_imds (every worker start).
+    for (const step of stage2Steps) {
+      const code = step === "wall" ? `${/^wall_between_run_networks\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? ""}\nwall_between_run_networks` : `${/^block_imds\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? ""}\nblock_imds`;
+      const ran = spawnSync("/bin/bash", ["-c", code], { env, encoding: "utf8" });
+      expect(ran.status, ran.stderr).toBe(0);
     }
     return readFileSync(join(directory, "iptables.rules"), "utf8").split("\n").filter((line) => line.startsWith("DOCKER-USER "));
   };
   const ISOLATION = "DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP";
-  for (const name of ["boot.sh"] as const) {
-    it(`${name}: the rvi-to-rvi isolation DROP is installed, and no RETURN or ACCEPT above it (the unit's own, or the setup launcher's added after it) can match an rvi bridge`, () => {
-      for (const withStage2 of [false, true]) {
-        const rules = applied(name, withStage2);
-        const at = rules.indexOf(ISOLATION);
-        expect(at, rules.join("\n")).toBeGreaterThanOrEqual(0);
-        for (const rule of rules.slice(0, at).filter((item) => /-j (?:RETURN|ACCEPT)$/u.test(item))) {
-          // Every skip above it is for an rvb or rvbs bridge (the resolver, the setup helper) and so cannot match traffic that enters on an rvi bridge.
-          expect(rule, rule).toMatch(/^DOCKER-USER -i rvbs?\+ /u);
-        }
-        // It is written once, and the plain "may not leave rvi" DROP is still there.
-        expect(rules.filter((rule) => rule === ISOLATION)).toHaveLength(1);
-        expect(rules).toContain("DOCKER-USER -i rvi+ ! -o rvi+ -j DROP");
-      }
-    });
-  }
+  it("stage 2's wall is installed at the top of DOCKER-USER: no RETURN or ACCEPT above it (the firewall unit's, or the launcher's added after) can match an rvi bridge; it is written once even if run again", () => {
+    for (const steps of [["wall"], ["wall", "launcher"], ["wall", "wall", "launcher"]] as const) {
+      const rules = applied("boot.sh", [...steps]);
+      const at = rules.indexOf(ISOLATION);
+      expect(at, rules.join("\n")).toBeGreaterThanOrEqual(0);
+      // Every skip above it is for an rvb or rvbs bridge (the resolver, the setup helper) and so cannot match traffic that enters on an rvi bridge.
+      for (const rule of rules.slice(0, at).filter((item) => /-j (?:RETURN|ACCEPT)$/u.test(item))) expect(rule, rule).toMatch(/^DOCKER-USER -i rvbs?\+ /u);
+      expect(rules.filter((rule) => rule === ISOLATION)).toHaveLength(1);
+      expect(rules).toContain("DOCKER-USER -i rvi+ ! -o rvi+ -j DROP");
+    }
+    // Without the stage-2 step there is no such rule: it is not in the firewall unit.
+    expect(applied("boot.sh", [])).not.toContain(ISOLATION);
+  });
+  it("stage 2 puts the pools and the wall in place in a named environment only, after the worker environment is written and before the worker unit exists (so before any Docker network of a run), and a failure stops the boot", () => {
+    const main = fn("stage2_main");
+    const at = (text: string) => main.indexOf(text);
+    expect(at("write_worker_environment")).toBeGreaterThan(-1);
+    expect(at("write_worker_environment")).toBeLessThan(at("set_docker_address_pools"));
+    expect(at("set_docker_address_pools")).toBeLessThan(at("wall_between_run_networks"));
+    expect(at("wall_between_run_networks")).toBeLessThan(at("write_worker_unit"));
+    expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
+    expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+fi/u);
+  });
 
   it("the isolation DROP keeps traffic inside one bridge flowing: it matches only routed (not bridged) rvi-to-rvi packets, and a run network and an end-to-end network are each ONE bridge", () => {
     expect(ISOLATION).toContain("! --physdev-is-bridged");
@@ -127,23 +134,34 @@ esac
   // M1: Docker's own auto-allocated networks (the end-to-end checker's) must not take the setup run's 172.29/16, the run network's 172.30/16 or the VPC's 10.42/16.
   const cidr = (text: string) => { const [address, bits] = text.split("/"); const o = address!.split(".").map(Number); return { start: (((o[0]! << 24) >>> 0) + (o[1]! << 16) + (o[2]! << 8) + o[3]!) >>> 0, bits: Number(bits) }; };
   const overlaps = (a: string, b: string) => { const x = cidr(a), y = cidr(b); const bits = Math.min(x.bits, y.bits); const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0; return ((x.start & mask) >>> 0) === ((y.start & mask) >>> 0); };
-  for (const name of ["boot.sh"] as const) {
-    it(`${name}: daemon.json sets default-address-pools that leave out 172.29/16, 172.30/16, 172.17/16 (docker0) and the VPC's 10.42/16, in /24s, with room for a thousand networks`, () => {
-      const format = /printf '(\{"data-root"[^\n]*\})\\n' "\$DOCKER_DATA_ROOT" >\/etc\/docker\/daemon\.json/u.exec(scripts[name])?.[1] ?? "";
-      const daemon = JSON.parse(format.replace("%s", "/data")) as { "data-root": string; "default-address-pools": Array<{ base: string; size: number }> };
-      expect(daemon["data-root"]).toBe("/data");
-      const pools = daemon["default-address-pools"];
-      expect(pools.length).toBeGreaterThan(0);
-      let networks = 0;
-      for (const pool of pools) {
-        for (const reserved of ["172.29.0.0/16", "172.30.0.0/16", "172.17.0.0/16", "10.42.0.0/16", "172.31.0.0/16"]) expect(overlaps(pool.base, reserved), `${pool.base} overlaps ${reserved}`).toBe(false);
-        expect(pool.size).toBe(24);
-        expect(pool.size).toBeGreaterThan(cidr(pool.base).bits);
-        networks += 2 ** (pool.size - cidr(pool.base).bits);
-      }
-      expect(networks).toBeGreaterThanOrEqual(1000);
-      // Each pool lies in space no other part of the product claims: private 172.16/12 or 192.168/16 only.
-      for (const pool of pools) expect(overlaps(pool.base, "172.16.0.0/12") || overlaps(pool.base, "192.168.0.0/16")).toBe(true);
-    });
-  }
+  it("stage 2 writes daemon.json with the pools and only then restarts Docker, then runs the container firewall script again; the pools leave out 172.29/16, 172.30/16, 172.17/16 (docker0) and the VPC's 10.42/16, in /24s, with room for a thousand networks", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rovara-pools-"));
+    const bin = join(directory, "bin");
+    spawnSync("mkdir", ["-p", bin]);
+    const log = join(directory, "calls.log");
+    writeFileSync(join(bin, "systemctl"), `#!/bin/bash\necho "systemctl $*" >>"${log}"\ncat "${directory}/daemon.json" >>"${log}"\n`); chmodSync(join(bin, "systemctl"), 0o755);
+    const text = (/^set_docker_address_pools\(\) \{\n[\s\S]*?^\}$/mu.exec(scripts["boot-stage2.sh"])?.[0] ?? "")
+      .replaceAll("/etc/docker/daemon.json", join(directory, "daemon.json")).replace("bash /usr/local/libexec/rovara-container-firewall", `echo firewall-script >>"${log}"`);
+    const ran = spawnSync("/bin/bash", ["-c", `DOCKER_DATA_ROOT=/data\n${text}\nset_docker_address_pools`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" });
+    expect(ran.status, ran.stderr).toBe(0);
+    const daemon = JSON.parse(readFileSync(join(directory, "daemon.json"), "utf8")) as { "data-root": string; "default-address-pools": Array<{ base: string; size: number }> };
+    expect(daemon["data-root"]).toBe("/data");
+    const calls = readFileSync(log, "utf8");
+    // The restart sees the new file (the file is printed right after the systemctl line), and the firewall script runs after it.
+    expect(calls.indexOf("systemctl restart docker.service")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("systemctl restart docker.service")).toBeLessThan(calls.indexOf("default-address-pools"));
+    expect(calls.indexOf("default-address-pools")).toBeLessThan(calls.indexOf("firewall-script"));
+    const pools = daemon["default-address-pools"];
+    expect(pools.length).toBeGreaterThan(0);
+    let networks = 0;
+    for (const pool of pools) {
+      for (const reserved of ["172.29.0.0/16", "172.30.0.0/16", "172.17.0.0/16", "10.42.0.0/16", "172.31.0.0/16"]) expect(overlaps(pool.base, reserved), `${pool.base} overlaps ${reserved}`).toBe(false);
+      expect(pool.size).toBe(24);
+      expect(pool.size).toBeGreaterThan(cidr(pool.base).bits);
+      networks += 2 ** (pool.size - cidr(pool.base).bits);
+    }
+    expect(networks).toBeGreaterThanOrEqual(1000);
+    // Each pool lies in space no other part of the product claims: private 172.16/12 or 192.168/16 only.
+    for (const pool of pools) expect(overlaps(pool.base, "172.16.0.0/12") || overlaps(pool.base, "192.168.0.0/16")).toBe(true);
+  });
 });

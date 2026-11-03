@@ -226,7 +226,7 @@ describe("EC2 worker user data", () => {
 
   it("gives the worker the host's Docker and keeps Docker's data on the workspace volume (#121)", () => {
     expect(bootText).toContain("readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker");
-    expect(bootText).toMatch(/printf '\{"data-root": "%s", "default-address-pools": \[[^\n]*\]\}\\n' "\$DOCKER_DATA_ROOT" >\/etc\/docker\/daemon\.json/u);
+    expect(bootText).toContain(`printf '{"data-root": "%s"}\\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json`);
     // The daemon starts only after the workspace is mounted, so its data root is on the volume.
     expect(bootText.indexOf("mount_workspace \"$device\"")).toBeLessThan(bootText.indexOf("  ensure_docker\n"));
     expect(workerLauncher).toContain('args=(run --rm --name "$WORKER_CONTAINER" "${network_args[@]}" --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
