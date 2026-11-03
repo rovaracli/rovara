@@ -70,33 +70,12 @@ ExecStart=/bin/bash /usr/local/libexec/rovara-run-walls
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # The worker needs the walls unit (and is started again with it): a drop-in, so the worker unit's own text stays as it was.
+  install -d -o root -g root -m 0755 "/etc/systemd/system/$WORKER_UNIT.d"
+  printf '[Unit]\nRequires=%s\nAfter=%s\n' "$RUN_WALLS_UNIT" "$RUN_WALLS_UNIT" >"/etc/systemd/system/$WORKER_UNIT.d/10-run-walls.conf" || return 1
   systemctl enable "$RUN_WALLS_UNIT"
 }
 
-# This optional preload is bounded; failure leaves the worker available.
-pull_contained_image() {
-  local attempt
-  for ((attempt=1; attempt<=RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE; attempt++)); do
-    timeout "$(try_seconds 300)" docker pull "$CONTAINED_IMAGE" && return 0
-    ((attempt<RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE)) && sleep "$((1 << (attempt - 1)))"
-  done
-  log "optional verifier image unavailable; worker continues"
-  return 1
-}
-
-# Optional until EXECUTOR_IMAGE is set; without it only end-to-end checks are withheld.
-pull_executor_image() {
-  [[ -n "${EXECUTOR_IMAGE:-}" ]] || return 0
-  local attempt
-  for ((attempt=1; attempt<=RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE; attempt++)); do
-    timeout "$(try_seconds 300)" docker pull "$EXECUTOR_IMAGE" && return 0
-    ((attempt<RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE)) && sleep "$((1 << (attempt - 1)))"
-  done
-  log "optional executor image unavailable; worker continues"
-  return 1
-}
-
-# Root-only: nothing here is secret today, but it must not become world-readable.
 # Test services (slice 1): the values the worker's service runner needs, for a named environment only. Nothing here is a secret and nothing comes from a customer setting:
 #   AGENTX_TEST_SERVICES_REGISTRY    the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
 #   AGENTX_TEST_SERVICES_ENV         the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane);
@@ -126,6 +105,30 @@ write_test_services_environment() {
     if account=$(instance_account_id); then printf 'AGENTX_TEST_SERVICES_ACCOUNT_ID=%s\n' "$account"; fi
   } >>"$WORKER_ENV_FILE"
 }
+# This optional preload is bounded; failure leaves the worker available.
+pull_contained_image() {
+  local attempt
+  for ((attempt=1; attempt<=RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE; attempt++)); do
+    timeout "$(try_seconds 300)" docker pull "$CONTAINED_IMAGE" && return 0
+    ((attempt<RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE)) && sleep "$((1 << (attempt - 1)))"
+  done
+  log "optional verifier image unavailable; worker continues"
+  return 1
+}
+
+# Optional until EXECUTOR_IMAGE is set; without it only end-to-end checks are withheld.
+pull_executor_image() {
+  [[ -n "${EXECUTOR_IMAGE:-}" ]] || return 0
+  local attempt
+  for ((attempt=1; attempt<=RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE; attempt++)); do
+    timeout "$(try_seconds 300)" docker pull "$EXECUTOR_IMAGE" && return 0
+    ((attempt<RETRY_ATTEMPTS && SECONDS<BOOT_DEADLINE)) && sleep "$((1 << (attempt - 1)))"
+  done
+  log "optional executor image unavailable; worker continues"
+  return 1
+}
+
+# Root-only: nothing here is secret today, but it must not become world-readable.
 write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
@@ -316,17 +319,14 @@ LAUNCHER
 }
 
 write_worker_unit() {
-  local region=$1 instance_id=$2 docker walls=""
+  local region=$1 instance_id=$2 docker
   docker=$(command -v docker)
-  # A named environment's worker does not start unless the unit that restores the run network walls did (and is started again with it).
-  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then walls=$'Requires='"$RUN_WALLS_UNIT"$'\nAfter='"$RUN_WALLS_UNIT"; fi
   write_worker_launcher "$docker" "$instance_id"
   cat >"/etc/systemd/system/$WORKER_UNIT" <<EOF
 [Unit]
 Description=AgentX worker for workspace $AGENTX_WORKSPACE_ID generation $AGENTX_SESSION_GENERATION
 Requires=docker.service $FIREWALL_UNIT
 After=docker.service $FIREWALL_UNIT network-online.target
-$walls
 Wants=network-online.target
 RequiresMountsFor=$MOUNT_PATH
 

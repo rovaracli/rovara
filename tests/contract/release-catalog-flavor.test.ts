@@ -1,9 +1,16 @@
 // Test services slice 1: a release never carries the staging-only catalog signing key. The tree check (scripts/release/build.ts), the worker image's flavor label (scripts/release/image-flavor.ts) and the paths that take
 // a worker image into a release, a bundle or a production deploy are exercised here on fixture trees and with fake label readers; nothing starts Docker or reads a registry.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
+import { CATALOG_STAGING_ACCOUNT_ID, catalogTrustedKeyPems } from "@agentx/contracts";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
+import { CATALOG_FLAVOR_TOOL, buildStagingArtifacts, restoreReleaseFlavor } from "../../scripts/test-deploy.js";
+import { skopeoLabelReader } from "../../scripts/release/image-flavor.js";
 import { buildRelease, assertReleaseCatalogTree } from "../../scripts/release/build.js";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { CATALOG_FLAVOR_LABEL, assertReleaseFlavorImage, type ImageLabelReader } from "../../scripts/release/image-flavor.js";
@@ -146,5 +153,118 @@ describe("the worker image build", () => {
     expect(dockerfile).toContain('LABEL ai.rovara.catalog-flavor="${CATALOG_FLAVOR}"');
     expect(dockerfile).toContain('case "$CATALOG_FLAVOR" in release|staging) ;; *) echo "CATALOG_FLAVOR is release or staging" >&2; exit 1 ;; esac');
     expect(dockerfile.indexOf("node packages/contracts/tools/catalog-flavor.ts")).toBeLessThan(dockerfile.indexOf("npx tsc -b packages/contracts"));
+  });
+});
+
+
+describe("the staging build path", () => {
+  const recording = () => {
+    const seen: string[][] = [];
+    return { runner: { run: (command: string, args: readonly string[]) => { seen.push([command, ...args]); return ""; } }, seen };
+  };
+  it("sets the staging flavor automatically, right before it builds the contracts dist and the Lambdas, and sets release back afterwards", () => {
+    const { runner, seen } = recording();
+    buildStagingArtifacts(runner);
+    expect(seen).toEqual([["npx", "tsx", CATALOG_FLAVOR_TOOL, "staging"], ["npm", "run", "build"]]);
+    expect(CATALOG_FLAVOR_TOOL).toBe("packages/contracts/tools/catalog-flavor.ts");
+    restoreReleaseFlavor(runner);
+    expect(seen.at(-1)).toEqual(["npx", "tsx", CATALOG_FLAVOR_TOOL, "release"]);
+  });
+  it("a build that forgets the step is a release build with an empty list and trusts nothing extra, even in the staging account with the key data file present", async () => {
+    // the checked-in tree, compiled: no extra key for the staging account
+    expect(catalogTrustedKeyPems({ runningAccountId: CATALOG_STAGING_ACCOUNT_ID })).toEqual([]);
+    // a tree holding the staging key data but no switch run: still release, still empty, so it passes the release check and its list holds nothing
+    const root = await temporary("forgot-the-step-");
+    for (const file of [FLAVOR_FILE, STAGING_KEYS_FILE]) {
+      await mkdir(join(root, file, ".."), { recursive: true });
+      await cp(new URL(`../../${file}`, import.meta.url), join(root, file));
+    }
+    await mkdir(join(root, "packages/contracts/dist"), { recursive: true });
+    await writeFile(join(root, "packages/contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
+    await writeFile(join(root, "packages/contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
+    await mkdir(join(root, "environments/service-catalog"), { recursive: true });
+    await writeFile(join(root, STAGING_KEY_DATA_FILE), JSON.stringify([{ keyId: "a".repeat(64), algorithm: "ECDSA_SHA_256", publicKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n" }]));
+    await expect(assertReleaseCatalogTree(root)).resolves.toBeUndefined();
+    expect(await readFile(join(root, STAGING_KEYS_FILE), "utf8")).not.toContain("a".repeat(64));
+    // and the switch is what changes that, and the release switch changes it back
+    await setCatalogFlavor(root, "staging");
+    expect(await readFile(join(root, STAGING_KEYS_FILE), "utf8")).toContain("a".repeat(64));
+    await expect(assertReleaseCatalogTree(root)).rejects.toThrow(/release refused/u);
+    await setCatalogFlavor(root, "release");
+    expect(await readFile(join(root, STAGING_KEYS_FILE), "utf8")).not.toContain("a".repeat(64));
+  });
+  it("is the only path that runs the switch: no production release, bundle, installer, upgrade or workflow file runs it or builds a staging image", async () => {
+    const read = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+    const releaseScripts = (await readdir(new URL("../../scripts/release/", import.meta.url))).filter((name) => name.endsWith(".ts") && name !== "catalog-flavor.ts").map((name) => `scripts/release/${name}`);
+    const workflows = (await readdir(new URL("../../.github/workflows/", import.meta.url))).map((name) => `.github/workflows/${name}`);
+    const productionFiles = [...releaseScripts, ...workflows, "scripts/release-production.ts", "scripts/release-common.ts", "scripts/release-installer.ts", "package.json", "infra/lib/release-pipeline.ts"];
+    for (const path of productionFiles) {
+      let text: string;
+      try { text = read(path); } catch { continue; }
+      // build.ts and image-flavor.ts name the tool in refusal messages; none of them runs it or passes the staging argument
+      expect(text, path).not.toMatch(/--build-arg\s+CATALOG_FLAVOR=staging|CATALOG_FLAVOR:\s*["']staging|catalog-flavor\.ts["'],\s*["']staging|catalog-flavor\.ts staging/u);
+    }
+    // the deploy workflow images pass no flavor, so Docker's default (release) applies
+    const release = YAML.parse(read(".github/workflows/release.yml")) as { jobs: Record<string, { steps: Array<{ run?: string }> }> };
+    for (const job of Object.values(release.jobs)) for (const step of job.steps) expect(step.run ?? "").not.toMatch(/CATALOG_FLAVOR|catalog-flavor/u);
+    // staging is named in exactly one place that runs: scripts/test-deploy.ts (the tool call and the worker image argument)
+    const deploy = read("scripts/test-deploy.ts");
+    expect(deploy.match(/CATALOG_FLAVOR_TOOL, "staging"/gu)).toHaveLength(1);
+    expect(deploy.match(/CATALOG_FLAVOR: "staging"/gu)).toHaveLength(1);
+    expect(deploy.indexOf("buildStagingArtifacts(context.runner)")).toBeGreaterThan(0);
+    expect(deploy).toContain("if (context.built) restoreReleaseFlavor(runner);");
+  });
+});
+
+describe("the release workflow can read the label", () => {
+  const workflow = YAML.parse(readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8")) as { jobs: Record<string, { steps: Array<{ run?: string; env?: Record<string, string> }> }> };
+  /** The steps of every job that runs a command which reads the worker image's label (release:build with --worker-image, release:bundle with a worker image). */
+  const labelReaders = Object.entries(workflow.jobs).filter(([, job]) => job.steps.some((step) => /release:build[^\n]*--worker-image|release:bundle[^\n]*image_flags|--image "worker=/u.test(step.run ?? "")));
+  it("has skopeo installed in every job that takes a worker image into a release or a bundle, before that step", () => {
+    expect(labelReaders.map(([name]) => name).sort()).toEqual(["bundle", "release"]);
+    for (const [name, job] of labelReaders) {
+      const reads = job.steps.findIndex((step) => /release:build[^\n]*--worker-image|release:bundle/u.test(step.run ?? ""));
+      const installs = job.steps.findIndex((step) => /apt-get install[^\n]*\bskopeo\b/u.test(step.run ?? ""));
+      expect(installs, name).toBeGreaterThanOrEqual(0);
+      expect(installs, name).toBeLessThan(reads);
+    }
+  });
+  it("reads a published image's label the way the workflow's skopeo can: anonymously, the arm64 config, the labels map", async () => {
+    // a fake skopeo on the PATH answers like the real one for a public image config
+    const bin = await temporary("fake-skopeo-");
+    const log = join(bin, "calls");
+    await writeFile(join(bin, "skopeo"), `#!/bin/sh\necho "$@" >> "${log}"\necho '{"config":{"Labels":{"ai.rovara.catalog-flavor":"release","org.opencontainers.image.revision":"abc"}}}'\n`);
+    chmodSync(join(bin, "skopeo"), 0o755);
+    const before = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${before ?? ""}`;
+    try {
+      expect(await skopeoLabelReader(WORKER)).toMatchObject({ "ai.rovara.catalog-flavor": "release" });
+      expect((await readFile(log, "utf8")).trim()).toBe(`inspect --config --override-os linux --override-arch arm64 docker://${WORKER}`);
+      await expect(assertReleaseFlavorImage("worker", WORKER, skopeoLabelReader)).resolves.toBeUndefined();
+    } finally {
+      if (before === undefined) delete process.env["PATH"]; else process.env["PATH"] = before;
+    }
+  });
+});
+
+describe("the worker Dockerfile never fails on a missing optional file", () => {
+  it("every host COPY source either is a directory/file that exists or a glob that matches something", async () => {
+    const dockerfile = await readFile(new URL("../../environments/base/Dockerfile", import.meta.url), "utf8");
+    const root = new URL("../../", import.meta.url).pathname;
+    const sources = dockerfile.split("\n").filter((line) => line.startsWith("COPY ") && !line.includes("--from=")).flatMap((line) => line.trim().split(/\s+/u).slice(1, -1).filter((word) => !word.startsWith("--")));
+    expect(sources.length).toBeGreaterThan(10);
+    const matches = async (pattern: string): Promise<boolean> => {
+      if (!pattern.includes("*")) { try { await readFile(join(root, pattern)).catch(async () => readdir(join(root, pattern))); return true; } catch { return false; } }
+      const directory = join(root, pattern.slice(0, pattern.lastIndexOf("/")));
+      const expression = new RegExp(`^${pattern.slice(pattern.lastIndexOf("/") + 1).replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u");
+      return (await readdir(directory).catch(() => [])).some((name) => expression.test(name));
+    };
+    const missing: string[] = [];
+    for (const source of sources) if (!(await matches(source))) missing.push(source);
+    expect(missing).toEqual([]);
+    // the optional staging key file is never named: the whole catalog directory is copied into the build stage, and the final stage copies catalog*.json from there
+    expect(dockerfile).not.toMatch(/staging-signing-key/u);
+    expect(dockerfile).toContain("COPY environments/service-catalog environments/service-catalog");
+    expect(dockerfile).toContain("COPY --from=build /opt/agentx/environments/service-catalog/catalog*.json ./packages/worker/service-catalog/");
   });
 });

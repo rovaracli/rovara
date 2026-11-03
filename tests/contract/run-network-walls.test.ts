@@ -234,10 +234,10 @@ esac
       for (const name of ["iptables.rules", "ip6tables.rules"]) writeFileSync(join(directory, name), "");
       expect(run().status).toBe(0);
       expect(rules()).toEqual(first);
-      // and the worker unit starts only with it, in a named environment only
-      const workerUnit = fn("write_worker_unit");
-      expect(workerUnit).toContain("if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then walls=$'Requires='\"$RUN_WALLS_UNIT\"$'\\nAfter='\"$RUN_WALLS_UNIT\"; fi");
-      expect(workerUnit).toContain("Requires=docker.service $FIREWALL_UNIT\nAfter=docker.service $FIREWALL_UNIT network-online.target\n$walls");
+      // and the worker unit starts only with it: a drop-in beside the worker unit, which this stage's own text for the unit leaves as it was
+      expect(readFileSync(join(directory, "systemd/agentx-worker.service.d/10-run-walls.conf"), "utf8")).toBe("[Unit]\nRequires=rovara-run-walls.service\nAfter=rovara-run-walls.service\n");
+      expect(fn("write_worker_unit")).not.toContain("RUN_WALLS_UNIT");
+      expect(fn("stage2_main")).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then[\s\S]*install_run_walls_unit/u);
       expect(scripts["boot.sh"]).not.toContain("rovara-run-walls");
     });
     it("stage 2 is where it lives: boot.sh (at its size limit) holds only its best-effort rule, the INPUT drop is not allowed through (-j DROP only), and it runs after the address pools", () => {
