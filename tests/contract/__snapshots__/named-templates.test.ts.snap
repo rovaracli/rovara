@@ -3220,6 +3220,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Comma-separated private subnet IDs of the foundation VPC",
       "Type": "String",
     },
+    "ProjectImagesEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a project may bring its own images for a dependency (reviewed compose services, a model image); needs testServices.enabled; 0: only Rovara's image catalog is used (agentx config set projectImages.enabled 1)",
+      "Type": "String",
+    },
     "ProofEvidenceEnabled": {
       "AllowedValues": [
         "0",
@@ -3312,6 +3321,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Most requests one Slack thread may start in a minute; further requests pause the thread with one notice",
       "Type": "String",
     },
+    "TestAccountsEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a project may use the customer's own test accounts for a dependency, each approved by a second admin (needs testServices.enabled; turn on only after the test-account proxy is deployed); 0: no test account is stored, approved or used (agentx config set testAccounts.enabled 1)",
+      "Type": "String",
+    },
     "TestEnvironmentEnabled": {
       "AllowedValues": [
         "0",
@@ -3319,6 +3337,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       ],
       "Default": "0",
       "Description": "1: the project test environment is on (propose, prove, approve, and tasks use it; only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes (agentx config set testEnvironment.enabled 1)",
+      "Type": "String",
+    },
+    "TestServicesEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a project's dependencies (databases, caches, queues, AWS services, outside APIs) get a backing for test runs on a sealed per-run network (turn on only after the Linux checks TS-L1 to TS-L6 pass and the worker image that carries the service runner is deployed); 0: today's flow, services are refused as before (agentx config set testServices.enabled 1)",
       "Type": "String",
     },
     "VerifyResultsEnabled": {
@@ -3833,6 +3860,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "ProofEvidenceEnabled",
                   },
+                  ",pj=",
+                  {
+                    "Ref": "ProjectImagesEnabled",
+                  },
                   ",rd=",
                   {
                     "Ref": "LiveRedirectEnabled",
@@ -3861,9 +3892,17 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "SavedEnvEnabled",
                   },
+                  ",ta=",
+                  {
+                    "Ref": "TestAccountsEnabled",
+                  },
                   ",tm=",
                   {
                     "Ref": "SlackTeamId",
+                  },
+                  ",tx=",
+                  {
+                    "Ref": "TestServicesEnabled",
                   },
                   ",vx=",
                   {

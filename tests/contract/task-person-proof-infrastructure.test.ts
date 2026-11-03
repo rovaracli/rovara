@@ -113,6 +113,10 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.SetupAgentEnabled;
   delete remainder.Parameters?.SavedEnvEnabled;
+  // Test services (TS37): three switches, parameters and packed settings, no part of the proof-only addition.
+  delete remainder.Parameters?.TestServicesEnabled;
+  delete remainder.Parameters?.TestAccountsEnabled;
+  delete remainder.Parameters?.ProjectImagesEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -147,7 +151,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "liveFixRovaraPaidCents", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "liveFixRovaraPaidCents", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;

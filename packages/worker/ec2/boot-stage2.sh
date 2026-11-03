@@ -11,6 +11,29 @@ readonly WORKER_ENV_FILE=/etc/agentx/worker.env
 readonly WORKER_CONTAINER=agentx-worker
 readonly DOCKER_SOCKET=/var/run/docker.sock
 
+# Test services (named environments only; it lives here and not in boot.sh to stay under the 16 KB user data limit). Both steps run in stage2_main after the worker environment is written and BEFORE the worker unit starts, so no run
+# network, setup network or end-to-end network can exist yet (the worker and the E2E qualification create them, later).
+# 1. Docker's own auto-allocated networks (the E2E checker's, whole /16s by default) must never take 172.29/16 (setup runs), 172.30/16 (run networks) or the VPC's 10.42/16: default-address-pools holds /24s from 172.18-172.28 and
+#    192.168/16 only (172.17 is docker0; 172.29-172.31 and 10/8 are left out; 3,072 networks). Stage 1 wrote daemon.json without them, so this rewrites it and restarts Docker, then runs the container firewall script again (a restart rebuilds
+#    Docker's chains). The restart happens before anything uses a Docker network: only images were pulled so far.
+set_docker_address_pools() {
+  local pools='[{"base":"172.18.0.0/15","size":24},{"base":"172.20.0.0/14","size":24},{"base":"172.24.0.0/14","size":24},{"base":"172.28.0.0/16","size":24},{"base":"192.168.0.0/16","size":24}]'
+  printf '{"data-root": "%s", "default-address-pools": %s}\n' "$DOCKER_DATA_ROOT" "$pools" >/etc/docker/daemon.json
+  systemctl restart docker.service && bash /usr/local/libexec/rovara-container-firewall
+}
+# 2. Two different rvi bridges never talk (a run network and an end-to-end network, or two runs): routed between bridges is "not bridged", traffic inside one bridge is bridged and flows. Inserted at the top of DOCKER-USER, so no earlier
+#    RETURN or ACCEPT can skip it. IPv6 only where Docker has that chain.
+# 3. The metadata address must still be blocked after the Docker restart (a restart rebuilds Docker's chains; the container firewall script that was just run again puts its DROP back). block_imds, with the metadata REJECT, is
+#    in the worker launcher and runs when the worker unit starts, which is after this; this checks what stands now, so a lost block stops the boot before any container can start.
+metadata_blocked() {
+  iptables -S DOCKER-USER 2>/dev/null | grep -Eq -- '^-A DOCKER-USER -d 169\.254\.169\.254/32 -j (DROP|REJECT)$'
+}
+wall_between_run_networks() {
+  local rule="DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP"
+  iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
+  ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
+}
+
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
   local attempt
@@ -343,6 +366,11 @@ stage2_main() {
   pull_executor_image || true
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
+  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    set_docker_address_pools || fail "could not set Docker's address pools"
+    metadata_blocked || fail "the metadata block is missing after the Docker restart"
+    wall_between_run_networks || fail "could not wall run networks off from each other"
+  fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload
   systemctl enable --now "$WORKER_UNIT"

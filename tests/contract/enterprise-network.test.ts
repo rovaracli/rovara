@@ -388,6 +388,16 @@ describe("the Enterprise network settings", () => {
     expect(parseEnterpriseEgressCidrs("172.16.0.0/12, 192.168.4.0/24, 100.64.0.0/10")).toEqual(["172.16.0.0/12", "192.168.4.0/24", "100.64.0.0/10"]);
   });
 
+  it("refuses a range inside 172.29.0.0/16 or 172.30.0.0/16, which the workers' Docker uses for setup and run networks, but not a wider private range that holds them, or its neighbours", () => {
+    for (const inside of ["172.29.0.0/16", "172.30.0.0/16", "172.29.5.0/24", "172.30.9.4/32", "172.30.128.0/17"]) {
+      expect(() => parseEnterpriseEgressCidrs(inside), inside).toThrow(/lies inside 172\.(?:29|30)\.0\.0\/16/u);
+      expect(() => foundation({ ...ENTERPRISE, enterpriseEgressCidrs: [inside] }), inside).toThrow(/lies inside 172\.(?:29|30)\.0\.0\/16/u);
+    }
+    expect(() => parseEnterpriseEgressCidrs("10.20.0.0/16, 172.28.0.0/16, 172.31.0.0/16")).not.toThrow();
+    expect(parseEnterpriseEgressCidrs("172.16.0.0/12")).toEqual(["172.16.0.0/12"]);
+    expect(() => foundation({ ...ENTERPRISE, enterpriseEgressCidrs: ["172.28.0.0/16", "172.31.1.0/24"] })).not.toThrow();
+  });
+
   it("requires a private range, unless a public one is asked for in so many words", () => {
     for (const publicRange of ["52.0.0.0/8", "3.120.0.0/14", "172.32.0.0/16", "11.0.0.0/8", "192.169.0.0/16", "100.128.0.0/10", "8.8.8.8/32"]) {
       expect(() => parseEnterpriseEgressCidrs(publicRange), publicRange).toThrow(/not a private range/);

@@ -16,7 +16,7 @@ import type { Edition } from "@agentx/contracts";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
-import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, type InternetEgress } from "./vpc-endpoints.js";
+import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, workerDockerRangeOf, type InternetEgress } from "./vpc-endpoints.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_PRODUCTION_DEPLOYMENT_MODE = "ec2-ebs";
@@ -110,6 +110,11 @@ export class ProductionFoundationStack extends Stack {
       throw new Error("internetEgress and enterpriseEgressCidrs are Enterprise edition settings");
     }
     if (enterprise && naming.env === undefined) throw new Error("the Enterprise edition needs a named environment");
+    for (const entry of props.enterpriseEgressCidrs ?? []) {
+      const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(entry);
+      const reserved = match === null ? undefined : workerDockerRangeOf([match[1]!, match[2]!, match[3]!, match[4]!].map(Number), Number(match[5]));
+      if (reserved !== undefined) throw new Error(`enterpriseEgressCidrs entry ${JSON.stringify(entry)} lies inside ${reserved}, which the workers' Docker uses for its own networks`);
+    }
     const noNat = enterprise && props.internetEgress !== "nat";
     if (noNat && (props.enterpriseEgressCidrs ?? []).length === 0) {
       throw new Error("an Enterprise install with no internet route needs at least one approved range (rovaraEnterpriseEgressCidrs): the workers must reach the control plane, which is public until the private control-plane path exists");

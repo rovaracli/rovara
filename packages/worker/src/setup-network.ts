@@ -28,7 +28,7 @@ import { agentXError } from "@agentx/contracts";
 import type { DockerCli } from "./swebench/containers.js";
 import { workspaceKey } from "./task-sandbox.js";
 
-const DOCKER_CALL_TIMEOUT_MS = 60_000;
+export const DOCKER_CALL_TIMEOUT_MS = 60_000;
 export const SETUP_NETWORK_LABEL = "agentx.setup-run";
 /** The label that ties a run's containers and network to ONE workspace, so a worker never removes another worker's on a shared Docker daemon. */
 export const SETUP_WORKSPACE_LABEL = "agentx.setup-workspace";
@@ -91,6 +91,11 @@ export function helperRunArgs(input: { name: string; network: string; taskId: st
   ];
 }
 
+/** True when a failed `docker network create` was caused by a subnet or host interface name another network holds, which the next slot cures. (The run network of run-network.ts reuses it.) */
+export function isSlotCollision(output: string): boolean {
+  return /pool overlaps|address already in use|overlap|(?:bridge|device|interface)\b[^\n]*already exists/iu.test(output);
+}
+
 export interface StartRunNetworkInput {
   taskId: string;
   /** The workspace root (`workspaceKey(rootPath)` labels what the run makes). */
@@ -112,7 +117,7 @@ export async function startRunNetwork(docker: DockerCli, input: StartRunNetworkI
     const created = await call(networkCreateArgs(name, input.taskId, candidate, input.workspace));
     if (created.exitCode === 0) addresses = candidate;
     // A subnet another run has, or a host interface name that is taken, is cured by the next slot: try it. A network of this name (the same operation twice) is not ("network with name ... already exists" names no bridge), and neither is any other failure: they end it.
-    else if (!/pool overlaps|address already in use|overlap|(?:bridge|device|interface)\b[^\n]*already exists/iu.test(`${created.stderr}${created.stdout}`)) break;
+    else if (!isSlotCollision(`${created.stderr}${created.stdout}`)) break;
   }
   const fail = async (): Promise<never> => {
     await call(["rm", "--force", helperName]);
