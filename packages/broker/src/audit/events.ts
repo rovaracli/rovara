@@ -538,6 +538,11 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
   return build("playbook.default_process_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, processKind: input.processKind });
 }
 
+/** `occurrence`: `auditOccurrence(project, "design_review", playbook revision)`. Fixed words and counts only: the people or the group named as the high-risk approver are never in the event. */
+export function auditPlaybookDesignReviewChanged(input: AuditBuilderBase & { projectName: string; revision: number; mode: "auto" | "always" | "never"; tier: "light" | "standard" | "thorough"; allowSkip: boolean; capCents: number; approverKind: "maintainers" | "people" | "group"; approverCount: number }): AuditEventInput {
+  return build("playbook.design_review_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, mode: input.mode, tier: input.tier, allowSkip: input.allowSkip, capCents: input.capCents, approverKind: input.approverKind, approverCount: input.approverCount });
+}
+
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });

@@ -2,6 +2,7 @@
 // and the company's locks decide it. No model text sets a tier, and no input can lower one: every rule only raises, a kind never starts below its floor (`DECISION_KIND_FLOOR_RISK`, so an
 // approve_setting is high however small it looks) and a company lock raises through `raiseRisk`. The reasons are fixed words and numbers; a path is shown through `plainLine`.
 import { DECISION_KIND_FLOOR_RISK, raiseRisk, type DecisionKind, type DecisionRisk } from "@agentx/contracts";
+import { DESIGN_AREA_WORDS, DESIGN_TIER_HIGH_CODES, DESIGN_TIER_MEDIUM_CODES, reviewCoverage, type DesignCardFacts } from "../design-review/risk.js";
 import { isSensitivePath } from "../rovara-code/risk.js";
 import { plainLine } from "./text.js";
 
@@ -24,7 +25,11 @@ export type DecisionLocks = Partial<Record<DecisionKind, DecisionRisk>>;
 /** What each kind's rules read. Every field is plain data the projector got from a pending item; none is model text. */
 export interface TierInputs {
   plan?: { files: readonly string[]; untestedClaims: number; costHighUsd?: number | undefined };
-  design?: { files: readonly string[] };
+  /**
+   * `review` is present when the design went through design review (DR9): the tier then also reads its reasons, its `touches[]`, how the review went and what it found. Absent (a design with no review, or one
+   * from before the stage): the older rule, infrastructure or sensitive paths make it medium.
+   */
+  design?: { files: readonly string[]; review?: DesignCardFacts | undefined };
   merge?: { prRisk: DecisionRisk; prReasons: readonly string[]; failedChecks: number; untestedClaims: number; securityFindingsHigh: number; fullSuitePending: boolean; ciFailing: boolean };
   dependency?: { newInstallScripts: boolean };
   feedback?: { touchesSensitivePaths: boolean };
@@ -59,6 +64,26 @@ function planRules(tally: Tally, files: readonly string[]): void {
 }
 
 /**
+ * The approve_design rule when the design went through design review (3.8). Every line only raises: the codes (Understand's reasons and the design's own `touches[]`) and the counts are fixed data, and a code
+ * that is left out lowers nothing. High: data model, auth, money, personal data, infrastructure, another repository or service, or files on infrastructure/IAM/migration paths. Medium: a new or changed API, a
+ * new dependency, sensitive paths, an open blocker or major, or a review that did not run or ran only in part.
+ */
+function designRules(tally: Tally, files: readonly string[], review: DesignCardFacts): void {
+  const codes = [...new Set([...review.reasons, ...review.touches])];
+  for (const code of codes) if (DESIGN_TIER_HIGH_CODES.includes(code)) tally.raise("high", `The design ${DESIGN_AREA_WORDS[code]}.`);
+  const infra = files.filter(isInfraPath);
+  if (infra.length > 0) tally.raise("high", `Changes infrastructure, IAM or data files: ${shownPaths(infra)}.`);
+  for (const code of codes) if (DESIGN_TIER_MEDIUM_CODES.includes(code)) tally.raise("medium", `The design ${DESIGN_AREA_WORDS[code]}.`);
+  const sensitive = files.filter((path) => isSensitivePath(path) && !isInfraPath(path));
+  if (sensitive.length > 0) tally.raise("medium", `Touches sensitive paths: ${shownPaths(sensitive)}.`);
+  if (review.blockers.length > 0) tally.raise("medium", `${plural(review.blockers.length, "blocker is", "blockers are")} still open.`);
+  if (review.majors > 0) tally.raise("medium", `${plural(review.majors, "major finding is", "major findings are")} still open.`);
+  const coverage = reviewCoverage(review.reviewers);
+  if (coverage === "none") tally.raise("medium", "Design review did not run.");
+  else if (coverage === "partial") tally.raise("medium", "Design review ran only in part.");
+}
+
+/**
  * The tier of one decision: the kind's floor, raised by what its inputs say, then by the company's lock for the kind. Always at least the floor and at least the lock.
  * A missing input for a kind that needs one (a merge with no PR risk) is NOT read as low: the caller must pass the inputs or the projector drops the card.
  */
@@ -76,8 +101,13 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
     }
     case "approve_design": {
       if (inputs.design === undefined) throw new Error("design inputs missing");
-      const touches = inputs.design.files.filter((path) => isInfraPath(path) || isSensitivePath(path));
-      if (touches.length > 0) tally.raise("medium", `Touches infrastructure, IAM or data: ${shownPaths(touches)}.`);
+      const review = inputs.design.review;
+      if (review === undefined) {
+        const touches = inputs.design.files.filter((path) => isInfraPath(path) || isSensitivePath(path));
+        if (touches.length > 0) tally.raise("medium", `Touches infrastructure, IAM or data: ${shownPaths(touches)}.`);
+        break;
+      }
+      designRules(tally, inputs.design.files, review);
       break;
     }
     case "merge": {
