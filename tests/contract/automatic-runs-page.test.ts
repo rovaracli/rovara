@@ -6,7 +6,8 @@ import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAutomaticRun } from "../../packages/broker/src/automatic-runs/start.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { systemOwnerIdOf } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, orgMemberKey, systemOwnerIdOf } from "@agentx/contracts";
+import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -119,5 +120,28 @@ describe("a hung automatic run does not keep the project's one automatic slot (t
     expect(h.audit.recordedBy("automatic_run.ended")).toHaveLength(1);
     // the slot is back
     expect("started" in await rebuild()).toBe(true);
+  });
+});
+
+describe("the approver-left reminder on the page", () => {
+  it("is not shown for an approver whose account was merged into a member's, and is shown once they have really left", async () => {
+    const audit = capturingAuditDeps();
+    const h = { ...(await createDeveloperTaskBroker({ audit, brokerExtra: { agents: {} } })), audit };
+    on();
+    const cmd = { cwd: "service", executable: "pytest", args: [], timeoutSeconds: 600 };
+    const body = TestEnvironmentBodySchema.parse({ tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [{ id: "unit", label: "Unit", command: cmd, kind: "test" }] }], roundBudgetMin: 30,
+      selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" }, services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [],
+      prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false } });
+    const deps = { documentClient: h.db, tableName: "state", now: Date.now, audit: audit.audit, secondPerson: () => Promise.resolve({ mode: "second_person" as const, membershipVersion: 1, conditions: [] }) };
+    const proposal = await proposeTestEnvironment(deps, { orgId: TEST_ORG, project: PROJECT, proposedBy: "dev_old", role: "maintainer", body });
+    await recordTestEnvProveReport(deps, { orgId: TEST_ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "smoke", status: "passed", durationMs: 1 }], services: [], finishedAt: new Date().toISOString() } });
+    await approveTestEnvironment(deps, { orgId: TEST_ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-merge-0001", approvedBy: "dev_old", role: "maintainer", approvedBySignedInAtMs: Date.now(), approval: { approverId: "dev_b", signedInAtMs: Date.now(), sessionRef: "5".repeat(64) } });
+    // the approver's account was merged into a current member's
+    h.db.set({ pk: "DEVELOPER#dev_old", sk: "META", entityType: "DEVELOPER", developerId: "dev_old", provider: "oidc", displayName: "Old", revoked: false, mergedInto: "dev_survivor" });
+    h.db.set({ ...orgMemberKey(TEST_ORG, "dev_survivor"), entityType: "ORG_MEMBER", developerId: "dev_survivor", role: "member" });
+    const page = async () => (await h.dev(MAYA, "GET", HEALTH)).body.automaticRuns as { reviewReminder?: { kind: string } };
+    expect((await page()).reviewReminder).toBeUndefined();
+    h.db.delete(orgMemberKey(TEST_ORG, "dev_survivor").pk, orgMemberKey(TEST_ORG, "dev_survivor").sk);
+    expect((await page()).reviewReminder).toMatchObject({ kind: "approver_left" });
   });
 });
