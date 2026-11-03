@@ -93,6 +93,7 @@ export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.
 
 // "How we work": the project playbook and its effective view (the How we work tab).
 export * from "./project-playbook.js";
+export * from "./design-review.js";
 export * from "./how-we-work.js";
 export * from "./how-we-work-track-record.js";
 

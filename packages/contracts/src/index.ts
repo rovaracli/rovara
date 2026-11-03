@@ -24,6 +24,7 @@ export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./project-playbook.js";
+export * from "./design-review.js";
 export * from "./project-learning.js";
 export * from "./how-we-work.js";
 export * from "./how-we-work-track-record.js";

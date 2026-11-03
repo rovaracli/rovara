@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { prefixedIdPattern } from "./agent.js";
 import { forwardReader } from "./forward-reader.js";
+import { DesignReviewSettingSchema } from "./design-review.js";
 
 /** A process layer is a custom agent, so a built-in agent's id is not one. */
 const ProcessAgentIdSchema = z.string().regex(prefixedIdPattern("agt"));
@@ -17,6 +18,8 @@ export const ProjectPlaybookSchema = z
   .object({
     revision: z.number().int().min(0),
     defaultProcess: DefaultProcessSchema,
+    /** Design review stage: absent means the owner's defaults (`designReviewSettingOf`). */
+    designReview: DesignReviewSettingSchema.optional(),
   })
   .strict();
 export type ProjectPlaybook = z.infer<typeof ProjectPlaybookSchema>;
@@ -29,6 +32,7 @@ export const ProjectPlaybookBodySchema = z
   .object({
     expectedRevision: z.number().int().min(0),
     defaultProcess: DefaultProcessSchema,
+    designReview: DesignReviewSettingSchema.optional(),
   })
   .strict();
 export type ProjectPlaybookBody = z.infer<typeof ProjectPlaybookBodySchema>;
