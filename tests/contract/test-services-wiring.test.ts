@@ -111,5 +111,11 @@ describe("the one-line hunks in the hot files", () => {
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("{ serviceCatalog: dependencies.serviceCatalog }");
     expect(read("packages/broker/src/aws/broker/dependency-wiring.ts")).toContain("rest.serviceCatalog ?? releaseServiceCatalogSource()");
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("noteInvokedFunctionArn(context?.invokedFunctionArn)");
+    // The candidate check's plan goes into the preparation, and its report comes back through one hook (the end-to-end behaviour is tests/contract/test-services-candidate-flow.test.ts).
+    expect(read("packages/broker/src/aws/developer-routes/project-archive-setup.ts")).toContain("await candidateDependencyPlan(deps, candidate.body,");
+    expect(read("packages/broker/src/aws/broker/workspace-preparation.ts")).toContain("{ testServices: { dependencies: [...options.testServices] } }");
+    expect(read("packages/broker/src/aws/developer-task-actions.ts")).toContain("testServices?: readonly TaskDependencyPlan[]");
+    expect(read("packages/broker/src/aws/broker/terminal-result.ts")).toContain('if (operation.kind === "prepare") await keepCandidateUsage(');
+    expect(read("packages/broker/src/aws/broker/terminal-result.ts")).toContain("TEST_SERVICES_USAGE_RESULT_KEY in result");
   });
 });

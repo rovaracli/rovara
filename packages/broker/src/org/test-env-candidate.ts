@@ -2,10 +2,11 @@
 // plus the proposal's), so the commands are run BEFORE they are applied. Its record is keyed by (project, proposal digest, settings revision) and holds the workspace (whose status is the result, read live as the
 // project's own setup check is) and the exact command lists the check ran. Nothing else reads a candidate: the Prove derives its report from it, and the approval writes into the settings only what it ran.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, PreparePinsSchema, ProjectCommandSchema, TestServicesUsageRecordSchema, projectPk, type OrgId, type OrgKey, type PreparePins, type ProjectCommand, type TestServicesUsageRecord } from "@agentx/contracts";
+import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { INDEX_EXPIRY_ATTRIBUTE, PreparePinsSchema, TEST_SERVICES_USAGE_RESULT_KEY, ProjectCommandSchema, TestServicesUsageRecordSchema, projectPk, type OrgId, type OrgKey, type PreparePins, type ProjectCommand, type TestServicesUsageRecord } from "@agentx/contracts";
 import { z } from "zod";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "./test-environment.js";
+import { testServicesEnabled } from "../test-env/test-services-switch.js";
 
 const REVISION_WIDTH = 8;
 export const CANDIDATE_CHECK_ENTITY = "TEST_ENV_CANDIDATE_CHECK";
@@ -61,4 +62,59 @@ export async function recordCandidateUsage(deps: { documentClient: Send; tableNa
   } catch {
     return false;
   }
+}
+
+// ---- the record a preparation reports
+
+/** The pages of a project's candidate records read to find the one for a workspace (a project has a handful at a time). */
+const CANDIDATE_LOOKUP_PAGES = 5;
+
+/** Fixed words for why a reported record was not kept (the log never holds the record). */
+export const USAGE_REFUSALS = ["switch_off", "no_such_check", "not_kept"] as const;
+export type UsageRefusal = (typeof USAGE_REFUSALS)[number];
+
+/**
+ * The candidate check that holds this workspace, scoped by the org: the workspace's own setup-check record names its org and project (and must be this org's), and the project's candidate records name the workspace.
+ * Undefined when there is none. Bounded, never throws.
+ */
+export async function candidateCheckOfWorkspace(deps: { documentClient: Send; tableName: string }, orgId: OrgId, workspaceId: string): Promise<{ project: string; digest: string; revision: number } | undefined> {
+  try {
+    // The record `commitSetupCheck` writes for every setup check (org/project-setup-check.ts `setupCheckRecordKey`; not imported here, that module imports this one).
+    const record = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "SETUP_CHECK" }, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+    if (record === undefined || record["orgId"] !== orgId || record["workspaceId"] !== workspaceId || typeof record["project"] !== "string") return undefined;
+    const project = record["project"];
+    let start: Record<string, unknown> | undefined;
+    for (let page = 0; page < CANDIDATE_LOOKUP_PAGES; page += 1) {
+      const found = (await deps.documentClient.send(new QueryCommand({
+        TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", FilterExpression: "workspaceId = :workspace AND orgId = :org",
+        ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": "TESTENV#CANDIDATE#", ":workspace": workspaceId, ":org": orgId }, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+      for (const item of found.Items ?? []) if (item["entityType"] === CANDIDATE_CHECK_ENTITY && typeof item["digest"] === "string" && typeof item["revision"] === "number") return { project, digest: item["digest"], revision: item["revision"] };
+      if (found.LastEvaluatedKey === undefined) return undefined;
+      start = found.LastEvaluatedKey;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The hook for a preparation's terminal result: if it carries `testServicesUsage` (the worker's usage record of a candidate check), keep it on the check that holds the workspace. Nothing is read or written for a result
+ * without the key (so with `tx` off nothing changes). A record that arrives with the switch off, for a workspace that is no candidate check of this org, or that does not parse or was already kept, is refused and logged in
+ * fixed words (never the record). Never throws.
+ */
+export async function keepCandidateUsage(deps: { documentClient: Send; tableName: string; now: () => number }, input: { orgId: OrgId | undefined; workspaceId: string; result: unknown; env?: NodeJS.ProcessEnv }): Promise<"none" | "kept" | "refused"> {
+  const result = input.result;
+  if (typeof result !== "object" || result === null || Array.isArray(result) || !(TEST_SERVICES_USAGE_RESULT_KEY in result)) return "none";
+  const refuse = (reason: UsageRefusal): "refused" => {
+    console.log(JSON.stringify({ component: "broker", event: "test_services.usage_refused", reason, workspaceId: input.workspaceId }));
+    return "refused";
+  };
+  if (!testServicesEnabled(input.env)) return refuse("switch_off");
+  // A workspace with no org (before orgs) holds no candidate check.
+  const check = input.orgId === undefined ? undefined : await candidateCheckOfWorkspace(deps, input.orgId, input.workspaceId);
+  if (check === undefined) return refuse("no_such_check");
+  const kept = await recordCandidateUsage(deps, { orgId: input.orgId!, project: check.project, digest: check.digest, revision: check.revision, usage: (result as Record<string, unknown>)[TEST_SERVICES_USAGE_RESULT_KEY] });
+  return kept ? "kept" : refuse("not_kept");
 }

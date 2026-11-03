@@ -1,3 +1,4 @@
+import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { WorkingBranchNameSchema } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { randomUUID } from "node:crypto";
@@ -265,7 +266,9 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     const withoutDevcontainer = { ...project.definition };
     delete withoutDevcontainer.devcontainer;
     const prepared = lists === undefined ? project : { ...project, definition: { ...(devcontainer === null ? withoutDevcontainer : project.definition), setup: lists.setup, readiness: lists.readiness, ...(devcontainer === undefined || devcontainer === null ? {} : { devcontainer }) } };
-    const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined ? undefined : { pins: runCommits });
+    // Test services: the dependencies a candidate check starts, pinned from the signed catalog (a refusal stops the check before anything is written). Nothing for any other check, so its options are what they were.
+    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : undefined;
+    const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }) });
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
       workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: previous?.workspaceId,

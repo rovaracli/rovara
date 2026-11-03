@@ -45,7 +45,7 @@ import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { dependenciesStartableNow } from "../test-env/dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
-import { dependencySeedCommands, refusedCommand } from "../test-env/refused-command.js";
+import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
@@ -176,7 +176,10 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
   if (!dependenciesStartableNow(changed)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
   // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).
-  if (dependencySeedCommands(changed).some(refusedCommand)) throw invalid("dependencies: a seed command downloads and runs code, or holds something secret");
+  for (const command of dependencySeedCommands(changed)) {
+    const problem = seedCommandProblem(command);
+    if (problem !== undefined) throw invalid(`dependencies: ${SEED_COMMAND_PROBLEM_WORDS[problem]}`);
+  }
   await refuseDependenciesWithDevcontainer(deps, orgId, project, { dependencies: changed });
 }
 
@@ -304,7 +307,8 @@ export async function recordTestEnvProveReport(deps: TestEnvDeps, input: { orgId
   }
   // The proposal itself is read for its dependencies: a report without the two dependency steps does not prove an environment that has some.
   const proposed = await readProposal(deps, input.orgId, input.project, digest).catch(() => undefined);
-  return { proved: testEnvIsProved(report.data, digest, proposed) };
+  // A proposal that cannot be read proves nothing (its dependencies are not known).
+  return { proved: proposed !== undefined && testEnvIsProved(report.data, digest, proposed) };
 }
 
 /** The stored Prove report for a proposal's digest, read again through the contract (a damaged item reads as none, never as proved). */

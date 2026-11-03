@@ -2,6 +2,7 @@
 // needs it, and whether a second person must approve it. Built by the broker from the stored proposal, never from the asker's words; text that came from a repository (a path) goes through `shownLine` and the redactor.
 import { formatCommandLine, redactText, type TestEnvDependency } from "@agentx/contracts";
 import { shownLine } from "../org/shown-line.js";
+import { SEED_COMMAND_DISPLAY_MAX, seedEnvWords } from "./refused-command.js";
 
 const LINE_MAX = 300;
 
@@ -30,8 +31,13 @@ export function dependencyCardLines(dependencies: readonly TestEnvDependency[]):
     const source = first === undefined ? "" : typeof first === "string" ? (first === "model" ? " Found by Rovara's reading of the code." : first === "person" ? " Added by a person." : "") : "path" in first ? ` Found in ${first.path}, line ${String(first.line)}.` : "";
     const line = (text: string) => shownLine(redactText(text), LINE_MAX);
     const lines = [line(`${dependency.name}: ${backingWords(dependency.backing)}.${source}`)];
-    const seeds = dependency.seeds.map((seed) => ("command" in seed ? `runs ${seed.command.cwd}: ${formatCommandLine(seed.command)}` : `loads ${seed.fixturePath}`));
-    if (seeds.length > 0) lines.push(line(`${dependency.name} test data: ${seeds.join("; ")}.`));
+    // Each seed is its own line and is shown IN FULL: a command is never cut (a proposal with one over the cap is refused when it is proposed). It is redacted and made one plain line, with a cap far above any real command.
+    const full = (text: string) => shownLine(redactText(text), SEED_COMMAND_DISPLAY_MAX * 2);
+    for (const seed of dependency.seeds) {
+      if ("fixturePath" in seed) { lines.push(line(`${dependency.name} test data: loads ${seed.fixturePath}.`)); continue; }
+      const env = seedEnvWords(seed.command);
+      lines.push(full(`${dependency.name} test data: runs ${seed.command.cwd}: ${formatCommandLine(seed.command)}${env === undefined ? "" : ` with ${env}`}.`));
+    }
     const initFiles = dependency.backing.kind === "local" ? (dependency.backing.config.initFiles ?? []) : [];
     if (initFiles.length > 0) lines.push(line(`${dependency.name} starts with: ${initFiles.join(", ")}.`));
     const names = dependency.connect.env.map((entry) => entry.name);

@@ -266,13 +266,13 @@ describe("Prove report", () => {
   const step = (name: string, status = "passed", extra: Record<string, unknown> = {}) => ({ step: name, status, durationMs: 1000, ...extra });
   const report = (overrides: Record<string, unknown> = {}) => ({ schemaVersion: 1, proposalDigest: sha("a"), steps: [step("setup"), step("build"), step("boot"), step("smoke"), step("full_suite")], fullSuite: { durationMs: 2_400_000, tests: 1240 }, coverageMapRef: sha("c"), services: [{ name: "partner-scorer", modeUsed: "mocked" }], finishedAt: "2026-10-30T12:00:00.000Z", ...overrides });
   it("is proved only when every step passed or was skipped and the report is for exactly this digest", () => {
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("a"))).toBe(true);
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("b"))).toBe(false);
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot"), step("smoke"), step("mocks", "skipped")] })), sha("a"))).toBe(true);
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot", "failed", { failure: "boot_failed" })] })), sha("a"))).toBe(false);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("a"), {})).toBe(true);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("b"), {})).toBe(false);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot"), step("smoke"), step("mocks", "skipped")] })), sha("a"), {})).toBe(true);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot", "failed", { failure: "boot_failed" })] })), sha("a"), {})).toBe(false);
   });
   it("is not proved when everything was skipped, when neither the smoke check nor the full suite passed, or when a service never booted", () => {
-    const proved = (over: Record<string, unknown>) => env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report(over)), sha("a"));
+    const proved = (over: Record<string, unknown>) => env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report(over)), sha("a"), {});
     expect(proved({ steps: [step("setup", "skipped"), step("build", "skipped"), step("boot", "skipped"), step("smoke", "skipped"), step("full_suite", "skipped")] })).toBe(false);
     expect(proved({ steps: [step("setup"), step("build"), step("boot")] })).toBe(false);
     expect(proved({ steps: [step("setup"), step("boot", "skipped"), step("smoke")] })).toBe(false);
@@ -281,8 +281,8 @@ describe("Prove report", () => {
     expect(proved({ steps: [step("setup"), step("boot"), step("smoke", "skipped"), step("full_suite")] })).toBe(true);
   });
   it("never reads a missing or empty report as proved", () => {
-    expect(env.testEnvIsProved(undefined, sha("a"))).toBe(false);
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [] })), sha("a"))).toBe(false);
+    expect(env.testEnvIsProved(undefined, sha("a"), {})).toBe(false);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [] })), sha("a"), {})).toBe(false);
   });
   it("names a failure for a failed step with a fixed code, and for no other step", () => {
     expect(env.TestEnvProveReportSchema.safeParse(report({ steps: [step("boot", "failed")] })).success).toBe(false);
