@@ -15,6 +15,7 @@ import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, Verific
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 import { ErrorRefSchema } from "./live-interaction.js";
 import { EarlyRiskSignalReadSchema } from "./early-risk-signal.js";
+import { DesignActionsViewSchema } from "./design-review-words.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
 
@@ -172,6 +173,8 @@ export const DeveloperTaskViewSchema = z.object({
   evidence: EvidenceViewSchema.optional(),
   /** Setup and test health SH19 (version 2 only, full reads only, only while the four-results switch is on): one of Verified, Code failed, Partially verified or Blocked by environment for the code now on the task, with one row per check. Absent while the switch is off or the result is not decided yet. */
   testing: TestingViewSchema.optional(),
+  /** Design review (DR11, version 2 only): the Design first and Skip buttons for the person reading, decided by the broker. Absent when design review is not offered for the task. */
+  designActions: DesignActionsViewSchema.optional().catch(undefined),
   /** Decisions D5 (version 2 only): the coding plan under review on one screen (about 1,500 characters), derived from the plan document with no model call. Absent when there is no readable plan. */
   planOneScreen: PlanOneScreenSchema.optional(),
   /**

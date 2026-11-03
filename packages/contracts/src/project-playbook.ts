@@ -45,7 +45,12 @@ export const DesignReviewLockedFieldSchema = z.enum(DESIGN_REVIEW_LOCKED_FIELDS)
  * `GET` and an applied `PUT` of a project's playbook. When the company has a design review lock, `playbook.designReview` is the setting HELD TO that lock (what the project really runs with, never a looser stored
  * value) and `designReviewLocked` names the fields the project cannot change. A lock that cannot be read shows the strictest setting with every field locked.
  */
-export const ProjectPlaybookResponseSchema = z.object({ playbook: ProjectPlaybookSchema, designReviewLocked: z.array(DesignReviewLockedFieldSchema).max(DESIGN_REVIEW_LOCKED_FIELDS.length).optional() }).strict();
+export const ProjectPlaybookResponseSchema = z.object({
+  playbook: ProjectPlaybookSchema,
+  designReviewLocked: z.array(DesignReviewLockedFieldSchema).max(DESIGN_REVIEW_LOCKED_FIELDS.length).optional(),
+  /** DR11: true only in an edition that has groups (Enterprise). The editor offers "a group" as the high-risk approver only then; the broker refuses a group elsewhere. Absent reads as false. */
+  designReviewGroups: z.boolean().optional(),
+}).strict();
 export type ProjectPlaybookResponse = z.infer<typeof ProjectPlaybookResponseSchema>;
 
 /** How a client reads that answer: the gateway's `requestId` beside the fields is kept, not refused (as `CodeSettingsResponseReaderSchema`). */
