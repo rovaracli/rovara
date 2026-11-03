@@ -297,7 +297,8 @@ describe("3.12 item 4 and 9: the approve_design card still needs a person, and a
       const card = projection.cards[0] as DecisionCard;
       const digest = projection.digests[card.id]!;
       if (extra.open === true) await store.recordEvidenceOpened({ ...caller(who), cardId: card.id }, digest, new Date(NOW).toISOString());
-      return handler.approve(caller(who), { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: { cardId: card.id, digest }, reason: extra.reason, tab: extra.tab });
+      const input: DesignApproveInput = { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: { cardId: card.id, digest }, reason: extra.reason, tab: extra.tab };
+      return handler.approve(caller(who), input);
     }
     return { press, writes };
   };
@@ -451,7 +452,7 @@ function assemble(answers: Partial<Record<ReviewerRole, string | undefined>>, ov
   return assembleRoundFindings({
     binding, pins: PINS, packets,
     result: { reviewers: roles.map((role) => outcome(role, answers[role] ?? answerOf(role, []))), merge: { status: over.merge === undefined ? "no_result" : "answered", ...(over.merge === undefined ? {} : { answer: over.merge }), tokensIn: 0, tokensOut: 0, costUsd: 0 } },
-    verification: verified(over.verifiedRoles ?? roles) as never,
+    verification: verified(over.verifiedRoles ?? roles),
   });
 }
 

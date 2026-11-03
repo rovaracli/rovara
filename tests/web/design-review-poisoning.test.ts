@@ -11,7 +11,7 @@ import { designTabModel } from "../../packages/ui/src/screens/session/design-rev
 import { cleanApproveReason, openBlockersOnCard } from "../../packages/ui/src/design/design-review-card.js";
 import { visibleText } from "../../packages/ui/src/design/VisibleText.js";
 import { designReviewFixture } from "./support/design-review-fixture.js";
-import { BIDI, CONTROLS, HIDDEN_NO_NEWLINE, PAYLOADS, ZERO_WIDTH, tokenFor } from "../support/design-review-poisoning.js";
+import { BIDI, CONTROLS, HIDDEN_NO_NEWLINE, PAYLOADS, ZERO_WIDTH, tokenFor } from "./support/design-review-payloads.js";
 
 const hex = (character: string) => character.repeat(64);
 
