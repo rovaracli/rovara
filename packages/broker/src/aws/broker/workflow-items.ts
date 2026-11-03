@@ -1115,7 +1115,7 @@ export async function completedWorkflowItems(
           ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
           : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });
         // Design review (switch `dr`, off: nothing here changes): a ready task may get its design reviewed; the mode is resolved from the effective setting and FULL is forced when it is on.
-        if (assessed.kind === "ready" && task.orgId !== undefined) next = await withDesignReviewMode(dependencies, { orgId: task.orgId, project: task.project, workflow: next, assessment: assessed, now });
+        if (assessed.kind === "ready" && task.orgId !== undefined) next = await withDesignReviewMode(dependencies, { orgId: task.orgId, project: task.project, workflow: next, assessment: assessed, now, ...(task.designFirst === undefined ? {} : { designFirst: task.designFirst }) });
         if (next.outcome === "ANSWERED") {
           answeredItems = [...answeredMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now),
             finishedReleaseMarkItem(dependencies.tableName, task.taskId, now)];

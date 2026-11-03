@@ -18,6 +18,8 @@ export interface DesignModeAtUnderstandInput {
   assessment: IntentAssessment;
   now: string;
   env?: NodeJS.ProcessEnv;
+  /** The person typed `design first:` in the request (the task record's `designFirst`): the mode is ON, whatever the project's setting says (owner Q3). */
+  designFirst?: { by: string } | undefined;
 }
 
 /**
@@ -31,13 +33,13 @@ export async function withDesignReviewMode(deps: ProjectPlaybookReader, input: D
   if (assessment.kind !== "ready" || workflow.stage !== "PLAN" || workflow.state !== "READY" || workflow.designReview !== undefined) return workflow;
   const effective = await readEffectiveDesignReview(deps, input.orgId, input.project);
   // What the person asked for, as far as the start recorded it: an explicit Quick path. (`design first:` and Skip arrive with DR11's intake; they are not invented here.)
-  const decision = resolveDesignMode({ setting: effective.setting, assessment, quick: isExplicitPath(workflow) && workflow.path === "QUICK" });
+  const decision = resolveDesignMode({ setting: effective.setting, assessment, quick: isExplicitPath(workflow) && workflow.path === "QUICK", ...(input.designFirst === undefined ? {} : { designFirst: true }) });
   if (!decision.decided || !decision.on) return workflow;
-  if (decision.decidedBy !== "auto" && decision.decidedBy !== "always") return workflow;
+  if (decision.decidedBy !== "auto" && decision.decidedBy !== "always" && decision.decidedBy !== "person") return workflow;
   try {
     return enableDesignReview(workflow, {
       expectedRevision: workflow.revision, now: input.now,
-      start: { decidedBy: decision.decidedBy, reasons: [...decision.reasons], ...(decision.note === undefined ? {} : { note: decision.note }), tier: effective.setting.tier, capUsd: effective.setting.capUsdPerTask },
+      start: { decidedBy: decision.decidedBy, ...(decision.decidedBy === "person" && input.designFirst !== undefined ? { by: { actorId: input.designFirst.by } } : {}), reasons: [...decision.reasons], ...(decision.note === undefined ? {} : { note: decision.note }), tier: effective.setting.tier, capUsd: effective.setting.capUsdPerTask },
     });
   } catch (error) {
     if (!(error instanceof WorkflowTransitionError)) throw error;

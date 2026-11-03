@@ -21,6 +21,7 @@ import { SLACK_SEND_BACK_INSTRUCTIONS, captureWorkflowFeedbackNote, confirmTaskP
 import { ownerKeyForSubject } from "../lambda.js";
 import { stopSwebenchRun } from "../swebench.js";
 import { startCodeIntent } from "../../rovara-code/intent.js";
+import { markDesignFirst } from "../../design-review/design-first.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { cancelRunningTask, type TaskCancellation } from "./acceptance.js";
@@ -58,6 +59,8 @@ export interface SlackWorkflowStartEvent {
   instructions: string;
   workflowPath: "QUICK" | "FULL";
   requestId: string;
+  /** `design first:` (DR11): the design is reviewed before any code. Recorded on the task, for the Understand step to read. */
+  designFirst?: true;
 }
 
 export interface SlackWorkflowDecisionEvent {
@@ -291,6 +294,8 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
     requestId, project: binding.projectName, input: { text: instructions }, path: event.workflowPath, source: "slack",
     binding: { kind: "slack_thread", teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs },
   });
+  // `design first:` (DR11): recorded on the task for the Understand step's mode resolution, which only turns it on while the switch is on for the project.
+  if (event.designFirst === true) await markDesignFirst(dependencies, started.task.taskId, caller.developerId);
   return { task: started.task };
 }
 

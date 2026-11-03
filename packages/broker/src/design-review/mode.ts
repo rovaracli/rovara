@@ -3,7 +3,7 @@
 // words are shown to people as inert text (through `plainLine`) and never set the tier, the approver, the cost or the mode.
 import {
   DESIGN_REVIEW_HIGH_RISK_REASONS, designReasonPhrase, skipRefusalText, skipVerdict,
-  type DesignReason, type IntentAssessment, type SkipVerdict,
+  type DesignReason, type IntentAssessment, type SkipVerdict, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { plainLine } from "../decisions/text.js";
 import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, isEffectiveSetting, type EffectiveDesignReviewSetting } from "./effective-setting.js";
@@ -125,3 +125,16 @@ export function designClassificationLine(decision: DesignModeDecision): string |
 /** The high-risk reason codes, for the approver chip (DR9): the same list the contracts use. */
 export const highRiskReasonsOf = (reasons: readonly DesignReason[]): readonly DesignReason[] =>
   reasons.filter((reason) => DESIGN_REVIEW_HIGH_RISK_REASONS.includes(reason));
+
+/**
+ * The classification line for a task whose design review is ON, from what its review recorded (decidedBy, reasons, Understand's note): the sentence Slack and Linear threads get when the mode resolves. Only for the first
+ * card of the task (the requirements or the Quick plan waiting for approval); `undefined` for a task with no design review (nothing is said) and for every later step. Plain text.
+ */
+export function designClassificationNoteOf(workflow: Pick<WorkflowSnapshot, "designReview" | "stage" | "state" | "reviewPhase" | "decisions">): string | undefined {
+  const review = workflow.designReview;
+  if (review === undefined || workflow.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || workflow.decisions.length > 0) return undefined;
+  if (review.decidedBy !== "auto" && review.decidedBy !== "always" && review.decidedBy !== "person") return undefined;
+  return designClassificationLine({
+    decided: true, on: true, decidedBy: review.decidedBy, reasons: review.reasons, ...(review.note === undefined ? {} : { note: review.note }), forceFull: true, quickOverridden: false, skip: { allowed: true },
+  });
+}
