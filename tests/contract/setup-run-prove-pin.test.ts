@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { testEnvDigest, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
-import { writeSetupRunProposal } from "../../packages/broker/src/rovara-code/setup-run-proposal.js";
 import { seedSetupRun } from "../support/candidate-check.js";
 import { checkedAtRunCommits } from "../../packages/broker/src/test-env/setup-run-pin.js";
 import { ENV, NAME, command, draftBody, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
