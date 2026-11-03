@@ -182,6 +182,14 @@ export const DesignQuestionSchema = z.object({
 });
 export type DesignQuestion = z.infer<typeof DesignQuestionSchema>;
 
+/** A person's answer to one design question (DR6): an option of that question, words, or both. Cleaned by the transition that records it. */
+export const DesignAnswerSchema = z.object({
+  questionId: z.enum(DESIGN_QUESTION_IDS),
+  optionId: z.string().min(1).max(16).optional(),
+  text: z.string().min(1).max(500).optional(),
+}).strict().refine((answer) => answer.optionId !== undefined || answer.text !== undefined, { message: "an answer picks an option or says something" });
+export type DesignAnswer = z.infer<typeof DesignAnswerSchema>;
+
 export const DesignReviewRoundSchema = z.object({
   round: z.union([z.literal(1), z.literal(2)]),
   designDigest: Digest,
@@ -189,6 +197,10 @@ export const DesignReviewRoundSchema = z.object({
   findings: z.array(DesignFindingSchema).max(DESIGN_REVIEW_FINDINGS_MAX),
   resolutions: z.array(FindingResolutionSchema).max(DESIGN_REVIEW_FINDINGS_MAX),
   questions: z.array(DesignQuestionSchema).max(DESIGN_REVIEW_QUESTIONS_MAX).optional(),
+  /** DR6: the one set of answers to this round's question card, with the person the broker authenticated. */
+  answers: z.object({ by: z.object({ actorId: z.string().min(1).max(128) }).strict(), at: Instant, answers: z.array(DesignAnswerSchema).min(1).max(DESIGN_REVIEW_QUESTIONS_MAX) }).strict().optional(),
+  /** DR6: findings (by id) of a later round that would undo an earlier fix. They end the loop early and go to the card (the oscillation rule). */
+  oscillation: z.array(z.string().min(1).max(64)).max(DESIGN_REVIEW_FINDINGS_MAX).optional(),
   mergeModel: DesignModelRefSchema.optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
