@@ -366,6 +366,8 @@ describe("the named TEST proof-only installation gate", () => {
     // template (nothing hand-computed). The legacy digests did not move.
     // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
     // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
+    // 2026-11-03, merge of lane ts-accounts (df8703c51) onto cf34811c6: the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); the only template additions are
+    // ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. TEST_ACCOUNT_SECRETS_ROLE_ARN is derived in the process, so AGENTX_SETTINGS did not change. Legacy did not move.
     const digestCases = [
       {
         label: "named",
