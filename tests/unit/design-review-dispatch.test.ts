@@ -1,7 +1,7 @@
 // Design review stage, DR7 slice B: the guards of the dispatch and of the plan check's other ends, one by one, each with a case that fails without it. The whole round trip is in tests/contract/design-review-e2e.test.ts.
 import { describe, expect, it, vi } from "vitest";
 import {
-  DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowSnapshotSchema, agentXError, closePlanCritique, createWorkflowSnapshot, decideWorkflow, enableDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact,
+  DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowSnapshotSchema, agentXError, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designReviewDisagreements, enableDesignReview, resolveDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact,
   type ModelSelection, type OrgId, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { designAnswersCommitItems, designAnswersHandler } from "../../packages/broker/src/design-review/answers.js";
@@ -13,6 +13,8 @@ import { designReviewEnabled } from "../../packages/broker/src/design-review/swi
 import { ownDesignFindings, withOwnFindings } from "../../packages/broker/src/design-review/own-findings.js";
 import { designSourcesOf, originOf, pinsOf, requirementIdsOf } from "../../packages/broker/src/design-review/round-inputs.js";
 import { applyPlannerResolve } from "../../packages/broker/src/design-review/resolve-answer.js";
+import { designResolvePrompt } from "../../packages/broker/src/design-review/resolve-run.js";
+import { estimateDesignReviewUsd } from "../../packages/broker/src/design-review/estimate.js";
 import { DesignReviewRoundStop, prepareDesignReviewRound, slotOf, type RoundInputs } from "../../packages/broker/src/design-review/round-start.js";
 import type { DesignReviewRoundPorts, RoundSourceReaders } from "../../packages/broker/src/design-review/round-ports.js";
 import type { PacketReaders } from "../../packages/broker/src/design-review/packet.js";
@@ -250,6 +252,55 @@ describe("the planner's answer to a round's findings", () => {
     expect(contestWith("d".repeat(40))).toMatchObject({ stage: "PLAN_REVIEW", designReview: { status: "done" } });
   });
 
+  describe("B2-m1: the last round does not ask, and a planner that asks anyway keeps its fixes", () => {
+    /** The planner's step of round 2 (the last round): round 1's fixes were reviewed again and found a major, a nit and another major. */
+    function planningLast(): WorkflowSnapshot {
+      const second = applyPlannerResolve({ workflow: planning(), answer: block({ resolutions: [fixed("1"), fixed("2")] }), revisedDesign: artifact("design", 2), pins, now: LATER });
+      const started = startDesignReview(second, { expectedRevision: second.revision, estimateUsd: 1, now: NOW });
+      const round = submitDesignReview(started, { expectedRevision: started.revision, designDigest: artifact("design", 2).sha256, reviewers: [{ ...run("critic", [SOURCE]), sessionId: "s-critic-2", modelKeyId: hex(21) }], now: LATER,
+        findings: [finding("3", "major", "The wait grows without a limit."), finding("4", "nit", "A name is unclear."), finding("5", "major", "Who owns the rollback?")] });
+      return running(round);
+    }
+    const question = { id: "q1", unclear: "Who owns the rollback?", evidence: [{ kind: "design", section: "§5" }], options: [{ id: "a", label: "The team", consequence: "Quick." }, { id: "b", label: "Operations", consequence: "Slower." }], recommended: "a", why: "Closer to the code." };
+
+    it("keeps the fix, leaves the asked and declined findings open as unresolved, and opens no question card (before the fix the whole answer was thrown away)", () => {
+      const next = applyPlannerResolve({
+        workflow: planningLast(), pins, now: LATER, revisedDesign: artifact("design", 3),
+        answer: block({ resolutions: [fixed("3"), { findingId: "4", action: "declined", note: "Cosmetic." }, { findingId: "5", action: "asked", note: "A team rule.", questionId: "q1" }], questions: [question] }),
+      });
+      expect(next).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+      const last = next.designReview!.rounds[1]!;
+      expect(last.resolutions.map((resolution) => [resolution.findingId, resolution.action])).toEqual([["3", "fixed"]]);
+      expect(last.questions).toBeUndefined();
+      expect(next.artifacts.filter((entry) => entry.type === "design").at(-1)!.version).toBe(3);
+      // The major that was asked about is shown for the person as unresolved; the fixed one is an unchecked fix.
+      expect(designReviewDisagreements(next.designReview).map((entry) => [entry.findingId, entry.kind])).toEqual([["3", "unchecked_fix"], ["5", "unresolved"]]);
+    });
+
+    it("positive control: round 1 still opens its question card, and a last round that only fixes and contests is unchanged", () => {
+      const asked = applyPlannerResolve({ workflow: planning(), pins, now: LATER, answer: block({ resolutions: [{ findingId: "1", action: "asked", note: "A team rule.", questionId: "q1" }, fixed("2")], questions: [question] }) });
+      expect(asked).toMatchObject({ stage: "PLAN", state: "WAITING", designReview: { status: "waiting_answers" } });
+      const plain = applyPlannerResolve({ workflow: planningLast(), pins, now: LATER, revisedDesign: artifact("design", 3), answer: block({ resolutions: [fixed("3"), { findingId: "4", action: "fixed", note: "Renamed." }, { findingId: "5", action: "fixed", note: "Named the owner." }] }) });
+      expect(plain.designReview!.rounds[1]!.resolutions.map((resolution) => resolution.action)).toEqual(["fixed", "fixed", "fixed"]);
+    });
+
+    it("the move itself leaves a finding open only in the last round", () => {
+      expect(() => resolveDesignReview(planning(), { expectedRevision: planning().revision, leaveOpen: ["1"], resolutions: [{ findingId: "2", action: "fixed", note: "x", settled: false }], artifact: artifact("design", 2), now: LATER })).toThrow(/last round/);
+      expect(() => resolveDesignReview(planningLast(), { expectedRevision: planningLast().revision, leaveOpen: ["nope"], resolutions: [], now: LATER })).toThrow(/open finding/);
+    });
+
+    it("tells the planner in its prompt: the last round may not ask or decline, a round already answered asks nothing new, and round 1 says nothing of the kind", () => {
+      const design = { ref: "design-v1", revision: "abc", text: "# Design" };
+      const lastRound = planningLast().designReview!.rounds[1]!;
+      expect(designResolvePrompt({ design, round: lastRound })).toContain("NO QUESTIONS NOW: this is the last round");
+      const round1 = planning().designReview!.rounds[0]!;
+      expect(designResolvePrompt({ design, round: round1 })).not.toContain("NO QUESTIONS NOW");
+      expect(designResolvePrompt({ design, round: round1 })).not.toContain("NO NEW QUESTIONS");
+      const answered = { ...round1, questions: [question], answers: { by: { actorId: OWNER }, at: LATER, answers: [{ questionId: "q1", optionId: "a" }] } } as typeof round1;
+      expect(designResolvePrompt({ design, round: answered })).toContain("NO NEW QUESTIONS NOW");
+    });
+  });
+
   it("sends the design on as reviewed, findings unresolved, when the answer cannot be read, misses a finding, or the move refuses it", () => {
     const unresolved = (answer: string, revisedDesign?: WorkflowArtifact) => applyPlannerResolve({ workflow: planning(), answer, ...(revisedDesign === undefined ? {} : { revisedDesign }), pins, now: LATER });
     for (const answer of ["I fixed everything.", block({ resolutions: [fixed("1")] }), block({ resolutions: [fixed("1"), fixed("2"), fixed("3")] })]) {
@@ -314,6 +365,17 @@ describe("the preparation of a round", () => {
     expect(p.db.find((item) => item.entityType === "DESIGN_REVIEW_PACKET" && String(item.sk).endsWith("#HEAD")).map((item) => item.keySlot).sort()).toEqual(["r1-codebase", "r1-comprehension", "r1-critic"]);
     expect(prepared.estimateUsd!).toBeGreaterThan(0);
     expect(slotOf(2, "zoom_out")).toBe("r2-zoom_out");
+  });
+
+  it("B2-M1: the review's room is held back for BOTH planner runs of a round that may ask (3 for two rounds), not one per round: the reviewers' ceilings add up to the cap less that", async () => {
+    const p = ports({ taskRoomUsd: async () => 100 });
+    await prepareDesignReviewRound(inputs(p.value, { capUsd: 10 }), resolved);
+    const allocation = p.db.find((item) => item.entityType === "DESIGN_REVIEW_ALLOCATION")[0]!;
+    const planner = estimateDesignReviewUsd({ tier: "standard", models: { reviewer: MODEL, merge: MODEL, planner: MODEL }, price: () => ({ inputUsdPerMTok: 3, outputUsdPerMTok: 15 }), packetTokens: 1_000 });
+    if (planner.kind !== "priced") throw new Error("priced");
+    const oneRun = planner.breakdown.plannerUsd / 3;
+    expect(allocation.totalUsd as number).toBeLessThanOrEqual(10 - 3 * oneRun + 1e-6);
+    expect(allocation.totalUsd as number).toBeGreaterThan(10 - 3 * oneRun - 1e-3);
   });
 
   it("no proxy: not run before anything is read, built, stored or allocated", async () => {

@@ -2,7 +2,8 @@
 // own function for one reviewer, "Cost unavailable" is never a number, a gate never runs on its own, and the card's choices are the ones the rules allow.
 import { describe, expect, it } from "vitest";
 import { DecisionCardSchema, type ModelIdentifier } from "@agentx/contracts";
-import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, ROLE_INPUT_TURN_FACTOR, designReviewSpendStop, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
+import * as estimateModule from "../../packages/broker/src/design-review/estimate.js";
+import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, ROLE_INPUT_TURN_FACTOR, plannerRunsFor, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
 import { designSpendCardItem, designSpendChoicePath } from "../../packages/broker/src/design-review/spend-card.js";
 import { cardOfItem } from "../../packages/broker/src/decisions/project.js";
 import { SECOND_REVIEW_TYPICAL_REVIEW_TOKENS, estimateSecondReviewUsd } from "../../packages/broker/src/rovara-code/second-review-picker.js";
@@ -31,7 +32,8 @@ describe("the estimate", () => {
     expect(estimate.breakdown.reviewersUsd).toBeCloseTo(one * 2, 6);
     // Light merges in code: nothing is priced for the merge.
     expect(estimate.breakdown.mergeUsd).toBe(0);
-    expect(estimate.breakdown.plannerUsd).toBeCloseTo(estimateSecondReviewUsd(PRICES["planner-model"]!, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * 2, 6);
+    // B2-M1: 3 planner runs for 2 rounds (round 1 asks then resolves; the last round does not ask).
+    expect(estimate.breakdown.plannerUsd).toBeCloseTo(estimateSecondReviewUsd(PRICES["planner-model"]!, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * 3, 6);
     expect(estimate.usd).toBeCloseTo(estimate.breakdown.reviewersUsd + estimate.breakdown.plannerUsd, 6);
   });
 
@@ -167,17 +169,20 @@ describe("the cap gate", () => {
   });
 });
 
-describe("M5: an unpriced run is still bounded by measured spend", () => {
-  it("stops at the cap on measured spend, priced or not, and an unpriced run with no reading never goes on", () => {
-    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 9.99, unpriced: true })).toEqual({ stop: false });
-    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 10, unpriced: true })).toEqual({ stop: true, why: "cap_reached" });
-    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 250, unpriced: false })).toEqual({ stop: true, why: "cap_reached" });
-    // No meter reading: a priced run is bounded by its estimate, an unpriced one by nothing, so it stops.
-    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: undefined, unpriced: false })).toEqual({ stop: false });
-    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: undefined, unpriced: true })).toEqual({ stop: true, why: "spend_unmeasured" });
-    // A reading that is not a usable number is no reading; a bad cap stops everything.
-    for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) expect(designReviewSpendStop({ capUsd: 10, measuredUsd: bad, unpriced: true }), String(bad)).toMatchObject({ stop: true });
-    expect(designReviewSpendStop({ capUsd: Number.NaN, measuredUsd: 0, unpriced: false })).toMatchObject({ stop: true });
+describe("B2-M1: the planner's runs are priced in the estimate", () => {
+  it("holds back room for BOTH planner runs of a round that may ask (the run that asks, then the run that resolves), and one for the last round, which does not ask", () => {
+    expect([plannerRunsFor(2), plannerRunsFor(1), plannerRunsFor(0), plannerRunsFor(Number.NaN)]).toEqual([3, 1, 0, 0]);
+    const one = estimateSecondReviewUsd(PRICES["planner-model"]!, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output });
+    const both = priced(estimateDesignReviewUsd({ tier: "standard", models, price }));
+    const last = priced(estimateDesignReviewUsd({ tier: "standard", models, price, rounds: 1 }));
+    expect(both.breakdown.plannerUsd).toBeCloseTo(one * 3, 6);
+    expect(last.breakdown.plannerUsd).toBeCloseTo(one, 6);
+  });
+});
+
+describe("M5 and B2-m5: an unpriced run is bounded by the keys' ceilings, not by a stop function nothing called", () => {
+  it("has no `designReviewSpendStop`: the dead stop was removed, and the per-slot key ceilings are the limit (tested end to end)", () => {
+    expect("designReviewSpendStop" in estimateModule).toBe(false);
   });
 });
 

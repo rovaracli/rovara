@@ -20,7 +20,8 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { COMMIT, HIDDEN_NO_NEWLINE, PAYLOADS, countOf, expectedFrameTags, frameTagNames, tokenFor } from "../support/design-review-poisoning.js";
 import { TEST_ORG } from "../support/orgs.js";
 
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); });
+// The switch is read at every step (B2-m3): the world's project is listed in `dp`.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments"); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 const review = (w: DesignWorld): WorkflowDesignReview => w.task().workflow.designReview!;

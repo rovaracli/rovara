@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXError, DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowTransitionError, agentXError, closeDesignReview, holdDesignReviewForCost, startDesignReview, workflowIsDesignReviewing, workflowRequestId,
+  AgentXError, DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowTransitionError, agentXError, closeDesignReview, holdDesignReviewForCost, reholdDesignReviewForCost, startDesignReview, workflowIsDesignReviewing, workflowRequestId,
   type DesignReviewBinding, type DesignReviewTier, type ModelIdentifier, type ModelSelection, type ReviewerRole, type WorkflowArtifact, type WorkflowSnapshot, type DESIGN_REVIEW_NOT_RUN_REASONS,
 } from "@agentx/contracts";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -31,6 +31,7 @@ import { putSlotPackets } from "./packet-store.js";
 import { designSourcesOf, pinsOf } from "./round-inputs.js";
 import type { DesignReviewDispatch, DesignReviewResolved, DesignReviewRoundPorts } from "./round-ports.js";
 import { allocateSlotBudgets } from "./slot-keys.js";
+import { designReviewEnabledFor } from "./switch.js";
 
 type NotRunReason = (typeof DESIGN_REVIEW_NOT_RUN_REASONS)[number];
 
@@ -188,9 +189,9 @@ const artifactOf = (workflow: WorkflowSnapshot, type: WorkflowArtifact["type"]):
 /** Applies the move a stop calls for, if the task is still where the start found it. */
 async function applyStop(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, stop: RoundStop, now: string): Promise<"STARTED" | "STALE"> {
   const expectedRevision = workflow.revision;
-  // A round started from the cost hold (an approved unpriced run) that is held again stays where it is: the card the person decided on is still the card.
-  if (stop.kind === "hold" && workflow.state === "WAITING") return "STARTED";
-  const next = stop.kind === "hold" ? holdDesignReviewForCost(workflow, { expectedRevision, ...(stop.estimateUsd === undefined ? {} : { estimateUsd: stop.estimateUsd }), now })
+  // B2-m6: a round started from the cost hold (an approved unpriced run) that is held again does not use the approval up in silence: the hold is recorded afresh, at a new revision and with the estimate the gate found now, so the
+  // approval (bound to the old revision) is stale, the card shows the new figure and a new tap is needed.
+  const next = stop.kind === "hold" ? (workflow.state === "WAITING" ? reholdDesignReviewForCost : holdDesignReviewForCost)(workflow, { expectedRevision, ...(stop.estimateUsd === undefined ? {} : { estimateUsd: stop.estimateUsd }), now })
     : stop.kind === "at_cap" ? closeDesignReview(workflow, { expectedRevision, outcome: "stopped_at_cap", now })
       : closeDesignReview(workflow, { expectedRevision, outcome: "not_run", notRunReason: stop.reason, now });
   try {
@@ -224,6 +225,9 @@ export async function startDesignReviewRound(
   if (!workflowIsDesignReviewing(workflow) || review === undefined || (review.status !== "estimating" && !approvedHold) || review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX) return "STALE";
   // A deployment whose broker did not give this path the round's ports (the owner's immediate start after a retry) leaves the dispatch row to the sweep, which has them.
   if (ports === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the design review cannot be started from here");
+  // B2-m3: the switch is read at every step, not only when a task enters the stage. `dr` set to 0, or the project taken out of `dp`, ends a review that is under way here, at its next step: it did not run (`switched_off`), the
+  // design goes to the person as it stands, and nothing is approved on anyone's behalf. A round already running finishes (its keys and its result are the ones the broker minted); the NEXT round, planner run or retry does not start.
+  if (!designReviewEnabledFor(task.project)) return applyStop(deps, task, workflow, { kind: "not_run", reason: "switched_off" }, iso(deps));
   await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);

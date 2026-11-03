@@ -177,6 +177,18 @@ export function holdDesignReviewForCost(currentInput: unknown, input: { expected
 }
 
 /**
+ * B2-m6: a round that a person's approval of an UNPRICED run started from the cost hold is held again (the gate now finds an estimate over the cap, which an approval never lifts). The hold stays at PLAN_CRITIQUE/WAITING
+ * "waiting_cost" but is recorded afresh, at a new revision and with the estimate the gate found: the approval named the old revision, so it is not carried over or used up in silence, the card shows the new figure, and a new
+ * tap (a raise, a lower tier or a skip) is what goes on. It records no approval.
+ */
+export function reholdDesignReviewForCost(currentInput: unknown, input: { expectedRevision: number; estimateUsd?: number; now: string }): WorkflowSnapshot {
+  const { current, review } = located(currentInput, input.expectedRevision, { stage: "PLAN_CRITIQUE", states: ["WAITING"], statuses: ["waiting_cost"] });
+  const { estimateUsd: _earlier, ...kept } = review;
+  void _earlier;
+  return moved(current, { stage: "PLAN_CRITIQUE", state: "WAITING", review: { ...kept, status: "waiting_cost", ...(input.estimateUsd === undefined ? {} : { estimateUsd: input.estimateUsd }) }, now: input.now });
+}
+
+/**
  * The reviewers start: from READY, or from the cost hold once a person approved the spend. Round 1 and round 2 start the same way. The cost cap stored on the review is checked HERE, before
  * any round, whoever calls:
  * - no cap on the record, or nothing left under it: refused;
@@ -584,19 +596,23 @@ function resolutionProblem(resolution: FindingResolution, finding: DesignFinding
  */
 export function resolveDesignReview(
   currentInput: unknown,
-  input: { expectedRevision: number; resolutions: readonly unknown[]; artifact?: unknown; now: string },
+  input: { expectedRevision: number; resolutions: readonly unknown[]; /** B2-m1: findings the planner answered in a way this round does not allow (asked or declined in the last round). They get no resolution and stay open, listed for the person as unresolved; only the last round may leave findings open. */ leaveOpen?: readonly string[]; artifact?: unknown; now: string },
 ): WorkflowSnapshot {
   const { current, review } = located(currentInput, input.expectedRevision, { stage: "PLAN", states: ["RUNNING"], statuses: ["resolving"] });
   const round = lastRound(review);
   if (round === undefined || designReviewRevisionsUsed(review) >= DESIGN_REVIEW_REVISIONS_MAX || designRoundResolved(round)) throw fail("there is nothing for the planner to resolve");
   const resolutions = z.array(FindingResolutionSchema).safeParse(input.resolutions);
   if (!resolutions.success) throw fail("the resolutions are invalid");
-  const pending = round.findings.filter((finding) => resolutionOf(round, finding.id) === undefined);
+  const finalRound = review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX;
+  const open = new Set(input.leaveOpen ?? []);
+  if (open.size > 0 && !finalRound) throw fail("only the last round leaves findings open");
+  const unanswered = round.findings.filter((finding) => resolutionOf(round, finding.id) === undefined);
+  if ([...open].some((id) => unanswered.every((finding) => finding.id !== id))) throw fail("a finding left open is not an open finding of the round");
+  const pending = unanswered.filter((finding) => !open.has(finding.id));
   const byFinding = new Map(resolutions.data.map((resolution) => [resolution.findingId, resolution]));
   if (byFinding.size !== resolutions.data.length || byFinding.size !== pending.length || pending.some((finding) => !byFinding.has(finding.id))) {
     throw fail("every open finding needs exactly one resolution");
   }
-  const finalRound = review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX;
   const settled: FindingResolution[] = [];
   for (const finding of pending) {
     const resolution = byFinding.get(finding.id)!;
