@@ -26,7 +26,6 @@
 import { Aws, CfnOutput, Duration, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import {
-  environmentRolePath,
   SAVED_ENV_KEEP_DEFAULT,
   SAVED_ENV_PUSH_SESSION_SECONDS,
   savedEnvCreateRoleName,
@@ -108,6 +107,10 @@ export class SavedEnvImages extends Construct {
     // The role ECR assumes to create a repository from the template. Only ECR may assume it; it may create repositories under the prefix and apply the policy, lifecycle and tags the template carries.
     this.createRole = new iam.Role(this, "CreateRole", {
       roleName: savedEnvCreateRoleName(env),
+      // The root path, not the environment's: the template's CustomRoleArn must match ^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$, which has no room for a path
+      // (staging, 2026-11-03: "CustomRoleArn: failed validation constraint for keyword [pattern]"). EnvironmentRolePath leaves a role that asks for "/" where it is, and the deploy role
+      // and the boundary name this one ARN (rootPathRoles in access-policies).
+      path: "/",
       description: "Rovara saved environment images: ECR assumes this to create a repository from the creation template",
       assumedBy: new iam.ServicePrincipal("ecr.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } } }),
     });
@@ -168,7 +171,7 @@ export class SavedEnvImages extends Construct {
     }
 
     // ---- the creation template
-    // The roles' real ARNs (with the environment's path, wherever the aspect puts them), so the policy names exactly the roles created here.
+    // The roles' real ARNs (the push, pull and manage roles carry the environment's path, wherever the aspect puts them), so the policy names exactly the roles created here.
     const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn });
     this.template = new ecr.CfnRepositoryCreationTemplate(this, "CreationTemplate", {
       prefix,
@@ -199,9 +202,9 @@ export class SavedEnvImages extends Construct {
     }));
   }
 
-  /** The creation role's ARN from its fixed name and the environment's path, known before the role exists. */
+  /** The creation role's ARN from its fixed name (it sits at the root path), known before the role exists. */
   private get createRoleArn(): string {
-    return `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role${environmentRolePath(this.envName)}${savedEnvCreateRoleName(this.envName)}`;
+    return `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role/${savedEnvCreateRoleName(this.envName)}`;
   }
 
   /** The key statements for ECR's creation role: it may create the one grant ECR uses, through ECR, and nobody else may create any grant. */

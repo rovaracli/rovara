@@ -63,6 +63,19 @@ describe("the creation template", () => {
     expect(props()["CustomRoleArn"]).toBeDefined();
   });
 
+  it("names a creation role at the root path: ECR's CustomRoleArn pattern has no room for an IAM path (staging, 2026-11-03)", () => {
+    // ^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$ : the name part cannot hold a "/", so a role under /agentx/<env>/ is refused at validation.
+    const arn = props()["CustomRoleArn"] as { "Fn::GetAtt": [string, string] };
+    expect(arn["Fn::GetAtt"][1]).toBe("Arn");
+    const resources = template.toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
+    const role = resources[arn["Fn::GetAtt"][0]]!;
+    expect(role.Type).toBe("AWS::IAM::Role");
+    expect(role.Properties["RoleName"]).toBe("agentx-test-img-create");
+    expect(role.Properties["Path"]).toBe("/");
+    const resolved = `arn:aws:iam::${ACCOUNT}:role${String(role.Properties["Path"])}${String(role.Properties["RoleName"])}`;
+    expect(resolved).toMatch(/^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,\-.@_]*$/u);
+  });
+
   it("expires untagged images after a day and has a count backstop of the largest keep plus 3 (13), whatever keep is; there is NO age rule (a tagged-image age rule never matches behind a count rule: the broker's manage walk holds the 30 day ceiling)", () => {
     const rules = (JSON.parse(props()["LifecyclePolicy"] as string) as { rules: Array<{ rulePriority: number; selection: Record<string, unknown> }> }).rules;
     expect(rules.map((rule) => rule.rulePriority)).toEqual([1, 2]);
@@ -168,7 +181,7 @@ describe("the key", () => {
     const statements = JSON.parse(text.replace(/<AWS::(Partition|AccountId|Region)>/gu, (_m, name: string) => ({ Partition: "aws", AccountId: ACCOUNT, Region: REGION })[name]!)) as Statement[];
     const allow = statements.find((statement) => statement.Sid === "CreationRoleGrantForEcr")!;
     expect(JSON.stringify(allow.Principal)).toContain(":root");
-    expect(allow.Condition?.["ArnEquals"]?.["aws:PrincipalArn"]).toBe(`arn:aws:iam::${ACCOUNT}:role/agentx/test/agentx-test-img-create`);
+    expect(allow.Condition?.["ArnEquals"]?.["aws:PrincipalArn"]).toBe(`arn:aws:iam::${ACCOUNT}:role/agentx-test-img-create`);
     expect((output[1] as { Description: string }).Description).toContain("DEDICATED");
     const policies = Object.values(b.template.findResources("AWS::IAM::Policy")).map((policy) => JSON.stringify(policy.Properties));
     expect(policies.some((policy) => policy.includes("CustomerKeyGrantForEcr") && policy.includes(KMS))).toBe(true);

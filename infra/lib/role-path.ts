@@ -9,7 +9,9 @@ import { isIamRole } from "./iam-roles.js";
  * service role can be scoped to `role/agentx/<env>/*` whatever name CloudFormation generates (it
  * truncates long generated names, dropping any name prefix). Roles built as plain CfnResource
  * (CDK's custom-resource providers) get the same property through an override. Stacks listed in
- * `except` are skipped: the access stack's fixed-name roles stay at the root path.
+ * `except` are skipped: the access stack's fixed-name roles stay at the root path. So does a role that
+ * declares the root path itself (`path: "/"`): the saved environment images' creation role, whose ARN
+ * ECR's CustomRoleArn pattern only accepts without a path.
  */
 export class EnvironmentRolePath implements IAspect {
   constructor(
@@ -20,6 +22,7 @@ export class EnvironmentRolePath implements IAspect {
   visit(node: IConstruct): void {
     if (!isIamRole(node)) return;
     if (this.except.has(Stack.of(node))) return;
+    if (node instanceof iam.CfnRole && node.path === "/") return;
     if (node instanceof iam.CfnRole) node.path = environmentRolePath(this.env);
     else node.addPropertyOverride("Path", environmentRolePath(this.env));
   }
