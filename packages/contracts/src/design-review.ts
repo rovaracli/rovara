@@ -3,6 +3,7 @@
 // Reviewers resolve their model through the existing `plan_check` stage (strongest, different from the planner): STAGE_IDS is unchanged on purpose, because adding a stage
 // changes the digest of every recorded model-choice approval.
 import { z } from "zod";
+import { sha256Hex } from "./web-hash.js";
 
 const PlainLine = (max: number) => z.string().min(1).max(max).refine((value) => !/[\p{Cc}\p{Cf}]/u.test(value), "must be plain text");
 const Digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -241,4 +242,13 @@ export type DesignReviewView = WorkflowDesignReview;
 /** A playbook with no setting runs the owner's defaults. */
 export function designReviewSettingOf(playbook: { designReview?: DesignReviewSetting | undefined }): DesignReviewSetting {
   return playbook.designReview ?? DESIGN_REVIEW_DEFAULT_SETTING;
+}
+
+/**
+ * The identity of a finding across rounds and in the merge step's exact-duplicate check: a hash of its section and its text with case, spacing and punctuation taken out.
+ * Code computes it; one a reviewer or the merge step wrote is replaced, so a model can neither hide a new finding behind an old fingerprint nor split an old one.
+ */
+export function designFindingFingerprint(finding: { section: string; text: string }): string {
+  const text = finding.text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return sha256Hex(JSON.stringify([finding.section, text]));
 }

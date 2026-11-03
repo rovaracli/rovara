@@ -7,10 +7,9 @@
 import { z } from "zod";
 import { redactText } from "./redaction.js";
 import { lastFencedBlock } from "./workflow-proposed-checks.js";
-import { sha256Hex } from "./web-hash.js";
 import {
   DESIGN_FINDING_SEVERITIES, DESIGN_REASONS, DESIGN_REVIEW_FINDINGS_MAX, DESIGN_REVIEW_QUESTIONS_MAX, DESIGN_SECTIONS, DesignCitationSchema, DesignQuestionSchema, DesignReasonSchema,
-  DesignSectionSchema, REVIEWER_ROLES, type DesignCitation, type DesignFinding, type DesignQuestion, type ReviewerRole,
+  DesignSectionSchema, REVIEWER_ROLES, designFindingFingerprint, type DesignCitation, type DesignFinding, type DesignQuestion, type ReviewerRole,
 } from "./design-review.js";
 
 export const DESIGN_REVIEW_INFO_STRING = "rovara-design-review";
@@ -199,13 +198,6 @@ const SECTION_RANK = new Map<string, number>(DESIGN_SECTIONS.map((section, index
 const ROLE_RANK = new Map<string, number>(REVIEWER_ROLES.map((role, index) => [role, index]));
 const CITATION_RANK: Record<DesignCitation["kind"], number> = { design: 0, code: 1, source: 2 };
 
-function normalized(text: string): string {
-  return text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
-}
-/** The same section and the same words (case and spacing aside). It is what "exact duplicate" means; the merge step decides nothing else about sameness in code. */
-export function designFindingFingerprint(section: string, text: string): string {
-  return sha256Hex(`${section}\n${normalized(text)}`);
-}
 
 function severityOf(findings: readonly { severity: DesignFinding["severity"] }[]): DesignFinding["severity"] {
   return findings.reduce<DesignFinding["severity"]>((highest, finding) => (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[highest] ? finding.severity : highest), "nit");
@@ -233,7 +225,7 @@ function ordered<T extends { severity: DesignFinding["severity"]; section: strin
 function buildFinding(index: number, group: readonly RawDesignFinding[], severity: DesignFinding["severity"], section: DesignFinding["section"], text: string): DesignFinding {
   return {
     id: `m${index + 1}`, severity, section, text, citations: citationUnion(group), fromReviewers: rolesOf(group), rawIds: group.map((finding) => finding.rawId),
-    fingerprint: designFindingFingerprint(section, text),
+    fingerprint: designFindingFingerprint({ section, text }),
   };
 }
 
@@ -282,7 +274,7 @@ export function checkDesignMerge(rawFindings: readonly RawDesignFinding[], merge
 export function mergeDesignFindingsByCode(rawFindings: readonly RawDesignFinding[]): { findings: DesignFinding[]; omitted: number } {
   const groups = new Map<string, RawDesignFinding[]>();
   for (const finding of uniqueRaw(rawFindings)) {
-    const key = designFindingFingerprint(finding.section, finding.text);
+    const key = designFindingFingerprint(finding);
     groups.set(key, [...(groups.get(key) ?? []), finding]);
   }
   const drafts = ordered([...groups.values()].map((group) => {

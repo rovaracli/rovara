@@ -18,11 +18,10 @@
 // Bounds: at most DESIGN_REVIEW_ROUNDS_MAX rounds and DESIGN_REVIEW_REVISIONS_MAX planner revisions, one question card per round with at most DESIGN_REVIEW_QUESTIONS_MAX questions.
 // Nothing here approves anything: every path ends at PLAN_REVIEW/WAITING, where `decideWorkflow` needs a person. The reviewers' and the planner's words are untrusted data: they are
 // parsed with the strict DR1 schemas, and code (never a model) decides the fingerprint of a finding, whether a resolution is settled, and where the workflow goes next.
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   DESIGN_REVIEW_NOT_RUN_REASONS, DESIGN_REVIEW_QUESTIONS_MAX, DESIGN_REVIEW_REVISIONS_MAX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REASONS_MAX, DESIGN_NOTE_MAX, DesignAnswerSchema, DesignFindingSchema,
-  DesignModelRefSchema, DesignQuestionSchema, DesignReasonSchema, DesignReviewRoundSchema, DesignReviewTierSchema, FindingResolutionSchema, ReviewerRunSchema, WorkflowDesignReviewSchema,
+  DesignModelRefSchema, DesignQuestionSchema, designFindingFingerprint, DesignReasonSchema, DesignReviewRoundSchema, DesignReviewTierSchema, FindingResolutionSchema, ReviewerRunSchema, WorkflowDesignReviewSchema,
   type DesignFinding, type DesignReviewRound, type FindingResolution, type ReviewerRun, type WorkflowDesignReview,
 } from "./design-review.js";
 import { designRoundHasResult, designRoundResolved, designReviewRevisionsUsed, resolutionOf } from "./design-review-state.js";
@@ -38,14 +37,6 @@ const DESIGN_ANSWER_TEXT_MAX = 500;
 export const DESIGN_REVIEW_RECORD_MAX_BYTES = 150_000;
 const SETTLED_NOTE = "Settled in an earlier round; raised again.";
 
-/**
- * The identity of a finding across rounds: a hash of its section and its text with case, spacing and punctuation taken out. Code computes it; the one a reviewer or the merge step wrote
- * is replaced, so a model can neither hide a new finding behind an old fingerprint nor split an old one.
- */
-export function designFindingFingerprint(finding: { section: string; text: string }): string {
-  const text = finding.text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  return createHash("sha256").update(JSON.stringify([finding.section, text])).digest("hex");
-}
 
 // ---- shared guards
 
