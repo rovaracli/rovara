@@ -11,8 +11,13 @@
 //     (`EmulatorSeedError`) and the run does not continue. The emulator applies a document step by step and reports each, so the answer is checked step by step too: every resource must be there, and there is nothing else.
 //   - No secret and no repository string in an error, a log or an argument. The control token is `emulator-control.ts`'s business; the document is a file of the run's directory, not an argument.
 //   - A run with no resources sends nothing.
+import { constants as fsConstants } from "node:fs";
+import { open, realpath, stat } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import { TaskAwsResourcesSchema, type TaskAwsResource } from "@agentx/contracts";
 import { EmulatorControlError, emulatorControlCall, type EmulatorControlTarget } from "./emulator-control.js";
+import { detectIacResources } from "./env-detect/iac-resources.js";
+import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 
 export type EmulatorSeedFailure = "refused" | "failed" | "stopped";
 const SENTENCES: Record<EmulatorSeedFailure, string> = {
@@ -107,4 +112,54 @@ export async function seedEmulator(input: SeedEmulatorInput): Promise<void> {
   let report: unknown;
   try { report = JSON.parse(answer); } catch { throw new EmulatorSeedError("failed"); }
   if (!seedReportCovers(report, input.resources)) throw new EmulatorSeedError("failed");
+}
+
+// ---- the project's declared resources, read from its infrastructure code (D7)
+
+/** The AWS services Rovara local AWS serves in this slice, and the kind of resource each one is seeded with. */
+export const SEEDED_AWS_SERVICES: Readonly<Record<string, TaskAwsResource["kind"]>> = { s3: "bucket", sqs: "queue", dynamodb: "table" };
+const IAC_FILE = /\.(?:tf|ya?ml|json|ts|js|py)$/u;
+export const IAC_FILE_MAX_BYTES = 1_048_576;
+
+/**
+ * The tables, buckets and queues the plan's infrastructure pointer declares, for the services the run serves. `ref.path` is the plan's pointer (the broker never read it): it must resolve, through every link, to a
+ * regular file under one of the repositories' own folders, not under a hidden folder of the workspace, with a name the detector reads, small, opened without following a link and the very file that was resolved. It is read
+ * as it is NOW (the candidate tree, not the base: the agent may have edited it). The D7 detector's reading is the one the setup used (names and key attributes only); a resource of a service the run does not serve (a topic,
+ * a service not in `services`) is left out, a table the detector found no key for is a refusal (it cannot be created), and the result must pass the contract's strict forms. Anything else is `EmulatorSeedError("refused")`;
+ * a file with nothing declared gives an empty list.
+ */
+export async function readAwsResourcesFromIac(input: { ref: { path: string }; services: readonly string[]; rootPath: string; repositoryPaths: readonly string[] }): Promise<TaskAwsResource[]> {
+  const fail = (): never => { throw new EmulatorSeedError("refused"); };
+  let text: string;
+  try {
+    const root = await realpath(resolve(input.rootPath));
+    const real = await realpath(resolve(root, input.ref.path));
+    const within = (path: string, folder: string): boolean => path === folder || path.startsWith(`${folder}${sep}`);
+    const repositories = (await Promise.all(input.repositoryPaths.map((path) => realpath(path).catch(() => undefined)))).filter((path): path is string => path !== undefined);
+    const hidden = await Promise.all((await hiddenWorkspaceDirectories(root)).map((path) => realpath(path).catch(() => path)));
+    if (!IAC_FILE.test(real) || !repositories.some((folder) => real.startsWith(`${folder}${sep}`)) || hidden.some((folder) => within(real, folder))) return fail();
+    const resolved = await stat(real);
+    const handle = await open(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > IAC_FILE_MAX_BYTES || info.dev !== resolved.dev || info.ino !== resolved.ino) return fail();
+      text = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (error instanceof EmulatorSeedError) throw error;
+    return fail();
+  }
+  const kinds = new Set(input.services.flatMap((service) => (Object.hasOwn(SEEDED_AWS_SERVICES, service) ? [SEEDED_AWS_SERVICES[service]!] : [])));
+  const detection = await detectIacResources({ repo: { paths: [input.ref.path], read: (path) => Promise.resolve(path === input.ref.path ? text : undefined) }, cwd: "." });
+  const found: unknown[] = [];
+  for (const candidate of detection.dependencies ?? []) {
+    for (const resource of candidate.hints.resources ?? []) {
+      if (resource.kind === "topic" || !kinds.has(resource.kind)) continue;
+      found.push(resource.kind === "table" ? { kind: "table", name: resource.name, keySchema: resource.keySchema } : { kind: resource.kind, name: resource.name });
+    }
+  }
+  const parsed = TaskAwsResourcesSchema.safeParse(found);
+  return parsed.success ? parsed.data : fail();
 }

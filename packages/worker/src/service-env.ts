@@ -74,6 +74,11 @@ export interface ServiceEnvAws {
   emulatedServices: readonly string[];
   /** AWS services the code uses that have no backing: they point at the sinkhole. */
   unbackedServices: readonly string[];
+  /**
+   * Also set the GLOBAL `AWS_ENDPOINT_URL` to the sinkhole in the working sandbox (the sealed sandbox always has it). With an emulator in the run, an AWS service that no per-service variable names (one the table does not know)
+   * must not reach real AWS from the agent's shell either: it reaches the sinkhole, or, where no sinkhole answers, a name that does not resolve. Default false (slice 1's behaviour).
+   */
+  sinkholeUnmapped?: boolean;
 }
 
 export interface ServiceEnvInput {
@@ -159,7 +164,7 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
     if (emulated.size !== aws.emulatedServices.length || aws.unbackedServices.some((service) => emulated.has(service)) || new Set(aws.unbackedServices).size !== aws.unbackedServices.length) refuse();
     for (const service of aws.emulatedServices) add(awsEndpointVariableName(service), `http://${alias}:${String(port)}`);
     for (const service of aws.unbackedServices) add(awsEndpointVariableName(service), input.sinkholeUrl);
-    if (input.sandbox === "check") add("AWS_ENDPOINT_URL", input.sinkholeUrl);
+    if (input.sandbox === "check" || aws.sinkholeUnmapped === true) add("AWS_ENDPOINT_URL", input.sinkholeUrl);
     add("AWS_ACCESS_KEY_ID", AWS_FAKE_ACCESS_KEY_ID);
     add("AWS_SECRET_ACCESS_KEY", AWS_FAKE_SECRET_ACCESS_KEY);
     add("AWS_REGION", region);

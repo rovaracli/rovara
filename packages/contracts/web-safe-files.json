@@ -99,7 +99,6 @@
   "packages/contracts/src/test-environment.ts",
   "packages/contracts/src/test-id.ts",
   "packages/contracts/src/test-proof.ts",
-  "packages/contracts/src/test-services-aws-resources.ts",
   "packages/contracts/src/test-services-shared.ts",
   "packages/contracts/src/test-services-usage.ts",
   "packages/contracts/src/tracker-people-web.ts",

@@ -231,6 +231,13 @@ describe("what the sandboxes are given (TS15): per-service endpoints, the sinkho
       expect(environment.secretValues.some((value) => [c.password, c.controlToken, c.sqsReceiptSecret].includes(value))).toBe(false);
     });
   }
+  it("sinkholeUnmapped puts the global endpoint at the sinkhole in the working sandbox too; without it the working sandbox is slice 1's", () => {
+    const aws = { alias: "aws", port: 4566, region: "us-east-1", emulatedServices: ["s3"], unbackedServices: unbackedAwsServices(["s3"]) };
+    const names = (flag: boolean) => new Map(buildServiceEnvironment({ sandbox: "working", sinkholeUrl, dependencies: [], aws: { ...aws, ...(flag ? { sinkholeUnmapped: true } : {}) } }).entries);
+    expect(names(false).has("AWS_ENDPOINT_URL")).toBe(false);
+    expect(names(true).get("AWS_ENDPOINT_URL")).toBe(sinkholeUrl);
+    expect(names(true).get("AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
+  });
   it("a variable that would carry any of the three values is refused (the builder fails closed instead of handing the sandbox the token)", () => {
     const c = newLocalAwsCredentials();
     for (const leaked of [c.controlToken, c.password, c.sqsReceiptSecret]) {

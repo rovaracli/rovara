@@ -22,12 +22,12 @@
 // WHAT IS NOT HERE (listed in the lane report): fixture seeds (`seeds[].fixturePath`: refused, "not available yet"), a sinkhole container (slice 3: the sealed name server still counts every unknown name, which is what the
 // usage record reads), Prove's use of this module (T2, prepare.ts), and any backing but `local` (the plan schema allows only that).
 import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
-  CATALOG_REGISTRY_ROOT, ServiceCatalogSchema, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
-  type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
+  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
+  type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
@@ -41,19 +41,22 @@ import {
 import type { ContainerExec } from "./devcontainer.js";
 import { runNetworkHelperIp, runNetworkLabelArgs, servicesNetworkStaleAfterMs } from "./run-network.js";
 import {
-  HELPER_CREDENTIAL_PATTERNS, HelperStartError, sweepServicesNetworksAtWorkerStart,
+  HELPER_CREDENTIAL_PATTERNS, HelperStartError, newLocalAwsCredentials, sweepServicesNetworksAtWorkerStart,
   type HelperFiles, type HelperRequest,
 } from "./service-helpers.js";
 import {
-  buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, helperSecretValues, removeRunDirectory, withServiceEnvFile,
+  buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, helperSecretValues, removeRunDirectory, unbackedAwsServices, withServiceEnvFile,
   type ServiceEnvDependency, type ServiceEnvironment, type ServiceRedactor,
 } from "./service-env.js";
+import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-control.js";
+import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
+import { SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
 import { createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
 import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
-import { buildServiceUsageRecord, countResets } from "./service-usage-record.js";
+import { buildServiceUsageRecord, countResets, mergeAwsUsage } from "./service-usage-record.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { TEST_SERVICES_BOOT_FACTS_ENVIRONMENT, emitReport, type ReportOutcome } from "./test-services-report.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -133,6 +136,8 @@ export interface UsageRecordSetup {
   failures?: ReadonlyMap<string, TestServicesStartFailure>;
   dns?: { docker: DockerCli; dnsHelperName: string };
   redactor: ServiceRedactor;
+  /** Slice 2: the emulator's ledger, read now (the round's own emulator, while it still runs). */
+  emulator?: EmulatorLedgerPort;
 }
 
 /**
@@ -259,12 +264,22 @@ interface Base {
   resetDependency: ResetDependency;
   /** The dependency's init files (read once, checked), mounted into ITS helper alone, in the working phase and in every round. */
   files: NonNullable<HelperRequest["files"]>;
+  /** Slice 2: this base is the ONE Rovara local AWS helper that all of the plan's emulated entries share (`plan` is the first of them). */
+  emulator?: EmulatorBase;
 }
 
-/** A dependency with one phase's own helper request and credentials (the working phase's, or one sealed round's). */
+/** What the plan's emulated entries add up to: their ids (each reports its own usage row), the AWS services they need, the region the code is told, and the infrastructure files that declare the resources. */
+interface EmulatorBase {
+  ids: string[];
+  services: string[];
+  region: string;
+  refs: Array<{ path: string }>;
+}
+
+/** A dependency with one phase's own helper request and credentials (the working phase's, or one sealed round's). The emulator's has no `env`: its variables come from the `aws` block of the environment. */
 interface Resolved extends Base {
   request: HelperRequest;
-  env: ServiceEnvDependency;
+  env?: ServiceEnvDependency;
 }
 
 /** The most an init file may hold (the launcher's own limit for a helper's file). */
@@ -320,7 +335,7 @@ async function requireLocalImages(docker: DockerCli, config: Pick<TestServicesCo
     if (signal?.aborted === true) throw new TestServicesError("start_failed");
     const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, base.plan.repository)}@sha256:${base.plan.digest}`;
     const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) }).catch(() => undefined);
-    if (present === undefined || present.exitCode !== 0) missing.set(base.plan.id, "pull_failed");
+    if (present === undefined || present.exitCode !== 0) for (const id of base.emulator?.ids ?? [base.plan.id]) missing.set(id, "pull_failed");
   }
   if (missing.size > 0) throw new TestServicesError("pull_failed", missing);
 }
@@ -332,27 +347,90 @@ const randomAlphanumeric = (length: number): string => randomBytes(length).toStr
  * is `mismatch`: the broker's plan is never trusted to name an image. The user and the database come from the plan's config or fixed defaults, and must have the launcher's plain form.
  */
 function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition">): Base[] {
-  return dependencies.map((plan) => {
-    const entry = catalogEntryById(catalog, plan.catalogId);
-    // A catalog id this worker image does not carry at all (the broker approved a newer catalog than the image): the same "not available on this worker" sentence as a digest it does not pin.
-    if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
-    if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
-      || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
-    // The digest must be one PINNED IN THIS WORKER IMAGE (the broker may have approved a newer catalog than the image the worker was built from): the fixed "not available on this worker" sentence, never a generic error.
-    if (entry.image.digest !== plan.digest) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
-    const user = plan.config.user ?? DEFAULT_USER;
-    const database = plan.config.database ?? DEFAULT_DATABASE;
-    if (!HELPER_CREDENTIAL_PATTERNS.user.test(user) || !HELPER_CREDENTIAL_PATTERNS.database.test(database)) throw new TestServicesError("mismatch");
-    const aliases = plan.aliases.length > 0 ? [...plan.aliases] : [...entry.connect.defaultAliases];
-    const host = aliases[0];
-    const port = entry.run.ports[0];
-    if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
-    return { plan, entry, aliases, host, port, user, database, resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset }, files: [] };
-  });
+  const emulated = dependencies.filter((plan) => plan.backing === "emulated");
+  const bases: Base[] = [];
+  let group: Base | undefined;
+  for (const plan of dependencies) {
+    if (plan.backing === "emulated") {
+      if (group === undefined) {
+        group = resolveEmulator(catalog, emulated, config);
+        bases.push(group);
+      }
+      continue;
+    }
+    bases.push(resolveLocal(catalog, plan, config));
+  }
+  return bases;
+}
+
+/** The plan's allowed region words: the contract's AWS shape is checked by the broker; this is the worker's own, looser-but-closed form (it never relies on the broker alone). */
+const EMULATOR_REGION = /^[a-z0-9-]{1,32}$/u;
+/** ... and the AWS shape the sandboxes' `AWS_REGION` takes (service-env.ts), so a region the environment would refuse is refused here, before anything is made. */
+const AWS_REGION_SHAPE = /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/u;
+const MAX_EMULATOR_SEEDS = 8;
+
+/**
+ * The plan's emulated entries against the worker's own catalog: ONE Rovara local AWS helper for all of them. Each entry must name the same pinned image the catalog pins (a digest the image does not pin is the fixed
+ * `pull_failed`), the same region, AWS services of the three this slice serves and nothing else, no connection variables and no init files (the sandboxes' variables come from the `aws` block). Anything else is `mismatch`:
+ * the broker's plan is never trusted to name an image, a service or a region.
+ */
+function resolveEmulator(catalog: ServiceCatalog, emulated: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition">): Base {
+  const first = emulated[0]!;
+  const allIds = emulated.map((plan) => plan.id);
+  const notAvailable = (): never => { throw new TestServicesError("pull_failed", new Map(allIds.map((id) => [id, "pull_failed" as const]))); };
+  const entry = catalogEntryById(catalog, first.catalogId);
+  if (entry === undefined) return notAvailable();
+  if (entry.backing !== "emulated" || entry.family !== "local-aws" || entry.status === "retired" || !entry.editions.includes(config.edition) || entry.image.repository !== first.repository) throw new TestServicesError("mismatch");
+  if (entry.image.digest !== first.digest) return notAvailable();
+  const services = new Set<string>();
+  const refs = new Map<string, { path: string }>();
+  const seeds: TaskDependencyPlan["seeds"] = [];
+  for (const plan of emulated) {
+    if (plan.catalogId !== first.catalogId || plan.repository !== first.repository || plan.digest !== first.digest || plan.aws === undefined || plan.aws.region !== first.aws?.region) throw new TestServicesError("mismatch");
+    if (!EMULATOR_REGION.test(plan.aws.region) || !AWS_REGION_SHAPE.test(plan.aws.region) || plan.connect.length > 0 || (plan.config.initFiles?.length ?? 0) > 0) throw new TestServicesError("mismatch");
+    for (const service of plan.aws.services) {
+      if (!Object.hasOwn(SEEDED_AWS_SERVICES, service)) throw new TestServicesError("mismatch");
+      services.add(service);
+    }
+    if (plan.aws.resources !== undefined) refs.set(plan.aws.resources.path, { path: plan.aws.resources.path });
+    seeds.push(...plan.seeds);
+  }
+  if (seeds.length > MAX_EMULATOR_SEEDS || refs.size > MAX_EMULATOR_SEEDS) throw new TestServicesError("mismatch");
+  const aliases = first.aliases.length > 0 ? [...first.aliases] : [...entry.connect.defaultAliases];
+  const host = aliases[0];
+  const port = entry.run.ports[0];
+  if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
+  return {
+    plan: first, entry, aliases, host, port, user: DEFAULT_USER, database: DEFAULT_DATABASE, files: [],
+    resetDependency: { id: first.id, seeds, reset: emulated.some((plan) => plan.reset === "between_checks") ? "between_checks" : "fresh_per_round" },
+    emulator: { ids: allIds, services: [...services], region: first.aws!.region, refs: [...refs.values()] },
+  };
+}
+
+function resolveLocal(catalog: ServiceCatalog, plan: TaskDependencyPlan, config: Pick<TestServicesConfig, "edition">): Base {
+  const entry = catalogEntryById(catalog, plan.catalogId);
+  // A catalog id this worker image does not carry at all (the broker approved a newer catalog than the image): the same "not available on this worker" sentence as a digest it does not pin.
+  if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
+  if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
+    || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
+  // The digest must be one PINNED IN THIS WORKER IMAGE (the broker may have approved a newer catalog than the image the worker was built from): the fixed "not available on this worker" sentence, never a generic error.
+  if (entry.image.digest !== plan.digest) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
+  const user = plan.config.user ?? DEFAULT_USER;
+  const database = plan.config.database ?? DEFAULT_DATABASE;
+  if (!HELPER_CREDENTIAL_PATTERNS.user.test(user) || !HELPER_CREDENTIAL_PATTERNS.database.test(database)) throw new TestServicesError("mismatch");
+  const aliases = plan.aliases.length > 0 ? [...plan.aliases] : [...entry.connect.defaultAliases];
+  const host = aliases[0];
+  const port = entry.run.ports[0];
+  if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
+  return { plan, entry, aliases, host, port, user, database, resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset }, files: [] };
 }
 
 /** One phase's helper request and variables, with a password made now: the working phase and every sealed round have their own, so no phase's helpers or password are another's. */
 function materialize(base: Base): Resolved {
+  if (base.emulator !== undefined) {
+    // Rovara local AWS: THREE fresh, different secrets for each emulator that starts (the working phase's and every sealed round's own): the presign secret as `password`, the control token and the SQS receipt-handle secret.
+    return { ...base, request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials: newLocalAwsCredentials(), region: base.emulator.region } };
+  }
   const credentials = { user: base.user, password: randomAlphanumeric(32), database: base.database };
   return {
     ...base,
@@ -367,9 +445,26 @@ function materialize(base: Base): Resolved {
  */
 export function neverValuesFor(resolved: ReadonlyArray<Pick<Resolved, "request" | "env">>): string[] {
   return resolved.flatMap((item) => {
+    // The emulator's three values are never delivered to a sandbox: it has no connection variables at all.
+    if (item.env === undefined) return helperSecretValues([item.request]);
     const delivered = item.env.connect.env.some((variable) => variable.template.includes("{password}"));
     const password = item.request.credentials?.password;
     return helperSecretValues([{ credentials: { ...(delivered || password === undefined ? {} : { password }), ...(item.request.credentials?.controlToken === undefined ? {} : { controlToken: item.request.credentials.controlToken }) } }]);
+  });
+}
+
+/**
+ * The variables of one sandbox for a phase's helpers: the connection variables of the real-software dependencies, and, when the plan has an emulator, the `aws` block: `AWS_ENDPOINT_URL_S3` / `_SQS` / `_DYNAMODB` at the
+ * emulator's first alias, every other AWS service the table knows (and, in both sandboxes, the global endpoint) at the sinkhole, `AWS_REGION` and `AWS_DEFAULT_REGION` from the plan's region (only a label inside the emulator:
+ * every endpoint is overridden, so no SDK call goes to the region's real AWS), fake credentials. The emulator's control token and secrets are `neverValues`: a variable holding one is refused.
+ */
+function environmentFor(sandbox: "working" | "check", resolved: readonly Resolved[]): ServiceEnvironment {
+  const emulator = resolved.find((item) => item.emulator !== undefined);
+  return buildServiceEnvironment({
+    sandbox, sinkholeUrl: SINKHOLE_URL, dependencies: resolved.flatMap((item) => (item.env === undefined ? [] : [item.env])), neverValues: neverValuesFor(resolved),
+    ...(emulator?.emulator === undefined ? {} : {
+      aws: { alias: emulator.host, port: emulator.port, region: emulator.emulator.region, emulatedServices: emulator.emulator.services, unbackedServices: unbackedAwsServices(emulator.emulator.services), sinkholeUnmapped: true },
+    }),
   });
 }
 
@@ -479,6 +574,7 @@ function mergeUsageRecords(earlier: TestServicesUsageRecord | undefined, later: 
   for (const row of [...earlier.unknownCalls.domains, ...later.unknownCalls.domains]) domains.set(row.domain, Math.min(limits.count, (domains.get(row.domain) ?? 0) + row.count));
   const ranked = [...domains].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
   const overflow = ranked.slice(limits.unknownDomains).reduce((sum, [, count]) => sum + count, 0);
+  const aws = mergeAwsUsage(earlier.aws, later.aws);
   return {
     schemaVersion: 1,
     dependencies: later.dependencies.map((entry) => ({ ...entry, resetCount: Math.min(limits.resets, entry.resetCount + (before.get(entry.id)?.resetCount ?? 0)) })),
@@ -486,6 +582,7 @@ function mergeUsageRecords(earlier: TestServicesUsageRecord | undefined, later: 
       domains: ranked.slice(0, limits.unknownDomains).map(([domain, count]) => ({ domain, count })),
       otherCount: Math.min(limits.count, earlier.unknownCalls.otherCount + later.unknownCalls.otherCount + overflow),
     },
+    ...(aws === undefined ? {} : { aws }),
   };
 }
 
@@ -500,6 +597,10 @@ interface RoundState {
   redactor: ServiceRedactor;
   startMs: number;
   dnsStarted: boolean;
+  /** The round's dependencies as they are seeded and put back (the emulator's carry its `prepare` step, bound to THIS round's emulator and token). */
+  resetDeps: readonly ResetDependency[];
+  /** Slice 2: reads this round's emulator's request ledger (absent when the plan has no emulator). */
+  ledger: EmulatorLedgerPort | undefined;
   /** Absent while the round is still starting. */
   runners: CheckRunners | undefined;
   /** Ends the sealed round (the check sandbox removed, the working sandbox put back). */
@@ -534,7 +635,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const runner = config.runner ?? createDockerServiceRunner(docker);
 
   const failures = new Map<string, TestServicesStartFailure>();
-  const ids = bases.map((base) => base.plan.id);
+  const ids = input.dependencies.map((dependency) => dependency.id);
+  const emulatorBase = bases.find((base) => base.emulator !== undefined);
   const secrets: string[] = [];
   const pendingStarts = new Set<Promise<ServiceSession>>();
   let workSession: ServiceSession | undefined;
@@ -564,14 +666,65 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const registry = `${config.registry}/${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}`;
   const startInput = (phaseRunId: string, resolved: readonly Resolved[], phaseFiles: HelperFiles, extra: Partial<Parameters<ServiceRunner["start"]>[0]>): Parameters<ServiceRunner["start"]>[0] => ({
     runId: phaseRunId, workspace, roundBudgetMs: TEST_SERVICES_RUN_LIFETIME_MS, registry, edition: config.edition, probeImage: config.probeImage, maxMemMiB: config.maxMemMiB,
-    helpers: resolved.map((item) => item.request), files: phaseFiles, resetHooks: createResetHooks(),
+    helpers: resolved.map((item) => item.request), files: phaseFiles, resetHooks: createResetHooks({ http: { files: phaseFiles, probeImage: config.probeImage } }),
     ...(config.now === undefined ? {} : { now: config.now }), ...(config.sleep === undefined ? {} : { sleep: config.sleep }), ...extra,
   });
 
+  /**
+   * How to talk to one phase's emulator: its network (name, gateway, and labels so the sweep finds a call's container), its helper, the phase's own files seam and THE PHASE'S OWN control token. The token is read from the
+   * helper's request here and goes nowhere but `emulator-control.ts` (an env file for the one call).
+   */
+  const controlTargetOf = (item: Resolved, session: ServiceSession, phaseFiles: HelperFiles, phaseRunId: string): EmulatorControlTarget => {
+    const helper = session.helpers.find((candidate) => candidate.id === item.plan.id);
+    const controlToken = item.request.credentials?.controlToken;
+    if (helper === undefined || controlToken === undefined) throw new EmulatorControlError("refused");
+    const createdAt = now();
+    const expiresAt = createdAt + servicesNetworkStaleAfterMs(TEST_SERVICES_RUN_LIFETIME_MS);
+    return {
+      docker, network: { name: session.network.name, gateway: session.network.gateway, labelArgs: () => runNetworkLabelArgs({ runId: phaseRunId, workspace, createdAt, expiresAt }) },
+      helper, probeImage: config.probeImage, files: phaseFiles, controlToken,
+    };
+  };
+  /**
+   * The dependency as one phase seeds it. A real-software dependency is its plan's. The emulator gets a `prepare` step that runs before its seed commands, after the start and after every reset: it reads the resources the
+   * project's infrastructure code declares AS THEY ARE NOW (the candidate tree) and creates them through `POST /_rovara/seed` (TS22). Fail closed: an unreadable file, a resource that is not in its strict form or an emulator that
+   * does not confirm every resource is a failed seed.
+   */
+  const dependencyOf = (item: Resolved, session: ServiceSession, phaseFiles: HelperFiles, phaseRunId: string): ResetDependency => {
+    const emulator = item.emulator;
+    if (emulator === undefined) return item.resetDependency;
+    return {
+      ...item.resetDependency,
+      prepare: async (signal) => {
+        const read = await Promise.all(emulator.refs.map((ref) => readAwsResourcesFromIac({ ref, services: emulator.services, rootPath: root, repositoryPaths: input.repositoryPaths })));
+        const unique = new Map<string, TaskAwsResource>();
+        for (const resource of read.flat()) unique.set(`${resource.kind}\0${resource.name}`, resource);
+        await seedEmulator({ target: { ...controlTargetOf(item, session, phaseFiles, phaseRunId), signal }, region: emulator.region, resources: [...unique.values()] });
+      },
+    };
+  };
+  /** The session as the usage record sees it: each emulated entry of the plan reports its own row (aws-s3, aws-sqs, aws-dynamodb), all of them the one emulator helper's health, start time and resets. */
+  const usageViewOf = (session: Pick<ServiceSession, "helpers" | "probe">, resets: ReadonlyMap<string, number>): { session: Pick<ServiceSession, "helpers" | "probe">; resets: ReadonlyMap<string, number> } => {
+    const emulator = emulatorBase?.emulator;
+    if (emulator === undefined || emulatorBase === undefined) return { session, resets };
+    const helperId = emulatorBase.plan.id;
+    const helper = session.helpers.find((candidate) => candidate.id === helperId);
+    const extra = emulator.ids.filter((id) => id !== helperId);
+    if (helper === undefined) return { session, resets };
+    const expanded = new Map(resets);
+    for (const id of extra) expanded.set(id, resets.get(helperId) ?? 0);
+    return {
+      session: { helpers: [...session.helpers, ...extra.map((id) => ({ ...helper, id }))], probe: (id, limitMs) => session.probe(extra.includes(id) ? helperId : id, limitMs) },
+      resets: expanded,
+    };
+  };
+
   const recordOf = async (open: RoundState): Promise<TestServicesUsageRecord | undefined> => {
     try {
+      const view = usageViewOf(open.session, open.resets);
       const built = await ports.buildServiceUsageRecord({
-        planned: ids, session: open.session, startMs: open.startMs, resetCounts: open.resets, failures, redactor: open.redactor, dns: { docker, dnsHelperName: open.plan.dnsHelperName },
+        planned: ids, session: view.session, startMs: open.startMs, resetCounts: view.resets, failures, redactor: open.redactor, dns: { docker, dnsHelperName: open.plan.dnsHelperName },
+        ...(open.ledger === undefined ? {} : { emulator: open.ledger }),
       });
       const parsed = TestServicesUsageRecordSchema.safeParse(built);
       return parsed.success ? parsed.data : undefined;
@@ -630,7 +783,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       input.sandbox.attachServices({ wrapExec: (inner) => inner, teardown });
     } else {
       const working = materializeAll(bases);
-      const workingEnv = buildServiceEnvironment({ sandbox: "working", sinkholeUrl: SINKHOLE_URL, dependencies: working.map((item) => item.env), neverValues: neverValuesFor(working) });
+      const workingEnv = environmentFor("working", working);
       secrets.push(...helperSecretValues(working.map((item) => item.request)), ...workingEnv.secretValues);
       redactor = createServiceRedactor(secrets);
       // The sandbox runs every command with the run's variables from here on, and tears the run down when it is disposed, even if the start below fails.
@@ -653,9 +806,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal));
       for (const item of working) {
         try {
-          await seedRun(countResets(workSession).session, [item.resetDependency], workingSeeds, seedSignal);
+          await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
         } catch {
-          failures.set(item.plan.id, "seed_failed");
+          for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
           throw new TestServicesError("seed_failed", failures);
         }
       }
@@ -680,7 +833,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     // The init files are read again from the candidate tree as it is NOW (the agent may have edited them), with the same checks as at the start.
     const current = await Promise.all(bases.map(async (base) => ({ ...base, files: await initFilesOf(base.plan, root, input.repositoryPaths) })));
     const resolved = materializeAll(current);
-    const environment = buildServiceEnvironment({ sandbox: "check", sinkholeUrl: SINKHOLE_URL, dependencies: resolved.map((item) => item.env), neverValues: neverValuesFor(resolved) });
+    const environment = environmentFor("check", resolved);
     secrets.push(...helperSecretValues(resolved.map((item) => item.request)), ...environment.secretValues);
     redactor = createServiceRedactor(secrets);
     const roundRedactor = redactor;
@@ -732,8 +885,16 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       closeSealed = async () => { release(); await running; };
       const runners = await ready;
 
+      // The round's own emulator: its prepare step (the project's declared resources, created through the control API with THIS round's token) and its ledger port.
+      const roundRunId = `${runId}-r${String(number)}`;
+      const roundDeps = resolved.map((item) => dependencyOf(item, session!, roundFiles, roundRunId));
+      const emulatorItem = resolved.find((item) => item.emulator !== undefined);
+      const roundLedger = emulatorItem === undefined ? undefined : emulatorLedgerPort(controlTargetOf(emulatorItem, session, roundFiles, roundRunId));
       const countedRound = countResets(session);
-      const state: RoundState = { number, session, counted: countedRound.session, resets: countedRound.resets, plan, files: roundFiles, redactor: roundRedactor, startMs, dnsStarted, runners, sealedClose: closeSealed };
+      const state: RoundState = {
+        number, session, counted: countedRound.session, resets: countedRound.resets, plan, files: roundFiles, redactor: roundRedactor, startMs, dnsStarted, runners, sealedClose: closeSealed,
+        resetDeps: roundDeps, ledger: roundLedger,
+      };
       round = state;
 
       // The seeds run INSIDE the round, in the sealed sandbox, from the candidate code: the agent's own migrations are applied, and the helpers hold nothing but what the seeds made.
@@ -741,9 +902,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal));
       for (const item of resolved) {
         try {
-          await seedRun(state.counted, [item.resetDependency], roundSeeds, seedSignal);
+          await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
         } catch {
-          failures.set(item.plan.id, "seed_failed");
+          for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
           throw new TestServicesError("seed_failed", failures);
         }
       }
@@ -769,7 +930,6 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     if (runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
     return runners;
   };
-  const resetDependencies = bases.map((base) => base.resetDependency);
 
   const usageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
     if (!active) return undefined;
@@ -784,7 +944,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       return { schemaVersion: 1, dependencies: ids.map((id) => ({ id, started: false, healthy: false, startMs: 0, resetCount: 0, failure: failures.get(id) ?? "start_failed" })), unknownCalls: { domains: [], otherCount: 0 } };
     }
     try {
-      const built = await ports.buildServiceUsageRecord({ planned: ids, session: workSession, startMs: workStartMs, failures, redactor });
+      const built = await ports.buildServiceUsageRecord({ planned: ids, session: usageViewOf(workSession, new Map()).session, startMs: workStartMs, failures, redactor });
       const parsed = TestServicesUsageRecordSchema.safeParse(built);
       return parsed.success ? parsed.data : undefined;
     } catch {
@@ -815,7 +975,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           if (open === undefined || open.runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
           const runners = open.runners;
           try {
-            await resetForNextCheck(open.counted, resetDependencies, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal)), signal);
+            await resetForNextCheck(open.counted, open.resetDeps, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal)), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
@@ -902,8 +1062,28 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 }
 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
-export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env): Array<typeof TEST_SERVICES_PLAN_FEATURE> {
-  return testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined ? [] : [TEST_SERVICES_PLAN_FEATURE];
+export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE> {
+  if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
+  return emulatorImagePrepulled(shipped) ? [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE] : [TEST_SERVICES_PLAN_FEATURE];
+}
+
+/** The two files the worker image ships beside `dist/`: the pinned catalog and the list root pulled at boot. */
+export interface ShippedCatalogFiles { catalog: URL | string; prepull: URL | string }
+export const SHIPPED_CATALOG_FILES: ShippedCatalogFiles = { catalog: BAKED_CATALOG_URL, prepull: new URL("../service-catalog/prepull.json", import.meta.url) };
+
+/**
+ * Whether this worker can run an emulated (Rovara local AWS) plan: the catalog baked into its image pins a `local-aws` entry AND root's boot pre-pull list holds exactly that digest. (A worker with a test-services configuration
+ * is one whose pre-pull succeeded: boot-stage2 writes the settings only then, so a listed image is on the host.) Read from the image's own files, synchronously, never a Docker call per ping; any problem is false.
+ */
+export function emulatorImagePrepulled(shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): boolean {
+  try {
+    const catalog = ServiceCatalogSchema.parse(JSON.parse(readFileSync(shipped.catalog, "utf8")));
+    const list = PrepullListSchema.parse(JSON.parse(readFileSync(shipped.prepull, "utf8")));
+    return catalog.entries.some((entry) => entry.backing === "emulated" && entry.family === "local-aws" && entry.status !== "retired" && entry.image.digest !== undefined
+      && list.images.some((image) => image.repository === entry.image.repository && image.digest === entry.image.digest));
+  } catch {
+    return false;
+  }
 }
 
 // ---- the candidate check (Prove, worker side): prepare.ts
