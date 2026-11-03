@@ -2,8 +2,8 @@
 // over the whole broker package and resolves every call by TYPE, so aliases (`const s = deps.store`), destructuring (`const { list } = store`), re-exports and renamed imports cannot
 // hide a read, and comments are not code. A call that reads the lesson store (or the record's row readers) must sit in a top-level function that also calls `readVisible`
 // (lessons) or `filterVisible` (rows), or in a file listed below as an internal worker that returns nothing to a viewer, with the reason. A stale list entry fails too.
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
@@ -39,10 +39,36 @@ const RECORD_READS = new Set(["queryRecordEvents", "queryRecordFacts", "getRecor
 
 interface Hit { file: string; kind: "lessons" | "rows"; text: string; guarded: boolean }
 
+/** Bypass samples the guard must catch. They are served from memory (never written to disk) and analysed in the same program as the real broker. */
+const PLANTED: Record<string, string> = {
+  "alias.ts": 'import type { LessonStore } from "../lessons/store.js";\nexport const a = (deps: { store: LessonStore }) => { const st = deps.store; return st.list({ workspaceId: "w", project: "p" }); };\n',
+  "destructure.ts": 'import type { LessonStore } from "../lessons/store.js";\nexport const b = ({ store: s }: { store: LessonStore }) => { const { get } = s; return get({ workspaceId: "w", project: "p" }, "x"); };\n',
+  "comment.ts": 'import type { LessonStore } from "../lessons/store.js";\n// read-visible.js readVisible( filterVisible(\nexport const c = (s: LessonStore) => s.list({ workspaceId: "w", project: "p" });\n',
+  "rows.ts": 'import { queryRecordEvents as q } from "../team-record/store.js";\nexport const d = q;\nexport const e = (t: Parameters<typeof q>[0]) => q(t, "o" as never, "p", {} as never);\n',
+};
+const PLANTED_DIR = "zzguard";
+
+/**
+ * Builds ONE program for the broker plus the planted samples. The analysis resolves calls by the types of the broker's own code, so third-party declaration files are served empty
+ * (the AWS SDK, openai, zod and the rest are about 14 MB of declarations and took the program from about 1 GB to about 2.5 GB, enough to kill a CI worker). The broker's own
+ * sources, the workspace packages (@agentx/contracts and the others, which resolve to their own dist files) and the TypeScript lib files stay real, so LessonStore and the team-record store resolve exactly as before.
+ */
 function analyse(root = BROKER): Hit[] {
   const config = ts.getParsedCommandLineOfConfigFile(join(root, "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => undefined });
   if (config === undefined) throw new Error("no tsconfig");
-  const program = ts.createProgram({ rootNames: config.fileNames, options: { ...config.options, noEmit: true, composite: false, incremental: false } });
+  const options: ts.CompilerOptions = { ...config.options, noEmit: true, composite: false, incremental: false, skipLibCheck: true };
+  const planted = new Map(Object.entries(PLANTED).map(([name, body]) => [join(root, "src", PLANTED_DIR, name), body]));
+  const host = ts.createCompilerHost(options);
+  const real = ts.createCompilerHost(options);
+  host.fileExists = (name) => planted.has(name) || real.fileExists(name);
+  host.readFile = (name) => planted.get(name) ?? real.readFile(name);
+  host.getSourceFile = (name, languageVersion, ...rest) => {
+    const body = planted.get(name);
+    if (body !== undefined) return ts.createSourceFile(name, body, languageVersion);
+    const empty = /[\\/]node_modules[\\/]/u.test(name) && !/[\\/]node_modules[\\/]typescript[\\/]lib[\\/]/u.test(name);
+    return empty ? ts.createSourceFile(name, "", languageVersion) : real.getSourceFile(name, languageVersion, ...rest);
+  };
+  const program = ts.createProgram({ rootNames: [...config.fileNames, ...planted.keys()], options, host });
   const checker = program.getTypeChecker();
   const hits: Hit[] = [];
   for (const source of program.getSourceFiles()) {
@@ -85,8 +111,10 @@ function callsAccess(unit: ts.Node, name: string): boolean {
   return found;
 }
 
+const allHits = analyse();
+
 describe("every read path goes through the access check", () => {
-  const hits = analyse();
+  const hits = allHits.filter((hit) => !hit.file.startsWith(`${PLANTED_DIR}/`));
 
   it("the analysis sees the known readers (it is not vacuous)", () => {
     expect(new Set(hits.filter((hit) => hit.kind === "lessons").map((hit) => hit.file))).toEqual(expect.any(Set));
@@ -120,21 +148,8 @@ describe("every read path goes through the access check", () => {
 });
 
 describe("the guard catches the bypasses a text search misses", () => {
-  const dir = join(BROKER, "src/zzguard");
-  const write = (name: string, body: string): void => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), body); };
-  const offenders = (): string[] => analyse().filter((hit) => hit.file.startsWith("zzguard/") && !hit.guarded).map((hit) => `${hit.file}`);
-
   it("an alias, a destructured method, a comment naming the filter, a subfolder and a new function in a guarded file all fail", () => {
-    try {
-      write("alias.ts", 'import type { LessonStore } from "../lessons/store.js";\nexport const a = (deps: { store: LessonStore }) => { const st = deps.store; return st.list({ workspaceId: "w", project: "p" }); };\n');
-      write("destructure.ts", 'import type { LessonStore } from "../lessons/store.js";\nexport const b = ({ store: s }: { store: LessonStore }) => { const { get } = s; return get({ workspaceId: "w", project: "p" }, "x"); };\n');
-      write("comment.ts", 'import type { LessonStore } from "../lessons/store.js";\n// read-visible.js readVisible( filterVisible(\nexport const c = (s: LessonStore) => s.list({ workspaceId: "w", project: "p" });\n');
-      write("rows.ts", 'import { queryRecordEvents as q } from "../team-record/store.js";\nexport const d = q;\nexport const e = (t: Parameters<typeof q>[0]) => q(t, "o" as never, "p", {} as never);\n');
-      const found = offenders();
-      expect(found).toEqual(expect.arrayContaining(["zzguard/alias.ts", "zzguard/destructure.ts", "zzguard/comment.ts", "zzguard/rows.ts"]));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-    expect(dirname(dir)).toBeDefined();
-  }, 120_000);
+    const found = allHits.filter((hit) => hit.file.startsWith(`${PLANTED_DIR}/`) && !hit.guarded).map((hit) => hit.file);
+    expect(new Set(found)).toEqual(new Set(Object.keys(PLANTED).map((name) => `${PLANTED_DIR}/${name}`)));
+  });
 });
