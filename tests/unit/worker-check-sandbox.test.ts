@@ -1,11 +1,11 @@
 // TS16: the sealed check sandbox's arguments, files and DNS helper arguments (check-sandbox.ts; test-services.md 4.0.2). Nothing starts Docker: the functions are pure, and the one reader uses a fake docker.
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CHECK_SANDBOX_HOSTNAME, RESERVED_RUN_ALIASES, SEALED_DNS_HELPER_ENTRY, SEALED_DNS_STATE_FILE, SINKHOLE_ALIAS,
-  checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, writeCheckSandboxFiles,
+  checkSandboxArgProblems, checkSandboxHostsFile, detachWorkingSandbox, reattachWorkingSandbox, startCheckSandbox, withDetachedWorking, checkSandboxNames, checkSandboxPlan, checkSandboxResolvConf, checkSandboxRunArgs, parseSealedDnsRecord, readSealedDnsRecord, sealedDnsHelperRunArgs, writeCheckSandboxFiles,
   type CheckSandboxInput, type CheckSandboxNetwork,
 } from "../../packages/worker/src/check-sandbox.js";
 import { RUN_NETWORK_CREATED_LABEL, RUN_NETWORK_EXPIRES_LABEL, RUN_NETWORK_LABEL, RUN_NETWORK_WORKSPACE_LABEL, runNetworkAddresses, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName } from "../../packages/worker/src/run-network.js";
@@ -29,7 +29,7 @@ function network(overrides: Partial<CheckSandboxNetwork> = {}): CheckSandboxNetw
 const helper = (index: number) => runNetworkHelperIp(SLOT, index);
 function input(overrides: Partial<CheckSandboxInput> = {}): CheckSandboxInput {
   return {
-    net: network(), taskId: "task-1", image: "worker:img", rootPath: ROOT, maskedPaths: ["/workspace/.agentx-state"], hostCpus: 4, hostMemoryBytes: 16 * 2 ** 30,
+    net: network(), taskId: "task-1", image: "worker:img", rootPath: ROOT, maskedPaths: ["/workspace/project/.agentx-state"], hostCpus: 4, hostMemoryBytes: 16 * 2 ** 30,
     filesDir: "/run/rovara/check-1", helpers: [{ alias: "postgres", address: helper(1) }, { alias: "aws", address: helper(2) }], sinkholeIp: helper(0), ...overrides,
   };
 }
@@ -55,7 +55,7 @@ describe("the sealed check sandbox's run arguments", () => {
   });
 
   it("is the task sandbox's own hardening plus only the run's additions (hostname, the four labels, the two read-only files)", () => {
-    const base = taskSandboxRunArgs({ name: `${runNetworkName(RUN)}-check`, taskId: "task-1", image: "worker:img", rootPath: ROOT, maskedPaths: ["/workspace/.agentx-state"], hostCpus: 4, hostMemoryBytes: 16 * 2 ** 30, network: { name: runNetworkName(RUN), ip: "172.30.5.4" } });
+    const base = taskSandboxRunArgs({ name: `${runNetworkName(RUN)}-check`, taskId: "task-1", image: "worker:img", rootPath: ROOT, maskedPaths: ["/workspace/project/.agentx-state"], hostCpus: 4, hostMemoryBytes: 16 * 2 ** 30, network: { name: runNetworkName(RUN), ip: "172.30.5.4" } });
     const additions = ["--hostname", CHECK_SANDBOX_HOSTNAME, ...network().labelArgs(), "--volume", `${FILES.resolvConfPath}:/etc/resolv.conf:ro`, "--volume", `${FILES.hostsPath}:/etc/hosts:ro`];
     expect(args).toEqual([...base.slice(0, -6), ...additions, ...base.slice(-6)]);
     expect(valuesOf(args, "--user")).toEqual(["1000:1000"]);
@@ -73,7 +73,7 @@ describe("the sealed check sandbox's run arguments", () => {
   });
 
   it("passes its own soundness check, and the check finds each unsound change", () => {
-    const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] };
+    const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/project/.agentx-state"] };
     expect(checkSandboxArgProblems(args, network(), paths)).toEqual([]);
     const withBefore = (...extra: string[]) => [...args.slice(0, -6), ...extra, ...args.slice(-6)];
     const bad: Array<[string, string[]]> = [
@@ -123,7 +123,7 @@ describe("the sealed check sandbox's run arguments", () => {
 
   it("a label whose text looks like a flag is a value, not a flag", () => {
     const odd = checkSandboxRunArgs(input({ taskId: "not-a-flag" }), FILES);
-    expect(checkSandboxArgProblems(odd, network(), { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] })).toEqual([]);
+    expect(checkSandboxArgProblems(odd, network(), { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/project/.agentx-state"] })).toEqual([]);
   });
 
   it("refuses a network that is not the run's address plan or has lost a label", () => {
@@ -338,7 +338,7 @@ describe("the helper's record of unknown names", () => {
 
 describe("the allow-list refuses every spelling of every bypass (review M1)", () => {
   const args = checkSandboxRunArgs(input(), FILES);
-  const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/.agentx-state"] };
+  const paths = { ...FILES, rootPath: ROOT, image: "worker:img", maskedPaths: ["/workspace/project/.agentx-state"] };
   const entry = args.indexOf("--entrypoint");
   const before = (...extra: string[]) => [...args.slice(0, entry), ...extra, ...args.slice(entry)];
   const afterEntrypoint = (...extra: string[]) => [...args.slice(0, entry + 2), ...extra, ...args.slice(entry + 2)];
@@ -523,7 +523,7 @@ describe("the working sandbox is detached for the round (review H1)", () => {
   it("connects the working sandbox back at .3 after the round, and says so when docker refuses", async () => {
     const { docker, calls } = fakeDocker({ networks: ["agentx-task"] });
     await reattachWorkingSandbox(docker, plan);
-    expect(calls).toEqual([["network", "connect", "--ip", "172.30.5.3", NET, WORK]]);
+    expect(calls.filter((call) => call[0] === "network")).toEqual([["network", "connect", "--ip", "172.30.5.3", NET, WORK]]);
     await expect(reattachWorkingSandbox(fakeDocker({ networks: [], connectExit: 1 }).docker, plan)).rejects.toThrow(/attached to the run's services network again/u);
     await expect(reattachWorkingSandbox({ run: () => Promise.reject(new Error("boom")) }, plan)).rejects.toThrow(/attached to the run's services network again/u);
   });
@@ -577,5 +577,214 @@ describe("smaller review items", () => {
     const sixtyFour = `${"a".repeat(63)}b`;
     const parsed = parseSealedDnsRecord(JSON.stringify({ unknown: [{ name: sixtyFour, queries: 1 }, { name: `${sixtyFour}c`, queries: 1 }], dropped: 0, unrecorded: 0 }));
     expect(parsed.unknown).toEqual([{ name: sixtyFour, queries: 1 }]);
+  });
+});
+
+/** A docker with a little state: the working sandbox's networks, whether the check sandbox exists, and every call in order. */
+function statefulDocker(state: { networks: string[]; sandboxExists?: boolean; rmFails?: boolean; connectFails?: boolean; startFails?: boolean }) {
+  const calls: string[][] = [];
+  const docker: DockerCli = {
+    run: (args) => {
+      calls.push([...args]);
+      const done = (exitCode = 0, stdout = "") => Promise.resolve({ exitCode, stdout, stderr: "" });
+      if (args[0] === "network" && args[1] === "disconnect") { state.networks = state.networks.filter((name) => name !== args[2]); return done(); }
+      if (args[0] === "network" && args[1] === "connect") {
+        if (state.connectFails === true) return done(1);
+        if (state.networks.includes(args[args.length - 2]!)) return done(1);
+        state.networks = [...state.networks, args[args.length - 2]!];
+        return done();
+      }
+      if (args[0] === "inspect") return done(0, JSON.stringify(Object.fromEntries(state.networks.map((name) => [name, {}]))));
+      if (args[0] === "run") { if (state.startFails === true) return done(125); state.sandboxExists = true; return done(0, "id\n"); }
+      if (args[0] === "rm") { if (state.rmFails !== true) state.sandboxExists = false; return done(state.rmFails === true ? 1 : 0); }
+      if (args[0] === "container" && args[1] === "inspect") return done(state.sandboxExists === true ? 0 : 1, state.sandboxExists === true ? "id\n" : "");
+      return done(1);
+    },
+  };
+  return { docker, calls, state };
+}
+const kind = (call: string[]) => (call[0] === "network" ? `${call[0]} ${call[1]}` : call[0] === "container" ? "container inspect" : call[0]!);
+
+describe("one round through withDetachedWorking (review lows 1 and 2)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+
+  it("detaches, runs the round, removes the check sandbox, and only then reattaches", async () => {
+    const { docker, calls, state } = statefulDocker({ networks: [NET, "agentx-task"] });
+    let seenInRound: string[] = [];
+    const result = await withDetachedWorking(docker, plan, async (start) => {
+      expect(state.networks).toEqual(["agentx-task"]);
+      expect(await start()).toBe("id");
+      expect(state.sandboxExists).toBe(true);
+      seenInRound = calls.map(kind);
+      return "round-result";
+    });
+    expect(result).toBe("round-result");
+    expect(seenInRound).toEqual(["network disconnect", "inspect", "inspect", "run"]);
+    const order = calls.map(kind);
+    expect(order.indexOf("rm")).toBeGreaterThan(order.indexOf("run"));
+    expect(order.indexOf("network connect")).toBeGreaterThan(order.indexOf("rm"));
+    expect(order.indexOf("network connect")).toBeGreaterThan(order.lastIndexOf("container inspect"));
+    expect(calls.find((call) => call[0] === "rm")).toEqual(["rm", "--force", plan.sandboxName]);
+    expect(state.sandboxExists).toBe(false);
+    expect(state.networks).toEqual(["agentx-task", NET]);
+  });
+
+  it("reattaches and removes the check sandbox when the round fails, and the round's error is the one thrown", async () => {
+    const { docker, calls, state } = statefulDocker({ networks: [NET, "agentx-task"] });
+    await expect(withDetachedWorking(docker, plan, async (start) => { await start(); throw new Error("the round failed"); })).rejects.toThrow("the round failed");
+    expect(state.sandboxExists).toBe(false);
+    expect(state.networks).toContain(NET);
+    const order = calls.map(kind);
+    expect(order.indexOf("network connect")).toBeGreaterThan(order.indexOf("rm"));
+  });
+
+  it("removes and reattaches even when the round never started the sandbox", async () => {
+    const { docker, calls, state } = statefulDocker({ networks: [NET, "agentx-task"] });
+    await withDetachedWorking(docker, plan, () => Promise.resolve(undefined));
+    expect(calls.map(kind)).toContain("rm");
+    expect(state.networks).toContain(NET);
+  });
+
+  it("does not run the round when the detach cannot be proven, and removes and reattaches nothing", async () => {
+    const stuck: DockerCli = { run: (args) => Promise.resolve(args[0] === "inspect" ? { exitCode: 0, stdout: JSON.stringify({ [NET]: {} }), stderr: "" } : { exitCode: 0, stdout: "", stderr: "" }) };
+    let ran = false;
+    await expect(withDetachedWorking(stuck, plan, () => { ran = true; return Promise.resolve(1); })).rejects.toThrow(/still on the run's services network/u);
+    expect(ran).toBe(false);
+  });
+
+  it("leaves the working sandbox detached and says so when the check sandbox cannot be removed, whatever the round did", async () => {
+    for (const roundFails of [false, true]) {
+      const { docker, calls, state } = statefulDocker({ networks: [NET, "agentx-task"], rmFails: true });
+      const run = withDetachedWorking(docker, plan, async (start) => { await start(); if (roundFails) throw new Error("the round failed"); });
+      await expect(run).rejects.toThrow(roundFails ? "the round failed" : /could not be removed/u);
+      expect(calls.map(kind)).not.toContain("network connect");
+      expect(state.networks).not.toContain(NET);
+    }
+  });
+
+  it("says so when the working sandbox cannot be reattached after a good round", async () => {
+    const { docker } = statefulDocker({ networks: [NET, "agentx-task"], connectFails: true });
+    await expect(withDetachedWorking(docker, plan, () => Promise.resolve(1))).rejects.toThrow(/attached to the run's services network again/u);
+  });
+});
+
+describe("reattaching is idempotent (review low 1)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+
+  it("does nothing when the working sandbox is already on the network", async () => {
+    const { docker, calls } = statefulDocker({ networks: [NET, "agentx-task"] });
+    await reattachWorkingSandbox(docker, plan);
+    await reattachWorkingSandbox(docker, plan);
+    expect(calls.map(kind)).toEqual(["inspect", "inspect"]);
+  });
+
+  it("connects once, and a second call is a no-op", async () => {
+    const { docker, calls, state } = statefulDocker({ networks: ["agentx-task"] });
+    await reattachWorkingSandbox(docker, plan);
+    await reattachWorkingSandbox(docker, plan);
+    expect(calls.filter((call) => call[0] === "network")).toHaveLength(1);
+    expect(state.networks).toEqual(["agentx-task", NET]);
+  });
+
+  it("passes when docker says the endpoint exists but a look shows it connected, and fails when it is not connected", async () => {
+    let looks = 0;
+    const racing: DockerCli = {
+      run: (args) => {
+        if (args[0] === "inspect") { looks += 1; return Promise.resolve({ exitCode: 0, stdout: JSON.stringify(looks >= 2 ? { [NET]: {} } : {}), stderr: "" }); }
+        return Promise.resolve({ exitCode: 1, stdout: "", stderr: "endpoint with name already exists in network" });
+      },
+    };
+    await expect(reattachWorkingSandbox(racing, plan)).resolves.toBeUndefined();
+    await expect(reattachWorkingSandbox(statefulDocker({ networks: [], connectFails: true }).docker, plan)).rejects.toThrow(/attached to the run's services network again/u);
+  });
+});
+
+describe("startCheckSandbox checks the plan's arguments again (review low 2)", () => {
+  const plan = checkSandboxPlan(input());
+  const NET = runNetworkName(RUN);
+  const entry = plan.sandboxRunArgs.indexOf("--entrypoint");
+
+  async function startWith(edited: typeof plan) {
+    const fake = statefulDocker({ networks: [NET, "agentx-task"] });
+    const proof = await detachWorkingSandbox(fake.docker, edited);
+    fake.calls.length = 0;
+    const result = await startCheckSandbox(fake.docker, edited, proof).then(() => "started", (error: unknown) => error);
+    return { result, calls: fake.calls };
+  }
+
+  it("starts a sound plan", async () => {
+    const { result, calls } = await startWith(plan);
+    expect(result).toBe("started");
+    expect(calls.map(kind)).toEqual(["inspect", "run"]);
+  });
+
+  it("refuses a hand-built plan with --privileged, a published port, another network, another image or another workspace, and runs nothing", async () => {
+    const edits: Array<[string, (typeof plan)]> = [
+      ["--privileged", { ...plan, sandboxRunArgs: [...plan.sandboxRunArgs.slice(0, entry), "--privileged", ...plan.sandboxRunArgs.slice(entry)] }],
+      ["a published port", { ...plan, sandboxRunArgs: [...plan.sandboxRunArgs.slice(0, entry), "-p8080:80", ...plan.sandboxRunArgs.slice(entry)] }],
+      ["the default bridge", { ...plan, sandboxRunArgs: plan.sandboxRunArgs.map((arg) => (arg === NET ? "bridge" : arg)) }],
+      ["another image", { ...plan, image: "other:img" }],
+      ["another workspace", { ...plan, rootPath: "/elsewhere" }],
+      ["no args at all", { ...plan, sandboxRunArgs: [] }],
+    ];
+    for (const [name, edited] of edits) {
+      const { result, calls } = await startWith(edited);
+      expect(String(result), name).toMatch(/arguments are unsound/u);
+      expect(calls.map(kind), name).not.toContain("run");
+    }
+  });
+});
+
+describe("the run files and the workspace are checked harder (review low 3)", () => {
+  const dirs: string[] = [];
+  afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+  const layout = (overrides: Partial<CheckSandboxInput> = {}) => input({ rootPath: "/workspace/project", maskedPaths: ["/workspace/project/.agentx-state"], filesDir: "/run/rovara/check-1", ...overrides });
+
+  it("refuses a workspace root that is not an absolute path", () => {
+    for (const rootPath of ["workspace/project", "./project", "", "project"]) expect(() => checkSandboxPlan(layout({ rootPath, maskedPaths: [] })), rootPath).toThrow(/absolute path/u);
+    expect(() => checkSandboxRunArgs(layout({ rootPath: "rel", maskedPaths: [] }), FILES)).toThrow(/absolute path/u);
+  });
+
+  it("refuses a masked folder that is not strictly inside the root", () => {
+    for (const masked of ["/workspace/other", "/workspace/project", "/workspace/projectx/state", "/workspace", "/", "/workspace/project/../x", "relative/state", "/etc"]) {
+      expect(() => checkSandboxPlan(layout({ maskedPaths: [masked] })), masked).toThrow(config("CONFIG_INVALID"));
+      expect(() => checkSandboxRunArgs(layout({ maskedPaths: [masked] }), FILES), masked).toThrow(config("CONFIG_INVALID"));
+    }
+    expect(() => checkSandboxPlan(layout({ maskedPaths: ["/workspace/project/.agentx-state", "/workspace/project/a/b"] }))).not.toThrow();
+  });
+
+  it("follows a symbolic link in a parent directory: a link from outside into the workspace is inside", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "check-sandbox-links-")));
+    dirs.push(base);
+    const ws = join(base, "ws");
+    await mkdir(join(ws, "sub"), { recursive: true });
+    await mkdir(join(base, "out"));
+    await symlink(join(ws, "sub"), join(base, "out", "link"));
+    const there = layout({ rootPath: ws, maskedPaths: [] });
+    expect(() => checkSandboxPlan({ ...there, filesDir: join(base, "out", "link", "run") })).toThrow(/inside the workspace/u);
+    expect(() => checkSandboxPlan({ ...there, filesDir: join(base, "out", "plain") })).not.toThrow();
+  });
+
+  it("follows a link the other way: a masked folder that is a link out of the workspace is refused, and a link into a masked folder is accepted", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "check-sandbox-links-")));
+    dirs.push(base);
+    const ws = join(base, "ws");
+    await mkdir(join(ws, "masked"), { recursive: true });
+    await mkdir(join(base, "out"));
+    await symlink(join(base, "out"), join(ws, "escape"));
+    await symlink(join(ws, "masked"), join(base, "into-masked"));
+    expect(() => checkSandboxPlan(layout({ rootPath: ws, maskedPaths: [join(ws, "escape")], filesDir: join(base, "files") }))).toThrow(/strictly inside/u);
+    expect(() => checkSandboxPlan(layout({ rootPath: ws, maskedPaths: [join(ws, "masked")], filesDir: join(base, "into-masked", "run") }))).not.toThrow();
+    expect(() => checkSandboxPlan(layout({ rootPath: ws, maskedPaths: [join(ws, "masked")], filesDir: join(ws, "masked", "run") }))).not.toThrow();
+    expect(() => checkSandboxPlan(layout({ rootPath: ws, maskedPaths: [join(ws, "masked")], filesDir: join(ws, "escape", "run") }))).toThrow(/inside the workspace/u);
+  });
+
+  it("works for paths that do not exist yet (the usual case): the real path of the nearest existing parent is used", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "check-sandbox-links-")));
+    dirs.push(base);
+    expect(() => checkSandboxPlan(layout({ rootPath: join(base, "no", "such", "ws"), maskedPaths: [], filesDir: join(base, "files", "deep", "dir") }))).not.toThrow();
+    expect(() => checkSandboxPlan(layout({ rootPath: join(base, "no", "such", "ws"), maskedPaths: [], filesDir: join(base, "no", "such", "ws", "x") }))).toThrow(/inside the workspace/u);
   });
 });

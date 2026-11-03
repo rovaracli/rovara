@@ -22,6 +22,10 @@
 // verifies with an inspect that the services network is gone from the container's networks; `startCheckSandbox` refuses to start the check sandbox without that proof (and looks again itself); `reattachWorkingSandbox` connects it
 // back at .3 after the round. The plan says so (`mustDetachWorking: true`). Only the worker's `docker` calls do this, so the TS17 ServiceRunner MUST start the check sandbox through `startCheckSandbox`, never with `plan.sandboxRunArgs` directly.
 //
+// FOR TS17: run the round through `withDetachedWorking(docker, plan, round)`; it is the only supported way. It detaches the working sandbox, runs the round, REMOVES the check sandbox, and reattaches the working sandbox in a
+// `finally` (also when the round fails). The working sandbox's real container name is `agentx-task-<id>-<uuid>` (task-sandbox.ts), so pass it EXPLICITLY as `CheckSandboxInput.workingSandboxName`; never rely on the
+// default `<network>-work`, which no container has. The lower-level `detachWorkingSandbox`, `startCheckSandbox` and `reattachWorkingSandbox` stay exported for tests and for `withDetachedWorking` only.
+//
 // NOT HERE (other tasks): the run's connection variables (`--env-file` on a worker tmpfs, per `docker exec`, TS15/TS17); the test-account proxy and its name (TS27); starting the helpers and the sinkhole (TS14/TS17); the
 // sinkhole's own record of calls (name, port, count: the fake server image in record-only mode, TS23); the boot firewall's IPv6 INPUT rule (boot.sh, review L4: see DEFERRED-CHECKS).
 //
@@ -43,6 +47,7 @@
 //   h. spoofing: a packet from .4 with the source address .3 or .2 gets no answer from the helper, and a bound-address trick (IP_FREEBIND) cannot make the helper count a name for a caller it does not serve
 //      (a spoofed source on the same bridge can only add a name to the record blindly: it never receives the answer).
 import { isIP } from "node:net";
+import { realpathSync } from "node:fs";
 import { chmod, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { agentXError } from "@agentx/contracts";
@@ -130,6 +135,10 @@ export interface CheckSandboxPlan {
   /** The working sandbox's container name and its address on the services network (.3), for `detachWorkingSandbox` and `reattachWorkingSandbox`. */
   workingSandboxName: string;
   workingSandboxIp: string;
+  /** What `startCheckSandbox` checks `sandboxRunArgs` against once more (checkSandboxArgProblems). */
+  rootPath: string;
+  image: string;
+  maskedPaths: readonly string[];
   /** True always: the working sandbox is a relay out (it is also on the internet-facing network), so it must be off the services network before the check sandbox starts (`startCheckSandbox` enforces it). */
   mustDetachWorking: true;
 }
@@ -212,7 +221,7 @@ export interface CheckSandboxArgPaths {
  * value (the run's network, .4, 1000:1000, ALL, no-new-privileges, the three mounts, the workspace as the working directory, the init entrypoint), the masked folders are exactly the expected tmpfs mounts, and after the
  * image comes exactly `-- sleep infinity`.
  */
-export function checkSandboxArgProblems(args: readonly string[], net: CheckSandboxNetwork, paths: CheckSandboxArgPaths): string[] {
+export function checkSandboxArgProblems(args: readonly string[], net: Pick<CheckSandboxNetwork, "name" | "checkSandboxIp">, paths: CheckSandboxArgPaths): string[] {
   const problems: string[] = [];
   const values = new Map<string, string[]>();
   let booleans = 0;
@@ -297,15 +306,47 @@ function assertHostPath(path: string): void {
 }
 
 /**
+ * `path` with the symbolic links of its parent directories resolved where they exist: the real path of the longest existing ancestor, followed by the rest as written. A path that does not exist yet (a run's files
+ * directory before it is made) still has its existing ancestors resolved, so a link above it cannot hide where it really is.
+ */
+function realish(path: string): string {
+  const resolved = posix.resolve(path);
+  let ancestor = resolved;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return posix.join(realpathSync(ancestor), ...rest);
+    } catch {
+      const parent = posix.dirname(ancestor);
+      if (parent === ancestor) return resolved;
+      rest.unshift(posix.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+function isUnder(path: string, folder: string): boolean {
+  return path === folder || path.startsWith(folder === "/" ? "/" : `${folder}/`);
+}
+
+/**
  * The sandbox's workspace mount is read-write, so a run file under it could be changed by the sandbox's own user (resolv.conf, hosts). A run file must therefore be outside the workspace root, or under one of the masked
- * folders (the sandbox sees an empty read-only tmpfs there).
+ * folders (the sandbox sees an empty read-only tmpfs there). Hardened: the root must be an absolute path; every masked folder must be strictly under the root (a masked folder elsewhere would exempt a path that the
+ * sandbox can still write); and the comparison uses real paths, so a symbolic link in a parent directory cannot move a file into or out of the workspace unseen. Reads the file system to resolve links (no write).
  */
 function assertFilesOutsideWorkspace(paths: readonly string[], rootPath: string, maskedPaths: readonly string[]): void {
-  const root = posix.resolve(rootPath);
-  const inside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder === "/" ? "/" : `${folder}/`);
+  if (!posix.isAbsolute(rootPath)) throw agentXError("CONFIG_INVALID", "the workspace root is an absolute path");
+  const root = realish(rootPath);
+  const masks = maskedPaths.map((masked) => {
+    if (!posix.isAbsolute(masked)) throw agentXError("CONFIG_INVALID", "a masked folder is an absolute path");
+    const lexical = posix.resolve(masked);
+    const real = realish(masked);
+    if (lexical === posix.resolve(rootPath) || !isUnder(lexical, posix.resolve(rootPath)) || real === root || !isUnder(real, root)) throw agentXError("CONFIG_INVALID", "a masked folder is strictly inside the workspace root");
+    return real;
+  });
   for (const path of paths) {
-    const resolved = posix.resolve(path);
-    if (inside(resolved, root) && !maskedPaths.some((masked) => inside(resolved, posix.resolve(masked)))) {
+    const real = realish(path);
+    if ((isUnder(real, root) || isUnder(posix.resolve(path), posix.resolve(rootPath))) && !masks.some((mask) => isUnder(real, mask))) {
       throw agentXError("CONFIG_INVALID", "a run file is inside the workspace, where the sandbox could change it");
     }
   }
@@ -391,6 +432,7 @@ export function checkSandboxPlan(input: CheckSandboxInput): CheckSandboxPlan {
     resolvConfPath, hostsPath,
     sandboxRunArgs: checkSandboxRunArgs(input, { resolvConfPath, hostsPath }),
     dnsHelperRunArgs: sealedDnsHelperRunArgs({ net: input.net, image: input.image, helpers: input.helpers, sinkholeIp: input.sinkholeIp }),
+    rootPath: input.rootPath, image: input.image, maskedPaths: [...input.maskedPaths],
     workingSandboxName, workingSandboxIp: input.net.workingSandboxIp, mustDetachWorking: true,
   };
 }
@@ -478,11 +520,18 @@ export async function detachWorkingSandbox(docker: DockerCli, plan: PlanForWorki
   return proof;
 }
 
-/** Connects the working sandbox back to the services network at .3 after the round. Throws when docker refuses. */
+/**
+ * Connects the working sandbox back to the services network at .3 after the round. Idempotent: when it is already on the network this does nothing (and a connect that docker refuses because the endpoint already exists
+ * passes if a look afterwards shows it connected). Throws when docker refuses and it is not connected.
+ */
 export async function reattachWorkingSandbox(docker: DockerCli, plan: PlanForWorking): Promise<void> {
   assertWorkingPlan(plan);
+  const already = await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(plan.network.name), () => false);
+  if (already) return;
   const connected = await docker.run(["network", "connect", "--ip", plan.workingSandboxIp, plan.network.name, plan.workingSandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
-  if (connected === undefined || connected.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be attached to the run's services network again");
+  if (connected !== undefined && connected.exitCode === 0) return;
+  if (await networksOf(docker, plan.workingSandboxName).then((networks) => networks.includes(plan.network.name), () => false)) return;
+  throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox could not be attached to the run's services network again");
 }
 
 /**
@@ -494,8 +543,46 @@ export async function startCheckSandbox(docker: DockerCli, plan: CheckSandboxPla
   if (!DETACH_PROOFS.has(detached) || detached.network !== plan.network.name || detached.container !== plan.workingSandboxName) {
     throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox does not start before the working sandbox is detached from the services network");
   }
+  // The plan is plain data, so its arguments are checked once more here, against the plan's own network, workspace and image: a hand-built or edited plan is refused.
+  const problems = checkSandboxArgProblems(plan.sandboxRunArgs, { name: plan.network.name, checkSandboxIp: plan.network.ip }, {
+    resolvConfPath: plan.resolvConfPath, hostsPath: plan.hostsPath, rootPath: plan.rootPath, image: plan.image, maskedPaths: plan.maskedPaths,
+  });
+  if (problems.length > 0) throw agentXError("CONFIG_INVALID", `the sealed check sandbox's arguments are unsound: ${problems.join("; ")}`);
   if ((await networksOf(docker, plan.workingSandboxName)).includes(plan.network.name)) throw agentXError("RUNTIME_UNAVAILABLE", "the working sandbox is on the run's services network again");
   const started = await docker.run(plan.sandboxRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
   if (started === undefined || started.exitCode !== 0) throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox could not be started");
   return started.stdout.trim();
+}
+
+/**
+ * One check round: detaches the working sandbox, runs `round` (which starts the check sandbox with `start()` and does its work), then REMOVES the check sandbox and reattaches the working sandbox in a `finally`, whether
+ * the round succeeded, failed or was cancelled. This is the only supported way for TS17 to use the sealed sandbox. If the check sandbox cannot be removed (it still exists after `docker rm --force`), the working sandbox
+ * is NOT reattached (a relay beside a live check sandbox would break the seal) and the call throws. The round's own error wins over a clean-up error.
+ */
+export async function withDetachedWorking<T>(docker: DockerCli, plan: CheckSandboxPlan, round: (start: () => Promise<string>) => Promise<T>): Promise<T> {
+  const detached = await detachWorkingSandbox(docker, plan);
+  let outcome: { value: T } | { error: unknown };
+  try {
+    outcome = { value: await round(() => startCheckSandbox(docker, plan, detached)) };
+  } catch (error) {
+    outcome = { error };
+  }
+  let cleanup: unknown;
+  try {
+    await removeCheckSandbox(docker, plan);
+    await reattachWorkingSandbox(docker, plan);
+  } catch (error) {
+    cleanup = error;
+  }
+  if ("error" in outcome) throw outcome.error as Error;
+  if (cleanup !== undefined) throw cleanup as Error;
+  return outcome.value;
+}
+
+/** Removes the check sandbox (`docker rm --force`); a container that does not exist is fine, one that still exists after the attempt is an error. */
+async function removeCheckSandbox(docker: DockerCli, plan: Pick<CheckSandboxPlan, "sandboxName">): Promise<void> {
+  if (!CONTAINER_NAME.test(plan.sandboxName)) throw agentXError("CONFIG_INVALID", "not a plan of a sealed check sandbox");
+  await docker.run(["rm", "--force", plan.sandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  const left = await docker.run(["container", "inspect", "--format", "{{.Id}}", plan.sandboxName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+  if (left === undefined || left.exitCode === 0) throw agentXError("RUNTIME_UNAVAILABLE", "the check sandbox could not be removed, so the working sandbox stays detached");
 }
