@@ -743,7 +743,7 @@ describe("re-arming on REQUEST_CHANGES keeps the evidence and the spend, and is 
     expect(review.earlierReviews!.length).toBe(DESIGN_REVIEW_EARLIER_MAX);
     const bulky = { ...waiting.designReview!, rounds: waiting.designReview!.rounds.map((round) => ({
       ...round, findings: Array.from({ length: 30 }, (_, index) => ({ ...finding(`b${index}`, "major", `${"w".repeat(480)}${index}`), fingerprint: hex(500 + index) })), resolutions: [],
-    })) };
+    })) } as unknown as NonNullable<WorkflowSnapshot["designReview"]>;
     let heavy = bulky;
     for (let n = 0; n < 4; n += 1) heavy = { ...rearmedDesignReview(heavy, { at: LATER, by: ACTOR }), rounds: bulky.rounds };
     expect(new TextEncoder().encode(JSON.stringify(heavy.earlierReviews)).length).toBeLessThanOrEqual(DESIGN_REVIEW_EARLIER_MAX_BYTES);
