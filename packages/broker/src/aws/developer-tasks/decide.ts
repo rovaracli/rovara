@@ -158,7 +158,7 @@ export async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteD
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
-  options: { via?: "PAGE"; note?: string; changeText?: string } = {},
+  options: { via?: "PAGE"; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
@@ -482,6 +482,7 @@ export async function decideTaskWorkflow(
           ...lockItems,
           ...(included.length === 0 ? [] : [counterTouch(deps, taskId)]),
           ...applicationConditions,
+          ...(options.designApproval?.items ?? []),
           accessFence(deps, access),
         ];
       }, { sharedTask: task.shared === true, workflowMode: mode, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(mode === "PLAN" && nextPhase !== undefined ? { workflowPhase: nextPhase } : {}), ...(selectedReadiness === undefined ? {} : { readiness: selectedReadiness }), ...(mode === "IMPLEMENT" ? taskBaseOption(task, next) : {}), ...(mode === "IMPLEMENT" && next.programStepId !== undefined ? { programStepId: next.programStepId } : {}), ...(workflowDependencies === undefined ? {} : { workflowDependencies }),

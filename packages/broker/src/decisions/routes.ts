@@ -33,7 +33,11 @@ export type PerformOutcome =
   | { kind: "refused"; reason: DecisionRefusalReason };
 
 /** The thing to act on: the card's own subject, or for a tab the document's own card and item (`kind` is the document's kind, never the pair's). */
-export interface PerformInput { card: DecisionCard; item: DecisionItem; requestId: string; tab?: DecisionTabId | undefined; /** The approve body's one-line reason: present only on an `approve_design` card (the route refuses it elsewhere). */ reason?: string | undefined }
+export interface PerformInput {
+  card: DecisionCard; item: DecisionItem; requestId: string; tab?: DecisionTabId | undefined; /** The approve body's one-line reason: present only on an `approve_design` card (the route refuses it elsewhere). */ reason?: string | undefined;
+  /** The card and the digest the person was SHOWN (the evidence-opened record is keyed by them): set by the approve route, read by the design handler's medium friction. */
+  shown?: { cardId: string; digest: string } | undefined;
+}
 
 /** An approve or a reject goes through the existing endpoint's own function, which re-checks the caller's live authority. */
 export interface DecisionPerformer<C extends DecisionCaller = DecisionCaller> {
@@ -202,7 +206,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
-    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }) });
+    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, shown: { cardId, digest: pending.digest }, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }) });
     const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();

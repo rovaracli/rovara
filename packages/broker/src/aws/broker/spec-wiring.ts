@@ -10,6 +10,8 @@ import { specPullRequestKey, type SpecState } from "../../spec/state.js";
 import { githubSpecClient } from "../../spec/github-git-client.js";
 import { SpecPublishError, classifyPublishError, publishSpec } from "../../spec/publish.js";
 import { specPullRequestBody } from "../../spec/link.js";
+import { designSpecStateOf, specDesignLineOf } from "../developer-tasks/design-spec.js";
+import { readObjectText } from "../../developer/plan-artifacts.js";
 import { projectForbiddenFolders, specPullRequestTitle } from "../../spec/publish-request.js";
 import type { SpecPublishOutcome } from "../../spec/hooks.js";
 import { dynamoSpecStore } from "../../spec/store.js";
@@ -55,6 +57,8 @@ export function specEndEnvironmentOf(dependencies: AwsBrokerDependencies, now: (
     store: dynamoSpecStore(dependencies),
     now,
     approvedPlanDigest: async (taskId) => approvedPlanDigestOf(await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId))),
+    // Design review (DR12): the spec waits for the approved design and writes it with the spec. Off for a task with no design review.
+    design: async (taskId) => designSpecStateOf(await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)), async (key, max) => (await readObjectText(dependencies.s3, dependencies.artifactBucketName, key, max)) ?? ""),
     taskKey: (taskId) => taskId.slice(0, 8),
     // Both are read by the broker through GitHub at the task's knowledgeCommit, never from the workspace the builder wrote.
     existingFolders: async (state, parent) => {
@@ -125,7 +129,7 @@ export function publishSpecFilesOf(dependencies: AwsBrokerDependencies): (task: 
         },
       }, {
         files: state.files, folder, baseCommit: state.knowledgeCommit, baseBranch: meta.defaultBranch, branch, title: specPullRequestTitle(task.title),
-        body: specPullRequestBody({ taskTitle: task.title, requirementCount: state.requirementCount ?? 0, ...(issuer === undefined ? {} : { taskPageUrl: taskPageUrl(issuer, task.taskId) }) }), forbiddenFolders: projectForbiddenFolders(),
+        body: specPullRequestBody({ taskTitle: task.title, requirementCount: state.requirementCount ?? 0, ...(specDesignLineOf(task) === undefined ? {} : { designLine: specDesignLineOf(task) }), ...(issuer === undefined ? {} : { taskPageUrl: taskPageUrl(issuer, task.taskId) }) }), forbiddenFolders: projectForbiddenFolders(),
       });
       const full = githubRepositoryFullName(meta.url);
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: { ...specPullRequestKey(full, published.number), entityType: "SPEC_PULL_REQUEST", taskId: task.taskId, number: published.number, url: published.url, repositoryUrl: meta.url } }));

@@ -23,10 +23,7 @@ import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 type DesignItem = Extract<DecisionItem, { kind: "approve_design" }>;
 
 /** What the decisions route passes beyond the usual: the approve body's `reason`, and the card and digest the person was SHOWN (the evidence-opened record is keyed by them). */
-export interface DesignApproveInput extends PerformInput {
-  reason?: string | undefined;
-  shown?: { cardId: string; digest: string } | undefined;
-}
+export type DesignApproveInput = PerformInput;
 
 /** The broker's own record of the design, read fresh for this request. Nothing in it comes from the request body. */
 export interface DesignApprovalContext {

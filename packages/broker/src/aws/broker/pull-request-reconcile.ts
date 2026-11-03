@@ -10,6 +10,7 @@ import { auditPullRequestOpened } from "../../audit/events.js";
 import { parseGitHubRepository, pullRequestBodyWithDraftNote } from "../../github-app.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
+import { proofDesignContextOf } from "../developer-tasks/design-proof.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { loadTestingView } from "../developer-tasks/testing-view.js";
 import { nightlyHeadReaderOf } from "./nightly-head.js";
@@ -131,7 +132,8 @@ async function proofContextForRewrite(dependencies: AwsBrokerDependencies, task:
   const actions = developerTaskActions(dependencies);
   const [operations, approvedPlan] = await Promise.all([actions.operations(task.workspaceId), approvedPlanForPullRequest({ actions }, workflow).catch(() => undefined)]);
   const evidence = evidenceRouteDependencies(dependencies).evidence;
-  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner"), ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }) }, task, workflow, approvedPlan, operations);
+  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner"), ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }),
+    design: proofDesignContextOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, taskId: task.taskId, readArtifact: (key, max) => actions.readArtifact(key, max) }) }, task, workflow, approvedPlan, operations);
 }
 
 /**

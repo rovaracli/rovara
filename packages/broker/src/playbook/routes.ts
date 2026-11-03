@@ -4,6 +4,7 @@ import {
   DESIGN_REVIEW_LOCKED_FIELDS,
   ProjectPlaybookBodySchema,
   agentXError,
+  featureEnabled,
   projectAllows,
   type AgentId,
   type EditionPolicy,
@@ -68,9 +69,11 @@ const MAINTAINERS_ONLY = "only a project maintainer can change how the project w
  */
 async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook): Promise<ProjectPlaybookResponse> {
   const lock: DesignReviewLockRead = await readDesignReviewLock(deps, orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
-  if (lock.kind === "none") return { playbook };
+  // Groups can be named as the high-risk approver only where the edition has them (Enterprise): the page offers the choice from this flag alone.
+  const groups = deps.edition !== undefined && featureEnabled(deps.edition, "groups") ? { designReviewGroups: true as const } : {};
+  if (lock.kind === "none") return { playbook, ...groups };
   const held = effectiveDesignReviewSetting(playbook, lock);
-  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS] };
+  return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS], ...groups };
 }
 
 /** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */

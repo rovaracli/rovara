@@ -16,6 +16,7 @@ import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
 import { rovaraPullRequestBody, rovaraStatusLines, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
+import { proofDesignContextOf } from "./design-proof.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { inertTaskTitle } from "./common.js";
 
@@ -114,7 +115,7 @@ function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string
 
 /** Playbook P1/P3: the Proof inputs of a task (the approved plan, the browser/API rows, the test proof): the pull request's description and the task page's proof table read them through this one call. */
 export async function proofContextOfTask(
-  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults"> & Partial<Pick<DeveloperTaskRouteDependencies, "evidence">>, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults" | "documentClient" | "tableName"> & Partial<Pick<DeveloperTaskRouteDependencies, "evidence">>, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
   /** The task's operations when the caller has already read them (the task view has), so they are not read again. */
   operations?: readonly OperationFacts[],
 ): ReturnType<typeof loadProofContext> {
@@ -122,6 +123,8 @@ export async function proofContextOfTask(
   return loadProofContext({
     actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: operations ?? await deps.actions.operations(task.workspaceId), actor }),
     ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }),
+    // Design review (DR12): the approved design's line; undefined for a task with no design review, which leaves the section as it was.
+    design: proofDesignContextOf({ documentClient: deps.documentClient, tableName: deps.tableName, taskId: task.taskId, readArtifact: (key, max) => deps.actions.readArtifact(key, max) }),
   }, task, workflow, approvedPlan, operations);
 }
 

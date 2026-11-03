@@ -2,7 +2,7 @@
 //   - `designAnswersCommitItems`: the contract move `answerDesignQuestions` and the CRITIC_REPLAN row that makes the planner's resolve run due, at the NEW revision, in ONE transaction (the answers and the next step can never differ);
 //   - `designAnswersHandler`: every permission check, so a route is one line. The audience is the requester, and for a high-risk design the high-risk approver too (`designQuestionAudience`); an Auditor, a viewer or a
 //     non-member is never in it. The first answer counts. Nobody answers for the person: this never builds an answer.
-import { WorkflowTransitionError, agentXError, answerDesignQuestions, isHighRiskDesign, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, answerDesignQuestions, isHighRiskDesign, type DesignReason, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey } from "../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import { designQuestionAudience, type DesignApproverDirectory } from "./approval.js";
@@ -33,6 +33,8 @@ export interface DesignAnswersContext {
   requesterId: string;
   workflow: WorkflowSnapshot;
   setting: EffectiveDesignReviewSetting;
+  /** Every design version's own §6 `touches`. A question about a design that touches a high-risk area is the high-risk approver's too, whatever Understand's reasons said (the union only raises). */
+  touches: readonly DesignReason[];
   directory: DesignApproverDirectory;
   edition: EditionPolicy | undefined;
 }
@@ -56,7 +58,7 @@ export function designAnswersHandler<C extends { developerId: string }>(ports: D
     const member = directory.people.eligibleIds.some((id) => same(id, caller.developerId)) || directory.projectMemberIds.some((id) => same(id, caller.developerId));
     if (!member || directory.notApproverIds.some((id) => same(id, caller.developerId))) return gone();
     const audience = designQuestionAudience({
-      requesterId: context.requesterId, aboutHighRisk: isHighRiskDesign(context.workflow.designReview.reasons), setting: context.setting, directory, edition: context.edition,
+      requesterId: context.requesterId, aboutHighRisk: isHighRiskDesign([...context.workflow.designReview.reasons, ...context.touches]), setting: context.setting, directory, edition: context.edition,
     });
     if (!audience.some((id) => same(id, caller.developerId))) throw agentXError("FORBIDDEN", "You can't answer these questions.");
     try {

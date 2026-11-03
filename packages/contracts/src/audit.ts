@@ -219,6 +219,8 @@ export const AUDIT_ACTIONS = [
   "company.second_review_context_changed",
   // The task owner acknowledged that an `on` second review did not run (the merge gate).
   "task.second_review_acknowledged",
+  // Design review (DR7 slice C): the person who asked for a high-risk task approved its design because no other person could (the sole-owner exception). `tier` is the design's risk tier.
+  "task.design_sole_owner_exception",
   // The second review's mode (`review.otherCompany`): raising applies at once; lowering is a proposal a different admin approves. `scope` is `company` or `project`.
   "company.second_review_mode_proposed",
   "company.second_review_mode_changed",
@@ -531,6 +533,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.second_review_context_changed": ["to", "widens"],
   // `cause` is one of the fixed words for why the second review did not run.
   "task.second_review_acknowledged": ["cause"],
+  "task.design_sole_owner_exception": ["tier", "openBlockers"],
   // `scope` is `company` or `project`; `from` / `to` are `off`, `shadow` or `on`; `mode` is `direct` or `second_person`; `refusal` a fixed word.
   "company.second_review_mode_proposed": ["scope", "from", "to"],
   "company.second_review_mode_changed": ["scope", "from", "to", "mode"],
