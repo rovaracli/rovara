@@ -14,8 +14,7 @@ export function reviewDefaultExtras(input: { servable: readonly ModelIdentifier[
   const byCompany = new Map<string, ModelIdentifier[]>();
   for (const model of ranked) {
     const company = modelCompany(model) === "other" ? `other:${model.provider}` : modelCompany(model);
-    const list = byCompany.get(company) ?? [];
-    if (list.length < PER_COMPANY) byCompany.set(company, [...list, model]);
+    byCompany.set(company, [...(byCompany.get(company) ?? []), model]);
   }
   // Round-robin by the strength of each company's best model, so a full pool still holds every company's strongest.
   const out: ModelIdentifier[] = [];

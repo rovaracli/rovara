@@ -116,6 +116,12 @@ describe("rule 5: the models the company can use reach the stage pool, within it
     expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have }))).toEqual(["anthropic/claude-opus-4", "openai/gpt-5"]);
     expect(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set(Array.from({ length: STAGE_POOL_MAX }, (_, index) => `p\0m${String(index)}`)) })).toEqual([]);
   });
+  it("takes at most three of one company, so one company's long list cannot crowd the others out", () => {
+    const many = ["gpt-5", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-4"].map((modelId) => ({ provider: "openai", modelId }));
+    const added = reviewDefaultExtras({ servable: [...many, gemini], approved: undefined, forbidden: [], have: new Set() });
+    expect(added.filter((model) => model.provider === "openai")).toHaveLength(3);
+    expect(added).toContainEqual(gemini);
+  });
   it("does not re-add a model the pool already holds", () => {
     expect(ids(reviewDefaultExtras({ servable: [gpt], approved: undefined, forbidden: [], have: new Set([`${gpt.provider}\0${gpt.modelId}`]) }))).toEqual([]);
   });
