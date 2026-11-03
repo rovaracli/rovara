@@ -23,6 +23,7 @@ import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { readEgressDomains } from "../org/egress-domains.js";
 import { customEndpointsAllowed, endpointQualified } from "./endpoint-qualification.js";
 import type { StoredModelSources } from "./store.js";
+import { withoutUnusable, type UsableModels } from "./usable-models.js";
 
 export type ModelRouteApi = InvocationModelRoute["api"];
 
@@ -60,6 +61,8 @@ export interface RoutingDependencies {
    * name it serves (the shared matcher). Absent, nothing can show that, so no endpoint is usable.
    */
   forbiddenModels?: (orgId: OrgId) => Promise<readonly ModelIdentifier[]>;
+  /** Owner decision 2026-11-03: which of Rovara's own catalog models this account cannot call. `servableModels` leaves them out, so no default choice offers them. Absent: the whole catalog. */
+  usableModels?: UsableModels | undefined;
 }
 
 export interface RouteInput {
@@ -206,14 +209,17 @@ export async function routeModel(deps: RoutingDependencies, input: RouteInput): 
  * a model depends on who is paying.
  */
 export async function servableModels(deps: RoutingDependencies, orgId: OrgId, project?: string): Promise<ModelIdentifier[]> {
-  const rovara = (): ModelIdentifier[] => bedrockClaudeModelIds(deps.rovaraGeography ?? "us").map((modelId) => ({ provider: "amazon-bedrock", modelId }));
+  const catalog = (): ModelIdentifier[] => bedrockClaudeModelIds(deps.rovaraGeography ?? "us").map((modelId) => ({ provider: "amazon-bedrock", modelId }));
+  // Rovara's own catalog, less the models this account has not enabled (never less than one model: see `withoutUnusable`). Read once, and only when Rovara is among the sources.
+  let cached: ModelIdentifier[] | undefined;
+  const rovara = async (): Promise<ModelIdentifier[]> => (cached ??= deps.usableModels === undefined ? catalog() : withoutUnusable(catalog(), await deps.usableModels.unusable()));
   if (deps.sources === undefined) return rovara();
   // With a project: the sources in the order that project walks them (its own order, within the org's), which is the order a model is routed in.
   const walk = await walkOf({ ...deps, sources: deps.sources }, orgId, project);
   const listed = new Map<string, ModelIdentifier>();
   const add = (model: ModelIdentifier) => { listed.set(`${model.provider}\0${model.modelId}`, { provider: model.provider, modelId: model.modelId }); };
   for (const id of walk.ids) {
-    if (id === "rovara") rovara().forEach(add);
+    if (id === "rovara") (await rovara()).forEach(add);
     else if (id !== "personal-chatgpt") {
       const source = walk.stored.sources.find((candidate) => candidate.sourceId === id);
       if (source !== undefined && await usable(deps, walk, orgId, source)) source.models.forEach((entry) => { add(entry.catalog); });

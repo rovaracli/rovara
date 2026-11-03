@@ -355,18 +355,20 @@ describe("the named TEST proof-only installation gate", () => {
     // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
     // 2026-11-03, integration tip fixes (ENV-ROOM): the four named and foreign digests were retaken once more, from the values the digest test itself reports. The broker's GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID and WEB_FEATURES
     // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
+    // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
+    // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a30ed4cc91a090631611dccd76918a5c49083c4dc670fb25ab7d1c7e02329840",
-        withoutRoute: "4b15f210000e13cc741bd7b847fb36b20d44210321b549f0ee57ed0a655f8e58",
+        withRoute: "e131a9d6dfed325c39a4460dd2cdfe7db09d604f2442ba921145355466bd1830",
+        withoutRoute: "52531e70ec95de77751cc98e146459c687654931b91ef04760721cffbfd789cf",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "06d08d478840800ceb8f53a15f4c1e02f313721e5e243a060bde497744e47499",
-        withoutRoute: "9b4273d22710acf8cd752f17bf88039c31c7260e03945027f3f006183dedc6eb",
+        withRoute: "bb84c5797c2f92cf15c1688b9573027cfe63b895c5774308bca4ae928a6e7134",
+        withoutRoute: "236ca02ab904a4b8dd3314a9cd2498cd03c2e34c8172ac00db0afb22fd2663c9",
       },
       {
         label: "legacy",

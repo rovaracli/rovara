@@ -292,6 +292,11 @@ export class ControlPlaneStack extends Stack {
       actions: ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
+    // Owner decision 2026-11-03: the broker learns which of Rovara's catalog models the account has enabled in Amazon Bedrock (an agreement per model) so no default choice offers one it cannot call. One read-only action: it names
+    // no resource type in the Service Authorization Reference (the runner's E2eModelDiscovery policy grants it the same way), reveals only a model's agreement and authorization status, and reaches no model or data. Named environments only (the model proxy is).
+    if (naming.env !== undefined) {
+      broker.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock:GetFoundationModelAvailability"], resources: ["*"] }));
+    }
     // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
     // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
     if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);

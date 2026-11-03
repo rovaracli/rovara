@@ -89,6 +89,7 @@ import "./github-credentials.js";
 import "./github-webhooks.js";
 import "@agentx/gateway";
 import "@agentx/model-runtime/catalog";
+import { proxyGeographyForRegion, type ProxyGeography } from "@agentx/model-runtime/catalog";
 import "@agentx/model-runtime/thinking-levels";
 import "../github-mcp.js";
 import "./connector-ledger.js";
@@ -236,6 +237,8 @@ import "../rovara-code/review-model-lines.js";
 import "../agents/dispatch.js";
 import "@agentx/model-runtime/config";
 import "../model-sources/routing.js";
+import { bedrockAvailabilityProbe, newBedrockClient } from "../model-sources/bedrock-availability.js";
+import { createUsableModels } from "../model-sources/usable-models.js";
 import "../agents/guardrails.js";
 import "../developer/decide-session.js";
 import "../developer/decide-inspect.js";
@@ -479,6 +482,14 @@ const modelProxyUrl = process.env.MODEL_PROXY_URL;
 const modelAccess = modelAccessFunctionName === undefined || modelAccessFunctionName === "" || modelProxyUrl === undefined || modelProxyUrl === ""
   ? undefined
   : { access: new ModelAccessInvoker({ functionName: modelAccessFunctionName, lambda: lambdaClient }), proxyUrl: modelProxyUrl };
+// Owner decision 2026-11-03: which of Rovara's catalog models this account cannot call (not enabled in Amazon Bedrock). Learned from a probe of the account's model availability (the broker role's one
+// `bedrock:GetFoundationModelAvailability` grant, at most once every ten minutes) and from refused calls. Only where the install runs the model proxy; nothing here refuses a model somebody chose.
+const usableModels = (() => {
+  if (modelAccess === undefined) return undefined;
+  let geography: ProxyGeography;
+  try { geography = proxyGeographyForRegion(process.env.AWS_REGION ?? "us-east-1"); } catch { return undefined; }
+  return createUsableModels({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, geography, probe: bedrockAvailabilityProbe(newBedrockClient(process.env.AWS_REGION)) });
+})();
 
 // Spec 025 A13: the health route's probes (health-probes.ts); clients are called only per request.
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
@@ -623,6 +634,7 @@ export const handler = createAwsBrokerHandler({
   ...(developer && cloudOrgResolver !== undefined ? { decide: {} } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
+  ...(usableModels === undefined ? {} : { usableModels }),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),
   cloud: cloudOrgResolver !== undefined,
   // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
