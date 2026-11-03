@@ -346,7 +346,7 @@ async function runTask(
     }
   }
   // Test services (slice 1): a plan with dependencies starts them now, for the whole task. Nothing at all happens for a plan without them. Torn down by the sandbox's dispose, on every exit path.
-  const testServices = await startTaskTestServices({ plan: step?.kind === "agent" ? undefined : invocation.payload.testEnvironment, mode, sandbox, operationId: invocation.operationId, rootPath: canonicalRoot, config: dependencies.testServices, artifactSink: dependencies.artifactSink })
+  const testServices = await startTaskTestServices({ plan: step?.kind === "agent" ? undefined : invocation.payload.testEnvironment, mode, sandbox, devcontainer: devcontainer !== undefined, operationId: invocation.operationId, rootPath: canonicalRoot, config: dependencies.testServices, artifactSink: dependencies.artifactSink })
     .catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   // R56: the agent's file tools run in the same container as its shell, never in the worker (sandbox-file-tools.ts), for every
   // Pi session of this task: the main ones, the feedback review and the critic and security reviews.

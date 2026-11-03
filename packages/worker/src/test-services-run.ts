@@ -29,6 +29,7 @@ import {
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
+import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import type { ArtifactSink } from "./artifacts.js";
 import {
   checkSandboxPlan, writeCheckSandboxFiles,
@@ -49,6 +50,7 @@ import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
 import { SEALED_ROUND_PORTS } from "./test-services-sealed.js";
+import { refuseTestServicesWithDevcontainer } from "./check-round-runners.js";
 import { countResets } from "./service-usage-record.js";
 import { loadPrepullList, prepullCatalogImages, type PrepullPorts } from "./service-prepull.js";
 import { setupWorkspaceKey } from "./setup-network.js";
@@ -105,6 +107,8 @@ export class TestServicesError extends Error {
 /** What a sealed round needs from the caller (s1-sealed's `SealedCheckRoundInput`; `withSealedCheckRound` accepts exactly this). */
 export interface SealedRoundSetup {
   docker: DockerCli;
+  /** The project has a dev container: the round is refused. Always false here (a task with a dev container never starts services). */
+  hasDevcontainer: boolean;
   plan: CheckSandboxPlan;
   rootPath: string;
   files: HelperFiles;
@@ -353,7 +357,9 @@ export interface StartTestServicesInput {
   /** The canonical workspace root. */
   rootPath: string;
   /** The task's working sandbox, already started. */
-  sandbox: Pick<TaskSandbox, "name" | "runCommand" | "attachServices">;
+  sandbox: TaskSandbox;
+  /** The project has a dev container. Refused before anything is made (the first step). */
+  hasDevcontainer: boolean;
   /** Where the usage record is written after each sealed round. */
   artifactSink?: ArtifactSink | undefined;
   signal?: AbortSignal;
@@ -377,6 +383,8 @@ function failureOf(error: unknown): TestServicesError {
  * removed before this throws a `TestServicesError`. On success the sandbox's `dispose()` tears the run down.
  */
 export async function startTestServicesRun(config: TestServicesConfig, input: StartTestServicesInput): Promise<TestServicesRun> {
+  // The very first step: a project with a dev container is "not available yet", before a directory, a network, a name server or a helper exists.
+  refuseTestServicesWithDevcontainer({ dependencies: input.dependencies, devcontainer: input.hasDevcontainer });
   const ports = config.sealedRound;
   if (ports === undefined) throw new TestServicesError("sealed_unavailable");
   const log = config.log ?? defaultLog;
@@ -478,11 +486,11 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     dnsStarted = true;
     const dns = await docker.run(sealedPlan.dnsHelperRunArgs, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
     if (dns === undefined || dns.exitCode !== 0) throw new TestServicesError("setup_failed");
-    sealedInput = { docker, plan: sealedPlan, rootPath: root, files, environment: checkEnvironment, redactor };
+    sealedInput = { docker, hasDevcontainer: false, plan: sealedPlan, rootPath: root, files, environment: checkEnvironment, redactor };
 
     // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
     const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
-    const workingSeeds: SeedPorts = seedPorts((command, signal) => input.sandbox.runCommand(command, signal));
+    const workingSeeds: SeedPorts = seedPorts(executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand);
     for (const item of resolved) {
       try {
         await seedRun(counted, [item.resetDependency], workingSeeds, seedSignal);
@@ -603,6 +611,8 @@ export interface StartTaskTestServicesInput {
   mode: string | undefined;
   /** The task's working sandbox, started; undefined for a task in a dev container or on the local shell (refused: no sandbox, no services). */
   sandbox: TaskSandbox | undefined;
+  /** The task runs in a dev container (refused with the fixed "not available yet" sentence, before anything else). */
+  devcontainer: boolean;
   operationId: string;
   rootPath: string;
   config?: TestServicesConfig | undefined;
@@ -616,12 +626,13 @@ export interface StartTaskTestServicesInput {
 export async function startTaskTestServices(input: StartTaskTestServicesInput): Promise<TestServicesRun | undefined> {
   const dependencies = input.plan?.dependencies;
   if (dependencies === undefined || !MODES_WITH_SERVICES.has(input.mode)) return undefined;
+  refuseTestServicesWithDevcontainer({ dependencies, devcontainer: input.devcontainer });
   const refuse = (reason: TestServicesFailureReason): never => { throw agentXError("RUNTIME_UNAVAILABLE", SENTENCES[reason]); };
   if (input.sandbox === undefined) return refuse("unsupported");
   const config = input.config ?? testServicesConfigFromEnvironment();
   if (config === undefined) return refuse("not_configured");
   try {
-    return await startTestServicesRun(config, { dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, artifactSink: input.artifactSink });
+    return await startTestServicesRun(config, { dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: input.devcontainer, artifactSink: input.artifactSink });
   } catch (error) {
     const failure = failureOf(error);
     throw agentXError("RUNTIME_UNAVAILABLE", failure.message);

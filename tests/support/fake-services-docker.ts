@@ -23,7 +23,7 @@ export interface RecordedExec {
 
 export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   const calls: string[][] = [];
-  const containers = new Map<string, { networks: Set<string> }>();
+  const containers = new Map<string, { networks: Set<string>; ips: Map<string, string> }>();
   const networks = new Set<string>();
   const removedNetworks: string[] = [];
   const execs: RecordedExec[] = [];
@@ -33,6 +33,12 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
     run(args) {
       calls.push([...args]);
       const [verb, second] = args;
+      if (verb === "network" && second === "inspect" && args.includes("{{json .Containers}}")) {
+        const network = args[args.length - 1]!;
+        const members: Record<string, { Name: string; IPv4Address: string }> = {};
+        for (const [name, found] of containers) if (found.networks.has(network)) members[`id-${name}`] = { Name: name, IPv4Address: `${found.ips.get(network) ?? "0.0.0.0"}/24` };
+        return answer(0, JSON.stringify(members));
+      }
       if (verb === "network" && second === "inspect") return answer(0, "bridge {} false");
       if (verb === "network" && second === "create") { networks.add(args[args.length - 1]!); return answer(); }
       if (verb === "network" && second === "rm") { removedNetworks.push(args[2]!); networks.delete(args[2]!); return answer(); }
@@ -40,8 +46,9 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         if (options.failConnect === true) return answer(1, "", "no");
         const container = args[args.length - 1]!;
         const network = args[args.length - 2]!;
-        const found = containers.get(container) ?? { networks: new Set<string>() };
+        const found = containers.get(container) ?? { networks: new Set<string>(), ips: new Map<string, string>() };
         found.networks.add(network);
+        if (args.includes("--ip")) found.ips.set(network, args[args.indexOf("--ip") + 1]!);
         containers.set(container, found);
         return answer();
       }
@@ -65,7 +72,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         const network = args[args.indexOf("--network") + 1]!;
         const kind = name.endsWith("-dns") ? "dns" : name.endsWith("-check") ? "check" : /-h[0-9a-f]{10}$/u.test(name) ? "helper" : "other";
         if (options.failRun === kind) return answer(1, "", "boom");
-        containers.set(name, { networks: new Set([network]) });
+        containers.set(name, { networks: new Set([network]), ips: new Map(args.includes("--ip") ? [[network, args[args.indexOf("--ip") + 1]!]] : []) });
         return answer(0, `${name}-id`);
       }
       if (verb === "run" && args.includes("--rm")) return answer();

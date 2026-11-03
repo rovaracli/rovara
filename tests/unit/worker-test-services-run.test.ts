@@ -108,7 +108,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: P
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
   await sandbox.start();
   const artifactSink = (artifact: { name: string; mediaType: string; content: string }): Promise<void> => { artifacts.push(artifact); return Promise.resolve(); };
-  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()]) => startTestServicesRun(config, { dependencies, operationId: OPERATION, rootPath: root, sandbox, artifactSink });
+  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()], hasDevcontainer = false) => startTestServicesRun(config, { dependencies, hasDevcontainer, operationId: OPERATION, rootPath: root, sandbox, artifactSink });
   const checkPlan: CheckPlan = { source: "project", readiness: [TEST_COMMAND], projectBefore: ["passed"] };
   const base: CheckRunners = { runProjectCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")), runAgentCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")) };
   return { fake, root, runParent, state, logs, artifacts, config, sandbox, start, checkPlan, base };
@@ -203,6 +203,18 @@ describe("starting the run", () => {
       expect((error as TestServicesError).failures.get("postgres")).toBe(failure);
       await nothingLeft(h);
     }
+  });
+});
+
+describe("a project with a dev container", () => {
+  it("is refused with the fixed not-available-yet sentence before anything is created: no run directory, no network, no helper, no name server, no pull", async () => {
+    const h = await harness();
+    const before = h.fake.calls.length;
+    await expect(h.start([dependency()], true)).rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
+    await expect(startTaskTestServices({ plan: { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency()] }, mode: "CHECKS", sandbox: h.sandbox, devcontainer: true, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() }))
+      .rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
+    expect(h.fake.calls.length).toBe(before);
+    expect(await readdir(h.runParent)).toEqual([]);
   });
 });
 
@@ -454,7 +466,7 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   it("makes no docker call and no file, and returns undefined, for no plan, a plan without dependencies, and a step that runs no code", async () => {
     const h = await harness();
     const before = h.fake.calls.length;
-    const input = { sandbox: h.sandbox, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() };
+    const input = { devcontainer: false, sandbox: h.sandbox, operationId: OPERATION, rootPath: h.root, config: h.config, artifactSink: () => Promise.resolve() };
     expect(await startTaskTestServices({ ...input, plan: undefined, mode: undefined })).toBeUndefined();
     expect(await startTaskTestServices({ ...input, plan: plan(), mode: "CHECKS" })).toBeUndefined();
     expect(await startTaskTestServices({ ...input, plan: plan([dependency()]), mode: "REVIEW" })).toBeUndefined();
@@ -473,7 +485,7 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
   });
   it("a plan with dependencies on a task with no sandbox, or a worker with no configuration, is refused with a fixed sentence and nothing is started", async () => {
     const h = await harness();
-    const input = { operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve(), plan: plan([dependency()]), mode: "CHECKS" };
+    const input = { devcontainer: false, operationId: OPERATION, rootPath: h.root, artifactSink: () => Promise.resolve(), plan: plan([dependency()]), mode: "CHECKS" };
     await expect(startTaskTestServices({ ...input, sandbox: undefined, config: h.config })).rejects.toThrow(/does not run in one/u);
     await expect(startTaskTestServices({ ...input, sandbox: h.sandbox, config: undefined })).rejects.toThrow(/not set up to run test services/u);
     expect(h.fake.verbs("network").filter((call) => call[1] !== "inspect")).toEqual([]);
