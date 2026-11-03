@@ -14,6 +14,9 @@
 #   L3 sealed sandbox: internet, IPv6, other run, relay no                    the escape project: internet.test.js, ipv6.test.js, neighbours.test.js, planted-state.test.js, relay.test.js
 #   L3 embedded resolver, multicast, run files          yes                   linux-runtime CI only; spoofed source addresses (TS-SEAL-4) need CAP_NET_RAW: linux-runtime CI only
 #   L4 Postgres hardening, template_db reset            partly                the helper's run arguments are unit-tested; the reset is exercised by every round; the flags themselves: linux-runtime CI
+#   IPv6 into the host (TS-SEAL-2)                      yes (a real probe)     the boot fact ipv6Drops says the DROP rules are PRESENT; the escape project's ipv6 test shows no global IPv6 address and no public v6 reach. No staging check sends a v6 packet at the host.
+#   GAP, linux-runtime CI: that job (.github/workflows/ci.yml) runs tests/linux only. NOTHING in it runs this script or its live driver, so the "linux-runtime CI only" rows above are NOT asserted by CI today. They are
+#   proven only when an operator runs this script and its live driver on a Linux host with a shell. Closing the gap = a CI step that runs the driver against the pinned Postgres image (needs registry access and the pinned digest).
 #   L5 test-account proxy                                -                     not in slice 1 (gates `ta`)
 #   L6 killed-worker sweep, no leftovers                no (self-report)      the run_end reports (nothing left, run directory empty, working sandbox not paused) and, after a restart, the worker_start report's swept counts
 #   L7, L8                                               -                     later slices

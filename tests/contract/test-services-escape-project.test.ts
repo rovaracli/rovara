@@ -145,7 +145,8 @@ describe("internet.test.js", () => {
   });
 
   it("DNS positive control: fails when the dependency's own name does not resolve, resolves to the sinkhole or outside the run, when the database is named by address, and when there is no DATABASE_URL", async () => {
-    for (const [label, over] of [["no answer", { postgres: "nxdomain" as Answer }], ["the sinkhole", { postgres: ["10.9.9.20"] }], ["outside the run", { postgres: ["10.1.1.1"] }]] as const) {
+    const wrong: Array<[string, Partial<Record<string, Answer>>]> = [["no answer", { postgres: "nxdomain" }], ["the sinkhole", { postgres: ["10.9.9.20"] }], ["outside the run", { postgres: ["10.1.1.1"] }]];
+    for (const [label, over] of wrong) {
       const resolver = await sealedResolver(over);
       expect((await runTest("internet.test.js", await base({ ESCAPE_DNS_SERVER: resolver }))).status, label).not.toBe(0);
     }
@@ -357,10 +358,11 @@ describe("planted-state.test.js", () => {
 
   it("fails when anything the working phase planted is there, in any schema or as a server setting, or the database holds nothing", async () => {
     const plant = receipt();
-    for (const [label, state] of [
+    const cases: Array<[string, Database]> = [
       ["a planted table in public", { tables: ["public.planted_escape", "public.seeded_in_round"] }], ["a planted table in another schema", { tables: ["escape_planted.planted_escape_other", "public.seeded_in_round"] }],
       ["an unrelated extra table", { tables: ["public.seeded_in_round", "public.x"] }], ["a planted schema", { schemas: ["escape_planted"] }], ["the planted setting", { marker: "planted" }], ["nothing seeded", { tables: [] }],
-    ] as const) {
+    ];
+    for (const [label, state] of cases) {
       const port = await listen("127.0.0.1", fakePostgres(database(state)));
       expect((await runDatabaseTest({ DATABASE_URL: databaseUrl(port), ESCAPE_PLANT_FILE: plant })).status, label).not.toBe(0);
     }

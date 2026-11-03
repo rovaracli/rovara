@@ -105,7 +105,7 @@ function run(s: Scenario, args: string[], env: Record<string, string> = {}) {
   mkdirSync(bin);
   writeFileSync(join(directory, "routes.json"), JSON.stringify(s.routes));
   const normalised = s.events.map((entry) => {
-    const wrapped = typeof entry === "object" && entry !== null && "__timed" in entry ? entry as { event: unknown; ageMs?: number; afterCancel?: boolean } : { event: entry };
+    const wrapped = typeof entry === "object" && entry !== null && "__timed" in entry ? entry as unknown as { event: unknown; ageMs?: number; afterCancel?: boolean } : { event: entry };
     return { message: JSON.stringify(wrapped.event), at: Date.now() - (wrapped.ageMs ?? -60_000), afterCancel: wrapped.afterCancel === true };
   });
   writeFileSync(join(directory, "events.json"), JSON.stringify(normalised));
