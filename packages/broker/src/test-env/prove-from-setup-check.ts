@@ -7,9 +7,11 @@
 //   - every setup command and every build, smoke and test check of the proposal must be among the commands that check ran, compared by program, arguments and directory. A command the check did not run is not
 //     proved;
 //   - the report claims only what ran: each step it names passed, the rest are skipped. It does not claim the boot of a service, a timed full run, a coverage map or a mock (those need the full Prove run, which
-//     needs a worker run with no task: not built yet), and a proposal with services is never proved here.
+//     needs a worker run with no task: not built yet), and a proposal with v1 services is never proved here.
+//   - test services (slice 1): a proposal with DEPENDENCIES is proved only with the usage record the candidate check reported (the worker started them and ran the test checks sealed). The two steps `dependencies`
+//     ("start dependencies") and `dependency_usage` ("dependency usage check") are derived from that record by the broker; a check with no record proves nothing about them.
 // A report is never read from a worker for this: the worker's word is not asked, so it cannot be forged.
-import { TestEnvProveReportSchema, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, testEnvDigest } from "@agentx/contracts";
+import { TestEnvProveReportSchema, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
 
 /** How old a passing setup check may be and still prove a proposal: the proposal's own life. */
 export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;
@@ -79,6 +81,8 @@ export function proveReportFromSetupCheck(input: {
   definition: ProjectCommandsAt;
   setup: AppProjectSummary["setup"];
   nowMs: number;
+  /** Test services: the usage record the candidate check reported (the worker's facts; the broker decides what they mean). Only read when the environment has dependencies. */
+  usage?: TestServicesUsageRecord | undefined;
 }): ProveFromSetupCheck {
   const { environment, definition, setup } = input;
   if (setup.status === "unchecked") return { ok: false, refusal: "no_setup_check" };
@@ -104,14 +108,34 @@ export function proveReportFromSetupCheck(input: {
   if (!setupCommands.every((command) => covered(command, definition.setup) || covered(command, definition.readiness)) || !checkCommands.every((command) => covered(command, definition.readiness))) return { ok: false, refusal: "commands_differ" };
 
   const step = (name: TestEnvProveReport["steps"][number]["step"], did: boolean) => ({ step: name, status: did ? "passed" as const : "skipped" as const, durationMs: 0 });
+  // Test services: the two dependency steps, from the usage record (a check that carries no record has not shown the dependencies work).
+  const dependencySteps = dependencyStepsOf(environment, input.usage);
+  if (dependencySteps === "not_checked") return { ok: false, refusal: "dependencies_not_checked" };
   const report = TestEnvProveReportSchema.safeParse({
     schemaVersion: 1,
     proposalDigest: testEnvDigest(environment),
-    steps: [step("setup", setupCommands.length > 0), step("build", build.length > 0), step("smoke", smoke.length > 0), step("full_suite", tests.length > 0)],
+    steps: [step("setup", setupCommands.length > 0), step("build", build.length > 0), step("smoke", smoke.length > 0), step("full_suite", tests.length > 0), ...dependencySteps],
     services: [],
     finishedAt: new Date(input.nowMs).toISOString(),
   });
   return report.success ? { ok: true, report: report.data } : { ok: false, refusal: "not_provable" };
+}
+
+/**
+ * The Prove steps "start dependencies" and "dependency usage check" for an environment with dependencies, from the candidate check's usage record. None for an environment without dependencies (its report is what it was);
+ * `"not_checked"` when it has dependencies and the check reported no record. A dependency the record does not show started, healthy and without a failure fails the first step; a call to a name no dependency answers fails the second.
+ */
+export function dependencyStepsOf(environment: Pick<TestEnvironmentBody, "dependencies">, usage: TestServicesUsageRecord | undefined): Array<TestEnvProveReport["steps"][number]> | "not_checked" {
+  const planned = environment.dependencies ?? [];
+  if (planned.length === 0) return [];
+  if (usage === undefined) return "not_checked";
+  const started = planned.every((dependency) => { const seen = usage.dependencies.find((entry) => entry.id === dependency.id); return seen !== undefined && seen.started && seen.healthy && seen.failure === undefined; });
+  const startMs = Math.min(usage.dependencies.reduce((sum, entry) => sum + entry.startMs, 0), 86_400_000);
+  const unknown = testServicesUnknownCallCount(usage);
+  return [
+    started ? { step: "dependencies", status: "passed", durationMs: startMs } : { step: "dependencies", status: "failed", durationMs: startMs, failure: "dependency_start_failed" },
+    unknown === 0 ? { step: "dependency_usage", status: "passed", durationMs: 0 } : { step: "dependency_usage", status: "failed", durationMs: 0, failure: "dependency_unexpected_call" },
+  ];
 }
 
 /** What a refusal says to a person (fixed words, never a value). */
@@ -129,4 +153,5 @@ export const TEST_ENV_REFUSAL_WORDS: Record<TestEnvRefusal, string> = {
   services_need_prove: "This environment calls services, which need the full Prove run. It is not available yet.",
   setup_check_old: "The last check of this test environment is more than a week old. Run it again.",
   setup_run_moved: "The setup run read the code at a different commit than this check ran on. Ask Rovara to run setup again, then check and prove the new proposal.",
+  dependencies_not_checked: "The check of this test environment did not start its dependencies. Run it again.",
 };

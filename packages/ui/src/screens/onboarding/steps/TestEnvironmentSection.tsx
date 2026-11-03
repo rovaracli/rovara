@@ -19,6 +19,7 @@ const LESS_SAFE_WORDS: Record<string, string> = {
   shared_target_changed: "points at a different shared environment", preview_target_changed: "changes how the per-task copy is built", account_target_changed: "uses different test accounts",
   prod_deny_reduced: "shortens the list of what counts as production", nightly_enabled: "runs the whole test suite every night, which costs money", nightly_more_often: "runs the nightly suite more often",
   preview_cost_raised: "raises what the per-task copy may cost", selection_narrowed: "runs fewer of your tests than before",
+  test_account: "uses a test account for a dependency", project_image: "runs your own image for a dependency", substitute_image: "runs your company's own build of an image", none_excluded_tests: "leaves out the tests that need a dependency", dependency_seed: "runs a command to fill a dependency with test data", run_cap_raised: "raises how many dependencies one run may start",
 };
 const SKIPPED_WORDS: Record<TestEnvApplyAnswer["skipped"][number]["reason"], string> = {
   different_directory: "run in another directory, which the project's settings can't hold",

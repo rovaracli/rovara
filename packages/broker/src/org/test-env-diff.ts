@@ -8,8 +8,8 @@ import { shownLine } from "./shown-line.js";
 export const TEST_ENV_DIFF_MAX = 60;
 const LINE_MAX = 300;
 
-/** Paths that decide what an environment can reach or cost come first. */
-const FIRST = ["tier", "services", "shared", "preview", "accounts", "capture", "nightly", "roundBudgetMin", "prodDeny", "data", "selection", "repos"];
+/** Paths that decide what an environment can reach or cost come first. A dependency's seeds, init files and variables are among them: they are commands and files that run with the dependency's network access. */
+const FIRST = ["tier", "services", "dependencies", "shared", "preview", "accounts", "capture", "nightly", "roundBudgetMin", "prodDeny", "data", "selection", "repos"];
 
 const isCommand = (value: unknown): value is { cwd: string; executable: string; args: string[]; timeoutSeconds: number; env?: Record<string, string> } =>
   typeof value === "object" && value !== null && typeof (value as { executable?: unknown }).executable === "string" && Array.isArray((value as { args?: unknown }).args);

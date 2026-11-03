@@ -14,6 +14,7 @@ import {
 } from "@agentx/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
 import { evidenceTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
+import type { PinnedDependency } from "./dependency-evidence.js";
 import { buildEvidencePack, type EvidenceProblem } from "./evidence-pack.js";
 import { NO_PROD_DENY, guardPack, guardRaw } from "./evidence-guard.js";
 import { kindOfRawCheck } from "./evidence-risk.js";
@@ -46,6 +47,8 @@ export interface KeepEvidenceInput {
   deny?: TestEnvProdDeny | undefined;
   /** Test environment (wire-testenv): what to say instead of "No approved test environment" when the project has one that was not applied to this task. */
   environmentNote?: EvidenceNotTested | undefined;
+  /** Test services: the dependencies the broker pinned for the run (see `PinnedDependency`). */
+  dependencies?: readonly PinnedDependency[] | undefined;
 }
 
 export interface KeepEvidenceDeps {
@@ -99,7 +102,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     for (const entry of parsedRaw?.checks ?? []) { const kind = kindOfRawCheck(entry); if (kind !== undefined && !kinds.has(entry.checkId)) kinds.set(entry.checkId, kind); }
     const environment = input.environment ?? DEFAULT_EVIDENCE_ENVIRONMENT;
     const built = buildEvidencePack({
-      candidateDigest: input.candidateDigest, rawText, checks: input.checks, checkKinds: kinds, environment,
+      candidateDigest: input.candidateDigest, rawText, checks: input.checks, checkKinds: kinds, environment, ...(input.dependencies === undefined ? {} : { dependencies: input.dependencies }),
       notTested: [...(environment.envRevision === 0 ? [input.environmentNote ?? NO_ENVIRONMENT_ITEM] : []), ...(rawText === undefined ? [NOT_CAPTURED_ITEM] : []), ...(guarded > 0 ? [WITHHELD_ITEM] : [])], storedArtifacts: new Map(),
     });
     if (built.pack === undefined) return { kept: false, reason: "invalid" };

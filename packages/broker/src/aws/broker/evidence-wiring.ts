@@ -36,7 +36,7 @@ export async function keepEvidenceAfterChecks(
   }, {
     orgId, task: { ownerKey: input.task.ownerKey, workspaceId: input.task.workspaceId, taskId: input.task.taskId }, operationId: input.operation.id, candidateDigest: input.candidateDigest,
     checks: input.checks.filter((entry) => entry.source === "project"), policyKinds: policyKindsOf(workflowSelectedChecks(input.workflow.checkPolicy)),
-    ...(chosen.environment === undefined ? {} : { environment: chosen.environment }), ...(chosen.deny === undefined ? {} : { deny: chosen.deny }), ...(chosen.note === undefined ? {} : { environmentNote: chosen.note }),
+    ...(chosen.environment === undefined ? {} : { environment: chosen.environment }), ...(chosen.dependencies === undefined ? {} : { dependencies: chosen.dependencies }), ...(chosen.deny === undefined ? {} : { deny: chosen.deny }), ...(chosen.note === undefined ? {} : { environmentNote: chosen.note }),
   }));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<undefined>((resolve) => { timer = setTimeout(() => { late = true; resolve(undefined); }, EVIDENCE_KEEP_MAX_MS); timer.unref?.(); });

@@ -14,6 +14,7 @@ import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnv
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { testEnvChangeLines } from "../org/test-env-diff.js";
 import { proposalIsSetupRun, readApprovedTestEnvironment, readProposal, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
+import { dependencyCardLines } from "../test-env/dependency-card-lines.js";
 import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
 import { testEnvironmentEnabled } from "../test-env/switch.js";
 import type { DecisionItem } from "./project.js";
@@ -29,6 +30,7 @@ const PROPOSAL_PAGES_MAX = 50;
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 24);
 const flagWords = (flag: string): string => `Turns on or raises: ${flag.replace(/_/gu, " ")}.`;
+const dependencyReason = (count: number): string => `Starts ${count === 1 ? "a dependency" : `${String(count)} dependencies`} for this project's tests (listed under Dependencies).`;
 
 /** The newest proposal of a project by the time it was proposed, over ALL its stored proposals (the keys are digests, so the newest is anywhere among them). Throws when there are too many pages to read. */
 export async function newestProposal(store: TestEnvDeps, orgId: OrgId, project: string): Promise<{ digest: string; proposedAt: string } | undefined> {
@@ -68,17 +70,20 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
       const approved = await readApprovedTestEnvironment(ports.store, orgId, project);
       if (approved !== undefined && testEnvDigest(approved.environment) === newest.digest) continue;
       const body = await readProposal(ports.store, orgId, project, newest.digest);
-      if (body === undefined || !testEnvIsProved(await readTestEnvProveReport(ports.store, orgId, project, newest.digest), newest.digest)) continue;
+      if (body === undefined || !testEnvIsProved(await readTestEnvProveReport(ports.store, orgId, project, newest.digest), newest.digest, body)) continue;
       const expectedRevision = approved?.revision ?? 0;
       const lessSafe = testEnvLessSafeChanges(approved?.environment, body);
       // TE-2: a proposal a setup RUN made is approved only with the approver's fresh sign-in, which a one-press card cannot ask for: it is a high card that opens the setup page.
       const setupRun = await proposalIsSetupRun(ports.store, orgId, project, newest.digest);
       const risk = lessSafe.length > 0 || setupRun ? "high" as const : testEnvApprovalRisk(body);
+      const dependencies = body.dependencies ?? [];
       const confirmPath = lessSafe.length > 0 ? await ports.confirmPathOf(caller, { project, digest: newest.digest, expectedRevision }) : undefined;
       found.push({
         kind: "approve_test_env", subjectId: newest.digest, project, title: `Test environment for ${project}`, createdAt: newest.proposedAt,
         openPath: `/app/onboard?project=${encodeURIComponent(project)}&step=setup`, ...(confirmPath === undefined ? {} : { confirmPath }),
-        contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...lessSafe.map(flagWords), ...(setupRun ? ["Made by a setup run that ran commands: approve it on the setup page after signing in again."] : [])], tier: body.tier, expectedRevision,
+        contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...lessSafe.map(flagWords), ...(setupRun ? ["Made by a setup run that ran commands: approve it on the setup page after signing in again."] : []), ...(dependencies.length > 0 ? [dependencyReason(dependencies.length)] : [])], tier: body.tier, expectedRevision,
+        // Test services: the plain Dependencies section. Absent for an environment without any, so such a card is what it was.
+        ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies) }] } : {}),
       });
     } catch { /* a project whose proposal cannot be read has no card */ }
   }
@@ -93,7 +98,9 @@ export interface EnvChangePorts {
 }
 
 /** The checks of an environment as a running task depends on them: which commands run, in which order. A change to anything here is not a change a running task can take. */
-const checkShape = (body: TestEnvironmentBody): string => JSON.stringify(body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setup: repo.setupCommands, checks: repo.checks.map((check) => [check.id, check.kind, check.command, check.reportPath ?? null, check.coveragePath ?? null, check.sarifPath ?? null]) })));
+const repoShape = (body: TestEnvironmentBody): string => JSON.stringify(body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setup: repo.setupCommands, checks: repo.checks.map((check) => [check.id, check.kind, check.command, check.reportPath ?? null, check.coveragePath ?? null, check.sarifPath ?? null]) })));
+/** Test services: the dependencies a running task started with are part of what it cannot change midway (a plan pins them), so a change to them is not offered to a running task. A body without dependencies shapes exactly as before. */
+const checkShape = (body: TestEnvironmentBody): string => (body.dependencies === undefined || body.dependencies.length === 0 ? repoShape(body) : `${repoShape(body)}|${JSON.stringify(body.dependencies)}`);
 
 /** Whether a running task may be offered `next` in place of the `pinned` revision: usable by tasks, the same commands, and not one bit less safe. */
 export function takesTheChange(pinned: TestEnvironmentBody, next: TestEnvironmentBody): boolean {

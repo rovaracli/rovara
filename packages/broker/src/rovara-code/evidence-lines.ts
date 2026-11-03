@@ -5,6 +5,7 @@
 // What stays at every shrink level: the Environment line, the not-run line and the mocked or not-tested bullets (a reader must not miss what was not proved), and the link. The counts per kind and the
 // changed-line coverage go first, from level 2.
 import { evidenceIsFor, type EvidenceMode, type EvidencePack } from "@agentx/contracts";
+import { packDependencyLines } from "./dependency-lines.js";
 import { inertLine } from "./inert-text.js";
 
 /** The evidence's part of the Proof context: the pack the broker built, how much of it the pull request shows, and the Rovara page that has the rest. */
@@ -165,11 +166,14 @@ export function evidenceLines(context: ProofEvidenceContext | undefined, candida
   const pack = boundEvidence(context, candidateDigest);
   if (context === undefined || pack === undefined) return { lines: [], notTested: [] };
   const full = level <= 1;
+  // Test services: what backed each dependency, in the fixed words of the honesty labels (nothing for a pack without dependencies, so such a pull request reads as it did).
+  const dependencies = packDependencyLines(pack, level);
   const lines = [
     ...(full ? [testsLine(pack, extra.proven), coverageLine(pack)] : []),
     environmentLine(pack, level),
+    ...dependencies.lines,
     notRunLine(pack),
     evidenceLinkLine(context),
   ].filter((line): line is string => line !== undefined);
-  return { lines, notTested: evidenceNotTestedLines(pack, level, extra.alreadyListed) };
+  return { lines, notTested: [...evidenceNotTestedLines(pack, level, extra.alreadyListed), ...dependencies.notTested] };
 }

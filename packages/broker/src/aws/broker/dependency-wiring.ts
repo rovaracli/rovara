@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes.
 
+import { releaseServiceCatalogSource } from "../../test-env/shipped-catalog.js";
 import { askDependenciesFor } from "./ask-service.js";
 import { liveSteerFromEnvironment } from "../../agent-sessions/live-steer.js";
 import { redirectFromEnvironment } from "./redirect-runtime.js";
@@ -605,8 +606,11 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
   // dependencies lazily, so the registry exists before they do.
   const holder: { finished?: AwsBrokerDependencies } = {};
   const savedEnvDeps = rest.savedEnvDeps ?? realSavedEnvDeps(rest, () => holder.finished!);
+  // Test services (slice 1): the release's signed service image catalog; nothing while the switch `tx` is off. An explicit one (tests) wins.
+  const serviceCatalog = rest.serviceCatalog ?? releaseServiceCatalogSource();
   const finished: AwsBrokerDependencies = {
     ...rest,
+    ...(serviceCatalog === undefined ? {} : { serviceCatalog }),
     ...(savedEnvDeps === undefined ? {} : { savedEnvDeps }),
     // Saved environments (SH25): the hooks exist only while the `sv` switch is on.
     ...installSavedEnv(savedEnvDeps === undefined ? {} : { savedEnvDeps }),

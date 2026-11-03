@@ -111,7 +111,7 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
     }
     case "approve_test_env":
       if (inputs.testEnv === undefined) throw new Error("test environment inputs missing");
-      tally.raise(inputs.testEnv.risk, inputs.testEnv.risk === "high" ? "Adds pre-production access, a shared or preview environment, video or traces." : "Sets how tests run for this project.");
+      tally.raise(inputs.testEnv.risk, inputs.testEnv.risk === "high" ? "Adds pre-production access, a shared or preview environment, video or traces, or a test account or your own image for a dependency." : "Sets how tests run for this project.");
       for (const reason of inputs.testEnv.reasons.slice(0, 3)) tally.raise(inputs.testEnv.risk, reason);
       break;
     case "fix_setup":

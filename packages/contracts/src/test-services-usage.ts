@@ -9,6 +9,8 @@ import { TestEnvDependencyIdSchema } from "./test-env-dependency.js";
 import { TestServiceHostSchema, looksLikeSecretValue } from "./test-services-shared.js";
 
 export const TEST_SERVICES_USAGE_SCHEMA_VERSION = 1;
+/** The key under which a candidate check's (a preparation's) usage record rides in its result. */
+export const TEST_SERVICES_USAGE_RESULT_KEY = "testServicesUsage";
 /** Why a dependency is not healthy, in fixed words (never the runtime's own error text). */
 export const TEST_SERVICES_START_FAILURES = ["pull_failed", "start_failed", "not_healthy", "seed_failed", "reset_failed"] as const;
 export type TestServicesStartFailure = (typeof TEST_SERVICES_START_FAILURES)[number];

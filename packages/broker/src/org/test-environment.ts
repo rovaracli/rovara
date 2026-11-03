@@ -43,6 +43,10 @@ import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
+import { dependenciesStartableNow } from "../test-env/dependency-plan.js";
+import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
+import { dependencySeedCommands, refusedCommand } from "../test-env/refused-command.js";
+import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 
@@ -59,6 +63,8 @@ export interface TestEnvDeps extends AuditDeps {
    * maintainer), whether the company has a sole owner, and refuses otherwise. The caller's claims about either person are never used.
    */
   secondPerson?: SecondPersonPort;
+  /** The install switches, for the test-services refusals. Absent: the process environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -156,6 +162,24 @@ function refuseRecordingOnShared(body: TestEnvironmentBody): void {
   if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) throw invalid("capture: video and traces are kept only in the sandbox and per-task preview tiers");
 }
 
+/**
+ * Test services (slice 1): dependencies are proposed and approved only with the switch `tx` on, only as real software from the catalog (a fake, a test account, a project image or a substitute image is "not available
+ * yet"), and not for a project that uses a dev container (the sealed check runners cannot be combined with one). Refused when proposed AND when approved, so a card is never offered that could not be carried out.
+ * A body without dependencies reads nothing and is never refused here.
+ */
+async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, project: string, body: TestEnvironmentBody, previous?: TestEnvironmentBody): Promise<void> {
+  // Only a dependency that is new or changed since the approved environment is judged: one already approved and left untouched must not make an unrelated change (the detectors' new commands) unprovable when, say, the
+  // switch was turned off since. A task still refuses to use it (`environmentUnusedReason`), so keeping it is not starting it.
+  const approved = new Set((previous?.dependencies ?? []).map((dependency) => JSON.stringify(dependency)));
+  const changed = (body.dependencies ?? []).filter((dependency) => !approved.has(JSON.stringify(dependency)));
+  if (changed.length === 0) return;
+  if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
+  if (!dependenciesStartableNow(changed)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+  // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).
+  if (dependencySeedCommands(changed).some(refusedCommand)) throw invalid("dependencies: a seed command downloads and runs code, or holds something secret");
+  await refuseDependenciesWithDevcontainer(deps, orgId, project, { dependencies: changed });
+}
+
 /** The contract's less-safe fields (pre-prod, shared, preview, video, traces, schema-synth, a raised budget, a moved target, a shortened deny list): any of them needs a second person. */
 export type TestEnvChangeFlag = TestEnvLessSafeField;
 
@@ -179,6 +203,7 @@ export async function proposeTestEnvironment(
   const previous = await readApprovedTestEnvironment(deps, input.orgId, input.project);
   refuseProduction(body, previous?.environment);
   refuseRecordingOnShared(body);
+  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, previous?.environment);
   const digest = testEnvDigest(body);
   const now = deps.now();
   // A mark that was set stays: a later proposal of the same body (the detectors', a repeat) cannot make a setup run's proposal look like an ordinary one.
@@ -277,7 +302,9 @@ export async function recordTestEnvProveReport(deps: TestEnvDeps, input: { orgId
     if (error instanceof Error && error.name === "TransactionCanceledException") throw stale("there is no such proposal to prove; propose the environment again");
     throw error;
   }
-  return { proved: testEnvIsProved(report.data, digest) };
+  // The proposal itself is read for its dependencies: a report without the two dependency steps does not prove an environment that has some.
+  const proposed = await readProposal(deps, input.orgId, input.project, digest).catch(() => undefined);
+  return { proved: testEnvIsProved(report.data, digest, proposed) };
 }
 
 /** The stored Prove report for a proposal's digest, read again through the contract (a damaged item reads as none, never as proved). */
@@ -350,9 +377,10 @@ export async function approveTestEnvironment(
   if (body === undefined) throw stale("this proposal is gone or has expired; propose the environment again");
   const proveItem = await read(deps, proveKey(input.orgId, input.project, input.digest));
   const prove = proveItem === undefined ? undefined : TestEnvProveReportSchema.safeParse(proveItem.report);
-  if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
+  if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest, body)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
   refuseProduction(body, current?.environment);
   refuseRecordingOnShared(body);
+  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, current?.environment);
   if ((current?.revision ?? 0) !== input.expectedRevision) throw stale("someone changed the test environment; reload and review again");
 
   const lessSafe = changeFlags(current?.environment, body);

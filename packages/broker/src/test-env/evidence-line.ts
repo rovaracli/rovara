@@ -7,12 +7,15 @@ import { UNUSED_WORDS, readTestEnvPin, usableTestEnvironment } from "./usable.js
 import { testEnvironmentEnabled } from "./switch.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { EvidenceEnvironment, EvidenceNotTested, OrgId, TestEnvProdDeny } from "@agentx/contracts";
+import type { PinnedDependency } from "../rovara-code/dependency-evidence.js";
 
 export interface EvidenceEnvironmentChoice {
   environment?: EvidenceEnvironment | undefined;
   deny?: TestEnvProdDeny | undefined;
   /** Replaces "No approved test environment" when the project has one that was not used. */
   note?: EvidenceNotTested | undefined;
+  /** Test services: the dependencies the task's pinned environment lists, as the broker pinned them. The pack's rows are built from these and the worker's usage record; only with the switch `tx` on (an environment with dependencies is not used otherwise). */
+  dependencies?: readonly PinnedDependency[] | undefined;
 }
 
 /** Never throws; with the switch off, or no pin, it says nothing (the pack then reads as it did before). */
@@ -25,7 +28,8 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: O
     const found = await usableTestEnvironment(deps, task.orgId, task.project, pin.revision, env);
     if (!found.ok) return { note: { kind: "environment", id: "test_environment", text: `${UNUSED_WORDS[found.reason]}: the project's own test setup was used`, reason: "not applied" } };
     const body = found.environment.environment;
-    return { environment: { tier: body.tier, envRevision: found.environment.revision, services: [], data: "synthetic", accounts: [] }, deny: body.prodDeny };
+    const dependencies = (body.dependencies ?? []).flatMap((dependency): PinnedDependency[] => (dependency.backing.kind === "local" ? [{ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) }] : []));
+    return { environment: { tier: body.tier, envRevision: found.environment.revision, services: [], data: "synthetic", accounts: [] }, deny: body.prodDeny, ...(dependencies.length === 0 ? {} : { dependencies }) };
   } catch {
     return {};
   }

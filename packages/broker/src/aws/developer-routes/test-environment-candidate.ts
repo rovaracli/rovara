@@ -1,11 +1,13 @@
 // TE-2: a test-environment proposal's candidate check, as the routes use it. The check is prepared from the commands the proposal would put in the settings, run on a fresh workspace BEFORE they are applied; its
 // result is stored for (project, digest, settings revision). The Prove reads it, and the approval writes into the settings only the commands it ran. See org/test-env-candidate.ts for what is stored.
-import { agentXError, testEnvDigest, workerProjectDefinition, type AppProjectSummary, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
+import { EDITION_ENV_VAR, agentXError, testEnvDigest, workerProjectDefinition, type AppProjectSummary, type OrgId, type ProjectCommand, type TaskDependencyPlan, type TestEnvironmentBody } from "@agentx/contracts";
 import { setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
 import { proposalIsSetupRun } from "../../org/test-environment.js";
 import { checkedAtRunCommits, setupRunCommitsOf } from "../../test-env/setup-run-pin.js";
 import { candidateListsChecked, identicalCommands } from "../../test-env/candidate-commands.js";
+import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf } from "../../test-env/dependency-plan.js";
+import { testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { proveReportFromSetupCheck, type ProveFromSetupCheck } from "../../test-env/prove-from-setup-check.js";
 import { setupCheckDepsOf } from "./project-list.js";
 import type { DeveloperRouteDependencies } from "./types.js";
@@ -38,7 +40,7 @@ export async function candidateStateOf(deps: DeveloperRouteDependencies, orgId: 
 export async function deriveCandidateProve(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, proposal: TestEnvironmentBody, definition: CandidateDefinition): Promise<ProveFromSetupCheck & { candidate?: CandidateCheck }> {
   const { check, setup } = await candidateStateOf(deps, orgId, name, testEnvDigest(proposal), definition);
   if (check === undefined) return { ok: false, refusal: "no_setup_check" };
-  const derived = proveReportFromSetupCheck({ environment: proposal, definition: { revision: definition.revision, setup: check.setup, readiness: check.readiness }, setup, nowMs: deps.now() });
+  const derived = proveReportFromSetupCheck({ environment: proposal, definition: { revision: definition.revision, setup: check.setup, readiness: check.readiness }, setup, nowMs: deps.now(), usage: check.usage });
   if (!derived.ok) return derived;
   // The check ran exactly the lists the settings would hold with this proposal's commands added: a record that says otherwise (damaged, or the proposal changed under its digest) proves nothing.
   const lists = candidateListsChecked(proposal, definition);
@@ -50,6 +52,19 @@ export async function deriveCandidateProve(deps: DeveloperRouteDependencies, org
     if (!checkedAtRunCommits(check.pins, run)) return { ok: false, refusal: "setup_run_moved" };
   }
   return { ...derived, candidate: check };
+}
+
+/**
+ * Test services (slice 1, Prove): the dependencies a proposal's candidate check starts, pinned by digest from the signed catalog, for the preparation's payload (`testServices`). Undefined when the proposal has none
+ * (the preparation then goes out as it always did). A dependency that cannot be pinned REFUSES the check, in fixed words: a check that ran without it would prove nothing.
+ */
+export async function candidateDependencyPlan(deps: Pick<DeveloperRouteDependencies, "serviceCatalog">, proposal: TestEnvironmentBody, projectId: string, env: NodeJS.ProcessEnv = process.env): Promise<TaskDependencyPlan[] | undefined> {
+  if ((proposal.dependencies?.length ?? 0) === 0) return undefined;
+  if (!testServicesEnabled(env)) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet);
+  const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
+  const planned = taskDependencyPlansOf({ body: proposal, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId });
+  if (!planned.ok) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
+  return planned.dependencies;
 }
 
 /** Words for the apply. */
