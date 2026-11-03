@@ -109,7 +109,7 @@ function readDotenv(path: string, text: string, out: DependencyCandidate[]): voi
   const copyable = COPYABLE_ENV.test(path);
   const lines = text.split("\n").slice(0, MAX_LINES);
   lines.forEach((raw, index) => {
-    const match = /^[ \t]*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/u.exec(raw);
+    const match = /^[ \t]*(?:export\s{1,40})?([A-Za-z_][A-Za-z0-9_]*)\s{0,40}=(.*)$/u.exec(raw);
     if (match === null) return;
     const name = safeEnvName(match[1]);
     if (name === undefined) return;
@@ -129,8 +129,8 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
   }
   const names = new Map<string, number>();
   for (const match of text.matchAll(/\$\{([A-Z][A-Z0-9_]{1,63})(?=[:}])/gu)) names.set(match[1]!, lineOf(text, match.index));
-  for (const match of text.matchAll(/(?:environ(?:\.get)?|getenv|env(?:\.[a-z_]+)?|config)\(\s*['"]([A-Z][A-Z0-9_]{1,63})['"]/gu)) names.set(match[1]!, lineOf(text, match.index));
-  for (const match of text.matchAll(/environ\[\s*['"]([A-Z][A-Z0-9_]{1,63})['"]\s*\]/gu)) names.set(match[1]!, lineOf(text, match.index));
+  for (const match of text.matchAll(/(?:environ(?:\.get)?|getenv|env(?:\.[a-z_]+)?|config)\(\s{0,40}['"]([A-Z][A-Z0-9_]{1,63})['"]/gu)) names.set(match[1]!, lineOf(text, match.index));
+  for (const match of text.matchAll(/environ\[\s{0,40}['"]([A-Z][A-Z0-9_]{1,63})['"]\s{0,40}\]/gu)) names.set(match[1]!, lineOf(text, match.index));
   for (const [raw, line] of names) {
     const name = safeEnvName(raw);
     const family = name === undefined ? undefined : familyOfName(name);
@@ -141,11 +141,11 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
     [/django\.db\.backends\.mysql/u, "mysql"],
     [/django_redis|django\.core\.cache\.backends\.redis/u, "redis"],
     [/django\.core\.cache\.backends\.(?:memcached|pymemcache)/u, "memcached"],
-    [/^[ \t]*spring\.(?:data\.)?redis\.[a-z.-]+\s*[=:]/mu, "redis"],
-    [/^[ \t]*spring\.rabbitmq\.[a-z.-]+\s*[=:]/mu, "rabbitmq"],
-    [/^[ \t]*spring\.kafka\.[a-z.-]+\s*[=:]/mu, "kafka"],
-    [/^[ \t]*spring\.data\.mongodb\.[a-z.-]+\s*[=:]/mu, "mongodb"],
-    [/^[ \t]*spring\.elasticsearch\.[a-z.-]+\s*[=:]/mu, "elasticsearch"],
+    [/^[ \t]*spring\.(?:data\.)?redis\.[a-z.-]+\s{0,40}[=:]/mu, "redis"],
+    [/^[ \t]*spring\.rabbitmq\.[a-z.-]+\s{0,40}[=:]/mu, "rabbitmq"],
+    [/^[ \t]*spring\.kafka\.[a-z.-]+\s{0,40}[=:]/mu, "kafka"],
+    [/^[ \t]*spring\.data\.mongodb\.[a-z.-]+\s{0,40}[=:]/mu, "mongodb"],
+    [/^[ \t]*spring\.elasticsearch\.[a-z.-]+\s{0,40}[=:]/mu, "elasticsearch"],
   ];
   for (const [pattern, family] of keyed) {
     const match = pattern.exec(text);
@@ -158,11 +158,11 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
       if (match !== null) add(out, family, path, lineOf(text, match.index), {});
     }
   }
-  const connection = /"ConnectionStrings"\s*:/u.exec(text);
+  const connection = /"ConnectionStrings"\s{0,40}:/u.exec(text);
   if (connection !== null) {
     // .NET: the names under ConnectionStrings say what each is. The strings themselves are not read.
     const block = text.slice(connection.index, connection.index + 2_000);
-    for (const [pattern, family] of [[/"[^"]*(?:postgres|npgsql)[^"]*"\s*:/iu, "postgres"], [/"[^"]*mysql[^"]*"\s*:/iu, "mysql"], [/"[^"]*redis[^"]*"\s*:/iu, "redis"], [/"[^"]*mongo[^"]*"\s*:/iu, "mongodb"], [/"[^"]*(?:rabbit|amqp)[^"]*"\s*:/iu, "rabbitmq"]] as const) {
+    for (const [pattern, family] of [[/"[^"]*(?:postgres|npgsql)[^"]*"\s{0,40}:/iu, "postgres"], [/"[^"]*mysql[^"]*"\s{0,40}:/iu, "mysql"], [/"[^"]*redis[^"]*"\s{0,40}:/iu, "redis"], [/"[^"]*mongo[^"]*"\s{0,40}:/iu, "mongodb"], [/"[^"]*(?:rabbit|amqp)[^"]*"\s{0,40}:/iu, "rabbitmq"]] as const) {
       const match = pattern.exec(block);
       if (match !== null) add(out, family, path, lineOf(text, connection.index + match.index), {});
     }

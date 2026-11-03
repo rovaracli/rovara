@@ -35,7 +35,7 @@ function portsOf(ports: unknown): number[] {
 function optionFlags(options: unknown): { refused: DependencyRefusedField[]; health: boolean } {
   const refused: DependencyRefusedField[] = [];
   if (typeof options !== "string" || options.length > 2_000) return { refused, health: false };
-  const tokens = options.split(/\s+/u).filter((token) => token !== "");
+  const tokens = options.split(/\s{1,40}/u).filter((token) => token !== "");
   const has = (flag: string): boolean => tokens.some((token) => token === flag || token.startsWith(`${flag}=`));
   const value = (flag: string): string | undefined => { const at = tokens.findIndex((token) => token === flag || token.startsWith(`${flag}=`)); return at < 0 ? undefined : tokens[at]!.includes("=") ? tokens[at]!.split("=")[1] : tokens[at + 1]; };
   if (has("--privileged")) refused.push("privileged");

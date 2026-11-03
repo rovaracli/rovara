@@ -9,7 +9,7 @@ export const detectIac: Detector = async ({ repo }) => {
     else if (name.endsWith(".tf")) iac.push({ value: { provider: "terraform", path }, source: { path, line: 1 } });
     else if (/^(?:template|serverless)\.(?:ya?ml|json)$/u.test(name) || /\.template\.(?:ya?ml|json)$/u.test(name)) {
       const text = await repo.read(path);
-      const line = text === undefined ? undefined : findLine(text, /AWSTemplateFormatVersion|Transform:\s*['"]?AWS::Serverless/u);
+      const line = text === undefined ? undefined : findLine(text, /AWSTemplateFormatVersion|Transform:\s{0,40}['"]?AWS::Serverless/u);
       if (line !== undefined) iac.push({ value: { provider: "cloudformation", path }, source: { path, line } });
     }
     if (iac.length >= 20) break;

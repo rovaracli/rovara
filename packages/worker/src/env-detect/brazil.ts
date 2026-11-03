@@ -50,9 +50,9 @@ const rankOf = (path: string): number => {
  * named after them. An argument naming a URL or `git+` source, text the redactor would change (a secret), and anything the download-and-run rule flags are refused.
  */
 function brazilCommand(span: string): { executable: string; args: string[] } | undefined {
-  const text = span.replace(/^(?:\$|>)\s+/u, "").replace(/\s+#.*$/u, "").trim();
+  const text = span.replace(/^(?:\$|>)\s{1,40}/u, "").replace(/\s{1,40}#.*$/u, "").trim();
   if (text.length === 0 || text.length > 400 || NOT_PLAIN.test(text) || redactText(text) !== text) return undefined;
-  const words = text.split(/\s+/u);
+  const words = text.split(/\s{1,40}/u);
   const [executable, ...args] = words as [string, ...string[]];
   if (words.length > 40) return undefined;
   // brazil-recursive-cmd: only value-less flags may come before brazil-build (any other flag could take brazil-build as its value and run something else).
@@ -63,7 +63,7 @@ function brazilCommand(span: string): { executable: string; args: string[] } | u
 }
 
 /** A line's own words for scoring: inline code and Brazil command lines are removed, so a command never makes its own context (`brazil-build` is not the word "build"). */
-const prose = (line: string): string => (/^(?:[$>]\s*)?brazil-/u.test(line.trim()) ? "" : line.replace(/`[^`\n]*`/gu, " "));
+const prose = (line: string): string => (/^(?:[$>]\s{0,40})?brazil-/u.test(line.trim()) ? "" : line.replace(/`[^`\n]*`/gu, " "));
 
 function scan(path: string, text: string): Candidate[] {
   // HTML comments are not the team's instructions: blanked, keeping every newline so line numbers stay the file's.

@@ -141,3 +141,22 @@ export function findLine(text: string, pattern: RegExp): number | undefined {
   const match = pattern.exec(text);
   return match === null ? undefined : lineOf(text, match.index);
 }
+
+/**
+ * The blocks of `text` that start with `open` and end at the next `close`, found in one pass. A regular expression `open[\s\S]*?close` rescans to the end of the text from every opener that has no closer, so a file of
+ * many openers costs time in proportion to its size squared; this does not. Case sensitive. At most `max` blocks.
+ */
+export function blocksBetween(text: string, open: string, close: string, max = 5_000): Array<{ index: number; end: number; text: string; inner: string }> {
+  const found: Array<{ index: number; end: number; text: string; inner: string }> = [];
+  let at = 0;
+  while (found.length < max) {
+    const start = text.indexOf(open, at);
+    if (start < 0) break;
+    const stop = text.indexOf(close, start + open.length);
+    if (stop < 0) break;
+    const end = stop + close.length;
+    found.push({ index: start, end, text: text.slice(start, end), inner: text.slice(start + open.length, stop) });
+    at = end;
+  }
+  return found;
+}

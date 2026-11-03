@@ -53,19 +53,19 @@ function pythonFakes(path: string, text: string): Hit[] {
     const item = awsClientCandidate(path, text, match.index, service === "cognitoidp" ? "cognito-idp" : service, false);
     if (item !== undefined) found.push({ ...item, hints: { fakedByTests: true, seenBy: ["test"] } });
   }
-  const awsFake = /\bmock_aws\b|\bbotocore\.stub\b|\bStubber\s*\(|\bmotoserver\b|\bmoto\b/u.exec(text);
+  const awsFake = /\bmock_aws\b|\bbotocore\.stub\b|\bStubber\s{0,40}\(|\bmotoserver\b|\bmoto\b/u.exec(text);
   if (awsFake !== null) {
-    for (const match of text.matchAll(/\.(?:client|resource)\(\s*(?:service_name\s*=\s*)?["']([A-Za-z0-9_-]+)["']/gu)) {
+    for (const match of text.matchAll(/\.(?:client|resource)\(\s{0,40}(?:service_name\s{0,40}=\s{0,40})?["']([A-Za-z0-9_-]+)["']/gu)) {
       const item = awsClientCandidate(path, text, awsFake.index, match[1]!, false);
       if (item !== undefined) found.push({ ...item, hints: { fakedByTests: true, seenBy: ["test"] } });
     }
   }
-  for (const match of text.matchAll(/\b(?:patch|patch\.object|mocker\.patch|monkeypatch\.setattr)\(\s*["']([A-Za-z0-9_.]+)["']/gu)) {
+  for (const match of text.matchAll(/\b(?:patch|patch\.object|mocker\.patch|monkeypatch\.setattr)\(\s{0,40}["']([A-Za-z0-9_.]+)["']/gu)) {
     const family = driverFamily(match[1]!);
     if (family !== undefined) found.push(fake(family, path, text, match.index));
   }
   for (const [pattern, family] of MOCK_LIBRARIES) { const match = pattern.exec(text); if (match !== null) found.push(fake(family, path, text, match.index)); }
-  for (const match of text.matchAll(/\b(?:responses\.add|requests_mock\.[a-z]+|httpx_mock\.add_response)\(\s*(?:responses\.[A-Z]+\s*,\s*)?["']https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\b(?:responses\.add|requests_mock\.[a-z]+|httpx_mock\.add_response)\(\s{0,40}(?:responses\.[A-Z]+\s{0,40},\s{0,40})?["']https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
   return found;
 }
 
@@ -83,25 +83,25 @@ function httpFake(authority: string, path: string, text: string, index: number):
 function nodeFakes(path: string, text: string): Hit[] {
   const found: Hit[] = [];
   // aws-sdk-client-mock: `mockClient(S3Client)`.
-  for (const match of text.matchAll(/\bmockClient\(\s*([A-Za-z0-9]+?)(?:Document)?Client\b/gu)) {
+  for (const match of text.matchAll(/\bmockClient\(\s{0,40}([A-Za-z0-9]+?)(?:Document)?Client\b/gu)) {
     const item = awsClientCandidate(path, text, match.index, match[1]!, false);
     if (item !== undefined) found.push({ ...item, hints: { fakedByTests: true, seenBy: ["test"] } });
   }
-  for (const match of text.matchAll(/\b(?:jest|vi)\.(?:mock|doMock)\(\s*["']([^"']+)["']/gu)) {
+  for (const match of text.matchAll(/\b(?:jest|vi)\.(?:mock|doMock)\(\s{0,40}["']([^"']+)["']/gu)) {
     const aws = /^@aws-sdk\/(?:client|lib)-([a-z0-9-]+)$/u.exec(match[1]!)?.[1];
     if (aws !== undefined) { const item = awsClientCandidate(path, text, match.index, aws, false); if (item !== undefined) found.push({ ...item, hints: { fakedByTests: true, seenBy: ["test"] } }); continue; }
     const family = driverFamily(match[1]!);
     if (family !== undefined) found.push(fake(family, path, text, match.index));
   }
   for (const [pattern, family] of MOCK_LIBRARIES) { const match = pattern.exec(text); if (match !== null) found.push(fake(family, path, text, match.index)); }
-  for (const match of text.matchAll(/\bnock\(\s*["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
-  for (const match of text.matchAll(/\b(?:http|rest|graphql)\.(?:get|post|put|patch|delete)\(\s*["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\bnock\(\s{0,40}["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
+  for (const match of text.matchAll(/\b(?:http|rest|graphql)\.(?:get|post|put|patch|delete)\(\s{0,40}["'`]https?:\/\/([^/\s"'`?#)]*)/gu)) { const item = httpFake(match[1]!, path, text, match.index); if (item !== undefined) found.push(item); }
   return found;
 }
 
 function javaFakes(path: string, text: string): Hit[] {
   const found: Hit[] = [];
-  for (const match of text.matchAll(/\b(?:Mockito\.)?mock\(\s*([A-Za-z0-9]+?)(?:Async)?Client\.class/gu)) {
+  for (const match of text.matchAll(/\b(?:Mockito\.)?mock\(\s{0,40}([A-Za-z0-9]+?)(?:Async)?Client\.class/gu)) {
     const item = awsClientCandidate(path, text, match.index, match[1]!, false);
     if (item !== undefined) found.push({ ...item, hints: { fakedByTests: true, seenBy: ["test"] } });
   }
@@ -150,14 +150,14 @@ function testcontainers(path: string, text: string): Hit[] {
     let version: string | undefined;
     for (const match of text.matchAll(new RegExp(pattern.source, "gu"))) {
       const open = text.indexOf("(", match.index + match[0].length - 1);
-      const image = open < 0 || text.slice(match.index + match[0].length, open).trim().replace(/<[^>]*>/gu, "") !== "" ? undefined : /["']([A-Za-z0-9._/:@-]{2,100})["']/u.exec(callArguments(text, open, 300))?.[1];
+      const image = open < 0 || text.slice(match.index + match[0].length, Math.min(open, match.index + match[0].length + 2_000)).trim().replace(/<[^<>]{0,200}>/gu, "") !== "" ? undefined : /["']([A-Za-z0-9._/:@-]{2,100})["']/u.exec(callArguments(text, open, 300))?.[1];
       version = image === undefined ? undefined : familyFromImage(image)?.version;
       if (version !== undefined) break;
     }
     found.push(container(family, path, text, first.index, version));
   }
   // `GenericContainer("redis:7")`, `DockerContainer("postgres:16")`, `DockerImageName.parse("kafka:3")`, a request with `Image: "redis:7"`.
-  for (const match of text.matchAll(/\b(?:GenericContainer|DockerContainer|DockerImageName\.parse|ContainerRequest)\b[^"'\n]{0,40}\(?\s*["']([A-Za-z0-9._/:@-]{2,100})["']|\bImage\s*:\s*"([A-Za-z0-9._/:@-]{2,100})"/gu)) {
+  for (const match of text.matchAll(/\b(?:GenericContainer|DockerContainer|DockerImageName\.parse|ContainerRequest)\b[^"'\n]{0,40}\(?\s{0,40}["']([A-Za-z0-9._/:@-]{2,100})["']|\bImage\s{0,40}:\s{0,40}"([A-Za-z0-9._/:@-]{2,100})"/gu)) {
     const image = familyFromImage(match[1] ?? match[2]);
     if (image !== undefined && image.family !== "localstack") found.push(container(image.family, path, text, match.index, image.version));
     else if (image?.localstack === true) found.push(...localstackServices(path, text, match.index));
@@ -170,7 +170,7 @@ function localstackServices(path: string, text: string, index: number): Hit[] {
   const found: Hit[] = [];
   const names = new Set<string>();
   for (const match of text.matchAll(/\bService\.([A-Z0-9_]+)\b/gu)) names.add(match[1]!);
-  for (const match of text.matchAll(/\bwith_?[sS]ervices\(([^)]*)\)/gu)) for (const quoted of match[1]!.matchAll(/["']([A-Za-z0-9_-]+)["']/gu)) names.add(quoted[1]!);
+  for (const match of text.matchAll(/\bwith_?[sS]ervices\(([^)]{0,500})\)/gu)) for (const quoted of match[1]!.matchAll(/["']([A-Za-z0-9_-]+)["']/gu)) names.add(quoted[1]!);
   for (const name of names) {
     const id = normalizeAwsService(name);
     if (id !== undefined) found.push(container(`aws:${id}`, path, text, index));

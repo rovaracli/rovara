@@ -108,9 +108,9 @@ export async function pythonManifestCandidates(repo: DetectorContext["repo"]): P
       let active = plain;
       if (!plain && path === "Pipfile") active = section === "packages" || section === "dev-packages";
       if (!plain && path === "pyproject.toml") {
-        if (/^(?:dependencies|requires|dev|test|tests)\s*=\s*\[/u.test(line)) inArray = true;
+        if (/^(?:dependencies|requires|dev|test|tests)\s{0,40}=\s{0,40}\[/u.test(line)) inArray = true;
         active = PY_DEPENDENCY_SECTION.test(section) || inArray;
-        if (inArray && /\]\s*(?:#.*)?$/u.test(line)) inArray = false;
+        if (inArray && /\]\s{0,40}(?:#.*)?$/u.test(line)) inArray = false;
       }
       if (!active || (plain && /^-/u.test(line))) return;
       for (const token of line.matchAll(/(?:^|["'\s,])([A-Za-z0-9][A-Za-z0-9._-]{0,100})(?:\[([^\]\s]{0,200})\])?(?=[\s<>=!~;,"'\]#]|$)/gu)) {
@@ -130,27 +130,27 @@ export async function pythonManifestCandidates(repo: DetectorContext["repo"]): P
   return mergeCandidates(found);
 }
 
-const IMPORT = (names: string): RegExp => new RegExp(`^[ \\t]*(?:import|from)\\s+(?:${names})\\b`, "mu");
+const IMPORT = (names: string): RegExp => new RegExp(`^[ \\t]*(?:import|from)\\s{1,40}(?:${names})\\b`, "mu");
 export const PY_DRIVERS: readonly DriverRule[] = [
-  { family: "postgres", uses: IMPORT("psycopg2|psycopg|asyncpg|pg8000"), call: /\b(?:psycopg2|psycopg|asyncpg|pg8000)\.(?:connect|create_pool|create_connection)\s*\(/u },
-  { family: "mysql", uses: IMPORT("pymysql|MySQLdb|mysql\\.connector|aiomysql|asyncmy"), call: /\b(?:pymysql|MySQLdb|aiomysql|asyncmy|mysql\.connector)\.(?:connect|create_pool)\s*\(/u },
-  { family: "redis", uses: IMPORT("redis|aioredis|valkey"), call: /\b(?:redis|aioredis|valkey)\.(?:Redis|StrictRedis|from_url|ConnectionPool|asyncio\.Redis)\s*\(|\b(?:Redis|StrictRedis)\s*\(/u },
-  { family: "mongodb", uses: IMPORT("pymongo|motor|mongoengine"), call: /\b(?:MongoClient|AsyncIOMotorClient)\s*\(|\bmongoengine\.connect\s*\(/u },
-  { family: "kafka", uses: IMPORT("kafka|confluent_kafka|aiokafka"), call: /\b(?:KafkaProducer|KafkaConsumer|AIOKafkaProducer|AIOKafkaConsumer|Producer|Consumer)\s*\(/u },
-  { family: "rabbitmq", uses: IMPORT("pika|aio_pika"), call: /\b(?:pika\.ConnectionParameters|pika\.URLParameters|connect_robust)\s*\(/u },
-  { family: "elasticsearch", uses: IMPORT("elasticsearch"), call: /\bElasticsearch\s*\(/u },
-  { family: "opensearch", uses: IMPORT("opensearchpy"), call: /\bOpenSearch\s*\(/u },
-  { family: "memcached", uses: IMPORT("pymemcache|memcache"), call: /\b(?:HashClient|Client)\s*\(/u },
+  { family: "postgres", uses: IMPORT("psycopg2|psycopg|asyncpg|pg8000"), call: /\b(?:psycopg2|psycopg|asyncpg|pg8000)\.(?:connect|create_pool|create_connection)\s{0,40}\(/u },
+  { family: "mysql", uses: IMPORT("pymysql|MySQLdb|mysql\\.connector|aiomysql|asyncmy"), call: /\b(?:pymysql|MySQLdb|aiomysql|asyncmy|mysql\.connector)\.(?:connect|create_pool)\s{0,40}\(/u },
+  { family: "redis", uses: IMPORT("redis|aioredis|valkey"), call: /\b(?:redis|aioredis|valkey)\.(?:Redis|StrictRedis|from_url|ConnectionPool|asyncio\.Redis)\s{0,40}\(|\b(?:Redis|StrictRedis)\s{0,40}\(/u },
+  { family: "mongodb", uses: IMPORT("pymongo|motor|mongoengine"), call: /\b(?:MongoClient|AsyncIOMotorClient)\s{0,40}\(|\bmongoengine\.connect\s{0,40}\(/u },
+  { family: "kafka", uses: IMPORT("kafka|confluent_kafka|aiokafka"), call: /\b(?:KafkaProducer|KafkaConsumer|AIOKafkaProducer|AIOKafkaConsumer|Producer|Consumer)\s{0,40}\(/u },
+  { family: "rabbitmq", uses: IMPORT("pika|aio_pika"), call: /\b(?:pika\.ConnectionParameters|pika\.URLParameters|connect_robust)\s{0,40}\(/u },
+  { family: "elasticsearch", uses: IMPORT("elasticsearch"), call: /\bElasticsearch\s{0,40}\(/u },
+  { family: "opensearch", uses: IMPORT("opensearchpy"), call: /\bOpenSearch\s{0,40}\(/u },
+  { family: "memcached", uses: IMPORT("pymemcache|memcache"), call: /\b(?:HashClient|Client)\s{0,40}\(/u },
 ];
 
 /** AWS clients (`boto3.client("s3")`) and drivers a Python source file uses (test services D5). An `endpoint_url` written as a string is flagged: it bypasses the endpoint variables. */
 export function pythonCodeCandidates(path: string, text: string): DependencyCandidate[] {
   const found = scanDrivers(path, text, PY_DRIVERS);
   if (/boto3|botocore|aioboto3|aiobotocore/u.test(text)) {
-    for (const match of text.matchAll(/\.(?:client|resource)\(\s*(?:service_name\s*=\s*)?["']([A-Za-z0-9_-]+)["']/gu)) {
+    for (const match of text.matchAll(/\.(?:client|resource)\(\s{0,40}(?:service_name\s{0,40}=\s{0,40})?["']([A-Za-z0-9_-]+)["']/gu)) {
       const open = text.indexOf("(", match.index);
       const args = callArguments(text, open);
-      const item = awsClientCandidate(path, text, match.index, match[1]!, /\bendpoint_url\s*=\s*[fFrb]?["']/u.test(args));
+      const item = awsClientCandidate(path, text, match.index, match[1]!, /\bendpoint_url\s{0,40}=\s{0,40}[fFrb]?["']/u.test(args));
       if (item !== undefined) found.push(item);
     }
   }

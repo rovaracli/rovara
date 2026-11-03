@@ -31,7 +31,7 @@ const MAX_SETUP_COMMANDS = 20;
 
 const REGISTRY_FILE = /^(?:\.npmrc|\.yarnrc|\.yarnrc\.yml|pip\.conf|pip\.ini|uv\.toml|pyproject\.toml|settings\.xml|requirements[^/]*\.txt)$/u;
 /** A line that names a package source. A URL elsewhere (a homepage, a link) is not one. */
-const REGISTRY_LINE = /(?:registry|index-url|extra-index-url|index_url|find-links|npmRegistryServer|<url>|\burl\s*[=:])/iu;
+const REGISTRY_LINE = /(?:registry|index-url|extra-index-url|index_url|find-links|npmRegistryServer|<url>|\burl\s{0,40}[=:])/iu;
 /** `http(s)://<host>[:port]` followed by a delimiter. A URL with credentials (`user:token@host`) does not match: the user part is not a host, so nothing in it is read. */
 const URL_HOST = /https?:\/\/([A-Za-z0-9][A-Za-z0-9.-]*)(?::\d{1,5})?(?=[/\s"'<>),;]|$)/giu;
 

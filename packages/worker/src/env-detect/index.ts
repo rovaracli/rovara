@@ -31,6 +31,9 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "iac-resources", run: detectIacResources },
 ];
 
+/** The detectors that only report dependency candidates (test services D1-D7). The language detectors also report their manifests' drivers, which `legacyOnly` drops. */
+export const DEPENDENCY_DETECTOR_NAMES: ReadonlySet<string> = new Set(["compose", "ci", "env", "sdk", "test-fakes", "iac-resources"]);
+
 export const ENV_DETECT_MAX_PATHS = 5_000;
 export const ENV_DETECT_MAX_FILE_BYTES = 256 * 1_024;
 export const ENV_DETECT_MAX_TOTAL_BYTES = 4 * 1_048_576;
@@ -89,14 +92,15 @@ function freeId(id: string, detector: string, taken: ReadonlySet<string>): strin
 /**
  * Runs every detector and merges what they found into one detection. Order is precedence. A check whose command (program, arguments, directory) another detector already proposed is dropped, keeping the first
  * one's citation; a check whose id is taken by a different command is KEPT under `<id>-<detector>` rather than silently replaced; setup commands, globs, services, notes and questions are de-duplicated; and the
- * environment's limits hold, each cut saying so.
+ * environment's limits hold, each cut saying so. `legacyOnly` runs the detectors that existed before test services, without any dependency candidate (used when the full pass was stopped for taking too long).
  */
-export async function runDetectors(reader: RepositoryReader, cwd: string): Promise<Detection> {
+export async function runDetectors(reader: RepositoryReader, cwd: string, options: { legacyOnly?: boolean } = {}): Promise<Detection> {
   const merged = emptyDetection();
   const candidates: DependencyCandidate[] = [];
   const ids = new Set<string>();
   let cutChecks = false;
   for (const detector of DETECTORS) {
+    if (options.legacyOnly === true && DEPENDENCY_DETECTOR_NAMES.has(detector.name)) continue;
     let part: Partial<Detection>;
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
@@ -109,7 +113,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
     }
     merged.services.push(...(part.services ?? []));
     merged.iac.push(...(part.iac ?? []));
-    candidates.push(...(part.dependencies ?? []));
+    if (options.legacyOnly !== true) candidates.push(...(part.dependencies ?? []));
     merged.fullSuiteOn.push(...(part.fullSuiteOn ?? []));
     merged.notes.push(...(part.notes ?? []));
     merged.questions.push(...(part.questions ?? []));

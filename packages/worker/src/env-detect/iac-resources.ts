@@ -148,11 +148,11 @@ const CDK_NAME_PROPERTY: Record<DependencyResource["kind"], [string, string]> = 
 
 function cdkKey(args: string, camel: string, snake: string): DependencyKeyAttribute | undefined {
   // TypeScript: partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING }   Python: partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING)
-  const ts = new RegExp(`\\b${camel}\\s*:\\s*\\{([^}]*)\\}`, "u").exec(args)?.[1];
-  const py = new RegExp(`\\b${snake}\\s*=\\s*[\\w.]*Attribute\\(([^)]*)\\)`, "u").exec(args)?.[1];
+  const ts = new RegExp(`\\b${camel}\\s{0,40}:\\s{0,40}\\{([^}]*)\\}`, "u").exec(args)?.[1];
+  const py = new RegExp(`\\b${snake}\\s{0,40}=\\s{0,40}[\\w.]*Attribute\\(([^)]*)\\)`, "u").exec(args)?.[1];
   const inner = ts ?? py;
   if (inner === undefined) return undefined;
-  const name = /\bname\s*[:=]\s*["'`]([^"'`$]+)["'`]/u.exec(inner)?.[1];
+  const name = /\bname\s{0,40}[:=]\s{0,40}["'`]([^"'`$]+)["'`]/u.exec(inner)?.[1];
   const type = /AttributeType\.([A-Z]+)/u.exec(inner)?.[1];
   return attribute(name, type);
 }
@@ -160,14 +160,14 @@ function cdkKey(args: string, camel: string, snake: string): DependencyKeyAttrib
 function readCdk(path: string, text: string, out: DependencyCandidate[]): void {
   if (!/aws-cdk-lib|@aws-cdk\/|aws_cdk/u.test(text)) return;
   const pattern = path.endsWith(".py")
-    ? /\b(?:[a-z_0-9]+\.)?(Table|TableV2|Bucket|Queue|Topic)\(\s*(?:self|scope)\s*,\s*["']([^"']+)["']/gu
-    : /\bnew\s+(?:[A-Za-z0-9_]+\.)?(Table|TableV2|Bucket|Queue|Topic)\s*\(\s*(?:this|scope|stack)\s*,\s*["'`]([^"'`]+)["'`]/gu;
+    ? /\b(?:[a-z_0-9]+\.)?(Table|TableV2|Bucket|Queue|Topic)\(\s{0,40}(?:self|scope)\s{0,40},\s{0,40}["']([^"']+)["']/gu
+    : /\bnew\s{1,40}(?:[A-Za-z0-9_]+\.)?(Table|TableV2|Bucket|Queue|Topic)\s{0,40}\(\s{0,40}(?:this|scope|stack)\s{0,40},\s{0,40}["'`]([^"'`]+)["'`]/gu;
   for (const match of text.matchAll(pattern)) {
     const kind = CDK_CLASSES[match[1]!]!;
     const open = text.indexOf("(", match.index);
     const args = callArguments(text, open, 2_000);
     const [camel, snake] = CDK_NAME_PROPERTY[kind];
-    const named = new RegExp(`\\b(?:${camel}\\s*:|${snake}\\s*=)\\s*["'\`]([^"'\`$]+)["'\`]`, "u").exec(args)?.[1];
+    const named = new RegExp(`\\b(?:${camel}\\s{0,40}:|${snake}\\s{0,40}=)\\s{0,40}["'\`]([^"'\`$]+)["'\`]`, "u").exec(args)?.[1];
     const name = plainName(named) ?? plainName(match[2]?.slice(0, 64));
     if (name === undefined) continue;
     const resource: DependencyResource = { kind, name };

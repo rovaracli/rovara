@@ -35,8 +35,8 @@ interface Directive { value: string; line: number; indirect: boolean }
 /** The values of one go.mod / go.work directive, in its single-line (`use ./a`) and block (`use (` ... `)`) forms, each with its line. Comments are dropped; `// indirect` is remembered. */
 export function goDirectives(text: string, name: string): Directive[] {
   const found: Directive[] = [];
-  const open = new RegExp(`^${name}\\s*\\($`, "u");
-  const single = new RegExp(`^${name}\\s+(.+)$`, "u");
+  const open = new RegExp(`^${name}\\s{0,40}\\($`, "u");
+  const single = new RegExp(`^${name}\\s{1,40}(.+)$`, "u");
   let block = false;
   text.split("\n").forEach((raw, index) => {
     const comment = raw.indexOf("//");
@@ -70,7 +70,7 @@ function versionNote(path: string, text: string): string[] {
 function outsideReplaces(path: string, text: string): string[] {
   const found: string[] = [];
   for (const directive of goDirectives(text, "replace")) {
-    const target = /=>\s*(\S+)/u.exec(directive.value)?.[1];
+    const target = /=>\s{0,40}(\S+)/u.exec(directive.value)?.[1];
     if (target !== undefined && (target.startsWith("/") || target.startsWith("../") || target === "..")) found.push(`${path} line ${String(directive.line)}`);
   }
   return found;
@@ -161,7 +161,7 @@ const detectGoBuild: Detector = async (context: DetectorContext) => {
   }
 
   // gotestsum only when go.mod itself requires it (not as an indirect dependency): `go run` uses the version go.mod pins.
-  const suiteLine = hasMod ? [...goDirectives(modText, "require"), ...goDirectives(modText, "tool")].find((item) => !item.indirect && item.value.split(/\s+/u)[0] === GOTESTSUM)?.line : undefined;
+  const suiteLine = hasMod ? [...goDirectives(modText, "require"), ...goDirectives(modText, "tool")].find((item) => !item.indirect && item.value.split(/\s{1,40}/u)[0] === GOTESTSUM)?.line : undefined;
   const coverage = `-coverprofile=${GO_COVER_PROFILE}`;
   found.checks.push({
     value: suiteLine === undefined
@@ -249,21 +249,21 @@ export async function goManifestCandidates(repo: RepositoryReader): Promise<Depe
 
 const GO_IMPORT = (paths: string): RegExp => new RegExp(`"(?:${paths})(?:/[^"]*)?"`, "u");
 export const GO_DRIVERS: readonly DriverRule[] = [
-  { family: "postgres", uses: GO_IMPORT("github\\.com/lib/pq|github\\.com/jackc/pgx(?:/v\\d+)?"), call: /\bsql\.Open\s*\(|\bpgx\.Connect\s*\(|\bpgxpool\.New\s*\(/u },
-  { family: "mysql", uses: GO_IMPORT("github\\.com/go-sql-driver/mysql"), call: /\bsql\.Open\s*\(|\bmysql\.NewConnector\s*\(/u },
-  { family: "redis", uses: GO_IMPORT("github\\.com/redis/go-redis(?:/v\\d+)?|github\\.com/go-redis/redis(?:/v\\d+)?|github\\.com/redis/rueidis"), call: /\bredis\.New(?:Client|ClusterClient|FailoverClient)\s*\(|\brueidis\.NewClient\s*\(/u },
-  { family: "mongodb", uses: GO_IMPORT("go\\.mongodb\\.org/mongo-driver(?:/v2)?"), call: /\bApplyURI\s*\(|\bmongo\.Connect\s*\(/u },
-  { family: "kafka", uses: GO_IMPORT("github\\.com/segmentio/kafka-go|github\\.com/IBM/sarama|github\\.com/Shopify/sarama|github\\.com/confluentinc/confluent-kafka-go(?:/v\\d+)?"), call: /\bkafka\.(?:NewWriter|NewReader|Dial|DialContext|NewProducer|NewConsumer)\s*\(|\bsarama\.New(?:SyncProducer|AsyncProducer|Consumer|Client)\s*\(/u },
-  { family: "rabbitmq", uses: GO_IMPORT("github\\.com/streadway/amqp|github\\.com/rabbitmq/amqp091-go"), call: /\bamqp\.Dial(?:Config)?\s*\(/u },
-  { family: "elasticsearch", uses: GO_IMPORT("github\\.com/elastic/go-elasticsearch(?:/v\\d+)?|github\\.com/olivere/elastic(?:/v\\d+)?"), call: /\belasticsearch\.NewClient\s*\(|\belastic\.NewClient\s*\(/u },
-  { family: "opensearch", uses: GO_IMPORT("github\\.com/opensearch-project/opensearch-go(?:/v\\d+)?"), call: /\bopensearch\.NewClient\s*\(/u },
-  { family: "memcached", uses: GO_IMPORT("github\\.com/bradfitz/gomemcache/memcache"), call: /\bmemcache\.New\s*\(/u },
+  { family: "postgres", uses: GO_IMPORT("github\\.com/lib/pq|github\\.com/jackc/pgx(?:/v\\d+)?"), call: /\bsql\.Open\s{0,40}\(|\bpgx\.Connect\s{0,40}\(|\bpgxpool\.New\s{0,40}\(/u },
+  { family: "mysql", uses: GO_IMPORT("github\\.com/go-sql-driver/mysql"), call: /\bsql\.Open\s{0,40}\(|\bmysql\.NewConnector\s{0,40}\(/u },
+  { family: "redis", uses: GO_IMPORT("github\\.com/redis/go-redis(?:/v\\d+)?|github\\.com/go-redis/redis(?:/v\\d+)?|github\\.com/redis/rueidis"), call: /\bredis\.New(?:Client|ClusterClient|FailoverClient)\s{0,40}\(|\brueidis\.NewClient\s{0,40}\(/u },
+  { family: "mongodb", uses: GO_IMPORT("go\\.mongodb\\.org/mongo-driver(?:/v2)?"), call: /\bApplyURI\s{0,40}\(|\bmongo\.Connect\s{0,40}\(/u },
+  { family: "kafka", uses: GO_IMPORT("github\\.com/segmentio/kafka-go|github\\.com/IBM/sarama|github\\.com/Shopify/sarama|github\\.com/confluentinc/confluent-kafka-go(?:/v\\d+)?"), call: /\bkafka\.(?:NewWriter|NewReader|Dial|DialContext|NewProducer|NewConsumer)\s{0,40}\(|\bsarama\.New(?:SyncProducer|AsyncProducer|Consumer|Client)\s{0,40}\(/u },
+  { family: "rabbitmq", uses: GO_IMPORT("github\\.com/streadway/amqp|github\\.com/rabbitmq/amqp091-go"), call: /\bamqp\.Dial(?:Config)?\s{0,40}\(/u },
+  { family: "elasticsearch", uses: GO_IMPORT("github\\.com/elastic/go-elasticsearch(?:/v\\d+)?|github\\.com/olivere/elastic(?:/v\\d+)?"), call: /\belasticsearch\.NewClient\s{0,40}\(|\belastic\.NewClient\s{0,40}\(/u },
+  { family: "opensearch", uses: GO_IMPORT("github\\.com/opensearch-project/opensearch-go(?:/v\\d+)?"), call: /\bopensearch\.NewClient\s{0,40}\(/u },
+  { family: "memcached", uses: GO_IMPORT("github\\.com/bradfitz/gomemcache/memcache"), call: /\bmemcache\.New\s{0,40}\(/u },
 ];
 
 /** AWS SDK clients (a service package imported) and drivers a Go file uses (test services D5). A `BaseEndpoint` / `Endpoint` written as a string is flagged for every AWS service the file imports. */
 export function goCodeCandidates(path: string, text: string): DependencyCandidate[] {
   const found = scanDrivers(path, text, GO_DRIVERS);
-  const explicit = /\b(?:BaseEndpoint|Endpoint)\s*[:=]\s*aws\.String\(\s*"/u.test(text);
+  const explicit = /\b(?:BaseEndpoint|Endpoint)\s{0,40}[:=]\s{0,40}aws\.String\(\s{0,40}"/u.test(text);
   for (const match of text.matchAll(/"github\.com\/aws\/aws-sdk-go(?:-v2)?\/service\/([a-z0-9]+)(?:\/[^"]*)?"/gu)) {
     const item = awsClientCandidate(path, text, match.index, match[1]!, explicit);
     if (item !== undefined) found.push(item);

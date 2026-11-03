@@ -30,7 +30,7 @@ export function stripJsonc(text: string): string {
     else if (char === "/" && text[i + 1] === "*") { i += 2; while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) { if (text[i] === "\n") out += "\n"; i += 1; } i += 1; }
     else out += char;
   }
-  return out.replace(/,(\s*[}\]])/gu, "$1");
+  return out.replace(/,(\s{0,40}[}\]])/gu, "$1");
 }
 
 /** The compose files the dev containers of the repository name, joined inside the repository and present in the path list. */

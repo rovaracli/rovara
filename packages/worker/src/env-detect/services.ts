@@ -13,7 +13,7 @@ const SKIP_DIRS = /(?:^|\/)(?:node_modules|dist|build|\.git|venv|\.venv|vendor|t
 const IGNORED_HOSTS = /^(?:localhost|127\.|0\.0\.0\.0|.*\.example\.(?:com|org|net)|example\.(?:com|org|net)|.*\.test|.*\.invalid|.*\.local|www\.w3\.org|json-schema\.org|schemas\.[a-z.]+|xmlns\.com|purl\.org|opensource\.org|github\.com|raw\.githubusercontent\.com|pypi\.org|files\.pythonhosted\.org|registry\.npmjs\.org|npmjs\.org)$/u;
 const MAX_FILES = 150;
 const MAX_HTTP = 20;
-const ENDPOINT = /EndpointName\s*[=:]\s*["']([A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))["']/u;
+const ENDPOINT = /EndpointName\s{0,40}[=:]\s{0,40}["']([A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))["']/u;
 
 export const detectServices: Detector = async ({ repo }) => {
   const services: Detection["services"] = [];
