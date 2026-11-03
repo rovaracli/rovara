@@ -321,7 +321,7 @@ export const execCommandPort: CommandPort = {
 };
 
 /** `docker://<registry>/<repository>:<first 32 digits of the digest>`: the tag is a handle, derived from the digest, and immutable in the repository. */
-const tagFor = (digest: string): string => digest.slice(0, 32);
+export const tagFor = (digest: string): string => digest.slice(0, 32);
 
 /**
  * skopeo copies every platform with the digests kept; the destination is then asked for the manifest BY DIGEST, the bytes are hashed here, and the child manifest digest of each platform is read from the index it served.
