@@ -65,6 +65,9 @@ export function effectiveAllowedBackings(company: Partial<AllowedBackings> | und
 /** Where the dependency will run. Only the sealed places (a task's check round, the nightly run) may use a test account. */
 export const BACKING_PLACES = ["task_check", "nightly", "working", "setup", "team_runner"] as const;
 export type BackingPlace = (typeof BACKING_PLACES)[number];
+// DEFERRED (L3): Prove's final run and the end-to-end checker's rounds are sealed places too (6.3: "task checks, Prove's final run, nightly and E2E rounds whose plan names the account"). They have no place
+// here yet because nothing runs them through this chooser. When Prove (TS22) and the end-to-end checker (TS24) are wired, add `prove_final` and `e2e` to BACKING_PLACES and to this list, with tests, or a
+// test account would be replaced by a fake in exactly the rounds that are meant to prove it. Until then an unknown place is read as NOT sealed (fail closed).
 const SEALED_PLACES: readonly BackingPlace[] = ["task_check", "nightly"];
 
 export type BackingStep = "local" | "project_image" | "emulated" | "test_account" | "fake";
@@ -106,6 +109,10 @@ export interface BackingChoiceInput {
   projectImages: ReadonlyArray<{ imageId: string; family: string }>;
   accounts: readonly TestAccount[];
   prodDeny: TestEnvProdDeny;
+  /** The list the approved environment had before this change, so removing an entry in the same change hides nothing (as `testAccountProdProblems` reads it). */
+  alsoDeny?: TestEnvProdDeny;
+  /** Rovara's own AWS account ids: an account whose role is in one of them is refused. */
+  rovaraAccountIds?: readonly string[];
   fixtures: readonly FixtureFact[];
   /** The agent can record or write a fixture set for this family. */
   canMakeFake: boolean;
@@ -171,7 +178,7 @@ export interface BackingChoice {
   /** The fixed sentence of `reason`. */
   words: string;
   /** Every step tried and passed over before the answer, in the order tried, each with its fixed reason. */
-  skipped: Array<{ step: BackingStep; reason: SkipReason; words: string }>;
+  skipped: Array<{ step: BackingStep | "maintainer"; reason: SkipReason; words: string }>;
   /** A test account or a project image, or a dependency with nothing behind it, needs a second person's approval (the "less safe" fields of 2.2). */
   lessSafe: boolean;
   /** A test account would have been used, but this place is not sealed: the answer is the fake that replaces it (owner Q2). */
@@ -218,20 +225,20 @@ function catalogStep(input: BackingChoiceInput, entries: readonly CatalogEntry[]
 const awsServiceOf = (family: string): string | undefined => (family.startsWith("aws:") ? family.slice(4) : undefined);
 
 function localStep(input: BackingChoiceInput): Step<ChosenBacking> {
-  if (!input.allowed.real) return { skip: "not_allowed" };
+  if (input.allowed.real !== true) return { skip: "not_allowed" };
   const found = catalogStep(input, input.catalog.entries.filter((entry) => entry.backing === "local" && entry.family === input.dependency.family), input.dependency.major);
   return "skip" in found ? found : { pick: { kind: "local", catalogId: found.pick.id } };
 }
 
 function projectImageStep(input: BackingChoiceInput): Step<ChosenBacking> {
-  if (!input.allowed.projectImages) return { skip: "not_allowed" };
+  if (input.allowed.projectImages !== true) return { skip: "not_allowed" };
   const images = input.projectImages.filter((image) => image.family === input.dependency.family).map((image) => image.imageId).sort();
   const first = images[0];
   return first === undefined ? { skip: "no_project_image" } : { pick: { kind: "project_image", imageId: first } };
 }
 
 function emulatedStep(input: BackingChoiceInput): Step<ChosenBacking> {
-  if (!input.allowed.emulated) return { skip: "not_allowed" };
+  if (input.allowed.emulated !== true) return { skip: "not_allowed" };
   const service = awsServiceOf(input.dependency.family);
   if (service === undefined) return { skip: "not_aws" };
   const found = catalogStep(input, input.catalog.entries.filter((entry) => entry.backing === "emulated"), undefined);
@@ -244,15 +251,20 @@ function emulatedStep(input: BackingChoiceInput): Step<ChosenBacking> {
 }
 
 /** The test account step, as if the place were sealed; the caller applies the place and the nightly-only rules. */
+/** The optional parts of the production check, passed only when given. */
+function prodOptions(input: BackingChoiceInput): { alsoDeny?: TestEnvProdDeny; rovaraAccountIds?: readonly string[] } {
+  return { ...(input.alsoDeny === undefined ? {} : { alsoDeny: input.alsoDeny }), ...(input.rovaraAccountIds === undefined ? {} : { rovaraAccountIds: input.rovaraAccountIds }) };
+}
+
 function testAccountStep(input: BackingChoiceInput): Step<ChosenBacking> {
-  if (!input.allowed.testAccounts) return { skip: "not_allowed" };
+  if (input.allowed.testAccounts !== true) return { skip: "not_allowed" };
   const covering = input.accounts.filter((account) => account.family === input.dependency.family);
   if (covering.length === 0) return { skip: "no_test_account" };
   const forProject = covering.filter((account) => account.projectIds === "all" || account.projectIds.includes(input.projectId));
   if (forProject.length === 0) return { skip: "account_not_for_project" };
   const usable = forProject.filter((account) => isTestAccountUsableAt(account, input.now));
   if (usable.length === 0) return { skip: "account_not_usable" };
-  const problems = usable.map((account) => ({ account, problems: testAccountProdProblems(account, input.prodDeny) }));
+  const problems = usable.map((account) => ({ account, problems: testAccountProdProblems(account, input.prodDeny, prodOptions(input)) }));
   const clean = problems.filter((entry) => entry.problems.length === 0).map((entry) => entry.account.id).sort();
   const first = clean[0];
   if (first !== undefined) return { pick: { kind: "test_account", accountId: first } };
@@ -260,10 +272,10 @@ function testAccountStep(input: BackingChoiceInput): Step<ChosenBacking> {
 }
 
 function fakeStep(input: BackingChoiceInput): Step<ChosenBacking> {
-  if (!input.allowed.fakes) return { skip: "not_allowed" };
+  if (input.allowed.fakes !== true) return { skip: "not_allowed" };
   if (STATEFUL_KINDS.includes(input.dependency.kind) && !input.dependency.family.startsWith("aws:")) return { skip: "fake_not_for_this_kind" };
   const ofFamily = input.fixtures.filter((fixture) => fixture.family === input.dependency.family);
-  const permitted = ofFamily.filter((fixture) => fixture.unmatched === "fail" || input.allowed.fakeMakesUpAnswers);
+  const permitted = ofFamily.filter((fixture) => fixture.unmatched === "fail" || input.allowed.fakeMakesUpAnswers === true);
   // A recording is closer to the real thing than a hand-written fake; then the reference decides.
   const best = [...permitted].sort((a, b) => Number(b.origin === "recorded") - Number(a.origin === "recorded") || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))[0];
   if (best !== undefined) return { pick: { kind: "fake", fixtureSetRef: best.ref, origin: best.origin } };
@@ -277,6 +289,15 @@ const words = (reason: SkipReason) => SKIP_REASON_WORDS[reason];
  * What backs one dependency, with the reason in fixed words and every step passed over. Never throws: facts it cannot read (a time that is not a time) make a step unavailable, never available.
  */
 export function chooseBacking(input: BackingChoiceInput): BackingChoice {
+  try {
+    return choose(input);
+  } catch {
+    // Facts that are not what the types say (a null, a choice nobody defined) must not break a run: nothing backs the dependency, and the answer says so.
+    return { backing: { kind: "none", reason: "not_supported" }, reason: "nothing_available", words: BACKING_REASON_WORDS.nothing_available, skipped: [], lessSafe: true, replacedTestAccount: false };
+  }
+}
+
+function choose(input: BackingChoiceInput): BackingChoice {
   const done = (backing: ChosenBacking, reason: BackingReason, skipped: BackingChoice["skipped"], replacedTestAccount = false): BackingChoice => ({
     backing, reason, words: BACKING_REASON_WORDS[reason], skipped, replacedTestAccount,
     lessSafe: backing.kind === "test_account" || backing.kind === "project_image" || (backing.kind === "none" && backing.reason !== "faked_by_tests"),
@@ -304,15 +325,19 @@ export function chooseBacking(input: BackingChoiceInput): BackingChoice {
         if (nightlyOnly && place !== "nightly") return { skip: "nightly_only" };
         return found;
       }
+      default: return { skip: "not_allowed" };
     }
   };
 
   // The order tried: the default, with the nightly account first for a nightly-only account, and a maintainer's choice before all.
   const base: BackingStep[] = nightlyOnly && place === "nightly" ? ["test_account", ...BACKING_ORDER.filter((step) => step !== "test_account")] : [...BACKING_ORDER];
-  const choice = dependency.maintainerChoice;
+  // A maintainer's choice that is not one of the backings (a typo, a name nobody defined) is unavailable: it is passed over, says so, and the default order applies.
+  const asked: unknown = dependency.maintainerChoice;
+  const choice: BackingStep | undefined = BACKING_ORDER.find((step) => step === asked);
   const order = choice === undefined ? base : [choice, ...base.filter((step) => step !== choice)];
 
   const skipped: BackingChoice["skipped"] = [];
+  if (asked !== undefined && choice === undefined) skipped.push({ step: "maintainer", reason: "maintainer_choice_unavailable", words: words("maintainer_choice_unavailable") });
   for (const step of order) {
     const found = evaluate(step);
     if ("pick" in found) {

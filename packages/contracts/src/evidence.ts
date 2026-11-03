@@ -212,7 +212,7 @@ export type EvidenceFinding = z.infer<typeof EvidenceFindingSchema>;
 
 // ---- test services (TS5, design test-services.md 2.4): how each dependency of a run was backed, in fixed words.
 // Self-contained on purpose: this file is in the browser entry's exact import graph, so it imports nothing new. A contract test keeps `EVIDENCE_BACKING_KINDS` equal to `TEST_ENV_BACKING_KINDS`.
-// Replaces: nothing. `environment.services` keeps its old meaning and old packs still parse; a run with test services carries `environment.dependencies` beside it, and a reader that does not know the field ignores it.
+// Replaces: nothing. `environment.services` keeps its old meaning and old packs still parse; a run with test services carries `environment.dependencies` beside it. Readers of the pack are strict, so a reader built before this field REJECTS a pack that carries it: roll out forward only (every reader upgraded before any writer sets the field; the switch `tx` stays off until then).
 
 export const EVIDENCE_BACKING_KINDS = ["local", "project_image", "emulated", "test_account", "fake", "none"] as const;
 export type EvidenceBackingKind = (typeof EVIDENCE_BACKING_KINDS)[number];
@@ -289,6 +289,9 @@ export const EvidenceDependencySchema = z
     if (!fake && entry.madeUpAnswers !== undefined) problem("madeUpAnswers", "only a fake makes up answers");
     if (entry.label !== "not_available" && entry.testsNotRun !== undefined) problem("testsNotRun", "only a dependency that was not available has tests that did not run");
     if (entry.fellBack !== undefined && entry.backing !== "fake" && entry.backing !== "none") problem("fellBack", "a fallback is a fake or nothing");
+    // A fallback is a fake, or nothing: the tests' own fake (`faked_by_tests`) is not something a run falls back to.
+    if (entry.fellBack !== undefined && entry.label !== "recorded_fake" && entry.label !== "hand_written_fake" && entry.label !== "not_available") problem("fellBack", "a fallback is a recorded fake, a hand-written fake or not available");
+    if (entry.fellBack !== undefined && entry.fellBack.reason.startsWith("test_account_") && entry.fellBack.from !== "test_account") problem("fellBack", "a test account reason belongs to a fallback from a test account");
     if (entry.usage !== undefined && entry.usage.unmatched > entry.usage.requests) problem("usage", "unmatched requests are some of the requests");
   });
 export type EvidenceDependency = z.infer<typeof EvidenceDependencySchema>;

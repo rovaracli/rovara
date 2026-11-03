@@ -1,7 +1,7 @@
 // Test services, TS5 (design test-services.md, 2.4 and 9.3): the honesty labels, the evidence fields that carry them, and the pull request lines built from them. Pure: nothing is wired.
 import { describe, expect, it } from "vitest";
 import * as evidence from "../../packages/contracts/src/evidence.js";
-import { dependencyLines, packDependencyLines, DEPENDENCY_LEVEL_LAST } from "../../packages/broker/src/rovara-code/dependency-lines.js";
+import { dependencyLines, dependencyLineIsInert, packDependencyLines, DEPENDENCY_LEVEL_LAST } from "../../packages/broker/src/rovara-code/dependency-lines.js";
 import { TEST_ENV_BACKING_KINDS, TEST_ENV_NONE_REASONS } from "../../packages/contracts/src/test-env-dependency.js";
 import { environmentLine } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 
@@ -120,6 +120,20 @@ describe("EvidenceDependency in the pack", () => {
     expect(evidence.EvidencePackSchema.safeParse(pack([from({ from: "none", reason: "did_not_start" }, recorded())])).success).toBe(false);
     expect(evidence.EvidencePackSchema.safeParse(pack([from({ from: "fake", reason: "did_not_start" }, recorded())])).success).toBe(false);
     expect(evidence.EvidencePackSchema.safeParse(pack([from({ from: "test_account", reason: "free words" }, recorded())])).success).toBe(false);
+  });
+  it("a fallback is never the tests' own fake, and a test account reason comes from a test account (M2)", () => {
+    const fake = (label: Dep["label"], backing: Dep["backing"], extra: Record<string, unknown> = {}) => dep({ name: "a", label, backing, ...extra });
+    const fell = (from: string, reason: string) => ({ from, reason });
+    const ok = (entry: Dep) => evidence.EvidencePackSchema.safeParse(pack([entry])).success;
+    expect(ok(fake("faked_by_tests", "none", { fellBack: fell("test_account", "test_account_unreachable") }))).toBe(false);
+    expect(ok(fake("faked_by_tests", "none", { fellBack: fell("local", "did_not_start") }))).toBe(false);
+    expect(ok(fake("hand_written_fake", "fake", { fellBack: fell("local", "did_not_start") }))).toBe(true);
+    expect(ok(fake("not_available", "none", { fellBack: fell("emulated", "did_not_start") }))).toBe(true);
+    for (const reason of ["test_account_unreachable", "test_account_expired", "test_account_busy"]) {
+      expect(ok(fake("hand_written_fake", "fake", { fellBack: fell("local", reason) })), reason).toBe(false);
+      expect(ok(fake("hand_written_fake", "fake", { fellBack: fell("emulated", reason) })), reason).toBe(false);
+      expect(ok(fake("hand_written_fake", "fake", { fellBack: fell("test_account", reason) })), reason).toBe(true);
+    }
   });
   it("keeps usage within the requests made", () => {
     expect(evidence.EvidencePackSchema.safeParse(pack([recorded("a", { usage: { requests: 10, unmatched: 2, faults: 1 } })])).success).toBe(true);
@@ -294,6 +308,41 @@ describe("the pull request lines (design 9.3)", () => {
         expect(text, name).not.toMatch(/&#x40;|&commat;/u);
         for (const line of [...out.lines, ...out.notTested]) expect(line.replaceAll(String.fromCharCode(0x200d), ""), name).not.toMatch(/[\p{Cc}\p{Cf}]/u);
       }
+    });
+    it("a link cannot be made by two names that are harmless apart (H1)", () => {
+      const out = dependencyLines([emulated("[click"), emulated("here](//evil.com)")], 0);
+      const text = [...out.lines, ...out.notTested].join("\n");
+      expect(text).not.toContain("](");
+      expect(out.lines[0]).toBe("Integration tests ran against: \\[click and here\\]\\(//evil.com\\) (Rovara local AWS).");
+      for (const line of [...out.lines, ...out.notTested]) expect(dependencyLineIsInert(line), line).toBe(true);
+    });
+    it("strike-through, code spans, emphasis, tags and quotes are written out as plain characters (H1)", () => {
+      // What each name must come out as: its characters written out with a backslash in front, by the name's own cleaning (the whole-line check is only the second defence).
+      const written: Record<string, string> = {
+        "~~gone": "\\~\\~gone", "gone~~": "gone\\~\\~", "`code": "\\`code", "code`": "code\\`", "*bold": "\\*bold", "_it_": "\\_it\\_", "<b>x</b>": "x",
+        "> quote": "\\> quote", "back\\slash": "back\\\\slash", "a|b": "a\\|b", "![img": "!\\[img", "(paren": "\\(paren", "x)": "x\\)",
+      };
+      for (const name of Object.keys(written)) {
+        const out = dependencyLines([emulated(name), emulated("other"), dep({ name: `${name} two`, label: "not_available", backing: "none", testsNotRun: 2 })], 3);
+        expect([...out.lines, ...out.notTested].join("\n"), name).toContain(written[name]);
+        for (const line of [...out.lines, ...out.notTested]) {
+          expect(dependencyLineIsInert(line), `${name}: ${line}`).toBe(true);
+          expect(line.replace(/\\./gu, ""), name).not.toMatch(/[`*_~[\]<]/u);
+        }
+      }
+      const out = dependencyLines([emulated("~~a"), emulated("b~~")], 0);
+      expect(out.lines[0]).toContain("\\~\\~a and b\\~\\~");
+    });
+    it("checks the whole line, not only the names", () => {
+      expect(dependencyLineIsInert("Integration tests ran against: Postgres (real).")).toBe(true);
+      expect(dependencyLineIsInert("- 12 tests not run: they need Kafka")).toBe(true);
+      for (const bad of ["a [b](c)", "a ](c", "![x", "~~x~~", "`x`", "*x*", "_x_", "<b>", "@user", "https://x", "see #12", "www.evil.com", "Fixes ENG-12", "tab\there", "GH-12", "[x"]) expect(dependencyLineIsInert(bad), bad).toBe(false);
+      expect(dependencyLineIsInert("a \\[x\\] \\_y\\_ \\\\")).toBe(true);
+      expect(dependencyLineIsInert("a \\\\[x")).toBe(false);
+    });
+    it("keeps a service's name exactly as it is in the company-approved words (L5)", () => {
+      const out = dependencyLines([dep({ name: "Post (gres", label: "company_approved", backing: "local", imageDigest: sha("a") })], 0);
+      expect(out.lines[0]).toBe("Integration tests ran against: Post \\(gres (company-approved Post \\(gres image).");
     });
     it("redacts a key-shaped name", () => {
       const key = ["AK", "IA"].join("") + "ABCDEFGHIJKLMNOP";

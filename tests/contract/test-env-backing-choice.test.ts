@@ -445,3 +445,69 @@ describe("deterministic, pure, fixed words", () => {
     expect(() => chooseBacking(input({ catalog: { ...pinnedCatalog(), entries: [] } as unknown as ServiceCatalog }))).not.toThrow();
   });
 });
+
+describe("hostile and malformed facts (M1, L1, L2)", () => {
+  it("an unknown maintainer choice is unavailable, never an error", () => {
+    for (const bogus of ["bogus", "__proto__", "constructor", "toString", "hasOwnProperty", "", " local", "LOCAL", 5, {}, [], null, true]) {
+      const choice = chooseBacking(pay({ fixtures: [fixture(sha("3"))], dependency: { maintainerChoice: bogus as never } }));
+      expect(choice.backing, String(bogus)).toMatchObject({ kind: "fake", fixtureSetRef: sha("3") });
+      expect(choice.reason, String(bogus)).toBe("best_available");
+      expect(choice.skipped[0], String(bogus)).toEqual({ step: "maintainer", reason: "maintainer_choice_unavailable", words: SKIP_REASON_WORDS.maintainer_choice_unavailable });
+    }
+    // A choice that is not set at all is not a bad choice.
+    expect(chooseBacking(pay({ fixtures: [fixture(sha("3"))] })).skipped.some((each) => each.step === "maintainer")).toBe(false);
+    expect(chooseBacking(pay({ fixtures: [fixture(sha("3"))], dependency: { maintainerChoice: undefined } })).skipped.some((each) => each.step === "maintainer")).toBe(false);
+  });
+  it("returns nothing, and says so, for any input that is not what the types say", () => {
+    const nothing = { backing: { kind: "none", reason: "not_supported" }, reason: "nothing_available", skipped: [], lessSafe: true, replacedTestAccount: false };
+    // A base that reaches every step: no real software for the family, the company allows own images, and nothing else is available.
+    const reach = pay({ allowed: allow({ projectImages: true }) });
+    const bad: unknown[] = [
+      null, undefined, 5, "text", [], {},
+      { ...reach, dependency: null }, { ...reach, dependency: undefined }, { ...reach, allowed: undefined }, { ...reach, allowed: null },
+      { ...reach, catalog: undefined }, { ...reach, catalog: { entries: null } }, { ...reach, catalog: { entries: [null] } },
+      { ...reach, accounts: null }, { ...reach, accounts: [null] }, { ...reach, projectImages: null }, { ...reach, projectImages: [null] }, { ...reach, fixtures: null }, { ...reach, fixtures: [null] },
+      { ...reach, accounts: [account()], prodDeny: null }, { ...reach, accounts: [account()], prodDeny: undefined },
+    ];
+    for (const value of bad) {
+      let choice: ReturnType<typeof chooseBacking> | undefined;
+      expect(() => { choice = chooseBacking(value as never); }, JSON.stringify(value)?.slice(0, 80)).not.toThrow();
+      expect(choice, JSON.stringify(value)?.slice(0, 80)).toMatchObject(nothing);
+      expect(choice?.words).toBe(BACKING_REASON_WORDS.nothing_available);
+    }
+  });
+  it("an unknown place or a hostile family is read as not sealed and finds nothing", () => {
+    expect(chooseBacking(pay({ accounts: [account()], place: "bogus" as never })).backing.kind).toBe("none");
+    expect(chooseBacking(pay({ accounts: [account()], place: "__proto__" as never })).reason).toBe("not_available_while_coding");
+    expect(chooseBacking(input({ dependency: { family: "__proto__", kind: "constructor" } })).backing.kind).toBe("none");
+  });
+  it("a box counts as allowed only when it is exactly true, in every step", () => {
+    const loose = (over: Record<string, unknown>) => ({ ...DEFAULT_ALLOWED_BACKINGS, ...over }) as unknown as AllowedBackings;
+    const images = [{ imageId: "my-dynamo", family: "aws:dynamodb" }];
+    expect(steps(chooseBacking(input({ allowed: loose({ real: "yes" }) })))[0]).toBe("local:not_allowed");
+    expect(steps(chooseBacking(dynamo({ projectImages: images, allowed: loose({ projectImages: "yes" }) })))).toContain("project_image:not_allowed");
+    expect(steps(chooseBacking(dynamo({ accounts: [dynamoAccount()], allowed: loose({ emulated: "yes" }) })))).toContain("emulated:not_allowed");
+    expect(steps(chooseBacking(dynamo({ accounts: [dynamoAccount()], fixtures: [fixture(sha("3"), { family: "aws:dynamodb" })], allowed: loose({ emulated: false, testAccounts: 1 }) })))).toContain("test_account:not_allowed");
+    expect(steps(chooseBacking(dynamo({ fixtures: [fixture(sha("3"), { family: "aws:dynamodb" })], allowed: loose({ emulated: false, testAccounts: false, fakes: "true" }) })))).toContain("fake:not_allowed");
+    expect(steps(chooseBacking(pay({ fixtures: [fixture(sha("3"), { unmatched: "schema_synth" })], allowed: loose({ fakeMakesUpAnswers: "true" }) })))).toContain("fake:fake_makes_up_answers_not_allowed");
+  });
+  it("an account in Rovara's own AWS account is refused (L2)", () => {
+    const own = dynamoAccount();
+    const base = dynamo({ accounts: [own], allowed: allow({ emulated: false }) });
+    expect(chooseBacking(base).backing.kind).toBe("test_account");
+    const refused = chooseBacking({ ...base, rovaraAccountIds: ["222233334444"] });
+    expect(refused.backing.kind).toBe("none");
+    expect(steps(refused)).toContain("test_account:account_names_production");
+    expect(chooseBacking({ ...base, rovaraAccountIds: ["999999999999"] }).backing.kind).toBe("test_account");
+  });
+  it("the list the environment had before this change is checked too (L2)", () => {
+    const base = pay({ accounts: [account()] });
+    const removed = { ...base, prodDeny: { accountIds: [], hosts: ["*.nothing.example"], arnPrefixes: [] }, alsoDeny: { accountIds: [], hosts: ["api.example-pay.com"], arnPrefixes: [] } };
+    const refused = chooseBacking(removed);
+    expect(refused.backing.kind).toBe("none");
+    expect(steps(refused)).toContain("test_account:account_names_production");
+    // The old list is enough to make a list exist.
+    expect(steps(chooseBacking({ ...base, prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, alsoDeny: { accountIds: [], hosts: ["*.nothing.example"], arnPrefixes: [] } }))).not.toContain("test_account:production_list_missing");
+    expect(chooseBacking(base).backing.kind).toBe("test_account");
+  });
+});
