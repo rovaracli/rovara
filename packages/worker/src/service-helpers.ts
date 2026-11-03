@@ -322,6 +322,46 @@ function probeArgs(net: ServicesNetwork, probeImage: string, address: string, en
   ];
 }
 
+// ---- health
+
+type Call = (args: string[], timeoutMs?: number) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut?: boolean | undefined }>;
+
+export interface HealthSubject {
+  probeImage: string;
+  entry: CatalogEntry;
+  /** The dependency id and the helper's address and container name. */
+  id: string;
+  address: string;
+  container: string;
+  /** Makes the probe container's name: one number per question of this run. */
+  probeNumber: number;
+}
+
+/**
+ * One health question about a helper, with at most `limitMs` to answer: a `command` check is a fixed `docker exec` inside the helper; a `tcp` or `http` check is asked from a named probe container on the services network. A
+ * probe that never answers, or whose call times out, is removed by name here; `inFlight` (when given) lists the probes not yet finished, so a cleanup can remove them too.
+ */
+async function askHealth(call: Call, net: ServicesNetwork, subject: HealthSubject, limitMs: number, inFlight?: Set<string>): Promise<boolean> {
+  const health = subject.entry.health;
+  if (health.kind === "command") {
+    const result = await call(["exec", subject.container, ...healthCommand(subject.entry, health.check, subject.entry.run.ports[0] ?? 0)], Math.min(EXEC_CALL_TIMEOUT_MS, limitMs));
+    // A cache that wants a password still answers: that is a live server.
+    return result.exitCode === 0 || (health.check === "redis_ping" && /NOAUTH/u.test(result.stdout));
+  }
+  const name = probeContainerName(net, subject.id, subject.probeNumber);
+  inFlight?.add(name);
+  const result = await call(probeArgs(net, subject.probeImage, subject.address, subject.entry, name), Math.min(PROBE_CALL_TIMEOUT_MS, limitMs));
+  if (result.timedOut === true || result.exitCode === null || result.exitCode === -1) await call(["rm", "--force", "--volumes", name]);
+  inFlight?.delete(name);
+  return result.exitCode === 0;
+}
+
+/** Asks a running helper its health question again (a session's `probe`, a reset's wait). Never throws: a Docker failure is "not healthy". */
+export function askHelperHealth(docker: DockerCli, net: ServicesNetwork, subject: HealthSubject, limitMs: number = PROBE_CALL_TIMEOUT_MS): Promise<boolean> {
+  const call: Call = (args, timeoutMs = DOCKER_CALL_TIMEOUT_MS) => docker.run(args, { timeoutMs }).catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false }));
+  return askHealth(call, net, subject, Math.max(1, limitMs));
+}
+
 // ---- starting
 
 /**
@@ -397,20 +437,9 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
   let probeNumber = 0;
   const probesInFlight = new Set<string>();
   /** One health question, with at most `limitMs` to answer. A probe container is named, so one that never answers (or whose call times out) is removed by name and cannot outlive the wait. */
-  const healthy = async (plan: Plan, container: string, limitMs: number): Promise<boolean> => {
-    const health = plan.entry.health;
-    if (health.kind === "command") {
-      const result = await call(["exec", container, ...healthCommand(plan.entry, health.check, plan.entry.run.ports[0] ?? 0)], Math.min(EXEC_CALL_TIMEOUT_MS, limitMs));
-      // A cache that wants a password still answers: that is a live server.
-      return result.exitCode === 0 || (health.check === "redis_ping" && /NOAUTH/u.test(result.stdout));
-    }
+  const healthy = (plan: Plan, container: string, limitMs: number): Promise<boolean> => {
     probeNumber += 1;
-    const name = probeContainerName(net, plan.request.id, probeNumber);
-    probesInFlight.add(name);
-    const result = await call(probeArgs(net, input.probeImage, plan.address, plan.entry, name), Math.min(PROBE_CALL_TIMEOUT_MS, limitMs));
-    if (result.timedOut === true || result.exitCode === null || result.exitCode === -1) await call(["rm", "--force", "--volumes", name]);
-    probesInFlight.delete(name);
-    return result.exitCode === 0;
+    return askHealth(call, net, { probeImage: input.probeImage, entry: plan.entry, id: plan.request.id, address: plan.address, container, probeNumber }, limitMs, probesInFlight);
   };
 
   const aborted = (): boolean => input.signal?.aborted === true;
