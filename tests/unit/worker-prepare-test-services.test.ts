@@ -7,7 +7,7 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TaskDependencyPlanSchema, catalogSigningMessage, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
+import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, catalogSigningMessage, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
@@ -179,5 +179,15 @@ describe("the catalog's trusted keys are compiled in, never read at runtime", ()
     // No key compiled in yet: nothing verifies in any account.
     await expect(loadCatalogFromDirectory(dir, trust)).rejects.toMatchObject({ reason: "catalog" });
     await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
+  });
+});
+
+describe("the prepare invocation's wiring (main.ts)", () => {
+  it("passes the payload's testServices plan to the preparation and puts the usage record in the result under the contract's key", () => {
+    const source = readFileSync(new URL("../../packages/worker/src/main.ts", import.meta.url), "utf8");
+    expect(source).toContain("invocation.payload.testServices.dependencies");
+    expect(source).toContain("onUsageRecord: (record) => { testServicesUsage = record; }");
+    expect(source).toContain("[TEST_SERVICES_USAGE_RESULT_KEY]: testServicesUsage");
+    expect(TEST_SERVICES_USAGE_RESULT_KEY).toBe("testServicesUsage");
   });
 });
