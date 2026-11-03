@@ -26,7 +26,7 @@ import type { ProvePorts } from "./prove.js";
 import type { DockerCli } from "./swebench/containers.js";
 import type { TestEnvironmentBody } from "@agentx/contracts";
 
-export type ServiceRunnerFailure = "unknown_dependency" | "attach_failed" | "reset_unsupported" | "reset_failed" | "stopped";
+export type ServiceRunnerFailure = "unknown_dependency" | "attach_failed" | "reset_unsupported" | "reset_failed" | "not_answering" | "stopped";
 
 /** The one error of this module besides the launcher's. `message` is a fixed sentence; the dependency's id never goes in it. */
 export class ServiceRunnerError extends Error {
@@ -40,6 +40,7 @@ const SENTENCES: Record<ServiceRunnerFailure, string> = {
   attach_failed: "The test sandbox could not join the test services' network",
   reset_unsupported: "The test services cannot be reset in this way",
   reset_failed: "A test service could not be reset",
+  not_answering: "A test service is not answering",
   stopped: "The test services were stopped",
 };
 
@@ -58,10 +59,15 @@ export interface SandboxNetworkView {
 /**
  * Where the sandboxes join the run. The working sandbox (task-sandbox.ts) and the sealed check sandbox (check-sandbox.ts) each implement this; the runner calls `attach` once the helpers are healthy and `detach` first
  * when the run stops. `detach` must be safe to call after a failed `attach`.
+ *
+ * `enterCheckRound` (optional): the run is about to be put back for an official check round. A working sandbox implements it by leaving the network (ts-sealed's `withDetachedWorking`), so nothing it runs can touch a helper while
+ * the helpers are reset or while the sealed checks run. The runner calls it from `ServiceSession.enterCheckRound`, which `freshHelpers` (service-reset.ts) calls FIRST: working sandbox out, helpers fresh, checks. A sandbox
+ * that never leaves (a sealed check sandbox) leaves it out.
  */
 export interface SandboxAttachment {
   attach(network: SandboxNetworkView, helpers: readonly StartedHelper[]): Promise<void>;
   detach(): Promise<void>;
+  enterCheckRound?(): Promise<void>;
 }
 
 /** What one helper uses right now. A number Docker did not give (or gave in a form this module does not read) is null, never a guess. */
@@ -74,14 +80,19 @@ export interface ServiceUsage {
   pids: number | null;
 }
 
-/** What a reset hook is told: the helper, and the means to ask it questions. It carries no secret; a hook that needs one reads it through its own seam. */
+/** The part of a helper's request a reset hook may see: no password, no files, no control token (those are secrets or seed data; the control token has its own field, for `http_reset` only). */
+export type ResetRequest = Pick<HelperRequest, "id" | "name" | "entry"> & { credentials?: { user?: string; database?: string } };
+
+/** What a reset hook is told: the helper, and the means to ask it questions. `request` carries no password (assert on `JSON.stringify(context.request)`). */
 export interface ResetContext {
   /** `seeded`: the seeds have just run. `reset`: put the helper back as it was after them. */
   phase: "seeded" | "reset";
   docker: DockerCli;
   network: ServicesNetwork;
   helper: StartedHelper;
-  request: HelperRequest;
+  request: ResetRequest;
+  /** The per-run control token of an `http_reset` helper (Rovara local AWS), and of no other kind. Never logged, never an argument: `http_reset` writes it to an env file for the one call. */
+  controlToken?: string;
   /** Asks the helper's health question once, with at most `limitMs` to answer (a restart waits on this). */
   health(limitMs?: number): Promise<boolean>;
   now(): number;
@@ -106,6 +117,10 @@ export interface ServiceRunnerStartInput {
   probeImage: string;
   maxMemMiB: number;
   helpers: readonly HelperRequest[];
+  /**
+   * The run's directory seam (service-env.ts `createRunDirectoryFiles`). `stop()` removes the files the helpers need (kept for a `restart` reset until then); it does NOT remove the directory: whoever created it removes it
+   * with `removeRunDirectory` after `session.stop()` has returned.
+   */
   files: HelperFiles;
   /** Where the sandboxes join. Optional: a caller that starts services to look at them (a probe, a test) needs none. */
   sandboxes?: SandboxAttachment;
@@ -123,6 +138,8 @@ export interface ServiceSession {
   usage(): Promise<ServiceUsage[]>;
   /** Tells the helper's hook that the run's seeds have finished. A kind with no work to do on this (everything but `template_db`) needs no hook for it. */
   seeded(id: string, signal?: AbortSignal): Promise<void>;
+  /** An official check round is about to start: the sandboxes' `enterCheckRound` hook runs (the working sandbox leaves the network). Nothing to do without one. */
+  enterCheckRound(signal?: AbortSignal): Promise<void>;
   /** Returns one helper to its seeded state with its catalog entry's reset kind, by the hook the caller gave. Says whether the seeded data is back (`keptSeeds`) or the seeds must run again. */
   reset(id: string, signal?: AbortSignal): Promise<ResetOutcome>;
   /** Detaches the sandboxes, removes the helpers and then the network. Idempotent; never throws. */
@@ -135,7 +152,7 @@ export interface ServiceRunner {
 }
 
 /** The workspaces whose earlier runs this process has already swept (rule 3 of TS-RN-3: once, when the worker first needs a service). */
-const sweptAtWorkerStart = new Set<string>();
+const sweptAtWorkerStart = new Map<string, Promise<void>>();
 /** For tests only: forgets which workspaces were swept. */
 export function forgetWorkerStartSweeps(): void { sweptAtWorkerStart.clear(); }
 
@@ -183,10 +200,13 @@ export function createDockerServiceRunner(docker: DockerCli): ServiceRunner {
   return {
     async start(input) {
       // Rule 3 of TS-RN-3, lazily and once: what an earlier worker of this workspace left behind goes before the first allocation. A failed sweep is not a failed start.
-      if (!sweptAtWorkerStart.has(input.workspace)) {
-        const swept = await sweepServicesNetworksAtWorkerStart(docker, input.workspace).then(() => true, () => false);
-        if (swept) sweptAtWorkerStart.add(input.workspace);
+      // One promise per workspace, kept: a start that arrives while the sweep runs waits for it (so it never removes a sibling start's brand-new network), and a sweep is never repeated, whatever it answered.
+      let sweep = sweptAtWorkerStart.get(input.workspace);
+      if (sweep === undefined) {
+        sweep = sweepServicesNetworksAtWorkerStart(docker, input.workspace).then(() => undefined);
+        sweptAtWorkerStart.set(input.workspace, sweep);
       }
+      await sweep.catch(() => undefined);
       const networkInput: StartServicesNetworkInput = { runId: input.runId, workspace: input.workspace, roundBudgetMs: input.roundBudgetMs, ...(input.now === undefined ? {} : { now: input.now }) };
       const network = await startServicesNetwork(docker, networkInput);
       let stopped = false;
@@ -223,9 +243,16 @@ export function createDockerServiceRunner(docker: DockerCli): ServiceRunner {
         };
         const clock = input.now ?? Date.now;
         const wait = input.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
-        const context = (phase: ResetContext["phase"], helper: StartedHelper, request: HelperRequest, signal?: AbortSignal): ResetContext => ({
-          phase, docker, network, helper, request, health: health(helper, request), now: clock, sleep: wait, ...(signal === undefined ? {} : { signal }),
-        });
+        const context = (phase: ResetContext["phase"], helper: StartedHelper, request: HelperRequest, signal?: AbortSignal): ResetContext => {
+          const { user, database } = request.credentials ?? {};
+          // The hook sees the user and database names only: never the password, the control token or the seed files.
+          const visible: ResetRequest = { id: request.id, name: request.name, entry: request.entry, credentials: { ...(user === undefined ? {} : { user }), ...(database === undefined ? {} : { database }) } };
+          const controlToken = request.entry.reset.kind === "http_reset" ? request.credentials?.controlToken : undefined;
+          return {
+            phase, docker, network, helper, request: visible, health: health(helper, request), now: clock, sleep: wait,
+            ...(controlToken === undefined ? {} : { controlToken }), ...(signal === undefined ? {} : { signal }),
+          };
+        };
         const session: ServiceSession = {
           network: view,
           helpers,
@@ -238,6 +265,10 @@ export function createDockerServiceRunner(docker: DockerCli): ServiceRunner {
             if (stopped || helpers.length === 0) return helpers.map((helper) => ({ id: helper.id, container: helper.container, memoryBytes: null, memoryLimitBytes: null, cpuPercent: null, pids: null }));
             const result = await call(["stats", "--no-stream", "--format", STATS_FORMAT, ...helpers.map((helper) => helper.container)]);
             return parseServiceUsage(result.exitCode === 0 ? result.stdout : "", helpers);
+          },
+          async enterCheckRound() {
+            if (stopped) throw new ServiceRunnerError("stopped");
+            await input.sandboxes?.enterCheckRound?.().catch(() => { throw new ServiceRunnerError("attach_failed"); });
           },
           async seeded(id, signal) {
             if (stopped) throw new ServiceRunnerError("stopped");
@@ -306,7 +337,7 @@ export function createProveServicePorts(runner: ServiceRunner, plan: ProveServic
       const id = plan.dependencyIdOf(service);
       if (id === undefined) throw new ServiceRunnerError("unknown_dependency");
       const running = await ensure(signal);
-      if (!(await running.probe(id))) throw new ServiceRunnerError("stopped");
+      if (!(await running.probe(id))) throw new ServiceRunnerError("not_answering");
       served.set(id, service.name);
     },
     async probePreprod(service) {

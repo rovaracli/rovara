@@ -11,6 +11,8 @@
 //     patterns (service-helpers.ts), a host is one DNS label, a port a number, a region the AWS shape, and a template must still pass the contract's `connectTemplateProblem`.
 //   - Fake AWS credentials are letters and digits only and nothing like a key shape. They are registered with the redactor with the per-run passwords, and the setup agent's secret-shape check exempts exactly these two values by
 //     value (`SERVICE_ENV_EXEMPT_VALUES`), never by name; any other `AWS_*` value is still a secret.
+//   - FOR TS30 (the wiring): this channel's variables must be passed to a command LAST, after anything the project or the task sets, or a name that clashes must be refused: otherwise a repository's own `AWS_ENDPOINT_URL` or
+//     `DATABASE_URL` would win over Rovara's. The module itself only refuses a dependency's own clashing names (`reservedDependencyEnvName`).
 //   - A per-service endpoint (`AWS_ENDPOINT_URL_<SERVICE>`) is used, not one global endpoint, so a service backed elsewhere can point elsewhere. Every AWS service the code uses that has no backing points at the sinkhole, and in
 //     the sealed check sandbox the global `AWS_ENDPOINT_URL` does too, so a service nobody detected fails loudly; in the working sandbox it is left unset (an undetected call goes to real AWS with fake credentials and fails to
 //     authenticate).
@@ -75,6 +77,11 @@ export interface ServiceEnvAws {
 }
 
 export interface ServiceEnvInput {
+  /**
+   * Values that must never appear in the environment (the emulator's control token and presign secret, a helper's password that the connection templates do not use). Any entry whose value contains one is refused: those two
+   * belong to the helper's own env file and the redactor (`helperSecretValues`), not to the sandboxes.
+   */
+  neverValues?: readonly string[];
   /** The working sandbox (the agent's shell) or the sealed check sandbox. */
   sandbox: "working" | "check";
   /** Where the sinkhole answers: `http://sinkhole`, or an address of the run's slot. */
@@ -115,7 +122,7 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
   const names = new Set<string>();
   const secrets = new Set<string>();
   const add = (name: string, value: string): void => {
-    if (!EnvNameSchema.safeParse(name).success || names.has(name) || !VALUE.test(value)) refuse();
+    if (!EnvNameSchema.safeParse(name).success || names.has(name) || !VALUE.test(value) || (input.neverValues ?? []).some((secret) => secret.length > 0 && value.includes(secret))) refuse();
     names.add(name);
     entries.push([name, value]);
   };
@@ -167,6 +174,14 @@ export function buildServiceEnvironment(input: ServiceEnvInput): ServiceEnvironm
 }
 
 /**
+ * Every secret value of a run's helpers, for the redactor: each helper's password (for Rovara local AWS, its presign secret) and its control token. Pass the result to `createServiceRedactor` and to
+ * `ServiceEnvInput.neverValues`; never to `buildServiceEnvironment` as a variable.
+ */
+export function helperSecretValues(helpers: ReadonlyArray<{ credentials?: { password?: string; controlToken?: string } }>): string[] {
+  return helpers.flatMap((helper) => [helper.credentials?.password, helper.credentials?.controlToken]).filter((value): value is string => value !== undefined && value !== "");
+}
+
+/**
  * Writes the environment as an env file through the seam (a tmpfs, mode 0600), hands `--env-file <path>` to `use`, and removes the file as soon as `use` has finished, whatever it did. An empty environment writes nothing and
  * passes no argument. The name is a plain file name (the file is `<name>.env`).
  */
@@ -175,8 +190,9 @@ export async function withServiceEnvFile<T>(files: HelperFiles, name: string, en
   for (const [variable, value] of environment.entries) if (!EnvNameSchema.safeParse(variable).success || !VALUE.test(value)) refuse();
   if (environment.entries.length === 0) return use([]);
   const fileName = `${name}.env`;
+  // Written BEFORE the try: a write that fails (the file exists, the disk is full) must not run the removal, which would delete a file that is not this call's.
+  const path = await files.write(fileName, `${environment.entries.map(([variable, value]) => `${variable}=${value}`).join("\n")}\n`, 0o600);
   try {
-    const path = await files.write(fileName, `${environment.entries.map(([variable, value]) => `${variable}=${value}`).join("\n")}\n`, 0o600);
     return await use(["--env-file", path]);
   } finally {
     await files.remove(fileName).catch(() => undefined);
@@ -199,15 +215,18 @@ export interface ServiceRedactor {
 /** Registers the run's secret values (passwords and the fake AWS values; fake ones too, so a later mistake cannot make them look like real keys in evidence). */
 export function createServiceRedactor(values: readonly string[]): ServiceRedactor {
   const forms = [...new Set(values.filter((value) => value.length >= MIN_SECRET_LENGTH).flatMap((value) => e2eSecretSpellings(value)))].sort((a, b) => b.length - a.length);
+  // Case-insensitive, in text and in bytes: a tool that upper- or lower-cases its output (an HTTP header name, a hex dump, an error banner) must not slip a value past. (Closes TS-SEALED-1.)
+  const patterns = forms.map((form) => new RegExp(form.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "giu"));
+  const lowered = forms.map((form) => Buffer.from(form.toLowerCase(), "utf8").toString("latin1"));
   return {
     text(text) {
       let out = text;
-      for (const form of forms) out = out.split(form).join(REDACTED);
+      for (const pattern of patterns) out = out.replace(pattern, REDACTED);
       return redactText(out);
     },
     contains(bytes) {
-      const haystack = Buffer.from(bytes).toString("latin1");
-      return forms.some((form) => haystack.includes(Buffer.from(form, "utf8").toString("latin1")));
+      const haystack = Buffer.from(bytes).toString("latin1").toLowerCase();
+      return lowered.some((form) => haystack.includes(form));
     },
   };
 }

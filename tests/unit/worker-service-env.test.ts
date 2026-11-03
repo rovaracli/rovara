@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { projectCommandEnvProblems } from "../../packages/contracts/src/project-node.js";
 import { assertE2EEnvironmentCannotRedirect } from "../../packages/model-runtime/src/e2e-environment-guard.js";
 import {
-  AWS_FAKE_ACCESS_KEY_ID, AWS_FAKE_SECRET_ACCESS_KEY, SERVICE_ENV_EXEMPT_VALUES, ServiceEnvError, awsEndpointVariableName, buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, removeRunDirectory, withServiceEnvFile,
+  AWS_FAKE_ACCESS_KEY_ID, AWS_FAKE_SECRET_ACCESS_KEY, SERVICE_ENV_EXEMPT_VALUES, ServiceEnvError, awsEndpointVariableName, buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, helperSecretValues, removeRunDirectory, withServiceEnvFile,
   type ServiceEnvInput,
 } from "../../packages/worker/src/service-env.js";
 import { credentialShapedVariables } from "../../packages/worker/src/setup-agent.js";
@@ -160,6 +160,12 @@ describe("the env file (a tmpfs, removed at once)", () => {
     expect(args).toEqual([]);
     expect(f.written).toEqual([]);
   });
+  it("L2: a write that fails runs no removal (the file in the way is not this call's)", async () => {
+    const removed: string[] = [];
+    const files: HelperFiles = { write: () => Promise.reject(new Error("exists")), remove: (name) => { removed.push(name); return Promise.resolve(); } };
+    await expect(withServiceEnvFile(files, "run-w.working", buildServiceEnvironment(input()), (a) => Promise.resolve(a))).rejects.toThrow("exists");
+    expect(removed).toEqual([]);
+  });
   it("a hostile file name or a value with a line break is refused before anything is written", async () => {
     const f = fakeFiles();
     const env = buildServiceEnvironment(input());
@@ -288,10 +294,52 @@ describe("the redactor", () => {
     expect(redactor.contains(Buffer.from("nothing here"))).toBe(false);
     expect(redactor.text("plain words")).toBe("plain words");
   });
+  it("M2: matches in any letter case, in text and in bytes (a header name, a shouted banner, a lower-cased dump)", () => {
+    const token = ["Ct", "Vb4Nq8Wz2Kd7"].join("");
+    const redactor = createServiceRedactor([token, PASSWORD]);
+    for (const text of [token.toUpperCase(), token.toLowerCase(), `x-token: ${token.toUpperCase()}`, `${PASSWORD.toUpperCase()}!`, `mixed ${token.slice(0, 5).toLowerCase()}${token.slice(5).toUpperCase()}`]) {
+      const out = redactor.text(text);
+      expect(out, text).not.toMatch(new RegExp(`${token}|${PASSWORD}`, "iu"));
+      expect(out, text).toMatch(/redacted/iu);
+    }
+    expect(redactor.contains(Buffer.from(`HEADER ${token.toUpperCase()} END`))).toBe(true);
+    expect(redactor.contains(Buffer.from(token.toLowerCase()))).toBe(true);
+    expect(redactor.contains(Buffer.from("unrelated text"))).toBe(false);
+    // A value with characters that mean something in a pattern is matched literally.
+    const odd = createServiceRedactor(["a.b*c+d?e(f)g[h]"]);
+    expect(odd.text("x a.b*c+d?e(f)g[h] y A.B*C+D?E(F)G[H] z")).toBe("x <redacted> y <redacted> z");
+    expect(odd.text("aXbbbcde(f)gh")).toBe("aXbbbcde(f)gh");
+  });
   it("ignores values too short to be a secret, so ordinary words are not rewritten", () => {
     const redactor = createServiceRedactor(["1", "true", "rovara", OTHER_PASSWORD]);
     expect(redactor.text("true 1 rovara")).toBe("true 1 rovara");
     expect(redactor.text(OTHER_PASSWORD)).not.toContain(OTHER_PASSWORD);
+  });
+});
+
+describe("H1: the emulator's secrets are registered with the redactor and never become variables", () => {
+  const presign = ["pw", "Qq8Rr2Vv5NnC"].join("");
+  const control = ["ct", "Vb4Nq8Wz2Kd7"].join("");
+  it("helperSecretValues lists each helper's password (the presign secret) and control token, and skips the missing ones", () => {
+    expect(helperSecretValues([{ credentials: { password: presign, controlToken: control } }, { credentials: { password: PASSWORD } }, {}, { credentials: { controlToken: "" } }])).toEqual([presign, control, PASSWORD]);
+  });
+  it("the redactor made from them hides both, and neverValues refuses an environment that would carry either", () => {
+    const secrets = helperSecretValues([{ credentials: { password: presign, controlToken: control } }]);
+    const redactor = createServiceRedactor(secrets);
+    expect(redactor.text(`a ${presign} b ${control}`)).toBe("a <redacted> b <redacted>");
+    expect(() => buildServiceEnvironment(input({ neverValues: secrets }))).not.toThrow();
+    const leaking = input({ neverValues: secrets, dependencies: [{ id: "payments", host: "fake-payments", port: 8080, credentials: {}, connect: { env: [{ name: "PAYMENTS_TOKEN", template: control }], hostAliases: ["fake-payments"] } }] });
+    expect(() => buildServiceEnvironment(leaking)).toThrow(ServiceEnvError);
+    const embedded = input({ neverValues: secrets, dependencies: [{ id: "payments", host: "fake-payments", port: 8080, credentials: {}, connect: { env: [{ name: "PAYMENTS_URL", template: `{endpoint}/${presign}` }], hostAliases: ["fake-payments"] } }] });
+    expect(() => buildServiceEnvironment(embedded)).toThrow(ServiceEnvError);
+  });
+  it("neither secret is among the variables the channel builds for an AWS run", () => {
+    const secrets = helperSecretValues([{ credentials: { password: presign, controlToken: control } }]);
+    const env = buildServiceEnvironment(input({ neverValues: secrets, aws: { alias: "aws", port: 4566, region: "us-east-1", emulatedServices: ["s3", "sqs"], unbackedServices: [] } }));
+    const text = JSON.stringify(env);
+    expect(text).not.toContain(presign);
+    expect(text).not.toContain(control);
+    expect(env.secretValues).not.toContain(control);
   });
 });
 

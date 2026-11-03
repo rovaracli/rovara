@@ -11,7 +11,7 @@ export interface ProbeOptions {
   port: number;
   path?: string;
   timeoutMs?: number;
-  /** A control call: POST (no body) with this token in the `x-rovara-control` header, which must answer 2xx. Needs a path. The token is plain letters and digits, 8 to 64. */
+  /** A control call: POST (no body) with this token in the `x-rovara-control-token` header, which must answer 2xx. Needs a path. The token is plain letters and digits, 8 to 64. */
   post?: { token: string };
 }
 
@@ -42,7 +42,7 @@ export function probeService(options: ProbeOptions): Promise<boolean> {
       socket.on("error", () => finish(false));
       return;
     }
-    const call = request({ host: options.host, port: options.port, path: options.path, method: options.post === undefined ? "GET" : "POST", headers: options.post === undefined ? { connection: "close" } : { connection: "close", "content-length": "0", "x-rovara-control": options.post.token } }, (response) => {
+    const call = request({ host: options.host, port: options.port, path: options.path, method: options.post === undefined ? "GET" : "POST", headers: options.post === undefined ? { connection: "close" } : { connection: "close", "content-length": "0", "x-rovara-control-token": options.post.token } }, (response) => {
       response.resume();
       finish(response.statusCode !== undefined && response.statusCode >= 200 && response.statusCode < 300);
     });

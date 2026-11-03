@@ -14,6 +14,7 @@
 //   - No secret is an argument. The Postgres hook talks over the container's local socket (no password). The Redis hook reads its password from the config file inside the container. The control call's token goes in an env file on
 //     the run's tmpfs (mode 0600), removed as soon as the call has returned.
 //   - A seed is a command the sandbox runs through a port (the sandbox is not here), a seed that fails ends the run of seeds at once, and every failure is one fixed sentence that never carries a command's output.
+//   - NOT HERE, a TS30 wiring item: the seeding of a Prove run. `seedRun` (seeds, then `seeded`) must be called once after the helpers start, by whoever wires Prove's boot step; Prove's own ports (service-runner.ts) only start and probe.
 //   - A reset kind with no hook, or a hook that fails, is a refusal, never a silent skip (`ServiceRunnerError`).
 import { randomBytes } from "node:crypto";
 import type { ProjectCommand, TestEnvDependency } from "@agentx/contracts";
@@ -68,7 +69,7 @@ export interface ResetDependency {
   reset: "fresh_per_round" | "between_checks";
 }
 
-type Seedable = Pick<ServiceSession, "reset" | "seeded">;
+type Seedable = Pick<ServiceSession, "reset" | "seeded"> & Partial<Pick<ServiceSession, "enterCheckRound">>;
 
 /**
  * After a run starts: every dependency's seeds, in the order given (the start order), then the session is told each one is seeded (a Postgres makes its template then). A dependency with no seeds is still told: a
@@ -91,6 +92,8 @@ export async function resetForNextCheck(session: Seedable, dependencies: readonl
 
 /** For a round that must not see the last one's state (a new check round, the TESTPROOF original-code rerun): every dependency, whatever its reset mode, is put back and reseeded where it lost its data. */
 export async function freshHelpers(session: Seedable, dependencies: readonly ResetDependency[], ports: SeedPorts, signal: AbortSignal): Promise<void> {
+  // The order is the point (L6): the working sandbox leaves the network FIRST, then the helpers are put back, then the checks run. A sandbox still attached could write to a helper while it is being reset.
+  await session.enterCheckRound?.(signal);
   await resetThenReseed(session, dependencies, ports, signal);
 }
 
@@ -107,15 +110,17 @@ async function resetThenReseed(session: Seedable, dependencies: readonly ResetDe
 // ---- the hooks
 
 const RESTART_TIMEOUT_S = 1;
-const RESTART_WAIT_MS = 60_000;
+const RESTART_WAIT_FALLBACK_MS = 60_000;
 const RESTART_POLL_MS = 500;
 const EXEC_TIMEOUT_MS = 30_000;
-const RESET_PATH = "/__rovara/reset";
+/** The emulator fork's control path (design 5.4, as built: `/_rovara/`, one underscore). */
+export const RESET_PATH = "/_rovara/reset";
 const SEEDED_SUFFIX = "_seeded";
 
-async function exec(context: ResetContext, args: string[]): Promise<void> {
-  const result = await context.docker.run(["exec", context.helper.container, ...args], { timeoutMs: EXEC_TIMEOUT_MS }).catch(() => ({ exitCode: -1 }));
+async function exec(context: ResetContext, args: string[]): Promise<string> {
+  const result = await context.docker.run(["exec", context.helper.container, ...args], { timeoutMs: EXEC_TIMEOUT_MS }).catch(() => ({ exitCode: -1, stdout: "" }));
   if (result.exitCode !== 0) throw new Error("exec");
+  return result.stdout;
 }
 
 /** The database, user and template names of a Postgres helper: its own request's, checked against the launcher's plain patterns, and short enough for a `_seeded` suffix. */
@@ -123,6 +128,8 @@ function postgresNames(context: ResetContext): { user: string; database: string;
   const user = context.request.credentials?.user;
   const database = context.request.credentials?.database;
   if (user === undefined || database === undefined || !HELPER_CREDENTIAL_PATTERNS.user.test(user)) throw new Error("names");
+  // Postgres' own template databases are never the working database: renaming or dropping them would break every later CREATE DATABASE.
+  if (database === "template0" || database === "template1") throw new Error("names");
   // The template name is the database name plus a suffix, so the one pattern check below covers both (a longer valid name has a valid prefix, and a prefix with a quote or a space is not valid).
   const template = `${database}${SEEDED_SUFFIX}`;
   if (!HELPER_CREDENTIAL_PATTERNS.database.test(template)) throw new Error("names");
@@ -130,38 +137,47 @@ function postgresNames(context: ResetContext): { user: string; database: string;
 }
 
 /** `psql` over the container's own socket, one `-c` per statement (each runs outside a transaction block, which `DROP DATABASE` and `CREATE DATABASE` need). */
-function psql(user: string, statements: readonly string[]): string[] {
-  return ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", "postgres", ...statements.flatMap((statement) => ["-c", statement])];
+function psql(user: string, connectTo: string, statements: readonly string[]): string[] {
+  return ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", connectTo, ...statements.flatMap((statement) => ["-c", statement])];
 }
 const disconnect = (database: string): string => `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${database}' AND pid <> pg_backend_pid()`;
 
 /** `template_db`: after the seeds, rename the seeded database to the template and copy it back; between checks, drop the working copy and copy the template again. The seeded data is kept. */
 export const templateDbHook: ResetHook = async (context) => {
   const { user, database, template } = postgresNames(context);
+  // The control connection must not be to the database being renamed or dropped: that is `postgres`, unless `postgres` IS the working database (the image's default name), when it is `template1`.
+  const connectTo = database === "postgres" ? "template1" : "postgres";
   if (context.phase === "seeded") {
-    await exec(context, psql(user, [disconnect(database), `ALTER DATABASE "${database}" RENAME TO "${template}"`, `ALTER DATABASE "${template}" WITH IS_TEMPLATE true`, `CREATE DATABASE "${database}" TEMPLATE "${template}"`]));
+    await exec(context, psql(user, connectTo, [
+      disconnect(database), `ALTER DATABASE "${database}" RENAME TO "${template}"`, `ALTER DATABASE "${template}" WITH IS_TEMPLATE true`, `ALTER DATABASE "${template}" WITH ALLOW_CONNECTIONS false`,
+      `CREATE DATABASE "${database}" TEMPLATE "${template}"`,
+    ]));
     return;
   }
-  await exec(context, psql(user, [disconnect(database), `DROP DATABASE IF EXISTS "${database}"`, `CREATE DATABASE "${database}" TEMPLATE "${template}"`]));
+  await exec(context, psql(user, connectTo, [disconnect(database), `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`, `CREATE DATABASE "${database}" TEMPLATE "${template}"`]));
   return { keptSeeds: true };
 };
 
-/** The redis-cli line, fixed. The password is read inside the container from the config file the launcher mounted; it is never an argument. */
-export const REDIS_FLUSH_SCRIPT = 'REDISCLI_AUTH="$(sed -n \'s/^requirepass //p\' /etc/rovara/redis.conf)" redis-cli flushall';
+/** The cache CLI line, fixed. The password is read inside the container from the config file the launcher mounted; it is never an argument. Valkey's image ships `valkey-cli`, Redis' `redis-cli`. */
+const flushScript = (cli: "redis-cli" | "valkey-cli"): string => `REDISCLI_AUTH="$(sed -n 's/^requirepass //p' /etc/rovara/redis.conf)" VALKEYCLI_AUTH="$REDISCLI_AUTH" ${cli} flushall`;
+export const REDIS_FLUSH_SCRIPT = flushScript("redis-cli");
+export const VALKEY_FLUSH_SCRIPT = flushScript("valkey-cli");
 
-/** `flush`: FLUSHALL. The data is gone. */
+/** `flush`: FLUSHALL, and the CLI must say `OK` (an error line with exit status 0 is a failed flush). The data is gone. */
 export const flushHook: ResetHook = async (context) => {
   if (context.phase === "seeded") return;
-  await exec(context, ["sh", "-c", REDIS_FLUSH_SCRIPT]);
+  const output = await exec(context, ["sh", "-c", /valkey/u.test(context.request.entry.id) ? VALKEY_FLUSH_SCRIPT : REDIS_FLUSH_SCRIPT]);
+  if (output.trim() !== "OK") throw new Error("flush");
   return { keptSeeds: false };
 };
 
-/** `restart`: restart the container and wait until it is healthy again (at most a minute). The data is gone. */
+/** `restart`: restart the container and wait until it is healthy again, at most the catalog entry's own `startTimeoutS`. The data is gone. The helper's bind-mounted files stay until the run stops (service-helpers.ts), so the restart finds them. */
 export const restartHook: ResetHook = async (context) => {
   if (context.phase === "seeded") return;
   const restarted = await context.docker.run(["restart", "--time", String(RESTART_TIMEOUT_S), context.helper.container], { timeoutMs: EXEC_TIMEOUT_MS }).catch(() => ({ exitCode: -1 }));
   if (restarted.exitCode !== 0) throw new Error("restart");
-  const deadline = context.now() + RESTART_WAIT_MS;
+  const startTimeoutS = context.request.entry.health.startTimeoutS;
+  const deadline = context.now() + (Number.isFinite(startTimeoutS) && startTimeoutS > 0 ? startTimeoutS * 1_000 : RESTART_WAIT_FALLBACK_MS);
   for (;;) {
     if (context.signal?.aborted === true) throw new Error("stopped");
     const remaining = deadline - context.now();
@@ -176,18 +192,18 @@ export interface HttpResetOptions {
   files: HelperFiles;
   /** The worker's own image (digest or id): the control call is made from a container of it, like a health probe. */
   probeImage: string;
-  /** The control token the emulator was started with for this run, plain letters and digits (8 to 64). Absent: the hook refuses. */
-  controlToken(context: ResetContext): string | undefined;
+  /** Overrides where the token comes from. Default: the one the runner put on the context (`context.controlToken`, the request's `credentials.controlToken`, for an `http_reset` helper only). */
+  controlToken?(context: ResetContext): string | undefined;
 }
 
 /**
- * `http_reset`: `POST /__rovara/reset` on the emulator, made from a hardened container of the worker's image on the services network (the worker cannot reach an `rvi*` bridge). The token is in an env file that
+ * `http_reset`: `POST /_rovara/reset` on the emulator, with the per-run control token in the `x-rovara-control-token` header (the fork's control API), made from a hardened container of the worker's image on the services network (the worker cannot reach an `rvi*` bridge). The token is in an env file that
  * exists only for the call. The data is gone.
  */
 export function httpResetHook(options: HttpResetOptions): ResetHook {
   return async (context) => {
     if (context.phase === "seeded") return;
-    const token = options.controlToken(context);
+    const token = options.controlToken === undefined ? context.controlToken : options.controlToken(context);
     const port = context.request.entry.run.ports[0];
     if (token === undefined || !HELPER_CREDENTIAL_PATTERNS.password.test(token) || port === undefined) throw new Error("token");
     const name = `${context.helper.container}-r${randomBytes(4).toString("hex")}`;

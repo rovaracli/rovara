@@ -130,6 +130,7 @@ function fakeClock() {
   return { now: () => at, sleep: (ms: number) => { at += ms; return Promise.resolve(); }, advance: (ms: number) => { at += ms; } };
 }
 
+const CONTROL = ["ct", "Vb4Nq8Wz2Kd7"].join("");
 const CREDENTIALS = { user: "rovara", password: SECRET, database: "app" };
 function request(id: string, entryId: string, extra: Partial<HelperRequest> = {}): HelperRequest {
   const entry = pinned(entryId);
@@ -224,11 +225,12 @@ describe("the arguments of a helper (snapshot)", () => {
     const seen: string[] = [];
     const write = t.files.helper.write.bind(t.files.helper);
     t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
-    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-west-2" })]);
-    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
+    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-west-2" })]);
+    expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_CONTROL_TOKEN=${CONTROL}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
     expect(flag(t.started()[0]!, "--memory")).toEqual(["640m"]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["aws"]);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(SECRET);
+    expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(CONTROL);
   });
 });
 
@@ -237,7 +239,7 @@ describe("every catalog entry is started under the profile (4.1.4)", () => {
   for (const entry of entries) {
     it(`${entry.id}`, async () => {
       const t = setup();
-      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" } : {})]);
+      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" } : {})]);
       const call = t.started()[0]!;
       for (const forbidden of ["--privileged", "--cap-add", "--publish", "-p", "-P", "--publish-all", "--net", "--pid", "--ipc", "--uts", "--device", "--volumes-from", "--userns", "--add-host", "--entrypoint", "--env", "-e", "--dns", "--link", "--cgroupns", "--security-opt=seccomp=unconfined"]) {
         expect(call, forbidden).not.toContain(forbidden);
@@ -308,7 +310,7 @@ describe("what the repository can and cannot reach", () => {
       await expect(good.run([request("a", "valkey@8")]), probeImage).resolves.toBeDefined();
     }
     const t = setup({}, { probeImage: "rovara/worker --privileged" });
-    await expect(t.run([request("a", "valkey@8"), request("b", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })])).rejects.toBeInstanceOf(HelperStartError);
+    await expect(t.run([request("a", "valkey@8"), request("b", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })])).rejects.toBeInstanceOf(HelperStartError);
     expect(t.calls).toHaveLength(0);
   });
   it("a hostile user, database or password cannot break out of the env file or be an option", async () => {
@@ -411,7 +413,7 @@ describe("small rules", () => {
 describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
   it("M1: a probe that never answers is removed by name when its call times out, and the start fails with the health words", async () => {
     const t = setup({ probeTimesOut: true });
-    const error = await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })]).then(() => undefined, (failure: unknown) => failure);
+    const error = await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]).then(() => undefined, (failure: unknown) => failure);
     expect((error as HelperStartError).reason).toBe("health_timeout");
     const probes = t.calls.filter((call) => call[0] === "run" && call.includes("--rm"));
     expect(probes.length).toBeGreaterThan(1);
@@ -436,8 +438,12 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
       await expect(t.run([request("postgres", "postgres@16")]), volumes).rejects.toBeInstanceOf(HelperStartError);
       expect(t.started(), volumes).toHaveLength(0);
     }
-    const nested = setup({ volumes: ["/var/lib/postgresql/data", "/var/lib/postgresql/data/sub", "/tmp"] });
+    const nested = setup({ volumes: ["/var/lib/postgresql/data", "/tmp"] });
     await expect(nested.run([request("postgres", "postgres@16")])).resolves.toBeDefined();
+    // L4: a folder under a tmpfs destination is a different mount point (its own anonymous volume): only the exact destination counts.
+    const below = setup({ volumes: ["/var/lib/postgresql/data", "/var/lib/postgresql/data/sub"] });
+    await expect(below.run([request("postgres", "postgres@16")])).rejects.toBeInstanceOf(HelperStartError);
+    expect(below.started()).toHaveLength(0);
     // A path that only shares a prefix is not covered.
     const sibling = setup({ volumes: ["/var/lib/postgresql/data2"] });
     await expect(sibling.run([request("postgres", "postgres@16")])).rejects.toBeInstanceOf(HelperStartError);
@@ -456,7 +462,7 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
       const t = setup();
       const write = t.files.helper.write.bind(t.files.helper);
       t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
-      await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1", ...(aliases === undefined ? {} : { aliases }) })]);
+      await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1", ...(aliases === undefined ? {} : { aliases }) })]);
     }
     expect(seen[0]).toContain("ROVARA_AWS_HOSTNAME=aws\n");
     expect(seen[1]).toContain("ROVARA_AWS_HOSTNAME=my-aws\n");
@@ -481,7 +487,7 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
     const original = t.docker.run.bind(t.docker);
     // Every health call takes 300 ms of the fake clock, so the time left is rarely a multiple of the poll.
     t.docker.run = (args, runOptions) => { if (args[0] === "inspect" || (args[0] === "run" && args.includes("--rm"))) clock.advance(300); return original(args, runOptions); };
-    await t.run([{ id: "aws", name: "aws", entry, credentials: { user: "rovara", password: SECRET }, region: "us-east-1" }]).catch(() => undefined);
+    await t.run([{ id: "aws", name: "aws", entry, credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" }]).catch(() => undefined);
     const probes = t.timeouts.filter((item) => item.args[0] === "run" && item.args.includes("--rm"));
     expect(probes.length).toBeGreaterThan(1);
     for (const probe of probes) { expect(probe.timeoutMs).toBeGreaterThan(0); expect(probe.timeoutMs).toBeLessThanOrEqual(2_000); }
@@ -502,10 +508,72 @@ describe("review fixes (TS14 review M1-M3, L1-L3)", () => {
   });
 });
 
+describe("review fixes 2 (H1, M1)", () => {
+  const aws = (credentials: NonNullable<HelperRequest["credentials"]>): HelperRequest => request("aws", "local-aws@r1", { credentials, region: "us-east-1" });
+  it("H1: the emulator's env file holds a control token of its own; it is in no argument, and in no other helper's file", async () => {
+    const t = setup();
+    const seen = new Map<string, string>();
+    const write = t.files.helper.write.bind(t.files.helper);
+    t.files.helper.write = (name, content, mode) => { seen.set(name, content); return write(name, content, mode); };
+    await t.run([aws({ user: "rovara", password: SECRET, controlToken: CONTROL }), request("postgres", "postgres@16")]);
+    const awsFile = [...seen.entries()].find(([name]) => name.endsWith(".env") && seen.get(name)!.includes("ROVARA_AWS_CONTROL_TOKEN"));
+    expect(awsFile?.[1]).toContain(`ROVARA_AWS_CONTROL_TOKEN=${CONTROL}\n`);
+    expect(awsFile?.[1]).toContain(`ROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\n`);
+    expect([...seen.values()].filter((content) => content.includes(CONTROL))).toHaveLength(1);
+    expect(t.calls.flat().join(" ")).not.toContain(CONTROL);
+    expect(t.files.files.size).toBe(0);
+  });
+  it("H1: the emulator will not start without a control token, with one equal to the presign secret, or with one that is not plain", async () => {
+    for (const controlToken of [undefined, SECRET, "short", `${CONTROL}\nX=1`, "has space 1234", "a".repeat(65), ""]) {
+      const t = setup();
+      await expect(t.run([aws({ user: "rovara", password: SECRET, ...(controlToken === undefined ? {} : { controlToken }) })]), String(controlToken)).rejects.toBeInstanceOf(HelperStartError);
+      expect(t.started(), String(controlToken)).toHaveLength(0);
+      expect(t.files.files.size).toBe(0);
+    }
+  });
+  it("H1: another family ignores a control token it was given (it is in no env file of a database)", async () => {
+    const t = setup();
+    const seen: string[] = [];
+    const write = t.files.helper.write.bind(t.files.helper);
+    t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
+    await t.run([request("postgres", "postgres@16", { credentials: { ...CREDENTIALS, controlToken: CONTROL } })]);
+    expect(seen.join("\n")).not.toContain(CONTROL);
+  });
+  it("M1: a restart-kind helper's bind-mounted files stay until stop(); its env file goes at once; a reset-by-template helper's files go when it is healthy", async () => {
+    const t = setup();
+    const file = { name: "seed.sql", content: "select 1;", to: "/etc/rovara/seed.sql" };
+    const started = await t.run([request("db", "mysql@8", { files: [file] }), request("pg", "postgres@16", { files: [{ ...file, to: "/docker-entrypoint-initdb.d/seed.sql" }] })]);
+    const mysql = helperContainerName(makeNet(), "db");
+    const postgres = helperContainerName(makeNet(), "pg");
+    expect([...t.files.files.keys()].sort()).toEqual([`${mysql}.seed.sql`]);
+    expect(t.files.removed).toContain(`${mysql}.env`);
+    expect(t.files.removed).toContain(`${postgres}.seed.sql`);
+    expect(t.files.removed).not.toContain(`${mysql}.seed.sql`);
+    await started.stop();
+    expect(t.files.files.size).toBe(0);
+    expect(t.files.removed).toContain(`${mysql}.seed.sql`);
+    await started.stop();
+  });
+  it("M1: a restart-kind helper's config file (a cache that reads one) is kept until stop() too", async () => {
+    const t = setup();
+    const entry = pinned("valkey@8", (copy) => { copy.reset = { kind: "restart" }; });
+    const started = await t.run([{ id: "cache", name: "cache", entry, credentials: CREDENTIALS }]);
+    const name = helperContainerName(makeNet(), "cache");
+    expect([...t.files.files.keys()]).toEqual([`${name}.conf`]);
+    await started.stop();
+    expect(t.files.files.size).toBe(0);
+  });
+  it("M1: a restart-kind helper whose start fails loses its files too", async () => {
+    const t = setup({ healthy: () => false });
+    await t.run([request("db", "mysql@8", { files: [{ name: "seed.sql", content: "x", to: "/etc/rovara/seed.sql" }] })]).catch(() => undefined);
+    expect(t.files.files.size).toBe(0);
+  });
+});
+
 describe("the labels (TS-RN-3 rule 1)", () => {
   it("every container the launcher starts, helpers and probes, carries all four labels with this run's values", async () => {
     const t = setup();
-    await t.run([request("postgres", "postgres@16"), request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })]);
+    await t.run([request("postgres", "postgres@16"), request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]);
     const containerCalls = t.calls.filter((call) => call[0] === "run");
     expect(containerCalls.length).toBeGreaterThanOrEqual(3); // two helpers and at least one probe (the emulator's health is over HTTP)
     for (const call of containerCalls) {
@@ -555,7 +623,7 @@ describe("start order and health (4.0.6)", () => {
   });
   it("an http health check is a hardened probe container on the run network, asking the helper's own address", async () => {
     const t = setup();
-    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET }, region: "us-east-1" })]);
+    await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL }, region: "us-east-1" })]);
     const probe = t.calls.find((call) => call[0] === "run" && call.includes("--rm"))!;
     expect(probe).toBeDefined();
     expect(flag(probe, "--network")).toEqual([runNetworkName(RUN)]);
@@ -564,7 +632,7 @@ describe("start order and health (4.0.6)", () => {
     expect(probe).toContain("--read-only");
     expect(flag(probe, "--user")).toEqual(["1000:1000"]);
     expect(probe.at(-1)).not.toContain("--privileged");
-    expect(probe.slice(probe.indexOf(PROBE_IMAGE))).toEqual([PROBE_IMAGE, "/opt/agentx/packages/worker/dist/service-probe.js", "--host", "172.30.153.16", "--port", "4566", "--path", "/__rovara/health"]);
+    expect(probe.slice(probe.indexOf(PROBE_IMAGE))).toEqual([PROBE_IMAGE, "/opt/agentx/packages/worker/dist/service-probe.js", "--host", "172.30.153.16", "--port", "4566", "--path", "/_rovara/health"]);
     expect(probe).toContain("--entrypoint");
     expect(flag(probe, "--name")[0]).toMatch(/^rovara-svc-[0-9a-f]{12}-p[0-9a-f]{10}$/u);
     expect(flag(probe, "--stop-timeout")).toEqual(["1"]);

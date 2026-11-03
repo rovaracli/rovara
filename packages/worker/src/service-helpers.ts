@@ -54,7 +54,7 @@ const USER = /^[a-z][a-z0-9_]{0,30}$/u;
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/u;
 const PASSWORD = /^[A-Za-z0-9]{8,64}$/u;
 /** The plain forms a per-run user, database and password must have, so none can break out of an env file, a URL or an option. The env channel (service-env.ts) uses the same. */
-export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD } as const;
+export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD, controlToken: PASSWORD } as const;
 const FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const RESERVED_FILE_NAMES = ["env", "conf"];
 const MOUNT_TARGET = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,8}$/u;
@@ -83,6 +83,11 @@ export interface HelperCredentials {
   password?: string;
   /** The database name the project uses (carried over from its compose file or settings). */
   database?: string;
+  /**
+   * Rovara local AWS only: the per-run token its control paths (`/_rovara/reset`, `/_rovara/seed`) require, generated like the passwords (8 to 64 letters and digits) and DIFFERENT from `password` (the presign secret).
+   * Required for the emulator, so its control API is never open to the sandbox's code. It goes only into the 0600 env file (`ROVARA_AWS_CONTROL_TOKEN`), never into an argument.
+   */
+  controlToken?: string;
 }
 
 export interface HelperFile {
@@ -181,7 +186,13 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   redis: { prepare: ({ credentials }) => ({ env: [], config: { content: `requirepass ${need(credentials.password, PASSWORD)}\n`, to: "/etc/rovara/redis.conf" } }) },
   // Rovara local AWS: listens only on its own run address (never a wildcard), with a per-run presign secret.
   // It also needs its own hostname, or it hands out `localhost` URLs (presigned URLs, queue URLs) that the other containers cannot use: the first alias the code reaches it by.
-  "local-aws": { prepare: ({ credentials, address, region, aliases }) => ({ env: [`QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${need(credentials.password, PASSWORD)}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${aliases[0] ?? "aws"}`] }) },
+  "local-aws": { prepare: ({ credentials, address, region, aliases }) => {
+    const presign = need(credentials.password, PASSWORD);
+    const control = need(credentials.controlToken, PASSWORD);
+    // Two secrets, two jobs: a control token that is the presign secret would let anyone holding a presigned URL's key reset the emulator.
+    if (control === presign) throw new RangeError("control token");
+    return { env: [`QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${aliases[0] ?? "aws"}`] };
+  } },
   "fake-server": { prepare: () => ({ env: [] }) },
 };
 
@@ -396,6 +407,8 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
   const call = (args: string[], timeoutMs = DOCKER_CALL_TIMEOUT_MS) => docker.run(args, { timeoutMs }).catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false as boolean | undefined }));
   const attempted: string[] = [];
   const written: string[] = [];
+  /** Files of helpers whose reset is a `restart`: Docker re-reads their bind sources when the container restarts, so they stay until `stop()`. The env file is not among them (a restart keeps the container's environment). */
+  const keptUntilStop = new Set<string>();
   const started: StartedHelper[] = [];
   const runStart = now();
 
@@ -429,11 +442,13 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
       if (plan.prepared.config !== undefined) {
         const name = `${container}.conf`;
         written.push(name);
+        if (plan.entry.reset.kind === "restart") keptUntilStop.add(name);
         configPath = await input.files.write(name, plan.prepared.config.content, 0o644);
       }
       for (const file of plan.request.files ?? []) {
         const name = `${container}.${file.name}`;
         written.push(name);
+        if (plan.entry.reset.kind === "restart") keptUntilStop.add(name);
         files.push({ path: await input.files.write(name, file.content, 0o644), to: file.to });
       }
       attempted.push(container);
@@ -486,7 +501,7 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
 
   /**
    * An image that declares a volume (`VOLUME` in its Dockerfile) gets an anonymous disk volume at that path unless something is mounted there, and that volume would hold data past the run. So before anything starts, every
-   * volume a pinned image declares must be covered by one of the entry's tmpfs mounts (the path itself, or a folder under one); otherwise the image is refused. An image that cannot be inspected is refused too.
+   * volume a pinned image declares must be covered by one of the entry's tmpfs mounts (the same destination path: a folder under one is a different mount point and is not enough); otherwise the image is refused. An image that cannot be inspected is refused too.
    */
   const assertVolumesCovered = async (plan: Plan): Promise<void> => {
     const inspected = await call(["image", "inspect", "--format", "{{json .Config.Volumes}}", plan.image]);
@@ -500,7 +515,7 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
     } catch {
       throw refused(plan.request);
     }
-    const covered = (path: string): boolean => plan.entry.run.tmpfs.some((mount) => path === mount.path || path.startsWith(`${mount.path}/`));
+    const covered = (path: string): boolean => plan.entry.run.tmpfs.some((mount) => path === mount.path);
     if (declared.some((path) => !covered(path))) throw refused(plan.request);
   };
 
@@ -525,7 +540,7 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
     throw agentXError("RUNTIME_UNAVAILABLE", "AgentX could not start the test services");
   }
   // Healthy: the files a helper read at start are not needed any more.
-  for (const name of written.splice(0)) await removeFile(name);
+  for (const name of written.splice(0)) if (!keptUntilStop.has(name)) await removeFile(name);
   const order = new Map(plans.map((plan) => [plan.request.id, plan.index]));
   started.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   let stopped = false;
@@ -535,6 +550,8 @@ export async function startHelpers(docker: DockerCli, net: ServicesNetwork, inpu
       if (stopped) return;
       stopped = true;
       await removeContainers();
+      for (const name of keptUntilStop) await removeFile(name);
+      keptUntilStop.clear();
     },
   };
 }

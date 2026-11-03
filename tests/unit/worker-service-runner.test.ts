@@ -19,6 +19,7 @@ const NOW = 1_800_000_000_000;
 const DIGEST = "a".repeat(64);
 const PROBE_IMAGE = `rovara/worker@sha256:${"b".repeat(64)}`;
 const PASSWORD = ["pw", "Zk3Lm9Qx7TbW"].join("");
+const CONTROL = ["ct", "Vb4Nq8Wz2Kd7"].join("");
 
 const catalog = ServiceCatalogSchema.parse(JSON.parse(readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8")) as unknown);
 function pinned(id: string): CatalogEntry {
@@ -39,6 +40,8 @@ interface FakeOptions {
   /** Containers (by name part) that never get healthy. */
   unhealthy?: boolean;
   stats?: string;
+  /** The family listing answers late (a real daemon is not instant). */
+  slowListing?: boolean;
   /** Rows the family listing answers (tab-separated id, family, created, workspace, expires): left behind by an earlier worker, none due yet. */
   rows?: string;
   statsFails?: boolean;
@@ -58,6 +61,7 @@ function fakeDocker(options: FakeOptions = {}) {
         return Promise.resolve(ok);
       }
       if (args[0] === "network" && args[1] === "rm") { networks = Math.max(0, networks - 1); return Promise.resolve(ok); }
+      if (args[0] === "ps" && options.slowListing === true) return new Promise((done) => setTimeout(() => done(options.rows !== undefined && args.includes("--format") && !args.some((word) => word.startsWith("label=rovara.run-network=")) ? { exitCode: 0, stdout: options.rows, stderr: "" } : ok), 15));
       if (args[0] === "ps" && args.includes("--format") && !args.some((word) => word.startsWith("label=rovara.run-network=")) && options.rows !== undefined) return Promise.resolve({ exitCode: 0, stdout: options.rows, stderr: "" });
       if (args[0] === "ps" || (args[0] === "network" && args[1] === "ls")) return Promise.resolve(options.failSweep === true ? fail : ok);
       if (args[0] === "image" && args[1] === "inspect") return Promise.resolve({ exitCode: 0, stdout: "null\n", stderr: "" });
@@ -65,6 +69,7 @@ function fakeDocker(options: FakeOptions = {}) {
       if (args[0] === "run" && args.includes("--rm")) return Promise.resolve(options.unhealthy === true ? fail : ok);
       if (args[0] === "exec") return Promise.resolve(options.unhealthy === true ? fail : ok);
       if (args[0] === "inspect") return Promise.resolve({ exitCode: 0, stdout: "running\n", stderr: "" });
+      if (args[0] === "rm" && options.slowListing === true && args.includes("0123456789ab")) return new Promise((done) => setTimeout(() => { calls.push(["__removed", "0123456789ab"]); done(ok); }, 80));
       if (args[0] === "rm") { for (const name of args.slice(1).filter((arg) => !arg.startsWith("-"))) containers.delete(name); return Promise.resolve(ok); }
       if (args[0] === "stats") return Promise.resolve({ exitCode: options.statsFails === true ? 1 : 0, stdout: options.stats ?? "", stderr: "" });
       return Promise.resolve(fail);
@@ -192,16 +197,66 @@ describe("the worker-start sweep (L5): lazy, once per process and workspace", ()
     forgetWorkerStartSweeps();
     expect(fake.calls).toEqual([]);
   });
-  it("a sweep that fails is not a failed start, and is tried again at the next start", async () => {
+  it("a sweep that fails is not a failed start, and is NOT repeated at the next start (once per process and workspace, whatever it answered)", async () => {
     const fake = fakeDocker({ failSweep: true });
     const runner = createDockerServiceRunner(fake.docker);
     const session = await runner.start(input());
     expect(session.helpers).toHaveLength(1);
     await session.stop();
+    const listings = (): number => fake.calls.filter((call) => call[0] === "ps" && call.includes("label=rovara.run-network") && !call.some((word) => word.startsWith("label=rovara.run-network="))).length;
+    const afterFirst = listings();
+    const again = await runner.start(input({ runId: "33333333-3333-4333-8333-333333333333" }));
+    await again.stop();
+    // The allocation sweep of the network module lists once more per start; the worker-start sweep does not run again.
+    expect(listings() - afterFirst).toBe(1);
+  });
+  it("L1: starts that arrive together share one sweep, and none starts its network before it has finished", async () => {
+    const fake = fakeDocker({ slowListing: true, rows: `0123456789ab\trovara-svc-0123456789ab\t1700000000000\t${WS}\t9999999999999\n` });
+    const runner = createDockerServiceRunner(fake.docker);
+    const sessions = await Promise.all([runner.start(input()), runner.start(input({ runId: "66666666-6666-4666-8666-666666666666" }))]);
+    const removalsOfLeftBehind = fake.calls.filter((call) => call[0] === "rm" && call.includes("0123456789ab"));
+    expect(removalsOfLeftBehind).toHaveLength(1);
+    // The removal takes a while: no network may be made before it has FINISHED, or the sweep could take a sibling start's new network with it.
+    const swept = fake.calls.findIndex((call) => call[0] === "__removed");
+    expect(swept).toBeGreaterThanOrEqual(0);
+    for (const [index, call] of fake.calls.entries()) if (call[0] === "network" && call[1] === "create") expect(index, "a network was made before the sweep finished").toBeGreaterThan(swept);
+    for (const session of sessions) await session.stop();
   });
 });
 
 describe("probe, usage and reset", () => {
+  it("L6: enterCheckRound calls the sandboxes' hook (the working sandbox leaves), is harmless without one, and fails with one fixed sentence", async () => {
+    const left: string[] = [];
+    const attachment: SandboxAttachment = { attach: () => Promise.resolve(), detach: () => Promise.resolve(), enterCheckRound: () => { left.push("left"); return Promise.resolve(); } };
+    const session = await createDockerServiceRunner(fakeDocker().docker).start(input({ sandboxes: attachment }));
+    await session.enterCheckRound();
+    expect(left).toEqual(["left"]);
+    await session.stop();
+    await expect(session.enterCheckRound()).rejects.toMatchObject({ reason: "stopped" });
+    const bare = await createDockerServiceRunner(fakeDocker().docker).start(input());
+    await expect(bare.enterCheckRound()).resolves.toBeUndefined();
+    const plain = await createDockerServiceRunner(fakeDocker().docker).start(input({ sandboxes: { attach: () => Promise.resolve(), detach: () => Promise.resolve() } }));
+    await expect(plain.enterCheckRound()).resolves.toBeUndefined();
+    const failing = await createDockerServiceRunner(fakeDocker().docker).start(input({ sandboxes: { ...attachment, enterCheckRound: () => Promise.reject(new Error(`secret ${PASSWORD}`)) } }));
+    const error = (await failing.enterCheckRound().catch((caught: unknown) => caught)) as Error;
+    expect(error).toMatchObject({ reason: "attach_failed" });
+    expect(error.message).not.toContain(PASSWORD);
+    await failing.stop();
+  });
+  it("M4/H1: an http_reset hook gets the control token on its own field, never inside the request, and other kinds get none", async () => {
+    const seen: ResetContext[] = [];
+    const hook = (context: ResetContext): Promise<void> => { seen.push(context); return Promise.resolve(); };
+    const aws = request("aws", "local-aws@r1", { credentials: { user: "rovara", password: PASSWORD, controlToken: CONTROL }, region: "us-east-1" });
+    const session = await createDockerServiceRunner(fakeDocker().docker).start(input({ helpers: [aws, request("postgres", "postgres@16", { credentials: { user: "rovara", password: PASSWORD, database: "app", controlToken: CONTROL } })], resetHooks: { http_reset: hook, template_db: hook } }));
+    await session.reset("aws");
+    await session.reset("postgres");
+    expect(seen[0]?.controlToken).toBe(CONTROL);
+    expect(JSON.stringify(seen[0]!.request)).not.toContain(CONTROL);
+    expect(JSON.stringify(seen[0]!.request)).not.toContain(PASSWORD);
+    expect(seen[1]?.controlToken).toBeUndefined();
+    expect(JSON.stringify(seen[1]!.request)).not.toContain(PASSWORD);
+    await session.stop();
+  });
   it("probe asks the helper's health question again, and an unknown id is refused with a fixed sentence", async () => {
     const fake = fakeDocker();
     const session = await createDockerServiceRunner(fake.docker).start(input());
@@ -246,7 +301,7 @@ describe("probe, usage and reset", () => {
   });
   it("every probe question has its own container name, so one that is slow cannot clash with the next", async () => {
     const fake = fakeDocker();
-    const session = await createDockerServiceRunner(fake.docker).start(input({ helpers: [request("aws", "local-aws@r1", { credentials: { user: "rovara", password: PASSWORD }, region: "us-east-1" })] }));
+    const session = await createDockerServiceRunner(fake.docker).start(input({ helpers: [request("aws", "local-aws@r1", { credentials: { user: "rovara", password: PASSWORD, controlToken: CONTROL }, region: "us-east-1" })] }));
     const before = fake.calls.length;
     await session.probe("aws");
     await session.probe("aws");
@@ -279,7 +334,10 @@ describe("probe, usage and reset", () => {
     expect(seen[0]?.helper.id).toBe("postgres");
     // A kind with no hook has nothing to do when the seeds finish (only template_db does), and a hook that throws on it is one fixed sentence.
     await expect(session.seeded("cache")).rejects.toMatchObject({ reason: "reset_failed" });
-    expect(JSON.stringify({ request: Object.keys(seen[0]!), network: seen[0]!.network.name })).not.toContain(PASSWORD);
+    // M4: the hook is told the names it needs and no secret: nothing of the request carries the password or the control token.
+    expect(JSON.stringify(seen[0]!.request)).not.toContain(PASSWORD);
+    expect(JSON.stringify(seen[0]!.request)).toContain('"user":"rovara"');
+    expect(Object.keys(seen[0]!.request).sort()).toEqual(["credentials", "entry", "id", "name"]);
     await expect(seen[0]!.health(1000)).resolves.toBe(true);
     const error = await session.reset("cache").catch((caught: unknown) => caught as ServiceRunnerError);
     expect(error).toMatchObject({ reason: "reset_failed", message: "A test service could not be reset" });
@@ -308,6 +366,7 @@ function fakeRunner() {
         probe: (id) => { events.push(`probe:${id}`); return id === "ghost" ? Promise.reject(new ServiceRunnerError("unknown_dependency")) : Promise.resolve(healthy.has(id)); },
         usage: () => Promise.resolve([]),
         seeded: () => Promise.resolve(),
+        enterCheckRound: () => Promise.resolve(),
         reset: () => Promise.resolve({ keptSeeds: false }),
         stop: () => { events.push("stop"); return Promise.resolve(); },
       };
@@ -332,7 +391,8 @@ describe("Prove's ports from a runner", () => {
     await ports.startMock(service("db"), signal);
     expect(events.filter((event) => event.startsWith("start:"))).toHaveLength(1);
     await expect(ports.startMock(service("other"), signal)).rejects.toMatchObject({ reason: "unknown_dependency" });
-    await expect(ports.startMock(service("cache"), signal)).rejects.toBeInstanceOf(ServiceRunnerError);
+    // A helper that does not answer has its own reason, not "stopped".
+    await expect(ports.startMock(service("cache"), signal)).rejects.toMatchObject({ reason: "not_answering", message: "A test service is not answering" });
     // A service the plan does not know never starts the runner by itself.
     const fresh = fakeRunner();
     await expect(createProveServicePorts(fresh.runner, plan()).startMock(service("other"), signal)).rejects.toMatchObject({ reason: "unknown_dependency" });
