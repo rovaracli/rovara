@@ -15,8 +15,9 @@
 #   L3 embedded resolver, multicast, run files          yes                   linux-runtime CI only; spoofed source addresses (TS-SEAL-4) need CAP_NET_RAW: linux-runtime CI only
 #   L4 Postgres hardening, template_db reset            partly                the helper's run arguments are unit-tested; the reset is exercised by every round; the flags themselves: linux-runtime CI
 #   IPv6 into the host (TS-SEAL-2)                      yes (a real probe)     the boot fact ipv6Drops says the DROP rules are PRESENT; the escape project's ipv6 test shows no global IPv6 address and no public v6 reach. No staging check sends a v6 packet at the host.
-#   GAP, linux-runtime CI: that job (.github/workflows/ci.yml) runs tests/linux only. NOTHING in it runs this script or its live driver, so the "linux-runtime CI only" rows above are NOT asserted by CI today. They are
-#   proven only when an operator runs this script and its live driver on a Linux host with a shell. Closing the gap = a CI step that runs the driver against the pinned Postgres image (needs registry access and the pinned digest).
+#   linux-runtime CI: the last steps of that job (.github/workflows/ci.yml, scripts/ci-test-services-linux.sh) apply the boot-stage2 rules on the runner, push the public postgres:16 (pinned by digest) to a throwaway local
+#   registry, run the live driver in the worker image and then THIS script with TSL_LIVE_OUT_FILE, and fail the job on any FAIL. That is where every "linux-runtime CI only" row above is proven. They run on a manual CI run
+#   and on a pull request that touches the worker, test services contracts/catalog, boot scripts, worker infra or these checks. A staging worker proves none of them.
 #   L5 test-account proxy                                -                     not in slice 1 (gates `ta`)
 #   L6 killed-worker sweep, no leftovers                no (self-report)      the run_end reports (nothing left, run directory empty, working sandbox not paused) and, after a restart, the worker_start report's swept counts
 #   L7, L8                                               -                     later slices
@@ -53,6 +54,8 @@ export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 
 if [[ $# -gt 0 ]]; then printf 'TSL ERROR this script takes no arguments\n'; exit 2; fi
 TSL_DIR=${TSL_DIR:-}
+TSL_LIVE_OUT_FILE=${TSL_LIVE_OUT_FILE:-}
+[[ -z "$TSL_LIVE_OUT_FILE" || "$TSL_LIVE_OUT_FILE" =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] || { printf 'TSL ERROR TSL_LIVE_OUT_FILE is not a plain path\n'; exit 2; }
 TSL_ENV=${TSL_ENV:-staging}
 [[ "$TSL_ENV" =~ ^[a-z][a-z0-9-]{0,19}$ ]] || { printf 'TSL ERROR TSL_ENV is not an environment name\n'; exit 2; }
 [[ -z "$TSL_DIR" || "$TSL_DIR" =~ ^/var/tmp/tsl\.[A-Za-z0-9]{6}$ ]] || { printf 'TSL ERROR TSL_DIR is not a directory this script is delivered into\n'; exit 2; }
@@ -180,7 +183,13 @@ version_at_least() { local IFS=.; local -a a=($1) b=($2); local i; for i in 0 1 
 
 # BEGIN LIVE CALL
 # ---- the live driver, when the operator delivered it: it runs first (it makes and removes its own run networks), so the read-only parts below see the host as it is when it is done.
-if [[ -n "$TSL_DIR" ]]; then
+if [[ -n "$TSL_LIVE_OUT_FILE" ]]; then
+  # linux-runtime CI (scripts/ci-test-services-linux.sh): the driver was run there already, in the worker image on the runner's Docker; its lines are read from this file. Nothing is started, pulled or removed here.
+  LIVE_RAN=1
+  LIVE_OUT=$(cat -- "$TSL_LIVE_OUT_FILE" 2>/dev/null || true)
+  [[ -n "$LIVE_OUT" ]] || LIVE_OUT="TSL ERROR the CI driver gave no lines"
+  case "$LIVE_OUT" in "TSL ERROR"*) printf '%s\n' "$LIVE_OUT" | head -3 ;; esac
+elif [[ -n "$TSL_DIR" ]]; then
   trap tsl_cleanup EXIT
   trap 'tsl_cleanup; exit 130' INT TERM HUP
   run_live_driver || true

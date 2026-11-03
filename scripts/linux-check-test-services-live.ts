@@ -11,7 +11,10 @@
 //
 // MODES (the first argument).
 //   run         the live checks: prints one `TSL <id> PASS|FAIL|PENDING <name> | <detail>` line per item (the shell script's own format) and exits 0.
+//   ci          the live checks on the linux-runtime CI runner (scripts/ci-test-services-linux.sh): the same checks, but the Postgres entry is the committed catalog's with the digest of a public postgres:16 image pushed to a
+//               local registry (localhost:5000), because CI has no ECR and no signed catalog. No trust check, no AWS. Never used on a staging worker.
 //   pull-list   prints the catalog image references (by digest) the run needs, one per line, so the shell script can pull them with the worker's registry login before the run (the checks start images with --pull=never).
+//   --js        (CI) prints this driver as a program a bare `node` runs (types stripped), for the `ci` mode above.
 //   --ssm-params  (on the Mac) prints the JSON `commands` of an AWS-RunShellScript call that delivers the shell script, this driver (types stripped), and the catalog to a staging worker and runs them (see the shell script's header).
 //
 // WHAT IT STARTS. Throwaway run networks (`rovara-svc-<hash>`, bridge `rvi<hex>`) and their containers, all made by the real modules and all carrying the run-network labels of one fixed throwaway workspace key (TSL_WORKSPACE), so a
@@ -25,7 +28,7 @@ import { gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
-  checkMirrorServesDigest, loadSignedCatalog, resolveCatalogImage, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog,
+  CatalogEntrySchema, checkMirrorServesDigest, loadSignedCatalog, resolveCatalogImage, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog,
 } from "@agentx/contracts";
 import type * as RunNetworkModule from "../packages/worker/src/run-network.js";
 import type * as ServiceHelpersModule from "../packages/worker/src/service-helpers.js";
@@ -157,10 +160,12 @@ const CONTROL_PORT = 7778;
 const ROUND_BUDGET_MS = 10 * 60_000;
 
 export interface LiveInput {
-  /** The signed catalog, from `loadVerifiedCatalog` (loadSignedCatalog): nothing else is accepted. */
-  catalog: VerifiedCatalog;
+  /** The signed catalog, from `loadVerifiedCatalog` (loadSignedCatalog): nothing else is accepted, unless `entry` is given (the CI mode). */
+  catalog?: VerifiedCatalog;
   /** The manifest bytes the environment's registry serves, by digest (the shell script fetched them with the worker role); `resolveCatalogImage` hashes them. */
-  manifests: RegistryManifestPort;
+  manifests?: RegistryManifestPort;
+  /** CI mode only (`ciPostgresEntry`): the Postgres entry to run, in place of the signed catalog's. A staging worker never gets this. */
+  entry?: CatalogEntry & { image: { digest: string } };
   /** `<account>.dkr.ecr.<region>.amazonaws.com`. */
   registry: string;
   /** The named environment (`staging`). */
@@ -215,11 +220,25 @@ export function manifestFilesPort(read: (digest: string) => Promise<Uint8Array |
 
 /** `resolveCatalogImage` for the one image: the registry must serve the catalog's digest, by the manifest bytes hashed here. Throws the registry's refusal sentence otherwise. */
 export async function resolvePostgres(input: Pick<LiveInput, "catalog" | "manifests" | "env">): Promise<void> {
+  if (input.catalog === undefined || input.manifests === undefined) throw new Error("the signed catalog and the registry's manifests are needed");
   const entry = postgresEntry(input.catalog);
   const check = await checkMirrorServesDigest(input.manifests, { id: POSTGRES_ID, repositoryName: `rovara-catalog/${input.env}/${entry.image.repository}`, digest: entry.image.digest });
   const noApprovals: SubstituteApprovalPort = { find: async () => undefined };
   const resolved = await resolveCatalogImage({ catalog: input.catalog, catalogId: POSTGRES_ID, edition: "public", served: { source: "rovara_registry", check }, approvals: noApprovals });
   if (!resolved.ok) throw new Error(resolved.message);
+}
+
+/**
+ * CI mode: the committed catalog's `postgres@16` entry (its run arguments, health check, resources and reset are the very ones a staging worker uses) with the digest of the image CI pushed to its local registry.
+ * The catalog is NOT verified here (CI has no signing key and no registry of its own): this proves how the entry RUNS on a real Docker host, not that the catalog is trusted. Throws a sentence when the entry is missing or not valid.
+ */
+export function ciPostgresEntry(catalogBytes: Uint8Array | string, digest: string): CatalogEntry & { image: { digest: string } } {
+  if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error("the Postgres digest is 64 hex digits");
+  const parsed = JSON.parse(typeof catalogBytes === "string" ? catalogBytes : Buffer.from(catalogBytes).toString("utf8")) as { entries?: Array<{ id?: unknown; image?: Record<string, unknown> }> };
+  const raw = parsed.entries?.find((candidate) => candidate.id === POSTGRES_ID);
+  if (raw === undefined || typeof raw.image !== "object") throw new Error(`the catalog has no ${POSTGRES_ID}`);
+  const entry = CatalogEntrySchema.parse({ ...raw, image: { ...raw.image, digest } });
+  return entry as CatalogEntry & { image: { digest: string } };
 }
 
 const randomAlnum = (length: number): string => randomBytes(length * 2).toString("base64").replace(/[^A-Za-z0-9]/gu, "").slice(0, length).padEnd(length, "x");
@@ -627,8 +646,13 @@ export async function runLiveChecks(input: LiveInput): Promise<{ lines: LiveLine
   const docker = input.docker ?? layer.containers.createDockerCli();
   const secrets: string[] = [];
   const redact = (text: string): string => secrets.reduce((value, secret) => value.split(secret).join("[removed]"), text);
-  const entry = postgresEntry(input.catalog);
-  await resolvePostgres(input);
+  let entry: CatalogEntry & { image: { digest: string } };
+  if (input.entry !== undefined) entry = input.entry;
+  else {
+    if (input.catalog === undefined) throw new Error("no catalog");
+    entry = postgresEntry(input.catalog);
+    await resolvePostgres(input);
+  }
   const context: Context = { input, layer, docker, entry, secrets, redact, counter: { n: 0 }, cleanups: [] };
   const lines: LiveLine[] = [];
   // the worker-start sweep of the throwaway workspace: what an earlier, killed check left behind goes first
@@ -676,6 +700,27 @@ export function ssmCommands(files: { script: string; driver: string; catalog: st
   ];
 }
 
+// ---- CI mode
+
+/** The CI mode's inputs are plain environment values, each checked; a missing or malformed one stops the run (exit 1), never skips an item. */
+async function runCi(environment: NodeJS.ProcessEnv): Promise<number> {
+  const need = (name: string, pattern: RegExp): string => {
+    const value = environment[name];
+    if (value === undefined || !pattern.test(value)) throw new Error(`${name} is missing or not in the expected form`);
+    return value;
+  };
+  const digest = need("TSL_CI_POSTGRES_DIGEST", /^sha256:[a-f0-9]{64}$/u).slice("sha256:".length);
+  const registry = need("TSL_REGISTRY", /^localhost:[0-9]{2,5}$/u);
+  const env = need("TSL_ENV", /^[a-z][a-z0-9-]{0,19}$/u);
+  const workDir = need("TSL_WORK", /^\/[A-Za-z0-9._/-]{1,200}$/u);
+  const workerImage = need("TSL_WORKER_IMAGE", /^(?:[a-z0-9][a-z0-9._/:-]{0,199}@sha256:[a-f0-9]{64}|sha256:[a-f0-9]{64})$/u);
+  const catalogFile = need("TSL_CATALOG", /^\/[A-Za-z0-9._/-]{1,200}$/u);
+  const entry = ciPostgresEntry(await readFile(catalogFile), digest);
+  const { lines, redact } = await runLiveChecks({ entry, registry, env, workerImage, workDir });
+  process.stdout.write(`${lines.map((line) => formatLine(line, redact)).join("\n")}\n`);
+  return 0;
+}
+
 // ---- the command line
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -693,8 +738,13 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify({ commands })}\n`);
     return 0;
   }
+  if (mode === "--js") {
+    process.stdout.write(await driverJavaScript(join(here, "linux-check-test-services-live.ts")));
+    return 0;
+  }
+  if (mode === "ci") return runCi(process.env);
   if (mode !== "run" && mode !== "pull-list") {
-    process.stderr.write("usage: --ssm-params (on the Mac)  |  run  |  pull-list   (the last two inside the worker image; see the header)\n");
+    process.stderr.write("usage: --ssm-params (on the Mac)  |  --js  |  run  |  pull-list  |  ci   (run, pull-list and ci inside the worker image; see the header)\n");
     return 2;
   }
   const environment = process.env;

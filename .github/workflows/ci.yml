@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
+      # "false" only on a pull request that changed none of the files the test services Linux checks read; empty (a manual run, a push) means run them.
+      test_services: ${{ steps.test_services.outputs.test_services }}
     steps:
       # Depth 2 keeps the pull request's merge commit and its first parent, the base branch.
       - uses: actions/checkout@v5
@@ -56,6 +58,18 @@ jobs:
         run: |
           git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
           node scripts/ci-docs-only.ts "$RUNNER_TEMP/changed.txt"
+      # The test services Linux checks (the last steps of linux-runtime) build the worker image and start real run networks: about 10 to 15 minutes. They run on a manual run or push always, and on a pull request
+      # only when it touches what they read: the worker, the test services contracts and catalog, boot.sh and boot-stage2.sh, the infra that decides the worker's network, or these checks themselves.
+      - name: Does the change touch what the test services Linux checks read?
+        id: test_services
+        if: github.event_name == 'pull_request'
+        run: |
+          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux)|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed.txt"; then
+            echo "test_services=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "test_services=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing the test services Linux checks read changed; they are skipped."
+          fi
       - name: Markdown-only change
         if: steps.scope.outputs.docs_only == 'true'
         run: echo "Only Markdown that no test reads changed; typecheck, the stricter type check, lint, tests, synth and the release check are skipped."
@@ -328,6 +342,24 @@ jobs:
           ROVARA_DOCKER: "1"
           ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
         run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-4-journeys.test.ts
+      # Test services Linux checks (TS-L1 to TS-L8): what needs root and a real Docker host and cannot be run on a staging worker (no SSM there). They run LAST in this job because they rewrite
+      # /etc/docker/daemon.json and restart Docker, as a worker's boot does. The worker image is the one that ships (environments/base/Dockerfile, FROM lines pointed at the pulled copy of the pinned digest).
+      # Skipped on a pull request that touches none of the files they read (scope job, test_services); a manual run always runs them. Estimated 10 to 15 minutes (image build 6 to 9, checks 4 to 6); not measured.
+      - name: Test services Linux checks (build the worker image and the driver)
+        if: needs.scope.outputs.test_services != 'false'
+        run: |
+          node scripts/ci-images.ts verify node-build
+          node scripts/ci-images.ts dockerfile environments/base/Dockerfile "$RUNNER_TEMP/worker.Dockerfile"
+          docker build -f "$RUNNER_TEMP/worker.Dockerfile" -t rovara-worker:ci .
+          npx tsx scripts/linux-check-test-services-live.ts --js > "$RUNNER_TEMP/tsl-live.mjs"
+      # No catalog and no AWS on CI: Postgres is the public postgres:16 (ECR Public mirror), pinned by the index digest in scripts/ci-test-services-linux.sh, pushed to a throwaway local registry and run by the
+      # digest it got there. The rules are boot-stage2.sh's own functions (sourced). Any FAIL, any unexpected PENDING and any live item without a PASS fails the job.
+      - name: Test services Linux checks (rules, live driver, host checks)
+        if: needs.scope.outputs.test_services != 'false'
+        env:
+          TSL_CI_WORKER_IMAGE: rovara-worker:ci
+          TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
+        run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
 
   # Stdio MCP host redesign (T11, design section 14): the runner image on a real Linux host. It builds environments/mcp-runner/Dockerfile and runs it the way ECS runs a runner task
   # (read-only, every capability dropped, a non-root user, an init process, the bundle volume read-only for the server): the processes' uid, no_new_privs, capabilities and limits
