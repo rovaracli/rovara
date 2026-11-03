@@ -341,6 +341,27 @@ describe("the sweep", () => {
     expect(await sweepDesignWaits(w.deps)).toMatchObject({ parked: 1 });
   });
 
+  it("OFF and a cost hold: the hold ends as every step of a switched-off review does, not run (switched_off), at the person's card; a wait for answers or a decision is left alone", async () => {
+    const w = world(costWait());
+    await armed(w);
+    w.enabled.on = false;
+    w.now.ms = T0 + 25 * HOUR;
+    const decisions = taskOf(w).workflow.decisions.length;
+    await sweepDesignWaits(w.deps);
+    expect(taskOf(w).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "switched_off" } });
+    expect(taskOf(w).workflow.decisions).toHaveLength(decisions);
+    expect(notifyRows(w)).toHaveLength(0);
+    for (const kind of ["answers", "decision"] as const) {
+      const other = world(WAITS[kind]());
+      await armed(other);
+      other.enabled.on = false;
+      other.now.ms = T0 + 25 * HOUR;
+      const before = structuredClone(taskOf(other));
+      await sweepDesignWaits(other.deps);
+      expect(taskOf(other)).toEqual(before);
+    }
+  });
+
   it("THE APPROVER LEFT: a high-risk design's reminder goes to the remaining eligible people, and says so", async () => {
     const w = world(decisionWait(["auth"]), { setting: setting({ kind: "people", memberIds: ["e".repeat(64)] }) });
     await armed(w);

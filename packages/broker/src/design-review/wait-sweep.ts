@@ -3,10 +3,11 @@
 //   - a reminder at 24 h and at 72 h: a NOTIFY row (once; `attribute_not_exists`) that the notifier turns into a notice (`design_wait`);
 //   - at 7 days: `parkDesignReview`, with the model keys of the task's design-review rounds blocked and finalized first (what they held is dropped) and a "parked" notice, in one commit;
 //   - at 30 days parked: `closeParkedDesignReview`, the task's release mark and a "closed" notice, in one commit.
-// NOTHING HERE APPROVES, ANSWERS OR SKIPS. The moves it makes record no decision. With the `dr` switch off, or the project not named in `dp`, it does nothing new for the task (the row is looked at again in an hour): the B2 lane's
-// `switched_off` not-run reason is the place for ending a switched-off review; this sweep never forces one.
+// NOTHING HERE APPROVES, ANSWERS OR SKIPS. The moves it makes record no decision. With the `dr` switch off, or the project not named in `dp`, it does nothing new for the task: no reminder, no park, no close (the row is looked at
+// again in an hour). The one exception is the cost hold, which is ended the way every other step of a switched-off review is (B2-m3): not run, `switched_off`, and the design goes to the person's card. A wait for answers cannot be
+// ended by anyone but the person (`closeDesignReview` refuses it); their answer reaches the planner's step, which ends the review as `switched_off` itself. A design card already waits for the person.
 import { QueryCommand, TransactWriteCommand, UpdateCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_DISPATCH_DUE_INDEX, WorkflowSnapshotSchema, closeParkedDesignReview, parkDesignReview, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, WorkflowSnapshotSchema, closeDesignReview, closeParkedDesignReview, parkDesignReview, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
 import { finishedReleaseMarkItem } from "../aws/developer-tasks/release.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DesignApproverDirectory } from "./approval.js";
@@ -93,11 +94,28 @@ export async function settleDesignWait(deps: DesignWaitSweepDeps, taskId: string
     await reschedule(deps, taskId, Math.max(rowRevision, workflow.revision), undefined);
     return "gone";
   }
+  const { wait, step } = due;
   if (!deps.enabledFor(task.project)) {
+    // The cost hold only waits for a spending choice for a review that is no longer to run: end it as every step does when the switch is off.
+    if (wait.kind === "cost" && wait.parkedAt === undefined) {
+      const ended = closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: "switched_off", now: nowIso });
+      try {
+        await deps.documentClient.send(new UpdateCommand({
+          TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)",
+          ExpressionAttributeValues: { ":workflow": ended, ":now": nowIso, ":revision": workflow.revision },
+        }));
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+        return "stale";
+      }
+      await reschedule(deps, taskId, ended.revision, nowMs + OFF_RECHECK_MS);
+      deps.log({ event: "design_review.wait_switched_off", taskId });
+      return "off";
+    }
     await reschedule(deps, taskId, Math.max(rowRevision, workflow.revision), nowMs + OFF_RECHECK_MS);
     return "off";
   }
-  const { wait, step } = due;
   if (step.kind === "none") {
     await reschedule(deps, taskId, workflow.revision, nextDesignWaitDueAt(wait, nowMs));
     return "none";
