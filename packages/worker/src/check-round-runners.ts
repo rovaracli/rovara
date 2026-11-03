@@ -195,7 +195,7 @@ export interface SealedCheckRoundInput {
    * The network the working sandbox belongs on (its working-phase network) and its address there. After the round the working sandbox is checked to be on it (connected there if it is not), and it is NEVER connected to
    * this round's network, not even for a moment: a round's network holds the round's helpers, name server and check sandbox, and nothing else. It must not be the plan's own network.
    */
-  workingPhaseNetwork: WorkingPhaseNetwork;
+  workingPhaseNetwork: WorkingPhaseNetwork | null;
   /** True when the project has a dev container: the round is then refused ("not available yet") before any Docker call. The caller states it, so it cannot be left out. */
   hasDevcontainer: boolean;
   /** `checkSandboxPlan(...)`: the sandbox, its names and files. The caller has written the plan's files (`writeCheckSandboxFiles`) and started the DNS helper. */
@@ -251,7 +251,7 @@ async function sealedRound<T>(input: SealedCheckRoundInput, round: (runners: Che
     } finally {
       live = false;
     }
-  }, { returnTo: input.workingPhaseNetwork });
+  }, { returnTo: input.workingPhaseNetwork ?? "none", pauseWorking: true });
 }
 
 /**

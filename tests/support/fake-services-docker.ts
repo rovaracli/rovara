@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 export interface FakeServicesDockerOptions {
-  /** The pinned image is already on the host (`image inspect` answers). Default: no, so the orchestrator pulls. */
+  /** The pinned image is already on the host (`image inspect` answers). Default: yes (root pulls at boot; the worker never pulls). False: the image was not pre-pulled. */
   imagePresent?: boolean;
   pullFails?: boolean;
   /** `docker run` of a container whose name ends with this suffix fails (`-dns`, `-check`, or a helper's hash is not known: use `helper`). */
@@ -69,7 +69,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
       }
       if (verb === "container" && second === "inspect") return containers.has(args[args.length - 1]!) ? answer(0, "id") : answer(1, "", "No such container");
       if (verb === "image" && second === "inspect" && args.includes("{{json .Config.Volumes}}")) return answer(0, "null\n");
-      if (verb === "image" && second === "inspect") return answer(options.imagePresent === true ? 0 : 1);
+      if (verb === "image" && second === "inspect") return answer(options.imagePresent === false ? 1 : 0);
       if (verb === "pull") { pulls.push(args[1]!); return answer(options.pullFails === true ? 1 : 0); }
       if (verb === "run" && args.includes("--detach")) {
         const name = args[args.indexOf("--name") + 1]!;

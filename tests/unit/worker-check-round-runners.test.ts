@@ -71,6 +71,8 @@ interface FakeOptions {
   extraMembers?: Array<{ name: string; address: string }>;
   /** What `network inspect` says instead of the real membership (an unreadable answer). */
   inspectAnswer?: { exitCode: number; stdout: string };
+  /** `docker pause` of the working sandbox answers with this exit code (default 0). */
+  pauseExit?: number;
   /** The old single-network shape: the working sandbox starts on the round's network (only the detach tests that need a relay use it). */
   workingStartsOnRound?: boolean;
   /** The extra members only appear once the check sandbox is up. */
@@ -82,7 +84,7 @@ interface FakeOptions {
 function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
   const calls: string[][] = [];
   const execs: ExecSeen[] = [];
-  const state = { workingNetworks: options.workingStartsOnRound === true ? [NET, "agentx-task"] : [WORKNET, "agentx-task"], sandboxUp: false };
+  const state = { workingNetworks: options.workingStartsOnRound === true ? [NET, "agentx-task"] : [WORKNET, "agentx-task"], sandboxUp: false, paused: false };
   /** The working sandbox's networks after every docker call: the proof that it was never on the round's network. */
   const history: string[][] = [[...[WORKNET, "agentx-task"]]];
   const members = (): Record<string, { Name: string; IPv4Address: string }> => {
@@ -101,6 +103,8 @@ function fakeDocker(sandboxName: string, options: FakeOptions = {}) {
       const [verb, second] = args;
       if (verb === "network" && second === "disconnect") { state.workingNetworks = state.workingNetworks.filter((name) => name !== args[2]); return { exitCode: 0, stdout: "", stderr: "" }; }
       if (verb === "network" && second === "connect") { state.workingNetworks = [...state.workingNetworks, args[args.length - 2]!]; return { exitCode: 0, stdout: "", stderr: "" }; }
+      if (verb === "pause") { if ((options.pauseExit ?? 0) === 0) state.paused = true; return { exitCode: options.pauseExit ?? 0, stdout: "", stderr: "" }; }
+      if (verb === "unpause") { state.paused = false; return { exitCode: 0, stdout: "", stderr: "" }; }
       if (verb === "network" && second === "inspect") return options.inspectAnswer === undefined ? { exitCode: 0, stdout: JSON.stringify(members()), stderr: "" } : { ...options.inspectAnswer, stderr: "" };
       if (verb === "inspect") return { exitCode: 0, stdout: JSON.stringify(Object.fromEntries(state.workingNetworks.map((name) => [name, {}]))), stderr: "" };
       if (verb === "run") { state.sandboxUp = (options.startExit ?? 0) === 0; return { exitCode: options.startExit ?? 0, stdout: "sandbox-id\n", stderr: "" }; }
@@ -333,6 +337,49 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
       await expect(withSealedCheckRound(roundInput(docker, p, { workingPhaseNetwork: { name, ip: "172.30.9.3" } }), () => Promise.resolve()), name).rejects.toThrow(/never to a round's network/u);
       expect(calls, name).toEqual([]);
     }
+  });
+
+  it("freezes the working sandbox (docker pause) before the check sandbox starts and unfreezes it only after the check sandbox is gone, on every exit path (H3)", async () => {
+    const p = plan();
+    const check = (name: string, calls: string[][], state: { paused: boolean }, options: { unpaused: boolean }) => {
+      const order = verbs(calls);
+      expect(order.indexOf("pause"), name).toBeGreaterThan(order.indexOf("network disconnect"));
+      expect(order.filter((verb) => verb === "pause"), name).toHaveLength(1);
+      const run = order.indexOf("run");
+      if (run >= 0) expect(order.indexOf("pause"), name).toBeLessThan(run);
+      expect(state.paused, name).toBe(!options.unpaused);
+      if (options.unpaused) expect(order.indexOf("unpause"), name).toBeGreaterThan(order.lastIndexOf("rm"));
+      expect(calls.find((call) => call[0] === "pause"), name).toEqual(["pause", WORK]);
+    };
+    const ok = fakeDocker(p.sandboxName);
+    await runSealedCheckRound(roundInput(ok.docker, p), planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
+    check("success", ok.calls, ok.state, { unpaused: true });
+    const failed = fakeDocker(p.sandboxName);
+    await withSealedCheckRound(roundInput(failed.docker, p), () => Promise.reject(new Error("x"))).catch(() => undefined);
+    check("failure", failed.calls, failed.state, { unpaused: true });
+    const controller = new AbortController();
+    const cancelled = fakeDocker(p.sandboxName, { answer: () => { controller.abort(); return new Promise(() => undefined); } });
+    await runSealedCheckRound(roundInput(cancelled.docker, p), planChecks([command("sleep", ["9"])], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: controller.signal });
+    check("cancel", cancelled.calls, cancelled.state, { unpaused: true });
+    const noStart = fakeDocker(p.sandboxName, { startExit: 125 });
+    await withSealedCheckRound(roundInput(noStart.docker, p), () => Promise.resolve()).catch(() => undefined);
+    check("start failure", noStart.calls, noStart.state, { unpaused: true });
+    // A sandbox that cannot be removed stays frozen.
+    const stuck = fakeDocker(p.sandboxName, { removeFails: true });
+    await withSealedCheckRound(roundInput(stuck.docker, p), () => Promise.resolve()).catch(() => undefined);
+    check("check sandbox not removed", stuck.calls, stuck.state, { unpaused: false });
+    expect(verbs(stuck.calls)).not.toContain("unpause");
+  });
+
+  it("fails closed when the pause fails: the round does not run, the check sandbox never starts, and nothing is left frozen", async () => {
+    const p = plan();
+    const { docker, calls, state } = fakeDocker(p.sandboxName, { pauseExit: 1 });
+    let ran = false;
+    await expect(withSealedCheckRound(roundInput(docker, p), () => { ran = true; return Promise.resolve(); })).rejects.toThrow(/could not be paused/u);
+    expect(ran).toBe(false);
+    expect(verbs(calls)).not.toContain("run");
+    expect(verbs(calls)).not.toContain("unpause");
+    expect(state.paused).toBe(false);
   });
 
   it("refuses a second round on a plan while the first runs, and allows one again afterwards (also after a failure)", async () => {

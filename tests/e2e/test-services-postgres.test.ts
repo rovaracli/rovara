@@ -196,7 +196,9 @@ describe("3. a task passes a check round against a real Postgres, and the PR say
     const started = (await bench.start(plan, "IMPLEMENT"))!;
     expect(started.ids).toEqual(["postgres"]);
     const digest = plan.dependencies![0]!.digest;
-    expect(bench.fake.pulls).toEqual([`${REGISTRY}/rovara-catalog/staging/svc/postgres@sha256:${digest}`]);
+    // The worker never pulls: root pre-pulled the digest, and the worker only checks it is on the host.
+    expect(bench.fake.pulls).toEqual([]);
+    expect(bench.fake.verbs("image").some((call) => call[1] === "inspect" && call.includes(`${REGISTRY}/rovara-catalog/staging/svc/postgres@sha256:${digest}`))).toBe(true);
     const connect = bench.fake.verbs("network").find((call) => call[1] === "connect");
     expect(connect).toBeDefined();
     expect(connect).toContain(bench.sandbox.name);
@@ -255,9 +257,9 @@ describe("3. a task passes a check round against a real Postgres, and the PR say
     await runChecks(CHECK_PLAN(broker.readiness), runners, { budgetMs: 60_000, signal: new AbortController().signal });
     const afterFirst = bench.fake.verbs("network").filter((call) => call[1] === "create").length;
     await runChecks(CHECK_PLAN(broker.readiness), runners, { budgetMs: 60_000, signal: new AbortController().signal });
-    // Working phase network + one per round.
-    expect(afterFirst).toBe(2);
-    expect(bench.fake.verbs("network").filter((call) => call[1] === "create")).toHaveLength(3);
+    // A CHECKS run has no working phase: one network per round, and no working-phase Postgres at all.
+    expect(afterFirst).toBe(1);
+    expect(bench.fake.verbs("network").filter((call) => call[1] === "create")).toHaveLength(2);
     await started.dispose();
     await nothingLeft(bench);
   });

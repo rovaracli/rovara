@@ -77,33 +77,44 @@ UNIT
 }
 
 # Test services (slice 1): the values the worker's service runner needs, for a named environment only. Nothing here is a secret and nothing comes from a customer setting:
-#   AGENTX_TEST_SERVICES_REGISTRY    the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
-#   AGENTX_TEST_SERVICES_ENV         the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane);
-#   AGENTX_TEST_SERVICES_RUN_DIR     the tmpfs run directory the launcher makes (same path on the host and in the worker);
-#   AGENTX_TEST_SERVICES_CATALOG_DIR where the worker image holds catalog.json and catalog.sig.json (the trusted keys are compiled in, never read from here);
-#   AGENTX_TEST_SERVICES_ACCOUNT_ID  the AWS account this instance runs in, read HERE from the instance identity document (IMDSv2) because the worker container cannot reach the metadata service (the launcher rejects it) and has no
-#                                     credentials of its own to ask STS. Left out when the lookup fails: the worker then does not trust the staging-only catalog key.
-# AGENTX_SANDBOX_IMAGE (the worker's own image, the probe image) is already written by write_worker_environment.
-instance_account_id() {
-  local token document id
-  token=$(curl -fsS --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null) || return 1
-  document=$(curl -fsS --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null) || return 1
-  id=$(printf '%s' "$document" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -1)
-  [[ "$id" =~ ^[0-9]{12}$ ]] || return 1
-  printf '%s' "$id"
-}
+#   AGENTX_TEST_SERVICES_REGISTRY  the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
+#   AGENTX_TEST_SERVICES_ENV       the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane).
+# AGENTX_TEST_SERVICES_RUN_DIR is NOT written here: the launcher adds it only when the tmpfs run directory was really mounted (so a worker whose mount failed has no complete configuration and does not offer test services).
+# The catalog the worker trusts is the one baked into its own image, with the digests it pins; it checks no signature and needs no account id or key (the broker keeps the signed-catalog check). AGENTX_SANDBOX_IMAGE (the
+# worker's own image, the probe image) is already written by write_worker_environment.
 write_test_services_environment() {
-  local registry=${AGENTX_WORKER_IMAGE%%/*} environment account
+  local registry=${AGENTX_WORKER_IMAGE%%/*} environment
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 1
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
   environment=${BASH_REMATCH[1]}
-  {
-    printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"
-    printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"
-    printf 'AGENTX_TEST_SERVICES_RUN_DIR=/run/agentx-test-services\n'
-    printf 'AGENTX_TEST_SERVICES_CATALOG_DIR=/opt/agentx/packages/worker/service-catalog\n'
-    if account=$(instance_account_id); then printf 'AGENTX_TEST_SERVICES_ACCOUNT_ID=%s\n' "$account"; fi
-  } >>"$WORKER_ENV_FILE"
+  { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
+}
+# The worker container has no registry login and no AWS credentials (only root on the host has the instance role), so ROOT pulls, before the worker starts, every digest in the pre-pull list baked into the worker image
+# (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and
+# silent; a login or a pull that fails is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
+pull_catalog_images() {
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment cid list line repository digest="" count=0 pairs=() reference
+  [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
+  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
+  environment=${BASH_REMATCH[1]}
+  list=$(mktemp) && cid=$(docker create "$AGENTX_WORKER_IMAGE" 2>/dev/null) || { log "CATALOG PRE-PULL FAILED: the worker image could not be read for its pre-pull list"; return 1; }
+  docker cp "$cid:/opt/agentx/packages/worker/service-catalog/prepull.json" "$list" >/dev/null 2>&1 || : >"$list"
+  docker rm "$cid" >/dev/null 2>&1 || true
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^\"repository\":\ *\"(svc/[a-z0-9][a-z0-9._-]{0,62})\" ]]; then repository=${BASH_REMATCH[1]}
+    elif [[ "$line" =~ \"digest\":\ *\"(sha256:)?([a-f0-9]{64})\" && -n "${repository:-}" ]]; then pairs+=("$repository@sha256:${BASH_REMATCH[2]}"); repository=""; fi
+  done < <(tr -d '\r' <"$list" | sed -E 's/^[[:space:]]+//; s/,$//' | grep -E '^"(repository|digest)"')
+  rm -f "$list"
+  ((${#pairs[@]} > 0)) || return 0
+  { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
+      | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
+    || { log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
+  for reference in "${pairs[@]}"; do
+    reference="$registry/rovara-catalog/$environment/$reference"
+    docker image inspect "$reference" >/dev/null 2>&1 || timeout --foreground --kill-after=10s 600s docker pull "$reference" >/dev/null 2>&1 || { log "CATALOG PRE-PULL FAILED: $reference"; return 1; }
+    count=$((count + 1))
+  done
+  log "pulled $count catalog image(s) by digest"
 }
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -308,7 +319,7 @@ else
 fi
 # Setup runs need the rvbs+ rules that the firewall step above may have had to withdraw: the worker is told "ready" or "unavailable" (any other value, or none, it treats as unavailable). Only a named environment has setup runs.
 if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi
-if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR"); fi
+if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR" --env "AGENTX_TEST_SERVICES_RUN_DIR=$TEST_SERVICES_RUN_DIR"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER
@@ -451,7 +462,11 @@ stage2_main() {
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
-    write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
+    if pull_catalog_images "$region"; then
+      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
+    else
+      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"
+    fi
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"

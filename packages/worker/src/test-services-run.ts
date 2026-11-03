@@ -26,8 +26,8 @@ import { constants as fsConstants } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import {
-  CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
-  type CatalogEdition, type CatalogEntry, type CatalogTrustContext, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
+  CATALOG_REGISTRY_ROOT, ServiceCatalogSchema, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
+  type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
@@ -54,7 +54,6 @@ import {
 } from "./service-runner.js";
 import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
 import { buildServiceUsageRecord, countResets } from "./service-usage-record.js";
-import { loadPrepullList, prepullCatalogImages, type PrepullPorts } from "./service-prepull.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import type { CheckRunners } from "./verification/checks.js";
@@ -68,7 +67,6 @@ export const TEST_SERVICES_USAGE_ARTIFACT = "test-services-usage.json";
  */
 export const TEST_SERVICES_RUN_LIFETIME_MS = 12 * 60 * 60_000;
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
-const PULL_TIMEOUT_MS = 5 * 60_000;
 const SEED_LIMIT_MS = 10 * 60_000;
 /** Slice 1 has no sinkhole container; the sealed name server needs an address for it, and this one belongs to no helper (the last of the 32). */
 const SINKHOLE_HELPER_INDEX = 31;
@@ -83,6 +81,9 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 export type TestServicesFailureReason =
   | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
 
+/** The one sentence for an image the worker cannot use: it is not one of the digests pinned INSIDE this worker image, or it was not pre-pulled onto this worker at boot. The worker never pulls. */
+export const PULL_FAILED_SENTENCE = "Dependency image not available on this worker";
+
 const SENTENCES: Record<TestServicesFailureReason, string> = {
   not_configured: "This worker is not set up to run test services",
   init_file: "A test service's init file is not a plain SQL file inside the workspace",
@@ -91,7 +92,7 @@ const SENTENCES: Record<TestServicesFailureReason, string> = {
   catalog: "The test services catalog could not be used",
   mismatch: "A test service in the plan is not the one this worker's catalog pins",
   sealed_unavailable: "This worker cannot run sealed check rounds, so it did not start the test services",
-  pull_failed: "A test service's image could not be pulled",
+  pull_failed: PULL_FAILED_SENTENCE,
   start_failed: "The test services could not be started",
   not_healthy: "A test service did not become healthy",
   seed_failed: "A test service's seeds did not complete",
@@ -114,7 +115,7 @@ export interface SealedRoundSetup {
   /** The project has a dev container: the round is refused. Always false here (a task with a dev container never starts services). */
   hasDevcontainer: boolean;
   /** The working sandbox's working-phase network and its address: the sealed round checks it is there afterwards and NEVER connects it to the round's own network. */
-  workingPhaseNetwork: { name: string; ip: string };
+  workingPhaseNetwork: { name: string; ip: string } | null;
   plan: CheckSandboxPlan;
   rootPath: string;
   files: HelperFiles;
@@ -174,22 +175,23 @@ const defaultLog = (event: Record<string, unknown>): void => console.log(JSON.st
 export const TEST_SERVICES_REGISTRY_ENVIRONMENT = "AGENTX_TEST_SERVICES_REGISTRY";
 export const TEST_SERVICES_ENV_ENVIRONMENT = "AGENTX_TEST_SERVICES_ENV";
 export const TEST_SERVICES_RUN_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_RUN_DIR";
-export const TEST_SERVICES_CATALOG_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_CATALOG_DIR";
 export const TEST_SERVICES_EDITION_ENVIRONMENT = "AGENTX_TEST_SERVICES_EDITION";
 export const TEST_SERVICES_MAX_MEM_ENVIRONMENT = "AGENTX_TEST_SERVICES_MAX_MEM_MIB";
-/** The AWS account the instance runs in: root writes it at boot from the instance identity (IMDSv2; the worker container cannot reach the metadata service). */
-export const TEST_SERVICES_ACCOUNT_ENVIRONMENT = "AGENTX_TEST_SERVICES_ACCOUNT_ID";
+/** The catalog the worker image ships, beside `dist/` (the same relative place from `src/` and from `dist/`). It is copied into the image at build time (environments/base/Dockerfile) from the release's committed catalog. */
+export const BAKED_CATALOG_URL = new URL("../service-catalog/catalog.json", import.meta.url);
+const BAKED_CATALOG_MAX_BYTES = 512 * 1024;
+
 /**
- * The signed catalog from a directory holding `catalog.json` and `catalog.sig.json`. OWNER RULE: the trusted keys are compiled into the release (contracts `catalog-trust.ts`: `CATALOG_TRUSTED_SIGNING_KEYS`, and the
- * staging-only list honoured only in the staging account AND a staging build) and are NEVER read from a file, the environment or SSM here. The only thing passed in is the account id the worker runs in (written at boot
- * from the instance identity, never from configuration a customer sets); a catalog that no trusted key signed is refused with one fixed error. `load` is a test seam: a test hands it `loadSignedCatalogWithKeys` of `@agentx/contracts/testing`; the production `loadSignedCatalog` takes no key list.
+ * The catalog that is PART OF THIS WORKER IMAGE (H4): the worker verifies no signature at run time and trusts no key. The image comes from the release pipeline, so its files (this catalog, with the digests it pins, and
+ * `prepull.json`) are exactly the release's; a worker runs a dependency only if the plan's digest is the one pinned here AND that exact digest is already on this host (`requireLocalImages`). The path is compiled in (no
+ * environment variable, no setting, nothing writable), and the broker keeps the signed-catalog check, with the staging or release trust, before it ever puts a digest in a plan. A file that cannot be read or is not a catalog
+ * is the fixed `catalog` error.
  */
-export async function loadCatalogFromDirectory(directory: string, trust: CatalogTrustContext, load: typeof loadSignedCatalog = loadSignedCatalog): Promise<ServiceCatalog> {
+export async function loadBakedCatalog(file: URL | string = BAKED_CATALOG_URL): Promise<ServiceCatalog> {
   try {
-    const [catalogBytes, signatureBytes] = await Promise.all([readFile(join(directory, CATALOG_FILE)), readFile(join(directory, CATALOG_SIGNATURE_FILE))]);
-    const loaded = load({ catalogBytes, signatureBytes, trust });
-    if (!loaded.ok) throw new Error("catalog");
-    return loaded.catalog;
+    const text = await readFile(file, "utf8");
+    if (Buffer.byteLength(text) > BAKED_CATALOG_MAX_BYTES) throw new Error("too large");
+    return ServiceCatalogSchema.parse(JSON.parse(text));
   } catch {
     throw new TestServicesError("catalog");
   }
@@ -205,22 +207,21 @@ export function testServicesConfigFromEnvironment(
   const registry = environment[TEST_SERVICES_REGISTRY_ENVIRONMENT];
   const catalogEnv = environment[TEST_SERVICES_ENV_ENVIRONMENT];
   const runDirectoryParent = environment[TEST_SERVICES_RUN_DIR_ENVIRONMENT];
-  const catalogDirectory = environment[TEST_SERVICES_CATALOG_DIR_ENVIRONMENT];
   const probeImage = environment[TASK_SANDBOX_IMAGE_ENVIRONMENT];
-  if (!registry || !catalogEnv || !runDirectoryParent || !catalogDirectory || !probeImage) return undefined;
+  if (!registry || !catalogEnv || !runDirectoryParent || !probeImage) return undefined;
   const edition = environment[TEST_SERVICES_EDITION_ENVIRONMENT] === "enterprise" ? "enterprise" : "public";
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {
     docker, registry, catalogEnv, edition, probeImage, runDirectoryParent, maxMemMiB: Number.isSafeInteger(mem) && mem > 0 ? mem : DEFAULT_MAX_MEM_MIB,
-    catalog: () => loadCatalogFromDirectory(catalogDirectory, { runningAccountId: environment[TEST_SERVICES_ACCOUNT_ENVIRONMENT] }), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
+    catalog: () => loadBakedCatalog(), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
   };
 }
 
 // ---- the worker's start (TS-RN-3 rule 3 and TS19)
 
 /**
- * Called once when the worker starts, before it takes any work: removes what a killed worker left (every container and network that carries the run-network family label AND this workspace's key, and nothing else), and
- * starts the catalog images' pre-pull in the background (bounded; it never holds the worker's start). A worker with no test services configuration does nothing at all. Never throws.
+ * Called once when the worker starts, before it takes any work: removes what a killed worker left (every container and network that carries the run-network family label AND this workspace's key, and nothing else).
+ * A worker with no test services configuration does nothing at all. Never throws. (The catalog images are pulled by root at boot, not here: the worker never pulls.)
  */
 export async function testServicesAtWorkerBoot(input: { rootPath: string; config?: TestServicesConfig | undefined; environment?: NodeJS.ProcessEnv; docker?: DockerCli; log?: (event: Record<string, unknown>) => void }): Promise<void> {
   const log = input.log ?? defaultLog;
@@ -229,18 +230,7 @@ export async function testServicesAtWorkerBoot(input: { rootPath: string; config
     if (config === undefined) return;
     const swept = await sweepServicesNetworksAtWorkerStart(config.docker, await setupWorkspaceKey(input.rootPath));
     if (swept.containers + swept.networks > 0) log({ event: "test-services.leftovers.removed", ...swept });
-    const ports: PrepullPorts = {
-      pull: async (reference, signal) => {
-        const pulled = await config.docker.run(["pull", reference], { timeoutMs: PULL_TIMEOUT_MS, signal });
-        if (pulled.exitCode !== 0) throw new Error("pull failed");
-      },
-      present: async (reference, signal) => (await config.docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, signal })).exitCode === 0,
-    };
-    // Not awaited: the pre-pull is an optimisation and the worker takes work while it runs.
-    void loadPrepullList()
-      .then((list) => prepullCatalogImages({ list, registry: config.registry, env: config.catalogEnv, ports }))
-      .then((result) => { if (result.pulled.length + result.failed.length > 0) log({ event: "test-services.prepull", pulled: result.pulled.length, failed: result.failed.length, skipped: result.skipped.length }); })
-      .catch(() => log({ event: "test-services.prepull.failed" }));
+    // No pre-pull here: the worker container has no registry login and no AWS credentials, so it never pulls. Root pulls the pinned digests before the worker starts (packages/worker/ec2/boot-stage2.sh).
   } catch {
     log({ event: "test-services.boot.failed" });
   }
@@ -314,6 +304,18 @@ async function initFilesOf(plan: TaskDependencyPlan, root: string, repositoryPat
   return files;
 }
 
+/** Every base's image, by digest, must already be on this host (the launcher runs with `--pull=never`, and the worker has no registry login). Otherwise: the fixed `pull_failed`, naming the dependencies, with nothing made yet. */
+async function requireLocalImages(docker: DockerCli, config: Pick<TestServicesConfig, "registry" | "catalogEnv">, bases: readonly Base[], signal: AbortSignal | undefined): Promise<void> {
+  const missing = new Map<string, TestServicesStartFailure>();
+  for (const base of bases) {
+    if (signal?.aborted === true) throw new TestServicesError("start_failed");
+    const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, base.plan.repository)}@sha256:${base.plan.digest}`;
+    const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) }).catch(() => undefined);
+    if (present === undefined || present.exitCode !== 0) missing.set(base.plan.id, "pull_failed");
+  }
+  if (missing.size > 0) throw new TestServicesError("pull_failed", missing);
+}
+
 const randomAlphanumeric = (length: number): string => randomBytes(length).toString("hex").slice(0, length);
 
 /**
@@ -324,7 +326,9 @@ function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly Tas
   return dependencies.map((plan) => {
     const entry = catalogEntryById(catalog, plan.catalogId);
     if (entry === undefined || entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
-      || entry.image.repository !== plan.repository || entry.image.digest !== plan.digest) throw new TestServicesError("mismatch");
+      || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
+    // The digest must be one PINNED IN THIS WORKER IMAGE (the broker may have approved a newer catalog than the image the worker was built from): the fixed "not available on this worker" sentence, never a generic error.
+    if (entry.image.digest !== plan.digest) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
     const user = plan.config.user ?? DEFAULT_USER;
     const database = plan.config.database ?? DEFAULT_DATABASE;
     if (!HELPER_CREDENTIAL_PATTERNS.user.test(user) || !HELPER_CREDENTIAL_PATTERNS.database.test(database)) throw new TestServicesError("mismatch");
@@ -431,6 +435,11 @@ export interface StartTestServicesInput {
   sandbox: TaskSandbox;
   /** The project has a dev container. Refused before anything is made (the first step). */
   hasDevcontainer: boolean;
+  /**
+   * Start the working phase (Postgres for the agent's own commands, joined to the working sandbox, with the seeds). Default true. False for CHECKS and Prove: they run no agent, and the only code that touches the
+   * database is the sealed rounds', so no working-phase helper exists beside a sealed round (nothing for a relay to reach, nothing to seed).
+   */
+  workingPhase?: boolean;
   /** Where the usage record is written after each sealed round. */
   artifactSink?: ArtifactSink | undefined;
   /** Stops the start (pulls, helper starts, seeds) when the task is cancelled. */
@@ -503,6 +512,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const docker = config.docker;
   const catalog = await config.catalog().catch(() => { throw new TestServicesError("catalog"); });
   const bases = resolveDependencies(catalog, input.dependencies, config);
+  // The worker NEVER pulls: root pulled the pinned digests at boot (boot-stage2.sh), and a digest that is not on this host now is the fixed pull_failed, before anything is made.
+  await requireLocalImages(docker, config, bases, input.signal);
   const root = await realpath(resolve(input.rootPath));
   // Before anything is made: the init files of each dependency, checked against the repositories' real folders.
   for (const base of bases) base.files = await initFilesOf(base.plan, root, input.repositoryPaths);
@@ -596,47 +607,39 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   // ---- the working phase
 
   try {
-    const working = materializeAll(bases);
-    const workingEnv = buildServiceEnvironment({ sandbox: "working", sinkholeUrl: SINKHOLE_URL, dependencies: working.map((item) => item.env), neverValues: neverValuesFor(working) });
-    secrets.push(...helperSecretValues(working.map((item) => item.request)), ...workingEnv.secretValues);
-    redactor = createServiceRedactor(secrets);
-    // The sandbox runs every command with the run's variables from here on, and tears the run down when it is disposed, even if the start below fails.
-    input.sandbox.attachServices({ wrapExec: workingExec(docker, files, input.sandbox.name, workingEnv, () => active), teardown });
+    if (input.workingPhase === false) {
+      // No working phase: the sandbox keeps its commands as they are, and `dispose()` still tears the rounds down.
+      input.sandbox.attachServices({ wrapExec: (inner) => inner, teardown });
+    } else {
+      const working = materializeAll(bases);
+      const workingEnv = buildServiceEnvironment({ sandbox: "working", sinkholeUrl: SINKHOLE_URL, dependencies: working.map((item) => item.env), neverValues: neverValuesFor(working) });
+      secrets.push(...helperSecretValues(working.map((item) => item.request)), ...workingEnv.secretValues);
+      redactor = createServiceRedactor(secrets);
+      // The sandbox runs every command with the run's variables from here on, and tears the run down when it is disposed, even if the start below fails.
+      input.sandbox.attachServices({ wrapExec: workingExec(docker, files, input.sandbox.name, workingEnv, () => active), teardown });
 
-    // The images, by digest, before anything starts (the launcher runs with `--pull=never`).
-    for (const item of working) {
-      if (input.signal?.aborted === true) throw new TestServicesError("start_failed");
-      const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, item.plan.repository)}@sha256:${item.plan.digest}`;
-      const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(input.signal === undefined ? {} : { signal: input.signal }) }).catch(() => undefined);
-      if (present?.exitCode === 0) continue;
-      const pulled = await docker.run(["pull", reference], { timeoutMs: PULL_TIMEOUT_MS, ...(input.signal === undefined ? {} : { signal: input.signal }) }).catch(() => undefined);
-      if (pulled === undefined || pulled.exitCode !== 0) {
-        failures.set(item.plan.id, "pull_failed");
-        throw new TestServicesError("pull_failed", failures);
-      }
-    }
-
-    const startedAt = now();
-    try {
-      workSession = await trackedStart(startInput(runId, working, files, { sandboxes: workingSandboxAttachment(docker, input.sandbox.name), ...(input.signal === undefined ? {} : { signal: input.signal }) }));
-    } catch (error) {
-      const failure = failureOf(error);
-      for (const id of ids) if (!failure.failures.has(id)) failures.set(id, failure.reason === "not_healthy" ? "not_healthy" : "start_failed");
-      for (const [id, reason] of failure.failures) failures.set(id, reason);
-      throw new TestServicesError(failure.reason, failures);
-    }
-    workStartMs = Math.max(0, now() - startedAt);
-    if (!active) throw new TestServicesError("start_failed");
-
-    // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
-    const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
-    const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal));
-    for (const item of working) {
+      const startedAt = now();
       try {
-        await seedRun(countResets(workSession).session, [item.resetDependency], workingSeeds, seedSignal);
-      } catch {
-        failures.set(item.plan.id, "seed_failed");
-        throw new TestServicesError("seed_failed", failures);
+        workSession = await trackedStart(startInput(runId, working, files, { sandboxes: workingSandboxAttachment(docker, input.sandbox.name), ...(input.signal === undefined ? {} : { signal: input.signal }) }));
+      } catch (error) {
+        const failure = failureOf(error);
+        for (const id of ids) if (!failure.failures.has(id)) failures.set(id, failure.reason === "not_healthy" ? "not_healthy" : "start_failed");
+        for (const [id, reason] of failure.failures) failures.set(id, reason);
+        throw new TestServicesError(failure.reason, failures);
+      }
+      workStartMs = Math.max(0, now() - startedAt);
+      if (!active) throw new TestServicesError("start_failed");
+
+      // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
+      const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
+      const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal));
+      for (const item of working) {
+        try {
+          await seedRun(countResets(workSession).session, [item.resetDependency], workingSeeds, seedSignal);
+        } catch {
+          failures.set(item.plan.id, "seed_failed");
+          throw new TestServicesError("seed_failed", failures);
+        }
       }
     }
   } catch (error) {
@@ -694,9 +697,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       check();
 
       // The sealed round: the working sandbox was never on this network; the check sandbox starts inside `withSealedCheckRound`.
-      // The working phase's network is where the working sandbox belongs; a round is only opened after that phase started.
-      if (workSession === undefined) throw new TestServicesError("setup_failed");
-      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
+      // The working phase's network is where the working sandbox belongs (none when the run has no working phase).
+      const setup: SealedRoundSetup = { docker, hasDevcontainer: false, workingPhaseNetwork: workSession === undefined ? null : { name: workSession.network.name, ip: workSession.network.workingSandboxIp }, plan, rootPath: root, files: roundFiles, environment, redactor: roundRedactor };
       let release!: () => void;
       const closed = new Promise<void>((done) => { release = done; });
       let handOver!: (runners: CheckRunners) => void;
@@ -858,6 +860,8 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
     return await startTestServicesRun(config, {
       dependencies, operationId: input.operationId, rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, sandbox: input.sandbox, hasDevcontainer: input.devcontainer,
       artifactSink: input.artifactSink, signal: stop.signal,
+      // A CHECKS run has no agent and no use for a working-phase Postgres: only the sealed rounds start services (H3).
+      workingPhase: input.mode !== "CHECKS",
     });
   } catch (error) {
     const failure = failureOf(error);
@@ -924,7 +928,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
   let run: TestServicesRun;
   try {
     await input.sandbox.start();
-    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal });
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal, workingPhase: false });
   } catch (error) {
     unregister?.();
     const failure = failureOf(error);

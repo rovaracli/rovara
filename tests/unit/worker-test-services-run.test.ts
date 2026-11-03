@@ -5,13 +5,12 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
-  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, loadCatalogFromDirectory, testServicesAdvertisedFeatures, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
+  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, loadBakedCatalog, testServicesAdvertisedFeatures, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
   type SealedRoundPorts, type SealedRoundSetup, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
@@ -137,11 +136,12 @@ const nothingLeft = async (h: Awaited<ReturnType<typeof harness>>): Promise<void
 const indexOf = (calls: string[][], predicate: (call: string[]) => boolean, from = 0): number => calls.findIndex((call, index) => index >= from && predicate(call));
 
 describe("starting the run", () => {
-  it("pulls the pinned image by digest, starts the helper from it on the run's network, joins the working sandbox at .3 and seeds with the run's variables", async () => {
+  it("uses the pinned image that is already on the host (by digest; the worker never pulls), starts the helper from it on the run's network, joins the working sandbox at .3 and seeds with the run's variables", async () => {
     const h = await harness();
     const run = await h.start();
     const reference = `${REGISTRY}/rovara-catalog/staging/svc/postgres@sha256:${DIGEST}`;
-    expect(h.fake.pulls).toEqual([reference]);
+    expect(h.fake.pulls).toEqual([]);
+    expect(h.fake.verbs("image").some((call) => call[1] === "inspect" && call.includes(reference))).toBe(true);
     const helperRun = h.fake.calls.find((call) => call[0] === "run" && call.includes("--detach") && call.includes(reference));
     expect(helperRun).toBeDefined();
     expect(helperRun).toContain("--pull=never");
@@ -160,15 +160,32 @@ describe("starting the run", () => {
     await h.sandbox.dispose();
   });
 
-  it("does not pull an image the host already has", async () => {
-    const h = await harness({ docker: { imagePresent: true } });
-    const run = await h.start();
+  it("never pulls: an image pinned in the worker image but NOT on this host (not pre-pulled) fails with the fixed 'dependency image not available on this worker' sentence, before anything is made", async () => {
+    const h = await harness({ docker: { imagePresent: false } });
+    const error = await h.start().then(() => undefined, (caught: unknown) => caught as TestServicesError);
+    expect(error).toBeInstanceOf(TestServicesError);
+    expect(error!.reason).toBe("pull_failed");
+    expect(error!.message).toBe("Dependency image not available on this worker");
+    expect(error!.failures.get("postgres")).toBe("pull_failed");
     expect(h.fake.pulls).toEqual([]);
-    await run.dispose();
+    expect(h.fake.calls.some((call) => call[0] === "pull")).toBe(false);
+    expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
+    await nothingLeft(h);
+  });
+
+  it("a digest the broker approved that this worker image does not pin gets the same sentence (a newer catalog than the image), and nothing is pulled or made", async () => {
+    const h = await harness();
+    const error = await h.start([dependency({ digest: "c".repeat(64) })]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+    expect(error).toBeInstanceOf(TestServicesError);
+    expect(error!.message).toBe("Dependency image not available on this worker");
+    expect(error!.failures.get("postgres")).toBe("pull_failed");
+    expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
+    expect(h.fake.calls.some((call) => call[0] === "pull")).toBe(false);
+    await nothingLeft(h);
   });
 
   it("refuses a dependency whose repository, digest, family or catalog entry differs from the worker's own signed catalog", async () => {
-    for (const change of [{ digest: "c".repeat(64) }, { repository: "svc/mysql" }, { family: "mysql" }, { catalogId: "postgres@99" }] as const) {
+    for (const change of [{ repository: "svc/mysql" }, { family: "mysql" }, { catalogId: "postgres@99" }] as const) {
       const h = await harness();
       await expect(h.start([dependency(change)])).rejects.toMatchObject({ reason: "mismatch" });
       expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
@@ -196,9 +213,9 @@ describe("starting the run", () => {
     await nothingLeft(h);
   });
 
-  it("a pull that fails, a helper that fails to start, a name server that fails to start and a working sandbox that cannot join each remove everything and say which fixed failure it was", async () => {
+  it("an image that is not on the host, a helper that fails to start, a name server that fails to start and a working sandbox that cannot join each remove everything and say which fixed failure it was", async () => {
     const cases: Array<[FakeServicesDockerOptions, string, string | undefined]> = [
-      [{ pullFails: true }, "pull_failed", "pull_failed"],
+      [{ imagePresent: false }, "pull_failed", "pull_failed"],
       [{ failRun: "helper" }, "start_failed", "start_failed"],
       [{ failConnect: true }, "start_failed", "start_failed"],
     ];
@@ -642,10 +659,10 @@ describe("no secret reaches a log, an artifact, an argument or an error", () => 
   });
 
   it("the errors of a failed start are fixed sentences without any value", async () => {
-    for (const docker of [{ pullFails: true }, { failRun: "helper" }] as const) {
+    for (const docker of [{ imagePresent: false }, { failRun: "helper" }] as const) {
       const h = await harness({ docker });
       const error = await h.start().then(() => undefined, (caught: unknown) => caught as Error);
-      expect(error!.message).toMatch(/^(A test service's image could not be pulled|The test services could not be started)$/u);
+      expect(error!.message).toMatch(/^(Dependency image not available on this worker|The test services could not be started)$/u);
       expect(JSON.stringify(h.logs)).not.toMatch(/[A-Za-z0-9]{32}/u);
     }
   });
@@ -738,11 +755,11 @@ describe("a nightly run", () => {
 });
 
 describe("cancel, a pending start, teardown warnings", () => {
-  it("a cancel while the images are pulled stops the start, removes everything and ends the cancel registration", async () => {
+  it("a cancel while the images are looked up stops the start, removes everything and ends the cancel registration", async () => {
     const h = await harness();
     const original = h.fake.docker.run.bind(h.fake.docker);
     let pulling = false;
-    h.fake.docker.run = (args, options) => (args[0] === "pull"
+    h.fake.docker.run = (args, options) => (args[0] === "image" && args[1] === "inspect" && args.includes("{{.Id}}")
       ? new Promise((_resolve, reject) => { pulling = true; if (options?.signal?.aborted === true) reject(new Error("aborted")); options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
       : original(args, options));
     let abort: (() => Promise<void>) | undefined;
@@ -801,37 +818,36 @@ describe("what the worker advertises", () => {
   });
 });
 
-describe("trusted catalog keys are compiled in, never read from a file or the environment (C1)", () => {
-  it("a key file placed in the catalog directory is ignored, and so is every environment variable", async () => {
-    const { generateKeyPairSync, createHash, sign } = await import("node:crypto");
-    const { catalogSigningMessage, CATALOG_SIGNATURE_ALGORITHM } = await import("@agentx/contracts");
+describe("the worker trusts the catalog baked into its own image and verifies no signature at run time (H4)", () => {
+  it("loads the image's catalog.json from a compiled-in path: a key file, a signature file or an environment variable beside it changes nothing", async () => {
+    const dir = await temp("rsv-catalog-baked-");
     const bytes = await readFile(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
-    const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-    const der = pair.publicKey.export({ type: "spki", format: "der" });
-    const dir = await temp("rsv-catalog-keyfile-");
     await writeFile(join(dir, "catalog.json"), bytes);
-    await writeFile(join(dir, "catalog.sig.json"), JSON.stringify({
-      schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: createHash("sha256").update(der).digest("hex"), catalogSha256: createHash("sha256").update(bytes).digest("hex"),
-      signature: sign("sha256", catalogSigningMessage(bytes), { key: pair.privateKey, dsaEncoding: "der" }).toString("base64"),
-    }));
-    const pem = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
-    for (const name of ["trusted-keys.pem", "keys.pem", "catalog.pub", "trusted-keys.json"]) await writeFile(join(dir, name), pem);
-    vi.stubEnv("AGENTX_TEST_SERVICES_TRUSTED_KEYS", pem);
-    vi.stubEnv("AGENTX_CATALOG_PUBLIC_KEYS", pem);
+    for (const name of ["trusted-keys.pem", "keys.pem", "catalog.pub", "trusted-keys.json", "catalog.sig.json"]) await writeFile(join(dir, name), "not a key");
+    vi.stubEnv("AGENTX_TEST_SERVICES_TRUSTED_KEYS", "x");
+    vi.stubEnv("AGENTX_TEST_SERVICES_CATALOG_DIR", dir);
     try {
-      await expect(loadCatalogFromDirectory(dir, { runningAccountId: "944937319445" })).rejects.toMatchObject({ reason: "catalog" });
-      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
-      // The same files verify only for a key the TEST hands the loader through the testing seam: the directory is never a source of keys.
-      const withKey = (input: Parameters<typeof loadSignedCatalogWithKeys>[0]) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys: [pem] });
-      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined }, (input) => withKey({ ...input, trustedKeys: [pem] }))).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
+      const catalog = await loadBakedCatalog(new URL(`file://${join(dir, "catalog.json")}`));
+      expect(catalog.entries.length).toBeGreaterThan(0);
+      // The default path is the image's, beside dist/, not any directory the environment names.
+      const config = testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: dir }, fakeServicesDocker().docker, undefined)!;
+      expect(config).toBeDefined();
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it("the orchestrator's source reads no key from a file, the environment or SSM", async () => {
+  it("a catalog file that is missing, too large or not a catalog is the fixed 'catalog' error", async () => {
+    const dir = await temp("rsv-catalog-bad-");
+    await writeFile(join(dir, "bad.json"), "{ nope");
+    await writeFile(join(dir, "wrong.json"), JSON.stringify({ hello: "world" }));
+    for (const name of ["bad.json", "wrong.json", "missing.json"]) await expect(loadBakedCatalog(join(dir, name)), name).rejects.toMatchObject({ reason: "catalog" });
+  });
+
+  it("the orchestrator's source reads no key from a file, the environment or SSM, verifies no signature, and never pulls", async () => {
     const source = await readFile(new URL("../../packages/worker/src/test-services-run.ts", import.meta.url), "utf8");
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
-    expect(code).not.toMatch(/\.pem|trusted-keys|TRUSTED_KEYS|PUBLIC_KEYS|ssm|SSM/u);
+    expect(code).not.toMatch(/\.pem|trusted-keys|TRUSTED_KEYS|PUBLIC_KEYS|ssm|SSM|loadSignedCatalog|CATALOG_SIGNATURE|ACCOUNT_ID|runningAccountId/u);
+    expect(code).not.toMatch(/\["pull"|"pull",|docker\.run\(\["pull/u);
   });
 });
