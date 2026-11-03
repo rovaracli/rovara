@@ -146,3 +146,15 @@ describe("the approver-left reminder on the page", () => {
     expect((await page()).reviewReminder).toMatchObject({ kind: "approver_left" });
   });
 });
+
+describe("the sweep's own cost", () => {
+  it("builds the task actions only for a run that needs its worker told, so a pass over no watches needs nothing from the broker's dependencies", async () => {
+    const { sweepAutomaticRunsOf } = await import("../../packages/broker/src/aws/broker/nightly-run-wiring.js");
+    const h = await createDeveloperTaskBroker();
+    // the pass reads only the table, the audit and the clock from the broker's dependencies; building the task actions would reach for much more
+    const touched = new Set<string>();
+    const spy = new Proxy({ documentClient: h.db, tableName: "state" } as Record<string | symbol, unknown>, { get: (target, key) => { touched.add(String(key)); return target[key]; } });
+    expect(await sweepAutomaticRunsOf(spy as never)).toEqual({ ended: 0, audited: 0, watching: 0, dropped: 0 });
+    expect([...touched].sort()).toEqual(["audit", "documentClient", "tableName"]);
+  });
+});
