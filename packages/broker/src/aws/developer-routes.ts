@@ -667,7 +667,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (reply !== undefined) return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body as object);
   }
   // Design review: Design first, Skip, the cost card's choices, the question card's answers, the Retry of a review that did not run, and the confirmation page of a high-risk design. A task with no design review answers as a missing one.
-  if (request.method === "POST" && isDesignReviewPath(url.pathname)) return routeDesignReview(deps, caller, request, url);
+  if ((request.method === "POST" || request.method === "GET") && isDesignReviewPath(url.pathname)) return routeDesignReview(deps, caller, request, url);
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
   if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
   // SH14 (switch `su`, off by default): the setup run that runs commands. With the switch off this answers undefined and the path falls through as any unknown path.

@@ -297,11 +297,11 @@ const reasonsOf = (workflow: WorkflowSnapshot): DesignReason[] => {
 async function transactWorkflow(env: Env, loaded: Loaded, next: WorkflowSnapshot, extra: unknown[], expect: { stage: string; states: readonly string[] }): Promise<void> {
   const { task, workflow } = loaded;
   const now = nowIso(env);
-  const states = expect.states.map((_, index) => `:s${String(index)}`);
+  const states = expect.states.map((_, index) => `workflow.#state = :s${String(index)}`);
   try {
     await env.task.actions.transact([{ Update: {
       TableName: env.deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
-      ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state IN (${states.join(", ")}) AND attribute_not_exists(closedAt)`,
+      ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND (${states.join(" OR ")}) AND attribute_not_exists(closedAt)`,
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": expect.stage, ...Object.fromEntries(expect.states.map((state, index) => [`:s${String(index)}`, state])) },
     } }, ...extra] as never);
@@ -328,7 +328,7 @@ async function designFirst(env: Env, taskId: string): Promise<{ outcome: "done" 
   try {
     next = enableDesignReview(workflow, { expectedRevision: workflow.revision, now, start: { decidedBy: "person", reasons: reasonsOf(workflow), tier: effective.setting.tier, capUsd: effective.setting.capUsdPerTask, by: { actorId: env.caller.developerId } } });
   } catch (error) {
-    if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", "Design first can't be added at this step.");
+    if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", `Design first can't be added at this step: ${error.message}.`);
     throw error;
   }
   // The task goes back to planning on the Full path; the planner's turn is due at the new revision.
@@ -398,6 +398,20 @@ async function approveOnPage(env: Env, taskId: string, body: { requestId: string
   throw agentXError(refusal.code, refusal.message);
 }
 
+/** The confirmation page's read: the card as the server shows it now and its digest, for a project member only (anyone else gets "no longer waiting"). The press is `approveOnPage`. */
+async function confirmationCard(env: Env, taskId: string): Promise<{ card: unknown; digest: string }> {
+  const loaded = await loadDesignTask(env, taskId);
+  if (loaded === undefined) throw agentXError("NOT_FOUND", GONE);
+  const facts = await factsOf(env, loaded);
+  if (!memberOf(facts.directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
+  const item = await approveItemOf(env, loaded, facts.touches);
+  const projection = item === undefined ? undefined : projectDecisionCards([item], { locks: {}, pairFullCards: false });
+  const card = projection?.cards[0];
+  const digest = projection?.digests[card?.id ?? ""];
+  if (projection === undefined || card === undefined || digest === undefined) throw agentXError("NOT_FOUND", GONE);
+  return { card, digest };
+}
+
 // ---- the routes
 
 function bodyOf<T extends z.ZodType>(schema: T, request: AdaptedHttpRequest): z.infer<T> {
@@ -412,11 +426,12 @@ function bodyOf<T extends z.ZodType>(schema: T, request: AdaptedHttpRequest): z.
 /** Routes `/v1/app/tasks/{id}/design-review/*`; undefined for any other path. Every handler checks the caller's authority itself. */
 export async function routeDesignReview(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   const match = DESIGN_REVIEW_ROUTE.exec(url.pathname);
-  if (match === null || request.method !== "POST") return undefined;
+  if (match === null || (request.method !== "POST" && !(request.method === "GET" && match[2] === "approve"))) return undefined;
   if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
   const env = envOf(deps, caller);
   const taskId = match[1]!;
   const action = match[2]!;
+  if (request.method === "GET") return confirmationCard(env, taskId);
   const plain = z.object({ requestId: Request }).strict();
   if (action === "first") { bodyOf(plain, request); return designFirst(env, taskId); }
   if (action === "skip") return skip(env, taskId, bodyOf(plain, request).requestId);
@@ -429,6 +444,9 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
   const choice = SPEND_CHOICES[action.slice("spend/".length)];
   if (choice === undefined) throw agentXError("NOT_FOUND", "route not found");
   const body = bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200) }).strict(), request);
+  // A repeat of a choice that was made: the earlier answer, before anything is read again (once chosen, the card no longer asks).
+  const earlier = await decisionStoreOf(env).findDecision({ orgId: caller.orgId, developerId: caller.developerId }, body.requestId);
+  if (earlier !== undefined && earlier.cardId === `approve_spend:${taskId}` && earlier.reason === choice) return { outcome: "done", choice, replay: true };
   const result = await designSpendChoiceHandler(spendPortsOf(env))(caller, { taskId, choice, requestId: body.requestId, shownDigest: body.shownDigest });
   return { outcome: "done", choice: result.choice };
 }
@@ -454,8 +472,9 @@ async function planHint(env: Env, task: DeveloperTaskRecord, workflow: WorkflowS
  * has no design review and the project does not run one: the view is then exactly what it was.
  */
 export function designActionsFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller): (task: DeveloperTaskRecord) => Promise<DesignActionsView | undefined> {
-  const env = envOf(deps, caller);
   return async (task) => {
+    // Built per call, not up front: `envOf` builds the task dependencies, which carry this very function.
+    const env = envOf(deps, caller);
     const workflow = task.workflow;
     if (workflow === undefined || task.closedAt !== undefined || task.orgId !== caller.orgId || workflow.definitionVersion !== "1.1.0") return undefined;
     const review = workflow.designReview;
