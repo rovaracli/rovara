@@ -15,7 +15,7 @@ function host(entries: readonly TreeEntryListing[], over: { truncated?: boolean;
   return { listTree, readText } satisfies KeyHost;
 }
 const request = (over: Partial<Parameters<typeof expectedEnvironmentKey>[1]> = {}): Parameters<typeof expectedEnvironmentKey>[1] => ({
-  repositories: [REPO], commits: new Map([["svc", "d".repeat(40)]]), detectorGlobs: [], testEnvRevision: 3, secretNames: ["NPM_TOKEN"], baseImageDigest: BASE, ...over,
+  orgId: "org_aaaaaaaaaaaaaaaaaaaa", repositories: [REPO], commits: new Map([["svc", "d".repeat(40)]]), detectorGlobs: [], testEnvRevision: 3, secretNames: ["NPM_TOKEN"], baseImageDigest: BASE, ...over,
 });
 const TREE: TreeEntryListing[] = [{ path: "src", mode: "040000", type: "tree", sha: blob("9") }, file("package.json", "1"), file("package-lock.json", "2"), file("src/index.ts", "3"), file("README.md", "4")];
 
@@ -91,6 +91,27 @@ describe("the key", () => {
 });
 
 describe("the cache", () => {
+  it("is per company: one company never gets a hit from another company's listing of the same repository and commit", async () => {
+    const cache = new KeyListingCache();
+    const mine = host(TREE);
+    const theirs = host([...TREE, file("pyproject.toml", "6")]);
+    const keyA = await expectedEnvironmentKey(mine, request({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" }), cache);
+    const keyB = await expectedEnvironmentKey(theirs, request({ orgId: "org_bbbbbbbbbbbbbbbbbbbb" }), cache);
+    expect(theirs.listTree).toHaveBeenCalledTimes(1);
+    expect(keyB).not.toBe(keyA);
+    // the same company again is a hit, for the listing and for the text
+    await expectedEnvironmentKey(mine, request({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" }), cache);
+    expect(mine.listTree).toHaveBeenCalledTimes(1);
+    const tree = [...TREE, file(".devcontainer/devcontainer.json", "a")];
+    const texts = { ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "x" } }' };
+    const a = host(tree, { texts }); const b = host(tree, { texts });
+    const other = { commits: new Map([["svc", "e".repeat(40)]]) };
+    await expectedEnvironmentKey(a, request({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", ...other }), cache);
+    await expectedEnvironmentKey(b, request({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", ...other }), cache);
+    expect(a.readText).toHaveBeenCalledTimes(1);
+    expect(b.readText).toHaveBeenCalledTimes(1);
+  });
+
   it("lists a commit once, again for another commit, and never keeps a cut or failed listing", async () => {
     const cache = new KeyListingCache();
     const h = host(TREE);

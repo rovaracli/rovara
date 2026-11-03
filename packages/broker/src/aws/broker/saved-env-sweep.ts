@@ -5,7 +5,7 @@
 //     retired: its compute and volume are deleted through the workspace deletion path every workspace uses, the workspace is marked CLOSED and given an expiry, and an operation that was still live is ended;
 //   - otherwise the marker is looked at again in ten minutes.
 // A workspace whose compute cannot be deleted just now (it is starting or stopping) is looked at again; nothing here throws into the sweep.
-import { UpdateCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, UpdateCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
 import { endBuildJob } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
@@ -59,7 +59,12 @@ export async function sweepSavedEnvBuilds(dependencies: AwsBrokerDependencies, l
         }
         // The build is over. The job, if it is still the project's, was never recorded.
         if (current !== undefined) await endBuildJob(deps, ids, listed.jobId, operationEnded ? "operation_failed" : "lease_expired");
-        if (await retireBuildWorkspace(dependencies, marker.workspaceId, marker.operationId, nowMs)) {
+        const retired = await retireBuildWorkspace(dependencies, marker.workspaceId, marker.operationId, listed.jobId, nowMs);
+        if (retired === "foreign") {
+          // The workspace is not the one this job made (its operation names another job, or none): it is left alone and the marker is dropped.
+          log("saved_env.marker_dropped", { reason: "workspace_not_the_jobs" });
+          await send(new DeleteCommand({ TableName: table, Key: markerKey(listed.jobId) }));
+        } else if (retired === "retired") {
           await send(new UpdateCommand({
             TableName: table, Key: markerKey(listed.jobId), UpdateExpression: "SET retiredAt = :now REMOVE #pk, #sort",
             ExpressionAttributeNames: { "#pk": WORKFLOW_DISPATCH_DUE_INDEX.partitionKey, "#sort": WORKFLOW_DISPATCH_DUE_INDEX.sortKey }, ExpressionAttributeValues: { ":now": new Date(nowMs).toISOString() },
@@ -84,17 +89,21 @@ export async function sweepSavedEnvBuilds(dependencies: AwsBrokerDependencies, l
 /**
  * Deletes the build workspace's compute and storage through the workspace deletion path, then marks the workspace CLOSED (with an expiry) and ends an operation that was still live. False when the compute cannot
  * be deleted just now (the sweep looks again). A workspace that is not there, or already CLOSED, is done.
+ * Before anything is deleted the workspace's operation must name THIS job (`savedEnvJobId`): a workspace whose operation names another job, or none (or has no record), is not what the marker says it is, and is
+ * left alone (`foreign`: the caller drops the marker).
  */
-export async function retireBuildWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string, operationId: string, nowMs: number): Promise<boolean> {
+export async function retireBuildWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string, operationId: string, jobId: string, nowMs: number): Promise<"retired" | "later" | "foreign"> {
   const send = (command: unknown): Promise<unknown> => (dependencies.documentClient as unknown as { send(command: unknown): Promise<unknown> }).send(command);
   const item = ((await send(new GetCommand({ TableName: dependencies.tableName, Key: workspaceKey(workspaceId), ConsistentRead: true }))) as { Item?: Row }).Item;
-  if (item === undefined) return true;
+  if (item === undefined) return "retired";
   const parsed = WorkspaceInstanceSchema.safeParse(workspaceRecordFields(item));
-  if (!parsed.success) return false;
+  if (!parsed.success) return "later";
+  const linked = ((await send(new GetCommand({ TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), ConsistentRead: true }))) as { Item?: { savedEnvJobId?: unknown } }).Item;
+  if (linked?.savedEnvJobId !== jobId) return "foreign";
   if (parsed.data.status !== "CLOSED") {
     try { await deleteWorkspaceCompute(dependencies, parsed.data); } catch (error) {
       log("saved_env.workspace_delete_failed", { error: error instanceof Error ? error.name : "unknown" });
-      return false;
+      return "later";
     }
     const at = new Date(nowMs).toISOString();
     await send(new UpdateCommand({
@@ -109,5 +118,5 @@ export async function retireBuildWorkspace(dependencies: AwsBrokerDependencies, 
     ConditionExpression: "attribute_exists(pk) AND (#status = :accepted OR #status = :dispatching OR #status = :running)", ExpressionAttributeNames: { "#status": "status", "#error": "error" },
     ExpressionAttributeValues: { ":failed": "FAILED", ":at": new Date(nowMs).toISOString(), ":error": "the saved image rebuild ended", ":accepted": "ACCEPTED", ":dispatching": "DISPATCHING", ":running": "RUNNING" },
   })).catch((error: unknown) => { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; });
-  return true;
+  return "retired";
 }

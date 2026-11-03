@@ -751,7 +751,7 @@ describe("links, on the real tree (review A1, A3)", () => {
     });
     const brokerKey = await expectedEnvironmentKey(
       { listTree: async () => ({ truncated: false, entries: listing }), readText: async (_repository, _commit, file) => (existsSync(join(a.fresh.root, "svc", file)) ? readFile(join(a.fresh.root, "svc", file), "utf8") : undefined) },
-      { repositories: [{ name: "svc", url: "https://github.com/acme/svc.git" }], commits: new Map([["svc", a.commit]]), detectorGlobs: a.input.detectorGlobs, testEnvRevision: a.input.approved.revision, secretNames: a.input.secretNames, baseImageDigest: a.input.baseImageDigest },
+      { orgId: "org_aaaaaaaaaaaaaaaaaaaa", repositories: [{ name: "svc", url: "https://github.com/acme/svc.git" }], commits: new Map([["svc", a.commit]]), detectorGlobs: a.input.detectorGlobs, testEnvRevision: a.input.approved.revision, secretNames: a.input.secretNames, baseImageDigest: a.input.baseImageDigest },
     );
     expect(brokerKey).toMatch(/^[a-f0-9]{64}$/u);
     const matching = await world();

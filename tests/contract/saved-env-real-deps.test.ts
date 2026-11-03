@@ -165,12 +165,12 @@ describe("the bindings", () => {
     const key = await hooked.deps.currentKey(TEST_ORG, NAME, heads);
     const same = await expectedEnvironmentKey(
       { listTree: async () => ({ truncated: false, entries: LISTING }), readText: async () => undefined },
-      { repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: ["HOOK_TOKEN"], baseImageDigest: DIGEST },
+      { orgId: TEST_ORG, repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: ["HOOK_TOKEN"], baseImageDigest: DIGEST },
     );
     expect(key).toBe(same);
     const otherSecret = await expectedEnvironmentKey(
       { listTree: async () => ({ truncated: false, entries: LISTING }), readText: async () => undefined },
-      { repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: [], baseImageDigest: DIGEST },
+      { orgId: TEST_ORG, repositories: [{ name: "web", url: "https://github.com/acme/web.git" }], commits: heads, detectorGlobs: ["package.json", "extra/**"], testEnvRevision: 1, secretNames: [], baseImageDigest: DIGEST },
     );
     expect(key).not.toBe(otherSecret);
   });

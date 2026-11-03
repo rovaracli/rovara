@@ -20,6 +20,8 @@ export interface KeyHost {
 }
 
 export interface KeyRequest {
+  /** The company the listing is read for: part of the cache key, so one company never gets a hit from another's listing. */
+  orgId: string;
   repositories: ReadonlyArray<{ name: string; url: string }>;
   /** The commit of each repository, by repository name: exactly these repositories. */
   commits: ReadonlyMap<string, string>;
@@ -29,13 +31,13 @@ export interface KeyRequest {
   baseImageDigest: string;
 }
 
-/** A small cache of listings by repository and commit. */
+/** A small cache of listings by company, repository and commit. */
 export class KeyListingCache {
   private readonly trees = new Map<string, { truncated: boolean; entries: readonly TreeEntryListing[] }>();
   private readonly texts = new Map<string, string | undefined>();
   constructor(private readonly max = 32) {}
-  async tree(host: KeyHost, repository: { name: string; url: string }, commit: string): Promise<{ truncated: boolean; entries: readonly TreeEntryListing[] } | undefined> {
-    const key = `${repository.url}\n${commit}`;
+  async tree(host: KeyHost, orgId: string, repository: { name: string; url: string }, commit: string): Promise<{ truncated: boolean; entries: readonly TreeEntryListing[] } | undefined> {
+    const key = `${orgId}\n${repository.url}\n${commit}`;
     const known = this.trees.get(key);
     if (known !== undefined) return known;
     const listed = await host.listTree(repository, commit);
@@ -45,8 +47,8 @@ export class KeyListingCache {
     }
     return listed;
   }
-  async text(host: KeyHost, repository: { name: string; url: string }, commit: string, path: string): Promise<string | undefined> {
-    const key = `${repository.url}\n${commit}\n${path}`;
+  async text(host: KeyHost, orgId: string, repository: { name: string; url: string }, commit: string, path: string): Promise<string | undefined> {
+    const key = `${orgId}\n${repository.url}\n${commit}\n${path}`;
     if (this.texts.has(key)) return this.texts.get(key);
     const text = await host.readText(repository, commit, path);
     // Only an answer is kept: a file that could not be read is asked for again.
@@ -66,14 +68,14 @@ export async function expectedEnvironmentKey(host: KeyHost, request: KeyRequest,
     for (const repository of request.repositories) {
       const commit = request.commits.get(repository.name);
       if (commit === undefined) return undefined;
-      const tree = await cache.tree(host, repository, commit);
+      const tree = await cache.tree(host, request.orgId, repository, commit);
       // A truncated listing is no listing: a key over part of the tree would miss the files past the cut.
       if (tree === undefined || tree.truncated) return undefined;
       const entries = new Map(tree.entries.filter((entry) => entry.type !== "tree").map((entry) => [entry.path, entry]));
       repositories.push({
         repositoryId: repository.name,
         paths: [...entries.keys()],
-        readText: async (path) => { const entry = entries.get(path); return entry?.type === "blob" ? cache.text(host, repository, commit, path).catch(() => undefined) : undefined; },
+        readText: async (path) => { const entry = entries.get(path); return entry?.type === "blob" ? cache.text(host, request.orgId, repository, commit, path).catch(() => undefined) : undefined; },
         hashFile: async (path) => { const entry = entries.get(path); return entry !== undefined && entry.type === "blob" && isRegularBlobMode(entry.mode) ? blobKeyHash(entry.sha) : undefined; },
       });
     }

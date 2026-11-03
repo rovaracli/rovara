@@ -572,3 +572,31 @@ describe("settling the end of a build", () => {
     expect(s.marker()).toMatchObject({ orgId: TEST_ORG, projectId: NAME, jobId: s.job.jobId, workspaceId: s.begun.workspaceId, operationId: s.begun.operationId });
   });
 });
+
+describe("a workspace that is not the job's", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("is left alone, and the marker is dropped, when its operation names another job or none", async () => {
+    for (const link of ["another-job", undefined] as const) {
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+      const r = await world();
+      const job = await r.queue();
+      const begun = await r.start();
+      if (!begun.started) throw new Error("not started");
+      r.t.deleteEc2Session?.mockClear();
+      const operationRow = r.t.db.get(`WORKSPACE#${begun.workspaceId}`, `OPERATION#${begun.operationId}`) as Record<string, unknown>;
+      const { savedEnvJobId: _gone, ...without } = operationRow;
+      void _gone;
+      r.t.db.set(link === undefined ? without : { ...operationRow, savedEnvJobId: link });
+      await r.t.finish(begun.workspaceId, begun.operationId, "FAILED", { error: "x" });
+      r.w.clock.now += 11 * 60_000;
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await sweepSavedEnvBuilds(r.dependencies, 10, { SAVED_ENV_ENABLED: "1" });
+      expect(r.t.deleteEc2Session, String(link)).not.toHaveBeenCalled();
+      expect((r.t.db.get(`WORKSPACE#${begun.workspaceId}`, "META") as Record<string, unknown>).status, String(link)).not.toBe("CLOSED");
+      expect(r.t.db.get(`SAVED_ENV_BUILD_START#${job.jobId}`, "START"), String(link)).toBeUndefined();
+      vi.useRealTimers();
+    }
+  });
+});

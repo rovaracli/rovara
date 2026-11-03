@@ -161,7 +161,7 @@ export function realSavedEnvDeps(input: Pick<AwsBrokerDependencies, "documentCli
       const inputs = await savedEnvBuildInputsOf(current, orgId, project);
       if (inputs === undefined) return undefined;
       const repositories = workerProjectDefinition((await requireLatestProject(current, orgId, project)).definition).repositories.map((repository) => ({ name: repository.name, url: repository.url }));
-      return expectedEnvironmentKey(savedEnvKeyHost(current, orgId), { repositories, commits: heads, detectorGlobs: inputs.detectorGlobs, testEnvRevision: inputs.revision, secretNames: inputs.secretNames, baseImageDigest: inputs.baseImageDigest }, keyCache);
+      return expectedEnvironmentKey(savedEnvKeyHost(current, orgId), { orgId, repositories, commits: heads, detectorGlobs: inputs.detectorGlobs, testEnvRevision: inputs.revision, secretNames: inputs.secretNames, baseImageDigest: inputs.baseImageDigest }, keyCache);
     },
     defaultHeads: (orgId, project) => savedEnvDefaultHeads(dependencies(), orgId, project),
     keep: async () => SAVED_ENV_KEEP_DEFAULT,
