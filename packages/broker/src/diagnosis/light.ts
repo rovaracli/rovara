@@ -7,7 +7,7 @@
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
 import {
-  DIAGNOSIS_REFUSALS, DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
+  DIAGNOSIS_REFUSALS, DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
   DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
   type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
 } from "@agentx/contracts";
@@ -48,6 +48,8 @@ export interface DiagnosisDependencies extends DiagnosisCoreDependencies {
   context: DiagnosisContextPorts;
   /** DG-1 S1: the organization's daily ceiling on the light diagnoses Rovara pays for (Public). Absent: `DIAGNOSIS_ROVARA_PAID_ORG_LIMITS`. */
   rovaraPaidLimits?: DiagnosisOrgCap | undefined;
+  /** DG-3: the install-wide daily ceiling, in cents, on the light diagnoses Rovara pays for across all organizations (the packed setting `fg`). Absent: `DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS`. */
+  rovaraPaidGlobalCents?: number | undefined;
 }
 
 export type DiagnosisCaller = { orgId: OrgId; developerId: string };
@@ -149,7 +151,7 @@ export async function startLightDiagnosis(deps: DiagnosisDependencies, caller: D
   const rendered = renderDiagnosisContext(facts, nonceFor(deps.context.tagKey, diagnosisId));
   const admitted = await admitDiagnosis(deps, {
     orgId: caller.orgId, developerId: caller.developerId, requestId: body.data.requestId, tier, errorRef: facts.errorRef, project: subject.project, context: rendered.text,
-    ...(deps.edition === "public" /* the edition where Rovara pays for the turn (`rovaraPaysForLight`) */ ? { rovaraPaid: deps.rovaraPaidLimits ?? DIAGNOSIS_ROVARA_PAID_ORG_LIMITS } : {}),
+    ...(deps.edition === "public" /* the edition where Rovara pays for the turn (`rovaraPaysForLight`) */ ? { rovaraPaid: deps.rovaraPaidLimits ?? DIAGNOSIS_ROVARA_PAID_ORG_LIMITS, rovaraPaidGlobalCentsPerDay: deps.rovaraPaidGlobalCents ?? DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS } : {}),
   });
   const request = await readDiagnosisRequest(deps, caller.orgId, admitted.diagnosisId);
   if (request === undefined) throw unavailable();
@@ -189,13 +191,13 @@ export async function requesterMayStillBeAnswered(deps: DiagnosisCoreDependencie
 }
 
 /** The waiting diagnosis for the service's model-access call: its project, its requester and the right to answer (undefined: refuse). */
-export async function waitingForKey(deps: DiagnosisCoreDependencies, value: unknown): Promise<{ orgId: OrgId; project: string; requester: string } | undefined> {
+export async function waitingForKey(deps: DiagnosisCoreDependencies, value: unknown): Promise<{ orgId: OrgId; diagnosisId: string; project: string; requester: string } | undefined> {
   if (!deps.enabled) throw notFound();
   const ref = DiagnosisRefSchema.safeParse(value);
   if (!ref.success) return undefined;
   const waiting = await waitingDiagnosis(deps, ref.data);
   if (waiting === undefined || !(await requesterMayStillBeAnswered(deps, ref.data.orgId, waiting))) return undefined;
-  return { orgId: ref.data.orgId, project: waiting.request.project, requester: waiting.requester };
+  return { orgId: ref.data.orgId, diagnosisId: ref.data.diagnosisId, project: waiting.request.project, requester: waiting.requester };
 }
 
 /** The context of one waiting diagnosis, after its requester's right to the error was read again. Throws a fixed error and the service then reports the diagnosis failed. */

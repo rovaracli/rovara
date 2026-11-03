@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { DIAGNOSIS_PREFILL_ALLOW as BROKER_ALLOW } from "@agentx/contracts"; // the package the broker itself imports
 import { describe, expect, it } from "vitest";
-import { DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_APPLY_BUTTON_LABEL, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN, DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "../../packages/contracts/src/index.js";
+import { DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_APPLY_BUTTON_LABEL, DIAGNOSIS_HELD_WORDS, DiagnosisProposalOutcomeSchema, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN, DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "../../packages/contracts/src/index.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { completeDiagnosis, startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { proposeDiagnosisChange, type DiagnosisProposePorts } from "../../packages/broker/src/diagnosis/propose.js";
@@ -17,7 +17,7 @@ const answer = (value: unknown) => JSON.stringify(value);
 const mergeChange = (extra: Record<string, unknown> = {}) => ({ kind: "settings_change", target: "code_settings", path: "mergeMethod", from: "squash", to: "merge", citations: [`doc:merge-method "${MERGE_QUOTE}"`], ...extra });
 const deviceChange = (extra: Record<string, unknown> = {}) => ({ kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: ".devcontainer/devcontainer.json", to: ".devcontainer/web/devcontainer.json", citations: [`repo:web:.devcontainer/web/devcontainer.json@${COMMIT} "image"`], ...extra });
 
-function ports(overrides: Partial<{ mergeMethod: string; configPath: string | undefined; hasContainer: boolean; revision: number; file: (path: string) => string | undefined | Error; noReader: boolean; repositories: Array<{ name: string; url: string }>; defaultBranchFile: (path: string) => string | undefined | Error; noDefaultBranchReader: boolean }> = {}) {
+function ports(overrides: Partial<{ mergeMethod: string; configPath: string | undefined; hasContainer: boolean; revision: number; file: (path: string) => string | undefined | Error; noReader: boolean; repositories: Array<{ name: string; url: string }>; defaultBranchFile: (path: string) => string | undefined | Error; noDefaultBranchReader: boolean; updateResult: unknown }> = {}) {
   const calls = { put: [] as unknown[][], update: [] as unknown[][], read: [] as unknown[][], defaultRead: [] as unknown[][] };
   const settings: CodeSettings = { allowSelfApproval: false, mergeMethod: (overrides.mergeMethod ?? "squash") as "squash", codeReviewers: [], revision: 3 };
   const value: DiagnosisProposePorts = {
@@ -28,7 +28,7 @@ function ports(overrides: Partial<{ mergeMethod: string; configPath: string | un
     }),
     codeSettings: async () => settings,
     putCodeSettings: async (...args) => { calls.put.push(args); return new StatusReply(200, {}); },
-    updateSettings: async (...args) => { calls.update.push(args); return {}; },
+    updateSettings: async (...args) => { calls.update.push(args); return overrides.updateResult ?? {}; },
     ...(overrides.noDefaultBranchReader === true ? {} : { readDefaultBranchFile: async (...args: unknown[]) => {
       calls.defaultRead.push(args);
       const read = (overrides.defaultBranchFile ?? (() => '{ "image": "node:22" }'))(String(args[2]));
@@ -87,6 +87,23 @@ describe("raising a change through the ordinary route", () => {
     const [event] = w.audit.recordedBy("diagnosis.proposal_raised");
     expect(event?.facts).toMatchObject({ proposalKind: "settings_change" });
     expect(JSON.stringify(w.audit.recorded())).not.toContain("merge commit");
+  });
+
+  it("DG-4: a dev container change that the settings route HELD (a token caller's commands wait for their check, TE-4) is answered as held, never as applied", async () => {
+    const w = diagnosisWorld();
+    const id = await ready(w, [deviceChange()]);
+    const held = { requestId: randomUUID(), fields: ["devcontainer"], status: "checking", heldAt: "2026-11-02T10:00:00.000Z" };
+    const p = ports({ updateResult: { project: {}, warnings: [], held } });
+    const reply = await propose(w, p.value, id, MAX, 1);
+    expect(reply).toEqual({ diagnosisId: id, index: 1, target: "setup_item", outcome: "held" });
+    expect(DiagnosisProposalOutcomeSchema.safeParse(reply).success).toBe(true);
+    expect(DIAGNOSIS_HELD_WORDS).toMatch(/^Held: /u);
+    expect(DIAGNOSIS_HELD_WORDS).toMatch(/Nothing has been applied yet/u);
+    // A save that was made (a browser session's) is still applied.
+    const saved = ports({ updateResult: { project: {}, warnings: [] } });
+    w.retried();
+    const id2 = await ready(w, [deviceChange()]);
+    await expect(propose(w, saved.value, id2, MAX, 1)).resolves.toMatchObject({ outcome: "applied" });
   });
 
   it("the dev container path: the settings save, as the maintainer, marked as the agent's, keeping the container's repository and changing only the path", async () => {

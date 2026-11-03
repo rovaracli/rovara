@@ -40,13 +40,37 @@ describe("who pays for a light diagnosis", () => {
     expect(args[1]).toBe(ORG_A);
     expect(args[2]).toBe("web");
     expect(args[3]).toBeUndefined();
-    expect(args[6]).toEqual({ rovaraPays: true });
+    expect(args[6]).toEqual({ rovaraPays: { claimKey: expect.any(Function) as unknown } });
     // A request cannot ask for a payer, a budget or a person: the body is strict.
     for (const extra of [{ rovaraPays: true }, { payer: "rovara" }, { developerId: ARJUN }, { maxBudgetUsd: 1000 }]) {
       expect(DiagnosisModelAccessRequestSchema.safeParse({ orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1", ...extra }).success).toBe(false);
       await expect(handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: status.diagnosisId, turnId: "Ev1234567890", ...extra }), "/v1/diagnoses/model-access")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     }
     expect(mint).toHaveBeenCalledTimes(1);
+  });
+
+  it("DG-3: a diagnosis takes ONE Rovara-paid key: a second model-access call for it (a retry, a redelivery) is refused by the claim the route hands the mint, and another diagnosis is not affected", async () => {
+    const w = diagnosisWorld({ edition: "public" });
+    const first = await startLightDiagnosis(w.diagnosis, w.caller(PRIYA), { requestId: randomUUID(), errorRef: w.ref() });
+    const t = service(w, "public");
+    // The mint is played as the real one plays it: it asks the claim first and mints nothing when it is refused.
+    mint.mockImplementation(async (...args: unknown[]) => {
+      const options = args[6] as { rovaraPays?: { claimKey(): Promise<boolean> } };
+      if (options.rovaraPays !== undefined && !(await options.rovaraPays.claimKey())) throw new Error("already claimed");
+      return { baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 };
+    });
+    try {
+      const ask = (id: string) => handleDiagnosisServiceRoute(t.dependencies, t.dependencies.diagnosisService, t.request("/diagnoses/model-access", { orgId: ORG_A, diagnosisId: id, turnId: `Ev${randomUUID().replaceAll("-", "").slice(0, 12)}` }), "/v1/diagnoses/model-access");
+      await expect(ask(first.diagnosisId)).resolves.toMatchObject({ statusCode: 200 });
+      await expect(ask(first.diagnosisId)).rejects.toThrow("already claimed");
+      await expect(ask(first.diagnosisId)).rejects.toThrow("already claimed");
+      w.retried();
+      const second = await startLightDiagnosis(w.diagnosis, w.caller(ARJUN), { requestId: randomUUID(), errorRef: w.ref() });
+      await expect(ask(second.diagnosisId)).resolves.toMatchObject({ statusCode: 200 });
+    } finally {
+      mint.mockReset();
+      mint.mockImplementation((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); });
+    }
   });
 
   it("Enterprise: the customer's own account and limits. The key is asked for in the requester's name, with no Rovara payment", async () => {

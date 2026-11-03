@@ -16,6 +16,7 @@ import { defaultBranchFileReader } from "../../diagnosis/default-branch-file.js"
 import type { GitHubTokenScope } from "../../github-app.js";
 import { githubScope } from "./scope-helpers.js";
 import { completeDiagnosis, prepareDiagnosisTurn, waitingForKey, type DiagnosisCoreDependencies } from "../../diagnosis/light.js";
+import { claimDiagnosisKey } from "../../diagnosis/store.js";
 import { diagnosisEnabled } from "../../diagnosis/switch.js";
 import { json } from "../json-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -78,5 +79,5 @@ export async function handleDiagnosisServiceRoute(
   if (waiting === undefined) throw agentXError("NOT_FOUND", "route not found");
   const edition = dependencies.editionPolicy?.edition ?? "public";
   const requester: OperationRequester | undefined = rovaraPaysForLight(edition) ? undefined : { kind: "developer", developerId: waiting.requester, provider: "oidc" };
-  return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, rovaraPaysForLight(edition) ? { rovaraPays: true } : {}), request.requestId);
+  return json(await mintChatTurnKey(dependencies, waiting.orgId, waiting.project, requester, { turnId, model, classifierModel }, undefined, rovaraPaysForLight(edition) ? { rovaraPays: { claimKey: () => claimDiagnosisKey(diagnosis, waiting.orgId, waiting.diagnosisId) } } : {}), request.requestId);
 }

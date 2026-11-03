@@ -170,6 +170,8 @@ export const BROKER_SETTINGS = {
   liveRedirect: { code: "rd", variable: "LIVE_REDIRECT_ENABLED" },
   // Live interaction F2 to F4: Fix with agent (diagnosis; switch `fd`, stack parameter LiveFixEnabled, "0" by default): the broker reads it as LIVE_FIX_ENABLED, and the diagnosis routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveFix: { code: "fd", variable: "LIVE_FIX_ENABLED" },
+  // DG-3: the most Rovara pays for Fix with agent's light diagnoses across all companies of the install in a UTC day, in cents (stack parameter LiveFixRovaraPaidDailyCents, 10000 by default; 0 pauses them). A number, so it is plain text. Packed setting, not a Lambda variable (ENV-ROOM).
+  liveFixRovaraPaidCents: { code: "fg", variable: "LIVE_FIX_ROVARA_PAID_DAILY_CENTS" },
   // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
   // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },

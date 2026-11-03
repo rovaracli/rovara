@@ -32,7 +32,7 @@ beforeEach(() => { admit.mockClear(); minted.mockClear(); routes.sourceId = "rov
 describe("a Rovara-paid turn", () => {
   it("is let through unmetered on a fixed small key for Rovara's own AI, with no customer to bill and no admission", async () => {
     admit.mockRejectedValueOnce(new Error("the customer's budget is spent"));
-    const key = await mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: true });
+    const key = await mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: { claimKey: async () => true } });
     expect(key).toMatchObject({ apiKey: "fake-proxy-key", baseUrl: "https://proxy.example.invalid" });
     expect(admit).not.toHaveBeenCalled();
     expect(minted).toHaveBeenCalledTimes(1);
@@ -45,9 +45,26 @@ describe("a Rovara-paid turn", () => {
     expect(input["maxBudgetUsd"]).toBeLessThanOrEqual(0.5);
   });
 
+  it("DG-3: mints ONE key per diagnosis: when the diagnosis already took its key (a retry, a redelivery) nothing is minted and the caller is told the proxy could not issue a key", async () => {
+    let taken = false;
+    const claimKey = async () => { if (taken) return false; taken = true; return true; };
+    await expect(mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: { claimKey } })).resolves.toMatchObject({ apiKey: "fake-proxy-key" });
+    await expect(mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: { claimKey } })).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+    await expect(mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev9999999999" }, undefined, { rovaraPays: { claimKey } })).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+    expect(minted).toHaveBeenCalledTimes(1);
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it("DG-3: the claim is taken only when Rovara's own key is about to be minted: a turn routed to the company's own source claims nothing", async () => {
+    routes.sourceId = "company-bedrock";
+    const claimKey = vi.fn(async () => true);
+    await mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: { claimKey } }).catch(() => undefined);
+    expect(claimKey).not.toHaveBeenCalled();
+  });
+
   it("is paid like any chat turn when the route is not Rovara's own AI (the company's own source)", async () => {
     routes.sourceId = "company-bedrock";
-    await mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: true }).catch(() => undefined);
+    await mintChatTurnKey(dependencies, ORG, "web", undefined, { turnId: "Ev1234567890" }, undefined, { rovaraPays: { claimKey: async () => true } }).catch(() => undefined);
     expect(admit).toHaveBeenCalledTimes(1);
     expect(admit.mock.calls[0]![1]).toMatchObject({ orgId: ORG, project: "web", payer: { kind: "project", project: "web" }, path: "CHAT" });
   });

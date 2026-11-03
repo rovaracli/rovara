@@ -5,12 +5,13 @@
 //   DIAGNOSIS#<id> / RECORD    the result: the proposals (already read again by `sanitizeDiagnosis`), the model and the cost. No error text, no requester. 30 days.
 //   DIAGNOSIS#<id> / PERSON    who asked. Kept apart, with an index (`DIAGNOSISBY#<developerId>`), so erasing the person removes the link and keeps the diagnosis.
 //   DIAGNOSISOPEN              "one open diagnosis per ErrorRef": the same error answers the existing diagnosis for an hour, and spends nothing.
-//   DIAGNOSISRATE              the counters: light 10 an hour per person and 50 a day per project; deep 3 a day per person.
+//   DIAGNOSISRATE              the counters: light 10 an hour per person and 50 a day per project; deep 3 a day per person; and, where Rovara pays, the organization's day of turns and cents.
+//   DIAGNOSISGLOBAL            DG-3: the one UTC day's Rovara-paid turns and cents across every organization of the install (the day is part of the key, so no clock can reset it).
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
-  agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
+  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
+  agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisGlobalDayKey, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
   type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type OrgId,
 } from "@agentx/contracts";
 
@@ -98,14 +99,25 @@ export async function readDiagnosisRequester(deps: DiagnosisStoreDependencies, o
 
 interface RateStep { room: boolean; item: TransactItem }
 
+/**
+ * DG-3 (clock skew): the window a counter is in. The broker's own clock decides (`deps.now`, never a request's time). A stored window NEWER than this instance's, by at most one window, was written by an
+ * instance whose clock runs ahead; it is the window still (the count is kept and the stored window is written back), never a reason to start again from zero. A stored window older than this one is a
+ * finished window (a new count), and one more than a window ahead is not trusted (a new count under this instance's own window).
+ */
+function windowOf(nowMs: number, windowMs: number, seenWindow: unknown): { window: number; inWindow: boolean } {
+  const window = Math.floor(nowMs / windowMs) * windowMs;
+  if (typeof seenWindow !== "number") return { window, inWindow: false };
+  if (seenWindow === window) return { window, inWindow: true };
+  return seenWindow > window && seenWindow - window <= windowMs ? { window: seenWindow, inWindow: true } : { window, inWindow: false };
+}
+
 /** One fixed-window counter as a step of the request's own transaction: the new count is set from the count that was read, conditional on it, so two requests cannot both take the last place. */
 async function rateStep(deps: DiagnosisStoreDependencies, key: { pk: string; sk: string }, orgId: OrgId, limit: number, windowMs: number): Promise<RateStep> {
   const stored = await getItem(deps, key);
-  const nowMs = deps.now();
-  const window = Math.floor(nowMs / windowMs) * windowMs;
   const seenWindow = stored?.["windowStart"], seenCount = stored?.["count"];
   if (stored !== undefined && (typeof seenWindow !== "number" || typeof seenCount !== "number")) throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
-  const count = typeof seenWindow === "number" && seenWindow === window && typeof seenCount === "number" ? seenCount : 0;
+  const { window, inWindow } = windowOf(deps.now(), windowMs, seenWindow);
+  const count = inWindow && typeof seenCount === "number" ? seenCount : 0;
   return {
     room: count < limit,
     item: { Update: {
@@ -130,11 +142,9 @@ async function orgCapStep(deps: DiagnosisStoreDependencies, orgId: OrgId, limits
   const key = diagnosisRateKey(orgId, "light_org", "all");
   const turnCents = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
   const stored = await getItem(deps, key);
-  const nowMs = deps.now();
-  const window = Math.floor(nowMs / DAY_MS) * DAY_MS;
   const seenWindow = stored?.["windowStart"], seenCount = stored?.["count"], seenCents = stored?.["cents"];
   if (stored !== undefined && (typeof seenWindow !== "number" || typeof seenCount !== "number" || typeof seenCents !== "number")) throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
-  const inWindow = typeof seenWindow === "number" && seenWindow === window;
+  const { window, inWindow } = windowOf(deps.now(), DAY_MS, seenWindow);
   const count = inWindow && typeof seenCount === "number" ? seenCount : 0;
   const cents = inWindow && typeof seenCents === "number" ? seenCents : 0;
   return {
@@ -148,6 +158,33 @@ async function orgCapStep(deps: DiagnosisStoreDependencies, orgId: OrgId, limits
         ":type": "DIAGNOSIS_RATE", ":org": orgId, ":window": window, ":next": count + 1, ":nextCents": cents + turnCents, ":expires": Math.floor((window + 2 * DAY_MS) / 1000),
         ...(stored === undefined ? {} : { ":seenWindow": seenWindow, ":seenCount": seenCount, ":seenCents": seenCents }),
       },
+    } },
+  };
+}
+
+/**
+ * DG-3: the whole install's day of Rovara-paid light diagnoses, across every organization, as one more step of the request's own transaction. The day is the UTC day of the broker's own clock and is part of
+ * the item's key, so a new day is a new item (no clock can reset a counter, and a clock a few seconds ahead only starts tomorrow's count early). The count is ADDED, never set from what was read: the
+ * condition `cents <= most` is checked by DynamoDB against the stored figure, so two requests that read the same figure cannot both take the last place. `percent` is the day's spend as a share of the
+ * ceiling, logged for the CloudWatch alarm.
+ */
+async function globalCapStep(deps: DiagnosisStoreDependencies, centsPerDay: number): Promise<RateStep & { cents: number; percent: number }> {
+  const turnCents = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
+  const day = new Date(deps.now()).toISOString().slice(0, 10);
+  const key = diagnosisGlobalDayKey(day);
+  const stored = await getItem(deps, key);
+  const seenCents = stored?.["cents"];
+  if (stored !== undefined && typeof seenCents !== "number") throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
+  const cents = typeof seenCents === "number" ? seenCents : 0;
+  const next = cents + turnCents;
+  return {
+    room: next <= centsPerDay, cents: next, percent: centsPerDay > 0 ? Math.round(100 * next / centsPerDay) : 100,
+    item: { Update: {
+      TableName: deps.tableName, Key: key,
+      UpdateExpression: "SET entityType = :type, #expires = :expires ADD #count :one, cents :turn",
+      ConditionExpression: "attribute_not_exists(pk) OR cents <= :most",
+      ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
+      ExpressionAttributeValues: { ":type": "DIAGNOSIS_RATE_GLOBAL", ":expires": Math.floor(Date.parse(`${day}T00:00:00.000Z`) / 1000) + 3 * 86_400, ":one": 1, ":turn": turnCents, ":most": centsPerDay - turnCents },
     } },
   };
 }
@@ -170,6 +207,8 @@ export interface DiagnosisAdmission {
   basedOn?: string | undefined;
   /** Light, where Rovara pays for the turn (Public): the organization's daily ceiling on those turns. Absent: the customer pays, and only the person and project limits apply. */
   rovaraPaid?: DiagnosisOrgCap | undefined;
+  /** DG-3: with `rovaraPaid`, the install-wide daily ceiling on those turns across all organizations, in cents. Absent: `DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS`. */
+  rovaraPaidGlobalCentsPerDay?: number | undefined;
 }
 
 const isCancelled = (error: unknown): boolean => (error as { name?: string }).name === "TransactionCanceledException";
@@ -194,15 +233,23 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
     if (existing !== undefined) return { diagnosisId: existing, created: false };
     const nowMs = deps.now();
     const org = input.tier === "light" && input.rovaraPaid !== undefined ? await orgCapStep(deps, orgId, input.rovaraPaid) : undefined;
+    const global = org === undefined ? undefined : await globalCapStep(deps, input.rovaraPaidGlobalCentsPerDay ?? DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS);
     const steps = input.tier === "light"
       ? [
         await rateStep(deps, diagnosisRateKey(orgId, "light_person", input.developerId), orgId, DIAGNOSIS_RATE.lightPerPersonPerHour, HOUR_MS),
         await rateStep(deps, diagnosisRateKey(orgId, "light_project", input.project), orgId, DIAGNOSIS_RATE.lightPerProjectPerDay, DAY_MS),
         ...(org === undefined ? [] : [org]),
+        ...(global === undefined ? [] : [global]),
       ]
       : [await rateStep(deps, diagnosisRateKey(orgId, "deep_person", input.developerId), orgId, DIAGNOSIS_RATE.deepPerPersonPerDay, DAY_MS)];
-    // The person's and the project's limits are answered first (in their own words); the organization's ceiling is the last thing that can refuse.
-    if (steps.some((step) => !step.room)) throw agentXError("TOO_MANY_REQUESTS", input.tier !== "light" ? DIAGNOSIS_REFUSALS.deepRateLimited : org !== undefined && !org.room && steps.slice(0, 2).every((step) => step.room) ? DIAGNOSIS_REFUSALS.orgRateLimited : DIAGNOSIS_REFUSALS.rateLimited);
+    // The person's and the project's limits are answered first (in their own words), then the organization's ceiling, and the install-wide one is the last thing that can refuse.
+    if (steps.some((step) => !step.room)) {
+      if (input.tier !== "light") throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.deepRateLimited);
+      if (!steps.slice(0, 2).every((step) => step.room)) throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.rateLimited);
+      if (org !== undefined && !org.room) throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.orgRateLimited);
+      deps.log?.({ event: "diagnosis.rovara_paid_global_full", globalDayCents: global?.cents });
+      throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.globalRateLimited);
+    }
     const waitingUntil = Math.floor(nowMs / 1000) + REQUEST_WAITING_SECONDS;
     const keep = Math.floor(nowMs / 1000) + DIAGNOSIS_RETENTION_DAYS * 86_400;
     try {
@@ -216,7 +263,8 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
         { Put: { TableName: deps.tableName, Item: { ...diagnosisKey(orgId, diagnosisId, "PERSON"), entityType: "DIAGNOSIS_PERSON", orgId, diagnosisId, requestedBy: input.developerId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
         { Put: { TableName: deps.tableName, Item: { ...diagnosisByPersonKey(orgId, input.developerId, diagnosisId), entityType: "DIAGNOSIS_BY", orgId, diagnosisId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
       ] as never }));
-      if (org !== undefined) deps.log?.({ event: "diagnosis.rovara_paid", orgId, orgDayCents: org.cents });
+      // `globalDayPercent` is what the CloudWatch alarm watches (80 % of the install-wide ceiling).
+      if (org !== undefined) deps.log?.({ event: "diagnosis.rovara_paid", orgId, orgDayCents: org.cents, ...(global === undefined ? {} : { globalDayCents: global.cents, globalDayPercent: global.percent }) });
       return { diagnosisId, created: true };
     } catch (error) {
       // Another call won the place at the same moment: if it was this very request or the same error, that is the answer.
@@ -227,6 +275,31 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
       // Only the counters moved (another person's request): read them again, a bounded number of times, without blaming the asker.
       if (attempt >= RATE_RACE_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", "Couldn't diagnose this now.");
     }
+  }
+}
+
+// ---- one key per diagnosis
+
+/**
+ * DG-3: the one place a Rovara-paid diagnosis takes its model key. Records, on the waiting request and in one conditional write, that its key is being minted; the first call wins and every later one
+ * (a repeat of the model-access call, an SQS redelivery, a retry of the chat service) answers false, so each diagnosis costs Rovara at most ONE key (DIAGNOSIS_LIGHT_BUDGET_USD) and the per-company and
+ * install-wide ceilings, which count one turn per admitted diagnosis, are hard limits. The key is never stored (a retry cannot be given the same one back), so a mint that fails after this claim ends the
+ * diagnosis as failed and the person asks again (a new diagnosis, counted again). Only a request that is still waiting can be claimed.
+ */
+export async function claimDiagnosisKey(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<boolean> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: "SET keyClaimedAt = :now",
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #state = :queued AND attribute_not_exists(keyClaimedAt)", ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":now": new Date(deps.now()).toISOString(), ":org": orgId, ":queued": "queued" },
+    }));
+    return true;
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") {
+      deps.log?.({ event: "diagnosis.key_already_claimed", orgId });
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -262,12 +335,19 @@ export async function settleDiagnosis(
   return true;
 }
 
-/** Lets go of the error's open place, only if it is still this diagnosis's. */
-export async function freeOpenPlace(deps: DiagnosisStoreDependencies, orgId: OrgId, request: Pick<DiagnosisRequest, "diagnosisId" | "tier" | "errorRef">): Promise<void> {
-  await deps.documentClient.send(new UpdateCommand({
+/**
+ * Lets go of the error's open place, only if it is still this diagnosis's. A failure is ignored (the place ends by itself within the hour), unless `strict`: then a place that is no longer this
+ * diagnosis's (or is not there) is fine, and any other failure is thrown, so a caller that must not leave it blocked (erase) can try again.
+ */
+export async function freeOpenPlace(
+  deps: DiagnosisStoreDependencies, orgId: OrgId, request: Pick<DiagnosisRequest, "diagnosisId" | "tier" | "errorRef">, options: { strict?: boolean } = {},
+): Promise<void> {
+  const freed = deps.documentClient.send(new UpdateCommand({
     TableName: deps.tableName, Key: diagnosisOpenKey(orgId, request.tier, errorRefKey(request.errorRef)), UpdateExpression: "SET expiresAt = :zero",
     ConditionExpression: "diagnosisId = :id", ExpressionAttributeValues: { ":zero": 0, ":id": request.diagnosisId },
-  })).catch(() => undefined);
+  }));
+  if (options.strict !== true) { await freed.catch(() => undefined); return; }
+  try { await freed; } catch (error) { if ((error as { name?: string }).name !== "ConditionalCheckFailedException") throw error; }
 }
 
 /** The diagnosis that is open for this error and tier now, if any (its id). */
@@ -308,11 +388,12 @@ export async function eraseDiagnosisPerson(deps: Pick<DiagnosisStoreDependencies
   for (const item of response.Items ?? []) {
     const diagnosisId = item["diagnosisId"];
     if (typeof diagnosisId === "string" && item["orgId"] === orgId) {
-      // The request first: it names the error whose open place is let go. The result and the request go before the link, so a stopped pass leaves the index to resume from.
-      const request = await readDiagnosisRequest({ ...deps, now: Date.now }, orgId, diagnosisId).catch(() => undefined);
+      // DG-3: the error's open place is let go FIRST, while the request that names the error is still there, and a failure to read the request or to let the place go stops this pass (the index item stays, the
+      // next pass resumes): an erase never deletes the request and leaves its error blocked for the rest of the hour. A request that is not there (it expired) has an open place that ended with it.
+      const request = await readDiagnosisRequest({ ...deps, now: Date.now }, orgId, diagnosisId);
+      if (request !== undefined) await freeOpenPlace({ ...deps, now: Date.now }, orgId, request, { strict: true });
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "RECORD") }));
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST") }));
-      if (request !== undefined) await freeOpenPlace({ ...deps, now: Date.now }, orgId, request);
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "PERSON") }));
     }
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"] as string, sk: item["sk"] as string } }));
