@@ -397,7 +397,7 @@ export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS
 
 const RELATIVE_PATH = /^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,199}$/u;
 /** The setup proposal's `DEVCONTAINER_PATH_PATTERN`, repeated: this file is part of the browser entry and imports nothing heavy. A test keeps the two the same. */
-export const DIAGNOSIS_DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
+export const DIAGNOSIS_DEVCONTAINER_PATH_PATTERN = /^(?:\.devcontainer\/(?:(?![.]+\/)[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
 
 function prefillValueOk(rule: PrefillValue, value: unknown): boolean {
   // A value that redaction would change looks like a secret (a token, a key, a credential in a URL): never prefilled, on any target or path.
