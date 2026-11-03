@@ -149,7 +149,7 @@ const databaseUrl = (port: number, password = PASSWORD): string => `postgres://a
 const runAsync = (command: string, args: string[], env: Record<string, string>): Promise<{ status: number | null; stderr: string }> => new Promise((resolve) => {
   const child = spawn(command, args, { cwd: FIXTURE, env: { PATH: process.env["PATH"] ?? "", ...env }, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
-  child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   child.once("close", (status) => resolve({ status, stderr }));
 });
 const runDatabaseTest = (env: Record<string, string>) => runAsync(process.execPath, ["--test", join(FIXTURE, "tests", "planted-state.test.js")], env);
