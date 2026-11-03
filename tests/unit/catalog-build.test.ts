@@ -17,6 +17,10 @@ import {
 } from "@agentx/contracts";
 import {
   CatalogBuildError,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  createCommandPort,
+  execCommandPort,
+  type ExecFileFn,
   buildPinnedCatalog,
   ecrScanPort,
   childrenProblem,
@@ -423,5 +427,43 @@ describe("the real ports (against fake commands and a fake ECR; nothing is run)"
     expect((await scanWith([{ imageScanStatus: { status: "FAILED" } }]).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).status).toBe("failed");
     expect((await scanWith(Array.from({ length: 4 }, () => ({ imageScanStatus: { status: "IN_PROGRESS" } }))).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).status).toBe("pending");
     await expect(scanWith([Object.assign(new Error("denied"), { name: "AccessDeniedException" })]).port({ id: "x@1", repositoryName: "r/x", platform: "linux/arm64", digest })).rejects.toThrow("denied");
+  });
+});
+
+describe("the command port", () => {
+  const recorded = () => {
+    const calls: Array<{ file: string; args: string[]; options: Parameters<ExecFileFn>[2] }> = [];
+    const exec: ExecFileFn = async (file, args, options) => {
+      calls.push({ file, args, options });
+      return { stdout: Buffer.from("ok") };
+    };
+    return { calls, exec };
+  };
+
+  it("kills a command after ten minutes by default, and keeps the output and environment handling as before", async () => {
+    const { calls, exec } = recorded();
+    expect(DEFAULT_COMMAND_TIMEOUT_MS).toBe(600_000);
+    expect((await createCommandPort({ exec }).run("skopeo", ["inspect"], { env: { A: "1" } })).toString()).toBe("ok");
+    expect(calls[0]?.options).toMatchObject({ encoding: "buffer", timeout: 600_000, killSignal: "SIGKILL" });
+    expect(calls[0]?.options.env["A"]).toBe("1");
+    expect(typeof execCommandPort.run).toBe("function");
+  });
+
+  it("takes a timeout per port and per command", async () => {
+    const { calls, exec } = recorded();
+    const port = createCommandPort({ timeoutMs: 5_000, exec });
+    await port.run("a", []);
+    await port.run("b", [], { timeoutMs: 7_000 });
+    expect(calls.map((call) => call.options.timeout)).toEqual([5_000, 7_000]);
+    await expect(port.run("c", [], { timeoutMs: 0 })).rejects.toThrow(/timeout/u);
+  });
+
+  it("says a killed command timed out, and passes other failures through unchanged", async () => {
+    const killed: ExecFileFn = async () => { throw Object.assign(new Error("Command failed"), { killed: true, signal: "SIGKILL" }); };
+    await expect(createCommandPort({ timeoutMs: 3_000, exec: killed }).run("syft", [])).rejects.toThrow(/syft was killed after 3 s/u);
+    const failed: ExecFileFn = async () => { throw Object.assign(new Error("exit 2"), { code: 2 }); };
+    await expect(createCommandPort({ exec: failed }).run("syft", [])).rejects.toThrow("exit 2");
+    const tooBig: ExecFileFn = async () => { throw Object.assign(new Error("maxBuffer"), { killed: true, code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }); };
+    await expect(createCommandPort({ exec: tooBig }).run("syft", [])).rejects.toThrow("maxBuffer");
   });
 });

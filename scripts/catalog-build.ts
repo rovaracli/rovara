@@ -311,14 +311,31 @@ export async function writeCatalogBuild(output: CatalogBuildOutput, where: { cat
 // ---- real ports (built only by main)
 
 export interface CommandPort {
-  run(file: string, args: readonly string[], options?: { env?: Record<string, string> }): Promise<Buffer>;
+  run(file: string, args: readonly string[], options?: { env?: Record<string, string>; timeoutMs?: number }): Promise<Buffer>;
 }
-export const execCommandPort: CommandPort = {
-  async run(file, args, options) {
-    const { stdout } = await execFileAsync(file, [...args], { encoding: "buffer", maxBuffer: SBOM_MAX_BYTES, env: { ...process.env, ...options?.env } });
-    return stdout;
-  },
-};
+/** The longest one external command (skopeo, syft, oras) may run before it is killed. Per-command override: `options.timeoutMs`; per-port override: `createCommandPort`. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/** The shape of the promisified `execFile` the command port uses (a seam, so a test can check the options without starting a process). */
+export type ExecFileFn = (file: string, args: string[], options: { encoding: "buffer"; maxBuffer: number; env: NodeJS.ProcessEnv; timeout: number; killSignal: NodeJS.Signals }) => Promise<{ stdout: Buffer }>;
+/** A command port that kills the child (SIGKILL) when it has run longer than its timeout, and says so in the error. Output and exit handling are `execFile`'s, as before. */
+export function createCommandPort(input: { timeoutMs?: number; exec?: ExecFileFn } = {}): CommandPort {
+  const exec: ExecFileFn = input.exec ?? ((file, args, options) => execFileAsync(file, args, options));
+  const defaultTimeout = input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  return {
+    async run(file, args, options) {
+      const timeout = options?.timeoutMs ?? defaultTimeout;
+      if (!Number.isInteger(timeout) || timeout <= 0) throw new Error("a command timeout is a positive number of milliseconds");
+      try {
+        const { stdout } = await exec(file, [...args], { encoding: "buffer", maxBuffer: SBOM_MAX_BYTES, env: { ...process.env, ...options?.env }, timeout, killSignal: "SIGKILL" });
+        return stdout;
+      } catch (error) {
+        if (typeof error === "object" && error !== null && (error as { killed?: unknown }).killed === true && (error as { code?: unknown }).code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error(`${file} was killed after ${String(Math.round(timeout / 1000))} s (the command timeout)`, { cause: error });
+        throw error;
+      }
+    },
+  };
+}
+export const execCommandPort: CommandPort = createCommandPort();
 
 /** `docker://<registry>/<repository>:<first 32 digits of the digest>`: the tag is a handle, derived from the digest, and immutable in the repository. */
 export const tagFor = (digest: string): string => digest.slice(0, 32);

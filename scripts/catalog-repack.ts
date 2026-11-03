@@ -24,13 +24,14 @@
 // same CommandPort catalog-build uses; they are only built by `main()`, which runs only when this file is the entry point. Nothing here is imported by the broker or the worker, and no secret is read: the registry
 // credential is ECR's short token, kept in a 0600 file inside a 0700 directory.
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { CATALOG_FILE, CatalogIdSchema, CatalogRegistryHostSchema, ServiceCatalogSchema, catalogRepositoryName } from "@agentx/contracts";
-import { DEFAULT_CATALOG_DIR, SourceRefSchema, execCommandPort, tagFor, type CommandPort } from "./catalog-build.js";
+import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, SourceRefSchema, createCommandPort, tagFor, type CommandPort } from "./catalog-build.js";
 
 export const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
 export const DOCKER_MANIFEST_LIST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.list.v2+json";
@@ -319,6 +320,10 @@ export async function repackCatalog(input: { catalog: unknown; repack: unknown; 
           refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves a manifest that hashes to ${hexOf(landed).slice(0, 12)} where upstream's digest is ${child.digest.slice(0, 12)}`);
           throw new RepackError(refusals);
         }
+        if (landed.byteLength !== child.size) {
+          refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves ${String(landed.byteLength)} bytes where upstream's descriptor says ${String(child.size)}`);
+          throw new RepackError(refusals);
+        }
       }
       const built = buildRepackIndex({ children: plan.selected, sourceReference: plan.sourceReference, sourceDigest: plan.sourceDigest, repackedAt: time });
       const tag = tagFor(built.digest);
@@ -395,24 +400,29 @@ export function skopeoRegistryPort(input: { commands: CommandPort; authFile: str
 
 /** oras pushes the index manifest by digest, tags it, and resolves a tag. The bytes go to the tool through a staged file (never a command line). */
 export function orasIndexPort(input: { commands: CommandPort; authFile: string; stage: (bytes: Uint8Array) => Promise<{ path: string; cleanup: () => Promise<void> }> }): IndexPort {
+  const resolveTag: IndexPort["resolveTag"] = async ({ repository, tag }) => {
+    try {
+      const resolved = (await input.commands.run("oras", ["resolve", "--registry-config", input.authFile, `${repository}:${tag}`])).toString("utf8").trim();
+      return /^sha256:[a-f0-9]{64}$/u.test(resolved) ? resolved : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   return {
     async push({ repository, digest, mediaType, bytes, tag }) {
       const staged = await input.stage(bytes);
       try {
         await input.commands.run("oras", ["manifest", "push", "--registry-config", input.authFile, "--media-type", mediaType, `${repository}@sha256:${digest}`, staged.path]);
-        await input.commands.run("oras", ["tag", "--registry-config", input.authFile, `${repository}@sha256:${digest}`, tag]);
       } finally {
         await staged.cleanup();
       }
+      // The repositories have immutable tags, which may refuse even a same-digest re-tag on a retry: look first. Already this digest: nothing to do. Another digest: stop (the tag is never moved). Missing: tag.
+      const existing = await resolveTag({ repository, tag });
+      if (existing === `sha256:${digest}`) return;
+      if (existing !== undefined) throw new Error(`the tag ${tag} already points at ${existing}, not at ${digest}`);
+      await input.commands.run("oras", ["tag", "--registry-config", input.authFile, `${repository}@sha256:${digest}`, tag]);
     },
-    async resolveTag({ repository, tag }) {
-      try {
-        const resolved = (await input.commands.run("oras", ["resolve", "--registry-config", input.authFile, `${repository}:${tag}`])).toString("utf8").trim();
-        return /^sha256:[a-f0-9]{64}$/u.test(resolved) ? resolved : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    resolveTag,
   };
 }
 
@@ -431,29 +441,130 @@ export const fileOutputPort: OutputPort = {
 // ---- command line
 
 export function repackUsage(): string {
-  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>]
-Run by an operator, with the owner's OK, on STAGING only: ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/catalog-repack.ts ... (account 944937319445, us-west-2). Needs skopeo and oras on PATH.
+  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}]
+Run by an operator, with the owner's OK, on STAGING only: ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/catalog-repack.ts ... (account 944937319445, us-west-2). Needs skopeo and oras (1.2.0 or newer, for
+\`oras resolve\`) on PATH. Upstream images must be anonymously pullable (no upstream credential is used); Docker Hub limits anonymous pulls, so a run may stop on a rate limit: wait and retry (see --repack-time).
 For each non-retired catalog entry it reads the upstream INDEX named in the repack file, checks its bytes hash to the digest the operator reviewed, picks exactly the catalog's platforms (linux/arm64 and linux/amd64; an
 index without either is refused), copies those child manifests and blobs BY DIGEST into <host>/rovara-catalog/<environment>/<repository>, pushes a new OCI index holding only those children (annotations: source reference,
 source digest, repack time) by digest, tags it with the first 32 digits of its digest, reads it back and checks it, then writes the provenance record and the sources file catalog-build reads (--sources).
 The repack file is { "schemaVersion": 1, "entries": { "<catalog id>": "host/path@sha256:<upstream index digest>" } } with every non-retired entry listed. A tag is refused. Child digests are never changed.
-The attestation manifests (unknown/unknown) in the upstream index are dropped and listed in the provenance record. Any refusal stops the run before the sources file is written. The same inputs and --repack-time
-give the same index digests; without --repack-time the time is now, so a new run makes a new index.\n`;
+The attestation manifests (unknown/unknown) in the upstream index are dropped and listed in the provenance record. Any refusal stops the run before the sources file is written.
+The repack time is part of each index. RETRY an aborted run with the SAME --repack-time (the first run's time; use the one printed at its start): the indexes already pushed and tagged for completed entries are then
+reused, not orphaned beside new ones, and the immutable tags are not touched again. Without --repack-time the time is now, so a new run makes new indexes.
+The output directories must exist or be creatable and writable, the two output files must differ, and an existing sources or provenance file is not overwritten unless --overwrite is given.
+Each skopeo and oras command is killed after --command-timeout-seconds.\n`;
+}
+
+export interface RepackArgs {
+  repackFile: string;
+  env: string;
+  registry: string;
+  sourcesOut: string;
+  provenanceOut: string;
+  catalogDir: string;
+  repackTime: string | undefined;
+  overwrite: boolean;
+  commandTimeoutMs: number;
+}
+const VALUE_FLAGS = ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--catalog-dir", "--repack-time", "--command-timeout-seconds"] as const;
+const BOOLEAN_FLAGS = ["--overwrite", "--help"] as const;
+
+/** Reads the command line. A flag it does not know, a flag given twice, a missing value, a bad time and identical output files are all errors (a typo must not be ignored). Paths are resolved. */
+export function parseRepackArgs(argv: readonly string[]): RepackArgs {
+  const found = new Map<string, string>();
+  let overwrite = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index] as string;
+    if ((BOOLEAN_FLAGS as readonly string[]).includes(arg)) {
+      if (arg === "--overwrite") overwrite = true;
+      continue;
+    }
+    if (!(VALUE_FLAGS as readonly string[]).includes(arg)) throw new Error(`unknown argument ${arg}`);
+    const value = argv[index + 1];
+    if (value === undefined || value === "" || value.startsWith("--")) throw new Error(`${arg} needs a value`);
+    if (found.has(arg)) throw new Error(`${arg} is given twice`);
+    found.set(arg, value);
+    index += 1;
+  }
+  const need = (flag: string): string => {
+    const value = found.get(flag);
+    if (value === undefined) throw new Error("--repack-file, --env, --registry, --sources-out and --provenance-out are required");
+    return value;
+  };
+  const repackTime = found.get("--repack-time");
+  if (repackTime !== undefined && Number.isNaN(Date.parse(repackTime))) throw new Error("--repack-time is not a time");
+  const seconds = Number(found.get("--command-timeout-seconds") ?? String(DEFAULT_COMMAND_TIMEOUT_MS / 1000));
+  if (!Number.isInteger(seconds) || seconds <= 0) throw new Error("--command-timeout-seconds is a positive whole number");
+  const args: RepackArgs = {
+    repackFile: resolve(need("--repack-file")),
+    env: need("--env"),
+    registry: need("--registry"),
+    sourcesOut: resolve(need("--sources-out")),
+    provenanceOut: resolve(need("--provenance-out")),
+    catalogDir: resolve(found.get("--catalog-dir") ?? DEFAULT_CATALOG_DIR),
+    repackTime,
+    overwrite,
+    commandTimeoutMs: seconds * 1000,
+  };
+  if (args.sourcesOut === args.provenanceOut) throw new Error("--sources-out and --provenance-out must be different files");
+  CatalogRegistryHostSchema.parse(args.registry);
+  catalogRepositoryName(args.env, "svc/check");
+  return args;
+}
+
+/** The file system the output check needs (a seam for tests). */
+export interface OutputCheckFs {
+  exists(path: string): Promise<boolean>;
+  /** Creates the directory when it is missing and throws when it cannot be written to. */
+  ensureWritableDirectory(path: string): Promise<void>;
+}
+export const nodeOutputCheckFs: OutputCheckFs = {
+  async exists(path) {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  async ensureWritableDirectory(path) {
+    await mkdir(path, { recursive: true });
+    await access(path, constants.W_OK);
+  },
+};
+
+/**
+ * Checked BEFORE anything is copied or pushed, so a run cannot get through all the registry work and then fail at the write: both output directories exist (or are created) and are writable, and neither output
+ * file exists unless `overwrite` is true (the sources file is what catalog-build reads, and the provenance record is the only record of what was repacked).
+ */
+export async function preflightOutputs(input: { sourcesFile: string; provenanceFile: string; overwrite: boolean }, fs: OutputCheckFs): Promise<void> {
+  if (resolve(input.sourcesFile) === resolve(input.provenanceFile)) throw new Error("--sources-out and --provenance-out must be different files");
+  for (const file of [input.sourcesFile, input.provenanceFile]) {
+    try {
+      await fs.ensureWritableDirectory(dirname(resolve(file)));
+    } catch (error) {
+      throw new Error(`the directory of ${file} does not exist and cannot be created, or is not writable${error instanceof Error ? ` (${error.message.slice(0, 120)})` : ""}`, { cause: error });
+    }
+  }
+  if (!input.overwrite) {
+    for (const file of [input.sourcesFile, input.provenanceFile]) {
+      if (await fs.exists(file)) throw new Error(`${file} already exists; it is not overwritten unless --overwrite is given`);
+    }
+  }
+}
+
+/** Everything `main` checks before it asks for a credential or touches a registry: the command line and the outputs. */
+export async function prepareRepackRun(argv: readonly string[], fs: OutputCheckFs): Promise<RepackArgs> {
+  const args = parseRepackArgs(argv);
+  await preflightOutputs({ sourcesFile: args.sourcesOut, provenanceFile: args.provenanceOut, overwrite: args.overwrite }, fs);
+  return args;
 }
 
 async function main(argv: string[]): Promise<void> {
-  const values = (flag: string): string[] => argv.flatMap((arg, index) => (arg === flag ? [argv[index + 1] ?? ""] : []));
-  const [repackFile] = values("--repack-file");
-  const [env] = values("--env");
-  const [registry] = values("--registry");
-  const [sourcesOut] = values("--sources-out");
-  const [provenanceOut] = values("--provenance-out");
-  const [repackTime] = values("--repack-time");
-  const catalogDir = resolve(values("--catalog-dir")[0] ?? DEFAULT_CATALOG_DIR);
-  if (!repackFile || !env || !registry || !sourcesOut || !provenanceOut) throw new Error("--repack-file, --env, --registry, --sources-out and --provenance-out are required");
-  if (repackTime !== undefined && Number.isNaN(Date.parse(repackTime))) throw new Error("--repack-time is not a time");
-  CatalogRegistryHostSchema.parse(registry);
-  catalogRepositoryName(env, "svc/check");
+  const args = await prepareRepackRun(argv, nodeOutputCheckFs);
+  const { registry, env, repackTime } = args;
+  const runTime = repackTime === undefined ? new Date() : new Date(repackTime);
+  process.stdout.write(`repack time ${runTime.toISOString()} (pass it as --repack-time to retry an aborted run)\n`);
   const { ECRClient, GetAuthorizationTokenCommand } = await import("@aws-sdk/client-ecr");
   const token = ((await new ECRClient({}).send(new GetAuthorizationTokenCommand({}))) as { authorizationData?: Array<{ authorizationToken?: string; proxyEndpoint?: string }> }).authorizationData?.[0];
   if (token?.authorizationToken === undefined || token.proxyEndpoint === undefined || token.proxyEndpoint.replace(/^https:\/\//u, "") !== registry) throw new Error("ECR gave no credential for the registry named by --registry");
@@ -462,14 +573,14 @@ async function main(argv: string[]): Promise<void> {
   const authFile = join(workDir, "config.json");
   try {
     await writeFile(authFile, JSON.stringify({ auths: { [registry]: { auth: token.authorizationToken } } }), { mode: 0o600 });
-    const commands = execCommandPort;
+    const commands = createCommandPort({ timeoutMs: args.commandTimeoutMs });
     let staged = 0;
     const output = await runRepack({
-      catalog: JSON.parse(await readFile(join(catalogDir, CATALOG_FILE), "utf8")) as unknown,
-      repack: JSON.parse(await readFile(resolve(repackFile), "utf8")) as unknown,
+      catalog: JSON.parse(await readFile(join(args.catalogDir, CATALOG_FILE), "utf8")) as unknown,
+      repack: JSON.parse(await readFile(args.repackFile, "utf8")) as unknown,
       env,
       registry,
-      outputs: { sourcesFile: resolve(sourcesOut), provenanceFile: resolve(provenanceOut) },
+      outputs: { sourcesFile: args.sourcesOut, provenanceFile: args.provenanceOut },
       ports: {
         registry: skopeoRegistryPort({ commands, authFile }),
         indexes: orasIndexPort({
@@ -481,11 +592,11 @@ async function main(argv: string[]): Promise<void> {
             return { path, cleanup: () => rm(path, { force: true }) };
           },
         }),
-        clock: { now: () => (repackTime === undefined ? new Date() : new Date(repackTime)) },
+        clock: { now: () => runTime },
         files: fileOutputPort,
       },
     });
-    process.stdout.write(`repacked ${String(Object.keys(output.sources.sources).length)} images; sources: ${resolve(sourcesOut)}; provenance: ${resolve(provenanceOut)}\n`);
+    process.stdout.write(`repacked ${String(Object.keys(output.sources.sources).length)} images; sources: ${args.sourcesOut}; provenance: ${args.provenanceOut}\n`);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

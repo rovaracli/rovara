@@ -10,12 +10,16 @@ import {
   RepackFileSchema,
   buildRepackIndex,
   orasIndexPort,
+  parseRepackArgs,
+  prepareRepackRun,
+  preflightOutputs,
   repackCatalog,
   repackUsage,
   runRepack,
   selectPlatforms,
   skopeoRegistryPort,
   type ClockPort,
+  type OutputCheckFs,
   type IndexPort,
   type OutputPort,
   type RegistryPort,
@@ -39,7 +43,7 @@ const childBytes = (id: string, platform: string): Buffer => Buffer.from(JSON.st
 const repositoryOf = (entry: { family: string }): string => `docker.io/library/${entry.family}`;
 
 /** An upstream index for a catalog entry. `platforms` default to the catalog's two plus noise (a 386 image and an attestation manifest). */
-function upstreamFor(entry: { id: string; family: string }, options: { platforms?: PlatformSpec[]; mediaType?: string; withAttestation?: boolean; childMediaType?: string } = {}): UpstreamImage {
+function upstreamFor(entry: { id: string; family: string }, options: { platforms?: PlatformSpec[]; mediaType?: string; withAttestation?: boolean; childMediaType?: string; sizeOffset?: number } = {}): UpstreamImage {
   const platforms = options.platforms ?? [{ os: "linux", architecture: "amd64" }, { os: "linux", architecture: "arm64", variant: "v8" }, { os: "linux", architecture: "386" }];
   const children = new Map<string, { digest: string; bytes: Buffer }>();
   const manifests: unknown[] = [];
@@ -47,7 +51,7 @@ function upstreamFor(entry: { id: string; family: string }, options: { platforms
     const key = `${platform.os}/${platform.architecture}${platform.variant === undefined ? "" : `/${platform.variant}`}`;
     const bytes = childBytes(entry.id, key);
     children.set(key, { digest: hex(bytes), bytes });
-    manifests.push({ mediaType: options.childMediaType ?? OCI_MANIFEST_MEDIA_TYPE, digest: `sha256:${hex(bytes)}`, size: bytes.byteLength, platform });
+    manifests.push({ mediaType: options.childMediaType ?? OCI_MANIFEST_MEDIA_TYPE, digest: `sha256:${hex(bytes)}`, size: bytes.byteLength + (options.sizeOffset ?? 0), platform });
   }
   const attestationDigests: string[] = [];
   if (options.withAttestation !== false) {
@@ -512,18 +516,46 @@ describe("the real ports build their commands from digests (and are not run)", (
     ]);
   });
 
-  it("oras pushes the index by digest, then tags it, and resolves the tag", async () => {
-    const { log, commands } = recorder({ oras: `sha256:${digest}\n` });
-    const staged: Array<{ bytes: Buffer }> = [];
-    const port = orasIndexPort({ commands, authFile: "/auth/config.json", stage: async (bytes) => { staged.push({ bytes: Buffer.from(bytes) }); return { path: "/stage/index.json", cleanup: async () => undefined }; } });
-    await port.push({ repository: destination("svc/postgres"), digest, mediaType: OCI_INDEX_MEDIA_TYPE, bytes: Buffer.from("{}"), tag: digest.slice(0, 32) });
+  /** A fake oras: `manifest push` stores nothing, `tag` records the tag, `resolve` prints the digest of an existing tag and fails (exit 1) for a missing one. */
+  const fakeOras = (tags: Record<string, string>) => {
+    const log: string[][] = [];
+    const commands: CommandPort = {
+      async run(file, args) {
+        log.push([file, ...args]);
+        if (args[0] === "resolve") {
+          const found = tags[args[args.length - 1] as string];
+          if (found === undefined) throw new Error("not found");
+          return Buffer.from(`${found}\n`);
+        }
+        if (args[0] === "tag") tags[`${(args[args.length - 2] as string).split("@")[0] as string}:${args[args.length - 1] as string}`] = (args[args.length - 2] as string).split("@")[1] as string;
+        return Buffer.from("");
+      },
+    };
+    const port = orasIndexPort({ commands, authFile: "/auth/config.json", stage: async () => ({ path: "/stage/index.json", cleanup: async () => undefined }) });
+    return { log, port, tags };
+  };
+  const pushInput = { repository: destination("svc/postgres"), digest, mediaType: OCI_INDEX_MEDIA_TYPE, bytes: Buffer.from("{}"), tag: digest.slice(0, 32) };
+  const tagRef = `${destination("svc/postgres")}:${digest.slice(0, 32)}`;
+  const pushArgs = ["oras", "manifest", "push", "--registry-config", "/auth/config.json", "--media-type", OCI_INDEX_MEDIA_TYPE, `${destination("svc/postgres")}@sha256:${digest}`, "/stage/index.json"];
+  const resolveArgs = ["oras", "resolve", "--registry-config", "/auth/config.json", tagRef];
+
+  it("oras pushes the index by digest, looks at the tag, tags it only when it is missing, and resolves the tag", async () => {
+    const { log, port } = fakeOras({});
+    await port.push(pushInput);
     expect(await port.resolveTag({ repository: destination("svc/postgres"), tag: digest.slice(0, 32) })).toBe(`sha256:${digest}`);
-    expect(log).toEqual([
-      ["oras", "manifest", "push", "--registry-config", "/auth/config.json", "--media-type", OCI_INDEX_MEDIA_TYPE, `${destination("svc/postgres")}@sha256:${digest}`, "/stage/index.json"],
-      ["oras", "tag", "--registry-config", "/auth/config.json", `${destination("svc/postgres")}@sha256:${digest}`, digest.slice(0, 32)],
-      ["oras", "resolve", "--registry-config", "/auth/config.json", `${destination("svc/postgres")}:${digest.slice(0, 32)}`],
-    ]);
-    expect(staged[0]?.bytes.toString()).toBe("{}");
+    expect(log).toEqual([pushArgs, resolveArgs, ["oras", "tag", "--registry-config", "/auth/config.json", `${destination("svc/postgres")}@sha256:${digest}`, digest.slice(0, 32)], resolveArgs]);
+  });
+
+  it("does not tag again when the tag already points at this digest (a retry in an immutable repository)", async () => {
+    const { log, port } = fakeOras({ [tagRef]: `sha256:${digest}` });
+    await port.push(pushInput);
+    expect(log).toEqual([pushArgs, resolveArgs]);
+  });
+
+  it("fails, and never moves the tag, when the tag already points at another digest", async () => {
+    const { log, port } = fakeOras({ [tagRef]: `sha256:${hex("other")}` });
+    await expect(port.push(pushInput)).rejects.toThrow(/already points at/u);
+    expect(log.some((entry) => entry[1] === "tag")).toBe(false);
   });
 
   it("the usage text names the flags, the digest rule and the staging guard", () => {
@@ -532,5 +564,78 @@ describe("the real ports build their commands from digests (and are not run)", (
     expect(text).toContain("staging-aws.sh");
     expect(text).toContain("tag is refused");
     expect(text).toContain("attestation");
+    expect(text).toContain("SAME --repack-time");
+    expect(text).toContain("anonymously pullable");
+    expect(text).toContain("rate limit");
+    expect(text).toContain("1.2.0");
+    for (const flag of ["--overwrite", "--command-timeout-seconds"]) expect(text).toContain(flag);
+  });
+});
+
+describe("child sizes", () => {
+  it("refuses a child whose landed manifest is not the size upstream's descriptor says", async () => {
+    const w = world({ upstream: (e) => upstreamFor(e, { sizeOffset: 1 }) });
+    const refusals = await refusalsOf(run(w));
+    expect(refusals[0]?.code).toBe("child_digest_changed");
+    expect(w.calls.pushes).toEqual([]);
+  });
+});
+
+describe("the command line and the output check", () => {
+  const base = ["--repack-file", "r.json", "--env", "staging", "--registry", REGISTRY, "--sources-out", "/o/sources.json", "--provenance-out", "/o/provenance.json"];
+  const fakeFs = (existing: string[] = [], unwritable: string[] = []) => {
+    const created: string[] = [];
+    const fs: OutputCheckFs = {
+      async exists(path) { return existing.includes(path); },
+      async ensureWritableDirectory(path) {
+        if (unwritable.includes(path)) throw new Error("EACCES");
+        created.push(path);
+      },
+    };
+    return { fs, created };
+  };
+
+  it("reads the flags, resolves the paths and defaults the time, overwrite and timeout", () => {
+    const args = parseRepackArgs(base);
+    expect(args).toMatchObject({ env: "staging", registry: REGISTRY, sourcesOut: "/o/sources.json", provenanceOut: "/o/provenance.json", repackTime: undefined, overwrite: false, commandTimeoutMs: 600_000 });
+    expect(parseRepackArgs([...base, "--overwrite", "--repack-time", NOW, "--command-timeout-seconds", "30"])).toMatchObject({ overwrite: true, repackTime: NOW, commandTimeoutMs: 30_000 });
+  });
+
+  it.each([
+    ["identical output files", [...base.slice(0, 7), "/o/x.json", "--provenance-out", "/o/x.json"]],
+    ["the same file under another spelling", [...base.slice(0, 7), "/o/x.json", "--provenance-out", "/o/../o/x.json"]],
+    ["an unknown flag (a typo)", [...base, "--overwite"]],
+    ["a flag given twice", [...base, "--env", "prod"]],
+    ["a missing value", [...base.slice(0, 8), "--registry"]],
+    ["a bad time", [...base, "--repack-time", "yesterday"]],
+    ["a bad timeout", [...base, "--command-timeout-seconds", "0"]],
+    ["a required flag missing", base.slice(2)],
+  ])("refuses %s", (_name, argv) => {
+    expect(() => parseRepackArgs(argv)).toThrow();
+  });
+
+  it("checks that both output directories exist or can be created and are writable", async () => {
+    const { fs, created } = fakeFs();
+    await preflightOutputs({ sourcesFile: "/a/sources.json", provenanceFile: "/b/provenance.json", overwrite: false }, fs);
+    expect(created).toEqual(["/a", "/b"]);
+    await expect(preflightOutputs({ sourcesFile: "/a/sources.json", provenanceFile: "/b/provenance.json", overwrite: false }, fakeFs([], ["/b"]).fs)).rejects.toThrow(/provenance.json/u);
+    await expect(preflightOutputs({ sourcesFile: "/a/sources.json", provenanceFile: "/b/provenance.json", overwrite: false }, fakeFs([], ["/a"]).fs)).rejects.toThrow(/sources.json/u);
+  });
+
+  it("runs the output check as part of preparing a run, before any credential or registry work", async () => {
+    await expect(prepareRepackRun(base, fakeFs(["/o/sources.json"]).fs)).rejects.toThrow(/already exists/u);
+    await expect(prepareRepackRun(base, fakeFs([], ["/o"]).fs)).rejects.toThrow(/cannot be created/u);
+    expect(await prepareRepackRun([...base, "--overwrite"], fakeFs(["/o/sources.json"]).fs)).toMatchObject({ overwrite: true });
+  });
+
+  it("refuses identical output files", async () => {
+    await expect(preflightOutputs({ sourcesFile: "/a/x.json", provenanceFile: "/a/../a/x.json", overwrite: true }, fakeFs().fs)).rejects.toThrow(/different files/u);
+  });
+
+  it("does not overwrite an existing sources or provenance file unless --overwrite is given", async () => {
+    const input = { sourcesFile: "/a/sources.json", provenanceFile: "/a/provenance.json" };
+    await expect(preflightOutputs({ ...input, overwrite: false }, fakeFs(["/a/sources.json"]).fs)).rejects.toThrow(/already exists/u);
+    await expect(preflightOutputs({ ...input, overwrite: false }, fakeFs(["/a/provenance.json"]).fs)).rejects.toThrow(/already exists/u);
+    await expect(preflightOutputs({ ...input, overwrite: true }, fakeFs(["/a/sources.json", "/a/provenance.json"]).fs)).resolves.toBeUndefined();
   });
 });
