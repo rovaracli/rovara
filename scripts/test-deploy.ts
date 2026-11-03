@@ -1290,10 +1290,26 @@ function recordOutput(context: ApplyContext, id: string, values: Record<string, 
   context.outputs.set(id, { ...context.outputs.get(id), ...values });
 }
 
+/** The staging build path's flavor switch (test services slice 1): the only code that sets the staging flavor, and it runs in this file alone. */
+export const CATALOG_FLAVOR_TOOL = "packages/contracts/tools/catalog-flavor.ts";
+
+/**
+ * Builds the contracts dist and the Lambdas with the STAGING catalog flavor: the switch first (it writes the flavor and the staging-only key list into the working tree), then `npm run build`. A build that skips the
+ * switch is a release-flavor build with the empty list, and trusts nothing extra. `restoreReleaseFlavor` undoes the switch when the deploy ends.
+ */
+export function buildStagingArtifacts(runner: Pick<Runner, "run">): void {
+  runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "staging"]);
+  runner.run("npm", ["run", "build"]);
+}
+/** Puts the working tree back to the committed release flavor and the empty staging key list (the compiled output is stale until the next build, and a release refuses stale output). */
+export function restoreReleaseFlavor(runner: Pick<Runner, "run">): void {
+  runner.run("npx", ["tsx", CATALOG_FLAVOR_TOOL, "release"]);
+}
+
 function runNpmBuild(context: ApplyContext): void {
   if (context.built) return;
-  context.runner.run("npm", ["run", "build"]);
   context.built = true;
+  buildStagingArtifacts(context.runner);
 }
 
 /** Uploads one object that must not already exist with other bytes, and reads back its version and checksum. */
@@ -2184,6 +2200,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   if (runner.capture("git", ["status", "--porcelain"]).stdout.trim() !== "") throw new Error("the working tree is dirty; commit first so the deployed bytes match the revision");
   const context = checkContext(args, runner, options, revision, outputDir);
+  try {
   // Before anything is pushed or changed: new Lambda code must not go onto a role that lacks a grant head needs.
   // Not for requalify-infra: its change set adds the renewal's role and policies (reviewed as Tier 3 by --check), so the deployed stack lacks every one of them by design.
   if (steps.some((step) => step.kind === "build-lambda-zip") && !args.only.includes("requalify-infra")) {
@@ -2197,6 +2214,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   // CJS) would otherwise replace working code on TEST, and a code-only change set has nothing that stops it.
   if (steps.some((step) => step.kind === "build-lambda-zip")) await assertLambdasLoad(context, args.only, renewalInstalled);
   for (const step of steps) await applyStep(context, step);
+  } finally {
+    // The build switched the tree to the staging flavor; whatever happened, it goes back to release and empty.
+    if (context.built) restoreReleaseFlavor(runner);
+  }
   console.log("\nTEST deploy complete.");
 }
 

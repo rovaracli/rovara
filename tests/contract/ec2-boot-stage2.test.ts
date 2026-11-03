@@ -45,6 +45,9 @@ const MOVED_FUNCTIONS = [
 const BLOCK_IMDS_WITH_COMMENT = /(?:^#[^\n]*\n)*^block_imds\(\) \{\n[\s\S]*?^\}\n/mu;
 
 const SETUP_ISOLATION_STATE_WITH_COMMENT = /(?:^#[^\n]*\n)*^setup_isolation_state\(\) \{\n[\s\S]*?^\}\n/mu;
+// Test services slice 1: the launcher's run directory (a tmpfs the worker gets at the same path) is the one other named-environment-only addition inside a moved function.
+const TEST_SERVICES_RUN_DIR_BLOCK = /^# Test services \(slice 1\): the run directory[^\n]*\n(?:#[^\n]*\n)*readonly TEST_SERVICES_RUN_DIR=[\s\S]*?^fi\n/mu;
+const TEST_SERVICES_RUN_DIR_VOLUME = /^if \[\[ "\$test_services_run_dir" == true \]\]; then args\+=\([^\n]*\n/mu;
 const SETUP_ISOLATION_ARGUMENT_WITH_COMMENT = /^# Setup runs need[^\n]*\nif named_environment; then args\+=\(--env "AGENTX_SETUP_ISOLATION=[^\n]*\n/mu;
 
 describe("boot-legacy.sh", () => {
@@ -105,7 +108,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     const moved = legacy.slice(legacy.indexOf(firstMoved), mainStart + 1).trimEnd();
     // Named exceptions: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it; and, since 2026-11-03, the reader of the
     // setup-isolation state file and the one line that hands its content to the worker (both named-environment only). Everything else is verbatim.
-    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "");
+    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "").replace(TEST_SERVICES_RUN_DIR_BLOCK, "").replace(TEST_SERVICES_RUN_DIR_VOLUME, "");
     expect(withoutSetupIsolation(stage2)).toContain(`\n${withoutSetupIsolation(moved)}\n`);
     for (const name of MOVED_FUNCTIONS) {
       expect(stage1, `${name} left boot.sh`).not.toContain(`\n${name}() {`);
@@ -123,7 +126,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
@@ -146,7 +149,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "instance_account_id", "write_test_services_environment", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });

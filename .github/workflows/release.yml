@@ -160,6 +160,11 @@ jobs:
       # output, which is gitignored: without this, a fresh checkout fails with
       # ERR_MODULE_NOT_FOUND before release:build even starts.
       - run: npm run build
+      # release:build reads the worker image's catalog-flavor label (scripts/release/image-flavor.ts) with skopeo and refuses any image not labelled release. The images are public ECR
+      # (public.ecr.aws, anonymous pull), so no registry login is needed here, as in the bundle job below, which installs skopeo the same way.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
       - env:
           VERSION: ${{ github.ref_name }}
           WORKER: ${{ needs.images.outputs.worker }}

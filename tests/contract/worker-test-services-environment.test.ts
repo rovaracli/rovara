@@ -101,8 +101,8 @@ describe("the run directory and the catalog in the image", () => {
     expect(launcher).toMatch(/if named_environment; then\n\s+if prepare_test_services_run_dir/u);
   });
   it("ships catalog.json and, once built, catalog.sig.json beside the pre-pull list (no key file: the trusted keys are compiled in)", () => {
-    expect(dockerfile).toContain("COPY environments/service-catalog/catalog*.json ./packages/worker/service-catalog/");
-    expect(dockerfile.indexOf("COPY --from=build /opt/agentx/packages/worker ./packages/worker")).toBeLessThan(dockerfile.indexOf("COPY environments/service-catalog/catalog*.json"));
+    expect(dockerfile).toContain("COPY --from=build /opt/agentx/environments/service-catalog/catalog*.json ./packages/worker/service-catalog/");
+    expect(dockerfile.indexOf("COPY --from=build /opt/agentx/packages/worker ./packages/worker")).toBeLessThan(dockerfile.indexOf("COPY --from=build /opt/agentx/environments/service-catalog/catalog*.json"));
     expect(dockerfile).not.toMatch(/service-catalog[^\n]*\.pem|trusted[-_]keys/iu);
   });
 });

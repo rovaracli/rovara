@@ -14,22 +14,46 @@ function files(directory: string, found: string[] = []): string[] {
   }
   return found;
 }
+// EVERY non-test file of every package (src, web, tools, bin, whatever else a package has), infra and scripts. The one file that defines the testing entry point is exempt by its exact path.
 const production = [
-  ...readdirSync(join(ROOT, "packages")).flatMap((name) => files(join(ROOT, "packages", name, "src"), [])).filter((path) => !path.includes("/src/testing")),
+  ...readdirSync(join(ROOT, "packages")).flatMap((name) => files(join(ROOT, "packages", name), [])),
   ...files(join(ROOT, "infra")), ...files(join(ROOT, "scripts")),
 ].map((path) => ({ path: relative(ROOT, path), text: readFileSync(path, "utf8") }));
-/** The only files that may define or wire the seams: the contracts package's own trust modules. */
+/** The only files that may define or wire the seams: the contracts package's own trust modules, each by its exact path (`testing.ts` is the entry point itself; nothing else called testing-anything is exempt). */
 const OWN = new Set(["packages/contracts/src/catalog-trust.ts", "packages/contracts/src/catalog-staging-keys.ts", "packages/contracts/src/catalog-trust-core.ts", "packages/contracts/src/catalog-load-core.ts", "packages/contracts/src/testing.ts"]);
 
+/** The seam names and paths, as they could be reached: a static import, a dynamic `import()`, a `require`, a relative path into the contracts package. Comments are not code. */
+const SEAM = /@agentx\/contracts\/testing|contracts\/(?:src\/|dist\/)?testing(?:\.[a-z]+)?\b|catalog-trust-core|catalog-load-core|loadSignedCatalogWith|trustedKeyPemsFor|trustedKeyPemsOf/u;
+const code = (text: string): string => text.split("\n").filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*") && !line.trim().startsWith("/*")).join("\n");
+const usesSeam = (text: string): boolean => SEAM.test(code(text));
+
 describe("the catalog trust seams", () => {
+  it("the detector sees every way in (positive controls)", () => {
+    for (const text of [
+      'import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";',
+      'const t = await import("@agentx/contracts/testing");',
+      'const t = await import(`@agentx/contracts/testing`);',
+      'const t = require("@agentx/contracts/testing");',
+      'import * as t from "../../contracts/src/testing.js";',
+      'const t = await import("../contracts/dist/testing.js");',
+      'import { trustedKeyPemsOf } from "./catalog-trust-core.js";',
+      'loadSignedCatalogWith(input, keys);',
+    ]) expect(usesSeam(text), text).toBe(true);
+    for (const text of ['// import "@agentx/contracts/testing"', ' * see @agentx/contracts/testing', 'import { loadSignedCatalog } from "@agentx/contracts";', 'const testing = true;']) expect(usesSeam(text), text).toBe(false);
+  });
+  it("covers the web packages and the non-src directories of every package, not only src", () => {
+    expect(production.some((file) => file.path.startsWith("packages/web/"))).toBe(true);
+    expect(production.some((file) => file.path.startsWith("packages/ui/"))).toBe(true);
+    expect(production.some((file) => file.path === "packages/contracts/tools/catalog-flavor.ts")).toBe(true);
+    expect(production.some((file) => /^packages\/[^/]+\/(?!src\/|web\/)/u.test(file.path))).toBe(true);
+  });
   it("scans real files (so a pass means something)", () => {
     expect(production.length).toBeGreaterThan(500);
     expect(production.some((file) => file.path === "packages/contracts/src/catalog-trust.ts")).toBe(true);
     expect(production.some((file) => file.path === "scripts/linux-check-test-services-live.ts")).toBe(true);
   });
   it("no production code imports the testing entry point or the cores behind it", () => {
-    const code = (text: string) => text.split("\n").filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*") && !line.trim().startsWith("/*")).join("\n");
-    const offenders = production.filter((file) => !OWN.has(file.path) && /@agentx\/contracts\/testing|contracts\/src\/testing|catalog-trust-core|catalog-load-core|loadSignedCatalogWith|trustedKeyPemsFor|trustedKeyPemsOf/u.test(code(file.text))).map((file) => file.path);
+    const offenders = production.filter((file) => !OWN.has(file.path) && usesSeam(file.text)).map((file) => file.path);
     expect(offenders).toEqual([]);
     // and the contracts package's own index does not export them
     const index = production.find((file) => file.path === "packages/contracts/src/index.ts")!.text;
