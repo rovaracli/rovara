@@ -77,6 +77,11 @@ export type DecisionItem =
    */
   | (ItemBase & { kind: "fix_setup"; cause: string; step: string; taskCount: number; knownFailingTests: number; unconfirmedFailing: number })
   /**
+   * Test services (TS24): a fake (fixture set) for one dependency, pinned by `contentVersion` (its digest). Counts and fixed words only; the sample pairs, schema, ignored paths and faults are the item's `details`, the
+   * broker's own redacted summary (`test-env/fixture-store.ts`). `schemaSynth` and `firstFromTestAccount` raise the card to high (no Approve, a full page with a fresh sign-in).
+   */
+  | (ItemBase & { kind: "approve_fixture_set"; dependency: string; origin: "recorded" | "written" | "imported"; entries: number; faults: number; scanClean: boolean; schemaSynth: boolean; firstFromTestAccount: boolean })
+  /**
    * SH12: a website the setup run needs, one card per host per project. `host` is a plain DNS name the broker checked; `from` is the repository file and line that led to it and `journalN` the setup command
    * that hit it: both are shown quoted and marked "from the repository", never read as instructions. `staffStep` is true where Rovara staff also approve the website (Cloud).
    */
@@ -117,7 +122,7 @@ export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BA
 
 const APPROVABLE: ReadonlySet<DecisionKind> = new Set<DecisionKind>([
   "approve_plan", "approve_requirements", "approve_design", "merge", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask",
-  "approve_spend", "approve_test_env", "confirm_env_change", "setup_host",
+  "approve_spend", "approve_test_env", "confirm_env_change", "setup_host", "approve_fixture_set",
 ]);
 
 const usd = (value: number): string => `$${value.toFixed(2)}`;
@@ -222,6 +227,18 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
         ],
         why: "A setup command could not reach this website. Allow it only if you know what it is.",
       };
+    case "approve_fixture_set":
+      return {
+        question: plainLine(`Use these ${item.origin === "written" ? "written" : item.origin === "imported" ? "imported" : "recorded"} answers for ${item.dependency}?`, 160),
+        next: "Tasks in this project get these answers in place of the real service, exactly as pinned; a request with no answer fails the check.",
+        evidence: [
+          chip("environment", "Answers", plural(item.entries, "answer", "answers"), "unknown"),
+          chip("environment", "Faults", plural(item.faults, "named fault", "named faults"), "unknown"),
+          chip("risk", "Personal-data scan", item.scanClean ? "clean" : "found something", item.scanClean ? "good" : "bad"),
+          ...(item.schemaSynth ? [chip("risk", "Unrecorded requests", "answered from the schema", "warning")] : []),
+        ],
+        why: item.scanClean ? "Check that the sample answers are test data before you approve." : "The scan found something in the answers: do not approve.",
+      };
     case "confirm_env_change":
       return { question: "Accept this change to the test setup?", next: "The running task continues on the new setup.", evidence: [chip("environment", "Changed", item.what, "warning")], why: "The setup changed while the task was running." };
   }
@@ -238,6 +255,7 @@ function tierInputsOf(item: DecisionItem): TierInputs {
     case "approve_spend": return { spend: { amountUsd: item.amountUsd } };
     case "approve_test_env": return { testEnv: { risk: item.risk, reasons: item.riskReasons } };
     case "fix_setup": return { fixSetup: { knownFailingTests: item.knownFailingTests } };
+    case "approve_fixture_set": return { fixtureSet: { schemaSynth: item.schemaSynth, firstFromTestAccount: item.firstFromTestAccount, scanClean: item.scanClean } };
     default: return {};
   }
 }

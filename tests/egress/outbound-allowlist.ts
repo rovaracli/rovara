@@ -184,7 +184,7 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "reserved-example", why: "Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.",
     hosts: [
-      "agentx.invalid", "agentx-mock.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
+      "agentx.invalid", "agentx-mock.invalid", "fixtures.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
       "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
       // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
       "registry.corp.example.net",

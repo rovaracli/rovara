@@ -1,0 +1,357 @@
+// Test services TS24: the fixture store (org-scoped, behind tx, reviewed before it is delivered), its review card and its 15-minute delivery.
+import { describe, expect, it } from "vitest";
+import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
+import { projectDecisionCards } from "../../packages/broker/src/decisions/project.js";
+import {
+  FIXTURE_READ_URL_SECONDS, createFixtureStore, createMemoryFixturePorts, fixtureObjectKey, fixtureSetCardItem, fixtureStoreId, parseFixtureStoreId,
+  type FixtureStore, type FixtureStoreDependencies,
+} from "../../packages/broker/src/test-env/fixture-store.js";
+
+const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa";
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb";
+const DENY: TestEnvProdDeny = { accountIds: ["111122223333"], hosts: ["*.prod.example.com"], arnPrefixes: [] };
+const NOW = new Date("2026-11-02T12:00:00.000Z");
+const dependency = { id: "payments-api", family: "http:api.example-pay.com", protocol: "http_json", target: "api.example-pay.com" } as const;
+const match = { ignorePaths: ["/requestedAt"], query: ["customer"] };
+const json = "application/json";
+const charge = (amount: number) => ({ method: "POST" as const, path: "/v1/charges", query: [{ name: "customer", value: "c1" }], contentType: json, body: JSON.stringify({ amount, requestedAt: "2026-11-02T00:00:00Z" }) });
+const answer = (body: unknown, status = 200) => ({ status, headers: [{ name: "etag" as const, value: "abc" }], contentType: json, body: JSON.stringify(body), latencyMs: 0 });
+function makeSet(over: Record<string, unknown> = {}): FixtureSet {
+  const shell = { dependency, match };
+  return FixtureSetSchema.parse({
+    schemaVersion: 2, dependency, origin: "recorded", revision: 2, recordedAt: "2026-11-01T00:00:00.000Z", syntheticOnly: true, match,
+    requestSchema: { type: "object", required: ["amount"], properties: { amount: { type: "integer" } } }, responseSchema: { type: "object", properties: { ok: { type: "boolean" }, id: { type: "string" } } },
+    entries: [1, 2, 3, 4].map((n) => fixtureEntry(shell, charge(n), answer({ ok: true, id: `ch_${String(n)}` }))),
+    faults: [{ name: "busy", kind: "throttle", status: 429, delayMs: 0 }],
+    ...over,
+  });
+}
+
+function setup(over: Partial<FixtureStoreDependencies> = {}, enabled = true) {
+  const ports = createMemoryFixturePorts();
+  const touched: string[] = [];
+  const objects: FixtureStoreDependencies["objects"] = {
+    putIfAbsent: (...args) => { touched.push("put"); return ports.objects.putIfAbsent(...args); },
+    get: (...args) => { touched.push("get"); return ports.objects.get(...args); },
+    presignGet: (...args) => { touched.push("presign"); return ports.objects.presignGet(...args); },
+  };
+  const index: FixtureStoreDependencies["index"] = {
+    get: (...args) => { touched.push("index.get"); return ports.index.get(...args); },
+    putIfAbsent: (...args) => { touched.push("index.put"); return ports.index.putIfAbsent(...args); },
+    replace: (...args) => { touched.push("index.replace"); return ports.index.replace(...args); },
+    listByDependency: (...args) => { touched.push("index.list"); return ports.index.listByDependency(...args); },
+  };
+  let on = enabled;
+  const store = createFixtureStore({ enabled: () => on, objects, index, denyFor: () => Promise.resolve(DENY), now: () => NOW, ...over });
+  return { store, ports, touched, setEnabled: (value: boolean) => { on = value; } };
+}
+const submitOk = async (store: FixtureStore, set = makeSet(), org = ORG_A, recordedFrom: "synthetic" | "test_account" | "written" = "synthetic") => {
+  const outcome = await store.submit(org, set, { actor: "maya", recordedFrom });
+  if (!outcome.ok) throw new Error(outcome.reason);
+  return outcome.record;
+};
+
+describe("behind the tx switch", () => {
+  it("answers `disabled` to every call with the switch off, and touches neither the object store nor the index", async () => {
+    const { store, touched } = setup({}, false);
+    const set = makeSet();
+    const digest = fixtureSetDigest(set);
+    expect(await store.submit(ORG_A, set, { actor: "maya", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.record(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.review(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.approve(ORG_A, digest, "maya")).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.reject(ORG_A, digest, "maya")).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.deliver(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.deliverById(ORG_A, fixtureStoreId(ORG_A, digest))).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.readApproved(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
+    expect(touched).toEqual([]);
+  });
+  it("reads the switch on every call: turning it off again stops delivery of a set that was approved", async () => {
+    const { store, setEnabled } = setup();
+    const record = await submitOk(store);
+    await store.approve(ORG_A, record.digest, "lead");
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
+    setEnabled(false);
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "disabled" });
+  });
+});
+
+describe("store ids and keys are org-scoped", () => {
+  it("names a set by its org and digest, and keeps one object per org", async () => {
+    const { store, ports } = setup();
+    const a = await submitOk(store, makeSet(), ORG_A);
+    const b = await submitOk(store, makeSet(), ORG_B);
+    expect(a.digest).toBe(b.digest);
+    expect(a.storeId).toBe(`fxs:${ORG_A}:${a.digest}`);
+    expect(b.storeId).not.toBe(a.storeId);
+    expect([...ports.objects.dump().keys()].sort()).toEqual([`private/${ORG_A}/fixtures/${a.digest}`, `private/${ORG_B}/fixtures/${a.digest}`]);
+    expect(fixtureObjectKey(ORG_A, a.digest)).toBe(`private/${ORG_A}/fixtures/${a.digest}`);
+    expect(parseFixtureStoreId(a.storeId)).toEqual({ orgId: ORG_A, digest: a.digest });
+    for (const bad of ["", "fxs:org_x:" + a.digest, `fxs:${ORG_A}:${a.digest.slice(1)}`, `fxs:${ORG_A}:${a.digest}/../x`, `${ORG_A}:${a.digest}`]) expect(parseFixtureStoreId(bad)).toBeUndefined();
+  });
+  it("refuses an org id that is not an org id (no path can be built from it)", async () => {
+    const { store, touched } = setup();
+    for (const org of ["", "org_x", "../org_aaaaaaaaaaaaaaaaaaaa", `${ORG_A}/../${ORG_B}`, ORG_A.toUpperCase()]) {
+      expect(await store.submit(org, makeSet(), { actor: "maya", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "bad_org" });
+    }
+    expect(touched).toEqual([]);
+  });
+  it("is the same upload twice, once: the second submit finds the first", async () => {
+    const { store, ports } = setup();
+    const first = await store.submit(ORG_A, makeSet(), { actor: "maya", recordedFrom: "synthetic" });
+    const second = await store.submit(ORG_A, makeSet(), { actor: "other", recordedFrom: "synthetic" });
+    expect(first).toMatchObject({ ok: true, created: true });
+    expect(second).toMatchObject({ ok: true, created: false });
+    expect(ports.objects.dump().size).toBe(1);
+  });
+});
+
+describe("cross-org reads are refused", () => {
+  it("answers another org's digest, another org's store id and a digest nobody holds with the same `not_found`", async () => {
+    const { store, touched } = setup();
+    const record = await submitOk(store, makeSet(), ORG_A);
+    await store.approve(ORG_A, record.digest, "lead");
+    const nobody = "f".repeat(64);
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ["record", () => store.record(ORG_B, record.digest)], ["review", () => store.review(ORG_B, record.digest)], ["approve", () => store.approve(ORG_B, record.digest, "x")], ["reject", () => store.reject(ORG_B, record.digest, "x")],
+      ["deliver", () => store.deliver(ORG_B, record.digest)], ["readApproved", () => store.readApproved(ORG_B, record.digest)],
+      ["deliverById", () => store.deliverById(ORG_B, fixtureStoreId(ORG_A, record.digest))],
+    ];
+    touched.length = 0;
+    for (const [, call] of calls) expect(await call()).toEqual({ ok: false, reason: "not_found" });
+    expect(await store.deliver(ORG_B, nobody)).toEqual({ ok: false, reason: "not_found" });
+    expect(await store.deliverById(ORG_B, fixtureStoreId(ORG_B, nobody))).toEqual({ ok: false, reason: "not_found" });
+    // No signed address was ever made for the other org's object, and the other org's set is still pending-free: it can still be delivered to its own org.
+    expect(touched).not.toContain("presign");
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
+    expect((await store.record(ORG_A, record.digest))).toMatchObject({ ok: true, record: { status: "approved", decidedBy: "lead" } });
+  });
+  it("answers a store id that names another org as not found even when the caller's org holds the same digest", async () => {
+    const { store, touched } = setup();
+    const a = await submitOk(store, makeSet(), ORG_A);
+    const b = await submitOk(store, makeSet(), ORG_B);
+    await store.approve(ORG_A, a.digest, "lead");
+    await store.approve(ORG_B, b.digest, "lead");
+    touched.length = 0;
+    expect(await store.deliverById(ORG_B, fixtureStoreId(ORG_A, a.digest))).toEqual({ ok: false, reason: "not_found" });
+    expect(touched).not.toContain("presign");
+    expect((await store.deliverById(ORG_B, b.storeId)).ok).toBe(true);
+  });
+  it("signs only the caller's own key", async () => {
+    const seen: string[] = [];
+    const { store } = setup({}, true);
+    const ports = createMemoryFixturePorts({ signUrl: (key) => { seen.push(key); return `https://fixtures.invalid/${key}`; } });
+    const own = createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
+    const record = await submitOk(own, makeSet(), ORG_A);
+    await own.approve(ORG_A, record.digest, "lead");
+    await own.deliver(ORG_A, record.digest);
+    expect(seen).toEqual([`private/${ORG_A}/fixtures/${record.digest}`]);
+    void store;
+  });
+  it("does not trust an index row that names another org", async () => {
+    const ports = createMemoryFixturePorts();
+    const lying: FixtureStoreDependencies["index"] = { ...ports.index, get: async (org, digest) => { const row = await ports.index.get(org, digest); return row === undefined ? undefined : { ...row, orgId: ORG_B }; } };
+    const store = createFixtureStore({ enabled: () => true, objects: ports.objects, index: lying, denyFor: () => Promise.resolve(DENY), now: () => NOW });
+    const record = await submitOk(store, makeSet(), ORG_A);
+    expect(await store.record(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_found" });
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+describe("a submitted set", () => {
+  it("is parsed as FixtureSet v2, scanned, and stored pending under its digest with its counts", async () => {
+    const { store, ports } = setup();
+    const set = makeSet();
+    const record = await submitOk(store, set);
+    expect(record).toMatchObject({ orgId: ORG_A, digest: fixtureSetDigest(set), dependencyId: "payments-api", entries: 4, faults: 1, origin: "recorded", recordedFrom: "synthetic", status: "pending", scanClean: true, submittedBy: "maya", version: 1 });
+    const stored = ports.objects.dump().get(fixtureObjectKey(ORG_A, record.digest))!;
+    expect(new TextDecoder().decode(stored)).toBe(canonicalJson(set));
+  });
+  it("is refused when it is not a v2 set, an entry sits under the wrong hash, or it is too big, and nothing is stored", async () => {
+    const { store, ports } = setup();
+    const set = makeSet();
+    expect(await store.submit(ORG_A, { ...set, schemaVersion: 1 }, { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "invalid" });
+    expect(await store.submit(ORG_A, { ...set, entries: [{ ...set.entries[0]!, requestHash: "a".repeat(64) }] }, { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "invalid" });
+    expect(await store.submit(ORG_A, "nonsense", { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "invalid" });
+    const shell = { dependency, match };
+    const big = Array.from({ length: 70 }, (_, n) => fixtureEntry(shell, { ...charge(n + 100), body: JSON.stringify({ amount: n + 100, pad: "x".repeat(60_000) }) }, answer({ ok: true, pad: "y".repeat(60_000) })));
+    const huge = await store.submit(ORG_A, { ...set, entries: big }, { actor: "m", recordedFrom: "synthetic" });
+    expect(huge.ok).toBe(false);
+    expect(ports.objects.dump().size).toBe(0);
+  });
+  it.each([
+    ["an email address", () => answer({ contact: "jane.roe@acme-corp.com" })],
+    ["a production host", () => answer({ callback: "https://a.prod.example.com/x" })],
+    ["a credential", () => answer({ debug: `key ${"AKIA"}${"ABCDEFGHIJKLMNOP"}` })],
+  ])("stops a set whose answers hold %s, stores nothing, and says only that the guard stopped it", async (_label, make) => {
+    const { store, ports } = setup();
+    const shell = { dependency, match };
+    const dirty = makeSet({ entries: [fixtureEntry(shell, charge(1), make())] });
+    const outcome = await store.submit(ORG_A, dirty, { actor: "maya", recordedFrom: "synthetic" });
+    expect(outcome).toEqual({ ok: false, reason: "data_guard" });
+    expect(ports.objects.dump().size).toBe(0);
+  });
+  it("is scanned in its request, its path and its header values too, with the org's own deny list", async () => {
+    const shell = { dependency, match };
+    const { store } = setup({ denyFor: (org) => Promise.resolve(org === ORG_B ? { accountIds: [], hosts: ["api.example-pay.com"], arnPrefixes: [] } : DENY) });
+    const dirtyRequest = makeSet({ entries: [fixtureEntry(shell, { ...charge(1), body: JSON.stringify({ amount: 1, mail: "jane.roe@acme-corp.com" }) }, answer({ ok: true }))] });
+    expect(await store.submit(ORG_A, dirtyRequest, { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "data_guard" });
+    // The same clean-looking set names a host that is production for org B only.
+    const body = makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ link: "https://api.example-pay.com/receipt" }))] });
+    expect((await store.submit(ORG_A, body, { actor: "m", recordedFrom: "synthetic" })).ok).toBe(true);
+    expect(await store.submit(ORG_B, body, { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "data_guard" });
+  });
+  it("fails closed when the deny list cannot be read", async () => {
+    const { store, ports } = setup({ denyFor: () => Promise.reject(new Error("unavailable")) });
+    await expect(store.submit(ORG_A, makeSet(), { actor: "m", recordedFrom: "synthetic" })).rejects.toThrow();
+    expect(ports.objects.dump().size).toBe(0);
+  });
+});
+
+describe("the review", () => {
+  it("shows counts, the schema, three redacted sample pairs, the scan result, the ignored paths and the faults", async () => {
+    const { store } = setup();
+    const set = makeSet();
+    const record = await submitOk(store, set);
+    const reviewed = await store.review(ORG_A, record.digest);
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const { review } = reviewed;
+    expect(review).toMatchObject({
+      storeId: record.storeId, digest: record.digest, origin: "recorded", revision: 2, recordedFrom: "synthetic",
+      counts: { entries: 4, faults: 1 }, scan: { clean: true }, ignorePaths: ["/requestedAt"], faults: [{ name: "busy", kind: "throttle", status: 429, delayMs: 0 }],
+      schema: { request: ["type object", "fields amount"], response: ["type object", "fields id, ok"] },
+    });
+    expect(review.samples).toHaveLength(3);
+    expect(review.samples[0]).toMatchObject({ method: "POST", path: "/v1/charges", query: "customer=c1", status: 200 });
+  });
+  it("cuts a long body and flattens control characters, so a recorded answer cannot fill or steer the page", async () => {
+    const shell = { dependency, match };
+    const long = makeSet({ entries: [fixtureEntry(shell, charge(1), { ...answer({ ok: true }), body: JSON.stringify({ note: `line one\nline two ${"z".repeat(2_000)}` }) })] });
+    const { store } = setup();
+    const record = await submitOk(store, long);
+    const reviewed = await store.review(ORG_A, record.digest);
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const body = reviewed.review.samples[0]!.responseBody;
+    expect(body.length).toBeLessThanOrEqual(300);
+    expect(body).not.toMatch(/[\r\n]/u);
+  });
+  it("refuses to review a stored object that is no longer the set its digest names", async () => {
+    const { store, ports } = setup();
+    const record = await submitOk(store);
+    const key = fixtureObjectKey(ORG_A, record.digest);
+    const swapped = makeSet({ revision: 9 });
+    ports.objects.dump().set(key, new TextEncoder().encode(canonicalJson(swapped)));
+    expect(await store.review(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
+  });
+});
+
+describe("approving and delivering", () => {
+  it("delivers only an approved set, with a 15-minute signed read of that one key and the digest to check", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
+    expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
+    const approved = await store.approve(ORG_A, record.digest, "lead");
+    expect(approved).toMatchObject({ ok: true, record: { status: "approved", decidedBy: "lead", decidedAt: NOW.toISOString(), version: 2 } });
+    const delivery = await store.deliver(ORG_A, record.digest);
+    if (!delivery.ok) throw new Error(delivery.reason);
+    expect(FIXTURE_READ_URL_SECONDS).toBe(900);
+    expect(delivery.url).toBe(`https://fixtures.invalid/private/${ORG_A}/fixtures/${record.digest}?expires=900`);
+    expect(delivery).toMatchObject({ digest: record.digest, storeId: record.storeId, expiresAt: "2026-11-02T12:15:00.000Z" });
+    expect(await store.deliverById(ORG_A, record.storeId)).toEqual(delivery);
+    const read = await store.readApproved(ORG_A, record.digest);
+    expect(read.ok && fixtureSetDigest(read.set)).toBe(record.digest);
+  });
+  it("does not deliver a rejected set, and a decision is made once", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    expect(await store.reject(ORG_A, record.digest, "lead")).toMatchObject({ ok: true, record: { status: "rejected" } });
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
+    expect(await store.approve(ORG_A, record.digest, "lead")).toEqual({ ok: false, reason: "already_decided" });
+    expect(await store.reject(ORG_A, record.digest, "lead")).toEqual({ ok: false, reason: "already_decided" });
+  });
+  it("loses a race cleanly: two approvals at once, one wins", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    const [first, second] = await Promise.all([store.approve(ORG_A, record.digest, "a"), store.approve(ORG_A, record.digest, "b")]);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+  });
+  it("hands out nothing for an object that no longer hashes to its digest, and does not approve it either", async () => {
+    const { store, ports, touched } = setup();
+    const pending = await submitOk(store, makeSet({ revision: 3 }));
+    const record = await submitOk(store);
+    await store.approve(ORG_A, record.digest, "lead");
+    const key = fixtureObjectKey(ORG_A, record.digest);
+    ports.objects.dump().set(key, new TextEncoder().encode(canonicalJson(makeSet({ revision: 9 }))));
+    touched.length = 0;
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(touched).not.toContain("presign");
+    ports.objects.dump().set(fixtureObjectKey(ORG_A, pending.digest), new TextEncoder().encode("not even json"));
+    expect(await store.approve(ORG_A, pending.digest, "lead")).toEqual({ ok: false, reason: "digest_mismatch" });
+    // Truncated bytes that still parse as JSON are no better.
+    ports.objects.dump().set(key, new TextEncoder().encode(canonicalJson(makeSet()) + " "));
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
+  });
+  it("answers a digest that is not 64 hex characters before it asks the index anything", async () => {
+    const { store, touched } = setup();
+    for (const digest of ["", "abc", "G".repeat(64), "a".repeat(63), `${"a".repeat(64)}x`, "../x"]) expect(await store.deliver(ORG_A, digest)).toEqual({ ok: false, reason: "bad_digest" });
+    expect(touched).toEqual([]);
+  });
+});
+
+describe("the review card (approve_fixture_set)", () => {
+  const cardFor = async (store: FixtureStore, record: Awaited<ReturnType<typeof submitOk>>, schemaSynth = false) => {
+    const reviewed = await store.review(ORG_A, record.digest);
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const item = fixtureSetCardItem({ record: reviewed.record, review: reviewed.review, project: "Orders", openPath: `/v1/app/environment/fixtures/${record.digest.slice(0, 16)}`, schemaSynth });
+    return { item, projection: projectDecisionCards([item]) };
+  };
+  it("is a medium card with Approve (evidence first) for a recording from synthetic inputs, bound to the digest", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    const { projection } = await cardFor(store, record);
+    const [card] = projection.cards;
+    expect(card).toMatchObject({ kind: "approve_fixture_set", id: `approve_fixture_set:${record.digest.slice(0, 40)}`, risk: "medium", status: "pending", friction: { expandEvidenceFirst: true, freshSignIn: false } });
+    expect(card!.actions.map((action) => action.kind)).toEqual(["approve", "reject", "open"]);
+    expect(card!.evidence.map((chip) => `${chip.label}: ${chip.value}`)).toEqual(["Answers: 4 answers", "Faults: 1 named fault", "Personal-data scan: clean"]);
+    const detail = projection.details[card!.id]!.map((group) => group.title);
+    expect(detail).toEqual(expect.arrayContaining(["Sample answers (cut, from the recording)", "Schema", "Ignored when matching a request", "Named faults", "Where it came from"]));
+    expect(projection.details[card!.id]!.find((group) => group.title.startsWith("Sample"))!.lines).toHaveLength(9);
+    expect(projection.digests[card!.id]).toMatch(/^[a-f0-9]{64}$/u);
+  });
+  it("is high, with no Approve action, when unrecorded requests are answered from the schema", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    const { projection } = await cardFor(store, record, true);
+    const [card] = projection.cards;
+    expect(card).toMatchObject({ risk: "high", friction: { freshSignIn: true } });
+    expect(card!.actions.map((action) => action.kind)).toEqual(["open"]);
+    expect(card!.riskReasons).toContain("Requests with no recording are answered from the schema.");
+  });
+  it("is high for the first recording made with a test account, and medium again once one is approved", async () => {
+    const { store } = setup();
+    const first = await submitOk(store, makeSet({ revision: 1 }), ORG_A, "test_account");
+    expect(first.firstFromTestAccount).toBe(true);
+    expect((await cardFor(store, first)).projection.cards[0]).toMatchObject({ risk: "high" });
+    // Another org's approved test-account recording does not count; this org's own does.
+    const other = await submitOk(store, makeSet({ revision: 5 }), ORG_B, "test_account");
+    await store.approve(ORG_B, other.digest, "lead");
+    expect((await submitOk(store, makeSet({ revision: 6 }), ORG_A, "test_account")).firstFromTestAccount).toBe(true);
+    await store.approve(ORG_A, first.digest, "lead");
+    const second = await submitOk(store, makeSet({ revision: 7 }), ORG_A, "test_account");
+    expect(second.firstFromTestAccount).toBe(false);
+    expect((await cardFor(store, second)).projection.cards[0]).toMatchObject({ risk: "medium" });
+  });
+  it("shows an approved set as answered, with no actions", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    await store.approve(ORG_A, record.digest, "lead");
+    const decided = (await store.record(ORG_A, record.digest));
+    if (!decided.ok) throw new Error("missing");
+    const reviewed = await store.review(ORG_A, record.digest);
+    if (!reviewed.ok) throw new Error("missing");
+    const item = fixtureSetCardItem({ record: decided.record, review: reviewed.review, project: "Orders", openPath: "/v1/app/environment/fixtures/x1", schemaSynth: false });
+    expect(projectDecisionCards([item]).cards[0]).toMatchObject({ status: "approved", actions: [] });
+  });
+});

@@ -120,7 +120,7 @@ Enterprise: Shown in help text and messages. Never called by the install.
 Enterprise: Names that cannot resolve (.invalid, .test, example domains) or that are not hosts at all. Never reached.
 
 - Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.
-  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `registry.corp.example.net`, `rovara.invalid`
+  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `fixtures.invalid`, `host.example.test`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `registry.corp.example.net`, `rovara.invalid`
 - XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched. (only in `packages/broker/src/developer/saml.ts`, `packages/broker/src/developer/providers.ts`)
   `schemas.xmlsoap.org`, `www.w3.org`
 

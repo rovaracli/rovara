@@ -32,6 +32,8 @@ export interface TierInputs {
   spend?: { amountUsd: number };
   testEnv?: { risk: DecisionRisk; reasons: readonly string[] };
   fixSetup?: { knownFailingTests: number };
+  /** A fake (fixture set) for a dependency (TS24): what raises it from medium to high. */
+  fixtureSet?: { schemaSynth: boolean; firstFromTestAccount: boolean; scanClean: boolean };
 }
 
 class Tally {
@@ -118,6 +120,15 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
     case "setup_host":
       tally.raise("medium", "Lets this project's machines reach a new website.");
       break;
+    case "approve_fixture_set": {
+      const fixture = inputs.fixtureSet;
+      if (fixture === undefined) throw new Error("fixture set inputs missing");
+      tally.raise("medium", "Tasks will get these recorded answers in place of the real service.");
+      if (fixture.schemaSynth) tally.raise("high", "Requests with no recording are answered from the schema.");
+      if (fixture.firstFromTestAccount) tally.raise("high", "First recording made with the company's test account.");
+      if (!fixture.scanClean) tally.raise("high", "The personal-data scan found something.");
+      break;
+    }
     default:
       break;
   }
