@@ -7,8 +7,9 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, catalogSigningMessage, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { SEALED_ROUND_PORTS, collectTestServicesUsage, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
@@ -162,6 +163,44 @@ describe("a candidate check that carries a dependency plan", () => {
   });
 });
 
+describe("cancel", () => {
+  it("a cancel of the operation while the images are pulled stops the preparation's services, removes everything and ends the registration", async () => {
+    const h = await harness({ docker: { imagePresent: false } });
+    const original = h.fake.docker.run.bind(h.fake.docker);
+    let pulling = false;
+    h.fake.docker.run = (args, options) => (args[0] === "pull"
+      ? new Promise((_resolve, reject) => { pulling = true; if (options?.signal?.aborted === true) reject(new Error("aborted")); options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
+      : original(args, options));
+    let abort: (() => Promise<void>) | undefined;
+    let unregistered = false;
+    const cancellation = { register: (_id: string, session?: { abort(): Promise<void> }) => { abort = session?.abort.bind(session); return () => { unregistered = true; }; } };
+    h.testServices.operationId = "77777777-7777-4777-8777-777777777777";
+    h.testServices.cancellation = cancellation;
+    const preparing = h.prepare().then(() => "prepared", () => "failed");
+    await vi.waitFor(() => expect(pulling).toBe(true));
+    await abort!();
+    expect(await preparing).toBe("failed");
+    expect(unregistered).toBe(true);
+    await nothingLeft(h);
+  });
+
+  it("the sealed rounds get the operation's real signal: a cancel before a test check fails the check without running it", async () => {
+    const h = await harness();
+    let abort: (() => Promise<void>) | undefined;
+    h.testServices.operationId = "77777777-7777-4777-8777-777777777777";
+    h.testServices.cancellation = { register: (_id: string, session?: { abort(): Promise<void> }) => { abort = session?.abort.bind(session); return () => undefined; } };
+    h.testServices.onUsageRecord = async () => undefined;
+    const original = h.fake.docker.run.bind(h.fake.docker);
+    // The first sealed exec (the round's seeds) is where the cancel arrives.
+    h.fake.docker.run = async (args, options) => {
+      if (args[0] === "exec" && args.some((arg) => arg.endsWith("-check"))) await abort!();
+      return original(args, options);
+    };
+    await expect(h.prepare()).rejects.toThrow();
+    await nothingLeft(h);
+  });
+});
+
 describe("the catalog's trusted keys are compiled in, never read at runtime", () => {
   it("loadCatalogFromDirectory accepts a catalog signed by a key the test seam is given and refuses one signed by another or by none", async () => {
     const bytes = readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
@@ -174,8 +213,9 @@ describe("the catalog's trusted keys are compiled in, never read at runtime", ()
     await writeFile(join(dir, "catalog.sig.json"), JSON.stringify({ schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId, catalogSha256: createHash("sha256").update(bytes).digest("hex"), signature }));
     const pem = (key: typeof pair.publicKey) => key.export({ type: "spki", format: "pem" }).toString();
     const trust = { runningAccountId: "944937319445" };
-    await expect(loadCatalogFromDirectory(dir, trust, [pem(pair.publicKey)])).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
-    await expect(loadCatalogFromDirectory(dir, trust, [pem(other.publicKey)])).rejects.toMatchObject({ reason: "catalog" });
+    const withKeys = (keys: string[]) => (input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array }) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys: keys });
+    await expect(loadCatalogFromDirectory(dir, trust, withKeys([pem(pair.publicKey)]))).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
+    await expect(loadCatalogFromDirectory(dir, trust, withKeys([pem(other.publicKey)]))).rejects.toMatchObject({ reason: "catalog" });
     // No key compiled in yet: nothing verifies in any account.
     await expect(loadCatalogFromDirectory(dir, trust)).rejects.toMatchObject({ reason: "catalog" });
     await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });

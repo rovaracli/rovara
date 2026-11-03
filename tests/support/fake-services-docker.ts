@@ -30,6 +30,8 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   const removedNetworks: string[] = [];
   const execs: RecordedExec[] = [];
   const pulls: string[] = [];
+  /** The read-only file mounts of each `docker run`, with the file's content AT THE TIME of the run (the run's files are removed later). */
+  const mounts: Array<{ container: string; to: string; content: string | undefined }> = [];
   const answer = (exitCode = 0, stdout = "", stderr = ""): Promise<{ exitCode: number; stdout: string; stderr: string }> => Promise.resolve({ exitCode, stdout, stderr });
   const docker: DockerCli = {
     run(args) {
@@ -73,6 +75,14 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         const name = args[args.indexOf("--name") + 1]!;
         const network = args[args.indexOf("--network") + 1]!;
         const kind = name.endsWith("-dns") ? "dns" : name.endsWith("-check") ? "check" : /-h[0-9a-f]{10}$/u.test(name) ? "helper" : "other";
+        for (const [index, arg] of args.entries()) {
+          const mount = arg === "-v" ? /^(\/[^:]+):([^:]+):ro$/u.exec(args[index + 1] ?? "") : null;
+          if (mount !== null && mount[1] !== undefined && mount[2] !== undefined) {
+            let content: string | undefined;
+            try { content = readFileSync(mount[1], "utf8"); } catch { content = undefined; }
+            mounts.push({ container: name, to: mount[2], content });
+          }
+        }
         if (options.failRun === kind) return answer(1, "", "boom");
         containers.set(name, { networks: new Set([network]), ips: new Map(args.includes("--ip") ? [[network, args[args.indexOf("--ip") + 1]!]] : []) });
         return answer(0, `${name}-id`);
@@ -96,5 +106,5 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   };
   /** Every container and service network still there, by name (the working sandbox included). */
   const left = (): { containers: string[]; networks: string[] } => ({ containers: [...containers.keys()], networks: [...networks] });
-  return { docker, calls, containers, networks, removedNetworks, execs, pulls, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
+  return { docker, calls, containers, networks, removedNetworks, execs, pulls, mounts, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
 }

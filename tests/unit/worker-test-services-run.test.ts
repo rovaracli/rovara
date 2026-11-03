@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
@@ -55,6 +56,9 @@ interface SealedState {
   /** The round's callback waits for this before it hands the runners over (to hold a round open). */
   hold?: Promise<void>;
   failStart?: boolean;
+  /** The round fails when it ends, with `closeError` as its message (a clean-up fault whose message holds a secret). */
+  failClose?: boolean;
+  closeError?: string;
   exitCode?: number;
   throwOnCommand?: boolean;
   /** A command that takes this long to run (the signal can stop it). */
@@ -82,7 +86,9 @@ function stubSealed(state: SealedState): SealedRoundPorts {
           runAgentCommand: () => Promise.resolve({ exitCode: 0, timedOut: false, output: "" }),
         };
         if (state.hold !== undefined) await state.hold;
-        return round(runners);
+        const value = await round(runners);
+        if (state.failClose === true) throw new Error(state.closeError ?? "close failed");
+        return value;
       });
     },
     buildServiceUsageRecord(input) {
@@ -266,6 +272,24 @@ describe("a dependency's init files (config.initFiles)", () => {
     await run.dispose();
   });
 
+  it("the init files are read again when EACH round starts, from the candidate tree as it is then", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, "app", "db"), { recursive: true });
+    const file = join(h.root, "app", "db", "init.sql");
+    await writeFile(file, "CREATE TABLE before_edit (id int);\n");
+    const run = await h.start([withInit("app/db/init.sql")]);
+    await writeFile(file, "CREATE TABLE after_edit (id int);\n");
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    const contents = h.fake.mounts.filter((mount) => mount.to === "/docker-entrypoint-initdb.d/init-01.sql").map((mount) => mount.content);
+    expect(contents).toEqual(["CREATE TABLE before_edit (id int);\n", "CREATE TABLE after_edit (id int);\n"]);
+    // A file the agent turned into a link out of the repository is refused when the round starts: no check runs.
+    await rm(file);
+    await symlink("/etc/passwd", file);
+    const round = await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries.map((entry) => entry.after)).toEqual(["not_run"]);
+    await run.dispose();
+  });
+
   it("a symlink to /etc/passwd is refused before anything starts", async () => {
     const h = await harness();
     await mkdir(join(h.root, "app", "db"), { recursive: true });
@@ -396,6 +420,21 @@ describe("a sealed check round", () => {
     await runChecks(h.checkPlan, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(h.state.executed.map((command) => command.args.join(" "))).toEqual(["run migrate", "test", "run migrate", "test"]);
     expect(h.fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(3);
+    await run.dispose();
+  });
+
+  it("the working sandbox leaves the round's network BEFORE the record is read: the round's helpers and name server never see it", async () => {
+    const h = await harness({ realSealed: true });
+    const run = await h.start();
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    const roundHelper = h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && /-h[0-9a-f]{10}$/u.test(call[call.indexOf("--name") + 1]!))[1]!;
+    const roundNetwork = roundHelper[roundHelper.indexOf("--network") + 1]!;
+    const reattach = h.fake.calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "network" && call[1] === "connect" && call.includes(roundNetwork)).map(({ index }) => index);
+    const leave = h.fake.calls.findIndex((call, index) => call[0] === "network" && call[1] === "disconnect" && call.includes("--force") && call.includes(roundNetwork) && index > (reattach[0] ?? -1));
+    const readRecord = h.fake.calls.findIndex((call) => call[0] === "exec" && call.includes("cat") && call.some((arg) => arg.endsWith("-dns")));
+    expect(reattach).toHaveLength(1);
+    expect(leave).toBeGreaterThan(reattach[0]!);
+    expect(readRecord).toBeGreaterThan(leave);
     await run.dispose();
   });
 
@@ -735,17 +774,19 @@ describe("cancel, a pending start, teardown warnings", () => {
     expect(await readdir(h.runParent)).toEqual([]);
   });
 
-  it("a teardown step that fails is logged as a warning with the step's name and a redacted reason, and the other steps still run", async () => {
-    const h = await harness();
+  it("a teardown step that fails is logged as a warning with the step's name and a REDACTED reason, and the other steps still run", async () => {
+    const h = await harness({ sealed: { failClose: true } });
     const run = await h.start();
     const password = passwordOf(h.fake);
-    const original = h.fake.docker.run.bind(h.fake.docker);
-    h.fake.docker.run = (args, options) => (args[0] === "network" && args[1] === "rm" ? Promise.reject(new Error(`cannot remove with ${password}`)) : original(args, options));
+    h.state.closeError = `cannot close the round for ${password}`;
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
     await run.dispose();
     expect(await readdir(h.runParent)).toEqual([]);
     const warnings = h.logs.filter((event) => event.event === "test-services.teardown.warning");
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatchObject({ step: "sealed-round" });
+    expect(String(warnings[0]!.reason)).toContain("<redacted>");
     expect(JSON.stringify(h.logs)).not.toContain(password);
-    void warnings;
   });
 });
 
@@ -778,8 +819,9 @@ describe("trusted catalog keys are compiled in, never read from a file or the en
     try {
       await expect(loadCatalogFromDirectory(dir, { runningAccountId: "944937319445" })).rejects.toMatchObject({ reason: "catalog" });
       await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
-      // The same files verify only for a key the caller hands the test seam: the directory is never a source of keys.
-      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined }, [pem])).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
+      // The same files verify only for a key the TEST hands the loader through the testing seam: the directory is never a source of keys.
+      const withKey = (input: Parameters<typeof loadSignedCatalogWithKeys>[0]) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys: [pem] });
+      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined }, (input) => withKey({ ...input, trustedKeys: [pem] }))).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
     } finally {
       vi.unstubAllEnvs();
     }

@@ -180,12 +180,12 @@ export const TEST_SERVICES_ACCOUNT_ENVIRONMENT = "AGENTX_TEST_SERVICES_ACCOUNT_I
 /**
  * The signed catalog from a directory holding `catalog.json` and `catalog.sig.json`. OWNER RULE: the trusted keys are compiled into the release (contracts `catalog-trust.ts`: `CATALOG_TRUSTED_SIGNING_KEYS`, and the
  * staging-only list honoured only in the staging account AND a staging build) and are NEVER read from a file, the environment or SSM here. The only thing passed in is the account id the worker runs in (written at boot
- * from the instance identity, never from configuration a customer sets); a catalog that no trusted key signed is refused with one fixed error. `testKeys` is a test seam (the contract's own `trustedKeys` override).
+ * from the instance identity, never from configuration a customer sets); a catalog that no trusted key signed is refused with one fixed error. `load` is a test seam: a test hands it `loadSignedCatalogWithKeys` of `@agentx/contracts/testing`; the production `loadSignedCatalog` takes no key list.
  */
-export async function loadCatalogFromDirectory(directory: string, trust: CatalogTrustContext, testKeys?: readonly string[]): Promise<ServiceCatalog> {
+export async function loadCatalogFromDirectory(directory: string, trust: CatalogTrustContext, load: typeof loadSignedCatalog = loadSignedCatalog): Promise<ServiceCatalog> {
   try {
     const [catalogBytes, signatureBytes] = await Promise.all([readFile(join(directory, CATALOG_FILE)), readFile(join(directory, CATALOG_SIGNATURE_FILE))]);
-    const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trust, ...(testKeys === undefined ? {} : { trustedKeys: testKeys }) });
+    const loaded = load({ catalogBytes, signatureBytes, trust });
     if (!loaded.ok) throw new Error("catalog");
     return loaded.catalog;
   } catch {
@@ -559,6 +559,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     round = undefined;
     if (open === undefined) return;
     await step("sealed-round", () => open.sealedClose());
+    // `withDetachedWorking` puts the working sandbox back on the round's network when the round ends. It leaves at once, BEFORE the record is read: the round's helpers and name server never see it.
+    await step("working-sandbox", () => docker.run(["network", "disconnect", "--force", open.plan.network.name, input.sandbox.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
     if (emit && active) {
       const record = await recordOf(open);
       if (record !== undefined) {
@@ -651,7 +653,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     await closeRound(false);
     rounds += 1;
     const number = rounds;
-    const resolved = materializeAll(bases);
+    // The init files are read again from the candidate tree as it is NOW (the agent may have edited them), with the same checks as at the start.
+    const current = await Promise.all(bases.map(async (base) => ({ ...base, files: await initFilesOf(base.plan, root, input.repositoryPaths) })));
+    const resolved = materializeAll(current);
     const environment = buildServiceEnvironment({ sandbox: "check", sinkholeUrl: SINKHOLE_URL, dependencies: resolved.map((item) => item.env), neverValues: neverValuesFor(resolved) });
     secrets.push(...helperSecretValues(resolved.map((item) => item.request)), ...environment.secretValues);
     redactor = createServiceRedactor(secrets);
@@ -872,6 +876,9 @@ export interface PrepareTestServices {
   /** The indexes of the readiness commands that are test checks and run SEALED (each in a round of its own, on fresh helpers). Absent: every readiness command. The others run in the working sandbox, with the run's variables. */
   testChecks?: readonly number[];
   config?: TestServicesConfig;
+  /** The invocation's operation id and the worker's cancellation controller: a cancel of the operation stops the start and the sealed rounds (the registration ends with `finish`). Absent: not cancellable, as a preparation is today. */
+  operationId?: string;
+  cancellation?: Pick<WorkerCancellationController, "register">;
   /** Receives the usage record once, after the readiness commands and before the services stop (also when the start failed: then every dependency is `started: false` with its fixed failure). */
   onUsageRecord?(record: TestServicesUsageRecord): void | Promise<void>;
 }
@@ -904,11 +911,18 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
   if (input.sandbox === undefined) return refuse("unsupported");
   const config = options.config ?? testServicesConfigFromEnvironment();
   if (config === undefined) return refuse("not_configured");
+  // A cancel of the operation stops the start and every round. The registration ends when the preparation's services are finished with (`finish`) or the start fails.
+  const stop = new AbortController();
+  let unregister: (() => void) | undefined;
+  if (options.cancellation !== undefined && options.operationId !== undefined) {
+    try { unregister = options.cancellation.register(options.operationId, { abort: () => { stop.abort(); return Promise.resolve(); } }); } catch { unregister = undefined; }
+  }
   let run: TestServicesRun;
   try {
     await input.sandbox.start();
-    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths });
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal });
   } catch (error) {
+    unregister?.();
     const failure = failureOf(error);
     await report(failure.failures);
     throw agentXError("RUNTIME_UNAVAILABLE", failure.message);
@@ -923,7 +937,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
       return async (command, index, rootPath) => {
         if (options.testChecks !== undefined && !options.testChecks.includes(index)) return inner(command, index, rootPath);
         const runners = run.checkRunners(unusedBase);
-        const signal = new AbortController().signal;
+        const signal = stop.signal;
         try {
           try {
             await runners.freshServices?.(signal);
@@ -940,6 +954,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
     async finish() {
       if (finished) return;
       finished = true;
+      unregister?.();
       const record = await run.usageRecord().catch(() => undefined);
       if (record !== undefined) await Promise.resolve(options.onUsageRecord?.(record)).catch(() => undefined);
     },
