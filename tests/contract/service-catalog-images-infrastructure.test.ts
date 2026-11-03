@@ -191,7 +191,7 @@ describe("property patterns (what CloudFormation checks on the resolved value)",
       }
       const policyText = (repository.Properties["LifecyclePolicy"] as { LifecyclePolicyText: string }).LifecyclePolicyText;
       expect(policyText.length).toBeLessThanOrEqual(30_720);
-      expect(() => JSON.parse(policyText)).not.toThrow();
+      expect(() => void (JSON.parse(policyText) as unknown)).not.toThrow();
     }
   });
   it("puts only pseudo parameters (account, partition, region) into the key policy, in a Join", () => {
