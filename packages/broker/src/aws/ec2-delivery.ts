@@ -24,6 +24,7 @@ import {
   TEST_ENV_DETECT_FEATURE,
   SECOND_REVIEWER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
+  TEST_SERVICES_AWS_PLAN_FEATURE,
   TEST_SERVICES_PLAN_FEATURE,
   PREPARE_REGISTRIES_FEATURE,
   PREPARE_SAVED_ENV_FEATURE,
@@ -460,6 +461,10 @@ async function forWorkerFeatures(
   }
   // Test services (slice 1): a run whose plan starts dependencies is never sent to a worker that does not list the feature (it would run the checks with no database and say nothing), and the field is never dropped.
   if (((invocation.kind === "task" && (invocation.payload.testEnvironment?.dependencies?.length ?? 0) > 0) || (invocation.kind === "prepare" && invocation.payload.testServices !== undefined)) && !features.includes(TEST_SERVICES_PLAN_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test services (slice 2): a plan that starts Rovara local AWS (an `emulated` dependency) also needs the worker to list the AWS feature: an older worker's strict parse would refuse the entry.
+  if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "emulated") === true && !features.includes(TEST_SERVICES_AWS_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

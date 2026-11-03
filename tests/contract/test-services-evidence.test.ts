@@ -175,7 +175,10 @@ describe("the pull request lines (design 9.3)", () => {
       expect(out.notTested).toEqual(["- Postgres: ran the company's own build of the image (digest abcdef012345), not Rovara's catalog image"]);
     });
     it("Rovara local AWS", () => {
-      expect(dependencyLines([emulated("S3")], 0).notTested).toEqual(["- S3 behaviour against real AWS (emulated)"]);
+      expect(dependencyLines([emulated("S3")], 0).notTested).toEqual(["- S3 behaviour against real AWS (emulated)", "- AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM"]);
+      // The permissions line is said once however many dependencies run on local AWS.
+      expect(dependencyLines([emulated("S3"), emulated("SQS")], 0).notTested.filter((line) => line.includes("permissions"))).toHaveLength(1);
+      expect(dependencyLines([real("Postgres")], 0).notTested).toEqual([]);
     });
     it("test account: no 'not tested' line, a note", () => {
       const out = dependencyLines([account("payments API")], 0);
@@ -233,7 +236,7 @@ describe("the pull request lines (design 9.3)", () => {
     it("keeps the same lines at every level, only in fewer words", () => {
       const base = dependencyLines(everything(), 0);
       expect(base.lines.length).toBe(2);
-      expect(base.notTested.length).toBe(7);
+      expect(base.notTested.length).toBe(8);
       for (let level = 0; level <= DEPENDENCY_LEVEL_LAST + 3; level += 1) {
         const out = dependencyLines(everything(), level);
         expect(out.lines.length, `lines at ${level}`).toBe(base.lines.length);
@@ -259,7 +262,8 @@ describe("the pull request lines (design 9.3)", () => {
     it("lists all 24 dependencies even when they would not fit", () => {
       const many = Array.from({ length: 24 }, (_, index) => emulated(`service-${String(index).padStart(2, "0")}-with-a-long-name`));
       const out = dependencyLines(many, 0);
-      expect(out.notTested.length).toBe(24);
+      // One line for each, and the one line that says AWS permissions were not checked.
+      expect(out.notTested.length).toBe(25);
       expect(out.lines[0]).toContain("service-23");
     });
   });
@@ -287,7 +291,7 @@ describe("the pull request lines (design 9.3)", () => {
         emulated("S3"), recorded("geo", { fixtureRevision: undefined, madeUpAnswers: 2 }), written("tax"), dep({ name: "Redis", label: "company_approved", backing: "local", imageDigest: sha("a") }), notAvailable("Kafka", { testsNotRun: 12 }),
       ], 3);
       expect(out.notTested).toEqual([
-        "- S3: emulated, not real AWS", "- geo: recorded 2026-11-02", "- geo: 2 made-up answers", "- tax: written by hand", "- Redis: company's own image (digest aaaaaaaaaaaa)", "- 12 tests not run: need Kafka",
+        "- S3: emulated, not real AWS", "- geo: recorded 2026-11-02", "- geo: 2 made-up answers", "- tax: written by hand", "- Redis: company's own image (digest aaaaaaaaaaaa)", "- 12 tests not run: need Kafka", "- AWS permissions not checked (no IAM)",
       ]);
       expect(dependencyLines([notAvailable("Kafka", { testsNotRun: 1 })], 3).notTested).toEqual(["- 1 test not run: need Kafka"]);
     });
