@@ -299,6 +299,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/automatic-runs/start.ts", "packages/broker/src/automatic-runs/end.ts", "packages/broker/src/automatic-runs/cap.ts",
       // The Ask-in-Linear scrub: a comment kept after the tries ran out (400 days) and the resume cursor of the fix pass (30 days) expire by the TTL.
       "packages/broker/src/agent-sessions/ask-linear-scrub.ts",
+      // 2026-11-03, DR7 slice A (design review): the packets built for a round's reviewer slots and the sealed key minted for each slot are working rows of one design-review operation; both expire a day after they are written (SLOT_PACKET_TTL_SECONDS) and are removed when the round is recorded. Only packet-store.ts and slot-keys.ts write them.
+      "packages/broker/src/design-review/packet-store.ts", "packages/broker/src/design-review/slot-keys.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

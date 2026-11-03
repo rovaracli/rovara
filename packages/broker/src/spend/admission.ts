@@ -214,6 +214,8 @@ export interface MintOperationKeyInput {
    * touched and this key competes with the winner's hold.
    */
   keepEarlierKeys?: boolean | undefined;
+  /** DR7: a ceiling on this key's cap, for work whose share of the money is fixed before it starts (a design-review reviewer's key). The cap is the least of this and every room above; it never raises it. */
+  budgetCeilingUsd?: number | undefined;
   /** The keys the task has minted so far (their spend is the run's), and those of this operation (the step's). */
   taskKeyIds: readonly string[];
   operationKeyIds?: readonly string[] | undefined;
@@ -326,6 +328,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
     left(stopAtUsd, windowSpent), smallestRoom(read.levels),
     input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, taskSpent),
     input.stepBudgetUsd === undefined ? Infinity : left(input.stepBudgetUsd, stepSpent),
+    input.budgetCeilingUsd === undefined ? Infinity : clean(Math.max(0, input.budgetCeilingUsd)),
   ));
   return { capUsd, levels: read.levels };
 }

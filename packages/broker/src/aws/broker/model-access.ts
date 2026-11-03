@@ -63,6 +63,7 @@ import { SYSTEM_OWNER_REFUSAL, isSystemOwned } from "../../developer/system-owne
 import { requireTaskStopWindowContext, taskStopKeyActorChecks, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { taskRecipeKey } from "../../developer/task-records.js";
+import { designReviewSlotOf, resolveSlotAsk } from "./design-review-slot-access.js";
 
 /**
  * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
@@ -256,10 +257,13 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
     if(companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
     if(companyPolicy.locked&&companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/how-we-work");
   }
-  const liveRoute = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+  // DR7: a design-review operation (one with a stored binding) is keyed by slot only, with a key limited to that slot's model. Any other operation is untouched by this.
+  const designSlot = designReviewSlotOf(operation, request.path);
+  const slotAsk = designSlot === undefined ? undefined : await resolveSlotAsk(dependencies, operation, designSlot);
+  const liveRoute = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined || slotAsk !== undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   // SR-1: the key of a review that carries a second reviewer may also call the aliases the broker chose for it, and no others. An unscoped key (no route) stays unscoped.
-  const route = liveRoute === undefined || (operation.secondReviewPlan?.aliases ?? []).length === 0 ? liveRoute : { ...liveRoute, extraAliases: operation.secondReviewPlan!.aliases };
+  const route = slotAsk !== undefined ? slotAsk.route : liveRoute === undefined || (operation.secondReviewPlan?.aliases ?? []).length === 0 ? liveRoute : { ...liveRoute, extraAliases: operation.secondReviewPlan!.aliases };
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     if (current.fence !== claims.fence || TERMINAL.has(current.status) || current.id !== claims.operationId || current.workspaceId !== claims.workspaceId
@@ -405,16 +409,23 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
   const ledger = ledgerOf(dependencies);
   let scope = await loadScope();
   if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  // DR7: a slot's key is minted once and handed out again while it lives (after every check above has run again).
+  const kept = await slotAsk?.reuse();
+  if (kept !== undefined) return json({ baseUrl: modelAccess.proxyUrl, apiKey: kept.apiKey, expiresAt: kept.expiresAt }, request.requestId);
   try {
     // Two attempts: a mint that races another for the same task finds the record changed under it, gives its key back and
     // counts again with the other's key included, so concurrent mints cannot each take the task's whole remainder.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    // The slots of a round ask together and each records its key on the same task: a slot gets more tries than the one race an ordinary mint expects.
+    for (let attempt = 0; attempt < (slotAsk === undefined ? 2 : 5); attempt += 1) {
       if (attempt > 0) scope = await loadScope();
       if (scope === undefined) throw new Error("the operation lost its organisation");
       // Ruling R30 and Task 31: the key's cap is the least of what the run's limits, the step, the member, the org and every budget the task counts against
       // have left; it is reserved before it is handed out, and recorded on the task and the operation.
-      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}) });
-      if (minted.outcome === "minted") return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}), ...(slotAsk === undefined ? {} : slotAsk.mintInput(scope)) });
+      if (minted.outcome === "minted") {
+        const answer = slotAsk === undefined ? { apiKey: minted.key, expiresAt: minted.expiresAt } : await slotAsk.keep(minted);
+        return json({ baseUrl: modelAccess.proxyUrl, apiKey: answer.apiKey, expiresAt: answer.expiresAt }, request.requestId);
+      }
     }
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {

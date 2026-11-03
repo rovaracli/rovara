@@ -971,6 +971,13 @@ export class ControlPlaneStack extends Stack {
         target: `integrations/${integration.ref}`,
         authorizationType: "NONE",
       });
+      // DR7: a design-review reviewer's stored packet. Same reason and same authentication (the `design-review-packet` capability, verified in handleDesignReviewPacket).
+      new apigwv2.CfnRoute(this, "DesignReviewPacketRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/design-review/packet",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
     }
     // GitHub signs webhook bodies itself; the broker verifies its HMAC and linked repository scope.
     new apigwv2.CfnRoute(this, "GithubWebhookRoute", {

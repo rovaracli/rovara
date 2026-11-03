@@ -102,6 +102,7 @@ import { nightlyRunsOf, sweepAutomaticRunsOf } from "./nightly-run-wiring.js";
 import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isIntakePollEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
+import { handleDesignReviewPacket } from "./design-review-packet-route.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
@@ -740,6 +741,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Internal worker routes authenticate with operation-scoped capabilities; user JWT auth starts below them.
       // Ruling R29: a task's model proxy key, authorized by the operation's capability, which names the task's operation.
       if (request.method === "GET" && url.pathname === "/v1/internal/model-access") return await handleModelAccess(dependencies, request);
+      // DR7: a design-review reviewer's stored packet, authorized by the operation's own `design-review-packet` capability.
+      if (request.method === "GET" && url.pathname === "/v1/internal/design-review/packet") return await handleDesignReviewPacket(dependencies, request);
       // Plan 3 Task 9: the pinned skills of the operation's task snapshot, authorized by the operation's `agent-skills` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-skills") return await handleAgentSkills(dependencies, request);
       // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.
