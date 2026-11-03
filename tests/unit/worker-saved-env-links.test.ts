@@ -84,6 +84,21 @@ describe("absolute links", () => {
     }
   });
 
+  it("accepts the links of a Linux Python 3.14 venv (lib64 -> lib at the root, the pi alias beside python), built here as synthetic links so the test needs no Linux (CI: Ubuntu 26.04)", async () => {
+    const root = await scratch();
+    const bin = await venv(root);
+    const pi = "\u{1D70B}thon";
+    await mkdir(join(root, "svc", ".venv", "lib"), { recursive: true });
+    expect(await ok(root, `${bin}/python`, "/usr/bin/python3.14")).toBe(true);
+    expect(await ok(root, `${bin}/python3`, "python")).toBe(true);
+    expect(await ok(root, `${bin}/python3.14`, "python")).toBe(true);
+    expect(await ok(root, `${bin}/${pi}`, "python")).toBe(true);
+    expect(await ok(root, "svc/.venv/lib64", "lib")).toBe(true);
+    // still not a way out: a lib64 that climbs out of the tree, and the alias pointing at a program that is not an interpreter, are refused
+    expect(await ok(root, "svc/.venv/lib64", "../../../lib")).toBe(false);
+    expect(await ok(root, `${bin}/${pi}`, "/usr/bin/sh")).toBe(false);
+  });
+
   it("refuses it when any of those is not so: another name, another folder, no pyvenv.cfg, a path with .. or a double slash, an interpreter that is not python3[.N], a deeper folder", async () => {
     const root = await scratch();
     const bin = await venv(root);

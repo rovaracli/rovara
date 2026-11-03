@@ -1,0 +1,76 @@
+{
+  "extends": "./base-referenced.json",
+  "include": [
+    "../tests/unit/f*.ts",
+    "../tests/unit/g*.ts",
+    "../tests/unit/h*.ts",
+    "../tests/unit/i*.ts",
+    "../tests/unit/j*.ts",
+    "../tests/unit/k*.ts",
+    "../tests/unit/l*.ts",
+    "../tests/unit/m*.ts",
+    "../tests/unit/n*.ts",
+    "../tests/unit/o*.ts",
+    "../tests/unit/p*.ts",
+    "../tests/unit/q*.ts",
+    "../tests/unit/r*.ts",
+    "../tests/unit/s*.ts",
+    "../tests/unit/t*.ts",
+    "../tests/unit/u*.ts",
+    "../tests/unit/v*.ts",
+    "../tests/unit/w*.ts",
+    "../tests/unit/x*.ts",
+    "../tests/unit/y*.ts",
+    "../tests/unit/z*.ts"
+  ],
+  "references": [
+    {
+      "path": "../packages/audit-verifier"
+    },
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/verifier"
+    },
+    {
+      "path": "../packages/model-runtime"
+    },
+    {
+      "path": "../packages/model-proxy"
+    },
+    {
+      "path": "../packages/gateway"
+    },
+    {
+      "path": "../packages/broker"
+    },
+    {
+      "path": "../packages/worker"
+    },
+    {
+      "path": "../packages/orchestrator"
+    },
+    {
+      "path": "../packages/mcp"
+    },
+    {
+      "path": "../packages/cli"
+    },
+    {
+      "path": "../packages/slack-service"
+    },
+    {
+      "path": "../packages/design-tokens"
+    },
+    {
+      "path": "../packages/ui"
+    },
+    {
+      "path": "../packages/web"
+    },
+    {
+      "path": "../infra"
+    }
+  ]
+}

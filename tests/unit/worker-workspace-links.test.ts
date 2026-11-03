@@ -60,6 +60,18 @@ describe("workspace links: virtual environment interpreter links", () => {
     for (const name of ["python3", "python", "pythonw"]) expect(await isVenvInterpreterLink(join(local, "bin", name), policy), name).toBe(true);
   });
 
+  it("accepts a Python 3.14 venv, which also holds the pi alias (U+1D70B then thon) beside python (CI: Ubuntu 26.04)", async () => {
+    const pi = "\u{1D70B}thon";
+    const venv = await makeVenv({ "bin/python": "/usr/bin/python3.14", "bin/python3": "python", "bin/python3.14": "python", [`bin/${pi}`]: "python" });
+    for (const name of ["python", "python3", "python3.14", pi]) expect(await isVenvInterpreterLink(join(venv, "bin", name), policy), name).toBe(true);
+    // The alias is a name, not a way out: it still has to end at an allowed interpreter, and look-alike names are not it.
+    const loose = await makeVenv({ [`bin/${pi}`]: "/tmp/evil/python3", "bin/python": "/usr/bin/python3" });
+    expect(await isVenvInterpreterLink(join(loose, "bin", pi), policy)).toBe(false);
+    const alike = await makeVenv({ "bin/\u03c0thon": "/usr/bin/python3", [`bin/${pi}3`]: "/usr/bin/python3", [`bin/x${pi}`]: "/usr/bin/python3" });
+    for (const name of ["\u03c0thon", `${pi}3`, `x${pi}`]) expect(await isVenvInterpreterLink(join(alike, "bin", name), policy), name).toBe(false);
+    expect(isAllowedInterpreterTarget(`/usr/bin/${pi}`, policy)).toBe(true);
+  });
+
   it("accepts a uv-style venv whose interpreter is a uv-managed Python under the sandbox user's home", async () => {
     const managed = `${UV_ROOT}/cpython-3.12.3-linux-aarch64-gnu/bin/python3.12`;
     const venv = await makeVenv({ "bin/python": managed, "bin/python3": "python", "bin/python3.12": "python" });

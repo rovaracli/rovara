@@ -1,6 +1,7 @@
 import { MissingProviderSecret, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
-import { bedrockClaudeModelIds, catalogModel, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
+import { ROUTE_PROVIDER, bedrockClaudeModelIds, catalogModel, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
+export { ROUTE_PROVIDER };
 import { TRANSPORTS, requestCompat } from "./transport.js";
 import { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetScopeOfProxyBody, modelNotAllowedMarker, type ModelBudgetScope } from "./budget.js";
 export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, type ModelBudgetScope } from "./budget.js";
@@ -73,9 +74,6 @@ export function routeSupportsReasoning(route: InvocationModelRoute): boolean {
 export function routedThinkingLevel<L extends string>(route: InvocationModelRoute, requested: L | undefined): L | "off" | undefined {
   return requested === undefined || routeSupportsReasoning(route) ? requested : "off";
 }
-
-/** The provider name a routed model is registered under. */
-export const ROUTE_PROVIDER = "rovara-route";
 
 /**
  * Who a routed model's usage is reported under: the catalog entry the route names (its provider and id, which price lists and

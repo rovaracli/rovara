@@ -1,7 +1,11 @@
 {
   "extends": "./base-referenced.json",
   "include": [
-    "../tests/unit/**/*.ts"
+    "../tests/unit/a*.ts",
+    "../tests/unit/b*.ts",
+    "../tests/unit/c*.ts",
+    "../tests/unit/d*.ts",
+    "../tests/unit/e*.ts"
   ],
   "references": [
     {

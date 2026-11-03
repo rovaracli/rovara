@@ -37,9 +37,23 @@ const metaOf = (h: Harness, name = "payments", orgId: OrgId = TEST_ORG) => h.db.
 const listed = async (h: Harness, who: Developer, query = "") => (await h.dev(who, "GET", `/v1/app/projects${query}`)).body.projects as Array<{ name: string; status: string }> | undefined;
 
 /** A cloud install whose firewall sync is a spy, so a test sees when an archive or restore asks for it. */
+/**
+ * The harness's bucket has no listing, and an archive now lists the project's nightly coverage maps whether or not evidence was ever kept (NH-1 fix 11), so a listing that fails is an erase left
+ * pending (and a warning). This makes the bucket a well one with nothing in it, or (`down`) one that is unavailable.
+ */
+function bucketLists(h: { s3: unknown }, down = false): void {
+  const s3 = h.s3 as { send: (command: { constructor: { name: string } }) => Promise<unknown> };
+  const original = s3.send.bind(s3);
+  s3.send = async (command) => {
+    if (command.constructor.name === "ListObjectsV2Command") { if (down) throw new Error("bucket unavailable"); return { Contents: [] }; }
+    return original(command);
+  };
+}
+
 async function cloudInstall(options: { syncOk?: boolean } = {}) {
   const sync = vi.fn(async () => ({ ok: options.syncOk ?? true, domains: 0 }));
   const h = await createSingleAnswerPlanBroker({ brokerExtra: { cloud: true, egressDomainsSync: sync } });
+  bucketLists(h);
   setRole(h.db, OMAR, "owner");
   const egress: EgressDomainsDependencies = { documentClient: h.db, tableName: "state", cloud: true, now: () => new Date(), sync };
   /** The project asks for exactly these domains and staff approve each, as the app and the operator console do. */
@@ -419,12 +433,7 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
       setRole(h.db, OMAR, "owner");
       expect((await h.dev(OMAR, "POST", "/v1/dev/tasks", start())).status).toBe(200);
       if (kept) h.db.set({ pk: `EVIDENCE_STORED#${TEST_ORG}`, sk: "META", entityType: "EVIDENCE_STORED", orgId: TEST_ORG });
-      // The harness's bucket has no listing; this one lists nothing (a well bucket with no evidence left) or is unavailable.
-      const original = h.s3.send.bind(h.s3);
-      h.s3.send = (async (command: { constructor: { name: string } }) => {
-        if (command.constructor.name === "ListObjectsV2Command") { if (bucketDown) throw new Error("bucket unavailable"); return { Contents: [] }; }
-        return original(command as never);
-      }) as unknown as typeof h.s3.send;
+      bucketLists(h, bucketDown);
       return h;
     };
     const down = await world(true, true);
@@ -437,7 +446,9 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
     const well = await world(false, true);
     expect((await archiveRoute(well, OMAR)).body.warnings).toEqual([]);
     expect(well.db.find((item) => item.pk === "EVIDENCE_ERASE_PENDING")).toEqual([]);
-    expect((await archiveRoute(await world(true, false), OMAR)).body.warnings).toEqual([]);
+    expect((await archiveRoute(await world(false, false), OMAR)).body.warnings).toEqual([]);
+    // Nothing kept, but the bucket cannot be listed: the project's nightly coverage maps cannot be checked either, so the erase stays pending and the answer says so (NH-1 fix 11).
+    expect((await archiveRoute(await world(true, false), OMAR)).body.warnings).toEqual([EVIDENCE_ERASE_PENDING_WARNING]);
   });
 
   it("answers a replay of the same request id without applying it again: a late archive after a restore leaves the project active", async () => {
