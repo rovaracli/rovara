@@ -129,7 +129,7 @@ function readSettings(path: string, text: string, out: DependencyCandidate[]): v
   }
   const names = new Map<string, number>();
   for (const match of text.matchAll(/\$\{([A-Z][A-Z0-9_]{1,63})(?=[:}])/gu)) names.set(match[1]!, lineOf(text, match.index));
-  for (const match of text.matchAll(/(?:environ(?:\.get)?|getenv|env(?:\.[a-z_]+)?|config)\(\s{0,40}['"]([A-Z][A-Z0-9_]{1,63})['"]/gu)) names.set(match[1]!, lineOf(text, match.index));
+  for (const match of text.matchAll(/(?:environ(?:\.get)?|getenv|env(?:\.[a-z_]+)?|config)\(\s{0,120}['"]([A-Z][A-Z0-9_]{1,63})['"]/gu)) names.set(match[1]!, lineOf(text, match.index));
   for (const match of text.matchAll(/environ\[\s{0,40}['"]([A-Z][A-Z0-9_]{1,63})['"]\s{0,40}\]/gu)) names.set(match[1]!, lineOf(text, match.index));
   for (const [raw, line] of names) {
     const name = safeEnvName(raw);

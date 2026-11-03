@@ -1,4 +1,5 @@
 // Test services: the detector pass under a wall-clock limit (a worker thread that the caller can end).
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_TOTAL_BYTES, boundedReader, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 import { ENV_DETECT_TIMEOUT_NOTE, runDetectorsGuarded, type ThreadEntry } from "../../packages/worker/src/env-detect/guarded.js";
@@ -56,11 +57,44 @@ describe("a pass that does not finish", () => {
     expect(detection.checks).toEqual([]);
     expect(detection.notes).toEqual([ENV_DETECT_TIMEOUT_NOTE]);
   });
-  it("runs in the calling thread, as before, when the thread cannot be started", async () => {
+  it("runs in the calling thread, as before, when the thread cannot be started, and says so once in the log", async () => {
     const files = REPOS["compose"]!;
     const direct = await runDetectors(reader(files).reader, "svc");
-    const detection = await runDetectorsGuarded(reader(files).reader, "svc", { timeoutMs: 5_000, entry: { url: new URL("../support/no-such-thread.ts", import.meta.url), execArgv: ["--import", "tsx"] } });
+    const lines: Array<[string, string]> = [];
+    const detection = await runDetectorsGuarded(reader(files).reader, "svc", { timeoutMs: 5_000, log: (level, line) => lines.push([level, line]), entry: { url: new URL("../support/no-such-thread.ts", import.meta.url), execArgv: ["--import", "tsx"] } });
     expect(JSON.stringify(detection)).toBe(JSON.stringify(direct));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]![0]).toBe("error");
+    const logged = JSON.parse(lines[0]![1]) as Record<string, string>;
+    expect(logged["message"]).toBe("env-detect guard unavailable, running unguarded: ERR_MODULE_NOT_FOUND");
+    expect(logged).toMatchObject({ component: "worker", event: "envdetect.guard_unavailable", reason: "ERR_MODULE_NOT_FOUND" });
+  });
+  it("counts a crash at start-up as stopped: today's detection plus the note, no unguarded rerun, no log line", async () => {
+    const served: string[] = [];
+    const bounded = reader(REPOS["node"]!);
+    const watching: RepositoryReader = { ...bounded.reader, read: (path) => { served.push(path); return bounded.reader.read(path); } };
+    const lines: string[] = [];
+    const detection = await runDetectorsGuarded(watching, "svc", { timeoutMs: 5_000, log: (_level, line) => lines.push(line), entry: entryOf("env-detect-crash-thread.ts") });
+    expect(detection.checks).toEqual([]);
+    expect(detection.notes).toEqual([ENV_DETECT_TIMEOUT_NOTE]);
+    expect(served).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+});
+
+// The compiled entry file the image ships (packages/worker/dist), run for real. `tsc -b` makes it; a checkout that has not built the worker skips these with a message, and scripts/check-worker-dist.ts fails the build if it is missing.
+const COMPILED = new URL("../../packages/worker/dist/env-detect/detect-thread.js", import.meta.url);
+const compiledPresent = existsSync(COMPILED.pathname);
+if (!compiledPresent) console.warn("worker-env-detect-guarded: packages/worker/dist/env-detect/detect-thread.js is absent (run `tsc -b packages/worker`); the compiled-entry tests are skipped.");
+describe.skipIf(!compiledPresent)("the compiled thread entry (dist)", () => {
+  const compiled: ThreadEntry = { url: COMPILED, execArgv: [] };
+  it.each(["node", "compose", "python", "iac"])("%s: a thread started from the compiled file gives the direct result and no log line", async (name) => {
+    const files = REPOS[name]!;
+    const lines: string[] = [];
+    const direct = await runDetectors(reader(files).reader, "svc");
+    const guarded = await runDetectorsGuarded(reader(files).reader, "svc", { timeoutMs: 30_000, entry: compiled, log: (_level, line) => lines.push(line) });
+    expect(JSON.stringify(guarded)).toBe(JSON.stringify(direct));
+    expect(lines).toEqual([]);
   });
 });
 

@@ -160,8 +160,8 @@ function cdkKey(args: string, camel: string, snake: string): DependencyKeyAttrib
 function readCdk(path: string, text: string, out: DependencyCandidate[]): void {
   if (!/aws-cdk-lib|@aws-cdk\/|aws_cdk/u.test(text)) return;
   const pattern = path.endsWith(".py")
-    ? /\b(?:[a-z_0-9]+\.)?(Table|TableV2|Bucket|Queue|Topic)\(\s{0,40}(?:self|scope)\s{0,40},\s{0,40}["']([^"']+)["']/gu
-    : /\bnew\s{1,40}(?:[A-Za-z0-9_]+\.)?(Table|TableV2|Bucket|Queue|Topic)\s{0,40}\(\s{0,40}(?:this|scope|stack)\s{0,40},\s{0,40}["'`]([^"'`]+)["'`]/gu;
+    ? /\b(?:[a-z_0-9]+\.)?(Table|TableV2|Bucket|Queue|Topic)\(\s{0,120}(?:self|scope)\s{0,40},\s{0,40}["']([^"']+)["']/gu
+    : /\bnew\s{1,40}(?:[A-Za-z0-9_]+\.)?(Table|TableV2|Bucket|Queue|Topic)\s{0,120}\(\s{0,120}(?:this|scope|stack)\s{0,40},\s{0,40}["'`]([^"'`]+)["'`]/gu;
   for (const match of text.matchAll(pattern)) {
     const kind = CDK_CLASSES[match[1]!]!;
     const open = text.indexOf("(", match.index);

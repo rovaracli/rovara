@@ -194,7 +194,7 @@ export function callArguments(text: string, open: number, max = 800): string {
 /** Whether call arguments hard-code where the service is: a connection URL string, or a host / address / brokers / endpoint set to a string literal (not a variable, a setting lookup or a template). */
 export function hardcodedEndpoint(args: string): boolean {
   return /["'`](?:jdbc:)?(?:postgres(?:ql)?|mysql|mariadb|redis|rediss|mongodb(?:\+srv)?|amqps?|kafka|https?):\/\/[^"'`\s$%{]{2,}/u.test(args)
-    || /\b(?:host|hosts|hostname|addr|address|brokers|bootstrap_servers|bootstrap\.servers|nodes?|endpoint|endpoint_url|endpointOverride|BaseEndpoint|Endpoint|Addr|Brokers|setHost|setUri|URI\.create)\b["']?\s{0,40}(?:[=:,(]|=>)\s{0,40}\[?\s{0,40}(?:aws\.String\(\s{0,40})?[fFrb]?["'`][^"'`$%{\s]{2,}["'`]/u.test(args)
+    || /\b(?:host|hosts|hostname|addr|address|brokers|bootstrap_servers|bootstrap\.servers|nodes?|endpoint|endpoint_url|endpointOverride|BaseEndpoint|Endpoint|Addr|Brokers|setHost|setUri|URI\.create)\b["']?\s{0,40}(?:[=:,(]|=>)\s{0,40}\[?\s{0,40}(?:aws\.String\(\s{0,120})?[fFrb]?["'`][^"'`$%{\s]{2,}["'`]/u.test(args)
     // a literal host:port (`"localhost:6379"`), or a libpq / ADO style `host=...` setting inside a connection string
     || /["'`][A-Za-z0-9][A-Za-z0-9.-]*:\d{2,5}["'`]/u.test(args)
     || /["'`][^"'`]*\bhost=[^\s"'`$%{]+/u.test(args);

@@ -90,32 +90,32 @@ export async function nodeManifestCandidates(repo: DetectorContext["repo"]): Pro
   return mergeCandidates(found);
 }
 
-const NODE_IMPORT = (names: string): RegExp => new RegExp(`(?:from\\s{1,40}|require\\(\\s{0,40}|import\\(\\s{0,40})["'](?:${names})["']`, "u");
+const NODE_IMPORT = (names: string): RegExp => new RegExp(`(?:from\\s{1,40}|require\\(\\s{0,120}|import\\(\\s{0,120})["'](?:${names})["']`, "u");
 export const NODE_DRIVERS: readonly DriverRule[] = [
-  { family: "postgres", uses: NODE_IMPORT("pg|pg-promise|pg-pool|postgres|slonik"), call: /\bnew\s{1,40}(?:Pool|Client)\s{0,40}\(|\bpgp\s{0,40}\(|\bpostgres\s{0,40}\(|\bcreatePool\s{0,40}\(/u },
-  { family: "mysql", uses: NODE_IMPORT("mysql2?(?:/promise)?"), call: /\bcreate(?:Connection|Pool|PoolCluster)\s{0,40}\(/u },
-  { family: "mariadb", uses: NODE_IMPORT("mariadb"), call: /\bcreate(?:Connection|Pool)\s{0,40}\(/u },
-  { family: "redis", uses: NODE_IMPORT("redis|ioredis|@redis/client"), call: /\bcreateClient\s{0,40}\(|\bnew\s{1,40}(?:Redis|IORedis|Cluster)\s{0,40}\(/u },
-  { family: "mongodb", uses: NODE_IMPORT("mongodb|mongoose"), call: /\bnew\s{1,40}MongoClient\s{0,40}\(|\bmongoose\.(?:connect|createConnection)\s{0,40}\(/u },
-  { family: "kafka", uses: NODE_IMPORT("kafkajs|node-rdkafka|@confluentinc/kafka-javascript"), call: /\bnew\s{1,40}Kafka\s{0,40}\(/u },
-  { family: "rabbitmq", uses: NODE_IMPORT("amqplib|amqp-connection-manager"), call: /\bamqp(?:lib)?\.connect\s{0,40}\(|\bconnect\s{0,40}\(/u },
-  { family: "elasticsearch", uses: NODE_IMPORT("@elastic/elasticsearch"), call: /\bnew\s{1,40}Client\s{0,40}\(/u },
-  { family: "opensearch", uses: NODE_IMPORT("@opensearch-project/opensearch"), call: /\bnew\s{1,40}Client\s{0,40}\(/u },
-  { family: "memcached", uses: NODE_IMPORT("memcached|memjs"), call: /\bnew\s{1,40}Memcached\s{0,40}\(|\bMemcached\.create\s{0,40}\(|\bClient\.create\s{0,40}\(/u },
+  { family: "postgres", uses: NODE_IMPORT("pg|pg-promise|pg-pool|postgres|slonik"), call: /\bnew\s{1,40}(?:Pool|Client)\s{0,120}\(|\bpgp\s{0,120}\(|\bpostgres\s{0,120}\(|\bcreatePool\s{0,120}\(/u },
+  { family: "mysql", uses: NODE_IMPORT("mysql2?(?:/promise)?"), call: /\bcreate(?:Connection|Pool|PoolCluster)\s{0,120}\(/u },
+  { family: "mariadb", uses: NODE_IMPORT("mariadb"), call: /\bcreate(?:Connection|Pool)\s{0,120}\(/u },
+  { family: "redis", uses: NODE_IMPORT("redis|ioredis|@redis/client"), call: /\bcreateClient\s{0,120}\(|\bnew\s{1,40}(?:Redis|IORedis|Cluster)\s{0,120}\(/u },
+  { family: "mongodb", uses: NODE_IMPORT("mongodb|mongoose"), call: /\bnew\s{1,40}MongoClient\s{0,120}\(|\bmongoose\.(?:connect|createConnection)\s{0,120}\(/u },
+  { family: "kafka", uses: NODE_IMPORT("kafkajs|node-rdkafka|@confluentinc/kafka-javascript"), call: /\bnew\s{1,40}Kafka\s{0,120}\(/u },
+  { family: "rabbitmq", uses: NODE_IMPORT("amqplib|amqp-connection-manager"), call: /\bamqp(?:lib)?\.connect\s{0,120}\(|\bconnect\s{0,120}\(/u },
+  { family: "elasticsearch", uses: NODE_IMPORT("@elastic/elasticsearch"), call: /\bnew\s{1,40}Client\s{0,120}\(/u },
+  { family: "opensearch", uses: NODE_IMPORT("@opensearch-project/opensearch"), call: /\bnew\s{1,40}Client\s{0,120}\(/u },
+  { family: "memcached", uses: NODE_IMPORT("memcached|memjs"), call: /\bnew\s{1,40}Memcached\s{0,120}\(|\bMemcached\.create\s{0,120}\(|\bClient\.create\s{0,120}\(/u },
 ];
 
 /** AWS SDK clients (v3 imports, v2 `new AWS.S3(...)`) and drivers a JavaScript or TypeScript file uses (test services D5). An `endpoint` written as a string is flagged. */
 export function nodeCodeCandidates(path: string, text: string): DependencyCandidate[] {
   const found = scanDrivers(path, text, NODE_DRIVERS);
-  const clients = [...text.matchAll(/\bnew\s{1,40}([A-Za-z0-9]+)Client\s{0,40}\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: hardcodedEndpoint(callArguments(text, text.indexOf("(", match.index + match[0].length - 1))) }));
-  for (const match of text.matchAll(/(?:from\s{1,40}|require\(\s{0,40}|import\(\s{0,40})["']@aws-sdk\/(?:client|lib)-([a-z0-9-]+)["']/gu)) {
+  const clients = [...text.matchAll(/\bnew\s{1,40}([A-Za-z0-9]+)Client\s{0,120}\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: hardcodedEndpoint(callArguments(text, text.indexOf("(", match.index + match[0].length - 1))) }));
+  for (const match of text.matchAll(/(?:from\s{1,40}|require\(\s{0,120}|import\(\s{0,120})["']@aws-sdk\/(?:client|lib)-([a-z0-9-]+)["']/gu)) {
     const id = normalizeAwsService(match[1]!);
     const explicit = id !== undefined && clients.some((client) => client.explicit && (client.name === id.replace(/-/gu, "") || client.name.startsWith(id.replace(/-/gu, ""))));
     const item = awsClientCandidate(path, text, match.index, match[1]!, explicit);
     if (item !== undefined) found.push(item);
   }
   if (/\baws-sdk\b/u.test(text)) {
-    for (const match of text.matchAll(/\bnew\s{1,40}AWS\.([A-Za-z0-9]+)\s{0,40}\(/gu)) {
+    for (const match of text.matchAll(/\bnew\s{1,40}AWS\.([A-Za-z0-9]+)\s{0,120}\(/gu)) {
       const item = awsClientCandidate(path, text, match.index, match[1]!, hardcodedEndpoint(callArguments(text, text.indexOf("(", match.index))));
       if (item !== undefined) found.push(item);
     }

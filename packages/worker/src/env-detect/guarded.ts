@@ -5,17 +5,22 @@
 //   - the thread has its own memory limit, and `terminate()` frees its heap with it;
 //   - on the limit (default 60 s, `timeoutMs`) the thread is ended and the detection is made again WITHOUT the dependency detectors, by a second thread with a shorter limit (10 s at most), so a repository
 //     that only trips a new detector still gets today's detection. If that one is stopped too, the detection is empty. Either way it says "Some checks took too long and were stopped.";
-//   - if a thread cannot be started at all (no compiled entry file), the pass runs in this thread exactly as before: the guard never makes detection worse than it was.
+//   - if a thread cannot be started because its entry file is missing (`ERR_MODULE_NOT_FOUND`, `ERR_WORKER_PATH`), the pass runs in this thread exactly as before, and ONE log line says so (the worker log), so a
+//     packaging fault does not go unseen. Any other failure before the first message (a crash, running out of memory) counts as "stopped": the caller gets today's detection plus the note, never an unguarded rerun.
 import { existsSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
+import { consoleWorkerLog, logEnvDetectGuardUnavailable, type WorkerLogSink } from "../worker-log.js";
 import { runDetectors } from "./index.js";
 import { emptyDetection, type Detection, type RepositoryReader } from "./types.js";
 
 export const ENV_DETECT_TIMEOUT_MS = 60_000;
 export const ENV_DETECT_FALLBACK_TIMEOUT_MS = 10_000;
 export const ENV_DETECT_TIMEOUT_NOTE = "Some checks took too long and were stopped.";
-const THREAD_MEMORY_MB = 1_024;
+const THREAD_MEMORY_MB = 512;
+/** The only errors that mean "no thread can be started here". */
+const UNAVAILABLE_CODES: ReadonlySet<string> = new Set(["ERR_MODULE_NOT_FOUND", "ERR_WORKER_PATH"]);
+const codeOf = (error: unknown): string | undefined => (typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : undefined);
 
 export interface ThreadEntry { url: URL; execArgv: string[] }
 export interface GuardOptions {
@@ -23,6 +28,8 @@ export interface GuardOptions {
   timeoutMs?: number | undefined;
   /** The thread's entry file; by default the compiled `detect-thread.js` beside this file, or its source with `tsx` when running from source. */
   entry?: ThreadEntry | undefined;
+  /** Where the "guard unavailable" line goes; the worker's console log by default. */
+  log?: WorkerLogSink | undefined;
 }
 
 export function defaultThreadEntry(): ThreadEntry {
@@ -31,7 +38,7 @@ export function defaultThreadEntry(): ThreadEntry {
   return { url: new URL("./detect-thread.ts", import.meta.url), execArgv: ["--import", "tsx"] };
 }
 
-type Attempt = { kind: "done"; detection: Detection } | { kind: "stopped" } | { kind: "unavailable" };
+type Attempt = { kind: "done"; detection: Detection } | { kind: "stopped" } | { kind: "unavailable"; code: string };
 
 function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, timeoutMs: number, entry: ThreadEntry): Promise<Attempt> {
   return new Promise((resolve) => {
@@ -43,8 +50,9 @@ function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, tim
         env: {},
         resourceLimits: { maxOldGenerationSizeMb: THREAD_MEMORY_MB, maxYoungGenerationSizeMb: 64 },
       });
-    } catch {
-      resolve({ kind: "unavailable" });
+    } catch (error) {
+      const code = codeOf(error);
+      resolve(code !== undefined && UNAVAILABLE_CODES.has(code) ? { kind: "unavailable", code } : { kind: "stopped" });
       return;
     }
     let settled = false;
@@ -68,9 +76,12 @@ function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, tim
       } else if (message.type === "done" && message.detection !== undefined) finish({ kind: "done", detection: message.detection });
       else if (message.type === "failed") finish({ kind: "stopped" });
     });
-    // A thread that cannot load its entry file never sends a message: that is "unavailable" (run in this thread), not "too slow".
-    worker.on("error", () => finish(started ? { kind: "stopped" } : { kind: "unavailable" }));
-    worker.on("exit", () => finish(started ? { kind: "stopped" } : { kind: "unavailable" }));
+    // Only a missing entry file means "unavailable". A crash or running out of memory, before or after the first message, is "stopped".
+    worker.on("error", (error: unknown) => {
+      const code = codeOf(error);
+      finish(!started && code !== undefined && UNAVAILABLE_CODES.has(code) ? { kind: "unavailable", code } : { kind: "stopped" });
+    });
+    worker.on("exit", () => finish({ kind: "stopped" }));
   });
 }
 
@@ -80,7 +91,10 @@ export async function runDetectorsGuarded(reader: RepositoryReader, cwd: string,
   const entry = options.entry ?? defaultThreadEntry();
   const full = await attempt(reader, cwd, false, timeoutMs, entry);
   if (full.kind === "done") return full.detection;
-  if (full.kind === "unavailable") return runDetectors(reader, cwd);
+  if (full.kind === "unavailable") {
+    logEnvDetectGuardUnavailable(options.log ?? consoleWorkerLog, full.code);
+    return runDetectors(reader, cwd);
+  }
   const legacy = await attempt(reader, cwd, true, Math.min(ENV_DETECT_FALLBACK_TIMEOUT_MS, timeoutMs), entry);
   const base = legacy.kind === "done" ? legacy.detection : emptyDetection();
   return { ...base, notes: [...new Set([...base.notes, ENV_DETECT_TIMEOUT_NOTE])] };

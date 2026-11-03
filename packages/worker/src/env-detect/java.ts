@@ -38,8 +38,8 @@ function moduleNote(modules: string[]): string {
 }
 
 /** Where a pom.xml / Gradle build file says which Java it needs; shared with the toolchain proposal. */
-export const MAVEN_JAVA_VERSION = /<(?:maven\.compiler\.release|maven\.compiler\.source|java\.version|release)>\s{0,40}(\d{1,2}(?:\.\d{1,2})?)\s{0,40}</u;
-export const GRADLE_JAVA_VERSION = /JavaLanguageVersion\.of\(\s{0,40}(\d{1,2})\s{0,40}\)|JavaVersion\.VERSION_(\d{1,2}(?:_\d{1,2})?)|\bsourceCompatibility[ \t]{0,20}=?[ \t]{0,20}['"]?(\d{1,2}(?:\.\d{1,2})?)/u;
+export const MAVEN_JAVA_VERSION = /<(?:maven\.compiler\.release|maven\.compiler\.source|java\.version|release)>[ \t\r\n]{0,200}(\d{1,2}(?:\.\d{1,2})?)[ \t\r\n]{0,200}</u;
+export const GRADLE_JAVA_VERSION = /JavaLanguageVersion\.of\(\s{0,120}(\d{1,2})\s{0,40}\)|JavaVersion\.VERSION_(\d{1,2}(?:_\d{1,2})?)|\bsourceCompatibility[ \t]{0,60}=?[ \t]{0,60}['"]?(\d{1,2}(?:\.\d{1,2})?)/u;
 
 function javaVersionNote(path: string, text: string, pattern: RegExp): string | undefined {
   const match = pattern.exec(text);
@@ -73,7 +73,7 @@ async function wrapperSourceNotes(repo: DetectorContext["repo"], path: string, t
 interface PluginBlock { body: string; index: number; line: number }
 /** The first `<plugin>` whose artifactId is `artifactId`; `line` is the artifactId's line. */
 function mavenPlugin(text: string, artifactId: string): PluginBlock | undefined {
-  const id = new RegExp(`<artifactId>\\s{0,40}${escape(artifactId)}\\s{0,40}</artifactId>`, "u");
+  const id = new RegExp(`<artifactId>[ \\t\\r\\n]{0,200}${escape(artifactId)}[ \\t\\r\\n]{0,200}</artifactId>`, "u");
   for (const match of blocksBetween(text, "<plugin>", "</plugin>")) {
     const inner = id.exec(match.text);
     if (inner !== null) return { body: match.text, index: match.index, line: lineOf(text, match.index + inner.index) };
@@ -113,7 +113,7 @@ async function detectMaven(context: DetectorContext, hasTests: boolean): Promise
   const projectAt: DetectedSource = { path: "pom.xml", line: top };
 
   const modulesBlock = blocksBetween(active, "<modules>", "</modules>", 1)[0]?.inner ?? "";
-  const modules = [...modulesBlock.matchAll(/<module>\s{0,40}([^<\s][^<]*?)\s{0,40}<\/module>/gu)].map((match) => match[1]!).filter((name) => /^[A-Za-z0-9_./-]{1,100}$/u.test(name));
+  const modules = [...modulesBlock.matchAll(/<module>[ \t\r\n]{0,200}([^<\s][^<]*?)[ \t\r\n]{0,200}<\/module>/gu)].map((match) => match[1]!).filter((name) => /^[A-Za-z0-9_./-]{1,100}$/u.test(name));
   const multi = modules.length > 0;
   if (multi) notes.push(moduleNote(modules));
   const versionNote = javaVersionNote("pom.xml", pom, MAVEN_JAVA_VERSION);
@@ -134,12 +134,12 @@ async function detectMaven(context: DetectorContext, hasTests: boolean): Promise
   const jacoco = mavenPlugin(active, "jacoco-maven-plugin");
   let coverage: { path: string; source: DetectedSource; phase: number } | undefined;
   if (jacoco !== undefined) {
-    const execution = blocksBetween(jacoco.body, "<execution>", "</execution>").find((item) => /<goal>\s{0,40}report\s{0,40}<\/goal>/u.test(item.text));
-    const goalAt = /<goal>\s{0,40}report\s{0,40}<\/goal>/u.exec(jacoco.body);
+    const execution = blocksBetween(jacoco.body, "<execution>", "</execution>").find((item) => /<goal>[ \t\r\n]{0,200}report[ \t\r\n]{0,200}<\/goal>/u.test(item.text));
+    const goalAt = /<goal>[ \t\r\n]{0,200}report[ \t\r\n]{0,200}<\/goal>/u.exec(jacoco.body);
     if (execution === undefined || goalAt === null) notes.push("JaCoCo is configured but the build does not write an XML report in a normal build, so changed-line coverage will show as not measured.");
     else if (multi) notes.push("JaCoCo writes one report per module, so no coverage path is proposed.");
     else {
-      const phase = /<phase>\s{0,40}([a-z-]+)\s{0,40}<\/phase>/u.exec(execution.text)?.[1] ?? "verify";
+      const phase = /<phase>[ \t\r\n]{0,200}([a-z-]+)[ \t\r\n]{0,200}<\/phase>/u.exec(execution.text)?.[1] ?? "verify";
       const index = MAVEN_PHASES.indexOf(phase);
       const dir = mavenDirectory(/<outputDirectory>([^<]{1,200})<\/outputDirectory>/u.exec(jacoco.body)?.[1] ?? "") ?? "target/site/jacoco";
       if (index === -1 || index > MAVEN_PHASES.indexOf("verify")) notes.push("JaCoCo's report is bound to a phase after verify, so no coverage path is proposed.");
@@ -273,7 +273,7 @@ async function detectGradle(context: DetectorContext, hasTests: boolean): Promis
     },
     source: topAt,
   });
-  const integration = /(?:register|create)[ \t]{0,40}(?:<[^<>\n]{0,100}>)?[ \t]{0,40}\(\s{0,40}["'](integrationTest|intTest|functionalTest|componentTest)["']|\btask[\s(]{0,40}["']?(integrationTest|intTest|functionalTest|componentTest)\b/u.exec(build);
+  const integration = /(?:register|create)[ \t]{0,40}(?:<[^<>\n]{0,100}>)?[ \t]{0,40}\(\s{0,120}["'](integrationTest|intTest|functionalTest|componentTest)["']|\btask[\s(]{0,40}["']?(integrationTest|intTest|functionalTest|componentTest)\b/u.exec(build);
   const integrationName = integration?.[1] ?? integration?.[2];
   if (integration !== null && integrationName !== undefined) {
     found.checks.push({
@@ -351,8 +351,8 @@ export async function javaManifestCandidates(repo: DetectorContext["repo"]): Pro
     if (text === undefined) continue;
     if (path.endsWith("pom.xml")) {
       for (const block of blocksBetween(text, "<dependency>", "</dependency>")) {
-        const group = /<groupId>\s{0,40}([^<\s]+)\s{0,40}<\/groupId>/u.exec(block.text)?.[1];
-        const artifact = /<artifactId>\s{0,40}([^<\s]+)\s{0,40}<\/artifactId>/u.exec(block.text)?.[1];
+        const group = /<groupId>[ \t\r\n]{0,200}([^<\s]+)[ \t\r\n]{0,200}<\/groupId>/u.exec(block.text)?.[1];
+        const artifact = /<artifactId>[ \t\r\n]{0,200}([^<\s]+)[ \t\r\n]{0,200}<\/artifactId>/u.exec(block.text)?.[1];
         const family = group === undefined || artifact === undefined ? undefined : javaArtifactFamily(`${group}:${artifact}`);
         if (family !== undefined) found.push(candidate(family, "mentioned", { path, line: lineOf(text, block.index) }, { seenBy: ["driver"] }));
       }
@@ -367,19 +367,19 @@ export async function javaManifestCandidates(repo: DetectorContext["repo"]): Pro
 }
 
 export const JAVA_DRIVERS: readonly DriverRule[] = [
-  { family: "postgres", uses: /^[ \t]*import\s{1,40}org\.postgresql\./mu, call: /DriverManager\.getConnection\s{0,40}\(|\.setUrl\s{0,40}\(|\.jdbcUrl\s{0,40}\(|\.setServerNames?\s{0,40}\(/u },
-  { family: "mysql", uses: /^[ \t]*import\s{1,40}com\.mysql\./mu, call: /DriverManager\.getConnection\s{0,40}\(|\.setUrl\s{0,40}\(|\.jdbcUrl\s{0,40}\(/u },
-  { family: "redis", uses: /^[ \t]*import\s{1,40}(?:redis\.clients\.jedis|io\.lettuce|org\.redisson)\./mu, call: /new\s{1,40}Jedis(?:Pool)?\s{0,40}\(|RedisClient\.create\s{0,40}\(|\.setAddress\s{0,40}\(/u },
-  { family: "mongodb", uses: /^[ \t]*import\s{1,40}com\.mongodb\./mu, call: /MongoClients\.create\s{0,40}\(|new\s{1,40}MongoClient\s{0,40}\(|new\s{1,40}ConnectionString\s{0,40}\(/u },
-  { family: "kafka", uses: /^[ \t]*import\s{1,40}org\.apache\.kafka\./mu, call: /\.put\s{0,40}\(\s{0,40}["']bootstrap\.servers["']|BOOTSTRAP_SERVERS_CONFIG\s{0,40},/u },
-  { family: "rabbitmq", uses: /^[ \t]*import\s{1,40}com\.rabbitmq\./mu, call: /\.setHost\s{0,40}\(|\.setUri\s{0,40}\(/u },
-  { family: "elasticsearch", uses: /^[ \t]*import\s{1,40}(?:org\.elasticsearch|co\.elastic)\./mu, call: /RestClient\.builder\s{0,40}\(|new\s{1,40}HttpHost\s{0,40}\(/u },
+  { family: "postgres", uses: /^[ \t]*import\s{1,40}org\.postgresql\./mu, call: /DriverManager\.getConnection\s{0,120}\(|\.setUrl\s{0,120}\(|\.jdbcUrl\s{0,120}\(|\.setServerNames?\s{0,120}\(/u },
+  { family: "mysql", uses: /^[ \t]*import\s{1,40}com\.mysql\./mu, call: /DriverManager\.getConnection\s{0,120}\(|\.setUrl\s{0,120}\(|\.jdbcUrl\s{0,120}\(/u },
+  { family: "redis", uses: /^[ \t]*import\s{1,40}(?:redis\.clients\.jedis|io\.lettuce|org\.redisson)\./mu, call: /new\s{1,40}Jedis(?:Pool)?\s{0,120}\(|RedisClient\.create\s{0,120}\(|\.setAddress\s{0,120}\(/u },
+  { family: "mongodb", uses: /^[ \t]*import\s{1,40}com\.mongodb\./mu, call: /MongoClients\.create\s{0,120}\(|new\s{1,40}MongoClient\s{0,120}\(|new\s{1,40}ConnectionString\s{0,120}\(/u },
+  { family: "kafka", uses: /^[ \t]*import\s{1,40}org\.apache\.kafka\./mu, call: /\.put\s{0,120}\(\s{0,120}["']bootstrap\.servers["']|BOOTSTRAP_SERVERS_CONFIG\s{0,40},/u },
+  { family: "rabbitmq", uses: /^[ \t]*import\s{1,40}com\.rabbitmq\./mu, call: /\.setHost\s{0,120}\(|\.setUri\s{0,120}\(/u },
+  { family: "elasticsearch", uses: /^[ \t]*import\s{1,40}(?:org\.elasticsearch|co\.elastic)\./mu, call: /RestClient\.builder\s{0,120}\(|new\s{1,40}HttpHost\s{0,120}\(/u },
 ];
 
 /** AWS SDK clients (v2 `S3Client.builder()`, v1 imports) and drivers a Java or Kotlin file uses (test services D5). An `endpointOverride` / endpoint configuration written as a string is flagged. */
 export function javaCodeCandidates(path: string, text: string): DependencyCandidate[] {
   const found = scanDrivers(path, text, JAVA_DRIVERS);
-  const builders = [...text.matchAll(/\b([A-Za-z0-9]+?)(?:Async)?Client\.builder\s{0,40}\(\s{0,40}\)([\s\S]{0,800}?)\.build\s{0,40}\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: /endpointOverride\s{0,40}\(\s{0,40}URI\.create\s{0,40}\(\s{0,40}"|EndpointConfiguration\s{0,40}\(\s{0,40}"/u.test(match[2]!) }));
+  const builders = [...text.matchAll(/\b([A-Za-z0-9]+?)(?:Async)?Client\.builder\s{0,120}\(\s{0,120}\)([\s\S]{0,800}?)\.build\s{0,120}\(/gu)].map((match) => ({ name: match[1]!.toLowerCase(), explicit: /endpointOverride\s{0,120}\(\s{0,120}URI\.create\s{0,120}\(\s{0,120}"|EndpointConfiguration\s{0,120}\(\s{0,120}"/u.test(match[2]!) }));
   for (const match of text.matchAll(/^[ \t]*import\s{1,40}(?:software\.amazon\.awssdk\.services|com\.amazonaws\.services)\.([a-z0-9]+)\./gmu)) {
     const id = normalizeAwsService(match[1]!);
     const explicit = id !== undefined && builders.some((builder) => builder.explicit && builder.name === id.replace(/-/gu, ""));

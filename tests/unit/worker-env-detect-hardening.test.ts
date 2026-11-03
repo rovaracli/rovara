@@ -159,3 +159,34 @@ describe("infrastructure resource names are carried, but never a key-shaped one"
     expect(JSON.stringify(detection)).not.toContain(keyName);
   });
 });
+
+describe("realistic wide spacing is still understood", () => {
+  const blanks = (count: number): string => " ".repeat(count);
+  it.each([60, 120])("%i blanks inside a call: environment names, boto3 clients, driver hosts, Go and Node calls", async (count) => {
+    const pad = blanks(count);
+    const detection = await detect({
+      "app/settings.py": `import os\nCACHE = os.environ.get(${pad}'REDIS_URL')\n`,
+      "svc/aws.py": `import boto3\nclient = boto3.client(${pad}"sqs", region_name="us-east-1")\n`,
+      "svc/db.py": `import psycopg2\nconn = psycopg2.connect${pad}(host="db.internal")\n`,
+      "main.go": `package main\nimport "github.com/redis/go-redis/v9"\nfunc f() { _ = redis.NewClient${pad}(&redis.Options{Addr: "localhost:6379"}) }\n`,
+      "src/mq.js": `const amqp = require("amqplib");\namqp.connect${pad}("amqp://rabbit");\n`,
+    });
+    expect(family(detection, "redis")!.hints.envNames).toContain("REDIS_URL");
+    expect(family(detection, "aws:sqs")).toBeDefined();
+    expect(family(detection, "postgres")!.hints.explicitEndpoint).toBe(true);
+    expect(family(detection, "redis")!.hints.explicitEndpoint).toBe(true);
+    expect(family(detection, "rabbitmq")!.hints.explicitEndpoint).toBe(true);
+  });
+  it("60 blanks after Gradle's sourceCompatibility, and 120 blanks or line ends inside Maven tags", async () => {
+    const gradle = await detect({ "build.gradle": `sourceCompatibility${blanks(60)}=${blanks(60)}17\n`, "src/test/java/AT.java": "class AT {}\n" });
+    expect(gradle.notes.join(" ")).toContain("Java 17");
+    for (const count of [60, 120]) {
+      const pad = `${blanks(count - 1)}\n`;
+      const pom = `<project>\n<properties><java.version>${pad}17${pad}</java.version></properties>\n<modules><module>${pad}api${pad}</module></modules>\n<dependencies><dependency><groupId>${pad}org.postgresql${pad}</groupId><artifactId>${pad}postgresql${pad}</artifactId></dependency></dependencies>\n</project>\n`;
+      const detection = await detect({ "pom.xml": pom, "src/test/java/AT.java": "class AT {}\n" });
+      expect(detection.notes.join(" ")).toContain("Java 17");
+      expect(detection.notes.join(" ")).toContain("1 module: api");
+      expect(family(detection, "postgres")).toBeDefined();
+    }
+  });
+});
