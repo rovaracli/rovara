@@ -33,18 +33,44 @@ wall_between_run_networks() {
   iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   ! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || ip6tables -C $rule 2>/dev/null || ip6tables -I $rule || return 1
 }
-# 4. TS-SEAL-2: nothing on a run bridge (rvi+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is missing), so after the
-#    Docker restart this puts the INPUT drop in place or stops the boot. It is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at all.
+# 4. TS-SEAL-2: nothing on a run bridge (rvi+) or a build bridge (rvb+) reaches the HOST over IPv6 either. The firewall unit's own ip6tables rule is best effort (a failure there only prints a line, and it is skipped when ip6tables is
+#    missing), so after the Docker restart this puts the INPUT drops in place or stops the boot. Each is inserted at the top of INPUT, once. Without a usable ip6tables the boot is allowed to go on only when the host has no IPv6 at
+#    all: IPv6 counts as off only when it is disabled for the interfaces that exist (conf/all) AND for those that will (conf/default, which a new bridge takes), or when the kernel has no IPv6.
 ipv6_active() {
-  [[ -e /proc/net/if_inet6 && $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) != 1 ]]
+  [[ -e /proc/net/if_inet6 ]] || return 1
+  [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) != 1 || $(cat /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null) != 1 ]]
 }
 wall_ipv6_into_host() {
-  local rule="INPUT -i rvi+ -j DROP"
+  local bridge
   if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
-    ip6tables -C $rule 2>/dev/null || ip6tables -I $rule
+    for bridge in rvb+ rvi+; do
+      ip6tables -C INPUT -i $bridge -j DROP 2>/dev/null || ip6tables -I INPUT -i $bridge -j DROP || return 1
+    done
   else
     ! ipv6_active
   fi
+}
+# 5. The walls above and the isolation DROP are not in the container firewall unit (boot.sh, at its size limit, writes that), so they would be lost at a host reboot or a Docker restart (a restart rebuilds Docker's chains) if
+#    only this one-time boot put them in place. A unit of its own re-applies them whenever the firewall unit runs, before the worker starts. An idle stop TERMINATES the instance and the next start launches a new one that runs boot.sh
+#    and this stage again; the unit covers what a new launch does not: a reboot of the same instance and a Docker restart.
+readonly RUN_WALLS_UNIT=rovara-run-walls.service
+install_run_walls_unit() {
+  install -d -o root -g root -m 0755 /usr/local/libexec
+  { printf 'set -e\n'; declare -f ipv6_active wall_between_run_networks wall_ipv6_into_host; printf 'wall_between_run_networks\nwall_ipv6_into_host\n'; } >/usr/local/libexec/rovara-run-walls || return 1
+  cat >"/etc/systemd/system/$RUN_WALLS_UNIT" <<UNIT || return 1
+[Unit]
+Description=Wall run networks off from each other and from the host over IPv6
+Requires=docker.service $FIREWALL_UNIT
+After=docker.service $FIREWALL_UNIT
+Before=$WORKER_UNIT
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/local/libexec/rovara-run-walls
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl enable "$RUN_WALLS_UNIT"
 }
 
 # This optional preload is bounded; failure leaves the worker available.
@@ -248,14 +274,17 @@ LAUNCHER
 }
 
 write_worker_unit() {
-  local region=$1 instance_id=$2 docker
+  local region=$1 instance_id=$2 docker walls=""
   docker=$(command -v docker)
+  # A named environment's worker does not start unless the unit that restores the run network walls did (and is started again with it).
+  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then walls=$'Requires='"$RUN_WALLS_UNIT"$'\nAfter='"$RUN_WALLS_UNIT"; fi
   write_worker_launcher "$docker" "$instance_id"
   cat >"/etc/systemd/system/$WORKER_UNIT" <<EOF
 [Unit]
 Description=AgentX worker for workspace $AGENTX_WORKSPACE_ID generation $AGENTX_SESSION_GENERATION
 Requires=docker.service $FIREWALL_UNIT
 After=docker.service $FIREWALL_UNIT network-online.target
+$walls
 Wants=network-online.target
 RequiresMountsFor=$MOUNT_PATH
 
@@ -384,6 +413,7 @@ stage2_main() {
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
     wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
+    install_run_walls_unit || fail "could not install the unit that restores the run network walls"
   fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload
