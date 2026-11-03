@@ -36,6 +36,7 @@ import {
   type TestEnvLessSafeField,
   type TestEnvironment,
   type TestEnvironmentBody,
+  catalogEntryById, type VerifiedCatalog,
 } from "@agentx/contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -175,6 +176,17 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   if (changed.length === 0) return;
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
   if (!dependenciesStartableNow(changed)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+  // A `local` dependency whose catalog entry has no pinned digest is the same "not available yet" (the signed catalog the release ships names no image to start): refused here too, not only when a task is planned. The catalog
+  // is asked only when the caller's dependencies carry one (the route's do); one that cannot be read leaves the judgment to the task's plan, which refuses it in fixed words.
+  const source = (deps as { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> }).serviceCatalog;
+  const catalog = source === undefined ? undefined : await Promise.resolve(source()).catch(() => undefined);
+  if (catalog !== undefined) {
+    for (const dependency of changed) {
+      if (dependency.backing.kind !== "local") continue;
+      const entry = catalogEntryById(catalog, dependency.backing.catalogId);
+      if (!catalog.pinned || entry === undefined || entry.image.digest === undefined) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+    }
+  }
   // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).
   for (const command of dependencySeedCommands(changed)) {
     const problem = seedCommandProblem(command);
