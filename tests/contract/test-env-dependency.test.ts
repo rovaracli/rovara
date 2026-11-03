@@ -198,7 +198,7 @@ describe("connection variables", () => {
     }
   });
   it("refuses a password, token, key or secret query parameter that is not a placeholder", () => {
-    for (const template of ["https://{host}/v1?password=abc", "https://{host}/v1?token=abc", "https://{host}/v1?api_key=abc", "https://{host}/v1?apikey=abc", "https://{host}/v1?secret=abc", "https://{host}/v1?Access_Token=abc", "https://{host}/v1?key=", "https://{host}/v1?secretvalue", "https://{host}/v1?password={password}x", "https://{host}/v1?token=x{password}", "https://{host}/v1?key={}", "{endpoint}?token=abc"]) {
+    for (const template of ["https://{host}/v1?password=abc", "https://{host}/v1?token=abc", "https://{host}/v1?api_key=abc", "https://{host}/v1?apikey=abc", "https://{host}/v1?secret=abc", "https://{host}/v1?Access_Token=abc", "https://{host}/v1?key=", "https://{host}/v1?pwd=abc", "https://{host}/v1?pass=abc", "https://{host}/v1?auth=abc", "https://{host}/v1?sig=abc", "https://{host}/v1?credentials=abc", "https://{host}/v1?secretvalue", "https://{host}/v1?password={password}x", "https://{host}/v1?token=x{password}", "https://{host}/v1?key={}", "{endpoint}?token=abc"]) {
       expect(dep.connectTemplateProblem(template), template).toBe(template.endsWith("{}") ? "placeholder" : "query_secret");
       expect(ok(env("X", template)), template).toBe(false);
     }

@@ -83,7 +83,7 @@ export type ConnectTemplateProblem = "shape" | "shell_character" | "placeholder"
 
 /** The shell and quoting characters no template may hold: a template becomes an environment value that a shell may read. */
 const SHELL_CHARACTERS = /[`$;|&<>"'\\]/u;
-const SECRET_QUERY_NAME = /password|token|key|secret/iu;
+const SECRET_QUERY_NAME = /pass|pwd|token|key|secret|auth|sig|cred|bearer|session/iu;
 const WHOLE_PLACEHOLDER = /^\{[a-z]+\}$/u;
 
 /**

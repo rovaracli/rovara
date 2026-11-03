@@ -151,7 +151,7 @@ describe("TestAccount record", () => {
       // the probes of the review
       for (const resource of ["arn:aws:s3:::*/*", "arn:aws:s3:::**", "arn:aws:s3:::*", "arn:aws:s3:::orders-test-bucket/**", "arn:aws:s3:::orders-test-bucket/*?", "arn:aws:s3:::orders-*/*", "arn:aws:s3:::?rders-test-bucket/*", "arn:aws:s3:::/*", "arn:aws:s3:::orders-test-bucket/*/*", "arn:aws:s3:::orders-test-bucket/a*b", "arn:aws:s3:::orders-test-bucket/*x"]) expect(ok(s3([resource])), resource).toBe(false);
       for (const resource of ["arn:aws:s3::999988887777:orders-test-bucket", "arn:aws:s3:us-west-2:222233334444:orders-test-bucket/*", "arn:aws:s3:us-west-2::orders-test-bucket", "arn:aws:s3::222233334444:orders-test-bucket"]) expect(ok(s3([resource])), resource).toBe(false);
-      for (const resource of ["arn:aws:s3:::A", "arn:aws:s3:::Orders-Test", "arn:aws:s3:::ab", "arn:aws:s3:::-orders", "arn:aws:s3:::orders_bucket", "arn:aws:s3:::orders test"]) expect(ok(s3([resource])), resource).toBe(false);
+      for (const resource of ["arn:aws:s3:::192.168.1.1/*", "arn:aws:s3:::1.2.3.4", "arn:aws:s3:::orders..bucket", "arn:aws:s3:::orders.-bucket", "arn:aws:s3:::xn--orders", "arn:aws:s3:::A", "arn:aws:s3:::Orders-Test", "arn:aws:s3:::ab", "arn:aws:s3:::-orders", "arn:aws:s3:::orders_bucket", "arn:aws:s3:::orders test"]) expect(ok(s3([resource])), resource).toBe(false);
       for (const resource of ["*", "arn:aws:dynamodb:us-west-2:222233334444:*", "arn:aws:dynamodb:*:*:*", "arn:aws:dynamodb:us-west-2:222233334444:table/*", "arn:aws:dynamodb:us-west-2:222233334444:table/orders-*", "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test*", "arn:aws:dynamodb:us-west-2:222233334444:table/t*?", "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test?", "arn:aws:dynamodb:us-west-2:222233334444:table/*/index/x", "arn:aws:dynamodb:us-west-2:222233334444:*/orders-test", "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test/*/*", "arn:aws:dynamodb:us-west-2:222233334444:/*", "arn:aws:dynamodb:us-west-2:222233334444:", "arn:aws:dynamodb:us-west-2:222233334444:table//x"]) expect(ok(ddb([resource])), resource).toBe(false);
       for (const resource of ["arn:aws:dynamodb:us-west-2:999988887777:table/orders-test", "arn:aws:dynamodb:us-east-1:222233334444:table/orders-test", "arn:aws:dynamodb::222233334444:table/orders-test", "arn:aws:dynamodb:us-west-2::table/orders-test", "arn:aws-cn:dynamodb:us-west-2:222233334444:table/orders-test", "arn:aws-us-gov:dynamodb:us-west-2:222233334444:table/orders-test", "arn:aws:dynamodb:*:222233334444:table/orders-test", "arn:aws:dynamodb:us-west-2:*:table/orders-test", "arn:*:dynamodb:us-west-2:222233334444:table/orders-test"]) expect(ok(ddb([resource])), resource).toBe(false);
       // a name that begins with a slash is no name
@@ -704,6 +704,12 @@ describe("environment variable names (shared rule)", () => {
   });
   it("refuses each reserved name as a test account's variable", () => {
     for (const name of [...names, ...prefixes.map((prefix) => `${prefix}FOO`)]) if (/^[A-Z][A-Z0-9_]{0,63}$/u.test(name)) expect(ok(account({ envNames: [name] })), name).toBe(false);
+  });
+  it("reserves the loader, runtime, shell-helper and credential-agent names that were missing", () => {
+    for (const name of ["ECS_CONTAINER_METADATA_URI", "SSH_AUTH_SOCK", "SSH_ASKPASS", "DOTNET_STARTUP_HOOKS", "COREHOST_TRACE", "CORECLR_ENABLE_PROFILING", "COMPLUS_X", "LC_ALL", "LANG", "MALLOC_CONF", "JAVA_OPTS", "GRADLE_OPTS", "SBT_OPTS", "EDITOR", "VISUAL", "PAGER", "BROWSER", "LESSOPEN", "HISTFILE", "LOCPATH", "NLSPATH"]) {
+      expect(shared.reservedDependencyEnvName(name), name).toBe(true);
+      expect(ok(account({ envNames: [name] })), name).toBe(false);
+    }
   });
   it("leaves ordinary names alone", () => {
     for (const name of ["DATABASE_URL", "REDIS_URL", "PAYMENTS_API_KEY", "PAYMENTS_API_URL", "CRM_TOKEN", "STRIPE_KEY", "DB_PASSWORD", "AMQP_URL", "ORDERS_ENDPOINT"]) {

@@ -200,6 +200,8 @@ const awsServiceOfAction = (action: string): AwsActionService => action.slice(0,
 
 /** An S3 bucket name: lower case letters, digits, dots and hyphens; 3 to 63 characters. Never a wildcard. */
 const S3_BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u;
+/** Spellings S3 itself refuses for a bucket: an IPv4-shaped name, a name with `..`, `.-` or `-.`, and the reserved `xn--` prefix. */
+const S3_BUCKET_REFUSED = /^\d{1,3}(?:\.\d{1,3}){3}$|\.\.|\.-|-\.|^xn--/u;
 
 const RoleArn = z.string().max(256).regex(/^arn:aws(?:-[a-z]+)*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,200}$/u, "an IAM role ARN");
 /** An ARN in the plain, bounded form: six colon-separated fields, no `?`, and `*` only in the last field (the next check says where). */
@@ -233,7 +235,7 @@ export function awsResourceProblem(resource: string, role: { partition: string; 
   if (service === "s3") {
     if (region !== "" || account !== "") return "region";
     const bucket = named.split("/")[0] ?? "";
-    return S3_BUCKET.test(bucket) ? undefined : "bucket";
+    return S3_BUCKET.test(bucket) && !S3_BUCKET_REFUSED.test(bucket) ? undefined : "bucket";
   }
   if (region !== role.region) return "region";
   if (account !== role.account) return "account";
