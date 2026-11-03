@@ -22,11 +22,12 @@ export function withSpecLink(body: string, line: string | undefined): string {
 }
 
 /** The spec pull request's own description: it names the task and says Rovara opened it and never merges. No model text. */
-export function specPullRequestBody(input: { taskTitle: string; taskPageUrl?: string | undefined; requirementCount: number }): string {
+export function specPullRequestBody(input: { taskTitle: string; taskPageUrl?: string | undefined; requirementCount: number; /** Design review (DR12): the one line of counts, from `designReviewedLine`. */ designLine?: string | undefined }): string {
   return [
     `Rovara wrote this spec from the plan a person approved for: ${input.taskTitle.replace(/[\r\n@<>]+/gu, " ").slice(0, 200)}`,
     "",
     `It lists ${String(input.requirementCount)} requirement${input.requirementCount === 1 ? "" : "s"}. The code pull request is reviewed against them. Edit the files here if the spec is wrong; Rovara will ask the task owner whether to re-plan.`,
+    ...(input.designLine === undefined ? [] : ["", input.designLine]),
     ...(input.taskPageUrl === undefined ? [] : ["", `Rovara task: ${input.taskPageUrl}`]),
     "",
     "Opened by Rovara. A person merges it.",
