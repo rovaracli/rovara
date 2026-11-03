@@ -47,7 +47,8 @@ describe("the design approval handler (H1)", () => {
       if (extra.open === true) await store.recordEvidenceOpened({ ...caller(who), cardId: card.id }, digest, new Date(NOW).toISOString());
       if (extra.open === "other") await store.recordEvidenceOpened({ ...caller(who), cardId: card.id }, "f".repeat(64), new Date(NOW).toISOString());
       const { reason, shown, tab } = extra;
-      return handler.approve(caller(who), { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: shown ?? { cardId: card.id, digest }, reason, tab });
+      const input: DesignApproveInput = { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: shown ?? { cardId: card.id, digest }, reason, tab };
+      return handler.approve(caller(who), input);
     }
     return { press, writes, state, store };
   }
