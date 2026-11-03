@@ -6,7 +6,8 @@
 // What: fixed fields only (counts, booleans, small fixed words and the boot facts). No name of a container, network, image or file, no path, no environment value, no command output, no secret: `reportLine` checks its own
 // output against the schema (`checkReport`) and a line that does not pass is not written.
 //
-//   leftoverContainers / leftoverNetworks   how many containers and networks still carry the run-network label of this workspace (zero after a clean teardown; a killed worker's are removed by the next start)
+//   leftoverContainers / leftoverNetworks   how many containers and networks still carry the run-network label of this workspace (zero after a clean teardown; a killed worker's are removed by the next start; null: Docker
+//                                           could not be asked, which is NOT the same as zero and fails the done-check)
 //   runDirEmpty                             the run directory (a tmpfs the worker was given) holds nothing
 //   runDirTmpfs                             that directory really is a tmpfs mount inside the worker (null: the mount table could not be read)
 //   workingSandboxPaused                    the task's working sandbox is NOT frozen after the run (false is right; true means a pause was left behind; null: no sandbox, or it is gone)
@@ -18,7 +19,14 @@ import type { DockerCli } from "./swebench/containers.js";
 export const TEST_SERVICES_REPORT_EVENT = "test-services.report";
 export const TEST_SERVICES_BOOT_FACTS_ENVIRONMENT = "AGENTX_TEST_SERVICES_BOOT_FACTS";
 export type ReportPhase = "run_end" | "worker_start";
-export type ReportOutcome = "completed" | "failed" | "cancelled" | "booted";
+/**
+ * completed:     the run ended and no check command in any round ended non-zero or timed out;
+ * checks_failed: the run itself worked, but at least one check command of a sealed round ended non-zero or timed out (a failed check, not a broken environment);
+ * failed:        the run could not start (dependencies, seeds, a round);
+ * cancelled:     the run was stopped;
+ * booted:        the `worker_start` line.
+ */
+export type ReportOutcome = "completed" | "checks_failed" | "failed" | "cancelled" | "booted";
 
 /** What root wrote at boot (boot-stage2.sh `write_test_services_boot_facts`). Booleans and small fixed words only. */
 export interface BootFacts {
@@ -36,8 +44,8 @@ export interface BootFacts {
 export interface TestServicesReport {
   phase: ReportPhase;
   outcome: ReportOutcome;
-  leftoverContainers: number;
-  leftoverNetworks: number;
+  leftoverContainers: number | null;
+  leftoverNetworks: number | null;
   runDirEmpty: boolean | null;
   runDirTmpfs: boolean | null;
   workingSandboxPaused: boolean | null;
@@ -70,6 +78,7 @@ export function parseBootFacts(text: string | undefined): BootFacts | "absent" |
 
 const REPORT_KEYS: ReadonlySet<string> = new Set(["phase", "outcome", "leftoverContainers", "leftoverNetworks", "runDirEmpty", "runDirTmpfs", "workingSandboxPaused", "sweptContainers", "sweptNetworks", "bootFacts"]);
 const count = (value: unknown): boolean => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= COUNT_MAX;
+const countOrNull = (value: unknown): boolean => value === null || count(value);
 const tri = (value: unknown): boolean => value === null || typeof value === "boolean";
 
 /** True when `value` is exactly a report: only the known keys, counts and booleans of the right kinds. */
@@ -78,8 +87,8 @@ export function checkReport(value: unknown): value is TestServicesReport {
   const report = value as Record<string, unknown>;
   if (!Object.keys(report).every((key) => REPORT_KEYS.has(key))) return false;
   if (report["phase"] !== "run_end" && report["phase"] !== "worker_start") return false;
-  if (!["completed", "failed", "cancelled", "booted"].includes(report["outcome"] as string)) return false;
-  if (!count(report["leftoverContainers"]) || !count(report["leftoverNetworks"]) || !tri(report["runDirEmpty"]) || !tri(report["runDirTmpfs"]) || !tri(report["workingSandboxPaused"])) return false;
+  if (!["completed", "checks_failed", "failed", "cancelled", "booted"].includes(report["outcome"] as string)) return false;
+  if (!countOrNull(report["leftoverContainers"]) || !countOrNull(report["leftoverNetworks"]) || !tri(report["runDirEmpty"]) || !tri(report["runDirTmpfs"]) || !tri(report["workingSandboxPaused"])) return false;
   if (report["sweptContainers"] !== undefined && !count(report["sweptContainers"])) return false;
   if (report["sweptNetworks"] !== undefined && !count(report["sweptNetworks"])) return false;
   const facts = report["bootFacts"];
@@ -111,12 +120,13 @@ export interface ReportInput {
 
 const ofLines = (stdout: string): number => stdout.split("\n").filter((line) => line.trim() !== "").length;
 
-/** Looks (read-only) at what is left, and builds the report. Every look that fails gives null or zero-with-unknown; this never throws. */
+/** Looks (read-only) at what is left, and builds the report. Every look that fails gives null; this never throws. */
 export async function collectReport(input: ReportInput): Promise<TestServicesReport> {
   const filters = ["--filter", `label=${RUN_NETWORK_LABEL}`, "--filter", `label=${RUN_NETWORK_WORKSPACE_LABEL}=${input.workspace}`];
-  const list = async (args: string[]): Promise<number> => {
+  // A look that fails is null ("could not look"), never zero: an unanswered question must not read as a clean worker.
+  const list = async (args: string[]): Promise<number | null> => {
     const result = await input.docker.run(args, { timeoutMs: 30_000 }).catch(() => undefined);
-    return result === undefined || result.exitCode !== 0 ? 0 : ofLines(result.stdout);
+    return result === undefined || result.exitCode !== 0 ? null : ofLines(result.stdout);
   };
   const leftoverContainers = await list(["ps", "-a", ...filters, "--format", "{{.ID}}"]);
   const leftoverNetworks = await list(["network", "ls", ...filters, "--format", "{{.ID}}"]);

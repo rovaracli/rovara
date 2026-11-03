@@ -39,9 +39,11 @@ describe("the boot facts", () => {
 describe("the report", () => {
   it("accepts exactly the schema: known keys, counts and booleans", () => {
     expect(checkReport(report())).toBe(true);
+    expect(checkReport(report({ outcome: "checks_failed" }))).toBe(true);
+    expect(checkReport(report({ leftoverContainers: null, leftoverNetworks: null }))).toBe(true);
     expect(checkReport(report({ phase: "worker_start", outcome: "booted", sweptContainers: 2, sweptNetworks: 1, bootFacts: FACTS as never }))).toBe(true);
     expect(checkReport(report({ phase: "worker_start", outcome: "booted", bootFacts: "absent" }))).toBe(true);
-    for (const bad of [{ ...report(), name: "rovara-svc-0123456789ab" }, { ...report(), leftoverContainers: -1 }, { ...report(), leftoverNetworks: "0" }, { ...report(), runDirEmpty: "true" }, { ...report(), phase: "somewhere" }, { ...report(), outcome: "ok" }, { ...report(), bootFacts: { ...FACTS, extra: true } }, null, [], "x"]) {
+    for (const bad of [{ ...report(), name: "rovara-svc-0123456789ab" }, { ...report(), leftoverContainers: -1 }, { ...report(), leftoverNetworks: "0" }, { ...report(), outcome: "checks_failed", leftoverNetworks: undefined }, { ...report(), runDirEmpty: "true" }, { ...report(), phase: "somewhere" }, { ...report(), outcome: "ok" }, { ...report(), bootFacts: { ...FACTS, extra: true } }, null, [], "x"]) {
       expect(checkReport(bad), JSON.stringify(bad)).toBe(false);
     }
   });
@@ -68,7 +70,8 @@ describe("the report", () => {
     expect((await collectReport({ ...base, docker: docker({ paused: "true\n" }).cli })).workingSandboxPaused).toBe(true);
     expect((await collectReport({ ...base, docker: docker({}).cli })).workingSandboxPaused).toBeNull();
     const failed = await collectReport({ ...base, docker: docker({ fail: true }).cli, runDirectoryParent: "/nowhere", readDirectory: async () => { throw new Error("gone"); }, readMountTable: async () => { throw new Error("gone"); } });
-    expect(failed).toMatchObject({ leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: null, runDirTmpfs: null, workingSandboxPaused: null });
+    // A Docker that cannot be asked is "could not look" (null), never zero.
+    expect(failed).toMatchObject({ leftoverContainers: null, leftoverNetworks: null, runDirEmpty: null, runDirTmpfs: null, workingSandboxPaused: null });
     expect(checkReport(failed)).toBe(true);
   });
 

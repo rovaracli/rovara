@@ -13,7 +13,7 @@
 //
 // Rules this module keeps, each with a test (tests/unit/worker-test-services-run.test.ts):
 //   - NOTHING HAPPENS WITHOUT A PLAN WITH DEPENDENCIES. With `tx` off the broker sends none; `startTaskTestServices` returns undefined at once (no Docker call, no file), `withTestServices(undefined, runners)` is the same object,
-//     and `testServicesAtWorkerBoot` does nothing when the worker is not configured for test services.
+//     and `testServicesAtWorkerBoot` sweeps nothing (it only logs the worker_start report) when the worker is not configured for test services.
 //   - NO SECRET IN ANY LOG, ARGUMENT OR ERROR. A per-run password is made here, used in the env files (0600, on the run's tmpfs directory, removed after each exec) and nowhere else; `helperSecretValues` goes to the redactor, and
 //     to `neverValues` except for a password that a connection template deliberately delivers to the sandbox (service-env.ts refuses a variable that holds a never value). Every error this module throws is a fixed sentence.
 //   - FAIL CLOSED. A worker without the sealed round (s1-sealed) or without configuration refuses a plan with dependencies before it starts anything. A dependency whose repository, digest or family differs from the worker's
@@ -222,13 +222,18 @@ export function testServicesConfigFromEnvironment(
 
 /**
  * Called once when the worker starts, before it takes any work: removes what a killed worker left (every container and network that carries the run-network family label AND this workspace's key, and nothing else).
- * A worker with no test services configuration does nothing at all. Never throws. (The catalog images are pulled by root at boot, not here: the worker never pulls.)
+ * A worker with no test services configuration sweeps nothing and only logs its worker_start report. Never throws. (The catalog images are pulled by root at boot, not here: the worker never pulls.)
  */
 export async function testServicesAtWorkerBoot(input: { rootPath: string; config?: TestServicesConfig | undefined; environment?: NodeJS.ProcessEnv; docker?: DockerCli; log?: (event: Record<string, unknown>) => void }): Promise<void> {
   const log = input.log ?? defaultLog;
   try {
     const config = input.config ?? testServicesConfigFromEnvironment(input.environment ?? process.env, input.docker ?? createDockerCli());
-    if (config === undefined) return;
+    if (config === undefined) {
+      // Not configured for test services (for instance root's pre-pull failed, so the settings were not written): the worker still says so, with root's boot facts (`prepull: "failed"` shows there), so an operator sees WHY.
+      const unconfiguredWorkspace = await setupWorkspaceKey(input.rootPath);
+      await emitReport({ docker: input.docker ?? createDockerCli(), workspace: unconfiguredWorkspace, phase: "worker_start", outcome: "booted", bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT] }, log);
+      return;
+    }
     const workspace = await setupWorkspaceKey(input.rootPath);
     const swept = await sweepServicesNetworksAtWorkerStart(config.docker, workspace);
     if (swept.containers + swept.networks > 0) log({ event: "test-services.leftovers.removed", ...swept });
@@ -537,6 +542,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   let active = true;
   let torndown: Promise<void> | undefined;
   let runOutcome: ReportOutcome = "completed";
+  /** A check command of a sealed round ended non-zero or timed out (the seeds and the between-check resets use the round's own runners and are not counted). */
+  let checkFailed = false;
   let round: RoundState | undefined;
   let opening: Promise<unknown> | undefined;
   let rounds = 0;
@@ -609,6 +616,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       await step("directory", () => removeRunDirectory(files.directory));
       // The worker's self-report (staging workers cannot be reached by SSM): what is left, in fixed fields, after every run ends.
       if (input.signal?.aborted === true && runOutcome === "completed") runOutcome = "cancelled";
+      else if (runOutcome === "completed" && checkFailed) runOutcome = "checks_failed";
       await step("report", () => emitReport({ docker, workspace, runDirectoryParent: config.runDirectoryParent, sandboxName: input.sandbox.name, phase: "run_end", outcome: runOutcome }, log));
     })();
     return torndown;
@@ -788,8 +796,16 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     ids,
     checkRunners() {
       return {
-        runProjectCommand: async (command, signal) => currentRound().runProjectCommand(command, signal),
-        runAgentCommand: async (replay, timeoutMs, signal) => currentRound().runAgentCommand(replay, timeoutMs, signal),
+        runProjectCommand: async (command, signal) => {
+          const result = await currentRound().runProjectCommand(command, signal);
+          if (result.exitCode !== 0 || result.timedOut) checkFailed = true;
+          return result;
+        },
+        runAgentCommand: async (replay, timeoutMs, signal) => {
+          const result = await currentRound().runAgentCommand(replay, timeoutMs, signal);
+          if (result.exitCode !== 0 || result.timedOut) checkFailed = true;
+          return result;
+        },
         async freshServices(signal) {
           opening = startRound(signal);
           await opening;

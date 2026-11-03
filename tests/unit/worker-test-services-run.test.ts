@@ -60,6 +60,7 @@ interface SealedState {
   failClose?: boolean;
   closeError?: string;
   exitCode?: number;
+  timedOut?: boolean;
   throwOnCommand?: boolean;
   /** A command that takes this long to run (the signal can stop it). */
   slowCommand?: boolean;
@@ -81,7 +82,7 @@ function stubSealed(state: SealedState): SealedRoundPorts {
             if (command.args.join(" ") === "run migrate") return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
             if (state.throwOnCommand === true) throw new Error("the check could not be run");
             if (state.slowCommand === true) await new Promise<void>((_, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); });
-            return { exitCode: state.exitCode ?? 0, timedOut: false, stdout: "ok", stderr: "" };
+            return { exitCode: state.exitCode ?? 0, timedOut: state.timedOut === true, stdout: "ok", stderr: "" };
           },
           runAgentCommand: () => Promise.resolve({ exitCode: 0, timedOut: false, output: "" }),
         };
@@ -717,11 +718,12 @@ describe("with tx off, or a plan with no dependencies, nothing happens", () => {
     expect(h.fake.verbs("network").filter((call) => call[1] !== "inspect")).toEqual([]);
     expect(await readdir(h.runParent)).toEqual([]);
   });
-  it("a worker with none of the test-services variables has no configuration, so the worker-start step makes no docker call", async () => {
+  it("a worker with none of the test-services variables has no configuration, so the worker-start step sweeps and removes nothing (it only looks, read-only, for its report)", async () => {
     expect(testServicesConfigFromEnvironment({ AGENTX_SANDBOX_IMAGE: IMAGE }, fakeServicesDocker().docker)).toBeUndefined();
     const fake = fakeServicesDocker();
-    await testServicesAtWorkerBoot({ rootPath: await temp("rsv-boot-"), environment: { AGENTX_SANDBOX_IMAGE: IMAGE }, docker: fake.docker });
-    expect(fake.calls).toEqual([]);
+    await testServicesAtWorkerBoot({ rootPath: await temp("rsv-boot-"), environment: { AGENTX_SANDBOX_IMAGE: IMAGE }, docker: fake.docker, log: () => undefined });
+    expect(fake.calls.filter((call) => ["rm", "stop", "kill", "pause", "unpause", "run", "pull"].includes(String(call[0])))).toEqual([]);
+    expect(fake.verbs("network").filter((call) => call[1] === "rm")).toEqual([]);
   });
 });
 
@@ -882,6 +884,29 @@ describe("the worker's self-report (staging workers are not SSM-managed: CloudWa
     await h.sandbox.dispose();
   });
 
+  it("a run whose checks failed reports checks_failed (not completed); a timed-out check too; a cancel still wins; a passing run stays completed", async () => {
+    for (const sealed of [{ exitCode: 1 }, { timedOut: true }] as const) {
+      const h = await harness({ sealed });
+      const run = await h.start();
+      await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+      await run.dispose();
+      expect(reports(h.logs).map((line) => line["outcome"])).toEqual(["checks_failed"]);
+      await h.sandbox.dispose();
+    }
+    const throwing = await harness({ sealed: { throwOnCommand: true } });
+    const thrown = await throwing.start();
+    await runChecks(throwing.checkPlan, withTestServices(thrown, throwing.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    await thrown.dispose();
+    expect(reports(throwing.logs).map((line) => line["outcome"])).toEqual(["completed"]);
+    const stopped = await harness({ sealed: { exitCode: 1 } });
+    const controller = new AbortController();
+    const run = await startTestServicesRun(stopped.config, { dependencies: [dependency()], hasDevcontainer: false, operationId: OPERATION, rootPath: stopped.root, repositoryPaths: [join(stopped.root, "app")], sandbox: stopped.sandbox, signal: controller.signal });
+    await runChecks(stopped.checkPlan, withTestServices(run, stopped.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    controller.abort();
+    await run.dispose();
+    expect(reports(stopped.logs).map((line) => line["outcome"])).toEqual(["cancelled"]);
+  });
+
   it("a failed start reports outcome failed; a cancelled run reports cancelled; each exactly once", async () => {
     const failing = await harness({ docker: { failRun: "helper" } });
     await failing.start().catch(() => undefined);
@@ -893,6 +918,23 @@ describe("the worker's self-report (staging workers are not SSM-managed: CloudWa
     await run.dispose();
     await run.dispose();
     expect(reports(h.logs).map((line) => line["outcome"])).toEqual(["cancelled"]);
+  });
+
+  it("a worker with NO test services configuration (root's pre-pull failed) still logs a worker_start line, with the boot facts that say why", async () => {
+    const root = await temp("rsv-report-noconfig-");
+    const logs: Array<Record<string, unknown>> = [];
+    const fake = fakeServicesDocker();
+    const facts = JSON.stringify({ metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "failed", prepulled: 0, loggedOut: true, dockerVersion: "25.0.5" });
+    await testServicesAtWorkerBoot({ rootPath: root, docker: fake.docker, environment: { AGENTX_TEST_SERVICES_BOOT_FACTS: facts }, log: (event) => logs.push(event) });
+    const lines = reports(logs);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ phase: "worker_start", outcome: "booted", bootFacts: { prepull: "failed" } });
+    expect(lines[0]).not.toHaveProperty("sweptContainers");
+    expect(logs.some((event) => event["event"] === "test-services.boot.failed")).toBe(false);
+    // No facts either: the line is still there, saying "absent".
+    const bare: Array<Record<string, unknown>> = [];
+    await testServicesAtWorkerBoot({ rootPath: root, docker: fake.docker, environment: {}, log: (event) => bare.push(event) });
+    expect(reports(bare)[0]).toMatchObject({ phase: "worker_start", bootFacts: "absent" });
   });
 
   it("the worker's start reports what is left after the sweep, with root's boot facts", async () => {
