@@ -1,6 +1,7 @@
 // Test services TS19: what the catalog's pins mean. Where an image lives, the pre-pull list, the Enterprise bundle's image list, and the one function that decides which digest may start (owner Q9, DC-TS-1).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import * as contracts from "@agentx/contracts";
 import {
   CATALOG_IMAGE_MESSAGES,
   CATALOG_IMAGE_REFUSALS,
@@ -9,6 +10,8 @@ import {
   SERVICE_CATALOG_REPOSITORIES,
   bundleCatalogProblems,
   checkBundleImages,
+  checkCatalogMirror,
+  checkMirrorServesDigest,
   catalogBundleImageName,
   catalogBundleImages,
   catalogImageReference,
@@ -19,6 +22,7 @@ import {
   resolveCatalogImage,
   resolveCatalogImages,
   type MirrorCheck,
+  type VerifiedCatalog,
   type ResolveCatalogImageInput,
   type ServedImage,
   type SubstituteApprovalPort,
@@ -133,8 +137,34 @@ const APPROVAL = "approval:2026-11-02:pg16-hardened";
 const approvalFor = (overrides: Partial<SubstituteApprovalRecord> = {}): SubstituteApprovalRecord => ({ approvalRef: APPROVAL, catalogId: "postgres@16", catalogDigest: digest("postgres@16"), digest: OTHER, ...overrides });
 const portOf = (...records: SubstituteApprovalRecord[]): SubstituteApprovalPort => ({ find: async (ref) => records.find((record) => record.approvalRef === ref) });
 const substitute = (overrides: Record<string, string> = {}) => ({ digest: OTHER, catalogDigest: digest("postgres@16"), approvalRef: APPROVAL, ...overrides });
-/** What the install serves for an id: the RESULT of a passed digest check (never a bare digest). */
-const served = (source: ServedImage["source"], digestHex: string, id = "postgres@16"): ServedImage => ({ source, check: { id, ok: true, digest: digestHex } });
+// What the install serves for an id is the RESULT of a real digest check, never a bare digest and never a hand-built object: a check is made by the package's own checkers (the registry check hashes the bytes a fake
+// registry serves; the bundle check reads a bundle's image list). Every digest the tests use is the SHA-256 of a known text, so a fake registry can serve bytes that really hash to it.
+const TEXT_OF_OTHER = "a company-built postgres";
+const TEXT_OF_OTHER_TWO = "another company-built postgres";
+const CHECKED_IDS = ["postgres@15", "postgres@16", "postgres@17", "mysql@8", "valkey@8", "local-aws@r1", "fake-server@r1", "dns-helper@r1", "mongo@7"];
+const BAD_DIGESTS = ["latest", "16", digest("postgres@16").toUpperCase(), digest("postgres@16").slice(1), `sha256:${digest("postgres@16")}`];
+const registryServing = (text: string): { manifestBytes: () => Promise<Uint8Array> } => ({ manifestBytes: async () => Buffer.from(text) });
+const mirrorChecks = new Map<string, MirrorCheck>();
+for (const id of CHECKED_IDS) {
+  for (const text of [...CHECKED_IDS.map((other) => `image:${other}`), TEXT_OF_OTHER, TEXT_OF_OTHER_TWO]) {
+    mirrorChecks.set(`${id}|${sha(text)}`, await checkMirrorServesDigest(registryServing(text), { id, repositoryName: "corp/svc/x", digest: sha(text) }));
+  }
+  // A digest that is not 64 lower-case hex: the registry check itself refuses it (a failed check).
+  for (const bad of BAD_DIGESTS) mirrorChecks.set(`${id}|${bad}`, await checkMirrorServesDigest(registryServing("x"), { id, repositoryName: "corp/svc/x", digest: bad }));
+}
+const bundleImages = catalogBundleImages(catalog, { registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", env: "staging" });
+const bundleChecks = checkBundleImages({ images: bundleImages }, catalog);
+/** What the install serves for an id: the RESULT of a real digest check. */
+const served = (source: ServedImage["source"], digestHex: string, id = "postgres@16"): ServedImage => {
+  if (source === "signed_bundle") {
+    const check = bundleChecks.find((candidate) => candidate.id === id);
+    if (check === undefined || !check.ok || check.digest !== digestHex) throw new Error(`the test has no passing bundle check for ${id} ${digestHex.slice(0, 8)}`);
+    return { source, check };
+  }
+  const check = mirrorChecks.get(`${id}|${digestHex}`);
+  if (check === undefined) throw new Error(`the test has no registry check for ${id} ${digestHex.slice(0, 8)}`);
+  return { source, check };
+};
 const request = (overrides: Partial<ResolveCatalogImageInput> = {}): ResolveCatalogImageInput => ({
   catalog, catalogId: "postgres@16", edition: "enterprise", served: served("company_registry", digest("postgres@16")), approvals: portOf(), ...overrides,
 });
@@ -168,13 +198,16 @@ describe("resolving an image to start", () => {
     expect(await refusal(request({ catalogId: "mongo@7", served: served("company_registry", digest("postgres@16"), "mongo@7") }))).toBe("unknown_entry");
     expect(await refusal(request({ catalogId: "not an id" }))).toBe("unknown_entry");
   });
-  it("takes the RESULT of a digest check, not a digest: a check that failed, is for another image, or is not a check at all is refused", async () => {
-    const failedMirror: MirrorCheck = { id: "postgres@16", ok: false, code: "digest_mismatch", message: "postgres image: the company registry serves other bytes than the catalog's digest" };
+  it("takes the RESULT of a real digest check, not a digest: a check that failed, is for another image, or is not a check at all is refused", async () => {
+    const failedMirror = await checkMirrorServesDigest(registryServing("other bytes"), { id: "postgres@16", repositoryName: "corp/svc/postgres", digest: digest("postgres@16") });
+    expect(failedMirror).toMatchObject({ ok: false, code: "digest_mismatch" });
     expect(await refusal(request({ served: { source: "company_registry", check: failedMirror } }))).toBe("not_verified");
-    expect(await refusal(request({ served: { source: "company_registry", check: { ...failedMirror, code: "unreachable" } } }))).toBe("not_verified");
-    expect(await refusal(request({ served: { source: "signed_bundle", check: { id: "postgres@16", ok: false, code: "missing", message: "postgres image: the signed bundle does not hold it" } } }))).toBe("not_verified");
-    // A check that did not pass is refused even when it carries a well-formed digest (the `ok` flag decides, not the presence of a digest).
-    expect(await refusal(request({ served: { source: "company_registry", check: { ...failedMirror, digest: digest("postgres@16") } as unknown as MirrorCheck } }))).toBe("not_verified");
+    const unreachable = await checkMirrorServesDigest({ manifestBytes: async () => { throw new Error("down"); } }, { id: "postgres@16", repositoryName: "corp/svc/postgres", digest: digest("postgres@16") });
+    expect(unreachable).toMatchObject({ ok: false, code: "unreachable" });
+    expect(await refusal(request({ served: { source: "company_registry", check: unreachable } }))).toBe("not_verified");
+    const withoutPostgres = checkBundleImages({ images: bundleImages.filter((image) => image.name !== "svc-postgres-16") }, catalog).find((check) => check.id === "postgres@16")!;
+    expect(withoutPostgres).toMatchObject({ ok: false, code: "missing" });
+    expect(await refusal(request({ served: { source: "signed_bundle", check: withoutPostgres } }))).toBe("not_verified");
     // A passed check for ANOTHER image does not cover this one, even when the digest is the right one.
     expect(await refusal(request({ served: served("company_registry", digest("postgres@16"), "mysql@8") }))).toBe("not_verified");
     // The old shape, a bare digest, and a missing check.
@@ -186,6 +219,66 @@ describe("resolving an image to start", () => {
     void request({ catalog: pinnedCatalog() });
     // @ts-expect-error a bare digest is not what the install served: a check result is
     void request({ served: { source: "company_registry", digest: digest("postgres@16") } });
+  });
+  it("refuses a FORGED check at run time: an object of the right shape that no checker returned, for every source", async () => {
+    for (const source of ["rovara_registry", "company_registry", "signed_bundle"] as const) {
+      const forged = { id: "postgres@16", ok: true, digest: digest("postgres@16") } as const;
+      expect(await refusal(request({ edition: source === "rovara_registry" ? "public" : "enterprise", served: { source, check: forged } as ServedImage })), source).toBe("not_verified");
+    }
+    // A real check copied field by field, cloned, or round-tripped through JSON is a different object: refused.
+    const real = (served("company_registry", digest("postgres@16")) as { check: MirrorCheck }).check;
+    for (const copy of [{ ...real }, structuredClone(real), JSON.parse(JSON.stringify(real)) as MirrorCheck, Object.freeze({ ...real })]) {
+      expect(await refusal(request({ served: { source: "company_registry", check: copy } })), JSON.stringify(copy)).toBe("not_verified");
+    }
+    // The genuine one still passes.
+    expect(await refusal(request({ served: { source: "company_registry", check: real } }))).toBe("ok");
+  });
+  it("refuses a RAW or copied catalog at run time: only the object loadSignedCatalog returned is verified", async () => {
+    expect(await refusal(request({ catalog: pinnedCatalog() as unknown as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: structuredClone(catalog) as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: { ...catalog } as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: JSON.parse(JSON.stringify(catalog)) as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog: undefined as unknown as VerifiedCatalog }))).toBe("not_verified");
+    expect(await refusal(request({ catalog }))).toBe("ok");
+  });
+  it("refuses a source and a check of different kinds: a bundle needs a bundle check, a registry needs a registry check", async () => {
+    const mirror = (served("company_registry", digest("postgres@16")) as { check: MirrorCheck }).check;
+    const bundle = bundleChecks.find((check) => check.id === "postgres@16")!;
+    expect(bundle.ok).toBe(true);
+    expect(await refusal(request({ served: { source: "signed_bundle", check: mirror } as ServedImage }))).toBe("not_verified");
+    expect(await refusal(request({ served: { source: "company_registry", check: bundle } as ServedImage }))).toBe("not_verified");
+    expect(await refusal(request({ edition: "public", served: { source: "rovara_registry", check: bundle } as ServedImage }))).toBe("not_verified");
+    // Each kind passes with its own source.
+    expect(await refusal(request({ served: { source: "signed_bundle", check: bundle } }))).toBe("ok");
+    expect(await refusal(request({ served: { source: "company_registry", check: mirror } }))).toBe("ok");
+  });
+  it("freezes what the checkers and the loader return, so a holder cannot change a verified result", () => {
+    const mirror = (served("company_registry", digest("postgres@16")) as { check: MirrorCheck }).check;
+    expect(Object.isFrozen(mirror)).toBe(true);
+    expect(() => { (mirror as { digest: string }).digest = OTHER; }).toThrow();
+    for (const check of bundleChecks) expect(Object.isFrozen(check)).toBe(true);
+    expect(Object.isFrozen(catalog)).toBe(true);
+    expect(Object.isFrozen(catalog.entries)).toBe(true);
+    expect(Object.isFrozen(catalog.entries[0])).toBe(true);
+    expect(() => { (catalog.entries[0] as { status: string }).status = "retired"; }).toThrow();
+  });
+  it("accepts the results of checkCatalogMirror, which are registered and frozen like the single check", async () => {
+    const port = { manifestBytes: async (_repositoryName: string, wanted: string) => { const id = CHECKED_IDS.find((candidate) => digest(candidate) === wanted); return id === undefined ? undefined : Buffer.from(`image:${id}`); } };
+    const results = await checkCatalogMirror({ catalog, port, repositoryNameFor: (repository) => `corp/${repository}` });
+    const postgres = results.find((result) => result.id === "postgres@16")!;
+    expect(postgres.ok).toBe(true);
+    expect(Object.isFrozen(postgres)).toBe(true);
+    expect(await refusal(request({ served: { source: "company_registry", check: postgres } }))).toBe("ok");
+    // Its failures are real results too (and refused).
+    const failing = await checkCatalogMirror({ catalog, port: { manifestBytes: async () => undefined }, repositoryNameFor: (repository) => repository });
+    expect(await refusal(request({ served: { source: "company_registry", check: failing.find((result) => result.id === "postgres@16")! } }))).toBe("not_verified");
+    const unnameable = await checkCatalogMirror({ catalog, port, repositoryNameFor: () => { throw new Error("no name"); } });
+    expect(await refusal(request({ served: { source: "company_registry", check: unnameable[0]! } }))).toBe("not_verified");
+  });
+  it("keeps the registrations private: the package exports no way to mark a catalog or a check as verified", () => {
+    const names = Object.keys(contracts);
+    for (const name of names) expect(name, name).not.toMatch(/^register(VerifiedCatalog|MirrorCheck|BundleCheck)$|^is(VerifiedCatalog|MirrorCheck|BundleCheck)$/u);
+    expect(names).toContain("resolveCatalogImage");
   });
   it("takes a bundle check as the proof for a signed bundle, and refuses a bundle that lacks or changes the image", async () => {
     const images = catalogBundleImages(catalog, { registry: "111122223333.dkr.ecr.us-west-2.amazonaws.com", env: "staging" });

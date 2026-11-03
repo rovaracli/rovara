@@ -15,6 +15,7 @@
 import { z } from "zod";
 import { type CATALOG_EDITIONS, type CatalogEntry, type ServiceCatalog, catalogEntryById } from "./service-catalog.js";
 import { CatalogIdSchema, SubstituteImageSchema, catalogIdName, type SubstituteImage } from "./test-env-dependency.js";
+import { isBundleCheck, isMirrorCheck, isVerifiedCatalog, registerBundleCheck } from "./service-catalog-brand.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export type CatalogEdition = (typeof CATALOG_EDITIONS)[number];
@@ -22,7 +23,7 @@ export type CatalogEdition = (typeof CATALOG_EDITIONS)[number];
 declare const verifiedCatalogBrand: unique symbol;
 /**
  * A catalog whose signature was checked over its exact bytes and whose strict schema held. The ONLY function that returns one is `loadSignedCatalog` (service-catalog-verify.ts); `resolveCatalogImage` takes nothing
- * else, so an unsigned or hand-built catalog cannot decide which image starts. (A brand is a compile-time guarantee: nothing but that one function may assert it.)
+ * else, so an unsigned or hand-built catalog cannot decide which image starts. The brand is also checked at run time (a private registry, `service-catalog-brand.ts`): a raw or cloned catalog is refused.
  */
 export type VerifiedCatalog = ServiceCatalog & { readonly [verifiedCatalogBrand]: true };
 
@@ -169,10 +170,12 @@ export function checkBundleImages(bundle: { images: ReadonlyArray<{ name: string
   return catalogPins(catalog, "enterprise").map((pin): BundleImageCheck => {
     const service = catalogIdName(pin.id);
     const image = bundle.images.find((candidate) => candidate.name === catalogBundleImageName(pin.id));
-    if (image === undefined) return { id: pin.id, ok: false, code: "missing", message: `${service} image: the signed bundle does not hold it` };
-    return digestOf(image.sourceRef) === pin.digest
-      ? { id: pin.id, ok: true, digest: pin.digest }
-      : { id: pin.id, ok: false, code: "digest_mismatch", message: `${service} image: the signed bundle holds other bytes than the catalog's digest` };
+    if (image === undefined) return registerBundleCheck({ id: pin.id, ok: false, code: "missing", message: `${service} image: the signed bundle does not hold it` });
+    return registerBundleCheck(
+      digestOf(image.sourceRef) === pin.digest
+        ? { id: pin.id, ok: true, digest: pin.digest }
+        : { id: pin.id, ok: false, code: "digest_mismatch", message: `${service} image: the signed bundle holds other bytes than the catalog's digest` },
+    );
   });
 }
 
@@ -271,10 +274,14 @@ export async function resolveCatalogImage(input: ResolveCatalogImageInput): Prom
   try {
     const id = CatalogIdSchema.safeParse(catalogId);
     if (!id.success) return refuse(catalogId, "unknown_entry");
-    // The check must have passed, be for THIS id, and carry a digest: a failed or foreign check is a refusal, whatever else is true.
+    // Run-time brands (service-catalog-brand.ts): the catalog is the object `loadSignedCatalog` returned, and the check is the object a real checker returned, of the kind the source needs. A raw or cloned catalog, a
+    // hand-built check, and a bundle check offered for a registry (or the reverse) are refused, whatever their fields say.
+    if (!isVerifiedCatalog(input.catalog)) return refuse(catalogId, "not_verified");
     const check = (input.served as { check?: { id?: unknown; ok?: unknown; digest?: unknown } } | undefined)?.check;
     const source = z.enum(CATALOG_IMAGE_SOURCES).safeParse((input.served as { source?: unknown } | undefined)?.source);
-    if (!source.success || check === undefined || check === null || check.ok !== true || check.id !== catalogId || !Sha256Schema.safeParse(check.digest).success) return refuse(catalogId, "not_verified");
+    if (!source.success || !(source.data === "signed_bundle" ? isBundleCheck(check) : isMirrorCheck(check))) return refuse(catalogId, "not_verified");
+    // The check must also have passed, be for THIS id, and carry a digest: a failed or foreign check is a refusal, whatever else is true.
+    if (check === undefined || check === null || check.ok !== true || check.id !== catalogId || !Sha256Schema.safeParse(check.digest).success) return refuse(catalogId, "not_verified");
     const served = { source: source.data, digest: check.digest as string };
     const entry: CatalogEntry | undefined = catalogEntryById(input.catalog, catalogId);
     if (entry === undefined) return refuse(catalogId, "unknown_entry");

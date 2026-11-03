@@ -12,6 +12,7 @@ import { z } from "zod";
 import { parseBundlePublicKey } from "./bundle.js";
 import { CATALOG_PLATFORMS, ServiceCatalogSchema, type ServiceCatalog } from "./service-catalog.js";
 import { catalogPins, type CatalogEdition, type MirrorCheck, type VerifiedCatalog } from "./service-catalog-images.js";
+import { registerMirrorCheck, registerVerifiedCatalog } from "./service-catalog-brand.js";
 import { catalogIdName, CatalogIdSchema } from "./test-env-dependency.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -86,8 +87,8 @@ export function loadSignedCatalog(input: { catalogBytes: Uint8Array; signatureBy
   if (!checked.ok) return { ok: false, reason: checked.reason };
   try {
     const catalog = ServiceCatalogSchema.parse(JSON.parse(Buffer.from(input.catalogBytes).toString("utf8")));
-    // The one place a catalog is branded as verified: the signature held over these exact bytes and the schema parsed them.
-    return { ok: true, catalog: catalog as VerifiedCatalog, keyId: checked.keyId };
+    // The one place a catalog is marked verified (at run time, in a private registry, and frozen): the signature held over these exact bytes and the schema parsed them.
+    return { ok: true, catalog: registerVerifiedCatalog(catalog), keyId: checked.keyId };
   } catch {
     return { ok: false, reason: "the catalog is signed but does not pass the catalog schema" };
   }
@@ -163,13 +164,13 @@ const MIRROR_MESSAGES = {
 /** One image: the registry must hold the manifest of exactly `digest`. The bytes are hashed here; the registry's word is not taken. */
 export async function checkMirrorServesDigest(port: RegistryManifestPort, input: { id: string; repositoryName: string; digest: string }): Promise<MirrorCheck> {
   const service = catalogIdName(input.id);
-  const fail = (code: keyof typeof MIRROR_MESSAGES): MirrorCheck => ({ id: input.id, ok: false, code, message: MIRROR_MESSAGES[code](service) });
+  const fail = (code: keyof typeof MIRROR_MESSAGES): MirrorCheck => registerMirrorCheck({ id: input.id, ok: false, code, message: MIRROR_MESSAGES[code](service) });
   try {
     if (!Sha256Schema.safeParse(input.digest).success) return fail("digest_mismatch");
     const bytes = await port.manifestBytes(input.repositoryName, input.digest);
     if (bytes === undefined) return fail("missing");
     if (bytes.byteLength === 0 || bytes.byteLength > MIRROR_MANIFEST_MAX_BYTES) return fail("digest_mismatch");
-    return sha256HexOf(bytes) === input.digest ? { id: input.id, ok: true, digest: input.digest } : fail("digest_mismatch");
+    return sha256HexOf(bytes) === input.digest ? registerMirrorCheck({ id: input.id, ok: true, digest: input.digest }) : fail("digest_mismatch");
   } catch {
     return fail("unreachable");
   }
@@ -187,7 +188,7 @@ export async function checkCatalogMirror(input: { catalog: ServiceCatalog; editi
       try {
         repositoryName = input.repositoryNameFor(pin.repository);
       } catch {
-        return { id: pin.id, ok: false, code: "unreachable", message: MIRROR_MESSAGES.unreachable(catalogIdName(pin.id)) };
+        return registerMirrorCheck({ id: pin.id, ok: false, code: "unreachable", message: MIRROR_MESSAGES.unreachable(catalogIdName(pin.id)) });
       }
       return checkMirrorServesDigest(input.port, { id: pin.id, repositoryName, digest: pin.digest });
     }),

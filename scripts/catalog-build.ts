@@ -14,7 +14,7 @@
 //      only some entries cannot write one. All outputs are made in memory first; nothing is written when any entry is refused, and the catalog file is written last, each file by rename.
 //
 // SOURCES must be Rovara-built multi-platform INDEXES (OCI image index or Docker manifest list) holding EXACTLY the platforms the catalog entry lists (`linux/arm64`, `linux/amd64`), by digest. A single-platform image is
-// accepted only for an entry that lists that one platform. An index with a platform the entry does not list, or without one it does, refuses the build. (Attestation manifests, `unknown/unknown`, are not platforms.)
+// accepted only for an entry that lists that one platform (its platform is read from the config blob its manifest names, checked against that digest). An index with a platform the entry does not list, or without one it does, refuses the build. (Attestation manifests, `unknown/unknown`, are not platforms.)
 //
 // Everything outside the decision rules is a PORT (mirror, SBOM, scan, signer, files), so the whole pipeline runs against fakes. The real ports at the bottom use skopeo, syft and ECR/KMS through clients the caller passes in;
 // they are only built by `main()`, which runs only when this file is the entry point. Nothing here is imported by the broker or the worker, and no secret is read: the registry credential is ECR's short token, kept in a 0600 file.
@@ -344,9 +344,14 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
       );
       return { digest, children };
     }
-    // A single-platform image is its own one child.
-    const single = JSON.parse((await input.commands.run("skopeo", ["inspect", "--authfile", input.authFile, byDigest])).toString("utf8")) as { Os?: string; Architecture?: string };
-    return { digest, children: single.Os !== undefined && single.Architecture !== undefined ? [{ platform: `${single.Os}/${single.Architecture}`, digest }] : [] };
+    // A single-platform image is its own one child. Its platform comes from the CONFIG BLOB the hashed manifest names (`config.digest`), fetched raw and checked against that digest, never from a second, parsed
+    // inspect of the registry (which could describe another image than the one whose bytes were hashed above).
+    const configDigest = /^sha256:([a-f0-9]{64})$/u.exec((manifest as { config?: { digest?: string } }).config?.digest ?? "")?.[1];
+    if (configDigest === undefined) return { digest, children: [] };
+    const config = await input.commands.run("skopeo", ["inspect", "--raw", "--config", "--authfile", input.authFile, byDigest]);
+    if (createHash("sha256").update(config).digest("hex") !== configDigest) throw new Error("the image config does not hash to the digest its manifest names");
+    const { os, architecture } = JSON.parse(config.toString("utf8")) as { os?: string; architecture?: string };
+    return { digest, children: typeof os === "string" && typeof architecture === "string" ? [{ platform: `${os}/${architecture}`, digest }] : [] };
   };
 }
 
