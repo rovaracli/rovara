@@ -46,6 +46,11 @@ export interface CheckRunners {
    * with a CheckNotRunError when AgentX refuses to replay it.
    */
   runAgentCommand(replay: string, timeoutMs: number, signal: AbortSignal): Promise<{ exitCode: number | null; timedOut: boolean; output: string }>;
+  /**
+   * Test services (TS18): puts the round's helpers back as they were seeded, before the round's first check. Every round that runs checks asks for it, so the TESTPROOF rerun on the original code never sees the
+   * candidate round's state. Absent when the task has no test services: then nothing here changes. When it rejects (and the round was not stopped), no check is run: each is `not_run`.
+   */
+  freshServices?(signal: AbortSignal): Promise<void>;
 }
 
 export interface CheckPlan {
@@ -152,6 +157,13 @@ export async function runChecks(
   const { signal } = options;
   const startedAt = now();
   const entries: CheckEntry[] = [];
+  if (runners.freshServices !== undefined && !signal.aborted) {
+    const fresh = await untilAborted(Promise.resolve().then(() => runners.freshServices?.(signal)), signal).then(() => true, () => false);
+    if (!fresh) {
+      const note = signal.aborted ? "AgentX stopped before this check ran." : "AgentX did not run this check: the test services could not be put back as they were seeded.";
+      return { entries: plannedChecks(plan, runners).map((check) => ({ id: check.id, label: check.label, source: check.source, before: check.before, after: "not_run", class: classifyCheck(check.before, "not_run"), output: note, durationMs: 0 })), stopped: signal.aborted };
+    }
+  }
   for (const check of plannedChecks(plan, runners)) {
     const entry = (after: CheckOutcome, output: string, durationMs = 0, exitCode?: number | null): CheckEntry => ({
       id: check.id,

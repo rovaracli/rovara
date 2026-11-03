@@ -310,16 +310,36 @@ function runArgs(net: ServicesNetwork, plan: Plan, container: string, paths: { e
   ];
 }
 
-/** The probe container's `docker run` arguments: the worker's own image, hardened like a helper, on the services network, labelled so the sweep finds it. */
-function probeArgs(net: ServicesNetwork, probeImage: string, address: string, entry: CatalogEntry, name: string): string[] {
-  const health = entry.health;
-  if (health.kind === "command") throw new RangeError("not a probe check");
+/** The `docker run` arguments of a short-lived container of the worker's own image on the services network: hardened like a helper (no capability, no writable root, small limits), named, and labelled so the sweep finds it. */
+function hardenedProgramRun(net: ServicesNetwork, probeImage: string, name: string, program: string[], envFile?: string): string[] {
   return [
     "run", "--rm", "--name", name, "--stop-timeout", "1", "--pull=never", ...net.labelArgs(), "--network", net.name,
     "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
     "--memory", "64m", "--memory-swap", "64m", "--cpus", "0.25", "--pids-limit", "32", "--log-driver", "none",
-    "--entrypoint", NODE, probeImage, PROBE_ENTRY, "--host", address, "--port", String(health.port), ...(health.kind === "http" ? ["--path", health.path] : []),
+    ...(envFile === undefined ? [] : ["--env-file", envFile]),
+    "--entrypoint", NODE, probeImage, PROBE_ENTRY, ...program,
   ];
+}
+
+/** The probe container's `docker run` arguments: the worker's own image, hardened like a helper, on the services network, labelled so the sweep finds it. */
+function probeArgs(net: ServicesNetwork, probeImage: string, address: string, entry: CatalogEntry, name: string): string[] {
+  const health = entry.health;
+  if (health.kind === "command") throw new RangeError("not a probe check");
+  return hardenedProgramRun(net, probeImage, name, ["--host", address, "--port", String(health.port), ...(health.kind === "http" ? ["--path", health.path] : [])]);
+}
+
+const PROBE_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/u;
+const CONTROL_PATH = /^\/[A-Za-z0-9._~/-]{1,127}$/u;
+
+/**
+ * The arguments of one control call (a POST with the run's control token) to a helper, made from a probe-style container: the worker cannot reach an `rvi*` bridge itself. The token is NOT an argument: it is in the
+ * env file the caller wrote on the run's tmpfs (`--env-file`), and the probe program reads it from its environment. Every input is checked here; a bad one throws.
+ */
+export function controlCallArgs(net: ServicesNetwork, input: { probeImage: string; address: string; port: number; path: string; name: string; envFile: string }): string[] {
+  if (!IMAGE_REFERENCE.test(input.probeImage) || !PROBE_NAME.test(input.name) || !CONTROL_PATH.test(input.path) || input.path.split("/").includes("..")) throw new RangeError("a control call");
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535 || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(input.address) || !input.address.startsWith(net.gateway.slice(0, net.gateway.lastIndexOf(".") + 1))) throw new RangeError("a control call");
+  if (!HOST_PATH.test(input.envFile) || input.envFile.split("/").includes("..") || input.envFile.includes("//")) throw new RangeError("a control call");
+  return hardenedProgramRun(net, input.probeImage, input.name, ["--host", input.address, "--port", String(input.port), "--path", input.path, "--post"], input.envFile);
 }
 
 // ---- health
