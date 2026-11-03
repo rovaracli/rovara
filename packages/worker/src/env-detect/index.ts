@@ -1,6 +1,7 @@
 // Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 4 MiB.
 import type { ProjectCommand } from "@agentx/contracts";
 import { detectBrazil } from "./brazil.js";
+import { detectEnvConfig } from "./env-config.js";
 import { detectCiServices } from "./ci-services.js";
 import { detectCompose } from "./compose.js";
 import { mergeCandidates } from "./dependency-candidates.js";
@@ -22,6 +23,7 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "brazil", run: detectBrazil },
   { name: "compose", run: detectCompose },
   { name: "ci", run: detectCiServices },
+  { name: "env", run: detectEnvConfig },
 ];
 
 export const ENV_DETECT_MAX_PATHS = 5_000;

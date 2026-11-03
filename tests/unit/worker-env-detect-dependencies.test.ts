@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { DETECTORS, boundedReader, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 
-const NEW_DETECTORS = new Set(["compose", "ci"]);
+const NEW_DETECTORS = new Set(["compose", "ci", "env"]);
 type Files = Record<string, string>;
 
 async function detect(files: Files, only?: (name: string) => boolean) {
