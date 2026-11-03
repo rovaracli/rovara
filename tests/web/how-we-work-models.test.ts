@@ -270,6 +270,19 @@ describe("editable model rows", () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
  });
 
+ it("shows a model the account cannot call disabled, with the broker's own words, and does not let it be chosen", async () => {
+  const sentence = "This model isn't enabled for your AWS account. Enable it in the Bedrock console, or Rovara will use another model.";
+  const f = await open({ read: () => stageModelsBody({ build: stageEntry("build", { candidates: candidates().map(candidate => keyOf(candidate.model) === OPUS ? { ...candidate, unusableReason: sentence } : candidate) }) }) });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  const opus = Array.from(picker("Build").options).find(option => option.value === OPUS)!;
+  expect(opus.disabled).toBe(true);
+  expect(opus.textContent).toBe("Opus 5.5: " + sentence);
+  const sonnet = Array.from(picker("Build").options).find(option => option.value === SONNET)!;
+  expect(sonnet.disabled).toBe(false);
+  expect(sonnet.textContent).toBe("Sonnet 4.6");
+  expect(f.calls()).toContain("GET /v1/app/projects/payments/stage-models");
+ });
+
  it("drops a pending model edit when the chosen model is no longer verified, and keeps the other edits", async () => {
   let aged = false;
   const f = await open({ read: () => stageModelsBody({ build: stageEntry("build", { candidates: candidates().map(candidate => aged && keyOf(candidate.model) === OPUS ? { ...candidate, status: "stale" } : candidate) }) }) });
