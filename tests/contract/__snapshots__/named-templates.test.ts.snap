@@ -11166,7 +11166,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "AWS::IAM::Policy",
     },
     "ServiceCatalogImagesImagesKeyB3CDB130": {
-      "DeletionPolicy": "RetainExceptOnCreate",
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "agentx:retain-on-create-rollback": true,
+      },
       "Properties": {
         "Description": "Rovara test service catalog images: encrypts the catalog repositories",
         "EnableKeyRotation": true,
@@ -11209,10 +11212,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Sid": "AdminWithoutUse",
             },
             {
-              "Action": [
-                "kms:CreateGrant",
-                "kms:DescribeKey",
-              ],
+              "Action": "kms:CreateGrant",
               "Condition": {
                 "Bool": {
                   "kms:GrantIsForAWSResource": "true",
@@ -11252,7 +11252,47 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 },
               },
               "Resource": "*",
-              "Sid": "UseOnlyThroughEcr",
+              "Sid": "GrantOnlyThroughEcr",
+            },
+            {
+              "Action": "kms:DescribeKey",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "ecr.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "DescribeOnlyThroughEcr",
             },
           ],
           "Version": "2012-10-17",

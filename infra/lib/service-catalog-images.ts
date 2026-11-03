@@ -28,6 +28,9 @@ import { Aws, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_k
 import { Construct } from "constructs";
 import { catalogRepositoryName } from "@agentx/contracts";
 
+/** The metadata `retention.ts` reads: the resource stays plain `Retain` where the aspect would make it `RetainExceptOnCreate`. */
+const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
+
 /** Tagged images kept per repository beyond which the oldest expire. Large on purpose: a retired digest may still be pinned by a saved environment or an older revision. */
 export const SERVICE_CATALOG_KEEP_TAGGED = 60;
 export const SERVICE_CATALOG_UNTAGGED_DAYS = 1;
@@ -44,8 +47,9 @@ export function serviceCatalogLifecyclePolicy(): { rules: Array<Record<string, u
 
 /**
  * The key policy: administration WITHOUT use, and use only through ECR. As the saved environment images key (saved-env-images.ts): the account root may administer the key but is given no Decrypt, Encrypt or
- * GenerateDataKey, and `kms:CreateAlias` stands in for `kms:Create*` (which would include kms:CreateGrant); an IAM principal of the account may create the grant ECR uses and describe the key only when the call comes
- * through ECR (`kms:ViaService`) and the grant is for an AWS resource (`kms:GrantIsForAWSResource`). Nobody can use the key directly.
+ * GenerateDataKey, and `kms:CreateAlias` stands in for `kms:Create*` (which would include kms:CreateGrant); an IAM principal of the account (the deploy role that creates the repositories, through its own
+ * `kms:*`) may create the grant ECR uses only when the call comes through ECR (`kms:ViaService`) and the grant is for an AWS resource (`kms:GrantIsForAWSResource`), and may describe the key only through ECR.
+ * Nobody can use the key directly. Nobody can schedule its deletion either (as the saved environment images key): the key is therefore marked to keep it when a first create rolls back (see the metadata below).
  */
 export function serviceCatalogKeyPolicy(): iam.PolicyDocument {
   return new iam.PolicyDocument({
@@ -56,12 +60,21 @@ export function serviceCatalogKeyPolicy(): iam.PolicyDocument {
         actions: ["kms:CreateAlias", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*", "kms:Revoke*", "kms:Get*", "kms:TagResource", "kms:UntagResource", "kms:CancelKeyDeletion"],
         resources: ["*"],
       }),
+      // Two statements, not one: kms:GrantIsForAWSResource is a condition key of the grant actions only (CreateGrant, ListGrants, RevokeGrant); a DescribeKey request does not carry it, so a Bool condition on it
+      // would never match DescribeKey. Each action gets exactly the conditions that apply to it: both go through ECR only, and the grant is for an AWS resource.
       new iam.PolicyStatement({
-        sid: "UseOnlyThroughEcr",
+        sid: "GrantOnlyThroughEcr",
         principals: [new iam.AccountRootPrincipal()],
-        actions: ["kms:CreateGrant", "kms:DescribeKey"],
+        actions: ["kms:CreateGrant"],
         resources: ["*"],
         conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` }, Bool: { "kms:GrantIsForAWSResource": "true" } },
+      }),
+      new iam.PolicyStatement({
+        sid: "DescribeOnlyThroughEcr",
+        principals: [new iam.AccountRootPrincipal()],
+        actions: ["kms:DescribeKey"],
+        resources: ["*"],
+        conditions: { StringEquals: { "kms:ViaService": `ecr.${Aws.REGION}.amazonaws.com` } },
       }),
     ],
   });
@@ -106,6 +119,9 @@ export class ServiceCatalogImages extends Construct {
         removalPolicy: RemovalPolicy.RETAIN,
         policy: serviceCatalogKeyPolicy(),
       });
+      // The key policy lets nobody schedule a deletion, so a rolled-back first create could not delete the key and the stack would be stuck in ROLLBACK_FAILED: keep it (the audit ledger vault key, the saved
+      // environment images key and the Slack action key do the same). The repositories are empty on a first create and stay RetainExceptOnCreate, so a retry can create them again.
+      (this.key.node.defaultChild as kms.CfnKey).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
       kmsKey = this.key.keyArn;
     }
 
