@@ -97,6 +97,35 @@ pull_executor_image() {
 }
 
 # Root-only: nothing here is secret today, but it must not become world-readable.
+# Test services (slice 1): the values the worker's service runner needs, for a named environment only. Nothing here is a secret and nothing comes from a customer setting:
+#   AGENTX_TEST_SERVICES_REGISTRY    the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
+#   AGENTX_TEST_SERVICES_ENV         the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane);
+#   AGENTX_TEST_SERVICES_RUN_DIR     the tmpfs run directory the launcher makes (same path on the host and in the worker);
+#   AGENTX_TEST_SERVICES_CATALOG_DIR where the worker image holds catalog.json and catalog.sig.json (the trusted keys are compiled in, never read from here);
+#   AGENTX_TEST_SERVICES_ACCOUNT_ID  the AWS account this instance runs in, read HERE from the instance identity document (IMDSv2) because the worker container cannot reach the metadata service (the launcher rejects it) and has no
+#                                     credentials of its own to ask STS. Left out when the lookup fails: the worker then does not trust the staging-only catalog key.
+# AGENTX_SANDBOX_IMAGE (the worker's own image, the probe image) is already written by write_worker_environment.
+instance_account_id() {
+  local token document id
+  token=$(curl -fsS --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null) || return 1
+  document=$(curl -fsS --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null) || return 1
+  id=$(printf '%s' "$document" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -1)
+  [[ "$id" =~ ^[0-9]{12}$ ]] || return 1
+  printf '%s' "$id"
+}
+write_test_services_environment() {
+  local registry=${AGENTX_WORKER_IMAGE%%/*} environment account
+  [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 1
+  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
+  environment=${BASH_REMATCH[1]}
+  {
+    printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"
+    printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"
+    printf 'AGENTX_TEST_SERVICES_RUN_DIR=/run/agentx-test-services\n'
+    printf 'AGENTX_TEST_SERVICES_CATALOG_DIR=/opt/agentx/packages/worker/service-catalog\n'
+    if account=$(instance_account_id); then printf 'AGENTX_TEST_SERVICES_ACCOUNT_ID=%s\n' "$account"; fi
+  } >>"$WORKER_ENV_FILE"
+}
 write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
@@ -229,6 +258,18 @@ worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
 require_model_proxy || { log 'no model proxy'; exit 1; }
 if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
+# Test services (slice 1): the run directory for the services' env files and seeds, a small tmpfs at the SAME path on the host and in the worker (the Docker daemon resolves the bind mounts the worker asks for against the host).
+# Made at every start, so it is there after a reboot too. Not fatal: without it the worker refuses runs that have dependencies, and everything else runs.
+readonly TEST_SERVICES_RUN_DIR=/run/agentx-test-services
+prepare_test_services_run_dir() {
+  install -d -o "$WORKER_UID" -g "$WORKER_GID" -m 0700 "$TEST_SERVICES_RUN_DIR" || return 1
+  mountpoint -q "$TEST_SERVICES_RUN_DIR" || mount -t tmpfs -o "size=64m,mode=0700,uid=$WORKER_UID,gid=$WORKER_GID,nosuid,nodev,noexec" tmpfs "$TEST_SERVICES_RUN_DIR" || return 1
+  mountpoint -q "$TEST_SERVICES_RUN_DIR"
+}
+test_services_run_dir=false
+if named_environment; then
+  if prepare_test_services_run_dir; then test_services_run_dir=true; else log 'test services run directory unavailable (not fatal)'; fi
+fi
 mapfile -t network_args < <(worker_network_args)
 runtime_ready=false
 if [[ -d "$RUNTIME_SOURCE" && ! -L "$RUNTIME_SOURCE" && $(stat -c %u:%g:%a "$RUNTIME_SOURCE" 2>/dev/null) == 0:0:755 ]]; then
@@ -264,6 +305,7 @@ else
 fi
 # Setup runs need the rvbs+ rules that the firewall step above may have had to withdraw: the worker is told "ready" or "unavailable" (any other value, or none, it treats as unavailable). Only a named environment has setup runs.
 if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi
+if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER
@@ -409,6 +451,7 @@ stage2_main() {
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
