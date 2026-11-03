@@ -1,7 +1,10 @@
 // Design review stage, DR6 (designs-2026-10-30/design-review-stage.md 3.2): the pure reads of a stored design review. Browser-safe: the task page, the cards and the workflow's transitions
 // (task-workflow-design-review.ts) all read the review through these, so "is it on", "what stays settled" and "what is still in dispute" have one answer.
 // Nothing here approves anything. Every list below is derived from the stored rounds, so there is nothing to keep in step.
-import { DESIGN_REVIEW_ROUNDS_MAX, type DesignFinding, type DesignReviewRound, type FindingResolution, type WorkflowDesignReview } from "./design-review.js";
+import {
+  DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, DESIGN_REVIEW_ROUNDS_MAX,
+  type DesignFinding, type DesignReviewActor, type DesignReviewRound, type EarlierDesignReview, type FindingResolution, type WorkflowDesignReview,
+} from "./design-review.js";
 
 /** The review is switched on and waits for its first design: the only state in which a submitted design document is admitted to the review. */
 export function designReviewAwaitsDesign(review: WorkflowDesignReview | undefined): boolean {
@@ -18,15 +21,84 @@ export function workflowIsDesignReviewing(workflow: { designReview?: WorkflowDes
   return workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN";
 }
 
+/** Money is kept to the micro-dollar: no floating-point drift can push a total over a cap or under zero. */
+export const addDesignUsd = (a: number, b: number): number => Math.round((a + b) * 1e6) / 1e6;
+
+export type DesignReviewCapRoom =
+  | { kind: "fits"; roomUsd: number }
+  | { kind: "no_cap" }
+  /** Nothing is left under the cap. */
+  | { kind: "at_cap" }
+  /** The estimate is known and is more than what is left under the cap: a person raises the cap or picks a lower tier. */
+  | { kind: "over_cap"; roomUsd: number }
+  /** There is no price: a person's one tap approves the spend (the cap still holds). */
+  | { kind: "no_price"; roomUsd: number };
+
 /**
- * A person asked for changes to the design: it is reviewed afresh (two new rounds), and what it cost stays counted toward the task's cap. The earlier rounds belong to the design that was
- * sent back; the decision that sent it back stays on the workflow's own record.
+ * Whether a round may start under the cap stored on the review (3.2: spend never exceeds the cap; 3.6: no price needs a tap). `estimateUsd` is what the round or rounds still to run are
+ * expected to cost; spend so far is already in `spentUsd`. The broker reads this to choose between starting and holding for the cost card; `startDesignReview` enforces it.
  */
-export function rearmedDesignReview(review: WorkflowDesignReview): WorkflowDesignReview {
-  const { estimateUsd: _estimate, notRunReason: _reason, ...kept } = review;
+export function designReviewCapRoom(review: Pick<WorkflowDesignReview, "capUsd" | "spentUsd" | "estimateUsd">, estimateUsd?: number): DesignReviewCapRoom {
+  if (review.capUsd === undefined) return { kind: "no_cap" };
+  const roomUsd = addDesignUsd(review.capUsd, -review.spentUsd);
+  if (roomUsd <= 0) return { kind: "at_cap" };
+  const estimate = estimateUsd ?? review.estimateUsd;
+  if (estimate === undefined) return { kind: "no_price", roomUsd };
+  return estimate > roomUsd + 1e-9 ? { kind: "over_cap", roomUsd } : { kind: "fits", roomUsd };
+}
+
+const SENT_BACK_TEXT_MAX = 160;
+const clip = (text: string, max: number): string => Array.from(text).slice(0, max).join("");
+
+/** What is kept of a review whose design was sent back: the paid reviewers and the findings with what was done about them, without the packets, files read or citations. */
+function archivedReview(review: WorkflowDesignReview, sentBack: { at: string; by: DesignReviewActor }): EarlierDesignReview {
+  return {
+    sentBackBy: sentBack.by, sentBackAt: sentBack.at, spentUsd: review.spentUsd,
+    rounds: review.rounds.map((round) => ({
+      round: round.round, designDigest: round.designDigest,
+      reviewers: round.reviewers.map((run) => ({
+        role: run.role, model: run.model, sessionId: run.sessionId, modelKeyId: run.modelKeyId, packetDigest: run.packetDigest, verified: run.verified,
+        ...(run.verifyFailure === undefined ? {} : { verifyFailure: run.verifyFailure }), tokensIn: run.tokensIn, tokensOut: run.tokensOut, costUsd: run.costUsd,
+      })),
+      findings: round.findings.map((finding) => {
+        const resolution = resolutionOf(round, finding.id);
+        return {
+          id: finding.id, severity: finding.severity, section: finding.section, fingerprint: finding.fingerprint, text: clip(finding.text, SENT_BACK_TEXT_MAX),
+          ...(resolution === undefined ? {} : { action: resolution.action, settled: resolution.settled }),
+        };
+      }),
+    })),
+  };
+}
+
+/** Keeps the archive inside its count and its bytes: the oldest review goes first; a lone review that is still too big loses its findings (the reviewers and what they cost stay). */
+function boundedArchive(archive: readonly EarlierDesignReview[]): EarlierDesignReview[] {
+  let kept = archive.slice(-DESIGN_REVIEW_EARLIER_MAX);
+  const weight = (list: readonly EarlierDesignReview[]): number => new TextEncoder().encode(JSON.stringify(list)).length;
+  while (kept.length > 1 && weight(kept) > DESIGN_REVIEW_EARLIER_MAX_BYTES) kept = kept.slice(1);
+  if (weight(kept) > DESIGN_REVIEW_EARLIER_MAX_BYTES) kept = kept.map((entry) => ({ ...entry, rounds: entry.rounds.map((round) => ({ ...round, findings: [] })) }));
+  return kept;
+}
+
+/**
+ * A person asked for changes to the design: it is reviewed afresh (two new rounds), and what it cost stays counted toward the task's cap. The paid rounds of the design that was sent
+ * back are archived on the record (bounded), not thrown away, so "what did we pay for" and the proof line keep their source.
+ * - A review that stopped at the cost cap (or has no room left under it) stays stopped: only a person's raised cap or lower tier opens it again.
+ * - After DESIGN_REVIEW_REARMS_MAX re-reviews the review does not run again: it is "not run" (`rearm_limit`) until a person changes the cap or the tier.
+ * - Only a review a person or the setting asked for is re-armed; one that was skipped or never on is left as it is.
+ */
+export function rearmedDesignReview(review: WorkflowDesignReview, sentBack: { at: string; by: DesignReviewActor }): WorkflowDesignReview {
+  if (review.decidedBy !== "auto" && review.decidedBy !== "always" && review.decidedBy !== "person") return review;
+  const { estimateUsd: _estimate, notRunReason: _reason, waiting: _waiting, ...kept } = review;
   void _estimate;
   void _reason;
-  return { ...kept, status: "estimating", rounds: [] };
+  void _waiting;
+  const earlierReviews = boundedArchive(review.rounds.length === 0 ? review.earlierReviews ?? [] : [...(review.earlierReviews ?? []), archivedReview(review, sentBack)]);
+  const base = { ...kept, rounds: [], ...(earlierReviews.length === 0 ? {} : { earlierReviews }) };
+  const used = review.rearms ?? 0;
+  if (review.status === "stopped_at_cap" || (review.capUsd !== undefined && review.spentUsd >= review.capUsd)) return { ...base, status: "stopped_at_cap", rearms: used };
+  if (used >= DESIGN_REVIEW_REARMS_MAX) return { ...base, status: "not_run", notRunReason: "rearm_limit", rearms: used };
+  return { ...base, status: "estimating", rearms: used + 1 };
 }
 
 /** A finding and what the planner did with it, for one round. */

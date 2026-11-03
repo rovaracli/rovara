@@ -214,7 +214,58 @@ export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 
 export const DESIGN_REVIEW_DECIDED_BY = ["auto", "always", "person", "person_skip", "never"] as const;
 export const DESIGN_REVIEW_STATUSES = ["estimating", "waiting_cost", "running", "resolving", "waiting_answers", "done", "not_run", "stopped_at_cap"] as const;
-export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified"] as const;
+/** `rearm_limit`: a person sent the design back more often than the re-review bound allows; they raise the cap or pick a lower tier to review again. */
+export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified", "rearm_limit"] as const;
+
+/** Re-reviews after a person sent a design back (REQUEST_CHANGES) before a person must raise the cap or pick a lower tier; and retries of a review that did not run. Both reset on such a change. */
+export const DESIGN_REVIEW_REARMS_MAX = 2;
+export const DESIGN_REVIEW_RETRIES_MAX = 2;
+/** Archived reviews of designs that were sent back (oldest dropped first) and the bytes they may weigh, so the record stays inside its 150 KB limit. */
+export const DESIGN_REVIEW_EARLIER_MAX = 4;
+export const DESIGN_REVIEW_EARLIER_MAX_BYTES = 40_000;
+export const DESIGN_REVIEW_APPROVALS_MAX = 20;
+/** 3.7: a wait for answers is parked after 7 days and closed as "not decided" after 30 days parked. */
+export const DESIGN_REVIEW_PARK_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The person a transition names, as the broker authenticated them (the same shape as `answers.by`). */
+export const DesignReviewActorSchema = z.object({ actorId: z.string().min(1).max(128) }).strict();
+export type DesignReviewActor = z.infer<typeof DesignReviewActorSchema>;
+const CapUsd = z.number().min(DESIGN_REVIEW_CAP_MIN_USD).max(DESIGN_REVIEW_CAP_MAX_USD);
+
+/** Money and tier decisions a person made, in order. The cap and the tier change only through these. */
+export const DesignReviewApprovalSchema = z.discriminatedUnion("kind", [
+  /** One tap on the spend: required when there is no price. It never lifts the cap. */
+  z.object({ kind: z.literal("spend"), by: DesignReviewActorSchema, at: Instant, approvedUsd: Usd.optional() }).strict(),
+  z.object({ kind: z.literal("raise_cap"), by: DesignReviewActorSchema, at: Instant, fromUsd: CapUsd, capUsd: CapUsd }).strict(),
+  z.object({ kind: z.literal("lower_tier"), by: DesignReviewActorSchema, at: Instant, from: DesignReviewTierSchema, tier: DesignReviewTierSchema }).strict(),
+]);
+export type DesignReviewApproval = z.infer<typeof DesignReviewApprovalSchema>;
+
+/** What is kept of the paid rounds when a person sends a design back: who ran, what each cost and what was found. Not the packets or the files read. */
+export const ArchivedReviewerSchema = z.object({
+  role: ReviewerRoleSchema, model: DesignModelRefSchema, sessionId: z.string().min(1).max(200), modelKeyId: z.string().min(1).max(200), packetDigest: Digest,
+  verified: z.boolean(), verifyFailure: z.enum(REVIEWER_VERIFY_FAILURES).optional(), tokensIn: z.number().int().min(0), tokensOut: z.number().int().min(0), costUsd: Usd,
+}).strict();
+export const ArchivedFindingSchema = z.object({
+  id: z.string().min(1).max(64), severity: z.enum(DESIGN_FINDING_SEVERITIES), section: DesignSectionSchema, fingerprint: Digest, text: z.string().min(1).max(160),
+  action: z.enum(["fixed", "contested", "asked", "declined"]).optional(), settled: z.boolean().optional(),
+}).strict();
+export const ArchivedRoundSchema = z.object({
+  round: z.union([z.literal(1), z.literal(2)]), designDigest: Digest,
+  reviewers: z.array(ArchivedReviewerSchema).max(DESIGN_REVIEW_REVIEWERS_MAX), findings: z.array(ArchivedFindingSchema).max(DESIGN_REVIEW_FINDINGS_MAX),
+}).strict();
+export const EarlierDesignReviewSchema = z.object({
+  sentBackBy: DesignReviewActorSchema, sentBackAt: Instant,
+  /** The review's total spend when the design was sent back. */
+  spentUsd: Usd, rounds: z.array(ArchivedRoundSchema).max(DESIGN_REVIEW_ROUNDS_MAX),
+}).strict();
+export type EarlierDesignReview = z.infer<typeof EarlierDesignReviewSchema>;
+
+/** A wait for answers (3.7): when it began, when it was parked (7 days), who resumed it, and when it was closed as not decided (30 days parked). */
+export const DesignReviewWaitSchema = z.object({
+  since: Instant, parkedAt: Instant.optional(), resumedBy: DesignReviewActorSchema.optional(), closedAt: Instant.optional(),
+}).strict();
 
 /** Beside `critique` on the workflow snapshot (wired in DR6). */
 export const WorkflowDesignReviewSchema = z.object({
@@ -225,6 +276,16 @@ export const WorkflowDesignReviewSchema = z.object({
   tier: DesignReviewTierSchema,
   estimateUsd: Usd.optional(),
   spentUsd: Usd,
+  /** The cost cap for this task, stored when the review starts (the setting's, or a person's raised one). Spend never goes past it; only a person's raise changes it. */
+  capUsd: CapUsd.optional(),
+  /** The person who asked for design first, and whether it came from a Quick plan's card (the earlier plan stays on the task as history). */
+  startedBy: DesignReviewActorSchema.optional(),
+  fromQuick: z.literal(true).optional(),
+  approvals: z.array(DesignReviewApprovalSchema).max(DESIGN_REVIEW_APPROVALS_MAX).optional(),
+  rearms: z.number().int().min(0).max(DESIGN_REVIEW_REARMS_MAX).optional(),
+  retries: z.number().int().min(0).max(DESIGN_REVIEW_RETRIES_MAX).optional(),
+  earlierReviews: z.array(EarlierDesignReviewSchema).max(DESIGN_REVIEW_EARLIER_MAX).optional(),
+  waiting: DesignReviewWaitSchema.optional(),
   rounds: z.array(DesignReviewRoundSchema).max(DESIGN_REVIEW_ROUNDS_MAX),
   notRunReason: z.enum(DESIGN_REVIEW_NOT_RUN_REASONS).optional(),
 }).strict().superRefine((review, context) => {
@@ -232,6 +293,7 @@ export const WorkflowDesignReviewSchema = z.object({
     if (round.round !== index + 1) context.addIssue({ code: "custom", path: ["rounds", index, "round"], message: "rounds are numbered 1, 2 in order" });
   });
   if (review.status === "not_run" && review.notRunReason === undefined) context.addIssue({ code: "custom", path: ["notRunReason"], message: "a review that did not run says why" });
+  if (review.waiting !== undefined && review.status !== "waiting_answers") context.addIssue({ code: "custom", path: ["waiting"], message: "only a wait for answers has a wait record" });
 });
 export type WorkflowDesignReview = z.infer<typeof WorkflowDesignReviewSchema>;
 
