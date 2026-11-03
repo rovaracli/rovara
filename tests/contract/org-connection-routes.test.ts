@@ -479,3 +479,36 @@ describe("who a Linear or Jira key belongs to (controller ruling, Task 22 review
     expect((await create(DANA, { ...MCP, identity: "service" }, { token: "t1" })).status).toBe(400);
   });
 });
+
+describe("the Jira organization admin key is not set through this route (DV-1)", () => {
+  const JIRA = { type: "jira", label: "Team Jira", access: "read", siteUrl: "https://acme.atlassian.net", identity: "service" };
+  const JIRA_SECRET = { email: "bot@acme.com", apiToken: "jira-token-ROUTE1234567890" };
+  const ADMIN_KEY = "ATAdminKey-ROUTE0123456789";
+  const bad: Array<Record<string, unknown>> = [
+    { ...JIRA_SECRET, orgAdminKey: ADMIN_KEY, atlassianOrgId: "org-id-1234" },
+    { ...JIRA_SECRET, orgAdminKey: ADMIN_KEY },
+    { ...JIRA_SECRET, atlassianOrgId: "org-id-1234" },
+    { ...JIRA_SECRET, clearOrgAdmin: true },
+  ];
+
+  it("a create or a save that names the key, the organization id or the clear flag is a 400 that points to the Connections screen, and nothing is written", async () => {
+    const { create, call, audit, fake } = await setup();
+    const made = await create(DANA, JIRA, JIRA_SECRET);
+    expect(made.status).toBe(201);
+    const id = made.body.connection.connectionId;
+    const callsBefore = fake.calls.length;
+    for (const secret of bad) {
+      const refusedCreate = await create(DANA, JIRA, secret);
+      const refusedSave = await call(DANA, "PUT", `/v1/app/connections/${id}`, { connection: JIRA, secret });
+      for (const reply of [refusedCreate, refusedSave]) {
+        expect(reply.status, JSON.stringify(secret)).toBe(400);
+        expect(JSON.stringify(reply.body)).toContain("Connections screen");
+        expect(JSON.stringify(reply.body)).not.toContain(ADMIN_KEY);
+      }
+    }
+    expect(fake.calls.length).toBe(callsBefore);
+    expect(audit.recordedBy("connection.saved")).toHaveLength(1);
+    // The ordinary save (email and token only) still works.
+    expect((await call(DANA, "PUT", `/v1/app/connections/${id}`, { connection: JIRA, secret: { ...JIRA_SECRET, apiToken: "rotated-token-0123456789" } })).status).toBe(200);
+  });
+});

@@ -349,6 +349,11 @@ export function auditConnectionSaved(input: AuditBuilderBase & { connectionId: s
   return build("connection.saved", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
 }
 
+/** `occurrence`: `auditOccurrence(requestId, connectionId, change, revision read)`. `change` is "set" or "cleared"; the key and the organization id are never an input. */
+export function auditConnectionJiraOrgAdminChanged(input: AuditBuilderBase & { connectionId: string; change: "set" | "cleared" }): AuditEventInput {
+  return build("connection.jira_org_admin_changed", input, { kind: "connection", id: input.connectionId }, { change: input.change });
+}
+
 /** `occurrence`: as `auditConnectionSaved`. */
 export function auditConnectionRemoved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
   return build("connection.removed", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });

@@ -737,6 +737,7 @@ describe("I4: the builders", () => {
     ["auditRolledBack (chain)", (occurrence) => builders.auditRolledBack({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", fromVersion: 3, toVersion: 2 })],
     ["auditBuiltinAdopted", (occurrence) => builders.auditBuiltinAdopted({ ...base, occurrence, details, agentId: "agt_1", version: 4 })],
     ["auditConnectionSaved", (occurrence) => builders.auditConnectionSaved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
+    ["auditConnectionJiraOrgAdminChanged", (occurrence) => builders.auditConnectionJiraOrgAdminChanged({ ...base, occurrence, details, connectionId: "con_1", change: "set" })],
     ["auditConnectionRemoved", (occurrence) => builders.auditConnectionRemoved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
     ["auditCodeSettingsChanged", (occurrence) => builders.auditCodeSettingsChanged({ ...base, occurrence, details, projectName: "web", revision: 2, changed: "selfApproval", selfApproval: true, mergeMethod: "squash", reviewers: 0 })],
     ["auditProjectConnectorChanged", (occurrence) => builders.auditProjectConnectorChanged({ ...base, occurrence, details, connectorId: "cnr_1", connectorType: "linear", revision: 3, change: "widened" })],
