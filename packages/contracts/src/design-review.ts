@@ -264,6 +264,14 @@ export const DesignAnswerSchema = z.object({
 }).strict().refine((answer) => answer.optionId !== undefined || answer.text !== undefined, { message: "an answer picks an option or says something" });
 export type DesignAnswer = z.infer<typeof DesignAnswerSchema>;
 
+/**
+ * A reviewer finding the broker did not use because no citation of it matched what the reviewer was given (3.12 item 5): kept as a role, a severity and a section only, so the card can say "N findings were not used", blockers included
+ * (a blocker that was dropped is the one a person most needs to know about). The words of the finding are not kept.
+ */
+export const DroppedDesignFindingSchema = z.object({ role: ReviewerRoleSchema, severity: z.enum(DESIGN_FINDING_SEVERITIES), section: DesignSectionSchema }).strict();
+export type DroppedDesignFinding = z.infer<typeof DroppedDesignFindingSchema>;
+export const DESIGN_DROPPED_FINDINGS_MAX = DESIGN_REVIEW_REVIEWERS_MAX * 15;
+
 export const DesignReviewRoundSchema = z.object({
   round: z.union([z.literal(1), z.literal(2)]),
   designDigest: Digest,
@@ -276,6 +284,8 @@ export const DesignReviewRoundSchema = z.object({
   /** DR6: findings (by id) of a later round that would undo an earlier fix. They end the loop early and go to the card (the oscillation rule). */
   oscillation: z.array(z.string().min(1).max(64)).max(DESIGN_REVIEW_FINDINGS_MAX).optional(),
   mergeModel: DesignModelRefSchema.optional(),
+  /** The reviewers' findings that were left out because no citation held (broker-made, never the worker's list). Absent in a round recorded before this field. */
+  droppedFindings: z.array(DroppedDesignFindingSchema).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 

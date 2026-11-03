@@ -2,7 +2,7 @@
 //
 // The broker already cleans, cuts and frames every answer (broker/src/context-sources/present.ts). The worker does not trust that it did: it strips hidden
 // characters again, and an answer that is not in the frame is put in one, so no path shows the model a source's words as bare text.
-import { stripHiddenCharacters, SEARCH_TEAM_KNOWLEDGE_TOOL, type ContextToolCallResponse, type ContextToolCatalog } from "@agentx/contracts";
+import { defuseFrameTags, stripHiddenCharacters, SEARCH_TEAM_KNOWLEDGE_TOOL, type ContextToolCallResponse, type ContextToolCatalog } from "@agentx/contracts";
 
 const FRAME = /<source-result source="([^"]{0,120})" item="([^"]{0,120})"[^>]*>\n([\s\S]*?)\n<\/source-result>/gu;
 const MAX_ANSWER_CHARS = 220_000;
@@ -23,7 +23,8 @@ export function frameForModel(response: ContextToolCallResponse, fallbackLabel: 
 
 /** Any `<source-result` or `</source-result`, however spaced, loses its angle bracket, so text cannot close its frame or open a forged one (review M1). */
 export function neutralizeFrameTags(text: string): string {
-  return text.replace(/<(\s*\/?\s*source-result)/giu, "&lt;$1");
+  // The same reading the broker uses (NFKC, case, spaces, slash and bracket look-alikes such as the fullwidth `＜`), not a list of ASCII spellings.
+  return defuseFrameTags(text, { frames: ["source-result"] });
 }
 
 const kib = (bytes: number): string => `${(bytes / 1_024).toFixed(1)} KB`;

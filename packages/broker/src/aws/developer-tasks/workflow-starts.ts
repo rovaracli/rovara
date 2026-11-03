@@ -10,6 +10,7 @@ import {
   type WorkflowSnapshot,
   WorkflowSnapshotSchema,
   workflowSelectedChecks,
+  workflowIsDesignReviewing,
   WorkflowTransitionError,
   workflowRequestId,
   returnWorkflowToImplementationAutomatically,
@@ -21,6 +22,7 @@ import {
   type E2EWorkflowAdmissionRef,
 } from "@agentx/contracts";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../../rovara-code/critic.js";
+import { startDesignReviewRound } from "../../design-review/round-start.js";
 import { personOwnerOf } from "../../developer/system-owner.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
@@ -160,7 +162,7 @@ export async function startTaskWorkflowPlanFromSystem(
 }
 
 /** A conversation id for one plan check, the same whenever the same check is started again (a repeat of its dispatch finds the conversation, not a second one). */
-function planCheckConversationId(taskId: string, revision: number): string {
+export function planCheckConversationId(taskId: string, revision: number): string {
   const hex = createHash("sha256").update(`agentx-plan-check-conversation:${taskId}:${String(revision)}`).digest("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
@@ -184,6 +186,8 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
   const step = workflow?.program?.steps.find((candidate) => candidate.kind === "plan_critic");
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || step === undefined
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN_CRITIQUE" || workflow.state !== "READY") return "STALE";
+  // Design review (switch `dr`, off: no task has a `designReview`, so this never runs): the design form of this stage is started by its own module.
+  if (workflowIsDesignReviewing(workflow)) return startDesignReviewRound(deps, { task, workflow, stepId: step.id, conversationId: planCheckConversationId, ...(actor === undefined ? {} : { actor }) });
   await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);

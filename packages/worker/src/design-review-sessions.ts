@@ -41,6 +41,15 @@ export function brokerPacketSource(input: { brokerUrl: string; capability: strin
   };
 }
 
+/**
+ * Security S16/N9: a reviewer reads through the SANDBOX file tools only. The local file tools (the dev local shell) are rooted at the whole workspace, where `agent-sessions/<planner>.jsonl` and `.agentx` hold the planner's own
+ * conversation; the sandbox tools hide those folders. A worker without sandbox file tools does not run a design review at all: it fails closed, and the broker records the review as not run.
+ */
+export function reviewFileToolsOf(fileTools: FileOpsTarget | undefined): { fileTools: FileOpsTarget } {
+  if (fileTools === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "a design review needs the sandbox file tools");
+  return { fileTools };
+}
+
 export interface ReviewSessionOptions {
   rootPath: string;
   fileTools?: FileOpsTarget | undefined;

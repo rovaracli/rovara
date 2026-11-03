@@ -386,7 +386,7 @@ export function submitDesignReview(
   currentInput: unknown,
   input: {
     expectedRevision: number; designDigest: string; reviewers: readonly unknown[]; findings: readonly unknown[]; mergeModel?: unknown; mergeCostUsd?: number;
-    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; now: string;
+    undoesEarlierFix?: readonly { findingId: string; earlierFindingId: string }[]; stoppedAtCap?: true; droppedFindings?: readonly unknown[]; now: string;
   },
 ): WorkflowSnapshot {
   const { current, review } = located(currentInput, input.expectedRevision, { stage: "PLAN_CRITIQUE", states: ["RUNNING"], statuses: ["running"] });
@@ -446,6 +446,7 @@ export function submitDesignReview(
   const round = DesignReviewRoundSchema.safeParse({
     round: roundNumber, designDigest: input.designDigest, reviewers: runs.data, findings, resolutions: carried,
     ...(oscillation.length === 0 ? {} : { oscillation }), ...(mergeModel?.success === true ? { mergeModel: mergeModel.data } : {}),
+    ...((input.droppedFindings ?? []).length === 0 ? {} : { droppedFindings: input.droppedFindings }),
   });
   if (!round.success) throw fail("the design review result is invalid");
   const spentUsd = addUsd(addUsd(review.spentUsd, runs.data.reduce((sum, run) => addUsd(sum, run.costUsd), 0)), mergeCost);

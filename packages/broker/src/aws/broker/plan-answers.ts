@@ -1,9 +1,10 @@
 // Part of the broker (split out of ../broker.ts): plan critique, plan answers, CI checks and planner replies.
 
 import { criticFailures } from "../../model-selection/task-failures.js";
+import { designReviewOutcome } from "../../design-review/outcome.js";
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, blockWorkflow, WorkflowSnapshotSchema, validateTaskGraph, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
+import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, blockWorkflow, WorkflowSnapshotSchema, validateTaskGraph, workflowIsDesignReviewing, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { decisionComments, pageCommentsPrompt, promptComments, readDecisionDetail } from "../../developer/owner-answers.js";
 import { writePlannerReplies } from "../../developer/page-comments.js";
@@ -60,6 +61,8 @@ export async function planCritiqueOutcome(
   dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation: OperationRecord, terminalStatus: OperationStatus, terminalError: string | undefined, now: string,
 ): Promise<WorkflowSnapshot> {
   const workflow = task.workflow;
+  // Design review (switch `dr`, off: no task has one): the design form of this stage ends with its own moves, which the plan check's would refuse.
+  if (workflowIsDesignReviewing(workflow)) return designReviewOutcome(dependencies, task, operation, terminalStatus, terminalError, now);
   // The check is advice: whatever goes wrong with it, the plan goes on to the person, who is told it was not checked (or that the check stopped at a limit).
   if (terminalStatus !== "SUCCEEDED") {
     if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {

@@ -50,6 +50,7 @@ import { isSpecOperation, specOperationEndItems } from "../../spec/end-items.js"
 import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
 import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
+import { withDesignReviewMode } from "../../design-review/understand-mode.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { keepEvidenceAfterChecks } from "./evidence-wiring.js";
 import { readUnderstandingArtifact, runWorkflowDispatch } from "./dispatch.js";
@@ -1110,6 +1111,8 @@ export async function completedWorkflowItems(
         next = assessed.kind === "answer"
           ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
           : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });
+        // Design review (switch `dr`, off: nothing here changes): a ready task may get its design reviewed; the mode is resolved from the effective setting and FULL is forced when it is on.
+        if (assessed.kind === "ready") next = await withDesignReviewMode(dependencies, { orgId: requireOrgId(task.orgId), project: task.project, workflow: next, assessment: assessed, now });
         if (next.outcome === "ANSWERED") {
           answeredItems = [...answeredMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now),
             finishedReleaseMarkItem(dependencies.tableName, task.taskId, now)];
