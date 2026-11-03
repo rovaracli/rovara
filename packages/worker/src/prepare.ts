@@ -867,11 +867,12 @@ function withoutFailure(manifest: PreparationManifest): PreparationManifest {
 
 /**
  * The prepare result's record of where each repository was checked out, before any agent runs: the broker keeps it
- * as the task's base. Omitted unless every repository has a 40-hex commit.
+ * as the task's base. Omitted unless every repository has a 40-hex commit (the broker's `baseCommitSha` is 40-hex only, so a 64-hex commit could not be stored; a setup run's pins may be 64-hex and then keep
+ * no `preparedBase`, which fails closed).
  */
 export function preparedBaseResult(manifest: PreparationManifest): { preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }>; knowledgeCommit?: string } {
   // Meta repo lane A3: the meta repo's commit, reported beside the code bases (the broker keeps it as the task's `knowledgeCommit`).
   const knowledge = manifest.meta !== undefined && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(manifest.meta.resolvedCommit) ? { knowledgeCommit: manifest.meta.resolvedCommit } : {};
-  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(repository.resolvedCommit))) return knowledge;
+  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^[a-f0-9]{40}$/.test(repository.resolvedCommit))) return knowledge;
   return { preparedBase: manifest.repositories.map((repository) => ({ repositoryId: repository.name, baseCommitSha: repository.resolvedCommit })), ...knowledge };
 }
