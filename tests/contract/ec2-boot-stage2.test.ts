@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -259,11 +259,55 @@ esac
 
 const directories: string[] = [];
 const responders: string[] = [];
-afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
-  for (const pidFile of responders.splice(0)) {
+
+/**
+ * The failure responders (boot.sh's `python3 -c ... BootFailed ...` server) that a run in one of `dirs` left alive. A responder is recognised
+ * by the BootFailed body in its command line and by the run's own failure-file path, its last argument, so only a server this suite started
+ * can match.
+ */
+function liveResponders(dirs: string[]): number[] {
+  if (dirs.length === 0) return [];
+  const listing = spawnSync("ps", ["-Ao", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout;
+  const pids: number[] = [];
+  for (const line of listing.split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/su.exec(line);
+    if (match === null || Number(match[1]) === process.pid || !match[2].includes("BootFailed")) continue;
+    if (dirs.some((directory) => match[2].includes(join(directory, "failure")))) pids.push(Number(match[1]));
+  }
+  return pids;
+}
+
+/** Stops every responder the runs in `dirs` started; returns the pids found alive when this began. */
+function reapResponders(dirs: string[], pidFiles: string[]): number[] {
+  // The pid file lives in the run's directory, so it has to be read before the directory is removed.
+  for (const pidFile of pidFiles) {
     try { process.kill(Number(readFileSync(pidFile, "utf8").trim())); } catch { /* never started, or already gone */ }
   }
+  const found = liveResponders(dirs);
+  for (const pid of found) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* gone already */ }
+  }
+  return found;
+}
+
+/** Waits (up to a few seconds) for the kernel to finish with the responders just signalled; returns the ones that never went. */
+function survivors(dirs: string[]): number[] {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (liveResponders(dirs).length === 0) return [];
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  return liveResponders(dirs);
+}
+
+afterEach(() => {
+  const dirs = directories.splice(0);
+  // Stop the responders BEFORE the directories (and the pid files in them) are removed: killing from a pid file that was already gone left one
+  // python server per run alive on the machine, for days.
+  reapResponders(dirs, responders.splice(0));
+  const alive = survivors(dirs);
+  for (const directory of dirs) rmSync(directory, { recursive: true, force: true });
+  // The guard: a BootFailed server this test started and could not stop fails the test, rather than piling up on the machine.
+  expect(alive, "BootFailed servers started by this test are still running").toEqual([]);
 });
 
 async function freePort(): Promise<number> {
@@ -368,6 +412,28 @@ async function ping(port: number): Promise<{ status: number; json: unknown }> {
   }
   throw new Error("the failure responder never answered");
 }
+
+describe("the failure responder does not outlive its test", () => {
+  it("is stopped by the suite after a boot that failed, so no BootFailed server is left running", async () => {
+    const run = await boot({ served: placedStage2, noHash: true });
+    expect(run.status).toBe(1);
+    // The responder the failed boot started answers /ping now, and is running until the suite stops it.
+    expect((await ping(run.port)).json).toMatchObject({ status: "BootFailed" });
+    expect(liveResponders([run.directory])).toHaveLength(1);
+    expect(reapResponders([run.directory], [])).toHaveLength(1);
+    expect(survivors([run.directory])).toEqual([]);
+  });
+
+  it("finds a stray BootFailed server by the run's failure file even with no pid file", () => {
+    const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
+    directories.push(directory);
+    const stray = spawn(process.execPath, ["-e", "/* BootFailed */ setInterval(() => {}, 1000)", join(directory, "failure")], { stdio: "ignore", detached: true });
+    stray.unref();
+    expect(liveResponders([directory])).toEqual([stray.pid]);
+    expect(reapResponders([directory], [])).toEqual([stray.pid]);
+    expect(survivors([directory])).toEqual([]);
+  });
+});
 
 describe("stage 1 runs stage 2 from the worker image", () => {
   it("starts the worker unit when the image's stage 2 matches the launch setting, after walling containers off and before any container is made", async () => {
