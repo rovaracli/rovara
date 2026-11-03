@@ -10,10 +10,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, projectMetaKey, projectRevisionKey, testEnvDigest,
-  type OrgId, type ProjectCommand, type TestEnvDraft, type TestEnvTaskPlan, type TestEnvironmentBody, type TestServicesUsageRecord,
+  CATALOG_SIGNATURE_ALGORITHM, EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, catalogSigningMessage, parseBundlePublicKey, projectMetaKey, projectRevisionKey, sha256HexOf, testEnvDigest,
+  type OrgId, type ProjectCommand, type TaskDependencyPlan, type TestEnvDraft, type TestEnvTaskPlan, type TestEnvironmentBody, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
@@ -32,12 +32,18 @@ import {
   type TestServicesConfig, type TestServicesRun,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
+import { serviceCatalogSourceOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { loadBakedCatalog, startPrepareTestServices, collectTestServicesUsage } from "../../packages/worker/src/test-services-run.js";
+import { OMAR } from "../support/developer-task-broker.js";
+import { ENV as WIZARD_ENV, NAME as WIZARD_NAME, command as wizardCommand, draftBody, setupWizardBench, withSwitch } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
-import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
+import { loaderTrusting, pinnedCatalog, testSigner, verifiedCatalog } from "../support/catalog-pinning.js";
 import { fakeServicesDocker, type FakeServicesDockerOptions } from "../support/fake-services-docker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+const TEST_ORG_ID = TEST_ORG;
 const PROJECT = "svc";
 const TASK = "task-1";
 const ON = { TEST_ENVIRONMENT_ENABLED: "1", TEST_SERVICES_ENABLED: "1" };
@@ -381,5 +387,65 @@ describe("5. with tx off the worker and the broker are what they were (golden)",
     const built = buildEvidencePack({ candidateDigest: "c".repeat(64), rawText: undefined, checks, environment, storedArtifacts: new Map() });
     expect("dependencies" in built.pack!.environment).toBe(false);
     expect(evidenceLines({ pack: built.pack, mode: "summary" }, "c".repeat(64), 0).lines.join("\n")).not.toMatch(/ran against/u);
+  });
+});
+
+// ---- 6. Prove, through the real seams: worker prepare -> the result the broker keeps -> the Prove report, with a catalog that arrives through the SIGNED trust path ---------------------------------------------------
+
+describe("6. Prove: the candidate check's record goes from the worker to the Prove report", () => {
+  afterEach(() => { delete process.env.TEST_SERVICES_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; vi.unstubAllEnvs(); });
+
+  /** The release's catalog, signed by a TEST key and read through the broker's own source (signature check, minimum revision): `@agentx/contracts/testing` supplies the key, in test code only. */
+  async function signedSource() {
+    const signer = testSigner();
+    const catalogBytes = Buffer.from(`${JSON.stringify(pinnedCatalog(), null, 2)}\n`, "utf8");
+    const signature = { schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId: parseBundlePublicKey(signer.publicKeyPem).keyId, catalogSha256: sha256HexOf(catalogBytes), signature: (await signer.sign(catalogSigningMessage(catalogBytes))).toString("base64") };
+    return serviceCatalogSourceOf({ read: async () => ({ catalogBytes, signatureBytes: Buffer.from(JSON.stringify(signature)) }), trust: { runningAccountId: undefined }, load: loaderTrusting(signer.publicKeyPem) });
+  }
+
+  it("a proposal's candidate check is sent the pinned plan; the worker starts it, runs the test check sealed and reports a record; the broker keeps it and derives both dependency steps", async () => {
+    const source = await signedSource();
+    // The broker's side is checked first: a catalog nobody signed gives the broker nothing to pin.
+    expect(await source()).toBeDefined();
+    const bench = await setupWizardBench({ autoCandidate: false, brokerExtra: { serviceCatalog: source } });
+    process.env.TEST_SERVICES_ENABLED = "1";
+    await withSwitch("1", async () => {
+      const postgres = {
+        id: "postgres", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "docker-compose.yml", line: 4 }], usedBy: ["integration"], backing: { kind: "local", catalogId: "postgres@16", config: {} },
+        connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] }, seeds: [], reset: "fresh_per_round",
+      };
+      const environment = draftBody({ dependencies: [postgres], repos: [{ repositoryId: "web", setupCommands: [wizardCommand("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: wizardCommand("make", ["old-test"], 1800), kind: "test" }] }] });
+      const proposal = await proposeTestEnvironment({ documentClient: bench.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG_ID, project: WIZARD_NAME, proposedBy: OMAR.developerId, role: "maintainer", body: environment });
+      const started = await bench.dev(OMAR, "POST", `${WIZARD_ENV}/check`, { digest: proposal.digest, requestId: randomUUID() });
+      expect(started.status, JSON.stringify(started.body)).toBe(202);
+      const candidate = (bench.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string }>)[0]!;
+      const outbox = bench.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === candidate.workspaceId)[0] as unknown as { invocation: { payload: { testServices: { dependencies: TaskDependencyPlan[] } } } };
+      const sent = outbox.invocation.payload.testServices.dependencies;
+      expect(sent.map((entry) => entry.id)).toEqual(["postgres"]);
+
+      // The worker half: the plan the broker sent, a catalog baked into the image (written here from the same release catalog), the fake Docker, the sealed round for the test check.
+      const work = await workerBench();
+      const dir = await temp("tsp-baked-");
+      await writeFile(join(dir, "catalog.json"), JSON.stringify(pinnedCatalog()));
+      (work.config as { catalog: () => Promise<unknown> }).catalog = () => loadBakedCatalog(join(dir, "catalog.json"));
+      const collector = collectTestServicesUsage();
+      const services = await startPrepareTestServices({ options: { dependencies: sent, testChecks: [0], config: work.config, onUsageRecord: collector.collect }, sandbox: work.sandbox, devcontainer: false, operationId: OPERATION, rootPath: work.root, repositoryPaths: [] });
+      const ran = await services!.sealedReadiness(async () => ({ exitCode: 0, stdout: "", stderr: "" }))({ cwd: ".", executable: "make", args: ["old-test"], timeoutSeconds: 60 }, 0, work.root);
+      expect(ran.exitCode).toBe(0);
+      await services!.finish();
+      await work.sandbox.dispose();
+      const reported = collector.result();
+      expect(Object.keys(reported)).toEqual(["testServicesUsage"]);
+
+      // The broker half: the prepare result is finished with the worker's own result object; the record is kept on the check and Prove derives its steps from it.
+      const prepareId = String((bench.db.get(`WORKSPACE#${candidate.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+      await bench.finish(candidate.workspaceId, prepareId, "SUCCEEDED", { result: reported });
+      const kept = (bench.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ usage?: unknown }>)[0]!;
+      expect(TestServicesUsageRecordSchema.parse(kept.usage).dependencies[0]).toMatchObject({ id: "postgres", started: true, healthy: true });
+      const proved = await bench.dev(OMAR, "POST", `${WIZARD_ENV}/prove`, { digest: proposal.digest });
+      expect(proved.status, JSON.stringify(proved.body)).toBe(200);
+      const report = (bench.db.find((item) => item.entityType === "TEST_ENV_PROVE")[0] as unknown as { report: { steps: Array<{ step: string; status: string }> } }).report;
+      expect(report.steps).toEqual(expect.arrayContaining([expect.objectContaining({ step: "dependencies", status: "passed" }), expect.objectContaining({ step: "dependency_usage", status: "passed" })]));
+    });
   });
 });
