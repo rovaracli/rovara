@@ -3,7 +3,7 @@
 // and the extraction of the shared rule with no change for lessons.
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DecisionCardSchema, editionPolicy, type DesignCitation, type DesignQuestion, type DesignReason, type DesignReviewSetting, type WorkflowDesignReview,
+  DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DecisionCardSchema, designReviewDisagreements, editionPolicy, type DesignCitation, type DesignQuestion, type DesignReason, type DesignReviewSetting, type WorkflowDesignReview,
 } from "@agentx/contracts";
 import { cardOfItem, detailsOfItem, projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { riskTierOf } from "../../packages/broker/src/decisions/risk-tier.js";
@@ -131,12 +131,14 @@ describe("the facts of a stored review", () => {
     ...overrides,
   });
 
-  it("counts verified reviewers of the last round, open blockers and majors (not settled ones) and every contested or declined finding as a disagreement", () => {
+  it("counts verified reviewers of the last round, open blockers and majors (not settled ones) and lists disagreements by the contract's one definition", () => {
     const result = designCardFactsOf(review(), ["data_model"]);
     expect(result.reviewers).toEqual({ planned: 3, verified: 2 });
     expect(result.blockers.map((b) => b.text)).toEqual(["finding f2"]);
     expect(result.majors).toBe(0);
-    expect(result.disagreements.map((d) => d.text)).toEqual(["finding f2", "finding f3"]);
+    // N10: the contract's definition. f1 was fixed and no later round read it (unchecked_fix), f2 is a contested blocker; a declined major (f3) and a nit (f4) are not disagreements.
+    expect(result.disagreements.map((d) => [d.text, d.kind])).toEqual([["finding f1", "unchecked_fix"], ["finding f2", "contested"]]);
+    expect(result.disagreements).toEqual(designReviewDisagreements(review()).map((d) => ({ section: "§3", text: `finding ${d.findingId}`, kind: d.kind })));
     expect(result.touches).toEqual(["data_model"]);
     expect(result.costUsd).toBe(0.96);
     expect(reviewCoverage(result.reviewers)).toBe("partial");
@@ -190,7 +192,7 @@ describe("fix round: the card reads every round (M6) and plans the right reviewe
     const raisedAgainSettled = round(2, all(true), [finding("g1", "blocker", "1")], [{ findingId: "g1", action: "contested", evidence: [{ kind: "design", section: "§3" }], note: "kept", settled: true }]);
     const settled = designCardFactsOf(review([first, raisedAgainSettled]), []);
     expect(settled.blockers).toEqual([]);
-    expect(settled.disagreements.map((d) => d.text)).toEqual(["finding g1"]);
+    expect(settled.disagreements.map((d) => [d.text, d.kind])).toEqual([["finding g1", "contested"]]);
     const raisedAgainOpen = round(2, all(true), [finding("g1", "blocker", "1")], [fixedOpen("g1")]);
     expect(designCardFactsOf(review([first, raisedAgainOpen]), []).blockers.map((b) => b.text)).toEqual(["finding g1"]);
   });

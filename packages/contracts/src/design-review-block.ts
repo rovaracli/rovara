@@ -234,7 +234,7 @@ function buildFinding(index: number, group: readonly RawDesignFinding[], severit
   };
 }
 
-export type DesignMergeFailure = "raw_missing" | "raw_repeated" | "raw_unknown" | "raw_duplicate" | "severity_changed" | "section_invented" | "section_mixed" | "text_not_from_raw" | "too_many";
+export type DesignMergeFailure = "raw_missing" | "raw_repeated" | "raw_unknown" | "raw_duplicate" | "severity_changed" | "section_invented" | "section_mixed" | "text_not_from_raw" | "too_many" | "fingerprint_repeated";
 export type DesignMergeCheck = { ok: true; findings: DesignFinding[] } | { ok: false; failure: DesignMergeFailure };
 
 const sameRaw = (a: RawDesignFinding, b: RawDesignFinding): boolean => a.role === b.role && a.severity === b.severity && a.section === b.section && a.text === b.text && citationsKey(a.citations) === citationsKey(b.citations);
@@ -292,6 +292,9 @@ export function checkDesignMerge(rawFindings: readonly RawDesignFinding[], merge
   if (used.size !== byId.size) return { ok: false, failure: "raw_missing" };
   const findings = ordered(groups.map((entry) => ({ ...entry, severity: entry.draft.severity, section: entry.draft.section })))
     .map((entry, index) => buildFinding(index, entry.group, entry.draft.severity, entry.draft.section, entry.draft.text));
+  // The model chose the grouping, and two groups of the same section and the same words have one identity: the workflow refuses a round that holds two findings with one fingerprint (the reviewers are
+  // already paid). The check belongs here, so such a grouping falls back to the code-only merge, which merges findings with one fingerprint into one finding (money N2).
+  if (new Set(findings.map((finding) => finding.fingerprint)).size !== findings.length) return { ok: false, failure: "fingerprint_repeated" };
   return { ok: true, findings };
 }
 

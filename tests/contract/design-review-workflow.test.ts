@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, designReviewCapRoom,
-  lowerDesignReviewTier, parkDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
+  lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
   designReviewDisagreements, designReviewRevisionsUsed, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique,
   submitWorkflowArtifact, workflowIsDesignReviewing, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
@@ -963,5 +963,75 @@ describe("minors", () => {
     expect(() => on(stuck)).toThrow(/ready to plan/);
     expect(on(planReady({ path: "FULL" })).designReview).toBeDefined();
     expect(on({ ...planReady({ path: "FULL" }), reviewPhase: "DESIGN" as const }).designReview).toBeDefined();
+  });
+});
+
+describe("money fix round 2: skip, spend on resume, a round that found nothing", () => {
+  const ACTOR2 = { actorId: PERSON };
+  const held = (): WorkflowSnapshot => holdDesignReviewForCost(designSubmitted(), { expectedRevision: designSubmitted().revision, estimateUsd: 40, now: NOW });
+
+  it("N4/m7: skipDesignReview from the cost hold records person_skip with who and ends at the card; nothing can bring the review back", () => {
+    const hold = held();
+    expect(hold.designReview!.status).toBe("waiting_cost");
+    const skipped = skipDesignReview(hold, { expectedRevision: hold.revision, by: ACTOR2, now: LATER });
+    expect(skipped).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { decidedBy: "person_skip", skippedBy: ACTOR2, status: "not_run", notRunReason: "skipped" } });
+    expect(skipped.designReview!.estimateUsd).toBeUndefined();
+    // the skip stands: Retry review, a raised cap, a lower tier and a re-arm all leave it alone
+    expect(() => retryDesignReviewNotRun(skipped, { expectedRevision: skipped.revision, by: ACTOR2, now: LATER })).toThrow(/did not run/);
+    expect(() => raiseDesignReviewCap(skipped, { expectedRevision: skipped.revision, capUsd: 50, by: ACTOR2, now: LATER })).toThrow(/skipped/);
+    expect(() => lowerDesignReviewTier(skipped, { expectedRevision: skipped.revision, tier: "light", by: ACTOR2, now: LATER })).toThrow(/skipped/);
+    expect(rearmedDesignReview(skipped.designReview!, { at: LATER, by: ACTOR2 })).toEqual(skipped.designReview);
+    // control: the same review sent to the same place by close (cost_declined) CAN be retried, which is the hole this closes
+    const declined = closeDesignReview(hold, { expectedRevision: hold.revision, outcome: "not_run", notRunReason: "cost_declined", now: LATER });
+    expect(retryDesignReviewNotRun(declined, { expectedRevision: declined.revision, by: ACTOR2, now: LATER })).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY" });
+  });
+
+  it("N4: a skip before any design exists leaves the task to go on to its design with the review off", () => {
+    const enabled = on(planReady());
+    const skipped = skipDesignReview(enabled, { expectedRevision: enabled.revision, by: ACTOR2, now: LATER });
+    expect(skipped).toMatchObject({ stage: "PLAN", state: "READY", designReview: { decidedBy: "person_skip", status: "not_run", notRunReason: "skipped" } });
+    let workflow = submitWorkflowArtifact(running(skipped), { expectedRevision: skipped.revision + 1, artifact: artifact("requirements"), now: NOW });
+    workflow = decide(workflow, "APPROVE", artifact("requirements").sha256);
+    const next = submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: artifact("design"), now: NOW });
+    expect(next).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+  });
+
+  it("N4: a skip is refused while the review runs, with a stale revision, and for a bad actor; a person_skip record must name who", () => {
+    const live = started(designSubmitted());
+    expect(() => skipDesignReview(live, { expectedRevision: live.revision, by: ACTOR2, now: LATER })).toThrow(/cannot be skipped/);
+    const hold = held();
+    expect(() => skipDesignReview(hold, { expectedRevision: hold.revision - 1, by: ACTOR2, now: LATER })).toThrow(/stale/);
+    expect(() => skipDesignReview(hold, { expectedRevision: hold.revision, by: { actorId: "" }, now: LATER })).toThrow(/invalid/);
+    expect(WorkflowSnapshotSchema.safeParse({ ...hold, designReview: { ...hold.designReview, decidedBy: "person_skip" } }).success).toBe(false);
+  });
+
+  it("N6: resuming a blocked round adds what its reviewers already cost; the total only goes up", () => {
+    const blocked = blockWorkflow(started(designSubmitted()), "The rule files could not be verified.", LATER);
+    const before = blocked.designReview!.spentUsd;
+    const resumed = resumeBlockedDesignReview(blocked, { expectedRevision: blocked.revision, addedSpendUsd: 0.35, now: LATER });
+    expect(resumed.designReview!.spentUsd).toBeCloseTo(before + 0.35, 6);
+    expect(resumeBlockedDesignReview(blocked, { expectedRevision: blocked.revision, now: LATER }).designReview!.spentUsd).toBe(before);
+    for (const bad of [-1, Number.NaN, 20_000]) expect(() => resumeBlockedDesignReview(blocked, { expectedRevision: blocked.revision, addedSpendUsd: bad, now: LATER })).toThrow(/invalid/);
+  });
+
+  it("N9: a round that found nothing is finished even when it took the total over the cap, and cannot be paid for again", () => {
+    const dear = [reviewerRun("critic", { costUsd: 0.3 }), reviewerRun("codebase", { costUsd: 0.3 })];
+    const clean = submitRound(started(designSubmitted({ capUsd: 0.5 }), { estimateUsd: 0.1 }), [], {}, dear);
+    expect(clean).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done", spentUsd: 0.6 } });
+    expect(() => raiseDesignReviewCap(clean, { expectedRevision: clean.revision, capUsd: 5, by: ACTOR2, now: LATER })).toThrow(/cannot be run again/);
+    // control: with a finding the same overspend still stops at the cap
+    expect(submitRound(started(designSubmitted({ capUsd: 0.5 }), { estimateUsd: 0.1 }), [finding("f1", "blocker", "x")], {}, dear).designReview!.status).toBe("stopped_at_cap");
+  });
+
+  it("N9: a stopped review whose last result read the design that is still the latest is not reopened by a raise", () => {
+    const stopped = submitRound(started(designSubmitted({ capUsd: 0.5 }), { estimateUsd: 0.1 }), [finding("f1", "blocker", "x")], { stoppedAtCap: true });
+    // the person settled the one finding, so every round is resolved and a raise would otherwise buy a second read of the same design
+    const review = stopped.designReview!;
+    const resolvedRound = { ...review.rounds[0]!, resolutions: [{ findingId: "f1", action: "contested" as const, evidence: [{ kind: "design" as const, section: "§4" as const }], note: "x", settled: true }] };
+    const crafted = { ...stopped, designReview: { ...review, rounds: [resolvedRound] } };
+    expect(() => raiseDesignReviewCap(crafted, { expectedRevision: crafted.revision, capUsd: 5, by: ACTOR2, now: LATER })).toThrow(/already reviewed/);
+    // control: with a changed design (a new latest artifact) the raise opens it again
+    const changed = { ...crafted, artifacts: [...crafted.artifacts, artifact("design", 2)] };
+    expect(raiseDesignReviewCap(changed, { expectedRevision: changed.revision, capUsd: 5, by: ACTOR2, now: LATER })).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY" });
   });
 });

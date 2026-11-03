@@ -21,6 +21,7 @@
 //   closeParkedDesignReview       parked 30 days              ->  CLOSED/COMPLETE "not decided"
 //   resolveDesignReview           PLAN/RUNNING "resolving"    ->  PLAN_CRITIQUE/READY "estimating" (round 2 of the revised design)
 //                                                              or PLAN_REVIEW/WAITING "done"
+//   skipDesignReview              the cost hold, or PLAN/READY before a design  ->  PLAN_REVIEW/WAITING (or the same place)  "not_run: skipped", decidedBy person_skip with who
 //   closeDesignReview             any step (a BLOCKED one too) that is not waiting for a person's answer -> PLAN_REVIEW/WAITING (the approve_design card)
 //
 // Bounds: at most DESIGN_REVIEW_ROUNDS_MAX rounds and DESIGN_REVIEW_REVISIONS_MAX planner revisions, one question card per round with at most DESIGN_REVIEW_QUESTIONS_MAX questions.
@@ -236,6 +237,8 @@ function roundsToKeep(review: WorkflowDesignReview): DesignReviewRound[] | undef
  * Anything else (a review in progress, one with unresolved findings, one with its rounds used) is refused.
  */
 function reopened(current: WorkflowSnapshot, review: WorkflowDesignReview, change: Partial<WorkflowDesignReview>, now: string): WorkflowSnapshot {
+  // A person's Skip stands: a raised cap, a lower tier or a retry does not bring the review back (m7).
+  if (review.decidedBy === "person_skip") throw fail("the design review was skipped by a person");
   const { estimateUsd: _estimate, notRunReason: _reason, ...kept } = review;
   void _estimate;
   void _reason;
@@ -247,6 +250,9 @@ function reopened(current: WorkflowSnapshot, review: WorkflowDesignReview, chang
   if (current.stage === "PLAN_REVIEW" && current.state === "WAITING" && (review.status === "stopped_at_cap" || review.status === "not_run" || (review.status === "done" && review.notRunReason !== undefined))) {
     const rounds = roundsToKeep(review);
     if (rounds === undefined || latestDesign(current) === undefined) throw fail("the design review cannot be run again from here");
+    // Paying again to read the design the last round already read, with a result, buys nothing (money N9): a changed design is needed.
+    const lastRead = rounds.at(-1);
+    if (lastRead !== undefined && designRoundHasResult(lastRead) && lastRead.designDigest === latestDesign(current)!.sha256) throw fail("the design is the one the last round already reviewed");
     return moved(current, { stage: "PLAN_CRITIQUE", state: "READY", review: { ...reset, rounds }, now });
   }
   throw fail("the design review cannot be run again from here");
@@ -295,12 +301,35 @@ export function retryDesignReviewNotRun(currentInput: unknown, input: { expected
   if (current.revision !== input.expectedRevision) throw fail("workflow revision is stale");
   const review = current.designReview;
   if (review === undefined || current.reviewPhase !== "DESIGN" || current.path !== "FULL" || current.stage !== "PLAN_REVIEW" || current.state !== "WAITING"
-    || review.notRunReason === undefined || review.notRunReason === "rearm_limit" || (review.status !== "not_run" && review.status !== "done")) {
+    || review.notRunReason === undefined || review.notRunReason === "rearm_limit" || review.notRunReason === "skipped" || review.decidedBy === "person_skip" || (review.status !== "not_run" && review.status !== "done")) {
     throw fail("only a design review that did not run can be retried");
   }
   actorOf(input.by);
   if ((review.retries ?? 0) >= DESIGN_REVIEW_RETRIES_MAX) throw fail("the review has been retried as often as allowed: a person raises the cap or picks a lower tier");
   return reopened(current, review, { retries: (review.retries ?? 0) + 1, ...(input.estimateUsd === undefined ? {} : { estimateUsd: input.estimateUsd }) }, input.now);
+}
+
+// ---- a person skips
+
+/**
+ * A person chose Skip on the spend card (the cost hold, or the cost question before a design exists). Records `decidedBy: "person_skip"` with who (`skippedBy`), the fixed reason `skipped`, and ends the review without
+ * running it: from the cost hold (PLAN_CRITIQUE/WAITING, "waiting_cost") the design goes to the person's card (PLAN_REVIEW/WAITING; "not run" before any round, "done" after one); from PLAN/READY, before a
+ * design exists, the task goes on to its design with the review off. Nothing here approves anything. The skip stands: `retryDesignReviewNotRun`, a raised cap and a lower tier refuse it, and a REQUEST_CHANGES
+ * does not re-arm it (`rearmedDesignReview`). The caller (the spend handler) has already applied the skip rules for this person.
+ */
+export function skipDesignReview(currentInput: unknown, input: { expectedRevision: number; by: { actorId: string }; now: string }): WorkflowSnapshot {
+  const current = parsed(currentInput);
+  if (current.revision !== input.expectedRevision) throw fail("workflow revision is stale");
+  const review = current.designReview;
+  const atCostHold = current.reviewPhase === "DESIGN" && current.stage === "PLAN_CRITIQUE" && current.state === "WAITING" && review?.status === "waiting_cost";
+  const beforeDesign = current.stage === "PLAN" && current.state === "READY" && review?.status === "estimating" && review.rounds.length === 0 && latestDesign(current) === undefined;
+  if (review === undefined || current.path !== "FULL" || (!atCostHold && !beforeDesign)) throw fail("the design review cannot be skipped from here");
+  const by = actorOf(input.by);
+  const { estimateUsd: _estimate, waiting: _waiting, ...kept } = review;
+  void _estimate;
+  void _waiting;
+  const skipped: WorkflowDesignReview = { ...kept, decidedBy: "person_skip", skippedBy: by, status: review.rounds.length > 0 ? "done" : "not_run", notRunReason: "skipped" };
+  return atCostHold ? moved(current, { stage: "PLAN_REVIEW", state: "WAITING", review: skipped, now: input.now }) : moved(current, { stage: "PLAN", state: "READY", review: skipped, now: input.now });
 }
 
 // ---- after BLOCKED
@@ -310,11 +339,13 @@ export function retryDesignReviewNotRun(currentInput: unknown, input: { expected
  * READY (WAITING when it was waiting for answers) and the block's reason is cleared. A review in the plan check step is "estimating" again, so the cost cap is checked when it starts; one in the
  * planner's step keeps "resolving". Spend is kept. Nothing is approved. (`closeDesignReview` also ends a blocked review.)
  */
-export function resumeBlockedDesignReview(currentInput: unknown, input: { expectedRevision: number; now: string }): WorkflowSnapshot {
+export function resumeBlockedDesignReview(currentInput: unknown, input: { expectedRevision: number; addedSpendUsd?: number; now: string }): WorkflowSnapshot {
   const current = parsed(currentInput);
   if (current.revision !== input.expectedRevision) throw fail("workflow revision is stale");
-  const review = current.designReview;
-  if (review === undefined || current.reviewPhase !== "DESIGN" || current.path !== "FULL" || current.state !== "BLOCKED") throw fail("the design review is not blocked");
+  const found = current.designReview;
+  if (found === undefined || current.reviewPhase !== "DESIGN" || current.path !== "FULL" || current.state !== "BLOCKED") throw fail("the design review is not blocked");
+  // What the reviewers of a round that blocked while running already cost is added, as close and retry do; the total only goes up (money N6).
+  const review: WorkflowDesignReview = { ...found, spentUsd: addUsd(found.spentUsd, spendDelta(input.addedSpendUsd)) };
   if (current.stage === "PLAN_CRITIQUE" && (review.status === "estimating" || review.status === "running" || review.status === "waiting_cost")) {
     return moved(current, { stage: "PLAN_CRITIQUE", state: "READY", review: { ...review, status: "estimating" }, now: input.now });
   }
@@ -426,8 +457,10 @@ export function submitDesignReview(
     const reason = whyNoResult(runs.data);
     return review.rounds.length === 0 ? end("not_run", { notRunReason: reason }) : end("done", { notRunReason: reason });
   }
+  // A round that found nothing is a finished review even when it took the total past the cap: there is nothing left to pay for, and "stopped at the cap" would let a raised cap buy the same read again (money N9).
+  if (findings.length === 0) return end("done");
   if (input.stoppedAtCap === true || spentUsd > review.capUsd) return end("stopped_at_cap");
-  if (findings.length === 0 || oscillation.length > 0 || designRoundResolved(round.data)) return end("done");
+  if (oscillation.length > 0 || designRoundResolved(round.data)) return end("done");
   return moved(current, { stage: "PLAN", state: "READY", review: sizeChecked({ ...base, status: "resolving" }), now: input.now });
 }
 

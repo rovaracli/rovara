@@ -281,8 +281,11 @@ export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 
 export const DESIGN_REVIEW_DECIDED_BY = ["auto", "always", "person", "person_skip", "never"] as const;
 export const DESIGN_REVIEW_STATUSES = ["estimating", "waiting_cost", "running", "resolving", "waiting_answers", "done", "not_run", "stopped_at_cap"] as const;
-/** `rearm_limit`: a person sent the design back more often than the re-review bound allows; they raise the cap or pick a lower tier to review again. */
-export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified", "rearm_limit"] as const;
+/**
+ * `rearm_limit`: a person sent the design back more often than the re-review bound allows; they raise the cap or pick a lower tier to review again.
+ * `skipped`: a person chose Skip on the spend card (`skipDesignReview`); the review is not retried, re-armed or reopened by a raise or a lower tier.
+ */
+export const DESIGN_REVIEW_NOT_RUN_REASONS = ["no_model_source", "no_verified_model", "cost_declined", "timeout", "worker_failed", "inputs_unverified", "rearm_limit", "skipped"] as const;
 
 /** Re-reviews after a person sent a design back (REQUEST_CHANGES) before a person must raise the cap or pick a lower tier; and retries of a review that did not run. Both reset on such a change. */
 export const DESIGN_REVIEW_REARMS_MAX = 2;
@@ -347,6 +350,8 @@ export const WorkflowDesignReviewSchema = z.object({
   capUsd: CapUsd.optional(),
   /** The person who asked for design first, and whether it came from a Quick plan's card (the earlier plan stays on the task as history). */
   startedBy: DesignReviewActorSchema.optional(),
+  /** The person who chose Skip on the spend card (`decidedBy` is then "person_skip"). */
+  skippedBy: DesignReviewActorSchema.optional(),
   fromQuick: z.literal(true).optional(),
   approvals: z.array(DesignReviewApprovalSchema).max(DESIGN_REVIEW_APPROVALS_MAX).optional(),
   rearms: z.number().int().min(0).max(DESIGN_REVIEW_REARMS_MAX).optional(),
@@ -360,6 +365,7 @@ export const WorkflowDesignReviewSchema = z.object({
     if (round.round !== index + 1) context.addIssue({ code: "custom", path: ["rounds", index, "round"], message: "rounds are numbered 1, 2 in order" });
   });
   if (review.status === "not_run" && review.notRunReason === undefined) context.addIssue({ code: "custom", path: ["notRunReason"], message: "a review that did not run says why" });
+  if (review.decidedBy === "person_skip" && review.skippedBy === undefined) context.addIssue({ code: "custom", path: ["skippedBy"], message: "a skip names the person who chose it" });
   if (review.waiting !== undefined && review.status !== "waiting_answers") context.addIssue({ code: "custom", path: ["waiting"], message: "only a wait for answers has a wait record" });
 });
 export type WorkflowDesignReview = z.infer<typeof WorkflowDesignReviewSchema>;

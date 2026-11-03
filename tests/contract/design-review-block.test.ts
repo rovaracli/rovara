@@ -390,3 +390,23 @@ describe("resolve block reader", () => {
     expect(readDesignResolve(fence("rovara-design-resolve", { resolutions: answers, questions: [{ ...question, recommended: "z" }] }), ids)).toMatchObject({ ok: false });
   });
 });
+
+describe("money N2: a model merge that makes two findings with one fingerprint falls back to the code merge", () => {
+  const rawFindings = [raw("critic-1", "critic", "major", "The queue is unbounded."), raw("codebase-1", "codebase", "major", "the queue is unbounded")];
+  const twoGroups = fence("rovara-design-merge", { merged: [{ rawIds: ["critic-1"], severity: "major", section: "§3", text: "The queue is unbounded." }, { rawIds: ["codebase-1"], severity: "major", section: "§3", text: "the queue is unbounded" }] });
+
+  it("checkDesignMerge refuses it with its own code, and mergeDesignFindings uses the code-only merge, which makes ONE finding", () => {
+    expect(designFindingFingerprint({ section: "§3", text: "The queue is unbounded." })).toBe(designFindingFingerprint({ section: "§3", text: "the queue is unbounded" }));
+    expect(checkDesignMerge(rawFindings, [{ rawIds: ["critic-1"], severity: "major", section: "§3", text: "The queue is unbounded." }, { rawIds: ["codebase-1"], severity: "major", section: "§3", text: "the queue is unbounded" }])).toEqual({ ok: false, failure: "fingerprint_repeated" });
+    const merged = mergeDesignFindings(rawFindings, twoGroups);
+    expect(merged).toMatchObject({ source: "code", fallback: "fingerprint_repeated" });
+    expect(merged.findings).toHaveLength(1);
+    expect(merged.findings[0]!.rawIds.sort()).toEqual(["codebase-1", "critic-1"]);
+    expect(new Set(merged.findings.map((finding) => finding.fingerprint)).size).toBe(merged.findings.length);
+  });
+
+  it("control: one group that holds both is a valid model merge", () => {
+    const one = fence("rovara-design-merge", { merged: [{ rawIds: ["critic-1", "codebase-1"], severity: "major", section: "§3", text: "The queue is unbounded." }] });
+    expect(mergeDesignFindings(rawFindings, one)).toMatchObject({ source: "model" });
+  });
+});

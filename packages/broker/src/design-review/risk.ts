@@ -29,8 +29,8 @@ export interface DesignCardFacts {
   /** Blockers no settled resolution closed. Approving with any needs a one-line reason (Q8). */
   blockers: ReadonlyArray<{ section: string; text: string }>;
   majors: number;
-  /** Findings the planner contested or declined: the reviewers and the planner differ, and the approver is shown both. */
-  disagreements: ReadonlyArray<{ section: string; text: string }>;
+  /** The contract's `designReviewDisagreements` (the one definition): where the reviewers and the planner differ, or a blocker or major nobody closed. */
+  disagreements: ReadonlyArray<{ section: string; text: string; kind?: "contested" | "unresolved" | "unchecked_fix" | "oscillation" }>;
   costUsd?: number | undefined;
 }
 
