@@ -941,7 +941,7 @@ export function auditSetupRecipeChange(input: AuditBuilderBase & { action: Setup
 // Customer test accounts (test services TS26) -----------------------------------------------------------------
 
 export type TestAccountAuditAction = "test_account.added" | "test_account.approved" | "test_account.narrowed" | "test_account.widened" | "test_account.reenable_requested" | "test_account.rotated"
-  | "test_account.suspended" | "test_account.expired" | "test_account.deleted" | "test_account.used";
+  | "test_account.suspended" | "test_account.expired" | "test_account.deleted" | "test_account.deleting" | "test_account.rotation_failed" | "test_account.used";
 
 /**
  * `occurrence`: `auditOccurrence(accountId, version, action)` (every change adds one version), or for the daily roll-up `auditOccurrence(accountId, projectId, day)`. The target is the account. Facts are ids, digests,

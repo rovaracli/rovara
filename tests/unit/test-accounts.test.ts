@@ -40,7 +40,14 @@ describe("while the ta switch is off", () => {
       () => expireDueAccounts(h.deps, ORG),
       () => resolveAccountsForRound(h.deps, { orgId: ORG, projectId: "orders", place: "sealed_round", accountIds: ["ta-x"] }),
       () => mintRoundGrants(h.deps, { orgId: ORG, projectId: "orders", place: "sealed_round", accountIds: ["ta-x"] }),
-      () => recordTestAccountUse(h.deps, { orgId: ORG, accountId: "ta-x", projectId: "orders", rounds: 1, requests: 1 }),
+      () => recordTestAccountUse(h.deps, { orgId: ORG, accountId: "ta-x", projectId: "orders", rounds: 1, connections: 1, bytes: 0 }),
+      // The secrets class has its own gate: nothing is minted, written or scheduled while `ta` is off, even when called directly.
+      () => h.secretsClass.put(ORG, "ta-x", "value", "x"),
+      () => h.secretsClass.putPending(ORG, "ta-x", "value", "x"),
+      () => h.secretsClass.promote(ORG, "ta-x", "v"),
+      () => h.secretsClass.discardPending(ORG, "ta-x", "v"),
+      () => h.secretsClass.scheduleDelete(ORG, "ta-x"),
+      () => h.secretsClass.mintResolveGrant(ORG, "ta-x"),
     ];
     for (const call of calls) {
       const refusal = await rejects(call());
@@ -190,7 +197,7 @@ describe("approving an account (Q7)", () => {
     expect(isTestAccountUsableAt(result.account, T0 + 90 * DAY)).toBe(false);
     expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.approved", facts: { digest: digest(result), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } });
     // The second-person evidence fences the commit.
-    expect(h.store.conditions.at(-1)).toHaveLength(1);
+    expect(h.store.conditions.at(-1)).toHaveLength(2);
   });
 
   it("uses the company's shorter expiry, never a longer one", async () => {
@@ -322,7 +329,7 @@ describe("narrowing and widening (DC-TS-2)", () => {
 
   it("treats a narrowing mixed with a widening, a higher limit, a new host or a new variable as a widening", async () => {
     for (const changes of [
-      { projectIds: ["web"] }, { limits: { maxRequestsPerRun: 2_001 } }, { envNames: ["PAYMENTS_API_KEY", "ANOTHER_NAME"] }, { hosts: ["api.stripe.com", "files.stripe.com"] },
+      { projectIds: ["web"] }, { limits: { maxConnectionsPerRun: 2_001 } }, { envNames: ["PAYMENTS_API_KEY", "ANOTHER_NAME"] }, { hosts: ["api.stripe.com", "files.stripe.com"] },
       { projectIds: ["orders"], limits: { maxConcurrentRounds: 3 } },
     ]) {
       const h = harness();
@@ -479,7 +486,7 @@ describe("use in a sealed round (Q3, Q8)", () => {
     h.state.deny = { accountIds: [], hosts: [], arnPrefixes: [] };
     expect(await reason()).toBe("production");
     h.state.deny = { accountIds: ["999900009999"], hosts: ["*.prod.example.com"], arnPrefixes: [] };
-    h.store.usage.set(`${ORG}#${id}#${new Date(T0).toISOString().slice(0, 10)}`, { rounds: 5, requests: a.account.limits.maxRequestsPerDay });
+    h.store.usage.set(`${ORG}#${id}#${new Date(T0).toISOString().slice(0, 10)}`, { rounds: 5, bytes: 0, connections: a.account.limits.maxConnectionsPerDay });
     expect(await reason()).toBe("day_cap");
     h.store.usage.clear();
     h.clock.now = T0 + 91 * DAY;
@@ -519,13 +526,16 @@ describe("use in a sealed round (Q3, Q8)", () => {
     expect(h.secrets.calls.some((call) => call.action === "GetSecretValue")).toBe(false);
     // What the grant holds can read that one secret and nothing else.
     const worker = h.secrets.secretsFor({ accessKeyId: grant.credentials.accessKeyId, secretAccessKey: grant.credentials.secretAccessKey, sessionToken: grant.credentials.sessionToken, expiration: new Date(T0 + 900_000) });
-    const read = await worker.send(new GetSecretValueCommand({ SecretId: grant.secretName }));
+    const read = await worker.send(new GetSecretValueCommand({ SecretId: grant.secretName, VersionStage: "AWSCURRENT" }));
     expect(JSON.parse(read.SecretString!)).toHaveProperty("value");
+    // Only the AWSCURRENT stage, named in the request.
+    await expect(worker.send(new GetSecretValueCommand({ SecretId: grant.secretName }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    await expect(worker.send(new GetSecretValueCommand({ SecretId: grant.secretName, VersionStage: "AWSPENDING" }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     const other = await active(h);
-    await expect(worker.send(new GetSecretValueCommand({ SecretId: testAccountSecretName("staging", ORG, other.account.id) }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    await expect(worker.send(new GetSecretValueCommand({ SecretId: testAccountSecretName("staging", ORG, other.account.id), VersionStage: "AWSCURRENT" }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     // Expired when its 15 minutes are over.
     h.clock.now = T0 + 16 * 60_000;
-    await expect(worker.send(new GetSecretValueCommand({ SecretId: grant.secretName }))).rejects.toMatchObject({ name: "ExpiredTokenException" });
+    await expect(worker.send(new GetSecretValueCommand({ SecretId: grant.secretName, VersionStage: "AWSCURRENT" }))).rejects.toMatchObject({ name: "ExpiredTokenException" });
   });
 
   it("mints nothing for an AWS role account, an account with no variables, or one the round may not use", async () => {
@@ -542,12 +552,12 @@ describe("use in a sealed round (Q3, Q8)", () => {
   it("adds a round's use to the day and audits the roll-up with counts only", async () => {
     const h = harness();
     const a = await active(h);
-    const totals = await recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: 1, requests: 120 });
-    expect(totals).toEqual({ rounds: 1, requests: 120 });
-    expect(await recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: 2, requests: 30 })).toEqual({ rounds: 3, requests: 150 });
-    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.used", facts: { day: "2026-11-02", rounds: 2, requests: 30 } });
-    expect((await rejects(recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: -1, requests: 0 }))).code).toBe("CONFIG_INVALID");
-    expect((await rejects(recordTestAccountUse(h.deps, { orgId: OTHER_ORG, accountId: a.account.id, projectId: "orders", rounds: 1, requests: 1 }))).code).toBe("NOT_FOUND");
+    const totals = await recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: 1, connections: 120, bytes: 0 });
+    expect(totals).toEqual({ rounds: 1, connections: 120, bytes: 0 });
+    expect(await recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: 2, connections: 30, bytes: 0 })).toEqual({ rounds: 3, connections: 150, bytes: 0 });
+    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.used", facts: { day: "2026-11-02", rounds: 2, connections: 30, bytes: 0 } });
+    expect((await rejects(recordTestAccountUse(h.deps, { orgId: ORG, accountId: a.account.id, projectId: "orders", rounds: -1, connections: 0, bytes: 0 }))).code).toBe("CONFIG_INVALID");
+    expect((await rejects(recordTestAccountUse(h.deps, { orgId: OTHER_ORG, accountId: a.account.id, projectId: "orders", rounds: 1, connections: 1, bytes: 0 }))).code).toBe("NOT_FOUND");
   });
 });
 
@@ -557,7 +567,7 @@ describe("the secrets class refuses a session it did not ask for", () => {
   });
   const secretsWith = (response: unknown) => new TestAccountSecrets({
     env: "staging", roleArn: ROLE_ARN, secretArnPrefix: ARN_PREFIX, region: "us-west-2", now: () => T0,
-    sts: { send: () => Promise.resolve(response as never) }, storeClientFor: () => { throw new Error("not used"); },
+    sts: { send: () => Promise.resolve(response as never) }, storeClientFor: () => { throw new Error("not used"); }, enabled: () => true,
   });
   it("hands a worker a grant of at most the 15 minutes it asked for", async () => {
     await expect(secretsWith(credentials(new Date(T0 + 15 * 60_000))).mintResolveGrant(ORG, "ta-0000000000000001")).resolves.toMatchObject({ region: "us-west-2", expiresAt: new Date(T0 + 15 * 60_000).toISOString() });
@@ -574,5 +584,236 @@ describe("the secrets class refuses a session it did not ask for", () => {
     }
     expect((await rejects(secrets.put(ORG, "ta-1", "bad key", "x"))).code).toBe("CONFIG_INVALID");
     expect((await rejects(secrets.put(ORG, "ta-1", "value", ""))).code).toBe("CONFIG_INVALID");
+  });
+});
+
+
+// ---- the review fixes (Opus review of bc5719055)
+
+/** The harness's secrets port with some methods replaced, to fail one step. */
+function secretsWith(h: Harness, over: Partial<Record<"put" | "putPending" | "promote" | "discardPending" | "scheduleDelete" | "mintResolveGrant", (...args: never[]) => Promise<unknown>>>): void {
+  const real = h.deps.secrets;
+  h.deps.secrets = {
+    put: real.put.bind(real), putPending: real.putPending.bind(real), promote: real.promote.bind(real), discardPending: real.discardPending.bind(real),
+    scheduleDelete: real.scheduleDelete.bind(real), mintResolveGrant: real.mintResolveGrant.bind(real), ...over,
+  } as never;
+}
+const secretOf = (h: Harness, account: StoredTestAccount) => h.secrets.stored(testAccountSecretName("staging", ORG, account.account.id))!;
+const stageOf = (h: Harness, account: StoredTestAccount, label: string): string | undefined => Object.entries(secretOf(h, account).stages).find(([, labels]) => labels.includes(label))?.[0];
+const valueOf = (h: Harness, account: StoredTestAccount): string => (JSON.parse(secretOf(h, account).value) as { value: string }).value;
+
+describe("H1: the AWS external id is Rovara's, never the customer's", () => {
+  it("is derived from the company and the account, shown in the record, and a customer's own value is refused", async () => {
+    const h = harness();
+    const stored = await added(h, { draft: awsDraft() });
+    expect(stored.account.aws?.externalId).toBe(`rovara-${ORG}-${stored.account.id}`);
+    expect(stored.account.aws?.externalId.startsWith("rovara-org_")).toBe(true);
+    for (const own of ["ext-0123456789", `rovara-${OTHER_ORG}-${stored.account.id}`, "rovara-org_", `rovara-${ORG}-someone-elses`]) {
+      const fresh = harness();
+      const refused = await rejects(addTestAccount(fresh.deps, fresh.caller(ADMIN_A), { draft: awsDraft({ aws: { ...awsDraft().aws, externalId: own } }) }));
+      expect(refused.code, own).toBe("CONFIG_INVALID");
+    }
+    // The id the first add would have is the same text, so it is accepted when it is exactly that.
+    const h2 = harness();
+    const exact = await addTestAccount(h2.deps, h2.caller(ADMIN_A), { draft: awsDraft({ aws: { ...awsDraft().aws, externalId: `rovara-${ORG}-ta-0000000000000001` } }) });
+    expect(exact.account.aws?.externalId).toBe(`rovara-${ORG}-ta-0000000000000001`);
+  });
+
+  it("is kept on an update, and an update cannot set another", async () => {
+    const h = harness();
+    const before = await active(h, { draft: awsDraft() });
+    const narrowed = await updateTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, changes: { aws: { ...awsDraft().aws, actions: ["dynamodb:GetItem"] } } });
+    expect(narrowed.account.aws?.externalId).toBe(`rovara-${ORG}-${before.account.id}`);
+    const foreign = await rejects(updateTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: narrowed.version, changes: { aws: { ...awsDraft().aws, externalId: `rovara-${OTHER_ORG}-${before.account.id}` } } }));
+    expect(foreign.code).toBe("CONFIG_INVALID");
+    // A stored record that already carries a foreign id (a bug elsewhere) cannot be changed into a valid one by an unrelated edit.
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    h.store.rows.set(`${ORG}#${before.account.id}`, { ...row, account: { ...row.account, aws: { ...row.account.aws!, externalId: `rovara-${OTHER_ORG}-${before.account.id}` } } });
+    expect((await rejects(updateTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: row.version, changes: { label: "renamed" } }))).code).toBe("CONFIG_INVALID");
+  });
+});
+
+describe("M1: a rotation serves the new value only after its row is committed", () => {
+  it("stages the value as pending, commits the row and audit, then promotes it; the old value serves until then", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    const oldVersion = stageOf(h, before, "AWSCURRENT");
+    const seenAtCommit: Array<{ current: string; pending: string | undefined; rowVersionId: string | undefined }> = [];
+    const commit = h.store.commit.bind(h.store);
+    h.store.commit = (next, expected, audit, conditions) => {
+      seenAtCommit.push({ current: valueOf(h, before), pending: stageOf(h, before, "AWSPENDING"), rowVersionId: next.secretVersionId });
+      return commit(next, expected, audit, conditions);
+    };
+    const next = stripeTest().replace(/.$/u, "Q");
+    const after = await rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: next });
+    expect(seenAtCommit).toHaveLength(1);
+    expect(seenAtCommit[0]!.current).toBe(oldValue);
+    expect(seenAtCommit[0]!.pending).toBeDefined();
+    expect(seenAtCommit[0]!.rowVersionId).toBe(seenAtCommit[0]!.pending);
+    expect(valueOf(h, before)).toBe(next);
+    expect(stageOf(h, before, "AWSCURRENT")).toBe(after.secretVersionId);
+    expect(stageOf(h, before, "AWSPREVIOUS")).toBe(oldVersion);
+    expect(stageOf(h, before, "AWSPENDING")).toBeUndefined();
+    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.rotated" });
+  });
+
+  it("changes nothing when the new value cannot be put", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    secretsWith(h, { putPending: () => Promise.reject(agentXFailure()) });
+    const auditsBefore = h.store.audits.length;
+    expect((await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }))).code).toBe("RUNTIME_UNAVAILABLE");
+    expect(valueOf(h, before)).toBe(oldValue);
+    expect(h.store.rows.get(`${ORG}#${before.account.id}`)!.version).toBe(before.version);
+    expect(h.store.audits).toHaveLength(auditsBefore);
+  });
+
+  it("leaves the old value serving, and takes the pending label off, when the row loses its race", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    h.store.failNextCommit = true;
+    expect((await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }))).code).toBe("CHANGE_STALE");
+    expect(valueOf(h, before)).toBe(oldValue);
+    expect(stageOf(h, before, "AWSPENDING")).toBeUndefined();
+    expect(h.store.rows.get(`${ORG}#${before.account.id}`)!.version).toBe(before.version);
+  });
+
+  it("leaves the old value serving when the commit throws, and still answers with the commit's own error even if the cleanup fails", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    h.store.commit = () => Promise.reject(Object.assign(new Error("store down"), { name: "StoreDown" }));
+    secretsWith(h, { discardPending: () => Promise.reject(agentXFailure()) });
+    await expect(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() })).rejects.toMatchObject({ name: "StoreDown" });
+    expect(valueOf(h, before)).toBe(oldValue);
+    expect(stageOf(h, before, "AWSCURRENT")).toBe(before.secretVersionId);
+  });
+
+  it("keeps the old value when the promotion fails, takes the pending label off, puts the row back and audits the failed rotation", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    secretsWith(h, { promote: () => Promise.reject(agentXFailure()) });
+    const failed = await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }));
+    expect(failed.code).toBe("RUNTIME_UNAVAILABLE");
+    expect(valueOf(h, before)).toBe(oldValue);
+    expect(stageOf(h, before, "AWSPENDING")).toBeUndefined();
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    expect(row.secretVersionId).toBe(before.secretVersionId);
+    expect(row.account.rotatedAt).toBe(before.account.rotatedAt);
+    expect(row.version).toBe(before.version + 2);
+    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.rotation_failed", facts: { cause: "promote" } });
+    expect(JSON.stringify(h.store.audits)).not.toContain("Qk7mP2xR9v");
+  });
+
+  it("refuses to promote a version that is not the pending one", async () => {
+    const h = harness();
+    const before = await active(h);
+    const current = stageOf(h, before, "AWSCURRENT")!;
+    expect((await rejects(h.secretsClass.promote(ORG, before.account.id, current))).code).toBe("CHANGE_STALE");
+    expect((await rejects(h.secretsClass.promote(ORG, before.account.id, "00000000-0000-4000-8000-ffffffffffff"))).code).toBe("CHANGE_STALE");
+  });
+
+  it("does not rotate an account that is being deleted", async () => {
+    const h = harness();
+    const before = await active(h);
+    secretsWith(h, { scheduleDelete: () => Promise.reject(agentXFailure()) });
+    await rejects(deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version }));
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    expect((await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: row.version, secretValue: stripeTest() }))).code).toBe("CHANGE_STALE");
+  });
+});
+
+function agentXFailure(): Error {
+  return Object.assign(new Error("RUNTIME_UNAVAILABLE: down"), { name: "AgentXError", code: "RUNTIME_UNAVAILABLE" });
+}
+
+describe("M2: an admin who joined within 24 hours is not the second person", () => {
+  it("refuses a second person whose role is under a day old, or whose start is unknown, and accepts one at exactly a day", async () => {
+    const h = harness();
+    const pending = await added(h);
+    const request = { id: pending.account.id, expectedVersion: pending.version, expectedDigest: digest(pending) };
+    h.adminSince.set(ADMIN_B, new Date(T0 - DAY + 1).toISOString());
+    const young = await rejects(approveTestAccount(h.deps, h.caller(ADMIN_B), request));
+    expect(young.code).toBe("FORBIDDEN");
+    expect(young.extra.availableAt).toBe(new Date(T0 + 1).toISOString());
+    h.adminSince.delete(ADMIN_B);
+    expect((await rejects(approveTestAccount(h.deps, h.caller(ADMIN_B), request))).code).toBe("FORBIDDEN");
+    h.adminSince.set(ADMIN_B, "not a date");
+    expect((await rejects(approveTestAccount(h.deps, h.caller(ADMIN_B), request))).code).toBe("FORBIDDEN");
+    h.adminSince.set(ADMIN_B, new Date(T0 + 60_000).toISOString());
+    expect((await rejects(approveTestAccount(h.deps, h.caller(ADMIN_B), request))).code).toBe("FORBIDDEN");
+    expect(h.store.rows.get(`${ORG}#${pending.account.id}`)!.account.status).toBe("pending");
+    h.adminSince.set(ADMIN_B, new Date(T0 - DAY).toISOString());
+    expect((await approveTestAccount(h.deps, h.caller(ADMIN_B), request)).account.status).toBe("active");
+  });
+
+  it("does not hold the sole owner's own exception to the day (it has its own cool-off)", async () => {
+    const h = harness();
+    h.eligible.ids = [ADMIN_A];
+    const pending = await added(h);
+    h.adminSince.delete(ADMIN_A);
+    const done = await approveTestAccount(h.deps, h.caller(ADMIN_A), { id: pending.account.id, expectedVersion: pending.version, expectedDigest: digest(pending) });
+    expect(done.account.approvals.at(-1)?.kind).toBe("sole_owner_exception");
+  });
+});
+
+describe("L4: deleting is committed before the secret is scheduled", () => {
+  it("writes an audited, unusable deleting row first, then schedules the secret, then removes the row", async () => {
+    const h = harness();
+    const before = await active(h);
+    const timeline: string[] = [];
+    const real = h.deps.secrets;
+    secretsWith(h, { scheduleDelete: async (...args: never[]) => { timeline.push(`schedule:${h.store.rows.get(`${ORG}#${before.account.id}`)!.account.status}`); await (real.scheduleDelete)(...args); } });
+    await deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version });
+    expect(timeline).toEqual(["schedule:deleting"]);
+    expect(h.store.audits.slice(-2).map((audit) => audit.action)).toEqual(["test_account.deleting", "test_account.deleted"]);
+    expect(h.store.rows.size).toBe(0);
+  });
+
+  it("leaves a deleting row that nothing can use when the scheduling fails, and a second delete finishes it", async () => {
+    const h = harness();
+    const before = await active(h);
+    secretsWith(h, { scheduleDelete: () => Promise.reject(agentXFailure()) });
+    await rejects(deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version }));
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    expect(row.account.status).toBe("deleting");
+    expect(row.account.expiresAt).toBeUndefined();
+    expect(isTestAccountUsableAt(row.account, T0 + 1)).toBe(false);
+    expect((await resolveAccountsForRound(h.deps, { orgId: ORG, projectId: "orders", place: "sealed_round", accountIds: [before.account.id] }))[0]).toMatchObject({ ok: false });
+    expect((await rejects(updateTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: row.version, changes: { label: "x" } }))).code).toBe("CHANGE_STALE");
+    expect((await rejects(suspendTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: row.version }))).code).toBe("CHANGE_STALE");
+    expect((await rejects(approveTestAccount(h.deps, h.caller(ADMIN_B), { id: before.account.id, expectedVersion: row.version, expectedDigest: digest(row) }))).code).toBe("CHANGE_STALE");
+    h.deps.secrets = h.secretsClass;
+    await deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: row.version });
+    expect(h.store.rows.size).toBe(0);
+    expect(secretOf(h, before).deleteAt).toBe(T0 + 7 * DAY);
+  });
+
+  it("deletes an AWS account, which has no secret, in one step", async () => {
+    const h = harness();
+    const aws = await active(h, { draft: awsDraft() });
+    await deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: aws.account.id, expectedVersion: aws.version });
+    expect(h.store.audits.map((audit) => audit.action)).not.toContain("test_account.deleting");
+    expect(h.store.rows.size).toBe(0);
+  });
+});
+
+describe("L5: the sole-owner setting is fenced in the approval's transaction", () => {
+  it("commits the setting's condition with the evidence conditions, for a second person and for the exception alike", async () => {
+    const h = harness();
+    const pending = await added(h);
+    await approveTestAccount(h.deps, h.caller(ADMIN_B), { id: pending.account.id, expectedVersion: pending.version, expectedDigest: digest(pending) });
+    const keys = h.store.conditions.at(-1)!.map((item) => JSON.stringify(item));
+    expect(keys.some((key) => key.includes("SETTING#sole-owner-exception"))).toBe(true);
+    expect(keys.some((key) => key.includes('"sk":"META"'))).toBe(true);
+    const solo = harness();
+    solo.eligible.ids = [ADMIN_A];
+    const lone = await added(solo);
+    await approveTestAccount(solo.deps, solo.caller(ADMIN_A), { id: lone.account.id, expectedVersion: lone.version, expectedDigest: digest(lone) });
+    expect(solo.store.conditions.at(-1)!.some((item) => JSON.stringify(item).includes("SETTING#sole-owner-exception"))).toBe(true);
   });
 });

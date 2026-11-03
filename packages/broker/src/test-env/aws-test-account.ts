@@ -5,7 +5,10 @@
 // ACCESS. No long-lived key exists: the broker assumes the customer's own role (STS AssumeRole) with
 //   - a SESSION POLICY built from exactly the account's approved actions and resource ARNs, one statement per service (an action never meets another service's resource), and nothing else. A session policy can only
 //     narrow what the customer's role already allows, so the policy is the ceiling Rovara asks for, not a grant. It is checked against the 2,048 characters STS allows and REFUSED when it does not fit (never cut);
-//   - the external id of the account's record (the customer's trust policy names it, a confused-deputy guard, not a secret), a session name and source identity from the round, and one hour at most.
+//   - the external id Rovara DERIVES for the company and account (`rovara-<orgId>-<accountId>`, `testAccountExternalId`; a customer never chooses it, so one company's request cannot carry another's: the customer puts it in their
+//     trust policy, and it is shown in the account record), a session name of a fixed shape (`rovara-<task>-<account>`, so CloudTrail names the task and the account; no SourceIdentity, the permissions boundary has no room for
+//     `sts:SetSourceIdentity`), and one hour at most. Each statement of the session policy also requires `aws:RequestedRegion` to be the account's region.
+//   - the `ta` switch: while it is off nothing is opened (NOT_FOUND, before any check or AWS call).
 // The credentials go to the caller to hand to the sealed sandbox's environment; they are never stored, logged, or put in evidence.
 //
 // WHERE THE SANDBOX MAY GO. The sealed check sandbox has no internet and no allow-list: its only way out is the test-account proxy (worker/src/test-account-proxy.ts), whose host list for this account is the REGIONAL
@@ -23,9 +26,11 @@
 import type { AssumeRoleCommandInput } from "@aws-sdk/client-sts";
 import {
   TestAccountAwsSchema,
+  agentXError,
   arnAccountId,
   isTestAccountUsableAt,
   testAccountAwsEndpointHosts,
+  testAccountExternalId,
   testAccountProdProblems,
   type EvidenceEnvironment,
   type ServiceMockFixtureSet,
@@ -43,6 +48,8 @@ export const SESSION_POLICY_MAX_CHARS = 2_048;
 
 export interface AssumedCredentials { accessKeyId: string; secretAccessKey: string; sessionToken: string; expiration: Date }
 export interface AwsTestAccountPort {
+  /** The `ta` switch (`testAccountsEnabled`), read at every call: while it is off no session is opened and AWS is not called. */
+  enabled(): boolean;
   /** The AWS account the deployment runs in; a role in it is refused. Undefined where it is not known (then every role is refused: fail closed). */
   ownAccountId: string | undefined;
   /** Every AWS account id that is Rovara's own (the deployment's and the others the company of Rovara runs): a role in one is refused. */
@@ -51,7 +58,7 @@ export interface AwsTestAccountPort {
 }
 
 /** Fixed reasons, safe to show. Never a role ARN, an account id, a message from AWS, or a credential. */
-export const AWS_TEST_ACCOUNT_CODES = ["not_aws_account", "not_usable", "own_account", "production", "bad_role", "arn_mismatch", "too_large", "refused", "unreachable", "bad_session"] as const;
+export const AWS_TEST_ACCOUNT_CODES = ["not_aws_account", "not_usable", "own_account", "production", "bad_role", "external_id", "arn_mismatch", "too_large", "refused", "unreachable", "bad_session"] as const;
 export type AwsTestAccountCode = (typeof AWS_TEST_ACCOUNT_CODES)[number];
 const WORDS: Record<AwsTestAccountCode, string> = {
   not_aws_account: "this test account is not an AWS role account",
@@ -59,6 +66,7 @@ const WORDS: Record<AwsTestAccountCode, string> = {
   own_account: "the test account's role must be in your own AWS account, not Rovara's",
   production: "this test account names production",
   bad_role: "this test account's role, actions or resources are not valid",
+  external_id: "this test account's external id is not the one Rovara derives for this company and account",
   arn_mismatch: "an approved action has no resource of its service",
   too_large: "the test account's actions and resources do not fit in one AWS session policy",
   refused: "AWS refused to let Rovara assume the test account's role; check its trust policy and external id",
@@ -90,7 +98,8 @@ export function awsTestAccountSessionPolicy(aws: TestAccountAws): string {
     const actions = aws.actions.filter((action) => serviceOfAction(action) === service).sort();
     const resources = aws.resources.filter((resource) => serviceOfArn(resource) === service).sort();
     if (resources.length === 0) throw new AwsTestAccountError("arn_mismatch");
-    return { Effect: "Allow", Action: actions, Resource: resources.length === 1 ? resources[0] : resources };
+    // Every call the session makes must be to the account's own region.
+    return { Effect: "Allow", Action: actions, Resource: resources.length === 1 ? resources[0] : resources, Condition: { StringEquals: { "aws:RequestedRegion": aws.region } } };
   });
   const policy = JSON.stringify({ Version: "2012-10-17", Statement: statements });
   if (policy.length > SESSION_POLICY_MAX_CHARS) throw new AwsTestAccountError("too_large");
@@ -118,10 +127,13 @@ function check(account: TestAccount, deny: TestEnvProdDeny, port: AwsTestAccount
   if (port.ownAccountId === undefined || roleAccount === port.ownAccountId || port.rovaraAccountIds.includes(roleAccount)) throw new AwsTestAccountError("own_account");
   if (testAccountProdProblems(account, deny, { rovaraAccountIds: [...port.rovaraAccountIds, port.ownAccountId] }).length > 0) throw new AwsTestAccountError("production");
   awsTestAccountHosts(account);
+  if (aws.externalId !== testAccountExternalId(account.orgId, account.id)) throw new AwsTestAccountError("external_id");
   return aws;
 }
 
 const idPart = (text: string, max: number, fallback: string): string => text.replace(/[^A-Za-z0-9]/gu, "").slice(0, max) || fallback;
+/** The session name: a fixed shape of two stripped identifiers, so CloudTrail shows which task and which account without any text a person typed. `[A-Za-z0-9_-]`, 64 characters at most. */
+const sessionNameOf = (taskId: string, accountId: string): string => `rovara-${idPart(taskId, 16, "task")}-${accountId.replace(/[^A-Za-z0-9_-]/gu, "").slice(0, 32) || "account"}`;
 
 export interface AwsTestAccountSession {
   credentials: AssumedCredentials;
@@ -134,19 +146,23 @@ export interface AwsTestAccountSession {
 /** Opens a session for one AWS test account for one round. */
 export async function openAwsTestAccountSession(
   port: AwsTestAccountPort,
-  input: { account: TestAccount; taskId: string; prodDeny: TestEnvProdDeny; maxExpiryDays?: number; now(): number },
+  input: { orgId: string; account: TestAccount; taskId: string; prodDeny: TestEnvProdDeny; maxExpiryDays?: number; now(): number },
 ): Promise<AwsTestAccountSession> {
+  if (!port.enabled()) throw agentXError("NOT_FOUND", "Not found");
+  // The account must be the one of the company the request is for, and the external id is derived from THAT company: one company's request can never carry another's id.
+  if (input.account.orgId !== input.orgId) throw new AwsTestAccountError("bad_role");
   const aws = check(input.account, input.prodDeny, port, input.now(), input.maxExpiryDays);
   const policy = awsTestAccountSessionPolicy(aws);
   const hosts = awsTestAccountHosts(input.account);
   let credentials: AssumedCredentials;
+  const externalId = testAccountExternalId(input.orgId, input.account.id);
+  // Right before the call: what is sent is the derived value, and the record must hold exactly it.
+  if (aws.externalId !== externalId) throw new AwsTestAccountError("external_id");
   try {
     credentials = await port.assumeRole({
       RoleArn: aws.roleArn,
-      RoleSessionName: `rovara-${idPart(input.taskId, 8, "task")}`,
-      ExternalId: aws.externalId,
-      // Shows in CloudTrail on every call the session makes: which task it was for.
-      SourceIdentity: `rovara-${idPart(input.taskId, 16, "task")}`,
+      RoleSessionName: sessionNameOf(input.taskId, input.account.id),
+      ExternalId: externalId,
       DurationSeconds: AWS_TEST_ACCOUNT_SESSION_SECONDS,
       Policy: policy,
     });

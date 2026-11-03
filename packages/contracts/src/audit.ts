@@ -326,6 +326,8 @@ export const AUDIT_ACTIONS = [
   "test_account.suspended",
   "test_account.expired",
   "test_account.deleted",
+  "test_account.deleting",
+  "test_account.rotation_failed",
   "test_account.used",
 ] as const;
 
@@ -625,7 +627,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "test_account.suspended": ["cause"],
   "test_account.expired": ["digest"],
   "test_account.deleted": ["kind", "cause"],
-  "test_account.used": ["day", "rounds", "requests"],
+  "test_account.deleting": ["kind", "cause"],
+  "test_account.rotation_failed": ["cause"],
+  "test_account.used": ["day", "rounds", "connections", "bytes"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

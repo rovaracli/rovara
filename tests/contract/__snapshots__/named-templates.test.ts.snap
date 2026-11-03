@@ -15146,6 +15146,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "secretsmanager:PutSecretValue",
                     "secretsmanager:DescribeSecret",
                     "secretsmanager:DeleteSecret",
+                    "secretsmanager:UpdateSecretVersionStage",
                   ],
                   "Condition": {
                     "StringEquals": {
@@ -15327,6 +15328,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "secretsmanager:PutSecretValue",
                     "secretsmanager:DeleteSecret",
                     "secretsmanager:TagResource",
+                    "secretsmanager:UpdateSecretVersionStage",
                   ],
                   "Condition": {
                     "StringNotEquals": {

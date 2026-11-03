@@ -11,7 +11,12 @@
 //   - NARROWING (DC-TS-2: a change `testAccountWidened` proves is smaller) applies at once. The approvals are re-stamped with the new digest (`restampApprovals`) and the change is audited. Anything this function
 //     cannot prove smaller is a widening: the account waits as `pending` (unusable) until it is approved again.
 //   - SUSPENDING and DELETING apply at once (a live admin; no second person, no fresh sign-in: a safety action stays easy).
-//   - ROTATING the value needs a fresh admin and the key-shape check; it does not change the record, so it does not need a second person (the reference, hosts and reach are what a second person approves).
+//   - ROTATING the value needs a fresh admin and the key-shape check; it does not change the record, so it does not need a second person (the reference, hosts and reach are what a second person approves). The new
+//     value goes in as AWSPENDING, the row and audit are committed naming that version, and only then is it promoted to AWSCURRENT; any failure in between leaves the old value serving (and a failed promotion is audited
+//     as `test_account.rotation_failed`). Notifying the company's owners of an approval or a rotation is TS-ACC-3.
+//   - THE SECOND PERSON must have held the admin role for 24 hours (`adminSince`): a freshly added admin is not a check on the person who added the account. (Made platform-wide by TS-ACC-3.)
+//   - DELETING commits an audited `deleting` row (unusable) before the secret's deletion is scheduled, then removes the row.
+//   - The AWS external id is Rovara's (`testAccountExternalId`), never the customer's.
 //   - EXPIRY: 90 days from the last qualifying approval at most (a company may set fewer). `expireDueAccounts` ends an account that has passed it; `remindersDue` says which are 14 days away.
 //
 // WHERE IT MAY BE USED (6.3, Q3, Q8): only by a sealed check round. `resolveAccountsForRound` refuses every other place (the setup run, the working sandbox, a team runner), an account that is not active, one past its expiry, one
@@ -23,7 +28,7 @@
 // Not wired: no route, no table, no switch reader (TS36 pages and the DynamoDB adapter are wiring). `TestAccountStore` is an interface; the in-memory store in tests/support has none of the adapter's races (see its notes).
 import {
   OrgIdSchema, TEST_ACCOUNT_EXPIRY_DAYS, TEST_ACCOUNT_LIMIT_DEFAULTS, agentXError, parseTestAccountSecretGrant, parseTestAccountSecretRef, restampApprovals, testAccountApprovalDigest,
-  testAccountApprovalsSatisfied, testAccountAwsEndpointHosts, testAccountProdProblems, testAccountQualifyingApprovals, testAccountSchemaFor, testAccountSecretRef, testAccountWidened, checkTestAccountKeyShape,
+  testAccountApprovalsSatisfied, testAccountAwsEndpointHosts, testAccountExternalId, testAccountProdProblems, testAccountQualifyingApprovals, testAccountSchemaFor, testAccountSecretRef, testAccountWidened, checkTestAccountKeyShape,
   isTestAccountUsableAt,
   type AuditEventInput, type OrgId, type TestAccount, type TestAccountApproval, type TestAccountSecretGrant, type TestEnvProdDeny,
 } from "@agentx/contracts";
@@ -56,7 +61,8 @@ export interface StoredTestAccount {
   secretVersionId?: string;
 }
 
-export interface DayUsage { rounds: number; requests: number }
+/** A day's use of one account: rounds, tunnels the proxy opened, and bytes through them (both directions). */
+export interface DayUsage { rounds: number; connections: number; bytes: number }
 
 /**
  * The store. A DynamoDB adapter must: (1) make `commit` write the row, the audit event (the outbox) and `conditions` in ONE transaction, conditional on the stored version being `expectedVersion` (null: no row yet),
@@ -77,6 +83,10 @@ export interface TestAccountStore {
 /** The secrets half the lifecycle needs (the class `TestAccountSecrets` is the real one): write a value, schedule its deletion, mint a session to read it. No method returns a value. */
 export interface TestAccountSecretsPort {
   put(orgId: string, accountId: string, key: string, value: string): Promise<string>;
+  /** Rotation: the new value as a version staged AWSPENDING (AWSCURRENT does not move), then `promote` after the row naming it is committed, or `discardPending` when it will not be. */
+  putPending(orgId: string, accountId: string, key: string, value: string): Promise<string>;
+  promote(orgId: string, accountId: string, versionId: string): Promise<void>;
+  discardPending(orgId: string, accountId: string, versionId: string): Promise<void>;
   scheduleDelete(orgId: string, accountId: string): Promise<void>;
   mintResolveGrant(orgId: string, accountId: string): Promise<ResolveGrant>;
 }
@@ -104,8 +114,16 @@ export interface TestAccountDeps {
    * approverId }`. The decision input must name these two people, or the approval is refused.
    */
   approvalEvidence(scope: { orgId: OrgId; proposerId: string; approverId: string }): Promise<{ decisionInput: ApprovalDecisionInput; conditions: TransactItem[] }>;
-  /** Whether the company still allows the sole-owner exception (its own switch; on unless the company turned it off). */
-  soleOwnerExceptionAllowed(orgId: OrgId): Promise<boolean>;
+  /**
+   * The company's sole-owner setting, read now: whether the exception is allowed (its own switch; on unless the company turned it off) and the conditions that fence the setting's version, which commit with the
+   * approval (a setting turned off between the read and the write refuses the write).
+   */
+  soleOwnerSetting(orgId: OrgId): Promise<{ allowed: boolean; conditions: TransactItem[] }>;
+  /**
+   * When this person's admin (or owner) role began, from the live role record; undefined when unknown. A second person whose role is under 24 hours old does not count as the second person (a freshly added
+   * account is not a check on the person who added it). Read now. TS-ACC-1 makes this platform-wide.
+   */
+  adminSince(scope: { orgId: OrgId; developerId: string }): Promise<string | undefined>;
   /** The company's production deny list, read now. An empty list refuses every account (an account reaches a real remote, so the list must exist first). */
   prodDeny(orgId: OrgId): Promise<TestEnvProdDeny>;
   /** The AWS account ids that are Rovara's own: a role in one is refused. */
@@ -148,6 +166,19 @@ async function requireAdminOnly(deps: TestAccountDeps, caller: TestAccountCaller
   await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
 }
 
+/** The least time a person has held the admin role before their approval counts as the second person's. */
+export const SECOND_PERSON_MIN_ADMIN_MS = DAY_MS;
+
+/** M2: an approver whose admin role began less than 24 hours ago (or whose start is unknown) is not the second person. */
+async function requireSeasonedAdmin(deps: TestAccountDeps, caller: TestAccountCaller): Promise<void> {
+  const since = await deps.adminSince({ orgId: caller.orgId, developerId: caller.developerId });
+  const began = since === undefined ? Number.NaN : Date.parse(since);
+  const availableAt = Number.isFinite(began) ? new Date(began + SECOND_PERSON_MIN_ADMIN_MS).toISOString() : null;
+  if (!Number.isFinite(began) || began > deps.now().getTime() || deps.now().getTime() - began < SECOND_PERSON_MIN_ADMIN_MS) {
+    throw Object.assign(agentXError("FORBIDDEN", "An admin counts as the second person after holding the role for 24 hours."), { availableAt });
+  }
+}
+
 // ---- audit
 
 interface Who { developerId: string; authTime?: string; sessionId?: string }
@@ -186,7 +217,8 @@ export interface TestAccountDraft {
   envNames?: readonly string[];
   projectIds: TestAccount["projectIds"];
   limits?: Partial<TestAccount["limits"]>;
-  aws?: TestAccount["aws"];
+  /** The role, region, actions and resources. The external id is Rovara's (`testAccountExternalId`): a value that differs from it is refused. */
+  aws?: AwsInput;
   /** The JSON key the value is stored under (default `value`); part of the reference. */
   secretKey?: string;
 }
@@ -198,7 +230,17 @@ export interface TestAccountChanges {
   envNames?: readonly string[];
   projectIds?: TestAccount["projectIds"];
   limits?: Partial<TestAccount["limits"]>;
-  aws?: TestAccount["aws"];
+  aws?: AwsInput;
+}
+
+/** The AWS block as a person gives it: no external id (Rovara derives it). */
+export type AwsInput = Omit<NonNullable<TestAccount["aws"]>, "externalId"> & { externalId?: string };
+
+/** The AWS block with Rovara's external id for this company and account. A customer-supplied id that is not that one is refused, never used. */
+function withExternalId(orgId: OrgId, accountId: string, input: AwsInput): NonNullable<TestAccount["aws"]> {
+  const derived = testAccountExternalId(orgId, accountId);
+  if (input.externalId !== undefined && input.externalId !== derived) throw invalid("The external id is set by Rovara; leave it out.", { fields: ["aws.externalId"] });
+  return { ...input, externalId: derived };
 }
 
 /** The names of the fields a schema refused, never the values. */
@@ -256,7 +298,7 @@ export async function addTestAccount(deps: TestAccountDeps, caller: TestAccountC
   const candidate = {
     id, orgId: caller.orgId, projectIds: draft.projectIds, family: draft.family, label: draft.label, kind: draft.kind,
     ...(withSecret ? { secretRef: testAccountSecretRef(deps.env, caller.orgId, id, key) } : {}),
-    ...(draft.aws === undefined ? {} : { aws: draft.aws }),
+    ...(draft.aws === undefined ? {} : { aws: withExternalId(caller.orgId, id, draft.aws) }),
     hosts: draft.hosts !== undefined ? [...draft.hosts] : draft.aws !== undefined ? testAccountAwsEndpointHosts(draft.aws) : draft.family.startsWith("http:") ? [draft.family.slice(5)] : [],
     envNames: draft.kind === "aws_role" ? [] : [...(draft.envNames ?? [])],
     limits: { ...TEST_ACCOUNT_LIMIT_DEFAULTS, ...draft.limits },
@@ -303,12 +345,14 @@ export async function approveTestAccount(deps: TestAccountDeps, caller: TestAcco
   if (account.status !== "pending") throw agentXError("CHANGE_STALE", "That test account is not waiting for approval.");
   if (current.version !== input.expectedVersion || digestOf(account) !== input.expectedDigest) throw stale();
   const proposerId = current.proposedBy;
-  if (proposerId === caller.developerId && !(await deps.soleOwnerExceptionAllowed(caller.orgId))) {
+  const soleOwner = await deps.soleOwnerSetting(caller.orgId);
+  if (proposerId === caller.developerId && !soleOwner.allowed) {
     throw Object.assign(agentXError("FORBIDDEN", "Another admin must approve this test account."), { soleOwner: { available: false, availableAt: null, reasonCode: "SOLE_OWNER_OFF" } });
   }
   const evidence = await deps.approvalEvidence({ orgId: caller.orgId, proposerId, approverId: caller.developerId });
   if (evidence.decisionInput.proposerId !== proposerId || evidence.decisionInput.approverId !== caller.developerId || evidence.conditions.length === 0) throw stale();
   const decision = decideSecondPersonApproval(evidence.decisionInput);
+  if (decision.mode === "second_person") await requireSeasonedAdmin(deps, caller);
   await requireNotProduction(deps, account);
   const maxDays = await deps.maxExpiryDays(caller.orgId);
   const kind = decision.mode === "sole_owner_exception" ? "sole_owner_exception" : "approver";
@@ -321,7 +365,7 @@ export async function approveTestAccount(deps: TestAccountDeps, caller: TestAcco
     digest: digestOf(next), approvalMode: decision.mode, approvals: testAccountQualifyingApprovals(next).length, expiresInDays: maxDays,
   });
   // The evidence conditions commit with the write: a second admin added, or either person changed, since the read refuses it.
-  if (!await deps.store.commit(stored, current.version, audit, evidence.conditions)) throw stale();
+  if (!await deps.store.commit(stored, current.version, audit, [...evidence.conditions, ...soleOwner.conditions])) throw stale();
   return stored;
 }
 
@@ -341,9 +385,11 @@ export async function updateTestAccount(deps: TestAccountDeps, caller: TestAccou
   if (current === undefined || current.account.orgId !== caller.orgId) throw missing();
   if (current.version !== input.expectedVersion) throw stale();
   const previous = current.account;
+  if (previous.status === "deleting") throw stale();
   const maxDays = await deps.maxExpiryDays(caller.orgId);
   const changes = input.changes;
-  const hosts = changes.hosts !== undefined ? [...changes.hosts] : changes.aws !== undefined ? testAccountAwsEndpointHosts(changes.aws) : previous.hosts;
+  const changedAws = changes.aws === undefined ? undefined : withExternalId(previous.orgId, previous.id, changes.aws);
+  const hosts = changes.hosts !== undefined ? [...changes.hosts] : changedAws !== undefined ? testAccountAwsEndpointHosts(changedAws) : previous.hosts;
   const shaped = {
     ...previous,
     ...(changes.label === undefined ? {} : { label: changes.label }),
@@ -351,7 +397,7 @@ export async function updateTestAccount(deps: TestAccountDeps, caller: TestAccou
     ...(changes.envNames === undefined ? {} : { envNames: [...changes.envNames] }),
     ...(changes.projectIds === undefined ? {} : { projectIds: changes.projectIds }),
     ...(changes.limits === undefined ? {} : { limits: { ...previous.limits, ...changes.limits } }),
-    ...(changes.aws === undefined ? {} : { aws: changes.aws }),
+    ...(changedAws === undefined ? {} : { aws: changedAws }),
   };
   // The schema checks the new record as a record; whether it is active is decided below, so it is checked as pending with the approvals it will have.
   const widened = testAccountWidened(previous, shaped);
@@ -393,10 +439,37 @@ export async function rotateTestAccountSecret(deps: TestAccountDeps, caller: Tes
   if (ref === undefined) throw invalid("This test account stores no secret.");
   const verdict = checkTestAccountKeyShape(account.family, input.secretValue);
   if (!verdict.ok) throw invalid("That value does not look like a test key.", { reason: verdict.code, fields: ["secretValue"] });
-  const secretVersionId = await deps.secrets.put(caller.orgId, account.id, ref.key, input.secretValue);
-  const stored: StoredTestAccount = { ...current, account: { ...account, rotatedAt: iso(deps) }, version: current.version + 1, secretVersionId };
-  const audit = auditOf(deps, { developerId: caller.developerId, authTime, sessionId: caller.sessionId }, "test_account.rotated", stored, { digest: digestOf(account) });
-  if (!await deps.store.commit(stored, current.version, audit, [])) throw stale();
+  if (account.status === "deleting") throw stale();
+  const who = { developerId: caller.developerId, authTime, sessionId: caller.sessionId };
+  // 1. The new value goes in as AWSPENDING: nothing that reads the secret sees it, so a failure from here on leaves the old value serving.
+  const pendingId = await deps.secrets.putPending(caller.orgId, account.id, ref.key, input.secretValue);
+  const stored: StoredTestAccount = { ...current, account: { ...account, rotatedAt: iso(deps) }, version: current.version + 1, secretVersionId: pendingId };
+  const audit = auditOf(deps, who, "test_account.rotated", stored, { digest: digestOf(account) });
+  // 2. The row and the audit name that version.
+  let committed = false;
+  let commitError: unknown;
+  try {
+    committed = await deps.store.commit(stored, current.version, audit, []);
+  } catch (error) {
+    commitError = error;
+  }
+  if (!committed) {
+    // Not committed: the pending version will not be promoted. Best effort to take its label off; AWSCURRENT was never touched.
+    await deps.secrets.discardPending(caller.orgId, account.id, pendingId).catch(() => undefined);
+    if (commitError !== undefined) throw commitError instanceof Error ? commitError : agentXError("RUNTIME_UNAVAILABLE", "The test account store failed.");
+    throw stale();
+  }
+  // 3. Only now does the new value become the one that is read.
+  try {
+    await deps.secrets.promote(caller.orgId, account.id, pendingId);
+  } catch (error) {
+    await deps.secrets.discardPending(caller.orgId, account.id, pendingId).catch(() => undefined);
+    // The row goes back to the version that still serves, and the failed rotation is audited (best effort: the failure itself is the answer).
+    const reverted: StoredTestAccount = { ...stored, account, version: stored.version + 1, ...(current.secretVersionId === undefined ? {} : { secretVersionId: current.secretVersionId }) };
+    if (current.secretVersionId === undefined) delete reverted.secretVersionId;
+    await deps.store.commit(reverted, stored.version, auditOf(deps, who, "test_account.rotation_failed", reverted, { cause: "promote" }), []).catch(() => false);
+    throw error;
+  }
   return stored;
 }
 
@@ -408,6 +481,7 @@ export async function suspendTestAccount(deps: TestAccountDeps, caller: TestAcco
   if (current === undefined || current.account.orgId !== caller.orgId) throw missing();
   if (current.version !== input.expectedVersion) throw stale();
   if (current.account.status === "suspended") return current;
+  if (current.account.status === "deleting") throw stale();
   const { expiresAt: _expiresAt, ...rest } = current.account;
   void _expiresAt;
   const stored: StoredTestAccount = { ...current, account: { ...rest, status: "suspended" }, version: current.version + 1 };
@@ -436,16 +510,28 @@ export async function reenableTestAccount(deps: TestAccountDeps, caller: TestAcc
   return stored;
 }
 
-/** Deletes an account at once (a live admin). The secret is scheduled for deletion first (7-day recovery window), then the row goes, so a failure in between leaves an account without a secret, never a secret without an owner. */
+/** Deletes an account at once (a live admin). The row is first committed as `deleting` (audited, unusable), then the secret is scheduled for deletion (7-day recovery window), then the row goes, so a failure in between leaves a row that says a deletion was under way, never a live account whose secret is going and never a secret without an owner. Deleting the same account again finishes it. */
 export async function deleteTestAccount(deps: TestAccountDeps, caller: TestAccountCaller, input: { id: string; expectedVersion: number }): Promise<void> {
   gate(deps);
   await requireAdminOnly(deps, caller);
   const current = await deps.store.get(caller.orgId, input.id);
   if (current === undefined || current.account.orgId !== caller.orgId) throw missing();
   if (current.version !== input.expectedVersion) throw stale();
-  if (current.account.secretRef !== undefined) await deps.secrets.scheduleDelete(caller.orgId, current.account.id);
-  const audit = auditOf(deps, { developerId: caller.developerId }, "test_account.deleted", current, { kind: current.account.kind, cause: "manual" });
-  if (!await deps.store.remove(caller.orgId, current.account.id, current.version, audit)) throw stale();
+  let latest = current;
+  if (current.account.secretRef !== undefined) {
+    // The row says "deleting" (audited, unusable) BEFORE the secret's deletion is scheduled: a crash in between leaves a row that says what was under way, never a live account whose secret is going.
+    if (current.account.status !== "deleting") {
+      const { expiresAt: _expiresAt, ...rest } = current.account;
+      void _expiresAt;
+      const deleting: StoredTestAccount = { ...current, account: { ...rest, status: "deleting" }, version: current.version + 1 };
+      const marked = auditOf(deps, { developerId: caller.developerId }, "test_account.deleting", deleting, { kind: current.account.kind, cause: "manual" });
+      if (!await deps.store.commit(deleting, current.version, marked, [])) throw stale();
+      latest = deleting;
+    }
+    await deps.secrets.scheduleDelete(caller.orgId, current.account.id);
+  }
+  const audit = auditOf(deps, { developerId: caller.developerId }, "test_account.deleted", latest, { kind: current.account.kind, cause: "manual" });
+  if (!await deps.store.remove(caller.orgId, current.account.id, latest.version, audit)) throw stale();
 }
 
 // ---- expiry
@@ -511,7 +597,7 @@ export async function resolveAccountsForRound(deps: TestAccountDeps, input: Roun
     if (account.projectIds !== "all" && !account.projectIds.includes(input.projectId)) { results.push({ id, ok: false, refusal: "project_not_allowed" }); continue; }
     if (testAccountProdProblems(account, deny, { rovaraAccountIds: deps.rovaraAccountIds() }).length > 0) { results.push({ id, ok: false, refusal: "production" }); continue; }
     const used = await deps.store.usageOn(input.orgId, id, dayOf(deps));
-    if (used.requests >= account.limits.maxRequestsPerDay) { results.push({ id, ok: false, refusal: "day_cap" }); continue; }
+    if (used.connections >= account.limits.maxConnectionsPerDay) { results.push({ id, ok: false, refusal: "day_cap" }); continue; }
     results.push({ id, ok: true, account });
   }
   return results;
@@ -540,15 +626,15 @@ export async function mintRoundGrants(deps: TestAccountDeps, input: RoundInput):
 }
 
 /** Adds one round's use to the account's day (and, once a day, its audit roll-up). Returns the day's totals. */
-export async function recordTestAccountUse(deps: TestAccountDeps, input: { orgId: OrgId; accountId: string; projectId: string; rounds: number; requests: number }): Promise<DayUsage> {
+export async function recordTestAccountUse(deps: TestAccountDeps, input: { orgId: OrgId; accountId: string; projectId: string; rounds: number; connections: number; bytes: number }): Promise<DayUsage> {
   gate(deps);
   const stored = await deps.store.get(input.orgId, input.accountId);
   if (stored === undefined || stored.account.orgId !== input.orgId) throw missing();
-  if (!Number.isSafeInteger(input.rounds) || !Number.isSafeInteger(input.requests) || input.rounds < 0 || input.requests < 0) throw invalid("not a usage count");
+  if (![input.rounds, input.connections, input.bytes].every((count) => Number.isSafeInteger(count) && count >= 0)) throw invalid("not a usage count");
   const day = dayOf(deps);
   const audit = auditTestAccountChange({
     ...auditBase(deps, input.orgId, "system", auditOccurrence(input.accountId, sha256Hex(input.projectId).slice(0, 16), day, "used"), stored.account),
-    action: "test_account.used", accountId: input.accountId, facts: { day, rounds: input.rounds, requests: input.requests },
+    action: "test_account.used", accountId: input.accountId, facts: { day, rounds: input.rounds, connections: input.connections, bytes: input.bytes },
   });
-  return deps.store.addUsage(input.orgId, input.accountId, input.projectId, day, { rounds: input.rounds, requests: input.requests }, audit);
+  return deps.store.addUsage(input.orgId, input.accountId, input.projectId, day, { rounds: input.rounds, connections: input.connections, bytes: input.bytes }, audit);
 }

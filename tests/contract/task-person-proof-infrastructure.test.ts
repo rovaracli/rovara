@@ -343,18 +343,20 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, TS26 (test accounts, lane ts-accounts): the named and foreign digests were retaken after ONE intended IAM addition to the named control plane (legacy did not move): the TestAccountSecretsRole (fixed name
     // agentx-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
     // lookups naming it (the boundary through the one `connector-secrets*` ARN, so it did not grow).
+    // 2026-11-03, ts-accounts review fixes (Opus review of bc5719055): the named and foreign digests were retaken after ONE intended IAM change to the named control plane (legacy did not move): the TestAccountSecretsRole's
+    // permissions gained `secretsmanager:UpdateSecretVersionStage` (the store purpose only, same org and use tags; denied to resolve) for rotation's pending-then-promote. No role was added, so the boundary did not change.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "7ce201b8057988a42d8c846d929c94900d354f1cd84197a655a7f89b545752f4",
-        withoutRoute: "ba9e9305fbd4e2edd3eee0e7a07771e39c9b44795bd36d8555a18d29ebfebb31",
+        withRoute: "713a0d14e4e6db1d13bff078dcca1bdb1aecf46b7b0ff3581f3059d89109b3f2",
+        withoutRoute: "5082ad445764b1bcced43b80203b1447e77d69c92bfcb5b710f2748f55376d71",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "4b2af2feeca92a6c068e7f4b688db37bb9fc09d9bd75521d1e2a52ec5715c91f",
-        withoutRoute: "e8597c6fff073612801e242d197a3eb42f5c39e037035e5580fc7ed079b8f488",
+        withRoute: "fbb4c7b30d33b01dd7d18fedc6f49584c2afee1028388e190289cb6f8d69b7b2",
+        withoutRoute: "8f126d898bd30802406aa6f93f507904646f8e7a5ff683a5921100e59c20c813",
       },
       {
         label: "legacy",

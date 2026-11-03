@@ -16,13 +16,18 @@ const stamp = (record: Record<string, unknown>): Record<string, unknown> => {
   const digest = acc.testAccountApprovalDigest(record as never);
   return { ...record, approvals: (record.approvals as Array<Record<string, unknown>>).map((each) => (each.approvedDigest === undefined ? { ...each, approvedDigest: digest } : each)) };
 };
-const account = (over: Record<string, unknown> = {}) => stamp({
+/** An AWS block without an external id gets the one Rovara derives for the record's own org and id, as the broker does. */
+const withDerivedExternalId = (record: Record<string, unknown>): Record<string, unknown> => {
+  const aws = record.aws as Record<string, unknown> | undefined;
+  return aws === undefined || aws.externalId !== undefined ? record : { ...record, aws: { ...aws, externalId: acc.testAccountExternalId(String(record.orgId), String(record.id)) } };
+};
+const account = (over: Record<string, unknown> = {}) => stamp(withDerivedExternalId({
   id: "payments-test", orgId: ORG, projectIds: ["orders", "billing"], family: "http:api.example-pay.com", label: "Payments test mode", kind: "api_key", secretRef: ref(),
-  hosts: ["api.example-pay.com"], envNames: ["PAYMENTS_API_KEY"], limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 },
+  hosts: ["api.example-pay.com"], envNames: ["PAYMENTS_API_KEY"], limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 },
   approvals: [approval("a"), approval("b")], status: "active", expiresAt: "2027-01-30T10:00:00.000Z", ...over,
-});
+}));
 const awsBlock = (over: Record<string, unknown> = {}) => ({
-  roleArn: "arn:aws:iam::222233334444:role/rovara-test", externalId: "ext-0123456789", region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+  roleArn: "arn:aws:iam::222233334444:role/rovara-test", region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
   resources: ["arn:aws:dynamodb:us-west-2:222233334444:table/orders-test"], ...over,
 });
 const awsAccount = (over: Record<string, unknown> = {}) => account({ id: "orders-dev", family: "aws:dynamodb", label: "Dev AWS (orders)", kind: "aws_role", secretRef: undefined, aws: awsBlock(), hosts: ["dynamodb.us-west-2.amazonaws.com"], envNames: [], ...over });
@@ -55,7 +60,7 @@ describe("TestAccount record", () => {
     for (const key of ["value", "secret", "token", "apiKey", "password", "secretValue", "credentials", "key"]) expect(ok({ ...account(), [key]: "x" }), key).toBe(false);
     expect(ok({ ...account(), aws: awsBlock() })).toBe(false);
     expect(ok(awsAccount({ aws: { ...awsBlock(), secretAccessKey: "x" } }))).toBe(false);
-    expect(ok(account({ limits: { maxRequestsPerRun: 1, maxRequestsPerDay: 1, maxConcurrentRounds: 1, extra: 1 } }))).toBe(false);
+    expect(ok(account({ limits: { maxConnectionsPerRun: 1, maxConnectionsPerDay: 1, maxConcurrentRounds: 1, extra: 1 } }))).toBe(false);
     expect(ok(account({ approvals: [{ ...approval("a"), extra: 1 }, approval("b")] }))).toBe(false);
   });
   it("needs the secret reference for an API key, an OAuth client and a basic account, but not for a pre-prod endpoint", () => {
@@ -185,6 +190,19 @@ describe("TestAccount record", () => {
       expect(ok(awsAccount({ aws: awsBlock({ roleArn: "arn:aws:iam::222233334444:user/x" }) }))).toBe(false);
       expect(ok(awsAccount({ aws: awsBlock({ externalId: "short" }) }))).toBe(false);
       expect(ok(awsAccount({ aws: awsBlock({ externalId: "has space in it" }) }))).toBe(false);
+    });
+    it("holds the external id Rovara derives for the company and the account, and no other", () => {
+      expect(acc.testAccountExternalId(ORG, "orders-dev")).toBe(`rovara-${ORG}-orders-dev`);
+      expect(ok(awsAccount())).toBe(true);
+      expect(ok(awsAccount({ aws: awsBlock({ externalId: acc.testAccountExternalId(ORG, "orders-dev") }) }))).toBe(true);
+      // A customer's own value, another account's, and another company's are all refused, however well-formed.
+      expect(ok(awsAccount({ aws: awsBlock({ externalId: "ext-0123456789" }) }))).toBe(false);
+      expect(ok(awsAccount({ aws: awsBlock({ externalId: acc.testAccountExternalId(ORG, "orders-files") }) }))).toBe(false);
+      expect(ok(awsAccount({ aws: awsBlock({ externalId: acc.testAccountExternalId(`org_${"z9y8x7w6v5".repeat(2)}`, "orders-dev") }) }))).toBe(false);
+      expect(ok(awsAccount({ aws: awsBlock({ externalId: "rovara-org_" }) }))).toBe(false);
+      // It matches the condition the broker's grant carries (`sts:ExternalId` like `rovara-org_*`).
+      expect(acc.testAccountExternalId(ORG, "orders-dev").startsWith("rovara-org_")).toBe(true);
+      expect(acc.testAccountExternalId(ORG, "x".repeat(64)).length).toBeLessThanOrEqual(128);
       expect(ok(awsAccount({ aws: awsBlock({ region: "US_WEST" }) }))).toBe(false);
       expect(ok(awsAccount({ aws: awsBlock({ actions: ["dynamodb:GetItem", "dynamodb:GetItem"] }) }))).toBe(false);
       expect(ok(awsAccount({ aws: awsBlock({ resources: ["arn:aws:dynamodb:us-west-2:222233334444:table/t1", "arn:aws:dynamodb:us-west-2:222233334444:table/t1"] }) }))).toBe(false);
@@ -241,22 +259,22 @@ describe("TestAccount record", () => {
 
   describe("limits", () => {
     it("have defaults and Rovara maximums", () => {
-      expect(acc.TEST_ACCOUNT_LIMIT_DEFAULTS).toEqual({ maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 });
-      expect(acc.TEST_ACCOUNT_LIMIT_MAXIMUMS).toMatchObject({ maxRequestsPerRun: 20_000, maxConcurrentRounds: 10 });
+      expect(acc.TEST_ACCOUNT_LIMIT_DEFAULTS).toEqual({ maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 });
+      expect(acc.TEST_ACCOUNT_LIMIT_MAXIMUMS).toMatchObject({ maxConnectionsPerRun: 20_000, maxConcurrentRounds: 10 });
       expect(ok(account({ limits: acc.TEST_ACCOUNT_LIMIT_DEFAULTS }))).toBe(true);
     });
     it("stop at the maximums and at 1", () => {
-      expect(ok(account({ limits: { maxRequestsPerRun: 20_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 10 } }))).toBe(true);
-      expect(ok(account({ limits: { maxRequestsPerRun: 20_001, maxRequestsPerDay: 100_000, maxConcurrentRounds: 2 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 100, maxRequestsPerDay: 1_000, maxConcurrentRounds: 11 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 0, maxRequestsPerDay: 1_000, maxConcurrentRounds: 2 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 100, maxRequestsPerDay: 1_000, maxConcurrentRounds: 0 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 100, maxRequestsPerDay: 1_000_001, maxConcurrentRounds: 2 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 1.5, maxRequestsPerDay: 1_000, maxConcurrentRounds: 2 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 20_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 10 } }))).toBe(true);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 20_001, maxConnectionsPerDay: 100_000, maxConcurrentRounds: 2 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 100, maxConnectionsPerDay: 1_000, maxConcurrentRounds: 11 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 0, maxConnectionsPerDay: 1_000, maxConcurrentRounds: 2 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 100, maxConnectionsPerDay: 1_000, maxConcurrentRounds: 0 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 100, maxConnectionsPerDay: 1_000_001, maxConcurrentRounds: 2 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 1.5, maxConnectionsPerDay: 1_000, maxConcurrentRounds: 2 } }))).toBe(false);
     });
     it("keep a run's requests inside the day's", () => {
-      expect(ok(account({ limits: { maxRequestsPerRun: 5_000, maxRequestsPerDay: 4_999, maxConcurrentRounds: 2 } }))).toBe(false);
-      expect(ok(account({ limits: { maxRequestsPerRun: 5_000, maxRequestsPerDay: 5_000, maxConcurrentRounds: 2 } }))).toBe(true);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 5_000, maxConnectionsPerDay: 4_999, maxConcurrentRounds: 2 } }))).toBe(false);
+      expect(ok(account({ limits: { maxConnectionsPerRun: 5_000, maxConnectionsPerDay: 5_000, maxConcurrentRounds: 2 } }))).toBe(true);
     });
   });
 
@@ -548,9 +566,9 @@ describe("approvals cover what was approved", () => {
       ["envNames", { envNames: ["PAYMENTS_API_KEY", "OTHER_KEY"] }],
       ["projectIds", { projectIds: ["orders", "billing", "reports"] }],
       ["projectIds all", { projectIds: "all" }],
-      ["limits run", { limits: { maxRequestsPerRun: 2_001, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 } }],
-      ["limits day", { limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_001, maxConcurrentRounds: 2 } }],
-      ["limits rounds", { limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 3 } }],
+      ["limits run", { limits: { maxConnectionsPerRun: 2_001, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 } }],
+      ["limits day", { limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_001, maxConcurrentRounds: 2 } }],
+      ["limits rounds", { limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 3 } }],
       ["secretRef", { secretRef: ref({ key: "other" }) }],
       ["kind", { kind: "basic" }],
       ["id", { id: "payments-test-two", secretRef: ref({ id: "payments-test-two" }) }],
@@ -583,8 +601,9 @@ describe("approvals cover what was approved", () => {
   it("ties approvals to this account in this org, even for a role-only AWS account with no secret reference", () => {
     const approved = parsed(awsAccount());
     expect(ok(approved)).toBe(true);
-    const otherId = { ...approved, id: "orders-dev-two" };
-    const otherOrg = { ...approved, orgId: OTHER_ORG };
+    // The external id follows the account (it is derived from the company and the id), so a copy under another id or org carries its own.
+    const otherId = { ...approved, id: "orders-dev-two", aws: { ...approved.aws!, externalId: acc.testAccountExternalId(ORG, "orders-dev-two") } };
+    const otherOrg = { ...approved, orgId: OTHER_ORG, aws: { ...approved.aws!, externalId: acc.testAccountExternalId(OTHER_ORG, "orders-dev") } };
     // Everything the approvers saw is the same; only whose account it is differs.
     expect(acc.testAccountApprovalDigest(otherId)).not.toBe(acc.testAccountApprovalDigest(approved));
     expect(acc.testAccountApprovalDigest(otherOrg)).not.toBe(acc.testAccountApprovalDigest(approved));
@@ -632,7 +651,7 @@ describe("approvals cover what was approved", () => {
       ["a host", { hosts: ["api.example-pay.com", "billing.example-pay.com"] }],
       ["a project", { projectIds: [...(approved.projectIds as string[]), "reports"] }],
       ["all projects", { projectIds: "all" }],
-      ["a request limit", { limits: { ...approved.limits, maxRequestsPerRun: 5_000 } }],
+      ["a request limit", { limits: { ...approved.limits, maxConnectionsPerRun: 5_000 } }],
       ["a variable", { envNames: [...approved.envNames, "EXTRA_VALUE"] }],
       ["the secret", { secretRef: ref({ key: "otherKey" }) }],
     ];

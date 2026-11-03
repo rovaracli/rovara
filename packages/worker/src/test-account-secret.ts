@@ -12,15 +12,15 @@
 //     takes a test account's variable names out of an environment, so no other child process inherits them.
 // Nothing here talks to AWS: the caller supplies `read`, which signs with the grant's own credentials. Wiring note: the worker needs `@aws-sdk/client-secrets-manager` for that reader (not a dependency of this
 // package yet) and the sealed sandbox (check-sandbox.ts, lane ts-sealed) calls this around its one exec.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, sep } from "node:path";
-import { checkTestAccountKeyShape, e2eSecretSpellings, parseTestAccountSecretGrant, type TestAccountSecretGrant } from "@agentx/contracts";
+import { TEST_ACCOUNT_SECRET_VERSION_STAGE, checkTestAccountKeyShape, e2eSecretSpellings, parseTestAccountSecretGrant, type TestAccountSecretGrant } from "@agentx/contracts";
 
 /** Where a command runs. Only a sealed check round may hold a test account's secret. */
 export type SecretPlace = "sealed_check" | "setup_run" | "setup_agent" | "working_sandbox" | "task_agent" | "team_runner";
 
-export const SECRET_REFUSALS = ["not_sealed", "bad_grant", "grant_expired", "unreadable", "no_value", "refused_value", "env_conflict", "bad_directory", "write_failed", "cleanup_failed"] as const;
+export const SECRET_REFUSALS = ["not_sealed", "bad_grant", "grant_expired", "unreadable", "no_value", "refused_value", "env_conflict", "bad_directory", "leftover_files", "write_failed", "cleanup_failed"] as const;
 export type SecretRefusal = (typeof SECRET_REFUSALS)[number];
 const WORDS: Record<SecretRefusal, string> = {
   not_sealed: "a test account's secret is available to a sealed check round only",
@@ -31,6 +31,7 @@ const WORDS: Record<SecretRefusal, string> = {
   refused_value: "the test account secret does not look like a test key",
   env_conflict: "two test accounts name the same variable",
   bad_directory: "the secret directory is not a private tmpfs directory of the worker",
+  leftover_files: "env files of an earlier round were found and wiped; the round is stopped",
   write_failed: "the test account env file could not be written",
   cleanup_failed: "the test account env file could not be removed",
 };
@@ -46,8 +47,11 @@ export class TestAccountSecretError extends Error {
 /** The redactor the worker already runs over everything it writes (journals, logs, check output): `register` teaches it one more spelling to hide. */
 export interface SecretRedactor { register: (spelling: string) => void }
 
-/** Reads one secret's `SecretString` with the grant's own session credentials. Returns undefined when it is not found. The caller wires the AWS SDK; tests pass a fake. */
-export type ReadSecret = (grant: Pick<TestAccountSecretGrant, "credentials" | "region" | "secretName">) => Promise<string | undefined>;
+/**
+ * Reads one secret's `SecretString` with the grant's own session credentials. Returns undefined when it is not found. The caller wires the AWS SDK; tests pass a fake. The request MUST carry
+ * `VersionStage: versionStage` (AWSCURRENT): the grant's session policy allows a read only for that named stage, so a request that leaves it out is refused, and a pending or previous version is never served.
+ */
+export type ReadSecret = (grant: Pick<TestAccountSecretGrant, "credentials" | "region" | "secretName"> & { versionStage: typeof TEST_ACCOUNT_SECRET_VERSION_STAGE }) => Promise<string | undefined>;
 
 export interface WithSecretsInput<T> {
   place: SecretPlace;
@@ -114,6 +118,36 @@ export function assertPrivateTmpfsDirectory(directory: string): void {
   if (!onTmpfs) throw new TestAccountSecretError("bad_directory");
 }
 
+// ---- leftovers
+
+/** The names this module gives its env files: `ta-` and 24 hex digits. Nothing else in the directory is touched. */
+const ENV_FILE_NAME = /^ta-[0-9a-f]{24}\.env$/u;
+
+/**
+ * Wipes every env file an earlier round left in the directory (a crash, a kill, a failed cleanup): each regular file named like ours is overwritten with zeros and removed; a link or a directory of that name is only
+ * removed. Returns how many it found. Called when the worker starts and before every round: any found at a round's start stops the round (`leftover_files`), because something ended without cleaning up.
+ * A directory that cannot be listed is `bad_directory`; a file that cannot be wiped is `cleanup_failed`.
+ */
+export function sweepTestAccountEnvFiles(directory: string): number {
+  let names: string[];
+  try {
+    names = readdirSync(directory).filter((name) => ENV_FILE_NAME.test(name));
+  } catch {
+    throw new TestAccountSecretError("bad_directory");
+  }
+  for (const name of names) {
+    const path = join(directory, name);
+    try {
+      const stat = lstatSync(path);
+      if (stat.isFile()) removeFile(path, stat.size);
+      else unlinkSync(path);
+    } catch {
+      throw new TestAccountSecretError("cleanup_failed");
+    }
+  }
+  return names.length;
+}
+
 // ---- reading
 
 function parsedGrants(inputs: readonly unknown[], now: number): TestAccountSecretGrant[] {
@@ -142,7 +176,7 @@ async function valueOf(grant: TestAccountSecretGrant, input: Pick<WithSecretsInp
   register(input.redactor, grant.credentials.sessionToken);
   let text: string | undefined;
   try {
-    text = await input.read({ credentials: grant.credentials, region: grant.region, secretName: grant.secretName });
+    text = await input.read({ credentials: grant.credentials, region: grant.region, secretName: grant.secretName, versionStage: TEST_ACCOUNT_SECRET_VERSION_STAGE });
   } catch {
     throw new TestAccountSecretError("unreadable");
   }
@@ -191,6 +225,8 @@ export async function withTestAccountSecrets<T>(input: WithSecretsInput<T>): Pro
   if (input.place !== "sealed_check") throw new TestAccountSecretError("not_sealed");
   const grants = parsedGrants(input.grants, input.now());
   (input.verifyDirectory ?? assertPrivateTmpfsDirectory)(input.directory);
+  // Anything an earlier round left is wiped, and this round does not start: a crash that left a secret on disk is a fault to look at, not one to run past.
+  if (sweepTestAccountEnvFiles(input.directory) > 0) throw new TestAccountSecretError("leftover_files");
   const lines: string[] = [];
   for (const grant of grants) {
     const value = await valueOf(grant, input);

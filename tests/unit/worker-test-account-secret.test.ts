@@ -1,11 +1,11 @@
 // Test services TS27: a test account's secret is read at run time into the sealed check sandbox only. Fake reader, real files in a private temp directory; every key-shaped string is built at run time.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { e2eSecretSpellings, testAccountSecretName } from "@agentx/contracts";
 import {
-  SECRET_REFUSALS, TestAccountSecretError, assertPrivateDirectory, assertPrivateTmpfsDirectory, dockerEnvFileArgs, isTmpfsDirectory, mountOf, namesHoldingSecret, withTestAccountSecrets, withoutTestAccountNames,
+  SECRET_REFUSALS, TestAccountSecretError, sweepTestAccountEnvFiles, assertPrivateDirectory, assertPrivateTmpfsDirectory, dockerEnvFileArgs, isTmpfsDirectory, mountOf, namesHoldingSecret, withTestAccountSecrets, withoutTestAccountNames,
   type ReadSecret, type SecretPlace, type SecretRefusal, type WithSecretsInput,
 } from "../../packages/worker/src/test-account-secret.js";
 
@@ -31,18 +31,18 @@ const grant = (over: Record<string, unknown> = {}) => ({
   envNames: ["PAYMENTS_API_KEY"], credentials: { accessKeyId: token("a"), secretAccessKey: token("b"), sessionToken: token("c") }, expiresAt: new Date(NOW + 600_000).toISOString(), ...over,
 });
 
-interface Rig { input: WithSecretsInput<string>; registered: string[]; reads: Array<{ secretName: string; accessKeyId: string }>; timeline: string[]; directory: string }
+interface Rig { input: WithSecretsInput<string>; registered: string[]; reads: Array<{ secretName: string; accessKeyId: string; versionStage?: string }>; timeline: string[]; directory: string }
 function rig(over: { value?: string; text?: string; grants?: unknown[]; place?: SecretPlace; read?: ReadSecret; run?: (envFile: string | undefined) => Promise<string>; verifyDirectory?: (directory: string) => void } = {}): Rig {
   const directory = privateDir();
   const registered: string[] = [];
-  const reads: Array<{ secretName: string; accessKeyId: string }> = [];
+  const reads: Array<{ secretName: string; accessKeyId: string; versionStage?: string }> = [];
   const timeline: string[] = [];
   const value = over.value ?? stripeTest();
   const input: WithSecretsInput<string> = {
     place: over.place ?? "sealed_check",
     grants: over.grants ?? [grant()],
     now: () => NOW,
-    read: over.read ?? ((g) => { reads.push({ secretName: g.secretName, accessKeyId: g.credentials.accessKeyId }); timeline.push(`read:${readdirSync(directory).length}`); return Promise.resolve(over.text ?? JSON.stringify({ value })); }),
+    read: over.read ?? ((g) => { reads.push({ secretName: g.secretName, accessKeyId: g.credentials.accessKeyId, versionStage: g.versionStage }); timeline.push(`read:${readdirSync(directory).length}`); return Promise.resolve(over.text ?? JSON.stringify({ value })); }),
     redactor: { register: (spelling) => { registered.push(spelling); timeline.push("register"); } },
     directory,
     verifyDirectory: over.verifyDirectory ?? (() => undefined),
@@ -112,8 +112,8 @@ describe("the env file", () => {
     const r = rig({ grants: [grant(), grant({ accountId: "other-test", secretName: testAccountSecretName("staging", ORG, "other-test"), envNames: ["OTHER_KEY"], credentials: { accessKeyId: token("x"), secretAccessKey: token("y"), sessionToken: token("z") } })] });
     await withTestAccountSecrets(r.input);
     expect(r.reads).toEqual([
-      { secretName: testAccountSecretName("staging", ORG, "payments-test"), accessKeyId: token("a") },
-      { secretName: testAccountSecretName("staging", ORG, "other-test"), accessKeyId: token("x") },
+      { secretName: testAccountSecretName("staging", ORG, "payments-test"), accessKeyId: token("a"), versionStage: "AWSCURRENT" },
+      { secretName: testAccountSecretName("staging", ORG, "other-test"), accessKeyId: token("x"), versionStage: "AWSCURRENT" },
     ]);
   });
 
@@ -124,6 +124,68 @@ describe("the env file", () => {
     expect(JSON.stringify(process.env)).toBe(before);
     expect(JSON.stringify(process.env)).not.toContain(value);
     expect(process.env.PAYMENTS_API_KEY).toBeUndefined();
+  });
+});
+
+describe("L3: files an earlier round left behind", () => {
+  const leftover = (directory: string, name = `ta-${"0123456789abcdef01234567"}.env`, text = "PAYMENTS_API_KEY=left-over-value\n"): string => {
+    const path = join(directory, name);
+    writeFileSync(path, text, { mode: 0o600 });
+    return path;
+  };
+
+  it("wipes and removes every ta-*.env file, counts them, and touches nothing else in the directory", () => {
+    const directory = privateDir();
+    const first = leftover(directory);
+    const second = leftover(directory, `ta-${"fedcba9876543210fedcba98"}.env`, "OTHER=also-left");
+    const unrelated = join(directory, "keep.env");
+    writeFileSync(unrelated, "KEEP=1");
+    const lookalike = join(directory, "ta-short.env");
+    writeFileSync(lookalike, "KEEP=2");
+    const link = join(directory, `ta-${"aaaaaaaaaaaaaaaaaaaaaaaa"}.env`);
+    symlinkSync(unrelated, link);
+    expect(sweepTestAccountEnvFiles(directory)).toBe(3);
+    expect(existsSync(first) || existsSync(second) || existsSync(link)).toBe(false);
+    // The link was removed, not followed: the file it pointed to is as it was.
+    expect(readFileSync(unrelated, "utf8")).toBe("KEEP=1");
+    expect(readFileSync(lookalike, "utf8")).toBe("KEEP=2");
+    expect(sweepTestAccountEnvFiles(directory)).toBe(0);
+  });
+
+  it("overwrites a file's content before removing it (what a hard link or a snapshot would otherwise keep)", () => {
+    const directory = privateDir();
+    const path = leftover(directory, undefined, "SECRET=abcdefghijklmnop\n");
+    const alias = join(directory, "alias-of-the-same-file");
+    linkSync(path, alias);
+    expect(sweepTestAccountEnvFiles(directory)).toBe(1);
+    expect(readFileSync(alias, "utf8")).not.toContain("abcdefghijklmnop");
+    expect(readFileSync(alias).every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("stops the round that finds one, after wiping it, with no read and no new file; the next round runs", async () => {
+    const r = rig();
+    const old = leftover(r.directory);
+    expect(await refusal(withTestAccountSecrets(r.input))).toBe("leftover_files");
+    expect(existsSync(old)).toBe(false);
+    expect(r.reads).toEqual([]);
+    expect(r.registered).toEqual([]);
+    expect(readdirSync(r.directory)).toEqual([]);
+    expect(await withTestAccountSecrets(r.input)).toContain("PAYMENTS_API_KEY=");
+    expect(readdirSync(r.directory)).toEqual([]);
+  });
+
+  it("also checks a round that has no grants, and a directory it cannot list is a fixed refusal", async () => {
+    const r = rig({ grants: [] });
+    leftover(r.directory);
+    expect(await refusal(withTestAccountSecrets(r.input))).toBe("leftover_files");
+    expect(() => sweepTestAccountEnvFiles(join(r.directory, "missing"))).toThrow(TestAccountSecretError);
+  });
+
+  it("does not sweep for a place that may not have a secret (the refusal comes first)", async () => {
+    const r = rig({ place: "team_runner" });
+    const old = leftover(r.directory);
+    expect(await refusal(withTestAccountSecrets(r.input))).toBe("not_sealed");
+    expect(existsSync(old)).toBe(true);
   });
 });
 

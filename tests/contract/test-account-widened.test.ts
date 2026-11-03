@@ -6,7 +6,7 @@ import * as acc from "../../packages/contracts/src/test-account.js";
 const ORG = `org_${"a1b2c3d4e5".repeat(2)}`;
 const base = (over: Record<string, unknown> = {}) => ({
   id: "payments-test", orgId: ORG, projectIds: ["orders", "billing"] as "all" | string[], kind: "api_key", family: "http:api.example-pay.com", hosts: ["api.example-pay.com", "files.example-pay.com"],
-  envNames: ["PAYMENTS_API_KEY", "PAYMENTS_KEY_COPY"], limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 },
+  envNames: ["PAYMENTS_API_KEY", "PAYMENTS_KEY_COPY"], limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 },
   secretRef: acc.testAccountSecretRef("staging", ORG, "payments-test", "apiKey"), ...over,
 });
 const awsBase = (over: Record<string, unknown> = {}, aws: Record<string, unknown> = {}) => base({
@@ -28,7 +28,7 @@ describe("testAccountWidened", () => {
     expect(widened(base(), base({ projectIds: ["orders"] }))).toBe(false);
     expect(widened(base({ projectIds: "all" }), base({ projectIds: ["orders"] }))).toBe(false);
     expect(widened(base({ projectIds: "all" }), base({ projectIds: "all" }))).toBe(false);
-    expect(widened(base(), base({ limits: { maxRequestsPerRun: 100, maxRequestsPerDay: 20_000, maxConcurrentRounds: 1 } }))).toBe(false);
+    expect(widened(base(), base({ limits: { maxConnectionsPerRun: 100, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 1 } }))).toBe(false);
   });
   it("is true for each widening", () => {
     expect(widened(base(), base({ hosts: [...base().hosts, "other.example-pay.com"] }))).toBe(true);
@@ -37,8 +37,8 @@ describe("testAccountWidened", () => {
     expect(widened(base(), base({ projectIds: ["orders", "billing", "web"] }))).toBe(true);
     expect(widened(base(), base({ projectIds: "all" }))).toBe(true);
     expect(widened(base(), base({ projectIds: ["web"] }))).toBe(true);
-    for (const key of ["maxRequestsPerRun", "maxRequestsPerDay", "maxConcurrentRounds"]) {
-      expect(widened(base(), base({ limits: { ...base().limits, [key]: base().limits[key as "maxRequestsPerRun"] + 1 } })), key).toBe(true);
+    for (const key of ["maxConnectionsPerRun", "maxConnectionsPerDay", "maxConcurrentRounds"]) {
+      expect(widened(base(), base({ limits: { ...base().limits, [key]: base().limits[key as "maxConnectionsPerRun"] + 1 } })), key).toBe(true);
     }
   });
   it("is true for a changed identity: id, org, kind, family or secret reference (another credential is not a narrowing)", () => {
@@ -80,7 +80,7 @@ describe("testAccountWidened", () => {
   it("never lets a narrowing and a widening hide in one change", () => {
     expect(widened(base(), base({ hosts: ["other.example-pay.com"], envNames: [] }))).toBe(true);
     expect(widened(base(), base({ hosts: ["api.example-pay.com"], projectIds: "all" }))).toBe(true);
-    expect(widened(base(), base({ hosts: ["api.example-pay.com"], limits: { ...base().limits, maxRequestsPerDay: 20_001 } }))).toBe(true);
+    expect(widened(base(), base({ hosts: ["api.example-pay.com"], limits: { ...base().limits, maxConnectionsPerDay: 20_001 } }))).toBe(true);
   });
   it("ignores the label, status, approvals and dates, which the approval digest does not cover either", () => {
     expect(widened({ ...base(), label: "a" }, { ...base(), label: "b" })).toBe(false);

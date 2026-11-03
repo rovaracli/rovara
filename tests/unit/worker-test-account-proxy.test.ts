@@ -29,7 +29,7 @@ async function rig(over: Partial<TestAccountProxyOptions> & { answers?: Record<s
   const proxy = await startTestAccountProxy({
     hosts: ["api.example-pay.com", "files.example-pay.com"],
     isDenied: denyChecker({ accountIds: [], hosts: ["*.prod.example.com", "billing.example-pay.com"], arnPrefixes: [] }),
-    maxRequests: 50,
+    maxConnections: 50,
     listenAddress: "127.0.0.1",
     listenPort: 0,
     allowedSources: ["127.0.0.1"],
@@ -83,11 +83,31 @@ describe("names and addresses", () => {
     for (const literal of ["127.0.0.1:443", "[::1]:443", "[2001:db8::1]:443", "2130706433:443", "0x7f.1:443", "localhost:443", "10.1.2.3:443", "::1:443"]) expect(parseConnectTarget(literal), literal).toEqual({ refusal: "ip_literal" });
   });
 
+  it("L2: denies every IPv6 range that can carry or translate to a private address, in any spelling", () => {
+    const probes: Array<[string, string]> = [
+      ["::/96 unspecified", "::"], ["::/96 loopback", "::1"], ["::/96 loopback spelled out", "0:0:0:0:0:0:0:1"], ["::/96 low address", "::2"], ["::/96 IPv4-compatible dotted", "::7f00:1"], ["::/96 IPv4-compatible tail", "::127.0.0.1"],
+      ["::/96 compatible public", "::8.8.8.8"], ["::/96 hex", "0:0:0:0:0:0:808:808"],
+      ["::ffff:0:0/96 public dotted", "::ffff:8.8.8.8"], ["::ffff:0:0/96 public hex", "::ffff:808:808"], ["::ffff:0:0/96 private", "::ffff:10.0.0.1"], ["::ffff:0:0/96 metadata", "::ffff:169.254.169.254"],
+      ["::ffff:0:0/96 spelled out", "0:0:0:0:0:ffff:808:808"], ["::ffff:0:0/96 upper case", "::FFFF:8.8.8.8"],
+      ["64:ff9b::/96", "64:ff9b::808:808"], ["64:ff9b::/96 dotted", "64:ff9b::8.8.8.8"], ["100::/64", "100::1"],
+      ["fec0::/10 site-local", "fec0::1"], ["fec0::/10 upper end", "feff:ffff::1"], ["fe80::/10 link-local", "fe80::1"], ["fe80::/10 with a zone", "fe80::1%eth0"], ["fe80::/10 upper end", "febf::1"],
+      ["2002::/16 6to4 public", "2002:808:808::1"], ["2002::/16 6to4 private", "2002:a00:1::1"], ["2002::/16 6to4 metadata", "2002:a9fe:a9fe::"], ["2002::/16 first", "2002::"], ["2002::/16 last", "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff"],
+      ["2001::/32 Teredo", "2001:0:4136:e378:8000:63bf:3fff:fdd2"], ["2001::/32 first", "2001::"], ["2001::/32 compressed", "2001::1"], ["2001:db8::/32 documentation", "2001:db8::1"],
+      ["fc00::/7 unique local", "fd12:3456::1"], ["fc00::/7 first", "fc00::"], ["ff00::/8 multicast", "ff02::1"],
+    ];
+    for (const [label, address] of probes) expect(isForbiddenAddress(address), `${label}: ${address}`).toBe(true);
+    // The neighbours of those ranges are public addresses and stay reachable.
+    for (const address of ["2001:1::1", "2001:4860:4860::8888", "2003::1", "2001:db9::1", "fe00::1", "ec00::1", "fbff::1", "64:ff9a::1", "101::1", "100:0:0:1::1", "1::1"]) {
+      expect(isForbiddenAddress(address), address).toBe(false);
+    }
+    for (const notAnAddress of ["", "not-an-address", "1.2.3", "::g", ":::", "1:2:3:4:5:6:7:8:9", "::ffff:999.1.1.1"]) expect(isForbiddenAddress(notAnAddress), notAnAddress).toBe(true);
+  });
+
   it("calls loopback, private, link-local, metadata, shared, multicast, reserved and mapped addresses forbidden, and a public one fine", () => {
     for (const address of ["127.0.0.1", "10.0.0.1", "172.16.5.5", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "192.0.2.1", "198.18.0.1", "::1", "::", "fe80::1", "fd00::1", "ff02::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:a00:1", "2001:db8::1", "not-an-address"]) {
       expect(isForbiddenAddress(address), address).toBe(true);
     }
-    for (const address of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "100.63.255.255", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) expect(isForbiddenAddress(address), address).toBe(false);
+    for (const address of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "100.63.255.255", "2606:4700:4700::1111", "2a00:1450:4001:81b::200e", "2620:0:860:2::1"]) expect(isForbiddenAddress(address), address).toBe(false);
   });
 });
 
@@ -167,7 +187,7 @@ describe("the proxy", () => {
   });
 
   it("caps the run's connections, then refuses with 429 and says so", async () => {
-    const { proxy } = await rig({ maxRequests: 2 });
+    const { proxy } = await rig({ maxConnections: 2 });
     const first = await connectTo(proxy, "api.example-pay.com:443");
     const second = await connectTo(proxy, "api.example-pay.com:443");
     expect([first.status, second.status]).toEqual([200, 200]);
@@ -244,6 +264,49 @@ describe("the proxy", () => {
     expect(JSON.stringify(proxy.snapshot())).not.toContain(pasted);
   });
 
+  it("L1: cuts a tunnel that carries more than its byte cap, and counts what passed before the cut", async () => {
+    const { proxy } = await rig({ maxTunnelBytes: 100 });
+    const tunnel = await connectTo(proxy, "api.example-pay.com:443");
+    expect(tunnel.status).toBe(200);
+    const closed = new Promise<boolean>((done) => { tunnel.socket.once("close", () => done(true)); setTimeout(() => done(false), 1_500); });
+    tunnel.socket.write("x".repeat(60)); // 60 up, and the echo makes 120 together: past 100
+    expect(await closed).toBe(true);
+    const snapshot = proxy.snapshot();
+    expect(snapshot.cut).toEqual({ bytes: 1, duration: 0 });
+    expect(snapshot.hosts[0]).toMatchObject({ bytesUp: 60, bytesDown: 0 });
+    expect(snapshot.bytes).toBe(60);
+  });
+
+  it("L1: lets a tunnel carry up to its cap, and counts every connection's bytes in the snapshot total", async () => {
+    const { proxy } = await rig({ maxTunnelBytes: 100 });
+    for (const host of ["api.example-pay.com", "files.example-pay.com"]) {
+      const tunnel = await connectTo(proxy, `${host}:443`);
+      const reply = new Promise<string>((done) => tunnel.socket.once("data", (chunk: Buffer) => done(chunk.toString("utf8"))));
+      tunnel.socket.write("y".repeat(50)); // 50 up and 50 echoed: exactly 100
+      expect(await reply).toBe("y".repeat(50));
+      tunnel.socket.end();
+    }
+    await new Promise((done) => setTimeout(done, 50));
+    const snapshot = proxy.snapshot();
+    expect(snapshot.bytes).toBe(200);
+    expect(snapshot.cut).toEqual({ bytes: 0, duration: 0 });
+  });
+
+  it("L1: cuts a tunnel that lives longer than its time cap", async () => {
+    const { proxy } = await rig({ maxTunnelMs: 80 });
+    const tunnel = await connectTo(proxy, "api.example-pay.com:443");
+    const closed = await new Promise<boolean>((done) => { tunnel.socket.once("close", () => done(true)); setTimeout(() => done(false), 1_500); });
+    expect(closed).toBe(true);
+    expect(proxy.snapshot().cut).toEqual({ bytes: 0, duration: 1 });
+  });
+
+  it("L1: refuses a per-tunnel cap that is not a positive whole number", async () => {
+    const base: TestAccountProxyOptions = { hosts: ["api.example-pay.com"], isDenied: () => false, maxConnections: 10, listenAddress: "127.0.0.1", listenPort: 0, allowedSources: ["127.0.0.1"] };
+    for (const over of [{ maxTunnelBytes: 0 }, { maxTunnelBytes: -1 }, { maxTunnelBytes: 1.5 }, { maxTunnelMs: 0 }, { maxTunnelMs: Number.NaN }]) {
+      await expect(startTestAccountProxy({ ...base, ...over })).rejects.toBeInstanceOf(RangeError);
+    }
+  });
+
   it("closes an idle tunnel", async () => {
     const { proxy } = await rig({ idleTimeoutMs: 80 });
     const tunnel = await connectTo(proxy, "api.example-pay.com:443");
@@ -253,7 +316,7 @@ describe("the proxy", () => {
   });
 
   it("is made only for one address, a small plain list, a bounded cap and a named sandbox", async () => {
-    const base: TestAccountProxyOptions = { hosts: ["api.example-pay.com"], isDenied: () => false, maxRequests: 10, listenAddress: "127.0.0.1", listenPort: 0, allowedSources: ["127.0.0.1"] };
+    const base: TestAccountProxyOptions = { hosts: ["api.example-pay.com"], isDenied: () => false, maxConnections: 10, listenAddress: "127.0.0.1", listenPort: 0, allowedSources: ["127.0.0.1"] };
     const refuses = async (over: Partial<TestAccountProxyOptions>) => { await expect(startTestAccountProxy({ ...base, ...over })).rejects.toBeInstanceOf(RangeError); };
     await refuses({ listenAddress: "0.0.0.0" });
     await refuses({ listenAddress: "::" });
@@ -264,8 +327,8 @@ describe("the proxy", () => {
     await refuses({ hosts: ["10.0.0.1"] });
     await refuses({ hosts: ["api.example-pay.com:443"] });
     await refuses({ hosts: ["API.example-pay.com"] });
-    await refuses({ maxRequests: 0 });
-    await refuses({ maxRequests: 20_001 });
+    await refuses({ maxConnections: 0 });
+    await refuses({ maxConnections: 20_001 });
     await refuses({ allowedSources: [] });
   });
 });

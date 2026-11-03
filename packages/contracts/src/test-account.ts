@@ -29,12 +29,12 @@ function line(max: number, min = 1) {
 }
 
 export const TEST_ACCOUNT_KINDS = ["api_key", "oauth_client", "basic", "aws_role", "preprod_endpoint"] as const;
-export const TEST_ACCOUNT_STATUSES = ["pending", "active", "suspended", "expired"] as const;
+export const TEST_ACCOUNT_STATUSES = ["pending", "active", "suspended", "expired", "deleting"] as const;
 export const TEST_ACCOUNT_APPROVAL_KINDS = ["approver", "sole_owner_exception"] as const;
 export const TEST_ACCOUNT_LIMITS = { hosts: 8, envNames: 4, projects: 50, actions: 20, resources: 20, approvals: 10 } as const;
-/** Requests per run, per day and rounds at once (11.2): the defaults and the Rovara maximums. The per-day figure is set by the company, so its maximum is only a sanity bound. */
-export const TEST_ACCOUNT_LIMIT_DEFAULTS = { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 } as const;
-export const TEST_ACCOUNT_LIMIT_MAXIMUMS = { maxRequestsPerRun: 20_000, maxRequestsPerDay: 1_000_000, maxConcurrentRounds: 10 } as const;
+/** Connections (tunnels the proxy opened) per run, per day and rounds at once (11.2): the defaults and the Rovara maximums. The per-day figure is set by the company, so its maximum is only a sanity bound. */
+export const TEST_ACCOUNT_LIMIT_DEFAULTS = { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 } as const;
+export const TEST_ACCOUNT_LIMIT_MAXIMUMS = { maxConnectionsPerRun: 20_000, maxConnectionsPerDay: 1_000_000, maxConcurrentRounds: 10 } as const;
 /** An account expires at most 90 days after its last qualifying approval (owner decision Q7); a company setting may only make that shorter, never longer. A reminder goes out 14 days before. */
 export const TEST_ACCOUNT_EXPIRY_DAYS = { default: 90, max: 90, reminder: 14 } as const;
 
@@ -43,6 +43,10 @@ export const TEST_ACCOUNT_EXPIRY_DAYS = { default: 90, max: 90, reminder: 14 } a
 /** The tags every test-account secret carries; the role that reads them is allowed only its own org's path (`rovara:org`). */
 export const TEST_ACCOUNT_SECRET_TAG_KEYS = { org: "rovara:org", use: "rovara:use" } as const;
 export const TEST_ACCOUNT_SECRET_USE = "test-account";
+/** The only version of a test account's secret a worker reads: the one the broker promoted. The reader names it in the request (an omitted stage is not assumed to match the resolve session policy's condition). */
+export const TEST_ACCOUNT_SECRET_VERSION_STAGE = "AWSCURRENT";
+/** The version a new value waits under until the row that records it is committed (rotation); it never serves a read. */
+export const TEST_ACCOUNT_SECRET_PENDING_STAGE = "AWSPENDING";
 /** The path segment between the install's environment and the org: test-account secrets live apart from connector and hook secrets, so the connector role cannot reach them. */
 export const TEST_ACCOUNT_SECRET_SEGMENT = "org-test-accounts";
 
@@ -250,11 +254,17 @@ export function testAccountAwsEndpointHosts(aws: Pick<TestAccountAws, "actions" 
   return services.map((service) => `${AWS_ENDPOINT_PREFIX[service]}.${aws.region}.amazonaws.com`);
 }
 
+/**
+ * The external id of an AWS role account: `rovara-<orgId>-<accountId>`. Rovara builds it from the org the request is for and the account's own id; a customer never chooses it, so one company's account
+ * can never cause an AssumeRole that carries another company's id (cloudwatchExternalId's pattern, with the account). `org_...` makes it match the `rovara-org_*` condition the broker's grant carries.
+ */
+export const testAccountExternalId = (orgId: string, accountId: string): string => `rovara-${orgId}-${accountId}`;
+
 export const TestAccountAwsSchema = z
   .object({
     roleArn: RoleArn,
-    /** The external id of the trust policy (a confused-deputy guard, not a secret). */
-    externalId: z.string().regex(/^[A-Za-z0-9+=,.@:/-]{8,128}$/u, "an external id"),
+    /** The external id of the customer's trust policy (a confused-deputy guard, not a secret). Rovara derives it (`testAccountExternalId`), the customer puts it in the trust policy, and the account record must carry exactly that value. */
+    externalId: z.string().regex(/^[A-Za-z0-9_+=,.@:/-]{8,128}$/u, "an external id"),
     region: TestEnvRegionSchema,
     actions: z.array(IamAction).min(1).max(TEST_ACCOUNT_LIMITS.actions),
     resources: z.array(Arn).min(1).max(TEST_ACCOUNT_LIMITS.resources),
@@ -301,7 +311,7 @@ export interface TestAccountApprovable {
   aws?: { roleArn: string; externalId: string; region: string; actions: readonly string[]; resources: readonly string[] } | undefined;
   envNames: readonly string[];
   projectIds: "all" | readonly string[];
-  limits: { maxRequestsPerRun: number; maxRequestsPerDay: number; maxConcurrentRounds: number };
+  limits: { maxConnectionsPerRun: number; maxConnectionsPerDay: number; maxConcurrentRounds: number };
   secretRef?: string | undefined;
 }
 
@@ -399,7 +409,7 @@ export function testAccountWidened(previous: TestAccountApprovable, next: TestAc
   if (previous.projectIds !== "all" && (next.projectIds === "all" || !subsetOf(next.projectIds, previous.projectIds))) return true;
   const was = previous.limits;
   const now = next.limits;
-  if (now.maxRequestsPerRun > was.maxRequestsPerRun || now.maxRequestsPerDay > was.maxRequestsPerDay || now.maxConcurrentRounds > was.maxConcurrentRounds) return true;
+  if (now.maxConnectionsPerRun > was.maxConnectionsPerRun || now.maxConnectionsPerDay > was.maxConnectionsPerDay || now.maxConcurrentRounds > was.maxConcurrentRounds) return true;
   if ((previous.aws === undefined) !== (next.aws === undefined)) return true;
   if (previous.aws !== undefined && next.aws !== undefined) {
     if (previous.aws.roleArn !== next.aws.roleArn || previous.aws.externalId !== next.aws.externalId || previous.aws.region !== next.aws.region) return true;
@@ -451,8 +461,8 @@ const TestAccountObjectSchema = z
     envNames: z.array(EnvNameSchema).max(TEST_ACCOUNT_LIMITS.envNames),
     limits: z
       .object({
-        maxRequestsPerRun: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxRequestsPerRun),
-        maxRequestsPerDay: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxRequestsPerDay),
+        maxConnectionsPerRun: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConnectionsPerRun),
+        maxConnectionsPerDay: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConnectionsPerDay),
         maxConcurrentRounds: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConcurrentRounds),
       })
       .strict(),
@@ -486,6 +496,7 @@ export function testAccountSchemaFor(options: TestAccountSchemaOptions = {}) {
     const isAws = account.kind === "aws_role";
     if (isAws !== (account.aws !== undefined)) problem(["aws"], "an AWS role account has the AWS block, and no other account does");
     if (isAws && account.secretRef !== undefined) problem(["secretRef"], "an AWS role account stores no secret");
+    if (account.aws !== undefined && account.aws.externalId !== testAccountExternalId(account.orgId, account.id)) problem(["aws", "externalId"], "the external id is the one Rovara derives for this company and account");
     if (isAws && account.envNames.length > 0) problem(["envNames"], "an AWS role account is reached by a role, not a variable");
     if (!isAws && (account.kind === "api_key" || account.kind === "oauth_client" || account.kind === "basic") && account.secretRef === undefined) problem(["secretRef"], "this kind of account needs its secret reference");
     if (!account.family.startsWith("http:") && !account.family.startsWith("aws:")) problem(["family"], "a test account is for an outside API (http:<host>) or an AWS service (aws:<service>)");
@@ -511,7 +522,7 @@ export function testAccountSchemaFor(options: TestAccountSchemaOptions = {}) {
       if (reservedDependencyEnvName(name)) problem(["envNames", index], "this variable is set by Rovara or the system");
     });
     if (account.projectIds !== "all" && new Set(account.projectIds).size !== account.projectIds.length) problem(["projectIds"], "a project is listed once");
-    if (account.limits.maxRequestsPerRun > account.limits.maxRequestsPerDay) problem(["limits", "maxRequestsPerRun"], "a run's requests fit inside the day's");
+    if (account.limits.maxConnectionsPerRun > account.limits.maxConnectionsPerDay) problem(["limits", "maxConnectionsPerRun"], "a run's requests fit inside the day's");
     if (looksLikeSecretValue(account.label)) problem(["label"], "a label is not the place for a key");
     // Only approvals of exactly this record count; the expiry runs from the last of those.
     const qualifying = testAccountQualifyingApprovals(account);

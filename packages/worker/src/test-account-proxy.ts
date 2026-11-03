@@ -12,13 +12,13 @@
 //   - `ip_literal`: a target that is or could be read as an address: dotted, short, decimal, hex or octal IPv4, any IPv6, a name whose last label has no letter, `localhost`, a name with no dot;
 //   - `denied`: a name on the production deny list (the caller passes the check; the account was also checked at save and at every run, so this is the third look);
 //   - `not_allowed`: a name that is not on the list of THIS run's accounts' hosts (at most 8, exact names, no wildcard);
-//   - `cap`: more connections than the run's cap (`maxRequests`, from the account: default 2,000), or more at once than `maxConcurrent`;
+//   - `cap`: more connections than the run's cap (`maxConnections`, from the account: default 2,000), or more at once than `maxConcurrent`;
 //   - `private_address`: a name that RESOLVES to a loopback, private, link-local, shared (100.64/10), metadata, multicast or reserved address (any one of its answers is enough). The proxy connects to the address it
 //     checked, not to the name again, so a name that answers differently the second time cannot move it (DNS rebinding);
 //   - `upstream`: the host did not answer in time or reset the connection.
 // Only port 443 is allowed: an account's hosts are plain names, never a name and a port.
 //
-// LIMITS. Headers are held to 4 KB and 10 seconds; a connect takes at most `connectTimeoutMs`; a tunnel closes after `idleTimeoutMs` without bytes and after `maxTunnelMs` in all; both ends are destroyed together.
+// LIMITS. Headers are held to 4 KB and 10 seconds; a connect takes at most `connectTimeoutMs`; a tunnel closes after `idleTimeoutMs` without bytes, after `maxTunnelMs` in all, and once it has carried `maxTunnelBytes` (both directions; the snapshot says how many were cut and how many bytes passed, which the day's use records); both ends are destroyed together.
 //
 // NOT DONE HERE. This module opens no network of its own, adds no firewall rule, and is not run by this build (no Docker): the Linux check TS-L5 (the proxy's egress bridge reaches only allowed names through the DNS
 // firewall, and a private range fails) must pass on linux-runtime or a staging worker before `ta` is on. The sealed sandbox (check-sandbox.ts, lane ts-sealed) starts it through `startTestAccountProxy` and reads its
@@ -36,7 +36,7 @@ export type ProxyRefusal = (typeof PROXY_REFUSALS)[number];
 const STATUS: Record<ProxyRefusal, number> = { source: 403, not_connect: 405, bad_request: 400, ip_literal: 403, denied: 403, not_allowed: 403, cap: 429, private_address: 403, upstream: 502 };
 const WORDS: Record<ProxyRefusal, string> = {
   source: "not a caller of this proxy", not_connect: "only CONNECT is allowed", bad_request: "not a host and port", ip_literal: "not a name", denied: "not allowed", not_allowed: "not allowed",
-  cap: "too many requests", private_address: "not allowed", upstream: "could not connect",
+  cap: "too many connections", private_address: "not allowed", upstream: "could not connect",
 };
 
 // ---- names
@@ -84,7 +84,42 @@ export function parseConnectTarget(target: string): { host: string; port: number
 
 // ---- addresses
 
-/** Whether an address is one a test account must never be reached at: loopback, private, link-local (the metadata address included), shared, multicast, reserved, unspecified; IPv6 the same, and IPv4-mapped IPv6 by its IPv4. */
+/** The 16 bytes of an IPv6 address (compressed, with an embedded dotted IPv4 tail, or with a zone), or undefined. Node's `isIP` has already said it is IPv6. */
+function ipv6Bytes(address: string): number[] | undefined {
+  const text = address.split("%")[0] as string;
+  let head = text;
+  let tail4: number[] = [];
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(text);
+  if (dotted !== null) {
+    tail4 = dotted.slice(1, 5).map(Number);
+    if (tail4.some((part) => part > 255)) return undefined;
+    head = `${text.slice(0, text.length - (dotted[0]).length)}0:0`;
+  }
+  const sides = head.split("::");
+  if (sides.length > 2) return undefined;
+  const parse = (part: string): number[] | undefined => {
+    if (part === "") return [];
+    const groups = part.split(":").map((group) => (/^[0-9a-f]{1,4}$/iu.test(group) ? Number.parseInt(group, 16) : Number.NaN));
+    return groups.some(Number.isNaN) ? undefined : groups;
+  };
+  const left = parse(sides[0] as string);
+  const right = sides.length === 2 ? parse(sides[1] as string) : [];
+  if (left === undefined || right === undefined) return undefined;
+  const missing = 8 - left.length - right.length;
+  if (sides.length === 2 ? missing < 1 : missing !== 0) return undefined;
+  const groups = [...left, ...Array.from({ length: sides.length === 2 ? missing : 0 }, () => 0), ...right];
+  if (tail4.length === 4) {
+    groups[6] = (tail4[0] as number) * 256 + (tail4[1] as number);
+    groups[7] = (tail4[2] as number) * 256 + (tail4[3] as number);
+  }
+  return groups.flatMap((group) => [group >> 8, group & 0xff]);
+}
+
+/**
+ * Whether an address is one a test account must never be reached at: loopback, private, link-local (the metadata address included), shared, multicast, reserved, unspecified. For IPv6, by prefix on the 16 bytes:
+ * ::/96 (unspecified, loopback and IPv4-compatible), ::ffff:0:0/96 (every IPv4-mapped address, whatever its IPv4), 64:ff9b::/96 (translation), 100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4: it carries an
+ * IPv4 address that could be anything), fc00::/7, fe80::/10, fec0::/10 (deprecated site-local) and ff00::/8. Anything that is not an address at all is forbidden.
+ */
 export function isForbiddenAddress(address: string): boolean {
   const kind = isIP(address);
   if (kind === 0) return true;
@@ -93,14 +128,22 @@ export function isForbiddenAddress(address: string): boolean {
     return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 0 && (c === 0 || c === 2))
       || (a === 192 && b === 168) || (a === 192 && b === 88 && c === 99) || (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) || a >= 224;
   }
-  const lower = address.toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/u.exec(lower);
-  if (mapped !== null) return isForbiddenAddress(mapped[1] as string);
-  if (/^::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}$/u.test(lower)) return true;
-  if (lower === "::" || lower === "::1") return true;
-  const first = Number.parseInt(lower.split(":")[0] || "0", 16);
-  // fc00::/7 unique local, fe80::/10 link local, ff00::/8 multicast, 2001:db8::/32 documentation, 64:ff9b::/96 translation, 100::/64 discard.
-  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00 || lower.startsWith("2001:db8:") || lower.startsWith("64:ff9b:") || lower.startsWith("100:");
+  const bytes = ipv6Bytes(address);
+  if (bytes === undefined) return true;
+  const zeros = (from: number, to: number): boolean => bytes.slice(from, to).every((byte) => byte === 0);
+  const first = (bytes[0] as number) * 256 + (bytes[1] as number);
+  const second = (bytes[2] as number) * 256 + (bytes[3] as number);
+  return zeros(0, 12) // ::/96
+    || (zeros(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff) // ::ffff:0:0/96
+    || (first === 0x0064 && second === 0xff9b && zeros(4, 12)) // 64:ff9b::/96
+    || (first === 0x0100 && zeros(2, 8)) // 100::/64
+    || (first === 0x2001 && second === 0x0000) // 2001::/32
+    || (first === 0x2001 && second === 0x0db8) // 2001:db8::/32
+    || first === 0x2002 // 2002::/16
+    || (first & 0xfe00) === 0xfc00 // fc00::/7
+    || (first & 0xffc0) === 0xfe80 // fe80::/10
+    || (first & 0xffc0) === 0xfec0 // fec0::/10
+    || (first & 0xff00) === 0xff00; // ff00::/8
 }
 
 const callerAddress = (raw: string | undefined): string => (raw ?? "").replace(/^::ffff:/iu, "");
@@ -113,7 +156,7 @@ export interface TestAccountProxyOptions {
   /** The production deny check (a closure over the company's list: `denyChecker`). True for a name that must never be reached. */
   isDenied: (host: string) => boolean;
   /** The cap on connections for this run. */
-  maxRequests: number;
+  maxConnections: number;
   /** The address to listen on: the proxy's address on the services network. A wildcard address is refused. */
   listenAddress: string;
   listenPort?: number;
@@ -122,7 +165,10 @@ export interface TestAccountProxyOptions {
   maxConcurrent?: number;
   idleTimeoutMs?: number;
   connectTimeoutMs?: number;
+  /** The longest one tunnel lives (default 5 minutes). */
   maxTunnelMs?: number;
+  /** The most bytes one tunnel carries, both directions together (default 256 MiB): past it the tunnel is cut. */
+  maxTunnelBytes?: number;
   /** All the addresses of a name. Default: the system resolver. */
   resolve?: (host: string) => Promise<string[]>;
   /** Opens the upstream connection to an address that has been checked. Default: `net.connect`. */
@@ -134,6 +180,10 @@ export interface ProxySnapshot {
   /** Connections that were allowed (the number the cap counts). */
   connections: number;
   hosts: ProxyHostStats[];
+  /** Bytes through all tunnels, both directions: what the day's use records. */
+  bytes: number;
+  /** Tunnels the proxy cut for passing a per-tunnel cap. */
+  cut: { bytes: number; duration: number };
   /** How many requests were refused, by reason. Never what was asked for. */
   refused: Record<ProxyRefusal, number>;
   capReached: boolean;
@@ -146,7 +196,7 @@ export interface TestAccountProxy {
   close(): Promise<void>;
 }
 
-const DEFAULTS = { maxConcurrent: 32, idleTimeoutMs: 60_000, connectTimeoutMs: 10_000, maxTunnelMs: 300_000 };
+const DEFAULTS = { maxConcurrent: 32, idleTimeoutMs: 60_000, connectTimeoutMs: 10_000, maxTunnelMs: 300_000, maxTunnelBytes: 256 * 1024 * 1024 };
 
 /** The deny check as a closure over the company's list. */
 export const denyChecker = (deny: TestEnvProdDeny) => (host: string): boolean => prodDenyMatchesHost(deny, host);
@@ -160,7 +210,9 @@ function validate(options: TestAccountProxyOptions): { hosts: Set<string> } {
     if (name === undefined || name !== raw) throw new RangeError("a proxy host is a plain lower-case name");
     hosts.add(name);
   }
-  if (!Number.isSafeInteger(options.maxRequests) || options.maxRequests < 1 || options.maxRequests > 20_000) throw new RangeError("the request cap is 1 to 20,000");
+  if (options.maxTunnelBytes !== undefined && (!Number.isSafeInteger(options.maxTunnelBytes) || options.maxTunnelBytes < 1)) throw new RangeError("the per-tunnel byte cap is a positive whole number");
+  if (options.maxTunnelMs !== undefined && (!Number.isSafeInteger(options.maxTunnelMs) || options.maxTunnelMs < 1)) throw new RangeError("the per-tunnel time cap is a positive whole number");
+  if (!Number.isSafeInteger(options.maxConnections) || options.maxConnections < 1 || options.maxConnections > 20_000) throw new RangeError("the connection cap is 1 to 20,000");
   if (options.allowedSources.length === 0) throw new RangeError("the proxy needs the address of the sandbox that may use it");
   if (isIP(options.listenAddress) === 0 || ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0"].includes(options.listenAddress)) throw new RangeError("the proxy listens on one address, never a wildcard");
   return { hosts };
@@ -175,6 +227,8 @@ export async function startTestAccountProxy(options: TestAccountProxyOptions): P
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULTS.idleTimeoutMs;
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULTS.connectTimeoutMs;
   const maxTunnelMs = options.maxTunnelMs ?? DEFAULTS.maxTunnelMs;
+  const maxTunnelBytes = options.maxTunnelBytes ?? DEFAULTS.maxTunnelBytes;
+  const cut = { bytes: 0, duration: 0 };
   const sources = new Set(options.allowedSources.map(callerAddress));
   const stats = new Map<string, ProxyHostStats>();
   const refused = Object.fromEntries(PROXY_REFUSALS.map((reason) => [reason, 0])) as Record<ProxyRefusal, number>;
@@ -208,7 +262,7 @@ export async function startTestAccountProxy(options: TestAccountProxyOptions): P
     const { host } = target;
     if (options.isDenied(host)) return refuse(client, "denied");
     if (!hosts.has(host)) return refuse(client, "not_allowed");
-    if (accepted >= options.maxRequests || active >= maxConcurrent) return refuse(client, "cap");
+    if (accepted >= options.maxConnections || active >= maxConcurrent) return refuse(client, "cap");
     accepted += 1;
     active += 1;
     const entry = stats.get(host) ?? { host, connections: 0, bytesUp: 0, bytesDown: 0 };
@@ -245,13 +299,22 @@ export async function startTestAccountProxy(options: TestAccountProxyOptions): P
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         upstream.setTimeout(idleTimeoutMs, () => { upstream.destroy(); client.destroy(); });
         client.setTimeout(idleTimeoutMs, () => { upstream.destroy(); client.destroy(); });
-        const limit = setTimeout(() => { upstream.destroy(); client.destroy(); }, maxTunnelMs);
+        const limit = setTimeout(() => { cut.duration += 1; upstream.destroy(); client.destroy(); }, maxTunnelMs);
+        let carried = 0;
+        const count = (length: number): boolean => {
+          carried += length;
+          if (carried <= maxTunnelBytes) return true;
+          cut.bytes += 1;
+          upstream.destroy();
+          client.destroy();
+          return false;
+        };
         const end = (): void => { clearTimeout(limit); upstream.destroy(); client.destroy(); };
         client.once("close", end);
         upstream.once("close", end);
-        client.on("data", (chunk: Buffer) => { entry.bytesUp += chunk.length; });
-        upstream.on("data", (chunk: Buffer) => { entry.bytesDown += chunk.length; });
-        if (head.length > 0) { entry.bytesUp += head.length; upstream.write(head); }
+        client.on("data", (chunk: Buffer) => { if (count(chunk.length)) entry.bytesUp += chunk.length; });
+        upstream.on("data", (chunk: Buffer) => { if (count(chunk.length)) entry.bytesDown += chunk.length; });
+        if (head.length > 0 && count(head.length)) { entry.bytesUp += head.length; upstream.write(head); }
         client.pipe(upstream);
         upstream.pipe(client);
       });
@@ -268,7 +331,7 @@ export async function startTestAccountProxy(options: TestAccountProxyOptions): P
   return {
     address: bound.address,
     port: bound.port,
-    snapshot: () => ({ connections: accepted, hosts: [...stats.values()].map((each) => ({ ...each })), refused: { ...refused }, capReached }),
+    snapshot: () => ({ connections: accepted, hosts: [...stats.values()].map((each) => ({ ...each })), bytes: [...stats.values()].reduce((sum, each) => sum + each.bytesUp + each.bytesDown, 0), cut: { ...cut }, refused: { ...refused }, capReached }),
     close: () => new Promise<void>((done) => {
       for (const socket of live) socket.destroy();
       server.close(() => done());
@@ -300,7 +363,7 @@ export function testAccountProxyEnv(input: { address: string; port?: number; noP
 interface HelperConfig {
   hosts: string[];
   deny: TestEnvProdDeny;
-  maxRequests: number;
+  maxConnections: number;
   listen: string;
   port: number;
   sources: string[];
@@ -311,7 +374,7 @@ function readHelperConfig(path: string): HelperConfig {
   const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<HelperConfig>;
   if (!Array.isArray(raw.hosts) || raw.deny === undefined || typeof raw.listen !== "string" || !Array.isArray(raw.sources) || typeof raw.state !== "string") throw new Error("the proxy's config is incomplete");
   return {
-    hosts: raw.hosts, deny: raw.deny, maxRequests: raw.maxRequests ?? TEST_ACCOUNT_LIMIT_DEFAULTS.maxRequestsPerRun, listen: raw.listen, port: raw.port ?? PROXY_LISTEN_PORT, sources: raw.sources, state: raw.state,
+    hosts: raw.hosts, deny: raw.deny, maxConnections: raw.maxConnections ?? TEST_ACCOUNT_LIMIT_DEFAULTS.maxConnectionsPerRun, listen: raw.listen, port: raw.port ?? PROXY_LISTEN_PORT, sources: raw.sources, state: raw.state,
   };
 }
 
@@ -321,7 +384,7 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
   const path = at < 0 ? undefined : argv[at + 1];
   if (path === undefined || path.startsWith("--")) throw new Error("missing --config");
   const config = readHelperConfig(path);
-  const proxy = await startTestAccountProxy({ hosts: config.hosts, isDenied: denyChecker(config.deny), maxRequests: config.maxRequests, listenAddress: config.listen, listenPort: config.port, allowedSources: config.sources });
+  const proxy = await startTestAccountProxy({ hosts: config.hosts, isDenied: denyChecker(config.deny), maxConnections: config.maxConnections, listenAddress: config.listen, listenPort: config.port, allowedSources: config.sources });
   let written = "";
   const flush = (): void => {
     const next = JSON.stringify(proxy.snapshot());

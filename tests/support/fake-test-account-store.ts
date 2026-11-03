@@ -45,13 +45,13 @@ export class FakeTestAccountStore implements TestAccountStore {
   }
 
   usageOn(orgId: OrgId, id: string, day: string): Promise<DayUsage> {
-    return Promise.resolve(this.usage.get(`${this.key(orgId, id)}#${day}`) ?? { rounds: 0, requests: 0 });
+    return Promise.resolve(this.usage.get(`${this.key(orgId, id)}#${day}`) ?? { rounds: 0, connections: 0, bytes: 0 });
   }
 
   addUsage(orgId: OrgId, id: string, _projectId: string, day: string, add: DayUsage, audit: AuditEventInput): Promise<DayUsage> {
     const key = `${this.key(orgId, id)}#${day}`;
-    const before = this.usage.get(key) ?? { rounds: 0, requests: 0 };
-    const after = { rounds: before.rounds + add.rounds, requests: before.requests + add.requests };
+    const before = this.usage.get(key) ?? { rounds: 0, connections: 0, bytes: 0 };
+    const after = { rounds: before.rounds + add.rounds, connections: before.connections + add.connections, bytes: before.bytes + add.bytes };
     this.usage.set(key, after);
     this.audits.push(AuditEventInputSchema.parse(audit));
     return Promise.resolve(after);

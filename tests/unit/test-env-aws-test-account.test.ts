@@ -17,16 +17,17 @@ const body = (services: unknown[], prodDeny: { accountIds: string[]; hosts: stri
   tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [] }], roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
   services, data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny, capture: { screenshots: "failed", video: false, traces: false },
 });
+const REGION = { StringEquals: { "aws:RequestedRegion": "us-west-2" } };
 const DENY: TestEnvProdDeny = { accountIds: ["111122223333"], hosts: [], arnPrefixes: [] };
 const person = (letter: string) => letter.repeat(64);
 const DYNAMO_ROLE = "arn:aws:iam::222233334444:role/rovara-test";
 const DYNAMO_TABLE = "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test";
-const awsBlock = (over: Record<string, unknown> = {}) => ({ roleArn: DYNAMO_ROLE, externalId: "ext-0123456789", region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [DYNAMO_TABLE], ...over });
+const awsBlock = (over: Record<string, unknown> = {}) => ({ roleArn: DYNAMO_ROLE, externalId: `rovara-${ORG}-orders-dev`, region: "us-west-2", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [DYNAMO_TABLE], ...over });
 /** An active, approved AWS role account, built the way the contract builds one (approvals stamped with the record's own digest). */
 function account(over: Record<string, unknown> = {}): TestAccount {
   const record: Record<string, unknown> = {
     id: "orders-dev", orgId: ORG, projectIds: ["orders"], family: "aws:dynamodb", label: "Dev AWS (orders)", kind: "aws_role", aws: awsBlock(), hosts: ["dynamodb.us-west-2.amazonaws.com"], envNames: [],
-    limits: { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 }, status: "active", expiresAt: new Date(NOW + 30 * 86_400_000).toISOString(), approvals: [], ...over,
+    limits: { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 }, status: "active", expiresAt: new Date(NOW + 30 * 86_400_000).toISOString(), approvals: [], ...over,
   };
   const digest = testAccountApprovalDigest(record as never);
   record.approvals = ["a", "b"].map((letter) => ({ by: person(letter), at: new Date(NOW - 86_400_000).toISOString(), freshSignIn: true, kind: "approver", approvedDigest: digest }));
@@ -35,11 +36,11 @@ function account(over: Record<string, unknown> = {}): TestAccount {
 const creds = (over: Partial<AssumedCredentials> = {}): AssumedCredentials => ({ accessKeyId: ["ASIA", "EXAMPLE"].join(""), secretAccessKey: "s3cr3t-example", sessionToken: "token-example", expiration: new Date(NOW + 3_600_000), ...over });
 function aws(over: Partial<AwsTestAccountPort> = {}) {
   const calls: Array<Record<string, unknown>> = [];
-  const port: AwsTestAccountPort = { ownAccountId: "999988887777", rovaraAccountIds: ["888800008888"], assumeRole: (input) => { calls.push({ ...input }); return Promise.resolve(creds()); }, ...over };
+  const port: AwsTestAccountPort = { enabled: () => true, ownAccountId: "999988887777", rovaraAccountIds: ["888800008888"], assumeRole: (input) => { calls.push({ ...input }); return Promise.resolve(creds()); }, ...over };
   return { port, calls };
 }
-const open = (port: AwsTestAccountPort, over: { account?: TestAccount; taskId?: string; prodDeny?: TestEnvProdDeny; maxExpiryDays?: number } = {}) =>
-  openAwsTestAccountSession(port, { account: over.account ?? account(), taskId: over.taskId ?? "task-1234abcd-9", prodDeny: over.prodDeny ?? DENY, ...(over.maxExpiryDays === undefined ? {} : { maxExpiryDays: over.maxExpiryDays }), now: () => NOW });
+const open = (port: AwsTestAccountPort, over: { orgId?: string; account?: TestAccount; taskId?: string; prodDeny?: TestEnvProdDeny; maxExpiryDays?: number } = {}) =>
+  openAwsTestAccountSession(port, { orgId: over.orgId ?? ORG, account: over.account ?? account(), taskId: over.taskId ?? "task-1234abcd-9", prodDeny: over.prodDeny ?? DENY, ...(over.maxExpiryDays === undefined ? {} : { maxExpiryDays: over.maxExpiryDays }), now: () => NOW });
 const refusalOf = async (call: Promise<unknown>): Promise<AwsTestAccountError> => {
   const error = await call.then(() => { throw new Error("expected a refusal"); }, (caught: unknown) => caught);
   expect(error).toBeInstanceOf(AwsTestAccountError);
@@ -51,8 +52,9 @@ describe("the session", () => {
     const { port, calls } = aws();
     const session = await open(port);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ SourceIdentity: "rovara-task1234abcd9", RoleArn: DYNAMO_ROLE, DurationSeconds: 3_600, RoleSessionName: "rovara-task1234", ExternalId: "ext-0123456789" });
-    expect(JSON.parse(calls[0]!["Policy"] as string)).toEqual({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: DYNAMO_TABLE }] });
+    expect(calls[0]).toMatchObject({ RoleArn: DYNAMO_ROLE, DurationSeconds: 3_600, RoleSessionName: "rovara-task1234abcd9-orders-dev", ExternalId: `rovara-${ORG}-orders-dev` });
+    expect(calls[0]).not.toHaveProperty("SourceIdentity");
+    expect(JSON.parse(calls[0]!["Policy"] as string)).toEqual({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: DYNAMO_TABLE, Condition: { StringEquals: { "aws:RequestedRegion": "us-west-2" } } }] });
     expect(AWS_TEST_ACCOUNT_SESSION_SECONDS).toBe(3_600);
     expect(session.credentials.accessKeyId).toBe(["ASIA", "EXAMPLE"].join(""));
     expect(session.expiresAtMs).toBe(NOW + 3_600_000);
@@ -83,6 +85,81 @@ describe("the session", () => {
       expect(fake.calls, code).toHaveLength(0);
       for (const word of ["222233334444", "999988887777", "111122223333", "arn:"]) expect(error.message).not.toContain(word);
     }
+  });
+
+  it("is off with the ta switch: nothing is checked, opened or sent to AWS", async () => {
+    const fake = aws({ enabled: () => false });
+    const error = await open(fake.port).then(() => undefined, (caught: unknown) => caught as { code?: string; message: string });
+    expect(error).toMatchObject({ code: "NOT_FOUND" });
+    expect(error?.message).toContain("Not found");
+    expect(fake.calls).toHaveLength(0);
+    // Evaluated at every call, not once.
+    let on = true;
+    const flipping = aws({ enabled: () => on });
+    await open(flipping.port);
+    on = false;
+    await expect(open(flipping.port)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(flipping.calls).toHaveLength(1);
+  });
+
+  it("H1: always sends the external id derived from the request's company and the account, and one company can never cause another's", async () => {
+    const OTHER = `org_${"z9y8x7w6v5".repeat(2)}`;
+    // The same account under the right company: the derived id, exactly.
+    const own = aws();
+    await open(own.port);
+    expect(own.calls.map((call) => call["ExternalId"])).toEqual([`rovara-${ORG}-orders-dev`]);
+    // Company A asking for company B's account: refused before anything is sent.
+    const foreignAccount = account({ orgId: OTHER, aws: awsBlock({ externalId: `rovara-${OTHER}-orders-dev` }) });
+    const cross = aws();
+    expect((await refusalOf(open(cross.port, { orgId: ORG, account: foreignAccount }))).code).toBe("bad_role");
+    expect(cross.calls).toHaveLength(0);
+    // Company B asking for its own account carries B's id and nobody else's.
+    const second = aws();
+    await open(second.port, { orgId: OTHER, account: foreignAccount });
+    expect(second.calls.map((call) => call["ExternalId"])).toEqual([`rovara-${OTHER}-orders-dev`]);
+    // A record that holds another company's id, a customer-chosen id or another account's id is refused, however it got there.
+    for (const externalId of [`rovara-${OTHER}-orders-dev`, "ext-0123456789", `rovara-${ORG}-orders-files`, "rovara-org_", ""]) {
+      const tampered = aws();
+      const record = { ...account(), aws: awsBlock({ externalId }) } as unknown as TestAccount;
+      const error = await refusalOf(open(tampered.port, { account: record }));
+      expect(["external_id", "not_usable"], externalId).toContain(error.code);
+      expect(tampered.calls, externalId).toHaveLength(0);
+    }
+    // The record that really is in the store, only its external id changed after the approval stamped it: the stamp no longer matches, and the id would not either.
+    const stamped = account();
+    const swapped = { ...stamped, aws: { ...stamped.aws!, externalId: `rovara-${OTHER}-orders-dev` } } as TestAccount;
+    const swappedPort = aws();
+    await refusalOf(open(swappedPort.port, { account: swapped }));
+    expect(swappedPort.calls).toHaveLength(0);
+    // Every id that is ever sent starts with what the broker's grant requires (`sts:ExternalId` like `rovara-org_*`).
+    for (const call of [...own.calls, ...second.calls]) expect(String(call["ExternalId"])).toMatch(/^rovara-org_[a-z0-9]{20}-[a-z0-9_-]+$/u);
+  });
+
+  it("names the session by a fixed shape of the task and the account, with nothing a person typed and no source identity", async () => {
+    const fake = aws();
+    await open(fake.port, { taskId: "TASK 12/34\n; drop table" });
+    const name = String(fake.calls[0]!["RoleSessionName"]);
+    expect(name).toBe("rovara-TASK1234droptabl-orders-dev");
+    expect(name).toMatch(/^[\w+=,.@-]{2,64}$/u);
+    expect(fake.calls[0]).not.toHaveProperty("SourceIdentity");
+    const long = aws();
+    await open(long.port, { taskId: "x".repeat(200) });
+    expect(String(long.calls[0]!["RoleSessionName"]).length).toBeLessThanOrEqual(64);
+    const empty = aws();
+    await open(empty.port, { taskId: "!!!" });
+    expect(String(empty.calls[0]!["RoleSessionName"])).toBe("rovara-task-orders-dev");
+  });
+
+  it("L7: limits each statement to the account's region, and the policy of a real account still fits", async () => {
+    const policy = JSON.parse(awsTestAccountSessionPolicy(awsBlock({ region: "eu-central-1", resources: ["arn:aws:dynamodb:eu-central-1:222233334444:table/t"] }))) as { Statement: Array<{ Condition: unknown }> };
+    expect(policy.Statement.every((statement) => JSON.stringify(statement.Condition) === JSON.stringify({ StringEquals: { "aws:RequestedRegion": "eu-central-1" } }))).toBe(true);
+    const four = awsBlock({
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "s3:GetObject", "s3:ListBucket", "sqs:SendMessage", "sqs:ReceiveMessage", "sns:Publish"],
+      resources: [DYNAMO_TABLE, "arn:aws:s3:::orders-test-bucket", "arn:aws:s3:::orders-test-bucket/*", "arn:aws:sqs:us-west-2:222233334444:orders-queue", "arn:aws:sns:us-west-2:222233334444:orders-topic"],
+    });
+    const text = awsTestAccountSessionPolicy(four);
+    expect((JSON.parse(text) as { Statement: unknown[] }).Statement).toHaveLength(4);
+    expect(text.length).toBeLessThanOrEqual(SESSION_POLICY_MAX_CHARS);
   });
 
   it("refuses any kind but an AWS role account, even when the record carries an AWS block", async () => {
@@ -154,8 +231,8 @@ describe("the session policy", () => {
     expect(JSON.parse(awsTestAccountSessionPolicy(two as never))).toEqual({
       Version: "2012-10-17",
       Statement: [
-        { Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: [DYNAMO_TABLE, "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test/index/*"] },
-        { Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket"], Resource: ["arn:aws:s3:::orders-test-bucket", "arn:aws:s3:::orders-test-bucket/*"] },
+        { Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: [DYNAMO_TABLE, "arn:aws:dynamodb:us-west-2:222233334444:table/orders-test/index/*"], Condition: REGION },
+        { Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket"], Resource: ["arn:aws:s3:::orders-test-bucket", "arn:aws:s3:::orders-test-bucket/*"], Condition: REGION },
       ],
     });
     const text = awsTestAccountSessionPolicy(two);
@@ -179,7 +256,7 @@ describe("the session policy", () => {
   });
   it("covers the other services of the allow-list the same way", () => {
     const sqs = awsBlock({ actions: ["sqs:SendMessage", "sqs:ReceiveMessage"], resources: ["arn:aws:sqs:us-west-2:222233334444:orders-queue"] });
-    expect((JSON.parse(awsTestAccountSessionPolicy(sqs as never)) as { Statement: unknown[] }).Statement).toEqual([{ Effect: "Allow", Action: ["sqs:ReceiveMessage", "sqs:SendMessage"], Resource: "arn:aws:sqs:us-west-2:222233334444:orders-queue" }]);
+    expect((JSON.parse(awsTestAccountSessionPolicy(sqs as never)) as { Statement: unknown[] }).Statement).toEqual([{ Effect: "Allow", Action: ["sqs:ReceiveMessage", "sqs:SendMessage"], Resource: "arn:aws:sqs:us-west-2:222233334444:orders-queue", Condition: REGION }]);
     const sagemaker = awsBlock({ actions: ["sagemaker:InvokeEndpoint"], resources: ["arn:aws:sagemaker:us-west-2:222233334444:endpoint/partner-scorer"] });
     expect((JSON.parse(awsTestAccountSessionPolicy(sagemaker as never)) as { Statement: Array<{ Action: string[] }> }).Statement[0]!.Action).toEqual(["sagemaker:InvokeEndpoint"]);
   });

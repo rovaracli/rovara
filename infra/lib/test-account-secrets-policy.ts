@@ -37,7 +37,7 @@ export function testAccountSecretsTrustPolicy(brokerRoleArn: string | Record<str
 /**
  * What a session may do, on `secret:agentx/<env>/org-test-accounts/<its org>/*` only. `secretArnPrefix` is everything in the ARN up to and including `secret:`.
  *
- * - Put, Describe and Delete need the secret's own `rovara:org` tag to equal the session's org, its `rovara:use` tag to be `test-account`, and the session's purpose to be `store`.
+ * - Put, Describe, UpdateSecretVersionStage and Delete need the secret's own `rovara:org` tag to equal the session's org, its `rovara:use` tag to be `test-account`, and the session's purpose to be `store`.
  * - CreateSecret and TagResource need the request tags to equal the session's org and `test-account`, those two to be the only tag keys, and purpose `store`.
  * - GetSecretValue needs the same resource tags and purpose `resolve`.
  * - Denied whatever else says: UntagResource, DeleteSecret with ForceDeleteWithoutRecovery, any read by a session that is not `resolve`, and any write by a session that is not `store`.
@@ -50,7 +50,7 @@ export function testAccountSecretsPolicyStatements(options: { secretArnPrefix: s
     "ForAllValues:StringEquals": { "aws:TagKeys": [ORG_TAG_KEY, USE_TAG_KEY] },
   };
   return [
-    { Sid: "StoreOwnOrgSecrets", Effect: "Allow", Action: ["secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret", "secretsmanager:DeleteSecret"], Resource: own, Condition: { StringEquals: { ...ownResource, [`aws:PrincipalTag/${PURPOSE_TAG_KEY}`]: "store" } } },
+    { Sid: "StoreOwnOrgSecrets", Effect: "Allow", Action: ["secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret", "secretsmanager:DeleteSecret", "secretsmanager:UpdateSecretVersionStage"], Resource: own, Condition: { StringEquals: { ...ownResource, [`aws:PrincipalTag/${PURPOSE_TAG_KEY}`]: "store" } } },
     { Sid: "ResolveOwnOrgSecret", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: own, Condition: { StringEquals: { ...ownResource, [`aws:PrincipalTag/${PURPOSE_TAG_KEY}`]: "resolve" } } },
     { Sid: "CreateOwnOrgSecrets", Effect: "Allow", Action: "secretsmanager:CreateSecret", Resource: own, Condition: tagged },
     { Sid: "TagOnlyWithCreate", Effect: "Allow", Action: "secretsmanager:TagResource", Resource: own, Condition: tagged },
@@ -60,7 +60,7 @@ export function testAccountSecretsPolicyStatements(options: { secretArnPrefix: s
     {
       Sid: "OnlyStoreWrites",
       Effect: "Deny",
-      Action: ["secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret", "secretsmanager:TagResource"],
+      Action: ["secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret", "secretsmanager:TagResource", "secretsmanager:UpdateSecretVersionStage"],
       Resource: "*",
       Condition: { StringNotEquals: { [`aws:PrincipalTag/${PURPOSE_TAG_KEY}`]: "store" } },
     },

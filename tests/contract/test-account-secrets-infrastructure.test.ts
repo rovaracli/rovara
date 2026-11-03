@@ -1,6 +1,6 @@
 // Test services TS26: the TestAccountSecretsRole and the broker's permission to assume it. The policy text is the one the control plane synthesizes; the Secrets Manager fake evaluates it, so isolation between
 // orgs, between purposes (store never reads, resolve never writes) and from the connector path is proved by what the role refuses.
-import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, GetSecretValueCommand, PutSecretValueCommand, TagResourceCommand, UntagResourceCommand } from "@aws-sdk/client-secrets-manager";
+import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, GetSecretValueCommand, PutSecretValueCommand, TagResourceCommand, UntagResourceCommand, UpdateSecretVersionStageCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
@@ -8,6 +8,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "../../infra/lib/test-account-secrets-policy.js";
 import { defaultBoundaryStatements, fixedNameEnvironmentRoleNames, testAccountSecretsRoleName } from "../../packages/contracts/src/access-policies.js";
+import * as accessPolicies from "../../packages/contracts/src/access-policies.js";
+import * as savedEnvImage from "../../packages/contracts/src/saved-env-image.js";
+import { resolveSessionPolicy } from "../../packages/broker/src/test-env/test-account-secrets.js";
 import { testAccountSecretName, testAccountSecretTags } from "../../packages/contracts/src/test-account.js";
 import { FAKE_BROKER_ROLE_ARN, FakeOrgSecrets, type FakeSecretsClient } from "../support/fake-org-secrets.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -67,10 +70,54 @@ describe("the TestAccountSecretsRole, as the policy text says", () => {
       new PutSecretValueCommand({ SecretId: name, SecretString: "x" }), new DeleteSecretCommand({ SecretId: name, RecoveryWindowInDays: 7 }), create(ORG_A, "third"),
       new TagResourceCommand({ SecretId: name, Tags: [{ Key: "rovara:org", Value: ORG_A }] }), new DescribeSecretCommand({ SecretId: name }),
     ]) expect(await refused(resolve.send(command)), command.constructor.name).toBe(true);
-    // The session policy the broker passes narrows a resolve session to one secret.
-    const narrowed = await session(secrets, tagsOf(ORG_A, "resolve"), { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: `${ARN_PREFIX}${name}-??????` }] });
-    expect(await allowed(narrowed.send(new GetSecretValueCommand({ SecretId: name })))).toBe(true);
-    expect(await refused(narrowed.send(new GetSecretValueCommand({ SecretId: other })))).toBe(true);
+    // The session policy the broker passes (the real one) narrows a resolve session to one secret, read by its AWSCURRENT stage named in the request.
+    const narrowed = await session(secrets, tagsOf(ORG_A, "resolve"), JSON.parse(resolveSessionPolicy(ARN_PREFIX, name)));
+    expect(await allowed(narrowed.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSCURRENT" })))).toBe(true);
+    expect(await refused(narrowed.send(new GetSecretValueCommand({ SecretId: other, VersionStage: "AWSCURRENT" })))).toBe(true);
+  });
+
+  it("L6: a resolve session reads only the version staged AWSCURRENT, named in the request: not a pending or previous version, and not an unnamed one", async () => {
+    const secrets = fake();
+    const store = await session(secrets, tagsOf(ORG_A, "store"));
+    await store.send(create(ORG_A, "payments-test"));
+    const name = testAccountSecretName("staging", ORG_A, "payments-test");
+    const pending = await store.send(new PutSecretValueCommand({ SecretId: name, SecretString: JSON.stringify({ apiKey: "pending-value" }), VersionStages: ["AWSPENDING"] }));
+    const policy = JSON.parse(resolveSessionPolicy(ARN_PREFIX, name)) as { Statement: Array<{ Condition: unknown }> };
+    expect(policy.Statement[0]!.Condition).toEqual({ "ForAnyValue:StringEquals": { "secretsmanager:VersionStage": "AWSCURRENT" } });
+    const resolve = await session(secrets, tagsOf(ORG_A, "resolve"), policy);
+    const current = await resolve.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSCURRENT" }));
+    expect(JSON.parse(current.SecretString!)).toEqual({ apiKey: "fake-value-123" });
+    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: name })))).toBe(true);
+    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSPENDING" })))).toBe(true);
+    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSPREVIOUS" })))).toBe(true);
+    // Naming the pending version's id, with no stage, is refused as well: the condition key is absent.
+    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: name, VersionId: pending.VersionId })))).toBe(true);
+    // Without the condition the same session could read it by stage, which is what the condition is for.
+    const unconditioned = await session(secrets, tagsOf(ORG_A, "resolve"), { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: `${ARN_PREFIX}${name}-??????` }] });
+    expect(await allowed(unconditioned.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSPENDING" })))).toBe(true);
+  });
+
+  it("M1: lets only the store session move a version stage of its own org's secret, and the pending put and promotion work end to end", async () => {
+    const secrets = fake();
+    const store = await session(secrets, tagsOf(ORG_A, "store"));
+    await store.send(create(ORG_A, "payments-test"));
+    const name = testAccountSecretName("staging", ORG_A, "payments-test");
+    const resolve = await session(secrets, tagsOf(ORG_A, "resolve"));
+    const otherOrg = await session(secrets, tagsOf(ORG_B, "store"));
+    const pending = await store.send(new PutSecretValueCommand({ SecretId: name, SecretString: JSON.stringify({ apiKey: "next-value" }), VersionStages: ["AWSPENDING"] }));
+    const described = await store.send(new DescribeSecretCommand({ SecretId: name }));
+    const holder = Object.entries(described.VersionIdsToStages!).find(([, labels]) => labels.includes("AWSCURRENT"))![0];
+    const promote = () => new UpdateSecretVersionStageCommand({ SecretId: name, VersionStage: "AWSCURRENT", MoveToVersionId: pending.VersionId!, RemoveFromVersionId: holder });
+    expect(await refused(resolve.send(promote()))).toBe(true);
+    expect(await refused(otherOrg.send(promote()))).toBe(true);
+    // The label cannot be moved without naming the version it leaves (as Secrets Manager requires).
+    await expect(store.send(new UpdateSecretVersionStageCommand({ SecretId: name, VersionStage: "AWSCURRENT", MoveToVersionId: pending.VersionId! }))).rejects.toMatchObject({ name: "InvalidParameterException" });
+    expect(await allowed(store.send(promote()))).toBe(true);
+    const policy = JSON.parse(resolveSessionPolicy(ARN_PREFIX, name)) as object;
+    const reader = await session(secrets, tagsOf(ORG_A, "resolve"), policy);
+    expect(JSON.parse((await reader.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSCURRENT" }))).SecretString!)).toEqual({ apiKey: "next-value" });
+    // The store session still cannot read it.
+    expect(await refused(store.send(new GetSecretValueCommand({ SecretId: name, VersionStage: "AWSCURRENT" })))).toBe(true);
   });
 
   it("never reaches another org's secret, in either purpose", async () => {
@@ -203,6 +250,22 @@ describe("TestAccountSecretsRole (named environments)", () => {
     const statement = boundary.find((entry) => entry.Sid === "ConnectorSecretsRole")!;
     expect(statement.Resource).toEqual(["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"]);
     expect("arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets-test-accounts").toMatch(new RegExp(`^${(statement.Resource as string[])[0]!.replace(/\*/gu, ".*")}$`, "u"));
+  });
+
+  it("L9: no other fixed or generated role name starts with the connector secrets role's name, which the boundary and the deploy role cover by prefix", () => {
+    const prefix = "agentx-staging-connector-secrets";
+    const expected = [accessPolicies.connectorSecretsRoleName("staging"), testAccountSecretsRoleName("staging")].sort();
+    // Every fixed name the control plane gives a role.
+    expect(fixedNameEnvironmentRoleNames("staging").filter((name) => name.startsWith(prefix)).sort()).toEqual(expected);
+    // Every role the synthesized template names.
+    const synthesized = Object.values(resources).filter((resource) => resource.Type === "AWS::IAM::Role").map((resource) => resource.Properties.RoleName).filter((name): name is string => typeof name === "string");
+    expect(synthesized.filter((name) => name.startsWith(prefix)).sort()).toEqual(expected);
+    // Every exported function that builds a role name, called for this environment (a new `...RoleName` helper is covered the day it is exported).
+    const builders = [...Object.entries(accessPolicies), ...Object.entries(savedEnvImage)].filter(([key, value]) => /RoleName$/u.test(key) && typeof value === "function" && (value as (...args: unknown[]) => unknown).length === 1);
+    expect(builders.length).toBeGreaterThan(8);
+    const generated = builders.map(([, build]) => (build as (env: string) => unknown)("staging")).filter((name): name is string => typeof name === "string");
+    expect(generated.filter((name) => name.startsWith(prefix)).sort()).toEqual(expected);
+    expect(savedEnvImage.savedEnvRolePrefix("staging").startsWith(prefix)).toBe(false);
   });
 
   it("uses no em dash in a name or description", () => {

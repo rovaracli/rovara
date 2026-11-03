@@ -5,10 +5,10 @@
 //   - `resolve`: a session minted for the worker of ONE sealed round and narrowed by a session policy to the one secret and the one read. It is handed over as credentials; this module never uses it.
 // The value is never logged and never put in an error: a failure is reported by the class of the AWS error only. The org id and the names are checked against each other before any AWS call, so a key-building
 // mistake is refused here as well as by IAM.
-import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, PutSecretValueCommand, UpdateSecretVersionStageCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
 import {
-  OrgIdSchema, TEST_ACCOUNT_GRANT_SECONDS, TEST_ACCOUNT_SECRET_TAG_KEYS, TEST_ACCOUNT_SECRET_USE, TestAccountIdSchema, agentXError, testAccountSecretName, testAccountSecretTags,
+  OrgIdSchema, TEST_ACCOUNT_GRANT_SECONDS, TEST_ACCOUNT_SECRET_PENDING_STAGE, TEST_ACCOUNT_SECRET_TAG_KEYS, TEST_ACCOUNT_SECRET_USE, TEST_ACCOUNT_SECRET_VERSION_STAGE, TestAccountIdSchema, agentXError, testAccountSecretName, testAccountSecretTags,
   type OrgId,
 } from "@agentx/contracts";
 
@@ -24,9 +24,9 @@ export const ACCOUNT_BEING_REMOVED_MESSAGE = "this test account is being removed
 export interface SessionCredentials { accessKeyId: string; secretAccessKey: string; sessionToken: string; expiration: Date }
 
 /** The Secrets Manager calls the broker's store session makes. GetSecretValue is not among them, on purpose. */
-export type StoreCommand = CreateSecretCommand | PutSecretValueCommand | DeleteSecretCommand | DescribeSecretCommand;
+export type StoreCommand = CreateSecretCommand | PutSecretValueCommand | DeleteSecretCommand | DescribeSecretCommand | UpdateSecretVersionStageCommand;
 export interface StoreClient {
-  send(command: StoreCommand): Promise<{ ARN?: string; VersionId?: string; DeletedDate?: Date }>;
+  send(command: StoreCommand): Promise<{ ARN?: string; VersionId?: string; DeletedDate?: Date; VersionIdsToStages?: Record<string, string[]> }>;
 }
 export interface TestAccountStsClient {
   send(command: AssumeRoleCommand): Promise<Pick<AssumeRoleCommandOutput, "Credentials">>;
@@ -44,6 +44,8 @@ export interface TestAccountSecretsInput {
   sts: TestAccountStsClient;
   /** A Secrets Manager client that signs with these session credentials. */
   storeClientFor(credentials: SessionCredentials): StoreClient;
+  /** The `ta` switch (`testAccountsEnabled`), read at every call: while it is off no session is minted and no secret is touched. */
+  enabled(): boolean;
   now?: () => number;
 }
 
@@ -60,7 +62,16 @@ const errorName = (error: unknown): string | undefined => (error instanceof Erro
 
 /** The session policy of a resolve session: read this one secret (its name plus Secrets Manager's six-character suffix) and nothing else. */
 export function resolveSessionPolicy(secretArnPrefix: string, secretName: string): string {
-  return JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: `${secretArnPrefix}${secretName}-??????` }] });
+  return JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Action: "secretsmanager:GetSecretValue",
+      Resource: `${secretArnPrefix}${secretName}-??????`,
+      // Only the version the broker promoted: a pending (not yet committed) or previous version is never read. The reader names the stage in its request.
+      Condition: { "ForAnyValue:StringEquals": { "secretsmanager:VersionStage": TEST_ACCOUNT_SECRET_VERSION_STAGE } },
+    }],
+  });
 }
 
 export class TestAccountSecrets {
@@ -77,6 +88,7 @@ export class TestAccountSecrets {
    * It never calls TagResource or UntagResource itself, and never reads.
    */
   async put(orgId: string, accountId: string, key: string, value: string): Promise<string> {
+    this.gate();
     const { org, name } = this.admit(orgId, accountId);
     if (!KEY.test(key)) throw agentXError("CONFIG_INVALID", "that is not a secret key name");
     if (value.length === 0 || value.length > VALUE_MAX) throw agentXError("CONFIG_INVALID", "that secret value is empty or too long");
@@ -100,6 +112,7 @@ export class TestAccountSecrets {
 
   /** Schedules the secret for deletion after a recovery window (7 to 30 days). A secret Secrets Manager cannot find is already gone. */
   async scheduleDelete(orgId: string, accountId: string, recoveryDays: number = DEFAULT_RECOVERY_DAYS): Promise<void> {
+    this.gate();
     const { org, name } = this.admit(orgId, accountId);
     try {
       await this.run(org, (client) => client.send(new DeleteSecretCommand({ SecretId: name, RecoveryWindowInDays: recoveryDays })));
@@ -111,10 +124,64 @@ export class TestAccountSecrets {
   }
 
   /**
+   * ROTATION, step 1: puts a new value as a version staged `AWSPENDING`. `AWSCURRENT` stays where it was, so nothing that reads the secret sees the new value yet. Returns the new version id. The secret must exist.
+   * Never reads.
+   */
+  async putPending(orgId: string, accountId: string, key: string, value: string): Promise<string> {
+    this.gate();
+    const { org, name } = this.admit(orgId, accountId);
+    if (!KEY.test(key)) throw agentXError("CONFIG_INVALID", "that is not a secret key name");
+    if (value.length === 0 || value.length > VALUE_MAX) throw agentXError("CONFIG_INVALID", "that secret value is empty or too long");
+    try {
+      const response = await this.run(org, (client) => client.send(new PutSecretValueCommand({ SecretId: name, SecretString: JSON.stringify({ [key]: value }), VersionStages: [TEST_ACCOUNT_SECRET_PENDING_STAGE] })));
+      if (response.VersionId === undefined || response.VersionId === "") throw agentXError("RUNTIME_UNAVAILABLE", "the test account secret store did not say which version it saved");
+      return response.VersionId;
+    } catch (error) {
+      if (errorName(error) === "InvalidRequestException" && await this.isScheduledForDeletion(org, name, false)) throw agentXError("CONFIG_INVALID", ACCOUNT_BEING_REMOVED_MESSAGE);
+      throw this.refusal(error);
+    }
+  }
+
+  /**
+   * ROTATION, step 2 (after the row that records `versionId` is committed): moves `AWSCURRENT` to that version. The version that held it keeps `AWSPREVIOUS` (Secrets Manager does that itself). A version that is
+   * not the pending one is refused, so a stale id cannot promote something else.
+   */
+  async promote(orgId: string, accountId: string, versionId: string): Promise<void> {
+    this.gate();
+    const { org, name } = this.admit(orgId, accountId);
+    try {
+      const described = await this.run(org, (client) => client.send(new DescribeSecretCommand({ SecretId: name })));
+      const stages = described.VersionIdsToStages ?? {};
+      if (!(stages[versionId] ?? []).includes(TEST_ACCOUNT_SECRET_PENDING_STAGE)) throw agentXError("CHANGE_STALE", "that secret version is not the pending one");
+      const holder = Object.entries(stages).find(([, labels]) => labels.includes(TEST_ACCOUNT_SECRET_VERSION_STAGE))?.[0];
+      await this.run(org, (client) => client.send(new UpdateSecretVersionStageCommand({
+        SecretId: name, VersionStage: TEST_ACCOUNT_SECRET_VERSION_STAGE, MoveToVersionId: versionId, ...(holder === undefined ? {} : { RemoveFromVersionId: holder }),
+      })));
+    } catch (error) {
+      throw this.refusal(error);
+    }
+    // The promotion is done. The pending label no longer means anything on the version that now serves, so it comes off (best effort: a label left behind changes nothing that is read).
+    await this.discardPending(orgId, accountId, versionId).catch(() => undefined);
+  }
+
+  /** Takes `AWSPENDING` off a version that will not be promoted (the row was not committed). Best effort for the caller; `AWSCURRENT` is not touched. */
+  async discardPending(orgId: string, accountId: string, versionId: string): Promise<void> {
+    this.gate();
+    const { org, name } = this.admit(orgId, accountId);
+    try {
+      await this.run(org, (client) => client.send(new UpdateSecretVersionStageCommand({ SecretId: name, VersionStage: TEST_ACCOUNT_SECRET_PENDING_STAGE, RemoveFromVersionId: versionId })));
+    } catch (error) {
+      if (errorName(error) === "ResourceNotFoundException") return;
+      throw this.refusal(error);
+    }
+  }
+
+  /**
    * A session for the worker of one sealed round, to read this one account's secret: tagged with the org and the purpose `resolve`, narrowed by a session policy to the one secret and the one action, 15
    * minutes. Nothing is read here. The caller has already decided the account may be used (`resolveAccountsForRound`).
    */
   async mintResolveGrant(orgId: string, accountId: string): Promise<ResolveGrant> {
+    this.gate();
     const { org, name } = this.admit(orgId, accountId);
     let response: Pick<AssumeRoleCommandOutput, "Credentials">;
     try {
@@ -141,6 +208,10 @@ export class TestAccountSecrets {
       region: this.input.region,
       expiresAt: new Date(expiresAt).toISOString(),
     };
+  }
+
+  private gate(): void {
+    if (!this.input.enabled()) throw agentXError("NOT_FOUND", "Not found");
   }
 
   private async isScheduledForDeletion(org: OrgId, name: string, goneCounts: boolean): Promise<boolean> {

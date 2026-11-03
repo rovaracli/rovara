@@ -2,7 +2,7 @@
 // policy, so a test proves org isolation instead of assuming it. The two policies are the ones the control
 // plane synthesizes (infra/lib/connector-secrets-policy.ts); the fake evaluates them with a small IAM engine:
 // an explicit Deny beats an Allow, no Allow is an implicit deny, and a condition operator the engine does not
-// know is an error, never a silent pass. Supported: StringEquals, StringLike, Null, Bool, ForAllValues:StringEquals.
+// know is an error, never a silent pass. Supported: StringEquals, StringNotEquals, StringLike, Null, Bool, ForAllValues:StringEquals, ForAnyValue:StringEquals.
 //
 // Simplifications. This is NOT a model of real IAM, so it is no proof of how AWS treats wildcards or variables:
 //  - A policy variable such as ${aws:PrincipalTag/rovara:org} is replaced by the session's tag value as plain text
@@ -23,6 +23,7 @@ import {
   PutSecretValueCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  UpdateSecretVersionStageCommand,
 } from "@aws-sdk/client-secrets-manager";
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import {
@@ -36,10 +37,10 @@ type Context = Record<string, string[] | undefined>;
 type Tags = Record<string, string>;
 
 /** What a test may send: the calls OrgSecrets makes, and the two it never makes, to prove the role refuses them. */
-export type FakeSecretsCommand = SecretsCommand | TagResourceCommand | UntagResourceCommand;
+export type FakeSecretsCommand = SecretsCommand | TagResourceCommand | UntagResourceCommand | UpdateSecretVersionStageCommand;
 
 export interface FakeSecretsClient {
-  send(command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }>;
+  send(command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date; VersionIdsToStages?: Record<string, string[]> }>;
 }
 
 export interface FakeCall {
@@ -57,6 +58,8 @@ interface StoredSecret {
   versions: number;
   /** Every version written, by id: a version stays readable by its VersionId after a newer one becomes current. */
   history: Array<{ id: string; value: string }>;
+  /** The staging labels by version id (AWSCURRENT, AWSPREVIOUS, AWSPENDING). `value` is always the AWSCURRENT version's text. */
+  stages: Record<string, string[]>;
   deleteAt?: number;
 }
 
@@ -144,6 +147,10 @@ function conditionHolds(condition: Record<string, Record<string, string | string
           break;
         case "ForAllValues:StringEquals":
           holds = actual === undefined || actual.every((value) => expected.includes(value));
+          break;
+        case "ForAnyValue:StringEquals":
+          // False when the key is absent, as in real IAM.
+          holds = actual !== undefined && actual.some((value) => expected.includes(value));
           break;
         default:
           throw new Error(`the fake IAM engine does not know the condition operator ${operator}`);
@@ -242,15 +249,36 @@ export class FakeOrgSecrets {
 
   /** Puts a secret in place without any IAM check, as an administrator or a past write would have. */
   seed(name: string, value: string, tags: Tags): void {
-    this.secrets.set(name, { value, tags, versions: 1, history: [{ id: this.versionId(), value }] });
+    const id = this.versionId();
+    this.secrets.set(name, { value, tags, versions: 1, history: [{ id, value }], stages: { [id]: ["AWSCURRENT"] } });
   }
 
   private versionId(): string {
     return `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`;
   }
 
-  stored(name: string): { value: string; tags: Tags; versions: number; history: Array<{ id: string; value: string }>; deleteAt?: number } | undefined {
+  stored(name: string): { value: string; tags: Tags; versions: number; history: Array<{ id: string; value: string }>; stages: Record<string, string[]>; deleteAt?: number } | undefined {
     return this.secrets.get(name);
+  }
+
+  /** Attaches a label to a version. A label already on a different version moves only when the caller names that version (UpdateSecretVersionStage) or the call is a put (which moves it, as Secrets Manager does). AWSCURRENT moving leaves AWSPREVIOUS behind. */
+  private attach(secret: StoredSecret, label: string, to: string, from: string | undefined, isPut = false): void {
+    const holder = Object.entries(secret.stages).find(([, labels]) => labels.includes(label))?.[0];
+    if (holder !== undefined && holder !== to && from === undefined && !isPut) throw new AwsError("InvalidParameterException", "the label is attached to another version: name it in RemoveFromVersionId");
+    if (holder !== undefined && holder !== to) {
+      secret.stages[holder] = (secret.stages[holder] ?? []).filter((each) => each !== label);
+      if (label === "AWSCURRENT") {
+        for (const id of Object.keys(secret.stages)) secret.stages[id] = (secret.stages[id] ?? []).filter((each) => each !== "AWSPREVIOUS");
+        secret.stages[holder] = [...(secret.stages[holder] ?? []), "AWSPREVIOUS"];
+      }
+    }
+    secret.stages[to] = [...new Set([...(secret.stages[to] ?? []), label])];
+    this.syncCurrent(secret);
+  }
+
+  private syncCurrent(secret: StoredSecret): void {
+    const current = secret.history.find((version) => (secret.stages[version.id] ?? []).includes("AWSCURRENT"));
+    if (current !== undefined) secret.value = current.value;
   }
 
   private nameOf(secretId: string): string {
@@ -275,7 +303,7 @@ export class FakeOrgSecrets {
     }
   }
 
-  private handle(session: Session | undefined, command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }> {
+  private handle(session: Session | undefined, command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date; VersionIdsToStages?: Record<string, string[]> }> {
     const action = command.constructor.name.replace(/Command$/, "");
     const input = command.input as unknown as Record<string, unknown>;
     return Promise.resolve().then(() => {
@@ -293,7 +321,7 @@ export class FakeOrgSecrets {
         if (existing !== undefined) throw new AwsError("ResourceExistsException", "the secret already exists");
         const value = command.input.SecretString ?? "";
         const id = this.versionId();
-        this.secrets.set(name, { value, tags: tags ?? {}, versions: 1, history: [{ id, value }] });
+        this.secrets.set(name, { value, tags: tags ?? {}, versions: 1, history: [{ id, value }], stages: { [id]: ["AWSCURRENT"] } });
         return { ARN: this.arnOf(name), VersionId: id };
       }
       if (command instanceof TagResourceCommand) {
@@ -309,10 +337,14 @@ export class FakeOrgSecrets {
         for (const key of command.input.TagKeys ?? []) delete existing.tags[key];
         return {};
       }
-      const known = command instanceof GetSecretValueCommand || command instanceof PutSecretValueCommand || command instanceof DescribeSecretCommand || command instanceof DeleteSecretCommand;
+      const known = command instanceof GetSecretValueCommand || command instanceof PutSecretValueCommand || command instanceof DescribeSecretCommand || command instanceof DeleteSecretCommand || command instanceof UpdateSecretVersionStageCommand;
       if (!known) throw new AwsError("AccessDeniedException", `${action} is not an action the fake supports`);
       // The request's own condition keys (secretsmanager:ForceDeleteWithoutRecovery is present, as "true" or "false", on every DeleteSecret).
       const requestKeys: Context = command instanceof DeleteSecretCommand ? { "secretsmanager:ForceDeleteWithoutRecovery": [String(command.input.ForceDeleteWithoutRecovery === true)] } : {};
+      // The version stage the request names, when it names one (a request that omits it carries no such key here: the conservative reading of what IAM sees).
+      if (command instanceof GetSecretValueCommand && command.input.VersionStage !== undefined) requestKeys["secretsmanager:VersionStage"] = [command.input.VersionStage];
+      if (command instanceof UpdateSecretVersionStageCommand) requestKeys["secretsmanager:VersionStage"] = [command.input.VersionStage ?? ""];
+      if (command instanceof PutSecretValueCommand && command.input.VersionStages !== undefined) requestKeys["secretsmanager:VersionStage"] = [...command.input.VersionStages];
       this.authorize(session, action, name, undefined, existing?.tags, requestKeys);
       if (existing === undefined) throw new AwsError("ResourceNotFoundException", "Secrets Manager can't find the specified secret.");
       if (existing.deleteAt !== undefined && !(command instanceof DescribeSecretCommand)) {
@@ -320,19 +352,42 @@ export class FakeOrgSecrets {
       }
       if (command instanceof GetSecretValueCommand) {
         const wanted = command.input.VersionId;
-        if (wanted === undefined) return { SecretString: existing.value };
+        if (wanted === undefined) {
+          const stage = command.input.VersionStage ?? "AWSCURRENT";
+          if (stage === "AWSCURRENT") return { SecretString: existing.value };
+          const byStage = existing.history.find((version) => (existing.stages[version.id] ?? []).includes(stage));
+          if (byStage === undefined) throw new AwsError("ResourceNotFoundException", "Secrets Manager can't find the specified secret value for staging label.");
+          return { SecretString: byStage.value, VersionId: byStage.id };
+        }
         const found = existing.history.find((version) => version.id === wanted);
         if (found === undefined) throw new AwsError("ResourceNotFoundException", "Secrets Manager can't find the specified secret value for VersionId.");
         return { SecretString: found.value, VersionId: found.id };
       }
       if (command instanceof PutSecretValueCommand) {
-        existing.value = command.input.SecretString ?? "";
+        const text = command.input.SecretString ?? "";
         existing.versions += 1;
         const id = this.versionId();
-        existing.history.push({ id, value: existing.value });
+        existing.history.push({ id, value: text });
+        const labels = command.input.VersionStages ?? ["AWSCURRENT"];
+        existing.stages[id] = [];
+        for (const label of labels) this.attach(existing, label, id, undefined, true);
         return { VersionId: id };
       }
-      if (command instanceof DescribeSecretCommand) return { ARN: this.arnOf(name), ...(existing.deleteAt === undefined ? {} : { DeletedDate: new Date(existing.deleteAt) }) };
+      if (command instanceof UpdateSecretVersionStageCommand) {
+        const label = command.input.VersionStage ?? "";
+        const from = command.input.RemoveFromVersionId;
+        const to = command.input.MoveToVersionId;
+        if (from !== undefined && !(existing.stages[from] ?? []).includes(label)) throw new AwsError("InvalidParameterException", "the label is not attached to that version");
+        if (to !== undefined && existing.stages[to] === undefined) throw new AwsError("ResourceNotFoundException", "no such version");
+        if (to === undefined) {
+          if (from !== undefined) existing.stages[from] = (existing.stages[from] ?? []).filter((each) => each !== label);
+          this.syncCurrent(existing);
+          return { ARN: this.arnOf(name) };
+        }
+        this.attach(existing, label, to, from);
+        return { ARN: this.arnOf(name) };
+      }
+      if (command instanceof DescribeSecretCommand) return { ARN: this.arnOf(name), VersionIdsToStages: Object.fromEntries(Object.entries(existing.stages).filter(([, labels]) => labels.length > 0)), ...(existing.deleteAt === undefined ? {} : { DeletedDate: new Date(existing.deleteAt) }) };
       if (command instanceof DeleteSecretCommand) {
         const days = command.input.RecoveryWindowInDays ?? 30;
         if (command.input.ForceDeleteWithoutRecovery === true || days < 7 || days > 30) throw new AwsError("InvalidParameterException", "invalid recovery window");

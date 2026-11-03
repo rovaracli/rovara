@@ -202,7 +202,7 @@ describe("the event catalog", () => {
       // TE-4: going back to the last proved setup
       "project.setup_restored",
       // customer test accounts (TS26)
-      "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.used",
+      "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.deleting", "test_account.rotation_failed", "test_account.used",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
