@@ -1,11 +1,13 @@
 // Slice 1, s1-sealed T1: the usage record (service-usage-record.ts). Deferred check TS-SEAL-1: a name the program asked for can hold a run secret, so the record never carries a name: a registrable domain and a count
 // at most, and not even that when the redactor changes it. Nothing starts Docker.
 import { TestServicesUsageRecordSchema } from "@agentx/contracts";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SEALED_DNS_STATE_FILE, type SealedDnsRecord } from "../../packages/worker/src/check-sandbox.js";
 import { createServiceRedactor } from "../../packages/worker/src/service-env.js";
 import type { ServiceSession } from "../../packages/worker/src/service-runner.js";
-import { USAGE_UNKNOWN_DOMAINS_MAX, buildServiceUsageRecord, countResets, reduceUnknownNames, type ServiceUsageRecord } from "../../packages/worker/src/service-usage-record.js";
+import { USAGE_UNKNOWN_DOMAINS_MAX, bucketCount, buildServiceUsageRecord, countResets, reduceUnknownNames, type ServiceUsageRecord } from "../../packages/worker/src/service-usage-record.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 const PASSWORD = "Zq8Wv3Lm9Xc2Rt5";
@@ -24,7 +26,8 @@ function expectNameFree(record: ServiceUsageRecord, forbidden: readonly string[]
 describe("reduceUnknownNames (TS-SEAL-1)", () => {
   it("keeps the registrable domain and the count, never the name", () => {
     const { domains: unknownDomains, otherCount: otherUnknownCount } = reduceUnknownNames(dns(["api.stripe.com", 2], ["files.stripe.com", 1], ["tracker.example.co.uk", 4]), redactor);
-    expect(unknownDomains).toEqual([{ domain: "example.co.uk", count: 4 }, { domain: "stripe.com", count: 3 }]);
+    // 4 and 3 lookups are the same bucket (2 to 5), so the order is by name and the counts show the bucket.
+    expect(unknownDomains).toEqual([{ domain: "example.co.uk", count: 2 }, { domain: "stripe.com", count: 2 }]);
     expect(otherUnknownCount).toBe(0);
     expect(JSON.stringify(unknownDomains)).not.toContain("api.");
   });
@@ -40,7 +43,7 @@ describe("reduceUnknownNames (TS-SEAL-1)", () => {
     for (const name of [`${PASSWORD.toLowerCase()}.com`, `${PASSWORD.toUpperCase()}.com`, `${CONTROL.toLowerCase()}.co.uk`]) {
       const { domains: unknownDomains, otherCount: otherUnknownCount } = reduceUnknownNames(dns([name, 5]), redactor);
       expect(unknownDomains, name).toEqual([]);
-      expect(otherUnknownCount, name).toBe(5);
+      expect(otherUnknownCount, name).toBe(2);
     }
   });
 
@@ -63,22 +66,22 @@ describe("reduceUnknownNames (TS-SEAL-1)", () => {
   it("a name with no registrable domain (one label, a bare suffix) is counted as other, not shown", () => {
     const { domains: unknownDomains, otherCount: otherUnknownCount } = reduceUnknownNames(dns(["intranet", 2], ["com", 1], ["co.uk", 1]), redactor);
     expect(unknownDomains).toEqual([]);
-    expect(otherUnknownCount).toBe(4);
+    expect(otherUnknownCount).toBe(2);
   });
 
   it("adds the name server's own dropped and unrecorded counts to other", () => {
     const { otherCount: otherUnknownCount } = reduceUnknownNames({ unknown: [], dropped: 7, unrecorded: 2 }, redactor);
-    expect(otherUnknownCount).toBe(9);
+    expect(otherUnknownCount).toBe(6);
   });
 
   it("names at most USAGE_UNKNOWN_DOMAINS_MAX domains, the most asked first, and counts the rest as other", () => {
     const rows: Array<[string, number]> = Array.from({ length: USAGE_UNKNOWN_DOMAINS_MAX + 10 }, (_unused, index) => [`host.site${String(index).padStart(3, "0")}.com`, index + 1]);
     const { domains: unknownDomains, otherCount: otherUnknownCount } = reduceUnknownNames(dns(...rows), redactor);
     expect(unknownDomains).toHaveLength(USAGE_UNKNOWN_DOMAINS_MAX);
-    expect(unknownDomains[0]!.count).toBe(USAGE_UNKNOWN_DOMAINS_MAX + 10);
+    expect(unknownDomains[0]!.count).toBe(21);
     expect(unknownDomains.map((row) => row.count)).toEqual([...unknownDomains.map((row) => row.count)].sort((a, b) => b - a));
-    // The ten least asked (counts 1 to 10) fell off the end and are counted.
-    expect(otherUnknownCount).toBe(55);
+    // The ten least asked (counts 1 to 10) fell off the end; their sum (55) is counted in a bucket.
+    expect(otherUnknownCount).toBe(21);
   });
 
   it("a name the general credential rule changes is withheld too, not only the registered values", () => {
@@ -101,6 +104,42 @@ function fakeSession(ids: string[], health: Record<string, boolean | "throw"> = 
     probe: (id, limitMs) => { asked.push([id, limitMs]); const answer = health[id] ?? true; return answer === "throw" ? Promise.reject(new Error("stopped")) : Promise.resolve(answer); },
   };
 }
+
+describe("counts are coarse buckets (TS-SEAL-1 bandwidth)", () => {
+  it("maps a count to the lower bound of its bucket: 1, 2-5, 6-20, 21+", () => {
+    const cases: Array<[number, number]> = [[0, 0], [1, 1], [2, 2], [5, 2], [6, 6], [20, 6], [21, 21], [1_000_000, 21]];
+    for (const [count, bucket] of cases) expect(bucketCount(count), String(count)).toBe(bucket);
+  });
+
+  it("two programs that ask a different number of times inside one bucket give the same record", () => {
+    const record = (queries: number, other: number) => reduceUnknownNames({ unknown: [{ name: "a.example.com", queries }, { name: "b.example.org", queries: 3 }], dropped: other, unrecorded: 0 }, redactor);
+    expect(record(2, 7)).toEqual(record(5, 20));
+    expect(record(2, 7)).not.toEqual(record(6, 20));
+  });
+
+  it("orders the domains by bucket and then by name, whatever the raw counts were", () => {
+    const { domains } = reduceUnknownNames(dns(["a.zeta.com", 3], ["a.alpha.com", 5], ["a.mid.com", 40], ["a.beta.com", 1]), redactor);
+    expect(domains.map((row) => [row.domain, row.count])).toEqual([["mid.com", 21], ["alpha.com", 2], ["zeta.com", 2], ["beta.com", 1]]);
+  });
+});
+
+describe("the record stays away from the agent and the model", () => {
+  // The record and the sealed round's output carry what the program chose to print or ask for. Nothing the agent, a model call or the setup agent reads may import them.
+  it("no agent-facing module imports the usage record or the sealed round", async () => {
+    const root = new URL("../../packages/worker/src/", import.meta.url).pathname;
+    const agentFacing = (path: string) => /^(agent-run\/|pi-session\.ts|agent-step\.ts|setup-agent|read-.*-tool\.ts|sandbox-file-tools\.ts|model-|understand\.ts|plan-|conversations\.ts|learned-|steer-invocation\.ts|diagnosis\.ts|context-)/u.test(path);
+    const offenders: string[] = [];
+    const walk = async (folder: string): Promise<void> => {
+      for (const entry of await readdir(folder, { withFileTypes: true })) {
+        const path = join(folder, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else if (entry.name.endsWith(".ts") && agentFacing(path.slice(root.length)) && /service-usage-record|check-round-runners|TestServicesUsageRecord/u.test(await readFile(path, "utf8"))) offenders.push(path.slice(root.length));
+      }
+    };
+    await walk(root);
+    expect(offenders).toEqual([]);
+  });
+});
 
 describe("buildServiceUsageRecord", () => {
   it("records, per planned dependency, whether it started, whether it answers, how long it took and how often it was reset", async () => {
@@ -141,7 +180,7 @@ describe("buildServiceUsageRecord", () => {
     expect(record.dependencies[0]).toMatchObject({ startMs: 86_400_000, resetCount: 100_000 });
     expectNameFree(record, []);
     const { domains, otherCount } = reduceUnknownNames(dns(["a.example.com", 10 ** 12]), redactor);
-    expect(domains).toEqual([{ domain: "example.com", count: 1_000_000_000 }]);
+    expect(domains).toEqual([{ domain: "example.com", count: 21 }]);
     expect(otherCount).toBe(0);
   });
 
@@ -167,7 +206,7 @@ describe("buildServiceUsageRecord", () => {
     const record = await buildServiceUsageRecord({ planned: ["postgres"], session: fakeSession(["postgres"]), dns: { docker, dnsHelperName: "rovara-svc-0123456789ab-dns" }, redactor });
     expect(calls).toEqual([["exec", "rovara-svc-0123456789ab-dns", "cat", SEALED_DNS_STATE_FILE]]);
     expect(record.unknownCalls.domains).toEqual([{ domain: "stripe.com", count: 2 }]);
-    expect(record.unknownCalls.otherCount).toBe(3);
+    expect(record.unknownCalls.otherCount).toBe(2);
     expectNameFree(record, [PASSWORD, "api.stripe", "attacker"]);
   });
 
