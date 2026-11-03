@@ -45,6 +45,7 @@ import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { dependenciesStartableNow } from "../test-env/dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
+import { dependencySeedCommands, refusedCommand } from "../test-env/refused-command.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
@@ -166,11 +167,17 @@ function refuseRecordingOnShared(body: TestEnvironmentBody): void {
  * yet"), and not for a project that uses a dev container (the sealed check runners cannot be combined with one). Refused when proposed AND when approved, so a card is never offered that could not be carried out.
  * A body without dependencies reads nothing and is never refused here.
  */
-async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, project: string, body: TestEnvironmentBody): Promise<void> {
-  if (body.dependencies === undefined || body.dependencies.length === 0) return;
+async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, project: string, body: TestEnvironmentBody, previous?: TestEnvironmentBody): Promise<void> {
+  // Only a dependency that is new or changed since the approved environment is judged: one already approved and left untouched must not make an unrelated change (the detectors' new commands) unprovable when, say, the
+  // switch was turned off since. A task still refuses to use it (`environmentUnusedReason`), so keeping it is not starting it.
+  const approved = new Set((previous?.dependencies ?? []).map((dependency) => JSON.stringify(dependency)));
+  const changed = (body.dependencies ?? []).filter((dependency) => !approved.has(JSON.stringify(dependency)));
+  if (changed.length === 0) return;
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
-  if (!dependenciesStartableNow(body.dependencies)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
-  await refuseDependenciesWithDevcontainer(deps, orgId, project, body);
+  if (!dependenciesStartableNow(changed)) throw invalid("dependencies: this kind of backing is not available yet; Rovara starts real software from its image list only");
+  // A seed is a command run with the dependency's network access: it gets the same refusal as any command (a download-and-run, or a secret).
+  if (dependencySeedCommands(changed).some(refusedCommand)) throw invalid("dependencies: a seed command downloads and runs code, or holds something secret");
+  await refuseDependenciesWithDevcontainer(deps, orgId, project, { dependencies: changed });
 }
 
 /** The contract's less-safe fields (pre-prod, shared, preview, video, traces, schema-synth, a raised budget, a moved target, a shortened deny list): any of them needs a second person. */
@@ -196,7 +203,7 @@ export async function proposeTestEnvironment(
   const previous = await readApprovedTestEnvironment(deps, input.orgId, input.project);
   refuseProduction(body, previous?.environment);
   refuseRecordingOnShared(body);
-  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body);
+  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, previous?.environment);
   const digest = testEnvDigest(body);
   const now = deps.now();
   // A mark that was set stays: a later proposal of the same body (the detectors', a repeat) cannot make a setup run's proposal look like an ordinary one.
@@ -371,7 +378,7 @@ export async function approveTestEnvironment(
   if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
   refuseProduction(body, current?.environment);
   refuseRecordingOnShared(body);
-  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body);
+  await refuseDependenciesNotAvailable(deps, input.orgId, input.project, body, current?.environment);
   if ((current?.revision ?? 0) !== input.expectedRevision) throw stale("someone changed the test environment; reload and review again");
 
   const lessSafe = changeFlags(current?.environment, body);

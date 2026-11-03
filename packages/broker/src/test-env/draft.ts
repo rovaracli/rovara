@@ -18,13 +18,10 @@ import {
   TEST_ENV_DRAFT_RESULT_KEY,
   TEST_ENV_ROUND_BUDGET_MIN,
   TestEnvDraftSchema,
-  formatCommandLine,
   projectPk,
   redactText,
-  remoteCodeReason,
   testEnvLessSafeChanges,
   type OrgId,
-  type ProjectCommand,
   type TestEnvDraft,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
@@ -33,6 +30,7 @@ import type { TransactItem } from "../audit/outbox.js";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "../org/test-environment.js";
 import { checkSelectionIsSafe, SAFE_SELECTION_METHODS } from "./prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
+import { refusedCommand } from "./refused-command.js";
 import { testServicesEnabled } from "./test-services-switch.js";
 import { proposeDependencies, type DependencyProposalContext } from "./dependency-proposal.js";
 
@@ -45,11 +43,8 @@ export const DRAFT_LEFT_OUT_NOTE = "A command that downloads and runs code, or t
 const RecordedOffersSchema = z.array(z.object({ recipeId: SetupRecipeIdSchema, revision: z.number().int().min(1) }).strict()).max(SETUP_RECIPE_OFFERS_MAX);
 const draftKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#DRAFT#${taskId}` });
 
-/** A command the broker will not carry in a draft: it fetches code and runs it, or its text changes under the redactor (a secret-shaped value). */
-export function refusedCommand(command: ProjectCommand): boolean {
-  const text = formatCommandLine(command);
-  return remoteCodeReason(text) !== undefined || redactText(text) !== text;
-}
+// `refusedCommand` lives in ./refused-command.ts (a leaf module); re-exported here for the callers that always had it from this file.
+export { refusedCommand };
 
 /**
  * The safest environment, and nothing beyond: the draft is refused (undefined) when it asks for more. A worker never proposes a backing: the draft's own `environment.dependencies` must be empty (the broker adds

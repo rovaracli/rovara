@@ -5,7 +5,7 @@ import { DEPENDENCIES_LEFT_OUT_NOTE, DEPENDENCIES_NO_CATALOG_NOTE, DEPENDENCIES_
 import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
 import { sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broker/src/test-env/draft.js";
 import { approveTestEnvItemsFor, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
-import { mergeDraftWithApproved } from "../../packages/broker/src/aws/developer-routes/test-environment.js";
+import { DEPENDENCY_CLASH_NOTE, mergeDraftWithApproved } from "../../packages/broker/src/aws/developer-routes/test-environment.js";
 import { proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
@@ -141,8 +141,16 @@ describe("the merge onto the approved environment", () => {
     expect(testEnvDigest(merged)).toBe(testEnvDigest(baseBody()));
   });
 
-  it("is not a merge when the two lists clash", () => {
-    expect(mergeDraftWithApproved(baseBody({ dependencies: [dep("main")] }), baseBody({ dependencies: [dep("other", { connect: { env: [{ name: "MAIN_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["other"] } })] }))).toBeUndefined();
+  it("leaves out a found dependency that clashes with an approved one, says so, and keeps the approved ones untouched", () => {
+    const approved = baseBody({ dependencies: [dep("other", { connect: { env: [{ name: "MAIN_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["other"] } })] });
+    const notes: string[] = [];
+    const merged = mergeDraftWithApproved(baseBody({ dependencies: [dep("main")] }), approved, notes)!;
+    expect(merged.dependencies!.map((entry) => entry.id)).toEqual(["other"]);
+    expect(merged.dependencies![0]).toEqual(approved.dependencies![0]);
+    expect(notes).toEqual([DEPENDENCY_CLASH_NOTE]);
+    // The ones that do not clash are still proposed.
+    const both = mergeDraftWithApproved(baseBody({ dependencies: [dep("main"), dep("third", { connect: { env: [{ name: "THIRD_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["third"] } })] }), approved, notes)!;
+    expect(both.dependencies!.map((entry) => entry.id)).toEqual(["other", "third"]);
   });
 });
 
@@ -174,7 +182,10 @@ describe("the approve card", () => {
   it("has a plain Dependencies section and stays medium for real software", async () => {
     const [item] = (await bench(baseBody({ dependencies: [postgres] }))) as Array<{ risk: string; details?: ReadonlyArray<{ title: string; lines: readonly string[] }>; riskReasons: readonly string[] }>;
     expect(item!.risk).toBe("medium");
-    expect(item!.details).toEqual([{ title: "Dependencies", lines: ["Postgres: runs the real software from Rovara's image list. Found in docker-compose.yml, line 4."] }]);
+    expect(item!.details).toHaveLength(1);
+    expect(item!.details![0]!.title).toBe("Dependencies");
+    expect(item!.details![0]!.lines[0]).toBe("Postgres: runs the real software from Rovara's image list. Found in docker-compose.yml, line 4.");
+    expect(item!.details![0]!.lines).toEqual(["Postgres: runs the real software from Rovara's image list. Found in docker-compose.yml, line 4.", "Postgres sets: DATABASE_URL."]);
     expect(item!.riskReasons.join(" ")).toMatch(/dependency/iu);
   });
 

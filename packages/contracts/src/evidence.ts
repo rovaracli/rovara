@@ -6,6 +6,7 @@ import { z } from "zod";
 import { forwardReader } from "./forward-reader.js";
 import { TEST_ID_MAX } from "./test-id.js";
 import { TestProofVerdictSchema } from "./test-proof.js";
+import { TestServicesUsageRecordSchema } from "./test-services-usage.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const CountSchema = z.number().int().min(0).max(100_000_000);
@@ -211,7 +212,7 @@ export const EvidenceFindingSchema = z
 export type EvidenceFinding = z.infer<typeof EvidenceFindingSchema>;
 
 // ---- test services (TS5, design test-services.md 2.4): how each dependency of a run was backed, in fixed words.
-// Self-contained on purpose: this file is in the browser entry's exact import graph, so it imports nothing new. A contract test keeps `EVIDENCE_BACKING_KINDS` equal to `TEST_ENV_BACKING_KINDS`.
+// Self-contained on purpose: this file is in the browser entry's exact import graph, so it imports nothing new (the usage record schema is a leaf of that graph already). A contract test keeps `EVIDENCE_BACKING_KINDS` equal to `TEST_ENV_BACKING_KINDS`.
 // Replaces: nothing. `environment.services` keeps its old meaning and old packs still parse; a run with test services carries `environment.dependencies` beside it. Readers of the pack are strict, so a reader built before this field REJECTS a pack that carries it: roll out forward only (every reader upgraded before any writer sets the field; the switch `tx` stays off until then).
 
 export const EVIDENCE_BACKING_KINDS = ["local", "project_image", "emulated", "test_account", "fake", "none"] as const;
@@ -493,6 +494,8 @@ export const EvidenceRawSchema = z
     selection: EvidenceSelectionSchema.optional(),
     api: EvidencePackSchema.shape.api.optional(),
     browser: EvidencePackSchema.shape.browser.optional(),
+    /** Test services: what the worker saw of the dependencies it started for the round, and the names the sealed tests asked for that no dependency answers. FACTS only: the broker decides every label from the pinned plan. */
+    testServices: TestServicesUsageRecordSchema.optional(),
   })
   .strict()
   .superRefine((raw, context) => {

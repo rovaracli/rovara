@@ -262,10 +262,10 @@ export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
 // ---- less-safe fields and the approval card's risk
 
 /**
- * The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). The last five are the dependency fields (`TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS`, test-env-dependency.ts;
+ * The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). The last six are the dependency fields (`TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS`, test-env-dependency.ts;
  * `schema_synth` is shared with the v1 mocks): a test account, a project image, a company-approved substitute image, a dependency run with excluded tests, and a raised run cap.
  */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed", "test_account", "project_image", "substitute_image", "none_excluded_tests", "run_cap_raised"] as const;
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed", "test_account", "project_image", "substitute_image", "none_excluded_tests", "dependency_seed", "run_cap_raised"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
