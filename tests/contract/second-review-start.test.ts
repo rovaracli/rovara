@@ -97,8 +97,10 @@ describe("the model picker", () => {
       expect(entry.suggestionReason).toMatch(/different AI company/u);
       expect(entry.suggestionReason).not.toMatch(/\n/u);
     }
-    // The strongest eligible one first (the critic's capability tiers).
-    expect(picked.suggested[0]!.model.modelId).toBe(GPT.modelId);
+    // The strongest eligible one first (the critic's capability tiers; inside the frontier tier cheaper first: Gemini has no catalog price, so it counts as the middle price of the priced frontier models and
+    // comes before the dearer GPT-5.5, instead of after it as when a missing price counted as dearest).
+    expect(picked.suggested[0]!.model.modelId).toBe(GEMINI.modelId);
+    expect(picked.suggested.map((entry) => entry.model.modelId)).toContain(GPT.modelId);
     expect(picked.suggested.every((entry) => entry.notes.length === 0)).toBe(true);
   });
 
@@ -132,8 +134,8 @@ describe("the plan: choice, default and the company's sources", () => {
   it("uses the top suggestion while nobody has chosen, records it as the default, and says so", () => {
     const plan = planned();
     expect(plan.choice).toBe("default");
-    expect(plan.model).toEqual({ provider: GPT.provider, modelId: GPT.modelId });
-    expect(defaultModelLine(plan.model, false)).toBe("Using default: openai/gpt-5.5 (change)");
+    expect(plan.model).toEqual({ provider: GEMINI.provider, modelId: GEMINI.modelId });
+    expect(defaultModelLine(plan.model, false)).toBe("Using default: google/gemini-3-pro (change)");
     expect(plan.candidates.length).toBeLessThanOrEqual(2);
   });
 

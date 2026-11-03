@@ -350,14 +350,30 @@ describe("the capability order", () => {
     // 1. A different company from the reference first: from Opus's point of view the OpenAI and Google models lead; from GPT-5's, the Claude and Google ones.
     expect(ids(rankCriticModels([opus, fable, gpt, pro], opus)).slice(0, 2).sort()).toEqual(["gemini-2.5-pro", "gpt-5"]);
     expect(ids(rankCriticModels([opus, fable, gpt, pro], gpt)).slice(0, 3).sort()).toEqual(["claude-fable-5-1", "claude-opus-5-5", "gemini-2.5-pro"]);
-    // 2. Then the cheaper one by list price (GPT-5 is cheaper than Opus 5.5, which is cheaper than Fable; a model with no catalog price is the dearest).
-    expect(ids(rankCriticModels([pro, fable, opus, gpt]))).toEqual(["gpt-5", "claude-opus-5-5", "claude-fable-5-1", "gemini-2.5-pro"]);
+    // 2. Then the cheaper one by list price (GPT-5 is cheaper than Opus 5.5, which is cheaper than Fable; a model with no catalog price counts as the middle price of the priced ones, so Gemini Pro ties with Opus 5.5 on cost and then falls to the version).
+    expect(ids(rankCriticModels([pro, fable, opus, gpt]))).toEqual(["gpt-5", "claude-opus-5-5", "gemini-2.5-pro", "claude-fable-5-1"]);
     expect(ids(rankCriticModels([opus, fable, gpt, pro], opus))).toEqual(["gpt-5", "gemini-2.5-pro", "claude-opus-5-5", "claude-fable-5-1"]);
     // 3. Equal price falls to the newer version, and then to the canonical name, so the order never depends on the order the models came in.
     const sameCost = [model("claude-opus-4-8"), model("claude-opus-5"), model("claude-opus-4-7")];
     expect(ids(rankCriticModels(sameCost))).toEqual(["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7"]);
     const unpriced = [model("gemini-3-pro", "google"), model("gemini-3-ultra-pro", "google")];
     expect(ids(rankCriticModels(unpriced))).toEqual(ids(rankCriticModels([...unpriced].reverse())));
+  });
+
+  it("a model with no catalog price is neutral: it ties on cost, then the newer version wins, whichever vendor it is (Gemini Pro is no longer always last)", () => {
+    const priced = model("gpt-5", "openai"), newerUnpriced = model("gemini-6-pro", "google"), olderUnpriced = model("gemini-2.5-pro", "google");
+    // The only priced model sets the neutral cost, so the unpriced ones tie with it and the order is by version (previously both unpriced models came last).
+    expect(ids(rankCriticModels([priced, newerUnpriced]))).toEqual(["gemini-6-pro", "gpt-5"]);
+    expect(ids(rankCriticModels([priced, olderUnpriced]))).toEqual(["gpt-5", "gemini-2.5-pro"]);
+    // Between a cheaper and a dearer priced model it sits in the middle, not after both.
+    const cheap = model("gpt-5", "openai"), dear = model("claude-fable-5-1", "anthropic"), mid = model("claude-opus-5-5", "anthropic");
+    expect(ids(rankCriticModels([dear, olderUnpriced, cheap, mid]))).toEqual(["gpt-5", "claude-opus-5-5", "gemini-2.5-pro", "claude-fable-5-1"]);
+    // With no priced model at all they tie on cost and fall to version, then name.
+    expect(ids(rankCriticModels([olderUnpriced, newerUnpriced, model("gemini-2.5-pro-x", "google")]))).toEqual(["gemini-6-pro", "gemini-2.5-pro", "gemini-2.5-pro-x"]);
+    // The order does not depend on the order the models came in.
+    const all = [dear, olderUnpriced, cheap, mid, newerUnpriced];
+    const expected = ids(rankCriticModels(all));
+    for (const permutation of [[...all].reverse(), [all[2]!, all[4]!, all[0]!, all[3]!, all[1]!], [all[1]!, all[0]!, all[4]!, all[2]!, all[3]!]]) expect(ids(rankCriticModels(permutation))).toEqual(expected);
   });
 
   it("does not depend on the order the models come in", () => {

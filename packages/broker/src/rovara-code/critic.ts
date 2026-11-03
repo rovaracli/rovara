@@ -28,7 +28,7 @@ function distinct(models: readonly ModelIdentifier[]): ModelIdentifier[] {
  *
  * Hand-made until the replay eval ranks models; no vendor is ranked above another. So the top tier is ONE "frontier" tier (Fable, Opus, GPT-5 that is not a mini or nano, Gemini Pro) with no order
  * inside it by vendor or by name; below it Sonnet, then the small models (Haiku, mini, nano, flash), then models no tier names. Among frontier models a stage prefers (1) a different company from the
- * step it checks, then (2) the cheaper model by the catalog's list price (a model with no price counts as dearest; two with the same price fall to the canonical name, so the order is fixed), then
+ * step it checks, then (2) the cheaper model by the catalog's list price (a model with no price counts as the middle price of the frontier models that have one, see `neutralCost`), then
  * (3) the newer version. Sonnet and below keep "newer version first".
  */
 export const CRITIC_CAPABILITY_TIERS: ReadonlyArray<RegExp> = [
@@ -75,10 +75,22 @@ function tierIn(tiers: ReadonlyArray<RegExp>, model: ModelIdentifier): number {
 /** Whether `model` is from a known company other than `reference`'s (a model of an unrecognised company is never shown to differ). */
 const fromOtherCompany = (model: ModelIdentifier, reference: ModelIdentifier): boolean => modelCompany(model) !== "other" && modelCompany(reference) !== "other" && modelCompany(model) !== modelCompany(reference);
 
-/** What one review costs at the catalog's list price: one million tokens in plus one million out, in dollars. A model the catalog has no price for is dearest. Only used to break a tie inside the frontier tier. */
-function listCost(model: ModelIdentifier): number {
+/** What one review costs at the catalog's list price: one million tokens in plus one million out, in dollars; undefined when the catalog has no price for the model. Only used to break a tie inside the frontier tier. */
+function listCost(model: ModelIdentifier): number | undefined {
   const price = listPricesPerMillion(model);
-  return price === undefined ? Number.POSITIVE_INFINITY : price.input + price.output;
+  return price === undefined ? undefined : price.input + price.output;
+}
+
+/**
+ * The cost a model with no catalog price counts as: the middle of the frontier models that do have one, so a missing price neither ranks a model first nor last (no vendor is favoured or penalised by what the
+ * catalog happens to list). It ties on cost with the model at that middle price, and the order then falls to the newer version and the name. It is a number, not a "ties with everyone" rule, so the order stays
+ * consistent (a tie with every model would put A before B by price, B before the unpriced model by version and the unpriced model before A by version: a cycle). With no priced frontier model they all tie.
+ */
+function neutralCost(models: readonly ModelIdentifier[]): number {
+  const costs = models.filter((model) => criticCapabilityTier(model) === FRONTIER_TIER).flatMap((model) => listCost(model) ?? []).sort((left, right) => left - right);
+  if (costs.length === 0) return 0;
+  const middle = Math.floor(costs.length / 2);
+  return costs.length % 2 === 1 ? costs[middle]! : (costs[middle - 1]! + costs[middle]!) / 2;
 }
 
 /**
@@ -86,6 +98,8 @@ function listCost(model: ModelIdentifier): number {
  * otherwise keep the order they came in.
  */
 export function rankCriticModels(models: readonly ModelIdentifier[], reference?: ModelIdentifier, legacyRanking = false): ModelIdentifier[] {
+  const neutral = legacyRanking ? 0 : neutralCost(models);
+  const costOf = (model: ModelIdentifier): number => listCost(model) ?? neutral;
   return models.map((model, index) => ({ model, index })).sort((left, right) => {
     const tierOf = legacyRanking ? legacyCriticCapabilityTier : criticCapabilityTier;
     const tier = tierOf(left.model) - tierOf(right.model);
@@ -96,7 +110,7 @@ export function rankCriticModels(models: readonly ModelIdentifier[], reference?:
         const other = Number(fromOtherCompany(right.model, reference)) - Number(fromOtherCompany(left.model, reference));
         if (other !== 0) return other;
       }
-      const dearer = listCost(left.model), cheaper = listCost(right.model);
+      const dearer = costOf(left.model), cheaper = costOf(right.model);
       if (dearer !== cheaper) return dearer < cheaper ? -1 : 1;
     }
     const a = versionOf(left.model);
