@@ -16,14 +16,19 @@ on:
 permissions:
   contents: read
 
-# Pushing to a pull request again supersedes its run in progress. A manual run is never cancelled.
-# A push run (Cloud only) is keyed by its commit, so a burst of merges never drops an intermediate commit.
+# A newer run on the same ref supersedes the one in progress (owner decision "CI cost", 2026-11-02): a second manual run of a branch, or a new push to a pull
+# request, cancels the first one's remaining jobs, so no runner minutes are spent on a commit nobody is waiting for. This includes a manual run: dispatch a
+# branch again only when you mean to replace the run in progress. Nothing else waits for a CI run to finish: the release workflows (release.yml,
+# release-test.yml) do their own builds and checks and never read this workflow's result.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
-# The checks, the test shards, the release check and the Linux runtime check run side by side, each on its own machine. The
-# job called `local` waits for all of them and is the one check a pull request needs (scripts/ci-gate.ts).
+# Cheap checks first, expensive jobs second. `scope` decides whether anything needs to run. `checks` (the type check, which also builds the packages, and the stricter type check; a few minutes
+# on its own) must pass before the test shards, the release check, the Linux runtime check, the MCP runner check and the browser tests start, so a type error stops the run
+# before any of those spend a minute. The full-repository lint takes 16 minutes on Cloud's runners; if it gated the shards they would start 16 minutes later, so `lint` waits
+# for `checks` and then runs beside the shards instead (a lint failure still fails the run, and the shards already running finish). The job called `local` waits for all of
+# them and is the one check a pull request needs (scripts/ci-gate.ts).
 jobs:
   # A pull request that changes only Markdown under specs/ or docs/, which no test reads, skips the
   # jobs below (scripts/ci-docs-only.ts). Manual runs always run them. A draft skips every job,
@@ -55,13 +60,13 @@ jobs:
         if: steps.scope.outputs.docs_only == 'true'
         run: echo "Only Markdown that no test reads changed; typecheck, the stricter type check, lint, tests, synth and the release check are skipped."
 
+  # The gate for every expensive job below: the type check (tsc -b) and the stricter type check. Nothing in it needs more than the TypeScript compiler.
   checks:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones.
-    # The checks job's full-repository lint took 16 of its 27 minutes on 2026-10-31 and passed 30 once v1.2 landed; the private repo's runners get 45.
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 15 }}
+    # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones. Without the lint (its own job below) this took about 11 minutes there.
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -89,18 +94,40 @@ jobs:
         env:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
           NODE_OPTIONS: --max-old-space-size=6144
-      # The full repository, on every run on both repositories, with the same config and rules as `eslint .`. One eslint process over the whole
-      # repository needed about 14 GB (13.8 GB measured) and ran out of memory on the 8 GB runner (C90), so scripts/lint-shards.ts lints one TypeScript
-      # program of tsconfig.lint/ at a time (the programs the stricter type check uses), then the web directories, then everything else, each in its own
-      # process. Each process has a 4 GB heap cap; the largest measured peak is about 3.6 GB. The programs read the packages' declarations that
-      # `npm run typecheck` (tsc -b) just built.
+
+  # The full-repository lint, on every run on both repositories, with the same config and rules as `eslint .`. It starts once `checks` has passed (no lint minutes are spent on code that
+  # does not type-check) and runs beside the test shards, not before them: it took 16 of the old checks job's 27 minutes on 2026-10-31 and passed 30 once v1.2 landed, and the private
+  # repo's runners get 45. It builds the packages itself (`npm run typecheck`) because the lint programs read the declarations that `tsc -b` leaves behind, and a job cannot read another's disk.
+  # One eslint process over the whole repository needed about 14 GB (13.8 GB measured) and ran out of memory on the 8 GB runner (C90), so scripts/lint-shards.ts lints one TypeScript
+  # program of tsconfig.lint/ at a time (the programs the stricter type check uses), then the web directories, then everything else, each in its own
+  # process. Each process has a 4 GB heap cap; the largest measured peak is about 3.6 GB.
+  lint:
+    needs: [scope, checks]
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 15 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       - run: npm run lint
 
-  # Vitest hands each shard an even share of the test files (by count, not by run time). To change the count, change the list:
-  # the shard total below comes from it. Four shards took 49 to 61 minutes each on the private repo's 2 vCPU runners (run 41332313193: one hit the 60-minute
-  # limit), so there are six: about 35 to 40 minutes each, for about the same total runner minutes.
+  # Each shard gets a share of the test files balanced by run time, not by file count (vitest's own --shard hands out an even number of files, and the slow CDK and container
+  # files made some shards take twice as long as others). tests/support/duration-sequencer.ts, set in vitest.config.ts, splits the files by the recorded seconds in
+  # tests/.timings/vitest-durations.json; a file with no recorded time gets the median. Regenerate the timings (scripts/test-shard-timings.ts) after many files are added. To change
+  # the count, change the list: the shard total below comes from it. Four shards took 49 to 61 minutes each on the private repo's 2 vCPU runners (run 41332313193: one hit
+  # the 60-minute limit), so there are six: about 35 to 40 minutes each, for about the same total runner minutes. They wait for `checks`, so a type error stops them before they start.
   test:
-    needs: scope
+    needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -133,7 +160,7 @@ jobs:
       - run: npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   release:
-    needs: scope
+    needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 25 || 15 }}
@@ -174,7 +201,7 @@ jobs:
   # the fallback only when the mirror copy is missing, and every pull retries with backoff. Everything after that uses the local copy: the executor image is built
   # from it, the tests use it, and the Docker 25 (dind) daemon is loaded from the runner's daemon with docker save | docker load and never pulls.
   linux-runtime:
-    needs: scope
+    needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
@@ -309,7 +336,7 @@ jobs:
   # network (this host's loopback). It is small: one image build, one test file, about ten minutes on the ARM runner (the runner image is ARM64 like the Fargate tasks).
   # A pull request that changes none of the runner's paths passes in under a minute without building anything; a manual run, or a push, always runs the checks.
   mcp-runner-linux:
-    needs: scope
+    needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -374,7 +401,7 @@ jobs:
           docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
 
   web-e2e:
-    needs: scope
+    needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Three browsers on the private repo's 2 vCPU runners ran past 30 minutes once v1.2 landed (run 41270914332).
@@ -410,7 +437,7 @@ jobs:
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, test, release, linux-runtime, mcp-runner-linux, web-e2e]
+    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, web-e2e]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')

@@ -49,12 +49,13 @@ describe("the docs-only check (CI skips the heavy steps for a Markdown-only pull
   it("guards every heavy job with the check, so a manual run always runs them", async () => {
     const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as Workflow;
     const heavySteps = (job: string) => workflow.jobs[job]!.steps.filter((step) => step.run !== undefined).map((step) => step.name ?? step.run);
-    expect(heavySteps("checks")).toEqual(["npm ci", "npm run typecheck", "Stricter type check (programs the change affects)", "Stricter type check (every program)", "npm run lint"]);
+    expect(heavySteps("checks")).toEqual(["npm ci", "npm run typecheck", "Stricter type check (programs the change affects)", "Stricter type check (every program)"]);
+    expect(heavySteps("lint")).toEqual(["npm ci", "npm run typecheck", "npm run lint"]);
     expect(heavySteps("test")).toEqual(["Free runner disk space", "npm ci", "npm run build", "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"]);
     expect(heavySteps("release")).toEqual(["npm ci", "npm run build", "npm run build:web", "npm run infra:synth", "Web builds are reproducible", "Release builds are reproducible"]);
-    for (const job of ["checks", "test", "release"]) {
-      expect(workflow.jobs[job]!.needs, job).toBe("scope");
-      expect(workflow.jobs[job]!.if, job).toBe(DOCS_ONLY_GUARD);
-    }
+    // `checks` gates the others (CI cost, 2026-11-02): they wait for it as well as for the scope.
+    expect(workflow.jobs.checks!.needs).toBe("scope");
+    for (const job of ["lint", "test", "release"]) expect(workflow.jobs[job]!.needs, job).toEqual(["scope", "checks"]);
+    for (const job of ["checks", "lint", "test", "release"]) expect(workflow.jobs[job]!.if, job).toBe(DOCS_ONLY_GUARD);
   });
 });

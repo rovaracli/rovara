@@ -14,7 +14,7 @@ describe("the mcp-runner-linux CI job", () => {
   it("runs on the ARM64 Linux runner (the runner image is ARM64 like the Fargate tasks), after scope, behind the Markdown-only skip, with a small timeout and read-only permissions", async () => {
     const j = await job();
     expect(j["runs-on"]).toBe("ubuntu-24.04-arm");
-    expect(j.needs).toBe("scope");
+    expect(j.needs).toEqual(["scope", "checks"]);
     expect(j.if).toBe("needs.scope.outputs.docs_only != 'true'");
     expect(j["timeout-minutes"]).toBeLessThanOrEqual(30);
     expect(j.permissions).toEqual({ contents: "read", packages: "read" });

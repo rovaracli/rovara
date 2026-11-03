@@ -5,7 +5,7 @@ import { needsVerdict } from "../../scripts/ci-gate.js";
 import { mockCellPort } from "../web-e2e/support/port.js";
 it("runs all browser engines in a dedicated guarded job required by the final gate", async () => {
  const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as { jobs: Record<string, { needs?: string | string[]; if?: string; steps: Array<{ run?: string; env?: Record<string, string> }> }> };
- const job = workflow.jobs["web-e2e"];expect(job).toBeDefined();expect(job?.needs).toBe("scope");expect(job?.if).toBe("needs.scope.outputs.docs_only != 'true'");
+ const job = workflow.jobs["web-e2e"];expect(job).toBeDefined();expect(job?.needs).toEqual(["scope", "checks"]);expect(job?.if).toBe("needs.scope.outputs.docs_only != 'true'");
  const commands = job!.steps.map(step => step.run ?? "").join("\n");expect(commands).toContain("npm ci");expect(commands).toContain("npm run build:web");expect(commands).toContain("npx playwright install --with-deps chromium firefox webkit");expect(commands).toContain("npx playwright test -c tests/web-e2e/playwright.config.ts");
  expect(job!.steps.some(step => step.env?.ROVARA_E2E_ALL_BROWSERS === "1")).toBe(true);expect(workflow.jobs.local?.needs).toContain("web-e2e");
 });
