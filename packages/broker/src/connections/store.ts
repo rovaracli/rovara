@@ -2,16 +2,21 @@
 // connection an org has given Rovara (the last six are Plan 4 Task 11, read-only), and the hook secrets of Plan 4's event hooks. A record holds the connection's settings, whether a secret has been saved,
 // and what the last check found. It never holds the key or token, or even the secret's name: that name is derived from
 // the org id and the connection id each time, and the value lives only in the org-tagged secret (org-secrets.ts).
+import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { z } from "zod";
 import { listMcpTools } from "@agentx/gateway";
 import {
+  type AuditEventInput,
   ConnectionIdSchema,
   ConnectionSecretSchemas,
+  INDEX_EXPIRY_ATTRIBUTE,
   ObservabilityConnectionTypeSchema,
   OrgConnectionSchema,
   OrgIdSchema,
+  agentRequestKey,
   agentXError,
+  canonicalJson,
   cloudwatchExternalId,
   cloudwatchRoleAccount,
   connectionKey,
@@ -26,7 +31,7 @@ import {
   type OrgId,
   type SecretConnectionType,
 } from "@agentx/contracts";
-import { auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
+import { auditConnectionJiraOrgAdminChanged, auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -304,6 +309,10 @@ export class OrgConnectionStore {
     requireExisting?: boolean;
     /** Create only: an id that exists is refused, and the write itself is conditional on there being none (a create never overwrites). */
     requireNew?: boolean;
+    /** More audit events that commit in the SAME transaction as the save (the Jira organization admin key change names itself here). */
+    alsoAudit?: AuditEventInput[];
+    /** Change only the record as this caller read it (its revision, 0 for none): a record that moved since is refused as stale, whatever a second read in here would find. */
+    expectRevision?: number;
   }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
@@ -343,6 +352,7 @@ export class OrgConnectionStore {
     }
     const existing = await readItem(this.input, orgId, connection.connectionId);
     if (existing === undefined && input.requireExisting === true) throw coded("NOT_FOUND", "no connection has that ID");
+    if (input.expectRevision !== undefined && (revisionOf(existing) ?? 0) !== input.expectRevision) throw coded("CHANGE_STALE", "that connection changed while you were saving it; try again");
     if (existing !== undefined && input.requireNew === true) throw coded("CONFIG_INVALID", "requestId: this request ID was already used; send a new one");
     if (existing !== undefined && existing.type !== connection.type) throw coded("CONFIG_INVALID", "connection.type: a connection's type cannot change; remove it and add a new one");
     // The Jira organization admin key and its organization id are kept by a later save that leaves them out (the web and the CLI send only the email and token); `clearOrgAdmin: true` removes them. Nothing of the
@@ -389,7 +399,7 @@ export class OrgConnectionStore {
       orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: connection.connectionId, connectorType: connection.type,
       occurrence: requestId === undefined ? auditOccurrence(connection.connectionId, at) : auditOccurrence(requestId, connection.connectionId),
     }));
-    const events = event === undefined ? [] : [event];
+    const events = [...(event === undefined ? [] : [event]), ...(input.alsoAudit ?? [])];
     const saved = strip(item) as unknown as OrgConnectionRecord;
     // The record, the directory entry, the audit item and the request item commit together or not at all (R18). The record is written only
     // if it is as it was read: a change that landed meanwhile refuses this one instead of being overwritten.
@@ -412,6 +422,42 @@ export class OrgConnectionStore {
       console.log(JSON.stringify({ component: "broker", event: "connection.after_save_failed", orgId, connectionId: connection.connectionId, error: error instanceof Error ? error.name : "unknown" }));
     });
     return saved;
+  }
+
+  /**
+   * Sets or clears the Jira connection's READ-ONLY Atlassian organization admin key and organization id (the pair goes together; both or neither), leaving the site, the email and the API token as they are.
+   * The pair is write-only like every secret: nothing here returns it. The change commits with its own audit event (`connection.jira_org_admin_changed`, "set" or "cleared", no value), and is refused
+   * where the ledger cannot take that event. `not_ready`: the connection has no readable email and token to keep (save them first).
+   */
+  async changeJiraOrgAdmin(input: { orgId: string; connectionId: string; change: { orgAdminKey: string; atlassianOrgId: string } | "clear"; by: string; requestId: string }): Promise<"saved" | "not_found" | "not_jira" | "not_ready" | "audit_unavailable" | "request_reused"> {
+    const orgId = parseOrg(input.orgId);
+    requireActor(input.by);
+    if (this.input.audit === undefined) return "audit_unavailable";
+    // R18: the request id is remembered with the change, in the same transaction. The same id for the same change is answered from that memory (nothing is written or audited again); for another change it is refused.
+    // The key enters the fingerprint only as a one-way hash specific to this org and connection.
+    const word = input.change === "clear" ? "cleared" : "set";
+    const fingerprint = createHash("sha256").update(canonicalJson({ route: "jira-org-admin", connectionId: input.connectionId, change: word,
+      secret: input.change === "clear" ? null : createHash("sha256").update(`jira-org-admin\0${orgId}\0${input.connectionId}\0${canonicalJson(input.change)}`, "utf8").digest("hex") }), "utf8").digest("hex");
+    const mark: RequestMark = { orgId, developerId: input.by, requestId: input.requestId, fingerprint };
+    const earlier = ((await this.input.documentClient.send(new GetCommand({ TableName: this.input.tableName, Key: agentRequestKey(orgId, input.by, input.requestId), ConsistentRead: true }))) as { Item?: Item }).Item;
+    const expires = earlier?.[INDEX_EXPIRY_ATTRIBUTE];
+    if (earlier !== undefined && !(typeof expires === "number" && expires <= Math.floor(this.input.now() / 1000))) return earlier.fingerprint === fingerprint ? "saved" : "request_reused";
+    const existing = await readItem(this.input, orgId, input.connectionId);
+    if (existing === undefined) return "not_found";
+    if (existing.type !== "jira") return "not_jira";
+    const stored = existing.hasSecret === true
+      ? await readConnectionSecret(this.input, orgId, { connectionId: input.connectionId, type: "jira", ...(typeof existing[VERSION_FIELD] === "string" ? { secretVersion: existing[VERSION_FIELD] } : {}) }).catch(() => undefined)
+      : undefined;
+    if (stored === undefined || !("email" in stored) || !("apiToken" in stored) || typeof stored.email !== "string" || typeof stored.apiToken !== "string") return "not_ready";
+    const kept = { email: stored.email, apiToken: stored.apiToken };
+    const secret = input.change === "clear" ? { ...kept, clearOrgAdmin: true } : { ...kept, orgAdminKey: input.change.orgAdminKey, atlassianOrgId: input.change.atlassianOrgId };
+    const event = await tryAuditEvent(this.input, () => auditConnectionJiraOrgAdminChanged({
+      orgId, actor: auditActorOf(input.by), occurredAt: this.iso(), connectionId: input.connectionId, change: word,
+      occurrence: auditOccurrence(input.requestId, input.connectionId, word, String(revisionOf(existing) ?? 0)),
+    }));
+    if (event === undefined) return "audit_unavailable";
+    await this.put({ orgId, connection: { ...(pick(existing) as Record<string, unknown>), connectionId: input.connectionId }, secret, by: input.by, requestId: input.requestId, request: mark, requireExisting: true, expectRevision: revisionOf(existing) ?? 0, alsoAudit: [event] });
+    return "saved";
   }
 
   /** Removes the connection and schedules its secret for deletion (7 days to recover it). */

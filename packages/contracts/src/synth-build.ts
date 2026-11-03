@@ -82,6 +82,13 @@ export const SYNTH_EXCLUDED_KEYS: Readonly<Record<string, string>> = {
   "agentx:autoRequalifyHourUtc": "Rovara's own scheduled runtime requalification, not an install setting",
   "agentx:autoRequalifySchedule": "Rovara's own scheduled runtime requalification, not an install setting",
   "agentx:e2eQualificationTransport": "Rovara's own qualification transport, not an install setting",
+  agentxBundleSigning: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningRepository: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningRepositoryIds: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningOidcProviderArn: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningAccountId: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningEnvironment: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
+  agentxBundleSigningAllowSharedAccount: "Rovara's own release bundle-signing stack (SK-4; docs/enterprise/bundle-signing.md), deployed by hand once in Rovara's signing account and never part of an install; not an install setting (2026-11-03: 0.5.2 batch)",
 };
 
 /** Settings whose value is never written to the approval record, the summary or a log: only its hash is. */

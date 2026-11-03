@@ -123,7 +123,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com", "amazonaws.com.cn"],
   },
   {
-    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert.", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts"],
+    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert; and, as the audience a GitHub Actions token must carry, in the release bundle-signing role's trust policy (a condition value, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts", "infra/lib/bundle-signing.ts"],
     hosts: ["sts.amazonaws.com"],
   },
   {
@@ -160,6 +160,10 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "deploy-supply-chain", why: "Node for the CloudShell install, and the release pipeline's tools.", files: ["infra/lib/release-pipeline.ts", "packages/cli/src/node-version.ts", ...DEFAULT_ALLOW],
     hosts: ["nodejs.org", "awscli.amazonaws.com"],
+  },
+  {
+    category: "deploy-supply-chain", why: "GitHub Actions' OIDC issuer, named as the federated provider in the release bundle-signing role's trust policy (an issuer name in a condition key, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/bundle-signing.ts"],
+    hosts: ["token.actions.githubusercontent.com"],
   },
   {
     category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule.", files: ["infra/lib/access.ts"],
@@ -256,6 +260,10 @@ export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
   {
     why: "The gateway's endpoint check: the same public-address test for the address a connector call goes to.",
     files: ["packages/gateway/src/endpoint.ts"],
+  },
+  {
+    why: "Test accounts (switch `ta`, off by default): the test-account proxy of a sealed check round resolves the one name a CONNECT asks for, only if it is on that run's list of the customer's own test account hosts (at most 8), and refuses it when any answer is a private, loopback, link-local or metadata address. The proxy then connects to the address it checked, on port 443 only. Nothing else is asked, and nothing is sent to Rovara.",
+    files: ["packages/worker/src/test-account-proxy.ts"],
   },
 ];
 

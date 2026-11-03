@@ -737,6 +737,7 @@ describe("I4: the builders", () => {
     ["auditRolledBack (chain)", (occurrence) => builders.auditRolledBack({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", fromVersion: 3, toVersion: 2 })],
     ["auditBuiltinAdopted", (occurrence) => builders.auditBuiltinAdopted({ ...base, occurrence, details, agentId: "agt_1", version: 4 })],
     ["auditConnectionSaved", (occurrence) => builders.auditConnectionSaved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
+    ["auditConnectionJiraOrgAdminChanged", (occurrence) => builders.auditConnectionJiraOrgAdminChanged({ ...base, occurrence, details, connectionId: "con_1", change: "set" })],
     ["auditConnectionRemoved", (occurrence) => builders.auditConnectionRemoved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
     ["auditCodeSettingsChanged", (occurrence) => builders.auditCodeSettingsChanged({ ...base, occurrence, details, projectName: "web", revision: 2, changed: "selfApproval", selfApproval: true, mergeMethod: "squash", reviewers: 0 })],
     ["auditProjectConnectorChanged", (occurrence) => builders.auditProjectConnectorChanged({ ...base, occurrence, details, connectorId: "cnr_1", connectorType: "linear", revision: 3, change: "widened" })],
@@ -858,6 +859,7 @@ describe("I4: the builders", () => {
     ["auditSetupRecipeChange", (occurrence) => builders.auditSetupRecipeChange({ ...base, occurrence, details, action: "setup_recipe.approved", facts: { recipeId: "rcp_" + "1".repeat(20), revision: 2, bodyDigest: "a".repeat(64), authority: "fresh_sign_in" } })],
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
     ["auditSavedEnvSettingChanged", (occurrence) => builders.auditSavedEnvSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: true })],
+    ["auditTestAccountChange", (occurrence) => builders.auditTestAccountChange({ ...base, occurrence, details, action: "test_account.approved", accountId: "ta-0000000000000001", facts: { digest: "a".repeat(64), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
   ];
 

@@ -349,6 +349,11 @@ export function auditConnectionSaved(input: AuditBuilderBase & { connectionId: s
   return build("connection.saved", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
 }
 
+/** `occurrence`: `auditOccurrence(requestId, connectionId, change, revision read)`. `change` is "set" or "cleared"; the key and the organization id are never an input. */
+export function auditConnectionJiraOrgAdminChanged(input: AuditBuilderBase & { connectionId: string; change: "set" | "cleared" }): AuditEventInput {
+  return build("connection.jira_org_admin_changed", input, { kind: "connection", id: input.connectionId }, { change: input.change });
+}
+
 /** `occurrence`: as `auditConnectionSaved`. */
 export function auditConnectionRemoved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
   return build("connection.removed", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
@@ -985,4 +990,17 @@ export function auditSavedEnvChanged(input: AuditBuilderBase & { projectName: st
 /** `occurrence`: `auditOccurrence(project, the time of the change)`. A maintainer turned the project's saved environment images on or off. */
 export function auditSavedEnvSettingChanged(input: AuditBuilderBase & { projectName: string; enabled: boolean }): AuditEventInput {
   return build("saved_env.setting_changed", input, { kind: "project", name: input.projectName }, { enabled: input.enabled });
+}
+
+// Customer test accounts (test services TS26) -----------------------------------------------------------------
+
+export type TestAccountAuditAction = "test_account.added" | "test_account.approved" | "test_account.narrowed" | "test_account.widened" | "test_account.reenable_requested" | "test_account.rotated"
+  | "test_account.suspended" | "test_account.expired" | "test_account.deleted" | "test_account.deleting" | "test_account.rotation_failed" | "test_account.used";
+
+/**
+ * `occurrence`: `auditOccurrence(accountId, version, action)` (every change adds one version), or for the daily roll-up `auditOccurrence(accountId, projectId, day)`. The target is the account. Facts are ids, digests,
+ * counts and fixed words only: the account's label, hosts, role and projects go in `details` (subject `org`), and a secret's value is never known here.
+ */
+export function auditTestAccountChange(input: AuditBuilderBase & { action: TestAccountAuditAction; accountId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
 }

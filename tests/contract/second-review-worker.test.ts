@@ -5,7 +5,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SECOND_REVIEWER_FEATURE, SecondReviewerSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, nextSecondReviewModel, secondReviewTryOutcome, type SecondReviewResult } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/index.js";
 import { runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
@@ -36,8 +36,12 @@ async function repository() {
   return { rootPath, repositories, candidate };
 }
 
-/** A model: `script` is its answers in order ("throw" = the session fails); `prompts` counts what it was asked. */
-function model(id: string, script: string[], prompts: string[], options: { delayMs?: number } = {}): { model: { provider: string; modelId: string }; piAdapter: PiSessionAdapter } {
+/**
+ * A model: `script` is its answers in order ("throw" = the session fails); `prompts` counts what it was asked.
+ * `delayMs` is a real wait. With `fakeClock` (the test has installed vi.useFakeTimers) the delay is instead virtual time that the model itself moves by `delayMs`, and a "hang" moves the clock to the next timer
+ * (the review's own limit), so how much of a budget a try used does not depend on how busy the machine is. `hold` is awaited before the model answers; `onPrompt` runs when it is asked.
+ */
+function model(id: string, script: string[], prompts: string[], options: { delayMs?: number; fakeClock?: boolean; hold?: Promise<unknown>; onPrompt?: () => void } = {}): { model: { provider: string; modelId: string }; piAdapter: PiSessionAdapter } {
   let next = 0;
   return {
     model: { provider: "test", modelId: id },
@@ -50,10 +54,18 @@ function model(id: string, script: string[], prompts: string[], options: { delay
           conversationId: input.conversationId ?? "review-session", sessionFile,
           async prompt(text) {
             prompts.push(`${id}:${text.includes("Review role: CODE") ? "CODE" : text.includes("Review role: SECURITY") ? "SECURITY" : "RETRY"}`);
+            options.onPrompt?.();
             const answer = script[Math.min(next, script.length - 1)]!;
             next += 1;
-            if (options.delayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
-            if (answer === "hang") await new Promise(() => undefined);
+            if (options.delayMs !== undefined) {
+              if (options.fakeClock === true) await vi.advanceTimersByTimeAsync(options.delayMs);
+              else await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+            }
+            if (options.hold !== undefined) await options.hold;
+            if (answer === "hang") {
+              if (options.fakeClock === true) await vi.advanceTimersToNextTimerAsync();
+              await new Promise(() => undefined);
+            }
             if (answer === "throw") throw new Error("the session failed");
             listener?.({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }] } });
           },
@@ -149,18 +161,26 @@ describe("the second reviewer inside the review operation", () => {
 
 describe("the second reviewer takes no extra wall time (M1)", () => {
   it("runs beside the normal reviews, so a review with a second reviewer is about as long as one without", async () => {
-    const prompts: string[] = [];
-    // The normal reviews take 2 x 400 ms one after the other; the second reviewer's three failing tries take 3 x 300 ms (900 ms if it ran after them). Run after them it would add that to the time; run beside them it adds about nothing.
-    const alone = await run({ first: model("first-v1", [PASS], prompts, { delayMs: 400 }) });
+    // Not measured in wall time (that moved with the machine's load). The first model holds its first review until the second reviewer has made all three of its failing tries. Run beside the normal reviews the
+    // second reviewer finishes while the first review is held, so the hold ends because of it; run after them it could not even start, and the hold would only end at the safety limit.
     const together: string[] = [];
-    const first = model("first-v1", [PASS], together, { delayMs: 400 });
-    const candidates = [model("second-a", ["throw"], together, { delayMs: 300 }), model("second-b", ["throw"], together, { delayMs: 300 })];
-    const { second, elapsed } = await run({ first, candidates });
-    expect(second?.tries).toBe(3);
-    expect(elapsed).toBeLessThan(alone.elapsed + 800);
-    // It really did overlap (this does not depend on the machine's speed): the second reviewer was already asking before the second of the normal reviews began.
+    let releaseHold!: (by: "second reviewer") => void;
+    const held = new Promise<"second reviewer">((resolve) => { releaseHold = resolve; });
+    let safety: ReturnType<typeof setTimeout> | undefined;
+    const holdEndedBy = Promise.race([held, new Promise<"safety limit">((resolve) => { safety = setTimeout(() => resolve("safety limit"), 20_000); })]);
+    const onSecondPrompt = () => { if (together.filter((entry) => entry.startsWith("second-")).length >= 3) releaseHold("second reviewer"); };
+    const first = model("first-v1", [PASS], together, { hold: holdEndedBy });
+    const candidates = [model("second-a", ["throw"], together, { onPrompt: onSecondPrompt }), model("second-b", ["throw"], together, { onPrompt: onSecondPrompt })];
+    try {
+      const { second } = await run({ first, candidates });
+      expect(second?.tries).toBe(3);
+      expect(await holdEndedBy).toBe("second reviewer");
+    } finally {
+      clearTimeout(safety);
+    }
+    // And the order shows it: the second reviewer was already asking before the second of the normal reviews began.
     expect(together.indexOf("second-a:CODE")).toBeLessThan(together.indexOf("first-v1:SECURITY"));
-  });
+  }, 60_000);
 
   it("all of its tries share ONE budget of one reviewer's time limit, so a hanging model ends the loop at that limit", async () => {
     const prompts: string[] = [];
@@ -174,12 +194,18 @@ describe("the second reviewer takes no extra wall time (M1)", () => {
 
   it("a try that would run past the shared budget is cut at what is left of it, not given a fresh limit", async () => {
     const prompts: string[] = [];
-    // The first try fails after 600 ms; the second hangs. With a shared budget of 1500 ms the second is cut at what is left (about 900 ms less the setup); with a fresh limit it would run 1500 ms more.
-    const slow = model("second-a", ["throw", "hang"], prompts, { delayMs: 600 });
-    const { second, elapsed } = await run({ first: model("first-v1", [PASS], prompts), candidates: [slow], timeoutMs: 1500 });
-    expect(second?.tries).toBe(2);
-    expect(second?.report).toMatchObject({ status: "UNKNOWN", failureReason: "TIMEOUT" });
-    expect(elapsed).toBeLessThan(1500 + 450);
+    // The first try fails after 600 ms; the second hangs. With a shared budget of 1500 ms the second is cut at what is left (900 ms); with a fresh limit it would run 1500 ms more (2100 ms in all).
+    // The clock is virtual (only the model moves it), so real work on a busy machine cannot use up the budget and the elapsed time is exact.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const slow = model("second-a", ["throw", "hang"], prompts, { delayMs: 600, fakeClock: true });
+      const { second, elapsed } = await run({ first: model("first-v1", [PASS], prompts), candidates: [slow], timeoutMs: 1500 });
+      expect(second?.tries).toBe(2);
+      expect(second?.report).toMatchObject({ status: "UNKNOWN", failureReason: "TIMEOUT" });
+      expect(elapsed).toBe(1500);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sees only the change by default: no source tools and no lessons (owner decision, option C); same_as_first gives it what the first reviewer has", async () => {
@@ -211,7 +237,10 @@ describe("the second reviewer stops with the run (N3, N2)", () => {
     const prompts: string[] = [];
     let open = 0;
     let started = 0;
-    const hanging = model("second-a", ["hang"], prompts);
+    // The first review's session fails only once the second reviewer is asking its model (not after a fixed wait, which a busy machine can outrun).
+    let asking!: () => void;
+    const askingModel = new Promise<void>((resolve) => { asking = resolve; });
+    const hanging = model("second-a", ["hang"], prompts, { onPrompt: () => asking() });
     const inner = hanging.piAdapter.create.bind(hanging.piAdapter);
     hanging.piAdapter.create = async (input) => {
       const session = await inner(input);
@@ -220,14 +249,13 @@ describe("the second reviewer stops with the run (N3, N2)", () => {
       session.dispose = () => { open -= 1; dispose(); };
       return session;
     };
-    // The first review's session fails after the second reviewer is already asking its model.
-    const broken: ReturnType<typeof model> = { model: { provider: "test", modelId: "first-v1" }, piAdapter: { async create() { await new Promise((resolve) => setTimeout(resolve, 600)); throw new Error(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE); } } };
+    const broken: ReturnType<typeof model> = { model: { provider: "test", modelId: "first-v1" }, piAdapter: { async create() { await Promise.race([askingModel, new Promise((resolve) => setTimeout(resolve, 30_000))]); throw new Error(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE); } } };
     await expect(run({ first: broken, candidates: [hanging] })).rejects.toThrow(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
-    for (let waited = 0; open > 0 && waited < 3000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+    for (let waited = 0; open > 0 && waited < 30_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
     // It had started (so the stop is what ended it, not its own limit of minutes), and its session is closed.
     expect(started).toBe(1);
     expect(open).toBe(0);
-  });
+  }, 60_000);
 
   it("the step's tool list still narrows the second reviewer's tools when it sees only the change; the sources, lessons, step instructions and skills are what it drops", async () => {
     const seen: Array<{ who: string; tools: unknown; skills: unknown }> = [];

@@ -277,6 +277,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/prior-edits.ts",
       // 2026-11-02, team-record-links: the admin tracker-people request receipt (`TEAM_RECORD_TRACKER_REQUEST`, a digest of the change and its outcome, no names) expires after 90 days; runtime.ts writes it when it remembers a request.
       "packages/broker/src/team-record/runtime.ts",
+      // 2026-11-03: 0.5.2 batch (fix/team-record-connect). The Jira organization admin key change reads the request receipt (`agentRequestKey` item) and its expiry to answer a repeat of the same request; the receipt expires with the TTL, nothing durable.
+      "packages/broker/src/connections/store.ts",
       // Track record (v1.2 slice 1): a pending outcome sample lasts a year, a scored one and its scored copy 180 days after the score; only outcomes.ts writes and reads them.
       "packages/broker/src/rovara-code/outcomes.ts",
       // Track record hooks: the small pointer item that says where a candidate's samples are (a task's `OUTCOME_KEYS#<round>` item) expires with the pending samples, a year after it is made.

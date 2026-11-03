@@ -302,6 +302,18 @@ describe("DG-2: the button says what it does", () => {
     expect(DIAGNOSIS_APPLY_BUTTON_LABEL).toBe("Apply this change");
     expect(DIAGNOSIS_APPLY_BUTTON_LABEL).not.toMatch(/propose/iu);
   });
+  it("SK-4: the dev container path pattern accepts the places a dev container lives and refuses `.`/`..` segments, absolute paths and anything else (both copies)", () => {
+    const good = [".devcontainer/devcontainer.json", ".devcontainer.json", ".devcontainer/node/devcontainer.json", ".devcontainer/a.b-c_d/devcontainer.json", ".devcontainer/.hidden/devcontainer.json", ".devcontainer/v1.2/devcontainer.json"];
+    const bad = [
+      ".devcontainer/../devcontainer.json", ".devcontainer/./devcontainer.json", ".devcontainer/.../devcontainer.json", ".devcontainer/../../etc/devcontainer.json", ".devcontainer/a/../devcontainer.json",
+      "../.devcontainer/devcontainer.json", "/.devcontainer/devcontainer.json", "/devcontainer.json", "/etc/passwd", "devcontainer.json", "src/.devcontainer.json", ".devcontainer/a/b/devcontainer.json",
+      ".devcontainer/devcontainer.json\n", ".devcontainer//devcontainer.json", ".devcontainer\\..\\devcontainer.json", "",
+    ];
+    for (const pattern of [DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN]) {
+      for (const path of good) expect(pattern.test(path), path).toBe(true);
+      for (const path of bad) expect(pattern.test(path), JSON.stringify(path)).toBe(false);
+    }
+  });
   it("the browser-safe copy of the dev container pattern is the setup proposal's own", () => {
     expect(DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.source).toBe(DEVCONTAINER_PATH_PATTERN.source);
     expect(DIAGNOSIS_DEVCONTAINER_PATH_PATTERN.flags).toBe(DEVCONTAINER_PATH_PATTERN.flags);

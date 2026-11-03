@@ -575,6 +575,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                           {
                             "Ref": "AWS::AccountId",
                           },
+                          ":role/agentx-staging-connector-secrets-test-accounts",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
                           ":role/agentx-staging-broker-role",
                         ],
                       ],
@@ -1214,7 +1230,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
-                      ":role/agentx/staging/agentx-staging-connector-secrets",
+                      ":role/agentx/staging/agentx-staging-connector-secrets*",
                     ],
                   ],
                 },
@@ -1402,22 +1418,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
-                      ":role/agentx-staging-connector-secrets",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
                       ":role/agentx-staging-broker-role",
                     ],
                   ],
@@ -1515,6 +1515,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-img-manage",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-connector-secrets*",
                     ],
                   ],
                 },
@@ -4651,6 +4667,20 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               },
               "Sid": "AssumeConnectorSecretsRole",
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "TestAccountSecretsRole",
+                  "Arn",
+                ],
+              },
+              "Sid": "AssumeTestAccountSecretsRole",
             },
             {
               "Action": "states:StartExecution",
@@ -15647,6 +15677,293 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::DynamoDB::Table",
       "UpdateReplacePolicy": "Retain",
+    },
+    "TestAccountSecretsRole": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession",
+              ],
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "rovara:org",
+                    "rovara:purpose",
+                  ],
+                },
+                "Null": {
+                  "aws:RequestTag/rovara:org": "false",
+                  "aws:RequestTag/rovara:purpose": "false",
+                },
+                "StringEquals": {
+                  "aws:RequestTag/rovara:purpose": [
+                    "store",
+                    "resolve",
+                  ],
+                },
+                "StringLike": {
+                  "aws:RequestTag/rovara:org": "org_????????????????????",
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BrokerServiceRole1938BCC9",
+                    "Arn",
+                  ],
+                },
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "AgentX customer test account secrets: assumed by the broker with rovara:org and rovara:purpose session tags, reaches only that org's test account secrets",
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "secretsmanager:PutSecretValue",
+                    "secretsmanager:DescribeSecret",
+                    "secretsmanager:DeleteSecret",
+                    "secretsmanager:UpdateSecretVersionStage",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "store",
+                      "aws:ResourceTag/rovara:org": "\${aws:PrincipalTag/rovara:org}",
+                      "aws:ResourceTag/rovara:use": "test-account",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":secretsmanager:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":secret:agentx/staging/org-test-accounts/\${aws:PrincipalTag/rovara:org}/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "StoreOwnOrgSecrets",
+                },
+                {
+                  "Action": "secretsmanager:GetSecretValue",
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "resolve",
+                      "aws:ResourceTag/rovara:org": "\${aws:PrincipalTag/rovara:org}",
+                      "aws:ResourceTag/rovara:use": "test-account",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":secretsmanager:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":secret:agentx/staging/org-test-accounts/\${aws:PrincipalTag/rovara:org}/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "ResolveOwnOrgSecret",
+                },
+                {
+                  "Action": "secretsmanager:CreateSecret",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "aws:TagKeys": [
+                        "rovara:org",
+                        "rovara:use",
+                      ],
+                    },
+                    "StringEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "store",
+                      "aws:RequestTag/rovara:org": "\${aws:PrincipalTag/rovara:org}",
+                      "aws:RequestTag/rovara:use": "test-account",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":secretsmanager:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":secret:agentx/staging/org-test-accounts/\${aws:PrincipalTag/rovara:org}/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "CreateOwnOrgSecrets",
+                },
+                {
+                  "Action": "secretsmanager:TagResource",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "aws:TagKeys": [
+                        "rovara:org",
+                        "rovara:use",
+                      ],
+                    },
+                    "StringEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "store",
+                      "aws:RequestTag/rovara:org": "\${aws:PrincipalTag/rovara:org}",
+                      "aws:RequestTag/rovara:use": "test-account",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":secretsmanager:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":secret:agentx/staging/org-test-accounts/\${aws:PrincipalTag/rovara:org}/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "TagOnlyWithCreate",
+                },
+                {
+                  "Action": "secretsmanager:UntagResource",
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "NeverUntag",
+                },
+                {
+                  "Action": "secretsmanager:DeleteSecret",
+                  "Condition": {
+                    "Bool": {
+                      "secretsmanager:ForceDeleteWithoutRecovery": "true",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "NeverDeleteWithoutRecovery",
+                },
+                {
+                  "Action": "secretsmanager:GetSecretValue",
+                  "Condition": {
+                    "StringNotEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "resolve",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "OnlyResolveReads",
+                },
+                {
+                  "Action": [
+                    "secretsmanager:CreateSecret",
+                    "secretsmanager:PutSecretValue",
+                    "secretsmanager:DeleteSecret",
+                    "secretsmanager:TagResource",
+                    "secretsmanager:UpdateSecretVersionStage",
+                  ],
+                  "Condition": {
+                    "StringNotEquals": {
+                      "aws:PrincipalTag/rovara:purpose": "store",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "OnlyStoreWrites",
+                },
+              ],
+              "Version": "2012-10-17",
+            },
+            "PolicyName": "OrgTestAccountSecrets",
+          },
+        ],
+        "RoleName": "agentx-staging-connector-secrets-test-accounts",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
     },
     "TurnRecords69ECFCD9": {
       "DeletionPolicy": "RetainExceptOnCreate",

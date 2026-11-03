@@ -38,6 +38,10 @@ const functionVariables = (template: Template, pattern: RegExp): Record<string, 
   return (found![1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
 };
 const RECORD_TYPES = ["AWS::S3Vectors::VectorBucket", "AWS::S3Tables::TableBucket", "AWS::Athena::WorkGroup"];
+/** Every statement of the Team record's own rights (a Sid starting `TeamRecord`) in the template's policies. */
+const recordStatements = (template: Template): Array<{ Sid: string; Action: string | string[]; Resource: unknown }> => Object.values(resourcesOf(template))
+  .flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement) : [])
+  .filter((statement): statement is { Sid: string; Action: string | string[]; Resource: unknown } => typeof statement.Sid === "string" && statement.Sid.startsWith("TeamRecord"));
 
 describe("the switch is off by default and changes nothing", () => {
   const plain = controlPlane(PUBLIC);
@@ -215,6 +219,33 @@ describe("the switch on: Public cloud", () => {
     expect(text).not.toMatch(/:database\/\*"|:table\/\*"|"database\/\*"|"table\/\*"/);
     expect(text).not.toMatch(/"(?:database|table)\/\*/);
   }, 180_000);
+
+  it("DV-1 (c): with the lake on, the ONLY record right on every resource is lakeformation:GetDataAccess; Athena stays on the one workgroup, S3 Tables on the one table bucket, results under results/", () => {
+    const statements = recordStatements(on);
+    const wide = statements.filter((statement) => JSON.stringify(statement.Resource) === "\"*\"" || [statement.Resource].flat().includes("*")).map((statement) => [statement.Sid, [statement.Action].flat()]);
+    expect(wide).toStrictEqual([["TeamRecordLakeFormationData", ["lakeformation:GetDataAccess"]]]);
+    const byId = Object.fromEntries(statements.map((statement) => [statement.Sid, JSON.stringify(statement.Resource)]));
+    expect(byId.TeamRecordAthena).toContain("workgroup/agentx-staging-record");
+    expect(byId.TeamRecordAthena).not.toContain("workgroup/*");
+    expect(byId.TeamRecordLakeTables).toContain("TableBucket");
+    expect(byId.TeamRecordAthenaResults).toContain("/results/*");
+    // No right to create, delete or change the lake's shape or the workgroup.
+    const actions = statements.flatMap((statement) => [statement.Action].flat());
+    for (const action of ["athena:CreateWorkGroup", "athena:UpdateWorkGroup", "athena:DeleteWorkGroup", "s3tables:DeleteTable", "s3tables:DeleteTableBucket", "s3tables:DeleteNamespace", "s3tables:CreateTable", "glue:CreateTable", "glue:DeleteTable", "glue:CreateDatabase", "lakeformation:GrantPermissions"]) expect(actions, action).not.toContain(action);
+  }, 180_000);
+
+  it("DV-1 (c): the first staging switch-on shape, the lake OFF (agentxTeamRecordLake=false): no lake resource and no Athena, S3 Tables, Glue or Lake Formation right anywhere in the template", () => {
+    const off = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordLake: "false" });
+    const types = typesOf(off);
+    expect(types).toContain("AWS::S3Vectors::VectorBucket");
+    expect(types).toContain("AWS::DynamoDB::Table");
+    for (const type of ["AWS::S3Tables::TableBucket", "AWS::S3Tables::Namespace", "AWS::S3Tables::Table", "AWS::Athena::WorkGroup"]) expect(types, type).not.toContain(type);
+    const text = JSON.stringify(off.toJSON());
+    for (const prefix of ["athena:", "s3tables:", "glue:", "lakeformation:"]) expect(text.includes(`"${prefix}`), prefix).toBe(false);
+    expect(brokerSettingsIn(functionVariables(off, /^Broker[0-9A-F]{8}$/)).teamRecordLake).toBe("0");
+    // The vector data role still names its index by the session tag, lake or no lake.
+    expect(text).toContain("aws:PrincipalTag/rovara-index");
+  }, 240_000);
 
   it("gives the broker rights on the table and its indexes only (no scan), and to assume the vector role", () => {
     const text = JSON.stringify(on.toJSON());

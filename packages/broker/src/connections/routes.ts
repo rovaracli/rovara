@@ -148,9 +148,21 @@ function withId(connection: Record<string, unknown>, connectionId: string, allow
   return { ...connection, connectionId };
 }
 
+/**
+ * The Jira organization admin key, its organization id and the flag that clears them are set only by the Connections screen's own route (`/v1/app/org/jira-org-admin`: a browser session, a recent sign-in, its own audit event).
+ * A save here that names any of them is refused, so a token that can edit connections cannot go around those checks. A save that leaves them out keeps the stored pair.
+ */
+const ORG_ADMIN_FIELDS = ["orgAdminKey", "atlassianOrgId", "clearOrgAdmin"] as const;
+function refuseOrgAdminFields(secret: Record<string, unknown> | undefined): void {
+  if (secret !== undefined && ORG_ADMIN_FIELDS.some((field) => field in secret)) {
+    throw agentXError("CONFIG_INVALID", "secret: the Jira organization admin key and organization id are set only on the Connections screen in the browser");
+  }
+}
+
 async function createConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   requireAdmin(caller);
   const input = parseBody(SaveBodySchema, body);
+  refuseOrgAdminFields(input.secret);
   const connectionId = mintConnectionId(caller, input.requestId);
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
   if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) });
@@ -167,6 +179,7 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
 async function saveConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, connectionId: string, body: unknown): Promise<unknown> {
   requireAdmin(caller);
   const input = parseBody(SaveBodySchema, body);
+  refuseOrgAdminFields(input.secret);
   const { mark, replay } = await markRequest(deps, caller, "save", connectionId, input);
   if (replay !== undefined) return { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) };
   const saved = await deps.store.put({

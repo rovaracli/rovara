@@ -155,6 +155,8 @@ export const AUDIT_ACTIONS = [
   "session.linked",
   "session.unlinked",
   "connection.saved",
+  // The Jira organization admin key (and organization id) was set or cleared on a Jira connection. The fact is "set" or "cleared"; the key and the id never go in.
+  "connection.jira_org_admin_changed",
   "connection.removed",
   "project_connector.changed",
   "guardrails.changed",
@@ -330,6 +332,19 @@ export const AUDIT_ACTIONS = [
   // Saved project images (SV wiring): ids, digests, counts and fixed words only.
   "saved_env.changed",
   "saved_env.setting_changed",
+  // Customer test accounts (test services TS26, switch `ta`): ids, digests, counts and fixed words only. A host, label or role never goes in a fact (they are in `details`), and a secret's value is never known to the broker.
+  "test_account.added",
+  "test_account.approved",
+  "test_account.narrowed",
+  "test_account.widened",
+  "test_account.reenable_requested",
+  "test_account.rotated",
+  "test_account.suspended",
+  "test_account.expired",
+  "test_account.deleted",
+  "test_account.deleting",
+  "test_account.rotation_failed",
+  "test_account.used",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -363,6 +378,7 @@ export const AUDIT_TARGET_KINDS = [
   "record_source",
   "mcp_server",
   "diagnosis",
+  "test_account",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -452,6 +468,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "session.linked": ["surface"],
   "session.unlinked": ["surface"],
   "connection.saved": ["connectorType"],
+  "connection.jira_org_admin_changed": ["change"],
   "connection.removed": ["connectorType"],
   "project_connector.changed": ["connectorType", "revision", "change"],
   "guardrails.changed": ["revision", "widened"],
@@ -631,6 +648,21 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "saved_env.changed": ["change", "cause", "digest", "count"],
   // `enabled` is the project's savedEnv.enabled setting after the change.
   "saved_env.setting_changed": ["enabled"],
+  // Customer test accounts. `kind` is the account kind, `digest` the sha256 of what was approved (`testAccountApprovalDigest`), `fromDigest` the one before a change, `hostCount` and `projectScope` (`all` or `list`) its reach.
+  // `approvalMode` is `second_person` or `sole_owner_exception`; `approvals` how many people's approvals count; `expiresInDays` the days from the approval to the expiry. `cause` is a fixed word (`manual`, `expired`, `widened`).
+  // `used` is the daily roll-up of one project: `day` (YYYY-MM-DD), `rounds` and `requests`.
+  "test_account.added": ["kind", "digest", "hostCount", "projectScope"],
+  "test_account.approved": ["digest", "approvalMode", "approvals", "expiresInDays"],
+  "test_account.narrowed": ["digest", "fromDigest"],
+  "test_account.widened": ["digest", "fromDigest"],
+  "test_account.reenable_requested": ["digest", "fromStatus"],
+  "test_account.rotated": ["digest"],
+  "test_account.suspended": ["cause"],
+  "test_account.expired": ["digest"],
+  "test_account.deleted": ["kind", "cause"],
+  "test_account.deleting": ["kind", "cause"],
+  "test_account.rotation_failed": ["cause"],
+  "test_account.used": ["day", "rounds", "connections", "bytes"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

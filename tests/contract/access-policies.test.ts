@@ -45,7 +45,7 @@ describe("service role policy", () => {
       } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
         // The fixed-name roles: IAM authorizes CloudFormation's lookup of each before it exists against its path-less ARN.
         // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
-        expect(resources).toEqual(["connector-secrets", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
+        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
         expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
@@ -469,7 +469,8 @@ describe("default permission boundary", () => {
     // has room for one more ARN, not three, and the broker's own policy names the three exactly.
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
       Sid: "ConnectorSecretsRole", Effect: "Allow", Action: ["sts:AssumeRole", "sts:TagSession"],
-      Resource: ["arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets", "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"],
+      // Test services TS26: the TestAccountSecretsRole shares the connector role's name as a prefix, so the one ARN ends in a wildcard (the boundary has no room for another; the broker's own policy names each role exactly).
+      Resource: ["arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"],
     });
     expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
     expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);
