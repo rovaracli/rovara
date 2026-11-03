@@ -3,9 +3,10 @@
 // and when it expires, Approve with "Sign in again" on REAUTH_REQUIRED, Repair for an unreadable row). Nothing shows while the setup agent is off (not found). Every word that comes from the server goes through VisibleText.
 import { describe, expect, it } from "vitest";
 import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
+import { MemoryRouter, Outlet, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
+import { HowWeWorkCompanyScreen } from "../../packages/ui/src/screens/admin/how-we-work/HowWeWorkCompanyScreen.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
@@ -214,11 +215,29 @@ describe("the company's Setup locks", () => {
   expect(section.queryByRole("button", { name: "Approve this change" })).toBeNull();
  });
 
- it("is an admin's: a member never asks for the locks", async () => {
-  const f = mountCompany({ role: "member" });
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
-  expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
-  expect(f.request.mock.calls.some(([request]) => request.path === LOCKS_PATH)).toBe(false);
+ it("is an admin's: rendered with a member's role (outside the admin layout, which would block the page first) it never asks for the locks", async () => {
+  for (const role of ["member", "admin"] as const) {
+   const f = fakeHost(async request => {
+    const path = request.path.split("?")[0] ?? "";
+    if (path === "/v1/app/org/model-selection-policy") return { status: 200, body: companyPolicyRaw() };
+    if (path === "/v1/app/org/model-sources") return { status: 200, body: { sources: [], order: ["rovara"] } };
+    if (path === LOCKS_PATH) return { status: 200, body: locksView() };
+    return refuse(404, "NOT_FOUND", "Not found.");
+   });
+   f.host.kind = "web";f.host.origin = "https://cell.example";
+   const query = createQueryClient();
+   const context = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", company: "Acme", developerId: "a".repeat(64), role, checking: false };
+   const router = createMemoryRouter([{ element: h(Outlet, { context }), children: [{ path: "/", element: h(HowWeWorkCompanyScreen) }] }], { initialEntries: ["/"] });
+   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+   await screen.findByRole("heading", { name: "How we work (company)" });
+   if (role === "admin") expect(await screen.findByRole("region", { name: "Setup locks" })).toBeTruthy();
+   else {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    expect(screen.queryByRole("region", { name: "Setup locks" })).toBeNull();
+    expect(f.request.mock.calls.some(([request]) => request.path === LOCKS_PATH)).toBe(false);
+   }
+   ui.unmount();query.clear();
+  }
  });
 
  it("shows 'Setup agent on' with no company limit set", async () => {
