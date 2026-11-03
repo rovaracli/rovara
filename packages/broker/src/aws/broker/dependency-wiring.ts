@@ -85,6 +85,7 @@ import { brokerEnvironmentName, decideRequestContext, egressDepsOf, githubScope,
 import { codeMergeHostOf, operationEventsNewestFirst } from "./terminal-and-github-events.js";
 import { deleteWorkspaceCompute, requesterOf, startTaskClose } from "./thread-workspaces.js";
 import { installSavedEnv } from "./saved-env-prepare.js";
+import { realSavedEnvDeps } from "./saved-env-real.js";
 import { deleteSlackBinding, heldPreparationDispatch, newWorkspacePreparation, spendRequestHostOf } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
 import { learningSettler } from "../../learning/settle.js";
@@ -600,16 +601,22 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
     : undefined);
   // Lane E (ME-13): the stage routes' sources runtime; an explicit one (tests) wins.
   const contextSources = input.contextSources ?? contextSourcesInstallOf(input)?.runtime;
-  return {
+  // Saved project images: the registry's real bindings, only while the `sv` switch is on and the install can run it. A registry the caller supplied (a test) wins. The bindings read the finished
+  // dependencies lazily, so the registry exists before they do.
+  let finished: AwsBrokerDependencies | undefined;
+  const savedEnvDeps = rest.savedEnvDeps ?? realSavedEnvDeps(rest, () => finished!);
+  finished = {
     ...rest,
+    ...(savedEnvDeps === undefined ? {} : { savedEnvDeps }),
     // Saved environments (SH25): the hooks exist only while the `sv` switch is on.
-    ...installSavedEnv(rest),
+    ...installSavedEnv(savedEnvDeps === undefined ? {} : { savedEnvDeps }),
     ...(contextSources === undefined ? {} : { contextSources }),
     catalogs: input.catalogs ?? new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 256 }),
     ...(credentialRegistry ? { credentialRegistry } : {}),
     ...(turnRecords ? { turnRecords } : {}),
     ...(turnRecordsTableName ? { turnRecordsTableName } : {}),
   };
+  return finished;
 }
 
 /** The broker actions developer task routes call (spec 025); tests and the route wiring use this factory. */

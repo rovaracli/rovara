@@ -336,18 +336,20 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, merge of feat/cr-settings (cee08fdcb) into cloud/next: the named and foreign digests were retaken after ONE intended addition, checked by synthesizing the parent remainders at 3488a7a48 and with the merge and
     // diffing them (nothing else differs): `SECOND_REVIEW_ENABLED` (Ref SecondReviewEnabled), a plain variable on the OutboxPublisher function. The legacy digests did not move (named environments only).
     // 2026-11-02, merge of cloud/next fde551404 into feat/saved-env-build: the four named and foreign digests were retaken for cloud/next's SecondReviewEnabled variable and the saved environment images together. Legacy did not move.
+    // 2026-11-02, feat/saved-env-wire: the four named and foreign digests were retaken for TWO intended additions (the legacy digests did not move; named environments only): the broker's AGENTX_NAMES gains `sk` (the saved
+    // environment images key's id: Ref SavedEnvImagesImagesKey...), and the Dispatcher function gains the plain variable SAVED_ENV_ENABLED (Ref SavedEnvEnabled), which it honours when it hands a rebuild job's lease to the worker.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "91137fb21d371db9072a27e664164d322540b4a4d6fb1d859666bee35a4965dd",
-        withoutRoute: "a851a74ff7daec9325285f7108477e4ce144c3af285b9c7c102158f8c45325ca",
+        withRoute: "f79dad27af5b121e428a3a20dfd6207a0951abb4708ccf1e2531a8f7fd6460f6",
+        withoutRoute: "b8c8b9f476528724e2e598d9ee2a9bf8acefe2ca145d06b3aff99ffb377a7305",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "77dae9bfb7465567aa293a692d57cefd1069e3ac5122136428250595082d462b",
-        withoutRoute: "e8ce2f951acfbcd5e3658e17530a3bdd66bbd663c969da6f47b955441506d192",
+        withRoute: "3c5177b46e1d94e5f7eab8124975f00cd88bb6fd5841bd74983d39a12a7e4411",
+        withoutRoute: "89c0414b575fdd7ff8df9d3100a4d5c2e869416454a2c71bb6e05f47e32f9de2",
       },
       {
         label: "legacy",

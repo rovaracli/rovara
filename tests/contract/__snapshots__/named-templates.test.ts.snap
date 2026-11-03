@@ -3635,6 +3635,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                       },
                     ],
                   },
+                  ",sk=",
+                  {
+                    "Ref": "SavedEnvImagesImagesKey550AA1C0",
+                  },
                   ",sl=",
                   {
                     "Ref": "SlackThreads36E14C1E",
@@ -7563,6 +7567,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "MAX_DISPATCH_ATTEMPTS": "5",
             "PROVISIONER_ARN": {
               "Ref": "SessionsProvisioner9C44055B",
+            },
+            "SAVED_ENV_ENABLED": {
+              "Ref": "SavedEnvEnabled",
             },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",

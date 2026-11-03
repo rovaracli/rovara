@@ -76,6 +76,8 @@ export class SavedEnvImages extends Construct {
   readonly createRole: iam.Role;
   readonly key: kms.Key | undefined;
   readonly kmsKeyArn: string;
+  /** The key's id (a token for the stack's own key; read from the ARN for a customer's): the broker is passed this, and builds the ARN from the region and the account. */
+  readonly kmsKeyId: string;
   readonly template: ecr.CfnRepositoryCreationTemplate;
   private readonly envName: string;
 
@@ -125,6 +127,7 @@ export class SavedEnvImages extends Construct {
       if ((!Token.isUnresolved(stack.region) && parsed[1] !== stack.region) || (!Token.isUnresolved(stack.account) && parsed[2] !== stack.account)) throw new Error("saved environment images: kmsKeyArn must be a key in this install's own account and region");
       this.key = undefined;
       this.kmsKeyArn = props.kmsKeyArn;
+      this.kmsKeyId = props.kmsKeyArn.slice(props.kmsKeyArn.lastIndexOf("/") + 1);
       // The role may use the customer's key through ECR to create the grant. Its identity policy carries the right; the key policy (the statements printed below) opens the key to the account's IAM policies for
       // this one role, and works before the role exists (a named principal that does not exist yet is refused by KMS; a condition on aws:PrincipalArn is not).
       this.createRole.addToPolicy(new iam.PolicyStatement({
@@ -165,6 +168,7 @@ export class SavedEnvImages extends Construct {
       (key.node.defaultChild as kms.CfnKey).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
       this.key = key;
       this.kmsKeyArn = key.keyArn;
+      this.kmsKeyId = key.keyId;
     }
 
     // ---- the creation template

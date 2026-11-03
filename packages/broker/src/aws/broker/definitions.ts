@@ -211,6 +211,8 @@ export interface AwsBrokerDependencies {
   /** Saved environments (SH24/SH25): the registry's ports (store, sessions, ECR). Wired with the routes; `installSavedEnv` derives the two hooks above from it, only while the switch is on. */
   savedEnvDeps?: SavedEnvDeps;
   /** Saved project images: what the install knows of the key's inputs for a project (the base image digest, the secret names, the detectors' globs). Undefined: a queued job cannot be started and is ended with `no_build_inputs`. */
+  /** Saved project images: the environment key of a project's default branches NOW (the reader the install gives: the key hashes files only a clone can read). Undefined: the registry queues nothing (`no_key`). */
+  savedEnvKey?: (orgId: string, project: string) => Promise<string | undefined>;
   savedEnvBuildInputs?: (orgId: string, project: string) => Promise<{ baseImageDigest: string; secretNames: readonly string[]; detectorGlobs: readonly string[] } | undefined>;
   /** Injectable clock for funding evidence and its durable audit. */
   now?: () => number;

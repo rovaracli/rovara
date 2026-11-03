@@ -118,6 +118,8 @@ export const BROKER_NAMES = {
   // Team record, Enterprise: the customer's KMS key (its id; the broker builds the ARN in this account and region), named in each workspace's vector session policy.
   // (The Team record's dead-letter queue, listed on the health route as `team-record`, has a fixed name and is derived by the broker, not passed: `teamRecordOpsDeadLetterName`, ENV-ROOM. Code `tq` is retired.)
   teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
+  // Saved project images (SV wiring): the key the repositories' creation template encrypts with (the stack's own, or the Enterprise customer's). The broker compares what ECR reports of a repository with it. Passed as the key's id.
+  savedEnvKey: { code: "sk", variable: "SAVED_ENV_KMS_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 
 export type BrokerNameKey = keyof typeof BROKER_NAMES;
