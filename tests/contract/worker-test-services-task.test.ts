@@ -13,8 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
-import { TEST_SERVICES_USAGE_ARTIFACT, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
-import { SEALED_ROUND_PORTS } from "../../packages/worker/src/test-services-sealed.js";
+import { SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { fakeServicesDocker } from "../support/fake-services-docker.js";
 

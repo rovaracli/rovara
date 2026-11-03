@@ -50,9 +50,8 @@ import { freshHelpers, createResetHooks, resetForNextCheck, seedRun, type ResetD
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
-import { SEALED_ROUND_PORTS } from "./test-services-sealed.js";
-import { refuseTestServicesWithDevcontainer } from "./check-round-runners.js";
-import { countResets } from "./service-usage-record.js";
+import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
+import { buildServiceUsageRecord, countResets } from "./service-usage-record.js";
 import { loadPrepullList, prepullCatalogImages, type PrepullPorts } from "./service-prepull.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -130,13 +129,16 @@ export interface UsageRecordSetup {
 }
 
 /**
- * s1-sealed's two exports, as this module needs them. Until that lane is merged the worker has none (`config.sealedRound` is undefined and a plan with dependencies is refused before anything starts); after the merge,
- * `test-services-sealed.ts` binds them: `withSealedCheckRound` (check-round-runners.ts) and `buildServiceUsageRecord` (service-usage-record.ts). Tests stub them.
+ * s1-sealed's two exports, as this module needs them. A config without them (`config.sealedRound` undefined) refuses a plan with dependencies before anything starts;
+ * `SEALED_ROUND_PORTS` binds them. Tests stub them.
  */
 export interface SealedRoundPorts {
   withSealedCheckRound<T>(input: SealedRoundSetup, round: (runners: CheckRunners) => Promise<T>): Promise<T>;
   buildServiceUsageRecord(input: UsageRecordSetup): Promise<unknown>;
 }
+
+/** s1-sealed's two exports, bound. This is the only file besides run-task.ts and prepare.ts that may import the sealed round or the usage-record builder (tests/unit/worker-sealed-source-guards.test.ts). */
+export const SEALED_ROUND_PORTS: SealedRoundPorts = { withSealedCheckRound, buildServiceUsageRecord };
 
 export interface TestServicesConfig {
   docker: DockerCli;
@@ -532,7 +534,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
     // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
     const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
-    const workingSeeds: SeedPorts = seedPorts(executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand);
+    const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal));
     for (const item of resolved) {
       try {
         await seedRun(counted, [item.resetDependency], workingSeeds, seedSignal);

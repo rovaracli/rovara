@@ -8,10 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
-import { SEALED_ROUND_PORTS } from "../../packages/worker/src/test-services-sealed.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
-  TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
+  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
   type SealedRoundPorts, type SealedRoundSetup, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
