@@ -30,6 +30,8 @@ export interface GuardOptions {
   entry?: ThreadEntry | undefined;
   /** Where the "guard unavailable" line goes; the worker's console log by default. */
   log?: WorkerLogSink | undefined;
+  /** Run only the detectors with these names (see `runDetectors`). */
+  only?: readonly string[] | undefined;
 }
 
 export function defaultThreadEntry(): ThreadEntry {
@@ -40,12 +42,12 @@ export function defaultThreadEntry(): ThreadEntry {
 
 type Attempt = { kind: "done"; detection: Detection } | { kind: "stopped" } | { kind: "unavailable"; code: string };
 
-function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, timeoutMs: number, entry: ThreadEntry): Promise<Attempt> {
+function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, timeoutMs: number, entry: ThreadEntry, only?: readonly string[]): Promise<Attempt> {
   return new Promise((resolve) => {
     let worker: Worker;
     try {
       worker = new Worker(entry.url, {
-        workerData: { paths: [...reader.paths], truncated: reader.truncated === true, cwd, legacyOnly },
+        workerData: { paths: [...reader.paths], truncated: reader.truncated === true, cwd, legacyOnly, ...(only === undefined ? {} : { only: [...only] }) },
         execArgv: entry.execArgv,
         env: {},
         resourceLimits: { maxOldGenerationSizeMb: THREAD_MEMORY_MB, maxYoungGenerationSizeMb: 64 },
@@ -89,13 +91,13 @@ function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, tim
 export async function runDetectorsGuarded(reader: RepositoryReader, cwd: string, options: GuardOptions = {}): Promise<Detection> {
   const timeoutMs = options.timeoutMs ?? ENV_DETECT_TIMEOUT_MS;
   const entry = options.entry ?? defaultThreadEntry();
-  const full = await attempt(reader, cwd, false, timeoutMs, entry);
+  const full = await attempt(reader, cwd, false, timeoutMs, entry, options.only);
   if (full.kind === "done") return full.detection;
   if (full.kind === "unavailable") {
     logEnvDetectGuardUnavailable(options.log ?? consoleWorkerLog, full.code);
-    return runDetectors(reader, cwd);
+    return runDetectors(reader, cwd, options.only === undefined ? {} : { only: options.only });
   }
-  const legacy = await attempt(reader, cwd, true, Math.min(ENV_DETECT_FALLBACK_TIMEOUT_MS, timeoutMs), entry);
+  const legacy = await attempt(reader, cwd, true, Math.min(ENV_DETECT_FALLBACK_TIMEOUT_MS, timeoutMs), entry, options.only);
   const base = legacy.kind === "done" ? legacy.detection : emptyDetection();
   return { ...base, notes: [...new Set([...base.notes, ENV_DETECT_TIMEOUT_NOTE])] };
 }

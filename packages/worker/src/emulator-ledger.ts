@@ -10,9 +10,10 @@
 // The caller records "unreadable", which the broker treats as a failed usage check.
 import { emulatorControlCall, type EmulatorControlTarget } from "./emulator-control.js";
 
+/** `invalid`: not the summary shape. `too_many`: more distinct services or operations than any honest run makes (the code flooded the ledger): a failure with its own word, never a quiet one. */
 export class EmulatorLedgerError extends Error {
-  constructor() {
-    super("The test services' AWS request ledger could not be read");
+  constructor(readonly reason: "invalid" | "too_many" = "invalid") {
+    super(reason === "too_many" ? "The test services' AWS request ledger holds more different calls than the worker reads" : "The test services' AWS request ledger could not be read");
     this.name = "EmulatorLedgerError";
   }
 }
@@ -29,7 +30,8 @@ export interface LedgerService extends LedgerCounts {
 export interface EmulatorLedger { services: LedgerService[] }
 
 /** The ledger's own limits: more than this is not read (an answer that big is refused whole). */
-export const LEDGER_LIMITS = { services: 64, operationsPerService: 2_000, operationChars: 200, count: 1_000_000_000_000 } as const;
+/** No AWS service has anywhere near this many operations: more distinct ones in a run is the code flooding the ledger (the emulator's own counters are not capped: fork follow-up). */
+export const LEDGER_LIMITS = { services: 64, operationsPerService: 200, operationChars: 200, count: 1_000_000_000_000 } as const;
 const SERVICE_KEY = /^[a-z][a-z0-9-]{0,39}$/u;
 
 function countOf(value: unknown): number {
@@ -48,7 +50,7 @@ export function parseLedgerSummary(text: string): EmulatorLedger {
   try { parsed = JSON.parse(text); } catch { throw new EmulatorLedgerError(); }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new EmulatorLedgerError();
   const entries = Object.entries(parsed as Record<string, unknown>);
-  if (entries.length > LEDGER_LIMITS.services) throw new EmulatorLedgerError();
+  if (entries.length > LEDGER_LIMITS.services) throw new EmulatorLedgerError("too_many");
   const services: LedgerService[] = [];
   for (const [service, value] of entries) {
     if (!SERVICE_KEY.test(service) || typeof value !== "object" || value === null || Array.isArray(value)) throw new EmulatorLedgerError();
@@ -56,7 +58,7 @@ export function parseLedgerSummary(text: string): EmulatorLedger {
     const operations = (value as Record<string, unknown>)["operations"];
     if (typeof operations !== "object" || operations === null || Array.isArray(operations)) throw new EmulatorLedgerError();
     const rows = Object.entries(operations as Record<string, unknown>);
-    if (rows.length > LEDGER_LIMITS.operationsPerService) throw new EmulatorLedgerError();
+    if (rows.length > LEDGER_LIMITS.operationsPerService) throw new EmulatorLedgerError("too_many");
     services.push({
       service, ...counts,
       operations: rows.map(([operation, row]) => {
@@ -69,12 +71,12 @@ export function parseLedgerSummary(text: string): EmulatorLedger {
 }
 
 /** The port the usage record takes: reads the emulator's ledger NOW (while it still runs) or throws. */
-export type EmulatorLedgerPort = () => Promise<EmulatorLedger>;
+export type EmulatorLedgerPort = (signal?: AbortSignal) => Promise<EmulatorLedger>;
 
 /** Binds the port to one running emulator. Call it for the round's own emulator while its helpers still run (before the round is torn down). */
 export function emulatorLedgerPort(target: EmulatorControlTarget): EmulatorLedgerPort {
-  return async () => {
-    const answer = await emulatorControlCall(target, { path: "ledgerSummary", method: "GET", print: true });
+  return async (signal) => {
+    const answer = await emulatorControlCall(signal === undefined ? target : { ...target, signal }, { path: "ledgerSummary", method: "GET", print: true });
     return parseLedgerSummary(answer);
   };
 }

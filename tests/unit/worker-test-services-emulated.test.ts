@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, catalogPrepullList, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan } from "@agentx/contracts";
+import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, catalogPrepullList, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestServicesUsageRecord } from "@agentx/contracts";
 import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
@@ -301,6 +301,57 @@ describe("sealed rounds: their own emulator, fresh values, resources again, one 
     expect(record.dependencies.every((entry) => entry.healthy)).toBe(true);
     await run.dispose();
     await h.sandbox.dispose();
+  });
+});
+
+describe("a round whose record is lost (review LOW)", () => {
+  it("a round whose usage record cannot be built makes the WHOLE run's record unreadable, for the rest of the run, and the saved artifact says so", async () => {
+    const h = await harness();
+    let builds = 0;
+    const sealedPorts = h.config.sealedRound!;
+    h.config.sealedRound = { withSealedCheckRound: (setup, round) => sealedPorts.withSealedCheckRound(setup, round), buildServiceUsageRecord: (input) => { builds += 1; return builds === 2 ? Promise.reject(new Error("the record could not be built")) : sealedPorts.buildServiceUsageRecord(input); } };
+    const saved: string[] = [];
+    const run = await startTestServicesRun(h.config, { dependencies: parse(plan3()), hasDevcontainer: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [join(h.root, "app")], sandbox: h.sandbox, artifactSink: (artifact) => { saved.push(artifact.content); return Promise.resolve(); } });
+    const runners = run.checkRunners(h.base);
+    const signal = new AbortController().signal;
+    const one = async (): Promise<void> => { await runners.freshServices?.(signal); await runners.endRound?.(); };
+    await one();
+    expect((await run.usageRecord())?.aws?.ledger).toBe("read");
+    await one(); // the second record fails
+    const lost = (await run.usageRecord())!;
+    expect(lost.aws).toEqual({ ledger: "unreadable", services: [], unsupportedOperations: [], otherCalls: 0, otherUnsupported: 0 });
+    expect(lost.dependencies.every((entry) => !entry.healthy && entry.failure !== undefined)).toBe(true);
+    expect((JSON.parse(saved.at(-1)!) as TestServicesUsageRecord).aws?.ledger).toBe("unreadable");
+    await one(); // a later good record does not bring a clean run back
+    expect((await run.usageRecord())!.aws?.ledger).toBe("unreadable");
+    expect((JSON.parse(saved.at(-1)!) as TestServicesUsageRecord).dependencies.every((entry) => !entry.healthy)).toBe(true);
+    await run.dispose();
+    await h.sandbox.dispose();
+  });
+  it("the emulator's env file switches off the services that are not planned", async () => {
+    const h = await harness();
+    const run = await h.start(parse(plan3()));
+    const file = h.emulatorEnv[0]!;
+    expect(file).toContain("ROVARA_AWS_SERVICES_SNS_ENABLED=false");
+    expect(file).toContain("ROVARA_AWS_SERVICES_LAMBDA_ENABLED=false");
+    for (const planned of ["S3", "SQS", "DYNAMODB"]) expect(file).not.toContain(`ROVARA_AWS_SERVICES_${planned}_ENABLED`);
+    await run.dispose();
+    await h.sandbox.dispose();
+  });
+  it("a pointer to app/notes.yaml fails the start with the fixed seed sentence and logs the fixed note, no name", async () => {
+    const h = await harness();
+    await writeFile(join(h.root, "app", "notes.yaml"), TEMPLATE);
+    const events: Array<Record<string, unknown>> = [];
+    h.config.log = (event) => events.push(event);
+    const plans = plan3();
+    plans[0] = emulated("s3", { aliases: ["aws"] }, { resources: { provider: "cloudformation", path: "app/notes.yaml" } });
+    const error = await h.start(parse(plans)).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+    expect(error!.reason).toBe("seed_failed");
+    expect(events.find((event) => event["event"] === "test-services.seed.refused")).toEqual({ event: "test-services.seed.refused", note: "The infrastructure file the plan names is not one that setup reads for resources" });
+    expect(JSON.stringify(events)).not.toContain("orders-archive");
+    expect(h.controls).toEqual([]);
+    await h.sandbox.dispose();
+    await nothingLeft(h);
   });
 });
 

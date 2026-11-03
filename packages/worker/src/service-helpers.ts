@@ -125,6 +125,11 @@ export interface HelperRequest {
   credentials?: HelperCredentials;
   /** The AWS region of the emulator. Default us-east-1. */
   region?: string;
+  /**
+   * Rovara local AWS only: the AWS services the run asked for (`s3`, `sqs`, `dynamodb`). Every OTHER service the emulator can serve is switched off in its env file (`ROVARA_AWS_SERVICES_<NAME>_ENABLED=false`, the fork's
+   * per-service switch, enforced by its `ServiceEnabledFilter`), so a call outside the plan is refused by the emulator itself and shows in the ledger. Absent: every service stays on (the development default).
+   */
+  awsServices?: readonly string[];
   files?: readonly HelperFile[];
 }
 
@@ -182,13 +187,16 @@ interface Prepared {
   config?: { content: string; to: string };
 }
 interface FamilyRule {
-  prepare(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[]; port: number }): Prepared;
+  prepare(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[]; port: number; awsServices: readonly string[] | undefined }): Prepared;
 }
 
 function need(value: string | undefined, pattern: RegExp): string {
   if (value === undefined || !pattern.test(value)) throw new RangeError("a credential is not in plain form");
   return value;
 }
+
+/** The services the fork can switch on or off (`rovara-aws.services.<key>.enabled`, from its application.yml), by key. */
+export const LOCAL_AWS_SERVICE_KEYS: readonly string[] = ["ssm", "sqs", "s3", "dynamodb", "sns", "lambda", "apigateway", "apigatewayv2", "iam", "eventbridge", "eventbridgev2", "cloudwatchlogs", "secretsmanager", "kinesis", "kms", "cognito", "stepfunctions", "sagemaker"];
 
 /** The families a helper may be, and the one way each takes its per-run credentials. A family not listed here is refused: whatever its image does with no setup is not decided by this launcher. */
 const FAMILY_RULES: Record<string, FamilyRule> = {
@@ -201,15 +209,17 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   // Rovara local AWS (the fork's run contract, rovara-local-aws README "Run contract"): with a control token the emulator refuses to start unless it is given its run address, the URL the code reaches it at and two signing secrets.
   // QUARKUS_HTTP_HOST is the run address (never a wildcard); ROVARA_AWS_BASE_URL is `http://<first alias>:<port>`, so presigned URLs and queue URLs name something the other containers resolve; the presign secret is `password`.
   // Three secrets, three jobs, all different: a control token that equalled a signing secret would let anyone holding a presigned URL or a receipt handle drive the control API. All three go only into the 0600 env file.
-  "local-aws": { prepare: ({ credentials, address, region, aliases, port }) => {
+  "local-aws": { prepare: ({ credentials, address, region, aliases, port, awsServices }) => {
     const presign = need(credentials.password, EMULATOR_SECRET);
     const control = need(credentials.controlToken, EMULATOR_SECRET);
     const receipt = need(credentials.sqsReceiptSecret, EMULATOR_SECRET);
     if (new Set([presign, control, receipt]).size !== 3) throw new RangeError("control token");
     const alias = aliases[0] ?? "aws";
+    if (awsServices !== undefined && (awsServices.length === 0 || new Set(awsServices).size !== awsServices.length || awsServices.some((service) => !LOCAL_AWS_SERVICE_KEYS.includes(service)))) throw new RangeError("aws services");
+    const switchedOff = awsServices === undefined ? [] : LOCAL_AWS_SERVICE_KEYS.filter((key) => !awsServices.includes(key)).map((key) => `ROVARA_AWS_SERVICES_${key.toUpperCase()}_ENABLED=false`);
     return { env: [
       `QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_BASE_URL=http://${alias}:${String(port)}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${receipt}`,
-      `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${alias}`,
+      `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${alias}`, ...switchedOff,
     ] };
   } },
   "fake-server": { prepare: () => ({ env: [] }) },
@@ -274,7 +284,7 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
       const region = request.region ?? "us-east-1";
       if (!REGION.test(region)) throw new RangeError("region");
       const address = net.helperIp(index);
-      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases, port: entry.run.ports[0] ?? 4566 });
+      const prepared = rule.prepare({ credentials: request.credentials ?? {}, address, region, aliases, port: entry.run.ports[0] ?? 4566, awsServices: request.awsServices });
       for (const [fileIndex, file] of (request.files ?? []).entries()) {
         if (fileIndex >= MAX_FILES_PER_HELPER || !FILE_NAME.test(file.name) || RESERVED_FILE_NAMES.includes(file.name) || Buffer.byteLength(file.content) > MAX_FILE_BYTES) throw new RangeError("file");
         const segments = file.to.split("/");

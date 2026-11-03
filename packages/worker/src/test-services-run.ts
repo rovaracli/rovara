@@ -50,13 +50,13 @@ import {
 } from "./service-env.js";
 import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-control.js";
 import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
-import { SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
+import { EmulatorSeedError, SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
 import { createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
 } from "./service-runner.js";
 import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
-import { buildServiceUsageRecord, countResets, mergeAwsUsage } from "./service-usage-record.js";
+import { UNREADABLE_AWS_USAGE, buildServiceUsageRecord, countResets, mergeAwsUsage } from "./service-usage-record.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { TEST_SERVICES_BOOT_FACTS_ENVIRONMENT, emitReport, type ReportOutcome } from "./test-services-report.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
@@ -429,7 +429,7 @@ function resolveLocal(catalog: ServiceCatalog, plan: TaskDependencyPlan, config:
 function materialize(base: Base): Resolved {
   if (base.emulator !== undefined) {
     // Rovara local AWS: THREE fresh, different secrets for each emulator that starts (the working phase's and every sealed round's own): the presign secret as `password`, the control token and the SQS receipt-handle secret.
-    return { ...base, request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials: newLocalAwsCredentials(), region: base.emulator.region } };
+    return { ...base, request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials: newLocalAwsCredentials(), region: base.emulator.region, awsServices: base.emulator.services } };
   }
   const credentials = { user: base.user, password: randomAlphanumeric(32), database: base.database };
   return {
@@ -650,6 +650,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   let opening: Promise<unknown> | undefined;
   let rounds = 0;
   let cumulative: TestServicesUsageRecord | undefined;
+  /** A round's record could not be built: the run's record says so (nothing started, nothing checked) from then on. */
+  let recordLost = false;
+  const lostRecord = (): TestServicesUsageRecord => ({ ...failedStartRecord(ids, new Map(ids.map((id) => [id, "not_healthy" as const]))), ...(emulatorBase === undefined ? {} : { aws: UNREADABLE_AWS_USAGE }) });
   let redactor: ServiceRedactor = createServiceRedactor([]);
 
   /** One teardown step: a failure is a warning with the step's name and a redacted reason, and the next step still runs. */
@@ -696,7 +699,11 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     return {
       ...item.resetDependency,
       prepare: async (signal) => {
-        const read = await Promise.all(emulator.refs.map((ref) => readAwsResourcesFromIac({ ref, services: emulator.services, rootPath: root, repositoryPaths: input.repositoryPaths })));
+        const read = await Promise.all(emulator.refs.map((ref) => readAwsResourcesFromIac({ ref, services: emulator.services, rootPath: root, repositoryPaths: input.repositoryPaths }))).catch((error: unknown) => {
+          // The reason is a fixed note, never a name or a path; the run sees only the fixed seed sentence.
+          if (error instanceof EmulatorSeedError && error.note !== undefined) log({ event: "test-services.seed.refused", note: error.note });
+          throw error;
+        });
         const unique = new Map<string, TaskAwsResource>();
         for (const resource of read.flat()) unique.set(`${resource.kind}\0${resource.name}`, resource);
         await seedEmulator({ target: { ...controlTargetOf(item, session, phaseFiles, phaseRunId), signal }, region: emulator.region, resources: [...unique.values()] });
@@ -743,10 +750,10 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     await step("working-sandbox", () => docker.run(["network", "disconnect", "--force", open.plan.network.name, input.sandbox.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }));
     if (emit && active) {
       const record = await recordOf(open);
-      if (record !== undefined) {
-        cumulative = mergeUsageRecords(cumulative, record);
-        if (input.artifactSink !== undefined) await input.artifactSink({ name: TEST_SERVICES_USAGE_ARTIFACT, mediaType: "application/json", content: JSON.stringify(cumulative) }).catch(() => log({ event: "test-services.usage.save.failed" }));
-      }
+      // A round whose record could not be built or parsed makes the WHOLE run's record unreadable (never dropped, never a run that looks clean on its other rounds): it stays so for the rest of the run.
+      if (record === undefined) { recordLost = true; cumulative = lostRecord(); }
+      else if (!recordLost) cumulative = mergeUsageRecords(cumulative, record);
+      if (cumulative !== undefined && input.artifactSink !== undefined) await input.artifactSink({ name: TEST_SERVICES_USAGE_ARTIFACT, mediaType: "application/json", content: JSON.stringify(cumulative) }).catch(() => log({ event: "test-services.usage.save.failed" }));
     }
     await cleanupRound(open);
   };
@@ -934,8 +941,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const usageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
     if (!active) return undefined;
     if (round !== undefined) {
+      if (recordLost) return cumulative;
       const live = await recordOf(round);
-      return live === undefined ? cumulative : mergeUsageRecords(cumulative, live);
+      return live === undefined ? lostRecord() : mergeUsageRecords(cumulative, live);
     }
     if (cumulative !== undefined) return cumulative;
     // No round has run: the working phase's own answer, with whatever failed since. A run with no working phase whose first round could not start says what failed (a record of facts, not a guess).

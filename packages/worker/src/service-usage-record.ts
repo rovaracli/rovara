@@ -29,7 +29,8 @@ import {
   type TestServicesAwsUsage, type TestServicesDependencyUsage, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { readSealedDnsRecord, type SealedDnsRecord } from "./check-sandbox.js";
-import type { EmulatorLedger, EmulatorLedgerPort } from "./emulator-ledger.js";
+import { EmulatorControlError } from "./emulator-control.js";
+import { EmulatorLedgerError, type EmulatorLedger, type EmulatorLedgerPort } from "./emulator-ledger.js";
 import type { ServiceRedactor } from "./service-env.js";
 import type { ResetOutcome, ServiceSession } from "./service-runner.js";
 import type { DockerCli } from "./swebench/containers.js";
@@ -151,23 +152,28 @@ export async function buildServiceUsageRecord(input: ServiceUsageRecordInput): P
 
 /** What the record says when the ledger cannot be read: nothing, and that it could not be read. */
 export const UNREADABLE_AWS_USAGE: TestServicesAwsUsage = { ledger: "unreadable", services: [], unsupportedOperations: [], otherCalls: 0, otherUnsupported: 0 };
+/** What the record says when the code made so many different calls that the ledger was past its limits: a failure with its own word. */
+export const FLOODED_AWS_USAGE: TestServicesAwsUsage = { ledger: "flooded", services: [], unsupportedOperations: [], otherCalls: 0, otherUnsupported: 0 };
 
 const byBucketThenName = <T extends { bucket: number; name: string }>(a: T, b: T): number => b.bucket - a.bucket || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
-/** Reads the ledger through the port with at most `limitMs` to answer, and reduces it. Never throws: any failure, a ledger that does not reduce to a valid record, or silence is `UNREADABLE_AWS_USAGE`. */
+/**
+ * Reads the ledger through the port with at most `limitMs` to answer, and reduces it. Never throws: a failure, a ledger that does not reduce to a valid record, or silence is `UNREADABLE_AWS_USAGE`; a ledger past its
+ * limits (the code flooded it with different calls) is `FLOODED_AWS_USAGE`. The port is handed an AbortSignal that aborts when the time is up, so the control call's container is stopped and removed with it.
+ */
 async function readAwsUsage(port: EmulatorLedgerPort, redactor: ServiceRedactor, limitMs: number): Promise<TestServicesAwsUsage> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const silence = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new RangeError("silence")); }, Math.max(1, limitMs)); });
   try {
-    let timer: NodeJS.Timeout | undefined;
-    const silence = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new RangeError("silence")), Math.max(1, limitMs)); });
-    try {
-      const ledger = await Promise.race([port(), silence]);
-      const parsed = TestServicesAwsUsageSchema.safeParse(reduceAwsUsage(ledger, redactor));
-      return parsed.success ? parsed.data : UNREADABLE_AWS_USAGE;
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  } catch {
-    return UNREADABLE_AWS_USAGE;
+    const ledger = await Promise.race([port(controller.signal), silence]);
+    const parsed = TestServicesAwsUsageSchema.safeParse(reduceAwsUsage(ledger, redactor));
+    return parsed.success ? parsed.data : UNREADABLE_AWS_USAGE;
+  } catch (error) {
+    controller.abort();
+    return (error instanceof EmulatorLedgerError && error.reason === "too_many") || (error instanceof EmulatorControlError && error.reason === "too_large") ? FLOODED_AWS_USAGE : UNREADABLE_AWS_USAGE;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -228,6 +234,7 @@ export function reduceAwsUsage(ledger: EmulatorLedger, redactor: ServiceRedactor
 export function mergeAwsUsage(earlier: TestServicesAwsUsage | undefined, later: TestServicesAwsUsage | undefined): TestServicesAwsUsage | undefined {
   if (earlier === undefined) return later;
   if (later === undefined) return earlier;
+  if (earlier.ledger === "flooded" || later.ledger === "flooded") return FLOODED_AWS_USAGE;
   if (earlier.ledger === "unreadable" || later.ledger === "unreadable") return UNREADABLE_AWS_USAGE;
   const max = USAGE_LIMITS.count;
   const services = new Map<string, { calls: number; unsupported: number }>();

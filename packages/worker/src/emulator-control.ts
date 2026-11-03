@@ -15,11 +15,12 @@ import { EMULATOR_CONTROL_PATHS, HELPER_CREDENTIAL_PATTERNS, controlRequestArgs,
 import type { ServicesNetwork } from "./run-network.js";
 import type { DockerCli } from "./swebench/containers.js";
 
-export type EmulatorControlFailure = "refused" | "failed" | "stopped";
+export type EmulatorControlFailure = "refused" | "failed" | "stopped" | "too_large";
 const SENTENCES: Record<EmulatorControlFailure, string> = {
   refused: "The test services' AWS control call was refused here",
   failed: "The test services' AWS control call did not complete",
   stopped: "The test services' AWS control call was stopped",
+  too_large: "The test services' AWS control call answered with more than the worker reads",
 };
 
 /** The one error of the control calls. `message` is a fixed sentence: nothing the emulator, a project or a Docker call said is in it. */
@@ -97,9 +98,10 @@ export async function emulatorControlCall(target: EmulatorControlTarget, request
       throw new EmulatorControlError("stopped");
     }
     if (result.exitCode !== 0) {
+      const tooLarge = result.exitCode === 2;
       // A call that timed out or failed may have left its container: removed by name (it is `--rm`, so a normal exit leaves nothing).
       await call(["rm", "--force", "--volumes", name], DOCKER_TIMEOUT_MS);
-      throw new EmulatorControlError("failed");
+      throw new EmulatorControlError(tooLarge ? "too_large" : "failed");
     }
     return request.print === true ? result.stdout : "";
   } finally {

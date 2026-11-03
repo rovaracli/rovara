@@ -16,7 +16,9 @@ import { open, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { TaskAwsResourcesSchema, type TaskAwsResource } from "@agentx/contracts";
 import { EmulatorControlError, emulatorControlCall, type EmulatorControlTarget } from "./emulator-control.js";
-import { detectIacResources } from "./env-detect/iac-resources.js";
+import { boundedReader, ENV_DETECT_MAX_FILE_BYTES } from "./env-detect/index.js";
+import { runDetectorsGuarded, type GuardOptions } from "./env-detect/guarded.js";
+import { iacFileIsRead } from "./env-detect/iac-resources.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 
 export type EmulatorSeedFailure = "refused" | "failed" | "stopped";
@@ -28,11 +30,27 @@ const SENTENCES: Record<EmulatorSeedFailure, string> = {
 
 /** The one error of the seeding. `message` is a fixed sentence: no resource name, no emulator text. */
 export class EmulatorSeedError extends Error {
-  constructor(readonly reason: EmulatorSeedFailure) {
+  /** Why the infrastructure file was refused, in a fixed sentence (`IAC_REFUSAL_NOTES`), when it was. Never a name or a path from the repository. */
+  readonly note: string | undefined;
+  constructor(readonly reason: EmulatorSeedFailure, note?: IacRefusal) {
     super(SENTENCES[reason]);
     this.name = "EmulatorSeedError";
+    this.note = note === undefined ? undefined : IAC_REFUSAL_NOTES[note];
   }
 }
+
+/** The ways the plan's infrastructure file is refused as a source of resources, each with one fixed note for the log. */
+export const IAC_REFUSAL_NOTES = {
+  unsafe_path: "The infrastructure file the plan names is not a plain file inside the project",
+  not_read: "The infrastructure file the plan names is not one that setup reads for resources",
+  too_large: "The infrastructure file the plan names is too large to read",
+  unreadable: "The infrastructure file the plan names could not be read",
+  stopped: "Reading the infrastructure file took too long and was stopped",
+  noted: "Reading the infrastructure file raised a problem (a file the parser refused, or more resources than are read)",
+  none: "The infrastructure file the plan names declares no resources for the services in the plan",
+  invalid: "The infrastructure file declares a resource that cannot be created",
+} as const;
+export type IacRefusal = keyof typeof IAC_REFUSAL_NOTES;
 
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/u;
 
@@ -107,7 +125,7 @@ export async function seedEmulator(input: SeedEmulatorInput): Promise<void> {
   try {
     answer = await emulatorControlCall(input.target, { path: "seed", method: "POST", body: JSON.stringify(document), print: true });
   } catch (error) {
-    throw new EmulatorSeedError(error instanceof EmulatorControlError ? error.reason : "failed");
+    throw new EmulatorSeedError(error instanceof EmulatorControlError && error.reason !== "too_large" ? error.reason : "failed");
   }
   let report: unknown;
   try { report = JSON.parse(answer); } catch { throw new EmulatorSeedError("failed"); }
@@ -119,17 +137,23 @@ export async function seedEmulator(input: SeedEmulatorInput): Promise<void> {
 /** The AWS services Rovara local AWS serves in this slice, and the kind of resource each one is seeded with. */
 export const SEEDED_AWS_SERVICES: Readonly<Record<string, TaskAwsResource["kind"]>> = { s3: "bucket", sqs: "queue", dynamodb: "table" };
 const IAC_FILE = /\.(?:tf|ya?ml|json|ts|js|py)$/u;
-export const IAC_FILE_MAX_BYTES = 1_048_576;
+/** The detector reads no file past this (its own per-file cap); a larger pointer is refused rather than half read. */
+export const IAC_FILE_MAX_BYTES = ENV_DETECT_MAX_FILE_BYTES;
+/** The longest the detector may run over the one file (it runs in a thread that is ended at the limit). */
+export const IAC_DETECT_LIMIT_MS = 10_000;
 
 /**
  * The tables, buckets and queues the plan's infrastructure pointer declares, for the services the run serves. `ref.path` is the plan's pointer (the broker never read it): it must resolve, through every link, to a
  * regular file under one of the repositories' own folders, not under a hidden folder of the workspace, with a name the detector reads, small, opened without following a link and the very file that was resolved. It is read
  * as it is NOW (the candidate tree, not the base: the agent may have edited it). The D7 detector's reading is the one the setup used (names and key attributes only); a resource of a service the run does not serve (a topic,
- * a service not in `services`) is left out, a table the detector found no key for is a refusal (it cannot be created), and the result must pass the contract's strict forms. Anything else is `EmulatorSeedError("refused")`;
- * a file with nothing declared gives an empty list.
+ * a service not in `services`) is left out, a table the detector found no key for is a refusal (it cannot be created), and the result must pass the contract's strict forms. FAIL CLOSED: the pointer must be a path the
+ * detector reads, the file at most 256 KiB, the detector runs in a time-limited thread, ANY note it makes (a template the parser refused, a cut at its resource limit, a stop) refuses, and a file that gives no resource
+ * for the plan's services refuses too. Every refusal is `EmulatorSeedError("refused")` with a fixed note (`IAC_REFUSAL_NOTES`).
  */
-export async function readAwsResourcesFromIac(input: { ref: { path: string }; services: readonly string[]; rootPath: string; repositoryPaths: readonly string[] }): Promise<TaskAwsResource[]> {
-  const fail = (): never => { throw new EmulatorSeedError("refused"); };
+export async function readAwsResourcesFromIac(input: { ref: { path: string }; services: readonly string[]; rootPath: string; repositoryPaths: readonly string[]; guard?: GuardOptions }): Promise<TaskAwsResource[]> {
+  const fail = (note: IacRefusal): never => { throw new EmulatorSeedError("refused", note); };
+  // The detector reads a path only if it is one of its patterns and not under a skipped folder: a pointer anywhere else would find nothing, and "nothing" is a refusal, said first and plainly.
+  if (!iacFileIsRead(input.ref.path)) return fail("not_read");
   let text: string;
   try {
     const root = await realpath(resolve(input.rootPath));
@@ -137,22 +161,28 @@ export async function readAwsResourcesFromIac(input: { ref: { path: string }; se
     const within = (path: string, folder: string): boolean => path === folder || path.startsWith(`${folder}${sep}`);
     const repositories = (await Promise.all(input.repositoryPaths.map((path) => realpath(path).catch(() => undefined)))).filter((path): path is string => path !== undefined);
     const hidden = await Promise.all((await hiddenWorkspaceDirectories(root)).map((path) => realpath(path).catch(() => path)));
-    if (!IAC_FILE.test(real) || !repositories.some((folder) => real.startsWith(`${folder}${sep}`)) || hidden.some((folder) => within(real, folder))) return fail();
+    if (!IAC_FILE.test(real) || !repositories.some((folder) => real.startsWith(`${folder}${sep}`)) || hidden.some((folder) => within(real, folder))) return fail("unsafe_path");
     const resolved = await stat(real);
     const handle = await open(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     try {
       const info = await handle.stat();
-      if (!info.isFile() || info.size > IAC_FILE_MAX_BYTES || info.dev !== resolved.dev || info.ino !== resolved.ino) return fail();
+      if (!info.isFile() || info.dev !== resolved.dev || info.ino !== resolved.ino) return fail("unsafe_path");
+      if (info.size > IAC_FILE_MAX_BYTES) return fail("too_large");
       text = await handle.readFile("utf8");
     } finally {
       await handle.close();
     }
   } catch (error) {
     if (error instanceof EmulatorSeedError) throw error;
-    return fail();
+    return fail("unreadable");
   }
+  // The file is the agent's to edit and the detector's patterns are text patterns, so the detector runs in a THREAD with a time limit and its own memory limit (env-detect/guarded.ts), over a reader that holds this one file
+  // (256 KiB at most). A thread that was stopped says so in the detection's notes; ANY note is a refusal (a template the parser refused, a cut at the detector's resource limit, a timeout).
+  const { reader } = boundedReader([input.ref.path], (path) => Promise.resolve(path === input.ref.path ? text : undefined));
+  const detection = await runDetectorsGuarded(reader, ".", { timeoutMs: IAC_DETECT_LIMIT_MS, ...input.guard, only: ["iac-resources"] }).catch(() => undefined);
+  if (detection === undefined) return fail("stopped");
+  if (detection.notes.length > 0) return fail(detection.notes.some((note) => /took too long/u.test(note)) ? "stopped" : "noted");
   const kinds = new Set(input.services.flatMap((service) => (Object.hasOwn(SEEDED_AWS_SERVICES, service) ? [SEEDED_AWS_SERVICES[service]!] : [])));
-  const detection = await detectIacResources({ repo: { paths: [input.ref.path], read: (path) => Promise.resolve(path === input.ref.path ? text : undefined) }, cwd: "." });
   const found: unknown[] = [];
   for (const candidate of detection.dependencies ?? []) {
     for (const resource of candidate.hints.resources ?? []) {
@@ -160,6 +190,8 @@ export async function readAwsResourcesFromIac(input: { ref: { path: string }; se
       found.push(resource.kind === "table" ? { kind: "table", name: resource.name, keySchema: resource.keySchema } : { kind: resource.kind, name: resource.name });
     }
   }
+  // Nothing found is a refusal too: the plan pointed at this file because setup saw resources in it, so an empty answer means the file moved on or the pointer is wrong, and a run with no resources would only fail later and less clearly.
+  if (found.length === 0) return fail("none");
   const parsed = TaskAwsResourcesSchema.safeParse(found);
-  return parsed.success ? parsed.data : fail();
+  return parsed.success ? parsed.data : fail("invalid");
 }

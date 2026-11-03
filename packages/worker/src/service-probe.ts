@@ -18,7 +18,7 @@ export interface ProbeOptions {
   /** A control call: POST (no body) with this token in the `x-rovara-control-token` header, which must answer 2xx. Needs a path. The token is plain letters and digits, 8 to 64. */
   post?: { token: string };
   /** A control call with more options than `post`: GET or POST, an optional body, and the answer's body handed to `onBody` (2xx only, at most CONTROL_ANSWER_MAX_BYTES; a longer answer fails the call). Needs a path. */
-  control?: { token: string; method: "GET" | "POST"; body?: Buffer; onBody?: (body: string) => void };
+  control?: { token: string; method: "GET" | "POST"; body?: Buffer; onBody?: (body: string) => void; /** Called once when the answer was past CONTROL_ANSWER_MAX_BYTES (the call is then false). */ onTooLarge?: () => void };
 }
 
 /** The most an answer's body may be for a call that prints it. */
@@ -71,7 +71,7 @@ export function probeService(options: ProbeOptions): Promise<boolean> {
       let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > CONTROL_ANSWER_MAX_BYTES) { finish(false); return; }
+        if (size > CONTROL_ANSWER_MAX_BYTES) { if (!settled) options.control?.onTooLarge?.(); finish(false); return; }
         chunks.push(chunk);
       });
       response.on("end", () => {
@@ -94,7 +94,7 @@ const BODY_FILE = /^\/rovara\/[a-z0-9][a-z0-9._-]{0,63}$/u;
  * The program's whole behaviour for one argument list and environment: the exit code and what is printed. `readBody` is the file seam (the real `readFileSync` in the container). A control call's token is read from
  * `env.ROVARA_CONTROL_TOKEN`; no argument can carry it. Anything it does not understand exits 1.
  */
-export async function probeCli(argv: readonly string[], env: Readonly<Record<string, string | undefined>>, readBody: (path: string) => Buffer = readFileSync): Promise<{ exitCode: 0 | 1; stdout: string }> {
+export async function probeCli(argv: readonly string[], env: Readonly<Record<string, string | undefined>>, readBody: (path: string) => Buffer = readFileSync): Promise<{ exitCode: 0 | 1 | 2; stdout: string }> {
   const argument = (name: string): string | undefined => {
     const at = argv.indexOf(`--${name}`);
     const value = at < 0 ? undefined : argv[at + 1];
@@ -122,9 +122,11 @@ export async function probeCli(argv: readonly string[], env: Readonly<Record<str
       } catch { return fail; }
     }
     let printed = "";
-    const control: NonNullable<ProbeOptions["control"]> = { token, method, ...(body === undefined ? {} : { body }), ...(argv.includes("--print") ? { onBody: (text: string) => { printed = text; } } : {}) };
+    let tooLarge = false;
+    const control: NonNullable<ProbeOptions["control"]> = { token, method, ...(body === undefined ? {} : { body }), ...(argv.includes("--print") ? { onBody: (text: string) => { printed = text; }, onTooLarge: () => { tooLarge = true; } } : {}) };
     const ok = host !== undefined && (await probeService({ host, port, ...timeoutMs, ...(path === undefined ? {} : { path }), control }));
-    return ok ? { exitCode: 0, stdout: printed } : fail;
+    // Exit 2 says one thing: the answer was past its limit (the emulator's ledger summary has no cap of its own; a program that makes many different calls can grow it).
+    return ok ? { exitCode: 0, stdout: printed } : tooLarge ? { exitCode: 2, stdout: "" } : fail;
   }
   const post = argv.includes("--post") ? { token } : undefined;
   const ok = host !== undefined && (await probeService({ host, port, ...timeoutMs, ...(path === undefined ? {} : { path }), ...(post === undefined ? {} : { post }) }));
