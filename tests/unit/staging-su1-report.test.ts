@@ -4,7 +4,9 @@
 import { execFile, execFileSync } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { createServer, type Server } from "node:net";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
@@ -254,6 +256,46 @@ describe("the script's checks, read as text", () => {
     expect(text).toContain("mktemp");
     expect(text).toContain("--stale-marker");
     expect(text).not.toContain("--stale-file-created");
+  });
+});
+
+describe("check 2 and the single-copy lock", () => {
+  const INPUT = ["-P INPUT ACCEPT", "-A INPUT -i lo -j ACCEPT", "-A INPUT -i rvb+ -j DROP"];
+  const before = (rules: string[], upto: number) => execFileSync("bash", ["-c", `${functionsOf("accepts_before")}\naccepts_before INPUT "$1" "$2"`, "x", rules.join("\n"), String(upto)], { encoding: "utf8" }).trim();
+  it("an ACCEPT or RETURN for an rvb interface above the DROP is reported, with its line", () => {
+    expect(before(INPUT, 3)).toBe("");
+    expect(before(["-P INPUT ACCEPT", "-A INPUT -i rvb+ -p tcp -m tcp --dport 8080 -j ACCEPT", ...INPUT.slice(1)], 4)).toBe("2");
+    expect(before(["-P INPUT ACCEPT", "-A INPUT -i rvbs+ -j RETURN", "-A INPUT -i rvb0a1b -j ACCEPT", ...INPUT.slice(1)], 5)).toBe("2 3");
+  });
+  it("rules that do not hide the DROP are not reported: other interfaces, a DROP, a rule below the DROP, another chain", () => {
+    expect(before(["-P INPUT ACCEPT", "-A INPUT -i eth0 -j ACCEPT", "-A INPUT -i rvb+ -j LOG", "-A INPUT -i rvb+ -j DROP", "-A INPUT -i rvb+ -j ACCEPT"], 4)).toBe("");
+    expect(before(["-P INPUT ACCEPT", "-A DOCKER-USER -i rvb+ -j ACCEPT", "-A INPUT -i rvb+ -j DROP"], 3)).toBe("");
+  });
+  it("check 2 fails on it and names it", () => {
+    expect(text).toMatch(/HIDING=\$\(accepts_before INPUT "\$INPUT_RULES" "\$I_INPUT"\)/u);
+    expect(text).toContain("input-rvb-accept-or-return-above-the-drop");
+  });
+
+  // flock is not on every machine this test runs on: a stand-in that locks the same way (the file descriptor's open file description) is put first on the path.
+  const withFlock = (script: string): string => execFileSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, PATH: `${shimDir}:${process.env["PATH"] ?? ""}` } }).trim();
+  const shimDir = mkdtempSync(join(tmpdir(), "su1-flock-"));
+  writeFileSync(join(shimDir, "flock"), '#!/bin/sh\nexec python3 -I -c \'import fcntl,sys\ntry:\n fcntl.flock(int(sys.argv[1]),fcntl.LOCK_EX|fcntl.LOCK_NB)\nexcept OSError:\n sys.exit(1)\' "$2"\n', { mode: 0o755 });
+  it("a second copy cannot take the lock while the first holds it, and can once the first has ended; the file is root-only", () => {
+    const lock = join(shimDir, "lock");
+    const out = withFlock(`${functionsOf("take_lock")}
+( take_lock "${lock}" && echo first-holds && sleep 3 ) &
+sleep 1
+( take_lock "${lock}" && echo second-took || echo second-refused )
+wait
+( take_lock "${lock}" && echo third-took || echo third-refused )
+stat -f %Lp "${lock}" 2>/dev/null || stat -c %a "${lock}"`);
+    expect(out.split("\n")).toEqual(["first-holds", "second-refused", "third-took", "600"]);
+  }, 20_000);
+  it("the lock is taken before anything is swept or started, and a refused copy ends with eleven FAIL lines", () => {
+    expect(text.indexOf('take_lock "$LOCK_FILE"')).toBeGreaterThan(0);
+    expect(text.indexOf('take_lock "$LOCK_FILE"')).toBeLessThan(text.indexOf("dk ps -a -q --filter 'label=agentx.su1-check'"));
+    expect(text).toMatch(/another copy of this script is running/u);
+    expect(text).toMatch(/for n in 1 2 3 4 5 6 7 8 9 10 11; do emit "\$n" FAIL not_run/u);
   });
 });
 

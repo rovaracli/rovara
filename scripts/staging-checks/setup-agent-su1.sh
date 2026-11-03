@@ -6,7 +6,7 @@
 # two throwaway setup-run networks (a /24 each, bridge rvbs<slot> with the same flags the worker uses, slots chosen from 230-250 that nothing holds), a DNS-watch helper on each (the worker's own image and the same
 # flags as `helperRunArgs` in packages/worker/src/setup-network.ts) and short-lived probe containers on them (the worker image, node only, no capability, read-only, no mounts). Everything it starts carries the label
 # agentx.su1-check=<run id> (never the worker's own agentx.setup-run labels, so the worker's leftover sweep neither removes nor counts them) and is removed on exit, also on an error or an interrupt; at its start it also
-# removes anything still carrying the bare label key agentx.su1-check, which an earlier run killed before its cleanup left behind. The script itself writes no file; the delivery commands built by
+# removes anything still carrying the bare label key agentx.su1-check, which an earlier run killed before its cleanup left behind. The script itself writes one empty root-only lock file (/run/lock/agentx-su1-check.lock, taken with flock so a second copy refuses to start and cannot sweep the first one's objects); the delivery commands built by
 # setup-agent-su1-report.ts --ssm-params put it into a root-only directory made with mktemp under /var/tmp and remove that directory when it ends. It sends nothing outside the host except the probes' DNS queries and
 # TCP/TLS attempts. It uses no AWS access at all, and no secret: the one value it reads from /etc/agentx/worker.env is the sandbox image name.
 #
@@ -130,6 +130,10 @@ statuses() { local out=$1 l; shift; for l in "$@"; do printf '%s=%s ' "$l" "$(fi
 not_timeout() { local out=$1 l s bad=""; shift; for l in "$@"; do s=$(field "$out" "$l"); [[ "$s" == timeout ]] || bad="$bad $l=${s:-no-result}"; done; printf '%s' "${bad# }"; }
 # the first line number, in the rules text $2 (iptables -S of chain $1), of a rule of that chain that holds every token of $3 (separated by |): iptables writes the options of a rule in its own order
 rule_at() { printf '%s\n' "$2" | awk -v chain="$1" -v toks="$3" 'BEGIN{n=split(toks,t,"|")} index($0,"-A " chain " ")==1{ok=1; for(i=1;i<=n;i++) if(index($0,t[i])==0){ok=0;break} if(ok){print NR; exit}}'; }
+# the line numbers of the rules of chain $1, in the rules text $2, before line $3, that accept or return traffic from an rvb interface (rvb+, rvbs+, rvb<hex>): such a rule above a DROP hides it
+accepts_before() { printf '%s\n' "$2" | awk -v chain="$1" -v upto="$3" 'index($0,"-A " chain " ")==1 && NR<upto && index($0,"-i rvb")!=0 && $0 ~ /-j (ACCEPT|RETURN)( |$)/{printf "%s ", NR}'; }
+# take_lock <file>: a root-only file held with flock on file descriptor 9 for as long as this process lives; fails when another copy of this script holds it
+take_lock() { local old rc; old=$(umask); umask 077; exec 9>>"$1"; rc=$?; umask "$old"; [[ $rc -eq 0 ]] && flock -n 9; }
 pkts() { iptables -L DOCKER-USER -n -v -x 2>/dev/null | grep -E -m1 -- "$1" | awk '{print $1}'; }   # packet counter of the first rule matching the pattern
 
 # ---- host facts
@@ -143,6 +147,13 @@ if [[ -z "$DOCKER" || ! -x "$DOCKER" ]]; then READY=0; REASON="no docker CLI"; f
 if [[ -z "$WORKER_IMAGE" ]]; then READY=0; REASON="no /etc/agentx/worker-image"; fi
 if [[ $READY -eq 1 ]] && ! dk info >/dev/null 2>&1; then READY=0; REASON="docker daemon not reachable"; fi
 if [[ $READY -eq 1 ]] && ! command -v iptables >/dev/null 2>&1; then READY=0; REASON="no iptables"; fi
+
+# one copy at a time: a second copy would sweep the first one's throwaway objects and share its slots
+LOCK_FILE=/run/lock/agentx-su1-check.lock; [[ -d /run/lock ]] || LOCK_FILE=/var/tmp/agentx-su1-check.lock
+if [[ $READY -eq 1 ]]; then
+  if ! command -v flock >/dev/null 2>&1; then READY=0; REASON="no flock"
+  elif ! take_lock "$LOCK_FILE"; then READY=0; REASON="another copy of this script is running (lock $LOCK_FILE)"; fi
+fi
 
 if [[ $READY -ne 1 ]]; then
   for n in 1 2 3 4 5 6 7 8 9 10 11; do emit "$n" FAIL not_run "cannot run on this host: $REASON"; done
@@ -253,6 +264,7 @@ else
   I_VPC=$(at '-i rvb+|--dport 53|-j RETURN')
   INPUT_RULES=$(iptables -S INPUT 2>/dev/null)
   I_INPUT=$(rule_at INPUT "$INPUT_RULES" '-i rvb+|-j DROP')
+  HIDING=""; [[ -z "$I_INPUT" ]] || HIDING=$(accepts_before INPUT "$INPUT_RULES" "$I_INPUT")
   MISSING=""
   for pair in "I_IMDS:metadata-reject" "I_CT:conntrack-return" "I_PU:physdev-udp53-return" "I_PT:physdev-tcp53-return" "I_XU:rvbs-udp53-drop" "I_XT:rvbs-tcp53-drop" "I_R16:range-172.16-drop" "I_R10:range-10-drop" "I_INPUT:input-rvb-drop"; do
     var=${pair%%:*}; [[ -n "${!var}" ]] || MISSING="$MISSING ${pair#*:}"
@@ -264,6 +276,7 @@ else
     [[ $I_CT -lt $I_R10 && $I_PU -lt $I_R10 ]] || ORDER="$ORDER returns-not-above-10-drop"
     [[ -z "$I_VPC" || ( $I_XU -lt $I_VPC && $I_XT -lt $I_VPC ) ]] || ORDER="$ORDER rvbs-53-drop-below-vpc-dns-return"
   fi
+  [[ -z "${HIDING% }" ]] || ORDER="$ORDER input-rvb-accept-or-return-above-the-drop:line(s)${HIDING% }"
   FWD=$(iptables -S FORWARD 2>/dev/null | grep -n -E -- '-j (DOCKER-USER|DOCKER-ISOLATION-STAGE-1|DOCKER)$' | sed 's/^\([0-9]*\):.* -j /\1 /' | tr '\n' ' ')
   FWD_OK=""
   case "$FWD" in *"DOCKER-USER"*"DOCKER-ISOLATION-STAGE-1"*) ;; *) FWD_OK="FORWARD jumps are not DOCKER-USER before DOCKER-ISOLATION-STAGE-1 ($FWD)" ;; esac

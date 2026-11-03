@@ -140,7 +140,7 @@ export function originOfSave(definition: { setup: readonly ProjectCommand[]; rea
  */
 export async function applyProposalCommands(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller,
-  input: { name: string; role: ProjectRole | undefined; body: TestEnvironmentBody; requestId: string; expectedRevision: number; /** The proposal is a maintainer's own edit, so its commands are theirs. */ edited: boolean; definition: { revision: number; repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origins?: ProjectOrigins | undefined } },
+  input: { name: string; role: ProjectRole | undefined; body: TestEnvironmentBody; requestId: string; expectedRevision: number; /** The proposal is a maintainer's own edit, so its commands are theirs. */ edited: boolean; definition: { revision: number; repositories: ReadonlyArray<{ path: string; name: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origins?: ProjectOrigins | undefined } },
 ): Promise<Omit<TestEnvApplyAnswer, "state">> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change the project's settings");
   // TE-2: tasks read the applied settings, so a proposal's commands are never applied before it is approved (every kind of proposal: the detectors', an edit, a setup run's).

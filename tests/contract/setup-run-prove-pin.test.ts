@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { testEnvDigest, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
+import { codeRepositoryNames } from "../../packages/broker/src/aws/developer-routes/test-environment-candidate.js";
 import { seedSetupRun } from "../support/candidate-check.js";
 import { checkedAtRunCommits } from "../../packages/broker/src/test-env/setup-run-pin.js";
 import { ENV, NAME, command, draftBody, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
@@ -200,6 +201,15 @@ describe("a setup run's proposal is proved only by a check at the run's commits"
       await finishCheck(t);
       expect((await prove(t, d2)).status).toBe(200);
     });
+  });
+});
+
+describe("codeRepositoryNames", () => {
+  it("names the code repositories and refuses a repository with no name rather than leaving it out of the match", () => {
+    expect(codeRepositoryNames({ repositories: [{ name: "web", path: "repo/web" }, { name: "api", path: "repo/api" }] })).toEqual(["web", "api"]);
+    for (const repositories of [[{ path: "repo/web" }], [{ name: "web", path: "repo/web" }, { name: "", path: "repo/api" }], [{ name: 7, path: "repo/api" }]]) {
+      expect(() => codeRepositoryNames({ repositories: repositories as never }), JSON.stringify(repositories)).toThrow(/has no name/u);
+    }
   });
 });
 

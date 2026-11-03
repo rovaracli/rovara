@@ -1,6 +1,6 @@
 // TE-2: a test-environment proposal's candidate check, as the routes use it. The check is prepared from the commands the proposal would put in the settings, run on a fresh workspace BEFORE they are applied; its
 // result is stored for (project, digest, settings revision). The Prove reads it, and the approval writes into the settings only the commands it ran. See org/test-env-candidate.ts for what is stored.
-import { testEnvDigest, workerProjectDefinition, type AppProjectSummary, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, testEnvDigest, workerProjectDefinition, type AppProjectSummary, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
 import { setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
 import { proposalIsSetupRun } from "../../org/test-environment.js";
@@ -10,7 +10,17 @@ import { proveReportFromSetupCheck, type ProveFromSetupCheck } from "../../test-
 import { setupCheckDepsOf } from "./project-list.js";
 import type { DeveloperRouteDependencies } from "./types.js";
 
-export interface CandidateDefinition { revision: number; repositories: ReadonlyArray<{ path: string; name?: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }
+export interface CandidateDefinition { revision: number; repositories: ReadonlyArray<{ path: string; name: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }
+
+/**
+ * The names of the project's code repositories (the ones a worker clones), which a setup run's commits are matched against. A repository with no name is a damaged definition: it is refused, never left out of the
+ * match (leaving it out would let a check that pinned fewer repositories pass).
+ */
+export function codeRepositoryNames(definition: Pick<CandidateDefinition, "repositories">): string[] {
+  const names = workerProjectDefinition(definition).repositories.map((repository) => (repository as { name?: unknown }).name);
+  if (!names.every((name): name is string => typeof name === "string" && name !== "")) throw agentXError("CONFIG_INVALID", "A repository of this project has no name, so its setup run's commits cannot be matched. Ask an administrator to check the project's repositories.");
+  return names;
+}
 
 /** The candidate check of a proposal at the project's current settings revision, and where it stands (derived from its workspace on every read). */
 export async function candidateStateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, digest: string, definition: CandidateDefinition): Promise<{ check: CandidateCheck | undefined; setup: AppProjectSummary["setup"] }> {
@@ -36,7 +46,7 @@ export async function deriveCandidateProve(deps: DeveloperRouteDependencies, org
   // SU-1 addendum 3: a setup run's proposal is proved only by a check made at the commits the run used (with none recorded it is refused): never on a newer main.
   const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
   if (check.origin === "setup_run" || await proposalIsSetupRun(store, orgId, name, testEnvDigest(proposal))) {
-    const run = await setupRunCommitsOf(store, orgId, name, testEnvDigest(proposal), workerProjectDefinition(definition).repositories.flatMap((repository) => repository.name === undefined ? [] : [repository.name]));
+    const run = await setupRunCommitsOf(store, orgId, name, testEnvDigest(proposal), codeRepositoryNames(definition));
     if (!checkedAtRunCommits(check.pins, run)) return { ok: false, refusal: "setup_run_moved" };
   }
   return { ...derived, candidate: check };
