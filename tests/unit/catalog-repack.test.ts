@@ -1,5 +1,8 @@
 // Test services, lane ts-repack: the repackaging script (scripts/catalog-repack.ts), run against fakes. Nothing here starts a process, opens a network connection or reads a credential.
 import { createHash } from "node:crypto";
+import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ServiceCatalogSchema } from "@agentx/contracts";
 import { SourcesFileSchema, type CommandPort } from "../../scripts/catalog-build.js";
@@ -7,11 +10,13 @@ import {
   OCI_INDEX_MEDIA_TYPE,
   OCI_MANIFEST_MEDIA_TYPE,
   RepackError,
+  nodeOutputCheckFs,
   RepackFileSchema,
   buildRepackIndex,
   orasIndexPort,
   parseRepackArgs,
   prepareRepackRun,
+  realRepackPorts,
   preflightOutputs,
   repackCatalog,
   repackUsage,
@@ -558,6 +563,49 @@ describe("the real ports build their commands from digests (and are not run)", (
     expect(log.some((entry) => entry[1] === "tag")).toBe(false);
   });
 
+  it("gives skopeo copy 45 minutes and leaves inspect and every oras command on the port default", async () => {
+    const calls: Array<{ file: string; args: readonly string[]; timeoutMs: number | undefined }> = [];
+    const commands: CommandPort = { async run(file, args, options) { calls.push({ file, args, timeoutMs: options?.timeoutMs }); return Buffer.from(`sha256:${digest}`); } };
+    const registry = skopeoRegistryPort({ commands, authFile: "/a" });
+    await registry.readManifest({ repository: "docker.io/library/postgres", digest });
+    await registry.copyImage({ sourceRepository: "docker.io/library/postgres", destinationRepository: destination("svc/postgres"), digest });
+    await skopeoRegistryPort({ commands, authFile: "/a", copyTimeoutMs: 5_000 }).copyImage({ sourceRepository: "a/b", destinationRepository: "c/d", digest });
+    const oras = orasIndexPort({ commands, authFile: "/a", stage: async () => ({ path: "/s", cleanup: async () => undefined }) });
+    await oras.resolveTag({ repository: "c/d", tag: "t" });
+    expect(calls.map((call) => `${call.file} ${call.args[0] as string} ${String(call.timeoutMs)}`)).toEqual(["skopeo inspect undefined", "skopeo copy 2700000", "skopeo copy 5000", "oras resolve undefined"]);
+  });
+
+  it("assembles the real ports with the copy timeout the command line gave", async () => {
+    const seen: Array<number | undefined> = [];
+    const commands: CommandPort = { async run(_file, args, options) { if (args[0] === "copy") seen.push(options?.timeoutMs); return Buffer.from(""); } };
+    const ports = realRepackPorts({ commands, authFile: "/a", copyTimeoutMs: 123_000, clock: { now: () => new Date(NOW) }, stage: async () => ({ path: "/s", cleanup: async () => undefined }) });
+    await ports.registry.copyImage({ sourceRepository: "a/b", destinationRepository: "c/d", digest });
+    expect(seen).toEqual([123_000]);
+  });
+
+  it("treats a tag that appears between the look and the tag as success, and still fails when it did not appear", async () => {
+    const ref = `${destination("svc/postgres")}@sha256:${digest}`;
+    const build = (afterTagFailure: string | undefined) => {
+      let tagFailed = false;
+      const commands: CommandPort = {
+        async run(_file, args) {
+          if (args[0] === "tag") { tagFailed = true; throw new Error("tag invalid: already exists"); }
+          if (args[0] === "resolve") {
+            if (!tagFailed || afterTagFailure === undefined) throw new Error("not found");
+            return Buffer.from(afterTagFailure);
+          }
+          return Buffer.from("");
+        },
+      };
+      return orasIndexPort({ commands, authFile: "/a", stage: async () => ({ path: "/s", cleanup: async () => undefined }) });
+    };
+    const input = { repository: destination("svc/postgres"), digest, mediaType: OCI_INDEX_MEDIA_TYPE, bytes: Buffer.from("{}"), tag: digest.slice(0, 32) };
+    await expect(build(`sha256:${digest}`).push(input)).resolves.toBeUndefined();
+    await expect(build(undefined).push(input)).rejects.toThrow(/already exists/u);
+    await expect(build(`sha256:${hex("other")}`).push(input)).rejects.toThrow(/already exists/u);
+    expect(ref).toContain(digest);
+  });
+
   it("the usage text names the flags, the digest rule and the staging guard", () => {
     const text = repackUsage();
     for (const flag of ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--repack-time"]) expect(text).toContain(flag);
@@ -568,7 +616,7 @@ describe("the real ports build their commands from digests (and are not run)", (
     expect(text).toContain("anonymously pullable");
     expect(text).toContain("rate limit");
     expect(text).toContain("1.2.0");
-    for (const flag of ["--overwrite", "--command-timeout-seconds"]) expect(text).toContain(flag);
+    for (const flag of ["--overwrite", "--command-timeout-seconds", "--copy-timeout-seconds"]) expect(text).toContain(flag);
   });
 });
 
@@ -583,7 +631,7 @@ describe("child sizes", () => {
 
 describe("the command line and the output check", () => {
   const base = ["--repack-file", "r.json", "--env", "staging", "--registry", REGISTRY, "--sources-out", "/o/sources.json", "--provenance-out", "/o/provenance.json"];
-  const fakeFs = (existing: string[] = [], unwritable: string[] = []) => {
+  const fakeFs = (existing: string[] = [], unwritable: string[] = [], links: Record<string, string> = {}, identities: Record<string, { dev: number; ino: number }> = {}) => {
     const created: string[] = [];
     const fs: OutputCheckFs = {
       async exists(path) { return existing.includes(path); },
@@ -591,14 +639,16 @@ describe("the command line and the output check", () => {
         if (unwritable.includes(path)) throw new Error("EACCES");
         created.push(path);
       },
+      async realpath(path) { return links[path] ?? path; },
+      async identity(path) { return identities[path]; },
     };
     return { fs, created };
   };
 
   it("reads the flags, resolves the paths and defaults the time, overwrite and timeout", () => {
     const args = parseRepackArgs(base);
-    expect(args).toMatchObject({ env: "staging", registry: REGISTRY, sourcesOut: "/o/sources.json", provenanceOut: "/o/provenance.json", repackTime: undefined, overwrite: false, commandTimeoutMs: 600_000 });
-    expect(parseRepackArgs([...base, "--overwrite", "--repack-time", NOW, "--command-timeout-seconds", "30"])).toMatchObject({ overwrite: true, repackTime: NOW, commandTimeoutMs: 30_000 });
+    expect(args).toMatchObject({ env: "staging", registry: REGISTRY, sourcesOut: "/o/sources.json", provenanceOut: "/o/provenance.json", repackTime: undefined, overwrite: false, commandTimeoutMs: 600_000, copyTimeoutMs: 2_700_000 });
+    expect(parseRepackArgs([...base, "--overwrite", "--repack-time", NOW, "--command-timeout-seconds", "30", "--copy-timeout-seconds", "90"])).toMatchObject({ overwrite: true, repackTime: NOW, commandTimeoutMs: 30_000, copyTimeoutMs: 90_000 });
   });
 
   it.each([
@@ -609,6 +659,7 @@ describe("the command line and the output check", () => {
     ["a missing value", [...base.slice(0, 8), "--registry"]],
     ["a bad time", [...base, "--repack-time", "yesterday"]],
     ["a bad timeout", [...base, "--command-timeout-seconds", "0"]],
+    ["a bad copy timeout", [...base, "--copy-timeout-seconds", "1.5"]],
     ["a required flag missing", base.slice(2)],
   ])("refuses %s", (_name, argv) => {
     expect(() => parseRepackArgs(argv)).toThrow();
@@ -626,6 +677,39 @@ describe("the command line and the output check", () => {
     await expect(prepareRepackRun(base, fakeFs(["/o/sources.json"]).fs)).rejects.toThrow(/already exists/u);
     await expect(prepareRepackRun(base, fakeFs([], ["/o"]).fs)).rejects.toThrow(/cannot be created/u);
     expect(await prepareRepackRun([...base, "--overwrite"], fakeFs(["/o/sources.json"]).fs)).toMatchObject({ overwrite: true });
+  });
+
+  it("refuses one file reached through a symbolic link to its directory", async () => {
+    const fs = fakeFs([], [], { "/link": "/real" }).fs;
+    await expect(preflightOutputs({ sourcesFile: "/link/x.json", provenanceFile: "/real/x.json", overwrite: true }, fs)).rejects.toThrow(/different files/u);
+    await expect(preflightOutputs({ sourcesFile: "/link/x.json", provenanceFile: "/real/y.json", overwrite: true }, fs)).resolves.toBeUndefined();
+  });
+
+  it("refuses names that differ only in case in the same directory (a case-folding file system), but not in different directories", async () => {
+    await expect(preflightOutputs({ sourcesFile: "/o/Sources.json", provenanceFile: "/o/sources.json", overwrite: true }, fakeFs().fs)).rejects.toThrow(/different files/u);
+    await expect(preflightOutputs({ sourcesFile: "/a/Sources.json", provenanceFile: "/b/sources.json", overwrite: true }, fakeFs().fs)).resolves.toBeUndefined();
+  });
+
+  it("refuses two existing paths that are the same file (device and inode), and accepts two different files", async () => {
+    const input = { sourcesFile: "/a/s.json", provenanceFile: "/b/p.json", overwrite: true };
+    await expect(preflightOutputs(input, fakeFs([], [], {}, { "/a/s.json": { dev: 1, ino: 7 }, "/b/p.json": { dev: 1, ino: 7 } }).fs)).rejects.toThrow(/different files/u);
+    await expect(preflightOutputs(input, fakeFs([], [], {}, { "/a/s.json": { dev: 1, ino: 7 }, "/b/p.json": { dev: 1, ino: 8 } }).fs)).resolves.toBeUndefined();
+    await expect(preflightOutputs(input, fakeFs([], [], {}, { "/a/s.json": { dev: 1, ino: 7 }, "/b/p.json": { dev: 2, ino: 7 } }).fs)).resolves.toBeUndefined();
+  });
+
+  it("on a real directory: a symbolic link to the directory and a hard link are caught, and distinct files pass", async () => {
+    const root = await mkdtemp(join(tmpdir(), "repack-preflight-"));
+    try {
+      await mkdir(join(root, "real"));
+      await symlink(join(root, "real"), join(root, "link"));
+      await expect(preflightOutputs({ sourcesFile: join(root, "link", "x.json"), provenanceFile: join(root, "real", "x.json"), overwrite: true }, nodeOutputCheckFs)).rejects.toThrow(/different files/u);
+      await writeFile(join(root, "real", "a.json"), "{}");
+      await link(join(root, "real", "a.json"), join(root, "real", "b.json"));
+      await expect(preflightOutputs({ sourcesFile: join(root, "real", "a.json"), provenanceFile: join(root, "real", "b.json"), overwrite: true }, nodeOutputCheckFs)).rejects.toThrow(/different files/u);
+      await expect(preflightOutputs({ sourcesFile: join(root, "real", "a.json"), provenanceFile: join(root, "new", "p.json"), overwrite: true }, nodeOutputCheckFs)).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses identical output files", async () => {

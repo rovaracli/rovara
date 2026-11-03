@@ -315,6 +315,8 @@ export interface CommandPort {
 }
 /** The longest one external command (skopeo, syft, oras) may run before it is killed. Per-command override: `options.timeoutMs`; per-port override: `createCommandPort`. */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/** The longest a COPY (skopeo copy of a whole image) or an SBOM (syft reading a whole image) may run: these move or read gigabytes, so they get 45 minutes; inspect and the other quick commands stay on the port's default. */
+export const DEFAULT_COPY_TIMEOUT_MS = 45 * 60 * 1000;
 /** The shape of the promisified `execFile` the command port uses (a seam, so a test can check the options without starting a process). */
 export type ExecFileFn = (file: string, args: string[], options: { encoding: "buffer"; maxBuffer: number; env: NodeJS.ProcessEnv; timeout: number; killSignal: NodeJS.Signals }) => Promise<{ stdout: Buffer }>;
 /** A command port that kills the child (SIGKILL) when it has run longer than its timeout, and says so in the error. Output and exit handling are `execFile`'s, as before. */
@@ -344,10 +346,10 @@ export const tagFor = (digest: string): string => digest.slice(0, 32);
  * skopeo copies every platform with the digests kept; the destination is then asked for the manifest BY DIGEST, the bytes are hashed here, and the child manifest digest of each platform is read from the index it served.
  * Attestation manifests (`unknown/unknown`) are not platforms and are left out.
  */
-export function skopeoMirrorPort(input: { commands: CommandPort; registry: string; authFile: string }): CatalogBuildPorts["mirror"] {
+export function skopeoMirrorPort(input: { commands: CommandPort; registry: string; authFile: string; copyTimeoutMs?: number }): CatalogBuildPorts["mirror"] {
   return async ({ source, repositoryName, expectedDigest }) => {
     const destination = `${input.registry}/${repositoryName}`;
-    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${source}`, `docker://${destination}:${tagFor(expectedDigest)}`]);
+    await input.commands.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${source}`, `docker://${destination}:${tagFor(expectedDigest)}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     const byDigest = `docker://${destination}@sha256:${expectedDigest}`;
     const raw = await input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, byDigest]);
     const digest = createHash("sha256").update(raw).digest("hex");
@@ -373,9 +375,9 @@ export function skopeoMirrorPort(input: { commands: CommandPort; registry: strin
 }
 
 /** syft reads ONE platform's child manifest from the registry (`--platform`; the same credential file, as a Docker config directory) and writes SPDX JSON. */
-export function syftSbomPort(input: { commands: CommandPort; registry: string; authDir: string }): CatalogBuildPorts["sbom"] {
+export function syftSbomPort(input: { commands: CommandPort; registry: string; authDir: string; timeoutMs?: number }): CatalogBuildPorts["sbom"] {
   return async ({ repositoryName, digest, platform }) =>
-    input.commands.run("syft", [`registry:${input.registry}/${repositoryName}@sha256:${digest}`, "--platform", platform, "-o", "spdx-json", "--quiet"], { env: { DOCKER_CONFIG: input.authDir } });
+    input.commands.run("syft", [`registry:${input.registry}/${repositoryName}@sha256:${digest}`, "--platform", platform, "-o", "spdx-json", "--quiet"], { env: { DOCKER_CONFIG: input.authDir }, timeoutMs: input.timeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
 }
 
 export interface EcrLike {
@@ -423,11 +425,20 @@ export function ecrScanPort(input: { client: EcrLike; commands: EcrCommands; sle
 // ---- command line
 
 function usage(): string {
-  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}]
+  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
 pinned catalog.json, catalog.sig.json, evidence/ and the worker pre-pull list. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
 The sources file maps each catalog id to a digest reference (host/path@sha256:...). Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
-single-platform image only for an id that lists that one platform); an index with another platform set is refused.\n`;
+single-platform image only for an id that lists that one platform); an index with another platform set is refused.
+Each skopeo inspect is killed after --command-timeout-seconds; each skopeo copy and each syft run after --copy-timeout-seconds.\n`;
+}
+
+/** A timeout flag in whole seconds, or the default. Shared with catalog-repack. */
+export function timeoutFlag(value: string | undefined, fallbackMs: number, flag: string): number {
+  if (value === undefined) return fallbackMs;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds <= 0) throw new Error(`${flag} is a positive whole number of seconds`);
+  return seconds * 1000;
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -439,6 +450,8 @@ async function main(argv: string[]): Promise<void> {
   const catalogDir = resolve(values("--catalog-dir")[0] ?? DEFAULT_CATALOG_DIR);
   const prepullFile = resolve(values("--prepull-file")[0] ?? DEFAULT_PREPULL_FILE);
   if (!sourcesFile || !env || !registry || !kmsKey) throw new Error("--sources, --env, --registry and --kms-key are required");
+  const commandTimeoutMs = timeoutFlag(values("--command-timeout-seconds")[0], DEFAULT_COMMAND_TIMEOUT_MS, "--command-timeout-seconds");
+  const copyTimeoutMs = timeoutFlag(values("--copy-timeout-seconds")[0], DEFAULT_COPY_TIMEOUT_MS, "--copy-timeout-seconds");
   CatalogRegistryHostSchema.parse(registry);
   catalogRepositoryName(env, "svc/check");
   const [{ ECRClient, GetAuthorizationTokenCommand, DescribeImageScanFindingsCommand, StartImageScanCommand }, { KMSClient, GetPublicKeyCommand, SignCommand }] = await Promise.all([import("@aws-sdk/client-ecr"), import("@aws-sdk/client-kms")]);
@@ -450,15 +463,15 @@ async function main(argv: string[]): Promise<void> {
   const authFile = join(authDir, "config.json");
   try {
     await writeFile(authFile, JSON.stringify({ auths: { [registry]: { auth: token.authorizationToken } } }), { mode: 0o600 });
-    const commands = execCommandPort;
+    const commands = createCommandPort({ timeoutMs: commandTimeoutMs });
     const signer = await kmsBundleSigner({ client: new KMSClient({}), keyId: kmsKey, commands: { GetPublicKeyCommand, SignCommand } });
     const output = await buildPinnedCatalog({
       catalog: JSON.parse(await readFile(join(catalogDir, CATALOG_FILE), "utf8")) as unknown,
       sources: JSON.parse(await readFile(resolve(sourcesFile), "utf8")) as unknown,
       env,
       ports: {
-        mirror: skopeoMirrorPort({ commands, registry, authFile }),
-        sbom: syftSbomPort({ commands, registry, authDir }),
+        mirror: skopeoMirrorPort({ commands, registry, authFile, copyTimeoutMs }),
+        sbom: syftSbomPort({ commands, registry, authDir, timeoutMs: copyTimeoutMs }),
         scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand } }),
         signer,
       },

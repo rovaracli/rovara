@@ -14,7 +14,7 @@ For every non-retired entry it reads the upstream index by the digest the operat
 - A tag is refused. Any refusal stops the run before the sources file is written; the read phase refuses before anything is copied.
 - The repack time is part of the index, so a new run is a new index digest. **Retry an aborted run with the same `--repack-time`** (the run prints its time at the start): the indexes already pushed and tagged for completed entries are then reused, not left orphaned beside new ones, and the immutable tags are not touched again (a tag that already points at the right digest is skipped; one that points at another digest stops the run). Without `--repack-time` a retry makes new indexes.
 - Before any registry work the run checks the outputs: both directories exist (or are created) and are writable, the two files differ, and an existing sources or provenance file is refused unless `--overwrite` is passed.
-- Every skopeo and oras command is killed after 10 minutes by default (`--command-timeout-seconds`).
+- Every skopeo inspect and oras command is killed after 10 minutes by default (`--command-timeout-seconds`), and each `skopeo copy` after 45 minutes (`--copy-timeout-seconds`). `catalog-build` takes the same two flags: its `skopeo copy` and `syft` runs get the 45-minute limit, `skopeo inspect` the 10-minute one.
 
 ## Operator run on staging
 

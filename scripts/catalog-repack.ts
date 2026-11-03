@@ -25,13 +25,13 @@
 // credential is ECR's short token, kept in a 0600 file inside a 0700 directory.
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { CATALOG_FILE, CatalogIdSchema, CatalogRegistryHostSchema, ServiceCatalogSchema, catalogRepositoryName } from "@agentx/contracts";
-import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, SourceRefSchema, createCommandPort, tagFor, type CommandPort } from "./catalog-build.js";
+import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COPY_TIMEOUT_MS, SourceRefSchema, createCommandPort, tagFor, timeoutFlag, type CommandPort } from "./catalog-build.js";
 
 export const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
 export const DOCKER_MANIFEST_LIST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.list.v2+json";
@@ -387,13 +387,13 @@ export async function runRepack(input: { catalog: unknown; repack: unknown; env:
 // ---- real ports (built only by main)
 
 /** skopeo reads and copies by digest. `copy` of one image manifest to a digest destination keeps the digest (`--preserve-digests`: no conversion). */
-export function skopeoRegistryPort(input: { commands: CommandPort; authFile: string }): RegistryPort {
+export function skopeoRegistryPort(input: { commands: CommandPort; authFile: string; copyTimeoutMs?: number }): RegistryPort {
   return {
     async readManifest({ repository, digest }) {
       return input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, `docker://${repository}@sha256:${digest}`]);
     },
     async copyImage({ sourceRepository, destinationRepository, digest }) {
-      await input.commands.run("skopeo", ["copy", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${sourceRepository}@sha256:${digest}`, `docker://${destinationRepository}@sha256:${digest}`]);
+      await input.commands.run("skopeo", ["copy", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${sourceRepository}@sha256:${digest}`, `docker://${destinationRepository}@sha256:${digest}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     },
   };
 }
@@ -420,7 +420,12 @@ export function orasIndexPort(input: { commands: CommandPort; authFile: string; 
       const existing = await resolveTag({ repository, tag });
       if (existing === `sha256:${digest}`) return;
       if (existing !== undefined) throw new Error(`the tag ${tag} already points at ${existing}, not at ${digest}`);
-      await input.commands.run("oras", ["tag", "--registry-config", input.authFile, `${repository}@sha256:${digest}`, tag]);
+      try {
+        await input.commands.run("oras", ["tag", "--registry-config", input.authFile, `${repository}@sha256:${digest}`, tag]);
+      } catch (error) {
+        // Another run (or the first attempt of this one) may have tagged it between the look and the tag: look again. Pointing at this digest is success; anything else is the failure.
+        if ((await resolveTag({ repository, tag })) !== `sha256:${digest}`) throw error;
+      }
     },
     resolveTag,
   };
@@ -441,7 +446,7 @@ export const fileOutputPort: OutputPort = {
 // ---- command line
 
 export function repackUsage(): string {
-  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}]
+  return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator, with the owner's OK, on STAGING only: ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/catalog-repack.ts ... (account 944937319445, us-west-2). Needs skopeo and oras (1.2.0 or newer, for
 \`oras resolve\`) on PATH. Upstream images must be anonymously pullable (no upstream credential is used); Docker Hub limits anonymous pulls, so a run may stop on a rate limit: wait and retry (see --repack-time).
 For each non-retired catalog entry it reads the upstream INDEX named in the repack file, checks its bytes hash to the digest the operator reviewed, picks exactly the catalog's platforms (linux/arm64 and linux/amd64; an
@@ -452,7 +457,7 @@ The attestation manifests (unknown/unknown) in the upstream index are dropped an
 The repack time is part of each index. RETRY an aborted run with the SAME --repack-time (the first run's time; use the one printed at its start): the indexes already pushed and tagged for completed entries are then
 reused, not orphaned beside new ones, and the immutable tags are not touched again. Without --repack-time the time is now, so a new run makes new indexes.
 The output directories must exist or be creatable and writable, the two output files must differ, and an existing sources or provenance file is not overwritten unless --overwrite is given.
-Each skopeo and oras command is killed after --command-timeout-seconds.\n`;
+Each skopeo inspect and oras command is killed after --command-timeout-seconds, each skopeo copy after --copy-timeout-seconds.\n`;
 }
 
 export interface RepackArgs {
@@ -465,8 +470,9 @@ export interface RepackArgs {
   repackTime: string | undefined;
   overwrite: boolean;
   commandTimeoutMs: number;
+  copyTimeoutMs: number;
 }
-const VALUE_FLAGS = ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--catalog-dir", "--repack-time", "--command-timeout-seconds"] as const;
+const VALUE_FLAGS = ["--repack-file", "--env", "--registry", "--sources-out", "--provenance-out", "--catalog-dir", "--repack-time", "--command-timeout-seconds", "--copy-timeout-seconds"] as const;
 const BOOLEAN_FLAGS = ["--overwrite", "--help"] as const;
 
 /** Reads the command line. A flag it does not know, a flag given twice, a missing value, a bad time and identical output files are all errors (a typo must not be ignored). Paths are resolved. */
@@ -493,8 +499,8 @@ export function parseRepackArgs(argv: readonly string[]): RepackArgs {
   };
   const repackTime = found.get("--repack-time");
   if (repackTime !== undefined && Number.isNaN(Date.parse(repackTime))) throw new Error("--repack-time is not a time");
-  const seconds = Number(found.get("--command-timeout-seconds") ?? String(DEFAULT_COMMAND_TIMEOUT_MS / 1000));
-  if (!Number.isInteger(seconds) || seconds <= 0) throw new Error("--command-timeout-seconds is a positive whole number");
+  const commandTimeoutMs = timeoutFlag(found.get("--command-timeout-seconds"), DEFAULT_COMMAND_TIMEOUT_MS, "--command-timeout-seconds");
+  const copyTimeoutMs = timeoutFlag(found.get("--copy-timeout-seconds"), DEFAULT_COPY_TIMEOUT_MS, "--copy-timeout-seconds");
   const args: RepackArgs = {
     repackFile: resolve(need("--repack-file")),
     env: need("--env"),
@@ -504,7 +510,8 @@ export function parseRepackArgs(argv: readonly string[]): RepackArgs {
     catalogDir: resolve(found.get("--catalog-dir") ?? DEFAULT_CATALOG_DIR),
     repackTime,
     overwrite,
-    commandTimeoutMs: seconds * 1000,
+    commandTimeoutMs,
+    copyTimeoutMs,
   };
   if (args.sourcesOut === args.provenanceOut) throw new Error("--sources-out and --provenance-out must be different files");
   CatalogRegistryHostSchema.parse(args.registry);
@@ -517,6 +524,10 @@ export interface OutputCheckFs {
   exists(path: string): Promise<boolean>;
   /** Creates the directory when it is missing and throws when it cannot be written to. */
   ensureWritableDirectory(path: string): Promise<void>;
+  /** The directory with every symbolic link resolved. */
+  realpath(path: string): Promise<string>;
+  /** The device and inode of an existing file (symbolic links followed), or nothing when there is no such file. */
+  identity(path: string): Promise<{ dev: number; ino: number } | undefined>;
 }
 export const nodeOutputCheckFs: OutputCheckFs = {
   async exists(path) {
@@ -531,26 +542,54 @@ export const nodeOutputCheckFs: OutputCheckFs = {
     await mkdir(path, { recursive: true });
     await access(path, constants.W_OK);
   },
+  realpath: (path) => realpath(path),
+  async identity(path) {
+    try {
+      const found = await stat(path, { bigint: false });
+      return { dev: found.dev, ino: found.ino };
+    } catch {
+      return undefined;
+    }
+  },
 };
 
 /**
- * Checked BEFORE anything is copied or pushed, so a run cannot get through all the registry work and then fail at the write: both output directories exist (or are created) and are writable, and neither output
- * file exists unless `overwrite` is true (the sources file is what catalog-build reads, and the provenance record is the only record of what was repacked).
+ * Checked BEFORE anything is copied or pushed, so a run cannot get through all the registry work and then fail at the write: both output directories exist (or are created) and are writable, the two outputs are
+ * not the same file (by path, by resolved directory plus a case-insensitive name, and for existing files by device and inode, so a symbolic link, a hard link or a case-folding file system cannot make one file of two),
+ * and neither exists unless `overwrite` is true (the sources file is what catalog-build reads, and the provenance record is the only record of what was repacked).
  */
 export async function preflightOutputs(input: { sourcesFile: string; provenanceFile: string; overwrite: boolean }, fs: OutputCheckFs): Promise<void> {
-  if (resolve(input.sourcesFile) === resolve(input.provenanceFile)) throw new Error("--sources-out and --provenance-out must be different files");
+  const same = "--sources-out and --provenance-out must be different files";
+  if (resolve(input.sourcesFile) === resolve(input.provenanceFile)) throw new Error(same);
+  const real: string[] = [];
   for (const file of [input.sourcesFile, input.provenanceFile]) {
     try {
-      await fs.ensureWritableDirectory(dirname(resolve(file)));
+      const directory = dirname(resolve(file));
+      await fs.ensureWritableDirectory(directory);
+      real.push(join(await fs.realpath(directory), basename(file)));
     } catch (error) {
       throw new Error(`the directory of ${file} does not exist and cannot be created, or is not writable${error instanceof Error ? ` (${error.message.slice(0, 120)})` : ""}`, { cause: error });
     }
   }
+  const [a, b] = real as [string, string];
+  if (dirname(a) === dirname(b) && basename(a).toLowerCase() === basename(b).toLowerCase()) throw new Error(same);
+  const [first, second] = [await fs.identity(input.sourcesFile), await fs.identity(input.provenanceFile)];
+  if (first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino) throw new Error(same);
   if (!input.overwrite) {
     for (const file of [input.sourcesFile, input.provenanceFile]) {
       if (await fs.exists(file)) throw new Error(`${file} already exists; it is not overwritten unless --overwrite is given`);
     }
   }
+}
+
+/** The real ports, assembled the way `main` does (a function so a test can check the wiring with a fake command port). */
+export function realRepackPorts(input: { commands: CommandPort; authFile: string; copyTimeoutMs: number; clock: ClockPort; stage: Parameters<typeof orasIndexPort>[0]["stage"] }): RepackPorts {
+  return {
+    registry: skopeoRegistryPort({ commands: input.commands, authFile: input.authFile, copyTimeoutMs: input.copyTimeoutMs }),
+    indexes: orasIndexPort({ commands: input.commands, authFile: input.authFile, stage: input.stage }),
+    clock: input.clock,
+    files: fileOutputPort,
+  };
 }
 
 /** Everything `main` checks before it asks for a credential or touches a registry: the command line and the outputs. */
@@ -581,20 +620,17 @@ async function main(argv: string[]): Promise<void> {
       env,
       registry,
       outputs: { sourcesFile: args.sourcesOut, provenanceFile: args.provenanceOut },
-      ports: {
-        registry: skopeoRegistryPort({ commands, authFile }),
-        indexes: orasIndexPort({
-          commands,
-          authFile,
-          stage: async (bytes) => {
-            const path = join(workDir, `index-${String(staged++)}.json`);
-            await writeFile(path, bytes, { mode: 0o600 });
-            return { path, cleanup: () => rm(path, { force: true }) };
-          },
-        }),
+      ports: realRepackPorts({
+        commands,
+        authFile,
+        copyTimeoutMs: args.copyTimeoutMs,
         clock: { now: () => runTime },
-        files: fileOutputPort,
-      },
+        stage: async (bytes) => {
+          const path = join(workDir, `index-${String(staged++)}.json`);
+          await writeFile(path, bytes, { mode: 0o600 });
+          return { path, cleanup: () => rm(path, { force: true }) };
+        },
+      }),
     });
     process.stdout.write(`repacked ${String(Object.keys(output.sources.sources).length)} images; sources: ${args.sourcesOut}; provenance: ${args.provenanceOut}\n`);
   } finally {

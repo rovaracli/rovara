@@ -18,6 +18,8 @@ import {
 import {
   CatalogBuildError,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_COPY_TIMEOUT_MS,
+  timeoutFlag,
   createCommandPort,
   execCommandPort,
   type ExecFileFn,
@@ -465,5 +467,32 @@ describe("the command port", () => {
     await expect(createCommandPort({ exec: failed }).run("syft", [])).rejects.toThrow("exit 2");
     const tooBig: ExecFileFn = async () => { throw Object.assign(new Error("maxBuffer"), { killed: true, code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }); };
     await expect(createCommandPort({ exec: tooBig }).run("syft", [])).rejects.toThrow("maxBuffer");
+  });
+});
+
+describe("which timeout each catalog-build command gets", () => {
+  const digest = "a".repeat(64);
+  const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, manifests: [{ digest: `sha256:${"b".repeat(64)}`, platform: { os: "linux", architecture: "arm64" } }] }));
+  const run = async (mirrorOptions: { copyTimeoutMs?: number } = {}, sbomOptions: { timeoutMs?: number } = {}) => {
+    const seen: string[] = [];
+    const port: CommandPort = { run: async (file, args, options) => { seen.push(`${file} ${args[0] as string} ${String(options?.timeoutMs)}`); return args.includes("--raw") ? manifest : Buffer.from("{}"); } };
+    await skopeoMirrorPort({ commands: port, registry: "r.example.com", authFile: "/a", ...mirrorOptions })({ id: "x@1", source: `s.example.com/x@sha256:${digest}`, repositoryName: "rovara-catalog/staging/svc/x", expectedDigest: digest }).catch(() => undefined);
+    await syftSbomPort({ commands: port, registry: "r.example.com", authDir: "/d", ...sbomOptions })({ id: "x@1", repositoryName: "rovara-catalog/staging/svc/x", platform: "linux/arm64", digest });
+    return seen;
+  };
+
+  it("gives skopeo copy and syft 45 minutes and leaves skopeo inspect on the port's default", async () => {
+    expect(DEFAULT_COPY_TIMEOUT_MS).toBe(2_700_000);
+    expect(await run()).toEqual(["skopeo copy 2700000", "skopeo inspect undefined", "syft registry:r.example.com/rovara-catalog/staging/svc/x@sha256:" + digest + " 2700000"]);
+  });
+
+  it("takes the copy timeout from the caller", async () => {
+    expect(await run({ copyTimeoutMs: 1_000 }, { timeoutMs: 2_000 })).toEqual(["skopeo copy 1000", "skopeo inspect undefined", "syft registry:r.example.com/rovara-catalog/staging/svc/x@sha256:" + digest + " 2000"]);
+  });
+
+  it("reads a timeout flag in whole seconds", () => {
+    expect(timeoutFlag(undefined, 5, "--x")).toBe(5);
+    expect(timeoutFlag("30", 5, "--x")).toBe(30_000);
+    for (const bad of ["0", "-1", "1.5", "abc", ""]) expect(() => timeoutFlag(bad, 5, "--x")).toThrow("--x");
   });
 });
