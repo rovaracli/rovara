@@ -6,7 +6,7 @@
 // The release puts `catalog.json` and `catalog.sig.json` beside the broker's code (the Lambda asset's `service-catalog/` folder). A missing file is a refusal, not a crash.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CATALOG_FILE, CATALOG_SIGNATURE_FILE } from "@agentx/contracts";
+import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, type loadSignedCatalog } from "@agentx/contracts";
 import { serviceCatalogSourceOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { lambdaAccountId } from "./lambda-identity.js";
 import { testServicesEnabled } from "./test-services-switch.js";
@@ -16,14 +16,14 @@ export const SHIPPED_CATALOG_FOLDER = "service-catalog";
 /** The directory of the shipped catalog: beside the broker's code in a Lambda, or the working directory in a test. */
 export const shippedCatalogDirectory = (env: NodeJS.ProcessEnv = process.env): string => join(env["LAMBDA_TASK_ROOT"] ?? process.cwd(), SHIPPED_CATALOG_FOLDER);
 
-/** The signed catalog the release ships, or undefined while `tx` is off. Reads the two files once, on first use. `testOnlyTrustedKeys` is a test seam (see `serviceCatalogSourceOf`). */
-export function releaseServiceCatalogSource(env: NodeJS.ProcessEnv = process.env, testOnlyTrustedKeys?: readonly string[]): ServiceCatalogSource | undefined {
+/** The signed catalog the release ships, or undefined while `tx` is off. Reads the two files once, on first use. `load` is a test port (see `serviceCatalogSourceOf`); production passes none, so only the contract's compiled-in keys count. */
+export function releaseServiceCatalogSource(env: NodeJS.ProcessEnv = process.env, load?: typeof loadSignedCatalog): ServiceCatalogSource | undefined {
   if (!testServicesEnabled(env)) return undefined;
   const directory = shippedCatalogDirectory(env);
   return serviceCatalogSourceOf({
     read: async () => ({ catalogBytes: await readFile(join(directory, CATALOG_FILE)), signatureBytes: await readFile(join(directory, CATALOG_SIGNATURE_FILE)) }),
     trust: () => ({ runningAccountId: lambdaAccountId() }),
     onRefused: (reason) => console.log(JSON.stringify({ component: "broker", event: "test_services.catalog_refused", reason })),
-    ...(testOnlyTrustedKeys === undefined ? {} : { testOnlyTrustedKeys }),
+    ...(load === undefined ? {} : { load }),
   });
 }

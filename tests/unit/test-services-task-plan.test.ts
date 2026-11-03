@@ -7,7 +7,7 @@ import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS } from "../../packages/broker/src/
 import { testEnvImplementPlanFor, testEnvPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
 import { UNUSED_WORDS, environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
-import { pinnedCatalog, testSigner, unpinnedCatalog, verifiedCatalog, digestOfId } from "../support/catalog-pinning.js";
+import { loaderTrusting, pinnedCatalog, testSigner, unpinnedCatalog, verifiedCatalog, digestOfId } from "../support/catalog-pinning.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@agentx/contracts";
 
@@ -95,17 +95,17 @@ describe("the signed catalog source", () => {
   it("loads the catalog once, verified, and refuses a bad signature, an untrusted key and a catalog older than the minimum", async () => {
     const good = await signed();
     let reads = 0;
-    const source = serviceCatalogSourceOf({ read: async () => { reads += 1; return good; }, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const source = serviceCatalogSourceOf({ read: async () => { reads += 1; return good; }, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 1 });
     expect((await source())?.pinned).toBe(true);
     await source();
     expect(reads).toBe(1);
-    const other = serviceCatalogSourceOf({ read: async () => good, trust, testOnlyTrustedKeys: [testSigner().publicKeyPem], minRevision: 1 });
+    const other = serviceCatalogSourceOf({ read: async () => good, trust, load: loaderTrusting(testSigner().publicKeyPem), minRevision: 1 });
     expect(await other()).toBeUndefined();
-    const old = serviceCatalogSourceOf({ read: async () => good, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 3 });
+    const old = serviceCatalogSourceOf({ read: async () => good, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 3 });
     expect(await old()).toBeUndefined();
-    const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const broken = serviceCatalogSourceOf({ read: async () => { throw new Error("no file"); }, trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 1 });
     expect(await broken()).toBeUndefined();
-    const tampered = serviceCatalogSourceOf({ read: async () => ({ ...good, catalogBytes: Buffer.concat([good.catalogBytes, Buffer.from(" ")]) }), trust, testOnlyTrustedKeys: [good.signer.publicKeyPem], minRevision: 1 });
+    const tampered = serviceCatalogSourceOf({ read: async () => ({ ...good, catalogBytes: Buffer.concat([good.catalogBytes, Buffer.from(" ")]) }), trust, load: loaderTrusting(good.signer.publicKeyPem), minRevision: 1 });
     expect(await tampered()).toBeUndefined();
   });
 
@@ -120,7 +120,7 @@ describe("the signed catalog source", () => {
   it("asks for the trust when it loads, so an account learned later is used", async () => {
     const good = await signed();
     const seen: Array<string | undefined> = [];
-    const source = serviceCatalogSourceOf({ read: async () => good, trust: () => { const context = { runningAccountId: seen.length === 0 ? undefined : "944937319445" }; seen.push(context.runningAccountId); return context; }, testOnlyTrustedKeys: [good.signer.publicKeyPem] });
+    const source = serviceCatalogSourceOf({ read: async () => good, trust: () => { const context = { runningAccountId: seen.length === 0 ? undefined : "944937319445" }; seen.push(context.runningAccountId); return context; }, load: loaderTrusting(good.signer.publicKeyPem) });
     expect((await source())?.pinned).toBe(true);
     expect(seen).toEqual([undefined]);
   });

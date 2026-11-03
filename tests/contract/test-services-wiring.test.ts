@@ -9,7 +9,7 @@ import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, CATALOG_SIGNATURE_ALGORITHM, cata
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { forgetInvokedFunctionArn, lambdaAccountId, noteInvokedFunctionArn } from "../../packages/broker/src/test-env/lambda-identity.js";
 import { SHIPPED_CATALOG_FOLDER, releaseServiceCatalogSource, shippedCatalogDirectory } from "../../packages/broker/src/test-env/shipped-catalog.js";
-import { pinnedCatalog, testSigner } from "../support/catalog-pinning.js";
+import { loaderTrusting, pinnedCatalog, testSigner } from "../support/catalog-pinning.js";
 import { setupWizardBench } from "../support/setup-wizard-testenv.js";
 
 const roots: string[] = [];
@@ -35,16 +35,16 @@ describe("the release's catalog source", () => {
 
   it("loads the shipped, signed catalog with tx on and the release's key", async () => {
     const { root, signer } = await shipped();
-    const source = releaseServiceCatalogSource({ TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root }, [signer.publicKeyPem]);
+    const source = releaseServiceCatalogSource({ TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root }, loaderTrusting(signer.publicKeyPem));
     expect((await source!())?.pinned).toBe(true);
   });
 
   it("is nothing for a catalog the release's key did not sign, with no key, or with no files (fail closed)", async () => {
     const { root, signer } = await shipped();
     const env = { TEST_SERVICES_ENABLED: "1", LAMBDA_TASK_ROOT: root };
-    expect(await releaseServiceCatalogSource(env, [testSigner().publicKeyPem])!()).toBeUndefined();
-    expect(await releaseServiceCatalogSource(env, [])!()).toBeUndefined();
-    expect(await releaseServiceCatalogSource({ ...env, LAMBDA_TASK_ROOT: join(root, "nowhere") }, [signer.publicKeyPem])!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource(env, loaderTrusting(testSigner().publicKeyPem))!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource(env, loaderTrusting())!()).toBeUndefined();
+    expect(await releaseServiceCatalogSource({ ...env, LAMBDA_TASK_ROOT: join(root, "nowhere") }, loaderTrusting(signer.publicKeyPem))!()).toBeUndefined();
   });
 
   it("trusts nothing today: the contract's key lists are empty, so a signed catalog does not load in any account (fail closed)", async () => {
@@ -77,7 +77,7 @@ describe("the account this broker runs in", () => {
     }
   });
 
-  it("keeps the test-only key seam out of every other file", () => {
+  it("keeps the test-only loader port out of every other file: production names no key list and no testing entry", () => {
     const hits: string[] = [];
     const walk = (directory: string): void => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -87,7 +87,10 @@ describe("the account this broker runs in", () => {
       }
     };
     walk("packages");
-    expect(hits.filter((path) => !path.includes("node_modules") && !path.includes("/dist/")).sort()).toEqual(["packages/broker/src/test-env/dependency-plan.ts", "packages/broker/src/test-env/shipped-catalog.ts"]);
+    // The old key-list seam is gone from the whole tree; the only production callers of the source take no loader.
+    expect(hits.filter((path) => !path.includes("node_modules") && !path.includes("/dist/"))).toEqual([]);
+    const callers = ["packages/broker/src/aws/broker/dependency-wiring.ts", "packages/broker/src/aws/broker/definitions.ts"].map((path) => readFileSync(path, "utf8"));
+    for (const text of callers) expect(text.replace(/\/\/.*$/gmu, "")).not.toMatch(/releaseServiceCatalogSource\([^)]/u);
   });
 });
 

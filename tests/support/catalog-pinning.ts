@@ -51,3 +51,8 @@ export function verifiedCatalog(catalog: ServiceCatalog): VerifiedCatalog {
   if (!loaded.ok) throw new Error(`the test catalog did not load: ${loaded.reason}`);
   return loaded.catalog;
 }
+
+/** A catalog loader that trusts exactly the keys the test names (`@agentx/contracts/testing`), for the broker's `load` port. Test code only. */
+export function loaderTrusting(...trustedKeys: string[]) {
+  return (input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array }) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys });
+}
