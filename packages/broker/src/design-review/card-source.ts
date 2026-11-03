@@ -4,31 +4,44 @@
 //     projector asks `riskTierOf`, which reads the facts below. Model text never sets it.
 //   - `designQuestionsItem`: ONE `answer_question` card per round with up to three questions, each with what is unclear, short cited evidence, the options with consequences, and the recommendation with why.
 // Every line a model wrote (a finding's text, a question) is passed through `plainLine` by the projector; nothing here is executed or followed.
-import { DESIGN_REVIEW_QUESTIONS_MAX, type DesignCitation, type DesignQuestion, type DesignReason, type WorkflowDesignReview } from "@agentx/contracts";
+import { DESIGN_REVIEW_QUESTIONS_MAX, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type FindingResolution, type WorkflowDesignReview } from "@agentx/contracts";
 import type { DecisionItem, ItemBase } from "../decisions/project.js";
 import { plainLine } from "../decisions/text.js";
-import { TIER_REVIEWERS } from "./estimate.js";
+import { TIER_REVIEWERS, reviewersForRound } from "./estimate.js";
 import type { DesignCardFacts } from "./risk.js";
 
 /**
- * What the approver is shown, from the stored review. The LAST round counts. `planned` is what the tier meant to run (a review that never ran has no round: planned is the tier's count and verified 0, so it
- * reads "did not run"). A finding is an OPEN blocker or major until a resolution marks it `settled`. A DISAGREEMENT is a finding the planner contested or declined, settled or not: the approver sees every place
- * the planner and a reviewer differ.
+ * What the approver is shown, from the stored review. The reviewer counts are the LAST round's (`planned` is what that round meant to run: round 1 of Thorough is four, since Zoom-out runs only after round 1;
+ * a review that never ran has no round and reads "did not run"). The FINDINGS are read across EVERY round (M6): a finding is followed by its fingerprint to its latest appearance, and it is an OPEN blocker or major
+ * when that appearance has no settled resolution AND, if it was last seen in an earlier round, no later round could have confirmed it fixed. A later round confirms a fix only when a reviewer of the same role
+ * (or, for a finding Rovara added itself, any reviewer) was VERIFIED in it and did not raise the finding again; a later round whose reviewer failed verification or did not run confirms nothing, so an earlier
+ * blocker stays on the card. A DISAGREEMENT is a finding the planner contested or declined at its latest appearance, settled or not: the approver sees every place the planner and a reviewer differ.
  */
 export function designCardFactsOf(review: WorkflowDesignReview, touches: readonly DesignReason[]): DesignCardFacts {
   const round = review.rounds.at(-1);
-  const planned = TIER_REVIEWERS[review.tier].length;
+  const planned = round === undefined ? TIER_REVIEWERS[review.tier].length : reviewersForRound(review.tier, round.round).length;
   const verified = round === undefined ? 0 : round.reviewers.filter((run) => run.verified).length;
-  const settled = new Set((round?.resolutions ?? []).filter((resolution) => resolution.settled).map((resolution) => resolution.findingId));
-  const differ = new Set((round?.resolutions ?? []).filter((resolution) => resolution.action === "contested" || resolution.action === "declined").map((resolution) => resolution.findingId));
-  const findings = round?.findings ?? [];
+  // A finding is followed by its fingerprint to the LATEST round that has it; only that appearance counts (every finding of that round with that fingerprint, so a round with two the same keeps both).
+  const lastRound = new Map<string, number>();
+  review.rounds.forEach((each, index) => { for (const finding of each.findings) lastRound.set(finding.fingerprint, index); });
+  const entries = review.rounds.flatMap((each, index) => each.findings
+    .filter((finding) => lastRound.get(finding.fingerprint) === index)
+    .map((finding) => ({ index, finding, resolution: each.resolutions.find((resolution) => resolution.findingId === finding.id) })));
+  const confirmedFixed = (entry: { index: number; finding: DesignFinding }): boolean => review.rounds.slice(entry.index + 1).some((later) => {
+    const roles = entry.finding.fromReviewers;
+    return later.reviewers.some((run) => run.verified && (roles.length === 0 || roles.includes(run.role)));
+  });
+  const open = entries.filter((entry) => (entry.finding.severity === "blocker" || entry.finding.severity === "major")
+    && !(entry.resolution?.settled === true)
+    && (entry.index === review.rounds.length - 1 || !confirmedFixed(entry)));
+  const differ = entries.filter((entry) => entry.resolution?.action === "contested" || entry.resolution?.action === "declined");
   return {
     reasons: review.reasons,
     touches,
     reviewers: { planned, verified },
-    blockers: findings.filter((finding) => finding.severity === "blocker" && !settled.has(finding.id)).map((finding) => ({ section: finding.section, text: finding.text })),
-    majors: findings.filter((finding) => finding.severity === "major" && !settled.has(finding.id)).length,
-    disagreements: findings.filter((finding) => differ.has(finding.id)).map((finding) => ({ section: finding.section, text: finding.text })),
+    blockers: open.filter((entry) => entry.finding.severity === "blocker").map((entry) => ({ section: entry.finding.section, text: entry.finding.text })),
+    majors: open.filter((entry) => entry.finding.severity === "major").length,
+    disagreements: differ.map((entry) => ({ section: entry.finding.section, text: entry.finding.text })),
     ...(review.spentUsd > 0 ? { costUsd: review.spentUsd } : {}),
   };
 }

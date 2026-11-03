@@ -19,6 +19,17 @@ export const TIER_REVIEWERS: Readonly<Record<DesignReviewTier, readonly Reviewer
   standard: ["comprehension", "critic", "codebase"],
   thorough: ["comprehension", "critic", "codebase", "zoom_out", "critic_b"],
 };
+/**
+ * Reviewers that read code or search with tools re-send the whole context on every tool turn, so what they read is a multiple of the packet (M4). Comprehension reads the packet alone (one call). The factors are
+ * deliberately round and high: the estimate may be high, never low. DR-FU2/FU3 replace them with measured turns from staging spend logs; until then they are named and tested, not guessed again in place.
+ */
+export const ROLE_INPUT_TURN_FACTOR: Readonly<Record<ReviewerRole, number>> = { comprehension: 1, critic: 2, codebase: 3, zoom_out: 2, critic_b: 2 };
+
+/** The reviewers one round of a tier runs. Zoom-out runs only AFTER round 1, on what changed (3.4), so round 1 of Thorough is four reviewers and round 2 is five. */
+export function reviewersForRound(tier: DesignReviewTier, round: 1 | 2): readonly ReviewerRole[] {
+  return round === 1 ? TIER_REVIEWERS[tier].filter((role) => role !== "zoom_out") : TIER_REVIEWERS[tier];
+}
+
 /** Light merges in code only: no model runs and nothing is priced. */
 export const TIER_HAS_MERGE_MODEL: Readonly<Record<DesignReviewTier, boolean>> = { light: false, standard: true, thorough: true };
 
@@ -32,15 +43,18 @@ export const MERGE_TOKENS = { perReviewerInput: 6_000, designInput: 8_000, outpu
 export type PriceLookup = (model: ModelIdentifier) => SecondReviewPrice | undefined;
 
 /** Which model price was missing. */
-export type PricedPart = "reviewer" | "merge" | "planner";
+export type PricedPart = "reviewer" | "merge" | "planner" | "packet";
 
 export interface DesignReviewEstimateInput {
   tier: DesignReviewTier;
   /** The models the resolver chose. The merge model defaults to the reviewer's (a model the customer connected is always at least as dear as a fast one: the estimate cannot come out low). */
   models: { reviewer: ModelIdentifier | undefined; merge?: ModelIdentifier | undefined; planner: ModelIdentifier | undefined };
   price: PriceLookup;
-  /** Tokens in a reviewer's packet (the broker builds it: design, requirements and sources). Absent: the typical review size, 60k. */
-  packetTokens?: number | undefined;
+  /**
+   * Tokens in a reviewer's packet (the broker builds it, so it knows its bytes: design, requirements and every source). REQUIRED (M4): a guess of 60k could come out low for a big packet and pass the gate.
+   * A number that is not a usable size makes the estimate "Cost unavailable", never a default.
+   */
+  packetTokens: number;
   /** Rounds to price. Absent: the maximum, 2. */
   rounds?: 1 | 2 | undefined;
 }
@@ -55,9 +69,7 @@ export type DesignReviewEstimate =
 /** Money to a millionth of a dollar, so a sum of the same parts is the same number whatever the order. */
 const micro = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
 
-function validTokens(value: number | undefined, fallback: number): number {
-  return value !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
-}
+const validTokens = (value: number): boolean => Number.isFinite(value) && value >= 0;
 
 /**
  * The estimate for one tier. `unavailable` when any model it must price has no catalog price (or was not resolved at all): nothing is guessed, and a zero price is not read as "free" unless the
@@ -65,7 +77,7 @@ function validTokens(value: number | undefined, fallback: number): number {
  */
 export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): DesignReviewEstimate {
   const rounds = input.rounds ?? DESIGN_REVIEW_ROUNDS_MAX;
-  const packet = validTokens(input.packetTokens, SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input);
+  const packet = input.packetTokens;
   const reviewers = TIER_REVIEWERS[input.tier].length;
   const priceOf = (model: ModelIdentifier | undefined): SecondReviewPrice | undefined => {
     if (model === undefined) return undefined;
@@ -76,11 +88,14 @@ export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): Desig
   const mergePrice = TIER_HAS_MERGE_MODEL[input.tier] ? priceOf(input.models.merge ?? input.models.reviewer) : undefined;
   const plannerPrice = priceOf(input.models.planner);
   const missing: PricedPart[] = [];
+  if (!validTokens(packet)) missing.push("packet");
   if (reviewerPrice === undefined) missing.push("reviewer");
   if (TIER_HAS_MERGE_MODEL[input.tier] && mergePrice === undefined) missing.push("merge");
   if (plannerPrice === undefined) missing.push("planner");
-  if (reviewerPrice === undefined || plannerPrice === undefined || (TIER_HAS_MERGE_MODEL[input.tier] && mergePrice === undefined)) return { kind: "unavailable", tier: input.tier, missing };
-  const reviewersUsd = micro(estimateSecondReviewUsd(reviewerPrice, { input: packet, maxOutput: REVIEWER_OUTPUT_TOKENS }) * reviewers * rounds);
+  if (missing.length > 0 || reviewerPrice === undefined || plannerPrice === undefined || (TIER_HAS_MERGE_MODEL[input.tier] && mergePrice === undefined)) return { kind: "unavailable", tier: input.tier, missing };
+  // Every reviewer of the tier is priced in every round (Zoom-out too: high, never low), each at its role's turn factor.
+  const perRound = TIER_REVIEWERS[input.tier].reduce((sum, role) => sum + estimateSecondReviewUsd(reviewerPrice, { input: packet * ROLE_INPUT_TURN_FACTOR[role], maxOutput: REVIEWER_OUTPUT_TOKENS }), 0);
+  const reviewersUsd = micro(perRound * rounds);
   const mergeUsd = mergePrice === undefined ? 0 : micro(estimateSecondReviewUsd(mergePrice, { input: MERGE_TOKENS.designInput + MERGE_TOKENS.perReviewerInput * reviewers, maxOutput: MERGE_TOKENS.output }) * rounds);
   const plannerUsd = micro(estimateSecondReviewUsd(plannerPrice, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * rounds);
   return { kind: "priced", usd: micro(reviewersUsd + mergeUsd + plannerUsd), breakdown: { reviewersUsd, mergeUsd, plannerUsd }, tier: input.tier, reviewers, rounds };
@@ -101,7 +116,7 @@ export type DesignReviewCapGate =
 export type DesignSpendChoice =
   | { choice: "lower_tier"; tier: DesignReviewTier; estimateUsd: number }
   | { choice: "raise_cap"; newCapUsd: number }
-  /** Run design review for this task anyway, with the price unknown: only offered for "cost unavailable". The requester takes the risk with their eyes open; the per-task cap still stops the round. */
+  /** Run design review for this task anyway, with the price unknown: only offered for "cost unavailable", and only the requester may choose it. MEASURED spend still stops the run at the cap (`designReviewSpendStop`). */
   | { choice: "run_unpriced" }
   | { choice: "skip" };
 
@@ -143,4 +158,18 @@ export function gateDesignReviewCost(input: CapGateInput): DesignReviewCapGate {
   if (raised > input.capUsd && raised <= ceiling) choices.push({ choice: "raise_cap", newCapUsd: raised });
   if (input.canSkip) choices.push({ choice: "skip" });
   return { kind: "ask", why: "over_cap", estimateUsd: estimate.usd, choices };
+}
+
+/**
+ * Whether a running design review must stop NOW, from the spend the proxy has MEASURED for the task's design review keys (M5). It does not depend on an estimate or a catalog price:
+ *   - measured spend at or above the cap stops it, in any run, priced or not, mid-round (3.6 "Running out"): nothing pauses to ask for money;
+ *   - an unpriced run with NO measurement (the meter gave nothing) stops too: with no price and no reading nothing bounds the spend, so it never starts another reviewer on a guess.
+ * A bad number (NaN, negative) is no reading. The caller (the DR7 dispatch) asks before it starts each reviewer and each merge or revision call.
+ */
+export function designReviewSpendStop(input: { capUsd: number; measuredUsd: number | undefined; unpriced: boolean }): { stop: false } | { stop: true; why: "cap_reached" | "spend_unmeasured" } {
+  const reading = input.measuredUsd !== undefined && Number.isFinite(input.measuredUsd) && input.measuredUsd >= 0 ? input.measuredUsd : undefined;
+  if (!Number.isFinite(input.capUsd) || input.capUsd < 0) return { stop: true, why: "cap_reached" };
+  if (reading !== undefined && reading >= input.capUsd) return { stop: true, why: "cap_reached" };
+  if (reading === undefined && input.unpriced) return { stop: true, why: "spend_unmeasured" };
+  return { stop: false };
 }

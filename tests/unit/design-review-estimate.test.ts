@@ -2,7 +2,7 @@
 // own function for one reviewer, "Cost unavailable" is never a number, a gate never runs on its own, and the card's choices are the ones the rules allow.
 import { describe, expect, it } from "vitest";
 import { DecisionCardSchema, type ModelIdentifier } from "@agentx/contracts";
-import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, estimateDesignReviewUsd, gateDesignReviewCost, nextLowerTier, TIER_REVIEWERS, type DesignReviewEstimate, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
+import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, ROLE_INPUT_TURN_FACTOR, designReviewSpendStop, estimateDesignReviewUsd as estimateWithPacket, gateDesignReviewCost, nextLowerTier, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
 import { designSpendCardItem, designSpendChoicePath } from "../../packages/broker/src/design-review/spend-card.js";
 import { cardOfItem } from "../../packages/broker/src/decisions/project.js";
 import { SECOND_REVIEW_TYPICAL_REVIEW_TOKENS, estimateSecondReviewUsd } from "../../packages/broker/src/rovara-code/second-review-picker.js";
@@ -17,13 +17,16 @@ const PRICES: Record<string, { inputUsdPerMTok: number; outputUsdPerMTok: number
 };
 const price: PriceLookup = (model) => PRICES[model.modelId];
 const models = { reviewer: STRONG, merge: FAST, planner: PLANNER };
+/** The packet size is required (M4); most tests use the typical 60k. */
+const estimateDesignReviewUsd = (input: Omit<DesignReviewEstimateInput, "packetTokens"> & { packetTokens?: number }): DesignReviewEstimate => estimateWithPacket({ packetTokens: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input, ...input });
 const priced = (estimate: DesignReviewEstimate) => { if (estimate.kind !== "priced") throw new Error("expected a price"); return estimate; };
 
 describe("the estimate", () => {
   it("matches estimateSecondReviewUsd for one reviewer: Light is one reviewer, no merge model, two rounds", () => {
     const estimate = priced(estimateDesignReviewUsd({ tier: "light", models, price }));
-    const one = estimateSecondReviewUsd(PRICES["strong-model"]!, { input: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input, maxOutput: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output });
-    expect(one).toBeCloseTo(0.24, 6);
+    // The one reviewer (Critic) searches with tools, so its input is the packet times its turn factor (M4).
+    const one = estimateSecondReviewUsd(PRICES["strong-model"]!, { input: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.input * ROLE_INPUT_TURN_FACTOR.critic, maxOutput: SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output });
+    expect(estimateSecondReviewUsd(PRICES["strong-model"]!, { input: 60_000, maxOutput: 4_000 })).toBeCloseTo(0.24, 6);
     expect(estimate.reviewers).toBe(1);
     expect(estimate.breakdown.reviewersUsd).toBeCloseTo(one * 2, 6);
     // Light merges in code: nothing is priced for the merge.
@@ -36,8 +39,8 @@ describe("the estimate", () => {
     const standard = priced(estimateDesignReviewUsd({ tier: "standard", models, price }));
     expect(standard.reviewers).toBe(3);
     expect(TIER_REVIEWERS.standard).toEqual(["comprehension", "critic", "codebase"]);
-    const one = estimateSecondReviewUsd(PRICES["strong-model"]!, { input: 60_000, maxOutput: 4_000 });
-    expect(standard.breakdown.reviewersUsd).toBeCloseTo(one * 3 * 2, 6);
+    const reviewerUsd = (role: keyof typeof ROLE_INPUT_TURN_FACTOR) => estimateSecondReviewUsd(PRICES["strong-model"]!, { input: 60_000 * ROLE_INPUT_TURN_FACTOR[role], maxOutput: 4_000 });
+    expect(standard.breakdown.reviewersUsd).toBeCloseTo((reviewerUsd("comprehension") + reviewerUsd("critic") + reviewerUsd("codebase")) * 2, 6);
     const merge = estimateSecondReviewUsd(PRICES["fast-model"]!, { input: MERGE_TOKENS.designInput + MERGE_TOKENS.perReviewerInput * 3, maxOutput: MERGE_TOKENS.output }) * 2;
     expect(standard.breakdown.mergeUsd).toBeCloseTo(merge, 6);
     const thorough = priced(estimateDesignReviewUsd({ tier: "thorough", models, price }));
@@ -50,13 +53,33 @@ describe("the estimate", () => {
     expect(priced(estimateDesignReviewUsd({ tier: "standard", models, price, rounds: 1 })).usd).toBeLessThan(standard.usd);
   });
 
-  it("uses the packet size the broker built, and falls back to the typical size for a bad number", () => {
+  it("uses the packet size the broker built, and a size that is not a usable number is Cost unavailable, never a default (M4)", () => {
     const small = priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 10_000 }));
     const typical = priced(estimateDesignReviewUsd({ tier: "light", models, price }));
+    const big = priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 200_000 }));
     expect(small.breakdown.reviewersUsd).toBeLessThan(typical.breakdown.reviewersUsd);
+    expect(big.breakdown.reviewersUsd).toBeGreaterThan(typical.breakdown.reviewersUsd);
     for (const bad of [Number.NaN, -5, Number.POSITIVE_INFINITY]) {
-      expect(priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: bad })).usd).toBe(typical.usd);
+      expect(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: bad })).toEqual({ kind: "unavailable", tier: "light", missing: ["packet"] });
     }
+    expect(priced(estimateDesignReviewUsd({ tier: "light", models, price, packetTokens: 0 })).breakdown.reviewersUsd).toBeGreaterThan(0);
+  });
+
+  it("M4: tool-using reviewers re-send the context every turn, so the estimate is a multiple of the packet for them (named factors, Comprehension reads once)", () => {
+    expect(ROLE_INPUT_TURN_FACTOR).toEqual({ comprehension: 1, critic: 2, codebase: 3, zoom_out: 2, critic_b: 2 });
+    const free: PriceLookup = () => ({ inputUsdPerMTok: 1, outputUsdPerMTok: 0 });
+    const cost = (tier: "standard" | "thorough") => priced(estimateDesignReviewUsd({ tier, models: { reviewer: STRONG, planner: PLANNER }, price: free, packetTokens: 1_000_000, rounds: 1 })).breakdown.reviewersUsd;
+    // 1 + 2 + 3 packets of 1M tokens at $1 per million, one round.
+    expect(cost("standard")).toBeCloseTo(6, 6);
+    // Thorough adds Zoom-out (2) and Critic B (2).
+    expect(cost("thorough")).toBeCloseTo(10, 6);
+  });
+
+  it("L3: Zoom-out runs only after round 1, so round 1 of Thorough plans four reviewers and round 2 five", () => {
+    expect(reviewersForRound("thorough", 1)).toEqual(["comprehension", "critic", "codebase", "critic_b"]);
+    expect(reviewersForRound("thorough", 2)).toEqual(TIER_REVIEWERS.thorough);
+    expect(reviewersForRound("standard", 1)).toEqual(TIER_REVIEWERS.standard);
+    expect(reviewersForRound("light", 2)).toEqual(["critic"]);
   });
 
   it("is Cost unavailable, never a number, when the catalog has no price for a model it must price", () => {
@@ -140,6 +163,20 @@ describe("the cap gate", () => {
     expect(gateDesignReviewCost({ tier: "standard", capUsd: 10, estimate: unavailable, canSkip: false })).toEqual({ kind: "ask", why: "cost_unavailable", estimateUsd: undefined, choices: [{ choice: "run_unpriced" }] });
     // Even a huge cap does not let an unpriced review start: there is no "within the cap" without a price.
     expect(gateDesignReviewCost({ tier: "standard", capUsd: 100, estimate: unavailable, canSkip: true }).kind).toBe("ask");
+  });
+});
+
+describe("M5: an unpriced run is still bounded by measured spend", () => {
+  it("stops at the cap on measured spend, priced or not, and an unpriced run with no reading never goes on", () => {
+    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 9.99, unpriced: true })).toEqual({ stop: false });
+    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 10, unpriced: true })).toEqual({ stop: true, why: "cap_reached" });
+    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: 250, unpriced: false })).toEqual({ stop: true, why: "cap_reached" });
+    // No meter reading: a priced run is bounded by its estimate, an unpriced one by nothing, so it stops.
+    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: undefined, unpriced: false })).toEqual({ stop: false });
+    expect(designReviewSpendStop({ capUsd: 10, measuredUsd: undefined, unpriced: true })).toEqual({ stop: true, why: "spend_unmeasured" });
+    // A reading that is not a usable number is no reading; a bad cap stops everything.
+    for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) expect(designReviewSpendStop({ capUsd: 10, measuredUsd: bad, unpriced: true }), String(bad)).toMatchObject({ stop: true });
+    expect(designReviewSpendStop({ capUsd: Number.NaN, measuredUsd: 0, unpriced: false })).toMatchObject({ stop: true });
   });
 });
 

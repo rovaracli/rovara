@@ -150,6 +150,70 @@ describe("the facts of a stored review", () => {
   });
 });
 
+describe("fix round: the card reads every round (M6) and plans the right reviewers per round (L3)", () => {
+  type Role = "comprehension" | "critic" | "codebase" | "zoom_out" | "critic_b";
+  const hex = (seed: string) => seed.repeat(64).slice(0, 64);
+  const finding = (id: string, severity: "blocker" | "major" | "nit", fingerprint: string, roles: Role[] = ["critic"]) => ({ id, severity, section: "§3" as const, text: `finding ${id}`, citations: [{ kind: "design" as const, section: "§3" as const }], fromReviewers: roles, rawIds: [id], fingerprint: hex(fingerprint) });
+  const run = (role: Role, verified: boolean) => ({
+    role, promptId: "p", promptVersion: 1, promptDigest: hex("a"), model: { provider: "anthropic", modelId: "m" }, sourceId: "s", sessionId: `ses-${role}-${String(verified)}-${String(Math.random())}`, modelKeyId: "k", packetDigest: hex("b"),
+    packet: [], filesRead: [], verified, ...(verified ? {} : { verifyFailure: "timeout" as const }), tokensIn: 1, tokensOut: 1, costUsd: 0.1, startedAt: "2026-11-03T10:00:00.000Z", endedAt: "2026-11-03T10:01:00.000Z",
+  });
+  const round = (n: 1 | 2, reviewers: ReturnType<typeof run>[], findings: ReturnType<typeof finding>[], resolutions: WorkflowDesignReview["rounds"][number]["resolutions"] = []) => ({ round: n, designDigest: hex("c"), reviewers, findings, resolutions });
+  const review = (rounds: WorkflowDesignReview["rounds"], tier: WorkflowDesignReview["tier"] = "standard"): WorkflowDesignReview => ({ decidedBy: "auto", reasons: [], status: "done", tier, spentUsd: 0.5, rounds });
+  const fixedOpen = (findingId: string) => ({ findingId, action: "fixed" as const, note: "fixed", settled: false });
+  const all = (verified: boolean) => [run("comprehension", true), run("critic", verified), run("codebase", true)];
+
+  it("an earlier blocker stays on the card when the later round's reviewer failed verification (its findings were voided)", () => {
+    const stored = review([round(1, all(true), [finding("f1", "blocker", "1")], [fixedOpen("f1")]), round(2, all(false), [])]);
+    const facts = designCardFactsOf(stored, []);
+    expect(facts.blockers.map((b) => b.text)).toEqual(["finding f1"]);
+    expect(tierOf(facts).risk).toBe("medium");
+    expect(tierOf(facts).reasons).toContain("1 blocker is still open.");
+  });
+
+  it("an earlier blocker and major that no later reviewer confirmed fixed stay; one a verified reviewer of the same role did not raise again is closed", () => {
+    const earlier = [finding("f1", "blocker", "1", ["critic"]), finding("f2", "major", "2", ["codebase"])];
+    const resolutions = [fixedOpen("f1"), fixedOpen("f2")];
+    // Round 2: critic verified and silent, codebase failed. f1 is confirmed fixed; f2 is not.
+    const part = designCardFactsOf(review([round(1, all(true), earlier, resolutions), round(2, [run("comprehension", true), run("critic", true), run("codebase", false)], [])]), []);
+    expect(part.blockers).toEqual([]);
+    expect(part.majors).toBe(1);
+    // Round 2 fully verified and silent: both closed (the older last-round-only answer, unchanged).
+    expect(designCardFactsOf(review([round(1, all(true), earlier, resolutions), round(2, [run("comprehension", true), run("critic", true), run("codebase", true)], [])]), [])).toMatchObject({ blockers: [], majors: 0 });
+    // A verified reviewer of ANOTHER role confirms nothing about a finding the critic raised.
+    const wrongRole = designCardFactsOf(review([round(1, all(true), [finding("f1", "blocker", "1", ["critic"])], [fixedOpen("f1")]), round(2, [run("comprehension", true), run("critic", false), run("codebase", true)], [])]), []);
+    expect(wrongRole.blockers).toHaveLength(1);
+  });
+
+  it("a finding raised again is judged by its latest round: settled there it closes, unsettled there it stays; a settled contest stays settled", () => {
+    const first = round(1, all(true), [finding("f1", "blocker", "1")], [fixedOpen("f1")]);
+    const raisedAgainSettled = round(2, all(true), [finding("g1", "blocker", "1")], [{ findingId: "g1", action: "contested", evidence: [{ kind: "design", section: "§3" }], note: "kept", settled: true }]);
+    const settled = designCardFactsOf(review([first, raisedAgainSettled]), []);
+    expect(settled.blockers).toEqual([]);
+    expect(settled.disagreements.map((d) => d.text)).toEqual(["finding g1"]);
+    const raisedAgainOpen = round(2, all(true), [finding("g1", "blocker", "1")], [fixedOpen("g1")]);
+    expect(designCardFactsOf(review([first, raisedAgainOpen]), []).blockers.map((b) => b.text)).toEqual(["finding g1"]);
+  });
+
+  it("a Rovara-added finding (no reviewer) is confirmed by any verified reviewer of a later round", () => {
+    const rovara = { id: "r1", severity: "blocker" as const, section: "§3" as const, text: "No section 3.", citations: [{ kind: "design" as const, section: "§3" as const }], origin: "rovara" as const, fromReviewers: [], rawIds: [], fingerprint: hex("9") };
+    expect(designCardFactsOf(review([round(1, all(true), [rovara as never], [fixedOpen("r1")]), round(2, all(true), [])]), []).blockers).toEqual([]);
+    expect(designCardFactsOf(review([round(1, all(true), [rovara as never], [fixedOpen("r1")]), round(2, [run("critic", false)], [])]), []).blockers).toHaveLength(1);
+  });
+
+  it("L3: round 1 of Thorough plans four reviewers (Zoom-out runs after it), so four verified is not 'partial'", () => {
+    const four = [run("comprehension", true), run("critic", true), run("codebase", true), run("critic_b", true)];
+    const facts = designCardFactsOf(review([round(1, four, [])], "thorough"), []);
+    expect(facts.reviewers).toEqual({ planned: 4, verified: 4 });
+    expect(reviewCoverage(facts.reviewers)).toBe("all");
+    expect(tierOf(facts).risk).toBe("low");
+    // Round 2 of Thorough plans five.
+    const five = [...four, run("zoom_out", true)];
+    expect(designCardFactsOf(review([round(1, four, []), round(2, five, [])], "thorough"), []).reviewers).toEqual({ planned: 5, verified: 5 });
+    expect(designCardFactsOf(review([round(1, four, []), round(2, four, [])], "thorough"), []).reviewers).toEqual({ planned: 5, verified: 4 });
+  });
+});
+
 describe("who may approve (decideDesignApproval)", () => {
   const people = (change: Partial<DesignApproverDirectory["people"]> = {}): DesignApproverDirectory["people"] => ({ complete: true, membershipVersion: 4, ownerIds: ["own", "max"], eligibleIds: ["own", "max"], lastEligibleLossAtMs: null, ...change });
   const dir = (change: Partial<DesignApproverDirectory> = {}): DesignApproverDirectory => ({ people: people(), projectMemberIds: ["own", "max", "priya", "arjun"], notApproverIds: [], ...change });
