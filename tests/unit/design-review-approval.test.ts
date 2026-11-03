@@ -152,7 +152,7 @@ describe("the facts of a stored review", () => {
 
 describe("who may approve (decideDesignApproval)", () => {
   const people = (change: Partial<DesignApproverDirectory["people"]> = {}): DesignApproverDirectory["people"] => ({ complete: true, membershipVersion: 4, ownerIds: ["own", "max"], eligibleIds: ["own", "max"], lastEligibleLossAtMs: null, ...change });
-  const dir = (change: Partial<DesignApproverDirectory> = {}): DesignApproverDirectory => ({ people: people(), projectMemberIds: ["own", "max", "priya", "arjun"], ...change });
+  const dir = (change: Partial<DesignApproverDirectory> = {}): DesignApproverDirectory => ({ people: people(), projectMemberIds: ["own", "max", "priya", "arjun"], notApproverIds: [], ...change });
   const input = (change: Partial<Parameters<typeof decideDesignApproval>[0]> = {}): Parameters<typeof decideDesignApproval>[0] => ({
     tier: "low", requesterId: "priya", approverId: "priya", nowMs: Date.parse("2026-11-03T12:00:00Z"), setting: DESIGN_REVIEW_DEFAULT_SETTING, edition: editionPolicy("enterprise"), directory: dir(), freshSignIn: true, openBlockers: 0, ...change,
   });
@@ -183,18 +183,33 @@ describe("who may approve (decideDesignApproval)", () => {
     expect(decideDesignApproval(input({ tier: "medium", approverId: "priya", freshSignIn: false })).ok).toBe(true);
   });
 
-  it("the sole-owner exception: the only eligible approver who is also the only owner may approve their own high design, after the 24-hour cool-off", () => {
+  it("the sole-owner exception: the only person who could approve, who is also the only owner, may approve their own high design, with a fresh sign-in and no cool-off", () => {
     const solo = dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own"] }), projectMemberIds: ["own"] });
     expect(decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", directory: solo }))).toEqual({ ok: true, mode: "sole_owner_exception" });
     // Someone else became eligible, or owns the project: no exception.
     expect(decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", directory: dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own", "max"] }) }) }))).toEqual({ ok: false, code: "requester_cannot_approve_high" });
     expect(decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", directory: dir({ people: people({ ownerIds: ["own", "max"], eligibleIds: ["own"] }) }) }))).toEqual({ ok: false, code: "requester_cannot_approve_high" });
-    // An eligible person lost access an hour ago: the cool-off holds and says when it opens.
+    // No cool-off (controller ruling): an eligible person who lost access an hour ago does not hold the sole owner back.
     const now = Date.parse("2026-11-03T12:00:00Z");
-    const lost = decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", nowMs: now, directory: dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own"], lastEligibleLossAtMs: now - 3_600_000 }), projectMemberIds: ["own"] }) }));
-    expect(lost).toMatchObject({ ok: false, code: "sole_owner_cool_off", availableAt: new Date(now - 3_600_000 + 86_400_000).toISOString() });
+    expect(decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", nowMs: now, directory: dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own"], lastEligibleLossAtMs: now - 3_600_000 }), projectMemberIds: ["own"] }) }))).toEqual({ ok: true, mode: "sole_owner_exception" });
     // The exception needs a fresh sign-in too.
     expect(decideDesignApproval(input({ tier: "high", requesterId: "own", approverId: "own", directory: solo, freshSignIn: false }))).toEqual({ ok: false, code: "fresh_sign_in_required" });
+  });
+
+  it("M1: naming yourself as the only approver does not make you the only one (other maintainers, admins or named members still count)", () => {
+    // The project has another maintainer; P is the sole OWNER and saves highRiskApprover = people [P]. Narrowing the list is not an exception.
+    const named: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["own"] } };
+    const others = dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own", "max"] }) });
+    expect(decideDesignApproval(input({ tier: "high", setting: named, requesterId: "own", approverId: "own", directory: others }))).toEqual({ ok: false, code: "requester_cannot_approve_high" });
+    // The same with the narrowed list made long ago, and with no history of loss at all: still no exception.
+    expect(decideDesignApproval(input({ tier: "high", setting: named, requesterId: "own", approverId: "own", directory: dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own", "max"], lastEligibleLossAtMs: 0 }) }) }))).toEqual({ ok: false, code: "requester_cannot_approve_high" });
+    // The other maintainer, if they are named, decides it instead; and when nobody else is a member the sole owner may.
+    const both: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["own", "arjun"] } };
+    expect(decideDesignApproval(input({ tier: "high", setting: both, requesterId: "own", approverId: "own", directory: dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own"] }) }) }))).toEqual({ ok: false, code: "requester_cannot_approve_high" });
+    const alone = dir({ people: people({ ownerIds: ["own"], eligibleIds: ["own"] }), projectMemberIds: ["own", "priya"] });
+    expect(decideDesignApproval(input({ tier: "high", setting: named, requesterId: "own", approverId: "own", directory: alone }))).toEqual({ ok: true, mode: "sole_owner_exception" });
+    // An Auditor named or sitting in the maintainers' list is not "another person who could approve".
+    expect(decideDesignApproval(input({ tier: "high", setting: named, requesterId: "own", approverId: "own", directory: { ...others, notApproverIds: ["max"] } }))).toEqual({ ok: true, mode: "sole_owner_exception" });
   });
 
   it("an incomplete or unavailable eligibility read refuses everything (fail closed)", () => {
@@ -220,7 +235,7 @@ describe("who may approve (decideDesignApproval)", () => {
 
   it("a group is the high-risk approver only in Enterprise: Public refuses it whatever the data says", () => {
     const group: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "group", groupId: "security-leads" } };
-    const withGroup = dir({ groups: { "security-leads": ["sec1", "sec2"] } });
+    const withGroup = dir({ groups: { "security-leads": ["sec1", "sec2"] }, projectMemberIds: ["own", "max", "priya", "sec1", "sec2"] });
     const ask = (edition: ReturnType<typeof editionPolicy> | undefined, approverId = "sec1") => decideDesignApproval(input({ tier: "high", setting: group, edition, directory: withGroup, requesterId: "priya", approverId }));
     expect(ask(editionPolicy("enterprise"))).toEqual({ ok: true, mode: "high_risk_approver" });
     expect(ask(editionPolicy("public"))).toEqual({ ok: false, code: "group_not_available" });
@@ -233,6 +248,24 @@ describe("who may approve (decideDesignApproval)", () => {
     expect(highRiskApprovers(group, withGroup, editionPolicy("enterprise"))).toEqual({ ok: true, ids: ["sec1", "sec2"] });
   });
 
+  it("H2: a group's members must be members of THIS project, and never an Auditor or viewer", () => {
+    const group: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "group", groupId: "security-leads" } };
+    // sec1 is a project member, outsider is in the group (a group is org-wide) but not in the project, auditor is in both lists by mistake.
+    const withGroup = dir({ groups: { "security-leads": ["sec1", "outsider", "auditor1"] }, projectMemberIds: ["own", "max", "priya", "sec1", "auditor1"], notApproverIds: ["auditor1"] });
+    expect(highRiskApprovers(group, withGroup, editionPolicy("enterprise"))).toEqual({ ok: true, ids: ["sec1"] });
+    const ask = (approverId: string) => decideDesignApproval(input({ tier: "high", setting: group, edition: editionPolicy("enterprise"), directory: withGroup, requesterId: "priya", approverId }));
+    expect(ask("sec1")).toEqual({ ok: true, mode: "high_risk_approver" });
+    expect(ask("outsider")).toMatchObject({ ok: false, code: "not_eligible" });
+    expect(ask("auditor1")).toMatchObject({ ok: false, code: "not_eligible" });
+    // Nobody left once the outsiders are dropped: the design waits for the maintainers to name one.
+    expect(highRiskApprovers(group, dir({ groups: { "security-leads": ["outsider"] } }), editionPolicy("enterprise"))).toEqual({ ok: false, code: "no_high_risk_approver" });
+    // The same exclusion for named people and for low/medium approval, and for questions.
+    const named: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["own", "auditor1"] } };
+    expect(highRiskApprovers(named, withGroup, editionPolicy("public"))).toEqual({ ok: true, ids: ["own"] });
+    expect(decideDesignApproval(input({ approverId: "auditor1", requesterId: "auditor1", directory: withGroup }))).toMatchObject({ ok: false, code: "not_eligible" });
+    expect(designQuestionAudience({ requesterId: "priya", aboutHighRisk: true, setting: group, directory: withGroup, edition: editionPolicy("enterprise") })).toEqual(["priya", "sec1"]);
+  });
+
   it("named people who are no longer members of the project do not count", () => {
     const named: DesignReviewSetting = { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds: ["own", "left-the-company"] } };
     expect(highRiskApprovers(named, dir(), editionPolicy("public"))).toEqual({ ok: true, ids: ["own"] });
@@ -242,7 +275,7 @@ describe("who may approve (decideDesignApproval)", () => {
 });
 
 describe("who may skip (Q10) and who is asked", () => {
-  const dir: DesignApproverDirectory = { people: { complete: true, membershipVersion: 1, ownerIds: ["own"], eligibleIds: ["own", "max"], lastEligibleLossAtMs: null }, projectMemberIds: ["own", "max", "priya"] };
+  const dir: DesignApproverDirectory = { people: { complete: true, membershipVersion: 1, ownerIds: ["own"], eligibleIds: ["own", "max"], lastEligibleLossAtMs: null }, projectMemberIds: ["own", "max", "priya"], notApproverIds: [] };
   const skip = (reasons: DesignReason[], skipperId: string, setting: Partial<DesignReviewSetting> = {}, touches?: DesignReason[]) =>
     maySkipDesignReview({ setting: { ...DESIGN_REVIEW_DEFAULT_SETTING, ...setting }, reasons, touches, skipperId, directory: dir, edition: editionPolicy("public") });
 
@@ -253,6 +286,11 @@ describe("who may skip (Q10) and who is asked", () => {
   it("anyone who may start the task can skip a design with no high-risk area", () => {
     expect(skip(["new_api"], "priya")).toEqual({ ok: true });
     expect(skip(["bug_fix"], "priya")).toEqual({ ok: true });
+  });
+  it("L5: on a design with no high-risk area the skipper must be a member of the project, not an outsider, Auditor or viewer", () => {
+    expect(skip(["new_api"], "zed")).toEqual({ ok: false, code: "not_a_member" });
+    expect(skip(["new_api"], "max")).toEqual({ ok: true });
+    expect(maySkipDesignReview({ setting: DESIGN_REVIEW_DEFAULT_SETTING, reasons: ["new_api"], skipperId: "priya", directory: { ...dir, notApproverIds: ["priya"] }, edition: editionPolicy("public") })).toEqual({ ok: false, code: "not_a_member" });
   });
   it("only a high-risk approver can skip a high-risk design, whether the area is in Understand's reasons or the design's touches", () => {
     for (const code of ["data_model", "auth", "money", "pii", "cross_repo_or_service", "infrastructure"] as const) {
