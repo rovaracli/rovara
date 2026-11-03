@@ -108,7 +108,8 @@ describe("the round trip with a poisoned design and persuaded reviewers", () => 
     const findings = review(w).rounds[0]!.findings;
     expect(findings.map((finding) => [finding.origin, finding.severity])).toEqual([["rovara", "blocker"]]);
     expect(findings[0]!.text).toContain("Requirement R3");
-    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "READY", designReview: { status: "resolving", tier: "standard", capUsd: 10 } });
+    // B2: the planner's resolve run starts at once (the CRITIC_REPLAN row is due), so the review stands at PLAN/RUNNING "resolving"; it still goes to the planner, not to "done".
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", designReview: { status: "resolving", tier: "standard", capUsd: 10 } });
   });
 });
 
@@ -140,7 +141,8 @@ describe("the round trip with hostile reviewer output and a hostile merge answer
     expect(round.droppedFindings).toEqual([{ role: "critic", severity: "blocker", section: "§3" }]);
     expect(JSON.stringify(w.task().workflow)).not.toContain("FORGED-WORDS");
     expect(review(w)).toMatchObject({ tier: "standard", capUsd: 10, decidedBy: "auto", status: "resolving" });
-    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "READY" });
+    // B2: the planner's resolve run has started (PLAN/RUNNING), not a bare READY.
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "RUNNING" });
   });
 
   it("positive control: the faithful merge answer is used (so the downgrade above was refused by the check, not ignored)", async () => {
@@ -261,6 +263,8 @@ describe("Understand's reading is a reading: a note that sets a tier, a cap or a
 
   async function understoodAs(assessment: IntentAssessment, playbook?: Record<string, unknown>) {
     vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+    // B2: the switch alone runs no project; the allowlist (`dp`) names the project the stage runs for.
+    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments");
     const access = fakeModelAccess();
     const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
