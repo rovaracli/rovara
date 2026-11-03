@@ -355,18 +355,20 @@ describe("the named TEST proof-only installation gate", () => {
     // template, from the values the digest test itself reports (nothing hand-computed). The legacy digests did not move.
     // 2026-11-03, merge of the test-services chain (ts-fakes to ts-repack, with ts-images' service catalog image repositories and their key) onto saved-env-wire and ts-run-network: the four named and foreign digests were
     // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
+    // 2026-11-03, integration tip fixes (ENV-ROOM): the four named and foreign digests were retaken once more, from the values the digest test itself reports. The broker's GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID and WEB_FEATURES
+    // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "96bc2587d0666cf58ee6faf48ef03a1532f4b88793de80c13b853872bd625331",
-        withoutRoute: "51e7db6606bc27f201af03792ec0cfc0bb5f333f57237b4855fb679b435dd89e",
+        withRoute: "a30ed4cc91a090631611dccd76918a5c49083c4dc670fb25ab7d1c7e02329840",
+        withoutRoute: "4b15f210000e13cc741bd7b847fb36b20d44210321b549f0ee57ed0a655f8e58",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "46f3a3d8d7aff0bde2d2047632a4ffdbea3cd7fcee9ba275470bff01a65c8e43",
-        withoutRoute: "ffb453a599a199cd2c663c2e2dff3f8946a7337b83e360863fe29d759fd92c74",
+        withRoute: "06d08d478840800ceb8f53a15f4c1e02f313721e5e243a060bde497744e47499",
+        withoutRoute: "9b4273d22710acf8cd752f17bf88039c31c7260e03945027f3f006183dedc6eb",
       },
       {
         label: "legacy",

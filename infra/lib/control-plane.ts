@@ -161,9 +161,12 @@ export class ControlPlaneStack extends Stack {
       default: '["agentx-admin"]',
       description: "JSON string array of claim values that grant AgentX administrator access",
     });
+    // A named environment's broker is given these two in its settings (BrokerSettings, ENV-ROOM), which are joined unescaped, so the parameter admits plain text only. The legacy install keeps them whole.
+    const plainText = naming.env === undefined ? {} : { allowedPattern: "^[A-Za-z0-9._:-]{0,64}$" };
     const githubAppCredentialRef = new CfnParameter(this, "GitHubAppCredentialRef", {
       type: "String",
       default: "github-agentx-sdlc",
+      ...plainText,
     });
     // No account or installation: the broker looks up the App's installation per repository owner (#123).
     // Empty: the broker reads the id from the private-key secret's appId. agentx init deploys the
@@ -172,6 +175,7 @@ export class ControlPlaneStack extends Stack {
       type: "String",
       default: "",
       description: "GitHub App id; empty reads it from the private-key secret's appId",
+      ...plainText,
     });
     const githubAppPrivateKeySecretArn = new CfnParameter(this, "GitHubAppPrivateKeySecretArn", {
       type: "String",
@@ -245,10 +249,13 @@ export class ControlPlaneStack extends Stack {
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
       CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString,
-      GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString,
-      GITHUB_APP_ID: githubAppId.valueAsString,
+      ...(naming.env === undefined ? { GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString, GITHUB_APP_ID: githubAppId.valueAsString } : {}),
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    if (naming.env !== undefined) {
+      BrokerSettings.of(broker).add("githubAppCredentialRef", githubAppCredentialRef.valueAsString);
+      BrokerSettings.of(broker).add("githubAppId", githubAppId.valueAsString);
+    }
     // Only the install's private MCP settings may be added here; any other name (a reserved variable) stops synth instead of being overwritten.
     for (const [name, value] of Object.entries(checkedBrokerEnvironment(props?.brokerEnvironment))) broker.addEnvironment(name, value);
     if (naming.env !== undefined) {
@@ -356,7 +363,7 @@ export class ControlPlaneStack extends Stack {
       broker.addEnvironment("AGENTX_CLOUD", "true");
       // The web app's company admin console (Settings: models, people, budgets, health, how we work) is shown only where the broker lists "admin" in
       // WEB_FEATURES (app-nav/nav.ts; owners and admins only). The other names (usage, chains, describe) are placeholder pages and stay off.
-      broker.addEnvironment("WEB_FEATURES", "admin");
+      BrokerSettings.of(broker).add("webFeatures", "admin");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both

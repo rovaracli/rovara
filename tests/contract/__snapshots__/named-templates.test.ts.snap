@@ -3120,10 +3120,12 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "String",
     },
     "GitHubAppCredentialRef": {
+      "AllowedPattern": "^[A-Za-z0-9._:-]{0,64}$",
       "Default": "github-agentx-sdlc",
       "Type": "String",
     },
     "GitHubAppId": {
+      "AllowedPattern": "^[A-Za-z0-9._:-]{0,64}$",
       "Default": "",
       "Description": "GitHub App id; empty reads it from the private-key secret's appId",
       "Type": "String",
@@ -3848,6 +3850,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "AutofixEnabled",
                   },
+                  ",gi=",
+                  {
+                    "Ref": "GitHubAppId",
+                  },
+                  ",gr=",
+                  {
+                    "Ref": "GitHubAppCredentialRef",
+                  },
                   ",lg=",
                   {
                     "Ref": "LearningSuggestionsDefault",
@@ -3951,12 +3961,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
             "EC2_WORKER_SUBNETS": {
               "Ref": "Ec2WorkerSubnets",
-            },
-            "GITHUB_APP_CREDENTIAL_REF": {
-              "Ref": "GitHubAppCredentialRef",
-            },
-            "GITHUB_APP_ID": {
-              "Ref": "GitHubAppId",
             },
             "GITHUB_APP_PRIVATE_KEY_SECRET_ARN": {
               "Ref": "GitHubAppPrivateKeySecretArn",

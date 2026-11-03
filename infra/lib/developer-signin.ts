@@ -456,7 +456,7 @@ export class DeveloperSignIn extends Construct {
       BrokerNames.of(broker).add("cloudUserPool", cloud.userPoolId);
       broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
       // Whether GitHub tokens are accepted (developerClaims checks the method is on); the client id is not a secret, the secret stays with the sign-in function.
-      broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
+      BrokerSettings.of(broker).add("developerGithubClientId", cloud.githubClientId.valueAsString);
       // Plan 3, Task 21a-presence (PF9): the confirmation page's session is read, claimed once (UpdateItem) and ended (DeleteItem) by the
       // broker; a ticket for a token's member is minted with PutItem, and its counters and "one live ticket" pointer with UpdateItem. Each
       // statement is narrowed to its own prefixes by leading keys; nothing else on the sign-in table is added.
