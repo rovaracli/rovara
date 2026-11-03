@@ -512,11 +512,11 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const docker = config.docker;
   const catalog = await config.catalog().catch(() => { throw new TestServicesError("catalog"); });
   const bases = resolveDependencies(catalog, input.dependencies, config);
-  // The worker NEVER pulls: root pulled the pinned digests at boot (boot-stage2.sh), and a digest that is not on this host now is the fixed pull_failed, before anything is made.
-  await requireLocalImages(docker, config, bases, input.signal);
   const root = await realpath(resolve(input.rootPath));
   // Before anything is made: the init files of each dependency, checked against the repositories' real folders.
   for (const base of bases) base.files = await initFilesOf(base.plan, root, input.repositoryPaths);
+  // The worker NEVER pulls: root pulled the pinned digests at boot (boot-stage2.sh), and a digest that is not on this host now is the fixed pull_failed, before anything is made (the files above touch no Docker).
+  await requireLocalImages(docker, config, bases, input.signal);
   const runId = `${input.operationId.replace(/[^A-Za-z0-9-]/gu, "-").slice(0, 48)}-${randomAlphanumeric(8)}`;
   const workspace = await setupWorkspaceKey(root);
   const files = await createRunDirectoryFiles(config.runDirectoryParent, `rsv-${sha(runId).slice(0, 16)}`).catch(() => { throw new TestServicesError("start_failed"); });
@@ -759,8 +759,11 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       return live === undefined ? cumulative : mergeUsageRecords(cumulative, live);
     }
     if (cumulative !== undefined) return cumulative;
-    // No round has run: the working phase's own answer, with whatever failed since.
-    if (workSession === undefined) return undefined;
+    // No round has run: the working phase's own answer, with whatever failed since. A run with no working phase whose first round could not start says what failed (a record of facts, not a guess).
+    if (workSession === undefined) {
+      if (failures.size === 0) return undefined;
+      return { schemaVersion: 1, dependencies: ids.map((id) => ({ id, started: false, healthy: false, startMs: 0, resetCount: 0, failure: failures.get(id) ?? "start_failed" })), unknownCalls: { domains: [], otherCount: 0 } };
+    }
     try {
       const built = await ports.buildServiceUsageRecord({ planned: ids, session: workSession, startMs: workStartMs, failures, redactor });
       const parsed = TestServicesUsageRecordSchema.safeParse(built);

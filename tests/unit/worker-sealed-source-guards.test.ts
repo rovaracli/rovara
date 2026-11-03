@@ -28,7 +28,7 @@ export const SEALED_ROUND_USERS: readonly string[] = [`${W}check-round-runners.t
 export const USAGE_RECORD_USERS: readonly string[] = [
   "packages/contracts/src/test-services-usage.ts", "packages/contracts/src/index.ts",
   // the evidence file the worker writes (EvidenceRawSchema) carries the record under `testServices`, so evidence.ts imports its schema (s1-broker T4)
-  "packages/contracts/src/evidence.ts", `${W}service-usage-record.ts`, `${W}test-services-run.ts`,
+  "packages/contracts/src/evidence.ts", `${W}service-usage-record.ts`, `${W}test-services-run.ts`, `${W}verification/evidence-raw.ts`,
   "packages/broker/src/rovara-code/evidence-pack.ts", "packages/broker/src/test-env/evidence-line.ts", "packages/broker/src/test-env/prove-from-setup-check.ts",
   "packages/broker/src/org/test-env-candidate.ts", "packages/broker/src/aws/developer-routes/test-environment-candidate.ts",
 ];

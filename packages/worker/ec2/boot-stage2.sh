@@ -93,13 +93,13 @@ write_test_services_environment() {
 # (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and
 # silent; a login or a pull that fails is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
 pull_catalog_images() {
-  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment cid list line repository digest="" count=0 pairs=() reference
+  local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 pairs=() reference
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
   [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
   environment=${BASH_REMATCH[1]}
-  list=$(mktemp) && cid=$(docker create "$AGENTX_WORKER_IMAGE" 2>/dev/null) || { log "CATALOG PRE-PULL FAILED: the worker image could not be read for its pre-pull list"; return 1; }
-  docker cp "$cid:/opt/agentx/packages/worker/service-catalog/prepull.json" "$list" >/dev/null 2>&1 || : >"$list"
-  docker rm "$cid" >/dev/null 2>&1 || true
+  # The list is read with a throwaway `cat` of the image's own file (no network, read-only, no capability): not a second copy-out of the image (stage 1 copies out stage 2 only, once).
+  list=$(mktemp) || return 1
+  timeout --foreground --kill-after=10s 120s docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "$AGENTX_WORKER_IMAGE" /opt/agentx/packages/worker/service-catalog/prepull.json >"$list" 2>/dev/null || : >"$list"
   while IFS= read -r line; do
     if [[ "$line" =~ ^\"repository\":\ *\"(svc/[a-z0-9][a-z0-9._-]{0,62})\" ]]; then repository=${BASH_REMATCH[1]}
     elif [[ "$line" =~ \"digest\":\ *\"(sha256:)?([a-f0-9]{64})\" && -n "${repository:-}" ]]; then pairs+=("$repository@sha256:${BASH_REMATCH[2]}"); repository=""; fi

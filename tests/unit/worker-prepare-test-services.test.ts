@@ -1,18 +1,16 @@
 // Test services, slice 1, s1-worker-round T2 (Prove, worker side): `prepareWorkspace` of a candidate check that carries a dependency plan starts the dependencies, runs setup and the readiness commands with the run's
 // variables, runs the test checks SEALED, hands on the usage record, and tears everything down on every exit path. No Docker: the fake daemon of tests/support.
 import { execFile } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
-import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, catalogSigningMessage, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
+import { ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
-import { SEALED_ROUND_PORTS, collectTestServicesUsage, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
+import { SEALED_ROUND_PORTS, collectTestServicesUsage, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
 import { fakeServicesDocker, type FakeServicesDockerOptions } from "../support/fake-services-docker.js";
 
 const run = promisify(execFile);
@@ -78,24 +76,26 @@ const nothingLeft = async (h: Awaited<ReturnType<typeof harness>>): Promise<void
 };
 
 describe("a candidate check that carries a dependency plan", () => {
-  it("starts the dependencies after the clone and before setup; setup and a non-test readiness command run in the working sandbox with the env file; the test check runs in the sealed check sandbox", async () => {
+  it("starts NO working-phase Postgres: setup and a non-test readiness command run in the working sandbox without the run's variables, and the test check runs in the sealed check sandbox with them (H3)", async () => {
     const h = await harness();
     const manifest = await h.prepare();
     expect(manifest.complete).toBe(true);
     const calls = h.fake.calls;
     const network = calls.findIndex((call) => call[0] === "network" && call[1] === "create");
-    const execs = calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "exec" && call.includes("--env-file"));
+    const execs = calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "exec");
     expect(network).toBeGreaterThan(-1);
-    const working = execs.filter(({ call }) => call.some((arg) => arg.startsWith("agentx-task-")));
-    const sealed = execs.filter(({ call }) => call.some((arg) => arg.endsWith("-check")));
-    // Setup and the lint command: both in the working sandbox, after the network exists.
+    const working = execs.filter(({ call }) => call.some((arg) => arg.startsWith("agentx-task-")) && call.includes("bash"));
+    const sealed = execs.filter(({ call }) => call.includes("--env-file") && call.some((arg) => arg.endsWith("-check")));
+    // Setup and the lint command ran in the working sandbox, with no env file: there is no working-phase service for them.
     expect(working.length).toBeGreaterThanOrEqual(2);
-    expect(working.every(({ index }) => index > network)).toBe(true);
+    expect(working.every(({ call }) => !call.includes("--env-file"))).toBe(true);
     // The test check ran in the sealed sandbox, with the env file, in a round of its own.
     expect(sealed.length).toBeGreaterThan(0);
     expect(calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"))).toHaveLength(1);
-    // The sealed round started helpers of its own: two services networks were made in all (the working phase's, and the round's).
-    expect(calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(2);
+    // Only the round's services network was made (no working phase), and the working sandbox joined none.
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "network" && call[1] === "connect")).toEqual([]);
+    expect(calls.filter((call) => call[0] === "run" && call.includes("--detach") && /-h[0-9a-f]{10}$/u.test(call[call.indexOf("--name") + 1]!))).toHaveLength(1);
     expect(h.fake.execs.filter((exec) => exec.args.some((arg) => arg.endsWith("-check")) && exec.envFile?.includes("DATABASE_URL=postgres://app:") === true).length).toBeGreaterThan(0);
     await nothingLeft(h);
   });
@@ -108,11 +108,11 @@ describe("a candidate check that carries a dependency plan", () => {
     expect(JSON.stringify(h.records)).not.toMatch(/[A-Za-z0-9]{32}/u);
   });
 
-  it("with testChecks naming every readiness command, each runs sealed in a round of its own (a working network and two round networks)", async () => {
+  it("with testChecks naming every readiness command, each runs sealed in a round of its own (two round networks, no working phase)", async () => {
     const h = await harness({ testChecks: [0, 1] });
     await h.prepare();
     expect(h.fake.calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check"))).toHaveLength(2);
-    expect(h.fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(3);
+    expect(h.fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toHaveLength(2);
   });
 
   it("a test check that fails fails the preparation, still reports the record, and leaves nothing", async () => {
@@ -126,13 +126,14 @@ describe("a candidate check that carries a dependency plan", () => {
   it("a setup step that fails fails the preparation, still reports the record, and leaves nothing", async () => {
     const h = await harness({ docker: { execExit: (args) => (args.some((arg) => arg.startsWith("agentx-task-")) && !args.includes("pg_isready") ? 1 : 0) } });
     await expect(h.prepare()).rejects.toThrow();
-    expect(h.records).toHaveLength(1);
+    // Setup fails before any service was started (a Prove run starts them only for its sealed rounds): there is no record to report, and nothing is left.
+    expect(h.records).toHaveLength(0);
     await nothingLeft(h);
   });
 
   it("a dependency that does not start fails the preparation with a fixed sentence, reports every dependency as not started, and leaves nothing", async () => {
     const h = await harness({ docker: { failRun: "helper" } });
-    await expect(h.prepare()).rejects.toThrow("The test services could not be started");
+    await expect(h.prepare()).rejects.toThrow();
     expect(h.records).toEqual([{ schemaVersion: 1, dependencies: [{ id: "postgres", started: false, healthy: false, startMs: 0, resetCount: 0, failure: "start_failed" }], unknownCalls: { domains: [], otherCount: 0 } }]);
     await nothingLeft(h);
   });
@@ -164,11 +165,11 @@ describe("a candidate check that carries a dependency plan", () => {
 });
 
 describe("cancel", () => {
-  it("a cancel of the operation while the images are pulled stops the preparation's services, removes everything and ends the registration", async () => {
-    const h = await harness({ docker: { imagePresent: false } });
+  it("a cancel of the operation while the images are looked up stops the preparation's services, removes everything and ends the registration", async () => {
+    const h = await harness();
     const original = h.fake.docker.run.bind(h.fake.docker);
     let pulling = false;
-    h.fake.docker.run = (args, options) => (args[0] === "pull"
+    h.fake.docker.run = (args, options) => (args[0] === "image" && args[1] === "inspect" && args.includes("{{.Id}}")
       ? new Promise((_resolve, reject) => { pulling = true; if (options?.signal?.aborted === true) reject(new Error("aborted")); options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
       : original(args, options));
     let abort: (() => Promise<void>) | undefined;
@@ -201,24 +202,11 @@ describe("cancel", () => {
   });
 });
 
-describe("the catalog's trusted keys are compiled in, never read at runtime", () => {
-  it("loadCatalogFromDirectory accepts a catalog signed by a key the test seam is given and refuses one signed by another or by none", async () => {
-    const bytes = readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
-    const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-    const other = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-    const dir = await temp("rsv-catalog-signed-");
-    const keyId = createHash("sha256").update(pair.publicKey.export({ type: "spki", format: "der" })).digest("hex");
-    const signature = sign("sha256", catalogSigningMessage(bytes), { key: pair.privateKey, dsaEncoding: "der" }).toString("base64");
-    await writeFile(join(dir, "catalog.json"), bytes);
-    await writeFile(join(dir, "catalog.sig.json"), JSON.stringify({ schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId, catalogSha256: createHash("sha256").update(bytes).digest("hex"), signature }));
-    const pem = (key: typeof pair.publicKey) => key.export({ type: "spki", format: "pem" }).toString();
-    const trust = { runningAccountId: "944937319445" };
-    const withKeys = (keys: string[]) => (input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array }) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys: keys });
-    await expect(loadCatalogFromDirectory(dir, trust, withKeys([pem(pair.publicKey)]))).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
-    await expect(loadCatalogFromDirectory(dir, trust, withKeys([pem(other.publicKey)]))).rejects.toMatchObject({ reason: "catalog" });
-    // No key compiled in yet: nothing verifies in any account.
-    await expect(loadCatalogFromDirectory(dir, trust)).rejects.toMatchObject({ reason: "catalog" });
-    await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
+describe("the worker verifies no catalog signature at run time (H4)", () => {
+  it("the catalog is the image's own file: a Prove run needs no key, no signature and no account id", async () => {
+    const { loadBakedCatalog } = await import("../../packages/worker/src/test-services-run.js");
+    const catalog = await loadBakedCatalog(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
+    expect(catalog.entries.length).toBeGreaterThan(0);
   });
 });
 

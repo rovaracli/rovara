@@ -235,7 +235,7 @@ describe("withSealedCheckRound: the order is the seal (TS-SEAL-3)", () => {
     const seen: string[] = [];
     const input = roundInput(docker, p, { freshServices: () => { seen.push(verbs(calls).join(",")); return Promise.resolve(); } });
     await runSealedCheckRound(input, planChecks([command("true")], { firstRuns: () => [] }), { budgetMs: 30 * MINUTE, signal: new AbortController().signal });
-    expect(seen).toEqual(["network disconnect,inspect,network inspect,inspect,run,network inspect"]);
+    expect(seen).toEqual(["network disconnect,inspect,pause,network inspect,inspect,run,network inspect"]);
   });
 
   it("looks at the services network itself before and after the start", async () => {

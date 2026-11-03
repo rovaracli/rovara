@@ -3,6 +3,9 @@
 # WRITTEN, NOT RUN. Nothing here has been run against staging. It runs only after the OWNER GO for `tx` on one project (DECISIONS: "Test services: thin slice first"), the catalog steps 1-5 and the Linux checks
 # TS-L1..L4, L6 and TS-RN-4 (scripts/linux-check-test-services.sh), and refuses to start without them (STAGING_E2E_OWNER_GO below).
 #
+# ROOT COMMANDS ON THE WORKER. Steps P4, 4 and 7 run READ-ONLY commands as root on the staging worker through SSM (`AWS-RunShellScript`: `docker ps`, `docker network ls`, `docker images`, `ls` of the run directory). The owner's OK for
+# this script covers those commands; each is shown in full in the script. Nothing on the worker is changed.
+#
 # WHAT IT DOES
 #   - every AWS call goes through ~/.local/share/rovara-tools/staging-aws.sh (account 944937319445, us-west-2) and is READ-ONLY (sts, ecr describe-images, ssm describe/get-parameter, ssm send-command of a read-only
 #     `docker ps/network ls` on the worker). It creates nothing in AWS, deploys nothing, reads no secret (no secretsmanager call at all).
@@ -20,6 +23,8 @@
 #   6      unknown calls fail loudly: the operator adds a test that calls an unlisted host; the evidence says `Blocked by environment: N call(s)` with a registrable domain and a count and NO full name.
 #   7      teardown is clean after success, failure, cancel and a killed worker: nothing with the label rovara.run-network is left on the worker (read through SSM) and the run directory is gone.
 #   8      switch off = today: with `tx` off for the project the same task runs as before (the operator flips the switch back; the script compares the dispatch payload fields the broker kept).
+#   L3     (live, not scriptable here) detached-process relay during a sealed round: the operator leaves a background process (a `nc`/`socat` relay) running in the WORKING sandbox, starts a sealed round, and checks that
+#          the process is frozen (`docker inspect -f '{{.State.Paused}}'` on the working sandbox is true for the whole round, false after) and that nothing it was given reaches outside. Recorded under TS-L3 in DEFERRED-CHECKS.
 #   9      any other backing is refused with "not available yet" at approval and at dispatch (the script proposes a draft with an S3 candidate and expects the refusal words).
 #
 # USAGE  (from the repository root, on the Mac; zsh or bash)
@@ -67,6 +72,20 @@ api() { # api METHOD PATH [JSON-BODY]  -> prints the body, sets API_STATUS
   API_STATUS=$(curl "${args[@]}" 2>"$WORK/api.err") || API_STATUS=000
   cat "$WORK/api.out"
 }
+# ssm_run INSTANCE 'shell text' -> prints the command's output; sets SSM_STATUS (Success|Failed|Timeout...). Polls until the invocation ends or 120 s pass; an empty answer from a command that did not succeed is a FAIL for the caller.
+ssm_run() {
+  local instance="$1" text="$2" id status i
+  SSM_STATUS=Unsent
+  id=$("$STAGING" aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "commands=[\"$text\"]" --query Command.CommandId --output text 2>/dev/null) || return 1
+  [[ -n "$id" && "$id" != None ]] || return 1
+  for i in $(seq 1 60); do
+    sleep 2
+    status=$("$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query Status --output text 2>/dev/null) || status=Pending
+    case "$status" in Success|Failed|Cancelled|TimedOut) SSM_STATUS="$status"; break ;; esac
+  done
+  [[ "$SSM_STATUS" == Success || "$SSM_STATUS" == Failed ]] || { SSM_STATUS="${status:-Timeout}"; return 1; }
+  "$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text 2>/dev/null
+}
 ENV_PATH="/v1/app/projects/$ROVARA_STAGING_PROJECT/test-environment"
 json() { python3 -c 'import json,sys
 try:
@@ -92,11 +111,11 @@ if wanted P3; then
   if [[ -n "$pinned" && "$digests" == *"sha256:${pinned#sha256:}"* ]]; then say P3 PASS "catalog pin matches the repository" "postgres@16 is pinned to a digest the repository holds"; else say P3 FAIL "catalog pin matches the repository" "the committed catalog pin '${pinned:-none}' is not among the repository's digests (catalog step 4/5)"; fi
 fi
 if wanted P4 && [[ -n "$WORKER" ]]; then
-  cmd='docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"'
-  id=$("$STAGING" aws ssm send-command --instance-ids "$WORKER" --document-name AWS-RunShellScript --parameters "commands=[\"$cmd\"]" --query Command.CommandId --output text 2>/dev/null)
-  sleep 5
-  out=$("$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$WORKER" --query StandardOutputContent --output text 2>/dev/null)
-  [[ -z "$(echo "$out" | tr -d '[:space:]')" || "$out" == "None" ]] && say P4 PASS "no leftovers before the run" "no container or network with the run-network label on $WORKER" || say P4 FAIL "no leftovers before the run" "leftover objects: $(echo "$out" | head -3 | tr '\n' ' ')"
+  cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo END'
+  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *END* ]]; then
+    objects=$(echo "$out" | grep -v '^START$\|^END$' | tr -d '[:space:]')
+    [[ -z "$objects" ]] && say P4 PASS "no leftovers before the run" "no container or network with the run-network label on $WORKER" || say P4 FAIL "no leftovers before the run" "leftover objects: $(echo "$out" | grep -v '^START$\|^END$' | head -3 | tr '\n' ' ')"
+  else say P4 FAIL "no leftovers before the run" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
 elif wanted P4; then say P4 OPERATOR "no leftovers before the run" "pass --worker <instance id> (an SSM managed worker)"; fi
 
 # ---- 1 dependencies listed, 9 other backings refused (the broker's own words)
@@ -141,11 +160,10 @@ fi
 if wanted 4 && [[ -n "$TASK_ID" ]]; then
   # The worker logs one fixed line per pull; the image digest is read from the catalog pin, never from the log's free text.
   if [[ -n "$WORKER" ]]; then
-    id=$("$STAGING" aws ssm send-command --instance-ids "$WORKER" --document-name AWS-RunShellScript --parameters 'commands=["docker images --digests --format \"{{.Repository}}@{{.Digest}}\" | grep rovara-catalog/"]' --query Command.CommandId --output text 2>/dev/null)
-    sleep 5
-    out=$("$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$WORKER" --query StandardOutputContent --output text 2>/dev/null)
-    [[ "$out" == *"rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:"* ]] && say 4 PASS "pulled by digest" "$(echo "$out" | head -1)" || say 4 FAIL "pulled by digest" "no rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:<digest> image on the worker"
-  else say 4 OPERATOR "pulled by digest" "pass --worker <instance id>"; fi
+    if out=$(ssm_run "$WORKER" 'echo START; docker images --digests --format \"{{.Repository}}@{{.Digest}}\" | grep rovara-catalog/; echo END') && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *END* ]]; then
+      [[ "$out" == *"rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:"* ]] && say 4 PASS "pre-pulled by digest" "$(echo "$out" | grep rovara-catalog | head -1)" || say 4 FAIL "pre-pulled by digest" "no rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:<digest> image on the worker (root pre-pulls at boot; the worker never pulls)"
+    else say 4 FAIL "pre-pulled by digest" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
+  else say 4 OPERATOR "pre-pulled by digest" "pass --worker <instance id>"; fi
 fi
 if wanted 5 && [[ -n "$EVIDENCE_FILE" ]]; then
   grep -q 'Integration tests ran against: Postgres (real)\.' "$EVIDENCE_FILE" && say 5 PASS "the PR line" "'Integration tests ran against: Postgres (real).' is in $EVIDENCE_FILE" || say 5 FAIL "the PR line" "the line is not in $EVIDENCE_FILE"
@@ -158,12 +176,12 @@ if wanted 6 && [[ -n "$EVIDENCE_FILE" ]]; then
   else say 6 OPERATOR "unknown calls fail loudly" "add a test that calls an unlisted host, run a task, save its evidence and re-run"; fi
 fi
 if wanted 7 && [[ -n "$WORKER" && -n "$TASK_ID" ]]; then
-  cmd='docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; ls /run/rovara 2>/dev/null | wc -l'
-  id=$("$STAGING" aws ssm send-command --instance-ids "$WORKER" --document-name AWS-RunShellScript --parameters "commands=[\"$cmd\"]" --query Command.CommandId --output text 2>/dev/null)
-  sleep 5
-  out=$("$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$WORKER" --query StandardOutputContent --output text 2>/dev/null)
-  objects=$(echo "$out" | grep -v '^[0-9]*$' | tr -d '[:space:]')
-  [[ -z "$objects" ]] && say 7 PASS "teardown is clean" "no run-network object left after the task (repeat after a failing task, a cancel and a killed worker; each is its own run of this check)" || say 7 FAIL "teardown is clean" "left: $(echo "$out" | head -3 | tr '\n' ' ')"
+  cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo RUNDIR; ls /run/agentx-test-services 2>/dev/null; echo END'
+  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$SSM_STATUS" == Success && "$out" == *START* && "$out" == *RUNDIR* && "$out" == *END* ]]; then
+    objects=$(echo "$out" | sed -n '/^START$/,/^RUNDIR$/p' | grep -v '^START$\|^RUNDIR$' | tr -d '[:space:]')
+    rundir=$(echo "$out" | sed -n '/^RUNDIR$/,/^END$/p' | grep -v '^RUNDIR$\|^END$' | tr -d '[:space:]')
+    [[ -z "$objects" && -z "$rundir" ]] && say 7 PASS "teardown is clean" "no run-network object and an empty /run/agentx-test-services after the task (repeat after a failing task, a cancel and a killed worker; each is its own run of this check)" || say 7 FAIL "teardown is clean" "left: ${objects:-nothing} / run dir: ${rundir:-empty}"
+  else say 7 FAIL "teardown is clean" "the SSM command did not complete (status ${SSM_STATUS:-unknown}) or answered nothing"; fi
 elif wanted 7; then say 7 OPERATOR "teardown is clean" "pass --worker and --task; repeat after success, failure, cancel and a killed worker (kill the worker's container mid-round, restart it, then run this check)"; fi
 
 # ---- 8 switch off = today, 9 other backings refused

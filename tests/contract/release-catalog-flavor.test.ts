@@ -208,7 +208,7 @@ describe("the staging build path", () => {
     const pending: Array<Promise<void>> = [];
     const runner = {
       run: (command: string, args: readonly string[]) => {
-        if (args.includes(CATALOG_FLAVOR_TOOL)) return void pending.push(setCatalogFlavor(root, args.at(-1) as "release" | "staging"));
+        if (args.includes(CATALOG_FLAVOR_TOOL)) { pending.push(setCatalogFlavor(root, args.at(-1) as "release" | "staging")); return ""; }
         throw new Error(`killed during ${command} ${args.join(" ")}`);
       },
     };

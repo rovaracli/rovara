@@ -75,9 +75,7 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
       docker: [
         `echo "docker $@" >> "${directory}/calls"`,
         'case "$1" in',
-        '  create) echo cid-1 ;;',
-        `  cp) [ -f "${directory}/prepull.json" ] && cp "${directory}/prepull.json" "$3" || exit 1 ;;`,
-        '  rm) ;;',
+        `  run) [ -f "${directory}/prepull.json" ] && cat "${directory}/prepull.json" || exit 1 ;;`,
         `  login) cat >/dev/null; exit ${String(options.loginExit ?? 0)} ;;`,
         `  image) exit ${options.present === true ? "0" : "1"} ;;`,
         `  pull) exit ${String(options.pullExit ?? 0)} ;;`,
@@ -96,7 +94,11 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
     expect(r.calls).toContain("aws ecr get-login-password --region us-west-2");
     expect(r.calls).toContain("docker login --username AWS --password-stdin 944937319445.dkr.ecr.us-west-2.amazonaws.com");
     expect(r.calls).toContain(`docker pull 944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:${REPO_DIGEST}`);
-    expect(r.calls).toContain(`docker cp cid-1:/opt/agentx/packages/worker/service-catalog/prepull.json`);
+    // The list is read with one throwaway `cat` of the image's file, not a copy-out of the image.
+    expect(r.calls).toContain("--entrypoint cat");
+    expect(r.calls).toContain("/opt/agentx/packages/worker/service-catalog/prepull.json");
+    expect(r.calls).not.toContain("docker cp");
+    expect(r.calls).not.toContain("docker create");
   });
   it("does nothing, quietly and successfully, for a worker whose image pins nothing or has no list (boot is not broken)", () => {
     for (const list of [prepull([]), undefined]) {
