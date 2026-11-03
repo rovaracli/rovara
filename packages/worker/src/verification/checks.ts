@@ -332,7 +332,7 @@ const MINTED_SEALED_OPTIONS = new WeakSet<object>();
  * the tests fails on any other caller. A hand-built `{ exec, redact }` is refused, so no check can be pointed at a sandbox that was started some other way.
  */
 export function mintSealedCheckOptions(options: SealedCheckOptions): SealedCheckOptions {
-  const minted = Object.freeze({ exec: options.exec, redact: options.redact });
+  const minted = Object.freeze({ exec: options.exec, redact: (text: string) => options.redact(text) });
   MINTED_SEALED_OPTIONS.add(minted);
   return minted;
 }
