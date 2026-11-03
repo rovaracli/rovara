@@ -1,7 +1,7 @@
 // Design review stage, DR1 (designs-2026-10-30/design-review-stage.md 3.1 and 3.5): the stored shapes. Strict everywhere; old intents, playbooks and stage lists still parse.
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, FILES_READ_LABEL, INPUT_PROOFS, INPUT_PROOF_SENTENCES, inputProofSentence, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema,
+  DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, LIGHT_CRITIC_PROMPT_ID, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, FILES_READ_LABEL, INPUT_PROOFS, INPUT_PROOF_SENTENCES, inputProofSentence, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema,
   ProjectPlaybookBodySchema, ProjectPlaybookSchema, ReviewerRunSchema, STAGE_IDS, WorkflowDesignReviewSchema, designReviewSettingOf, isHighRiskDesign,
 } from "../../packages/contracts/src/index.js";
 import * as web from "../../packages/contracts/src/web.js";
@@ -90,6 +90,9 @@ describe("design review contracts", () => {
     expect(ReviewerRunSchema.parse(run)).toEqual(run);
     expect(ReviewerRunSchema.safeParse({ ...run, paraphrase: "It adds webhooks." }).success).toBe(false);
     expect(ReviewerRunSchema.parse({ ...run, role: "comprehension", paraphrase: "It adds webhooks." }).paraphrase).toBe("It adds webhooks.");
+    // minor 7: the Light tier's Critic is the one critic whose registered prompt asks for the paraphrase
+    expect(ReviewerRunSchema.parse({ ...run, promptId: LIGHT_CRITIC_PROMPT_ID, paraphrase: "It adds webhooks." }).paraphrase).toBe("It adds webhooks.");
+    expect(ReviewerRunSchema.safeParse({ ...run, role: "codebase", promptId: LIGHT_CRITIC_PROMPT_ID, paraphrase: "It adds webhooks." }).success).toBe(false);
     expect(ReviewerRunSchema.safeParse({ ...run, verified: false }).success).toBe(false);
     expect(ReviewerRunSchema.parse({ ...run, verified: false, verifyFailure: "packet_digest_mismatch", inputProof: undefined }).verified).toBe(false);
   });

@@ -1256,6 +1256,17 @@ describe("ec2-ebs delivery", () => {
       }
     });
 
+    it("sends a design-review binding only to a worker that lists task.designReview.v1, and never drops the binding (DR5)", async () => {
+      const designReview = { version: 1, round: 1, reviewers: [{ role: "critic", keySlot: "critic", packetDigest: "a".repeat(64), model: { provider: "p", modelId: "m" } }] };
+      const record = taskRecord({ workflowMode: "PLAN_CRITIQUE", designReview });
+      const older = delivery({ workerFeatures: async () => ["task.workflowMode", "task.workflowPlanCritique"] });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/needs a newer worker/);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => ["task.workflowMode", "task.workflowPlanCritique", "task.designReview.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).designReview).toEqual(designReview);
+    });
+
     it("refuses workflow dispatch when a worker cannot prove it enforces the requested tool boundary", async () => {
       const { deliver, post } = delivery({ workerFeatures: async () => [] });
       const record = taskRecord({ workflowMode: "PLAN" });

@@ -1,5 +1,6 @@
 // Adapted from the Elephant-Goldfish Model (github.com/google/elephant-goldfish-model, commit 464db031e), `agents/*.md` (the shared "Core Mandates" and output rules), Copyright 2026 Google LLC, Apache License 2.0.
 // Modified by Rovara (PrepLabsAI): the interactive gates are removed (the review is asynchronous), findings are one strict JSON block with required citations and at most 15 entries, and all material is treated as untrusted data. See NOTICE.
+import { PACKET_FRAME_TAGS } from "@agentx/contracts";
 
 /** A review prompt. The digest is computed in code (`promptDigest`), never typed here: a change to the text without a new version is caught by the digest test. */
 export interface ReviewPrompt {
@@ -11,12 +12,8 @@ export interface ReviewPrompt {
 
 export const MATERIAL_MARKER = "=== MATERIAL ===";
 
-/**
- * The frames the packet builder puts material in (packet.ts uses these same names). Rule 3 names every one of them, so the model is told about exactly the frames it will meet:
- * "source-file" holds every item (the design, the requirements, repository files, meta repository files and MCP items), "source-result" is the inner block of an MCP item, and
- * "request-information" holds the request (comprehension only).
- */
-export const PACKET_FRAME_TAGS = ["source-file", "source-result", "request-information"] as const;
+// The frames the packet puts material in (named in contracts/src/design-review-packet.ts, the one place that renders them). Rule 3 names every one of them.
+export { PACKET_FRAME_TAGS };
 
 /** The rules every role starts with. They come first, and the material that follows cannot change them (design-review-stage.md 3.12 item 1). */
 export const COMMON_RULES = [
