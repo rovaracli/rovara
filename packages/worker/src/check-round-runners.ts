@@ -21,9 +21,11 @@ import { withDetachedWorking, type CheckSandboxPlan } from "./check-sandbox.js";
 import { withServiceEnvFile, type ServiceEnvironment, type ServiceRedactor } from "./service-env.js";
 import type { HelperFiles } from "./service-helpers.js";
 import type { DockerCli } from "./swebench/containers.js";
-import { createCheckRunners, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
+import { createCheckRunners, mintSealedCheckOptions, runChecks, type CheckPlan, type CheckRound, type CheckRunners } from "./verification/checks.js";
 
 const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
+/** The exec inputs `withSealedCheckRound` made (TS-SEAL-3). Module-private: `sealedContainerExec` refuses any other. */
+const ROUND_EXEC_INPUTS = new WeakSet<object>();
 
 export interface SealedExecInput {
   docker: DockerCli;
@@ -39,9 +41,10 @@ export interface SealedExecInput {
 
 /**
  * `docker exec [--env-file F] [--env K=V ...] <check sandbox> <command>`. A name in `environment` is taken out of the command's own `env` first, so the run's value is the only one the exec gets.
- * Rejects (fixed sentence) when the round is over.
+ * Rejects (fixed sentence) when the round is over. Refuses an input that `withSealedCheckRound` did not make: it is exported for the round's own tests and nothing else (a source guard allows no other caller).
  */
 export function sealedContainerExec(input: SealedExecInput): ContainerExec {
+  if (!ROUND_EXEC_INPUTS.has(input)) throw agentXError("CONFIG_INVALID", "a sealed exec is made only by a sealed check round");
   if (!CONTAINER_NAME.test(input.container)) throw agentXError("CONFIG_INVALID", "not a plan of a sealed check sandbox");
   const owned = new Set(input.environment.entries.map(([name]) => name));
   const prefix = randomUUID().replace(/-/gu, "").slice(0, 16);
@@ -90,9 +93,11 @@ export async function withSealedCheckRound<T>(input: SealedCheckRoundInput, roun
   return withDetachedWorking(input.docker, input.plan, async (start) => {
     await start();
     let live = true;
-    const exec = sealedContainerExec({ docker: input.docker, container: input.plan.sandboxName, files: input.files, environment: input.environment, live: () => live });
+    const execInput: SealedExecInput = { docker: input.docker, container: input.plan.sandboxName, files: input.files, environment: input.environment, live: () => live };
+    ROUND_EXEC_INPUTS.add(execInput);
+    const exec = sealedContainerExec(execInput);
     const runners: CheckRunners = {
-      ...createCheckRunners({ rootPath: input.rootPath, sealed: { exec, redact: (text) => input.redactor.text(text) } }),
+      ...createCheckRunners({ rootPath: input.rootPath, sealed: mintSealedCheckOptions({ exec, redact: (text) => input.redactor.text(text) }) }),
       ...(input.freshServices === undefined ? {} : { freshServices: input.freshServices }),
       ...(input.resetBetweenChecks === undefined ? {} : { resetBetweenChecks: input.resetBetweenChecks }),
     };
