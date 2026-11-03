@@ -1,7 +1,7 @@
 # Rovara: notes for coding agents
 
 Read this first. It is short on purpose. For "where does X live", go to [docs/architecture/code-map.md](docs/architecture/code-map.md).
-`CLAUDE.md` is a link to this file, so Claude Code and Codex read the same text.
+`CLAUDE.md` imports this file, so Claude Code and Codex read the same text.
 
 ## Names: Rovara was called AgentX
 
