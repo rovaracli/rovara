@@ -237,14 +237,20 @@ jobs:
           aws s3 cp --recursive "$RUNNER_TEMP/installer/$VERSION" "s3://$BUCKET/$VERSION"
           aws s3 cp "$RUNNER_TEMP/installer/latest/installer.template.json" "s3://$BUCKET/latest/installer.template.json" --cache-control "max-age=300"
 
-  # The signed Enterprise bundle. Off until the owner sets AGENTX_BUNDLE_ENABLED and AGENTX_BUNDLE_KMS_KEY (no signing key exists yet, register EW2-2). The synthesis kit is made in this
-  # job, from a clean checkout of the release's commit, and the bundle step takes only a kit made from the same release.json: a bundle cannot be signed with a kit whose self-checks
-  # (determinism, the release's own templates, every Enterprise profile against a build from source, all run inside a sandbox) did not just run on this release.
+  # The signed Enterprise bundle, in two jobs. Both are off until the owner sets AGENTX_BUNDLE_ENABLED and AGENTX_BUNDLE_KMS_KEY (no signing key exists yet, register EW2-2).
+  #
+  # `bundle` builds and checks everything and holds NO AWS credential and no id-token: the synthesis kit is made from a clean checkout of the release's commit (its self-checks, all run inside a
+  # sandbox: determinism, the release's own templates, every Enterprise profile against a build from source), and `release:bundle --unsigned` takes only a kit made from the same release.json. It
+  # leaves the unsigned folder and a single-file signer (built here) as an artifact.
+  #
+  # `sign` is the ONLY job in the bundle path with id-token: write, and the only one that runs in the release-signing GitHub environment (required reviewers, version tags only), which the signing
+  # role's trust policy requires: the images and npm jobs also hold id-token, but their tokens do not carry that environment. It runs no `npm ci` and no install script: it downloads the artifact,
+  # sets up Node, and runs the one pre-bundled file, which checks every file of the folder against bundle.json again (and the kit against kit.json) and only then signs. docs/enterprise/bundle-signing.md.
   bundle:
     needs: [images, release]
     if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != '')
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write }
+    permissions: { contents: read }
     steps:
       - uses: actions/checkout@v5
         with: { persist-credentials: false }
@@ -259,14 +265,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap skopeo
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: aws-actions/configure-aws-credentials@v5
-        with: { role-to-assume: "${{ vars.AGENTX_BUNDLE_SIGNING_ROLE_ARN }}", aws-region: us-east-1 }
       - env:
           VERSION: ${{ github.ref_name }}
           WORKER: ${{ needs.images.outputs.worker }}
           SLACK: ${{ needs.images.outputs.slack }}
           EXECUTOR: ${{ needs.images.outputs.executor }}
-          KMS_KEY: ${{ vars.AGENTX_BUNDLE_KMS_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${VERSION#v}"
@@ -278,4 +281,41 @@ jobs:
           LITELLM=$(npx tsx -e 'import { LITELLM_SOURCE_IMAGE } from "./infra/lib/bundle-images.ts"; console.log(LITELLM_SOURCE_IMAGE)')
           image_flags=(--image "litellm=$LITELLM" --image "worker=$WORKER" --image "slack=$SLACK")
           if [ -n "$EXECUTOR" ]; then image_flags+=(--image "executor=$EXECUTOR"); fi
-          npm run release:bundle -- --release "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/bundle" --kms-key "$KMS_KEY" "${image_flags[@]}" --synth-kit "$RUNNER_TEMP/kit"
+          npm run release:bundle -- --release "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/bundle" --unsigned "${image_flags[@]}" --synth-kit "$RUNNER_TEMP/kit"
+          # The signing job's whole program, as one file with its dependencies inside it, and the Node version it runs on.
+          mkdir -p "$RUNNER_TEMP/signer"
+          cp .node-version "$RUNNER_TEMP/signer/node-version"
+          npx esbuild scripts/release/sign-bundle.ts --bundle --platform=node --format=esm --target=node22 --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" --outfile="$RUNNER_TEMP/signer/sign-bundle.mjs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-unsigned
+          path: |
+            ${{ runner.temp }}/bundle
+            ${{ runner.temp }}/signer
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  sign:
+    needs: bundle
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != '')
+    runs-on: ubuntu-latest
+    environment: release-signing
+    permissions: { id-token: write }
+    steps:
+      - uses: actions/download-artifact@v5
+        with: { name: bundle-unsigned, path: "${{ runner.temp }}/in" }
+      - uses: actions/setup-node@v5
+        with: { node-version-file: "${{ runner.temp }}/in/signer/node-version" }
+      - uses: aws-actions/configure-aws-credentials@v5
+        with: { role-to-assume: "${{ vars.AGENTX_BUNDLE_SIGNING_ROLE_ARN }}", aws-region: us-east-1 }
+      - env:
+          KMS_KEY: ${{ vars.AGENTX_BUNDLE_KMS_KEY }}
+        run: node "$RUNNER_TEMP/in/signer/sign-bundle.mjs" --bundle "$RUNNER_TEMP/in/bundle" --kms-key "$KMS_KEY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-signed
+          path: ${{ runner.temp }}/in/bundle
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

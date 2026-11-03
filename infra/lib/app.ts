@@ -237,7 +237,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   if (bundleSigning !== undefined) {
     new BundleSigningStack(app, "AgentXBundleSigning", {
       description: "Rovara release bundle signing key, usable only by the release workflow's bundle job through GitHub OIDC",
-      env: { region: "us-east-1" },
+      env: { account: bundleSigning.accountId, region: "us-east-1" },
       terminationProtection: true,
       config: bundleSigning,
     });

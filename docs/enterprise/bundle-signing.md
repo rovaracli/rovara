@@ -1,115 +1,189 @@
 # Signing Enterprise release bundles: the key, the role, and the owner's one-time steps
 
-Status: the code is built and tested; **nothing here has been done in AWS**. No signing key exists
-(register item EW2-2). The steps below are for the owner to run later, once, by hand. Nothing in the
+Status: the code is built and tested; **nothing here has been done in AWS or GitHub**. No signing key
+exists (register item EW2-2). The steps below are for the owner to run later, once, by hand. Nothing in the
 release workflow or in any deploy creates the key.
 
-## Why the signing permission is limited to one workflow job
+## What this protects, and what it does not
 
 `release:kit` writes a synthesis kit and records the SHA-256 of every kit file in `kit.json`.
-`release:bundle` checks those hashes again, immediately before it signs (it hashes the bytes it is
-about to sign, in the same process, and refuses on any difference). Both checks use hashes that come
-from the kit itself, so they protect against mistakes and against a file changing mid-run. They do
-not stop a person who can run `release:bundle` with a signing permission: they can edit the kit,
-recompute `kit.json`, and sign it.
+`release:bundle` checks those hashes again right before the bundle is finished, and the signing job checks
+the whole bundle again from its bytes before it signs. Those hashes come from the kit itself, so they
+protect against mistakes and against a file changing mid-run. They do not stop a person who can sign:
+they could edit the kit, recompute `kit.json`, and sign it. So the real protection is **who can use the
+signing key**.
 
-The complete answer is that nobody holds the signing permission except one job:
+What the code sets up (`infra/lib/bundle-signing.ts`, stack `AgentXBundleSigning`, `us-east-1`):
 
-- **The role.** `rovara-release-bundle-signing` can be assumed only through GitHub's OIDC token, and
-  only when all of these hold:
+- **One signing job.** In `release.yml`, `bundle` builds and checks everything and holds no AWS credential
+  and no `id-token`. `sign` is the only job in that path with `id-token: write`; it runs no `npm ci` and
+  no install script: it downloads the unsigned bundle and a single pre-bundled signer file, checks
+  every file again against `bundle.json` (and the kit against `kit.json`), and signs.
+- **The role** `rovara-release-bundle-signing` is assumable only through GitHub's OIDC token, and only when
+  all of these hold:
   - `aud` is `sts.amazonaws.com`;
-  - `sub` is `repo:<owner>/<repo>:ref:refs/tags/v*` (a version tag of the named repository; a branch,
-    a pull request or an environment never matches);
-  - `job_workflow_ref` is `<owner>/<repo>/.github/workflows/release.yml@refs/tags/v*`.
-- **The key.** An ECC P-256 `SIGN_VERIFY` KMS key. Its key policy allows `kms:Sign` and
-  `kms:GetPublicKey` only when the caller is that role, and has an explicit **Deny** of `kms:Sign` for
-  every other principal, account administrators included. Administrators can manage the key but not
-  use it or create grants for it.
-- **The role's own policy.** `kms:Sign` and `kms:GetPublicKey` on that one key, and nothing else.
+  - `repository_id` and `repository_owner_id` equal the repository's immutable ids (a renamed or
+    reclaimed name cannot match);
+  - `environment` is `release-signing` and `sub` is that repository's environment subject, in either
+    the id form `repo:*@<ownerId>/*@<repoId>:environment:release-signing` or the name form;
+  - `job_workflow_ref` is `<owner>/<repo>/.github/workflows/release.yml@refs/tags/v?*.?*.?*` and
+    `ref` is `refs/tags/v?*.?*.?*`.
 
-The key is in `infra/lib/bundle-signing.ts` (`BundleSigningStack`, stack name `AgentXBundleSigning`,
-`us-east-1`). It exists only when the context key `agentxBundleSigning=enabled` is given; without it
-every other template is byte-for-byte what it was (a test checks this).
+  The environment is what separates the sign job from the `images` and `npm` jobs, which also hold
+  `id-token` (for other roles): the trust policy cannot tell jobs of one workflow apart by name, but only
+  the sign job's token carries the `release-signing` environment.
+- **The key**: ECC P-256, `SIGN_VERIFY`, deletion policy Retain. The key policy allows `kms:Sign` and
+  `kms:GetPublicKey` only when the caller is that role, explicitly denies `kms:Sign` to every other
+  principal, and gives administrators management actions without `Sign`, `Verify` or `CreateGrant`.
 
-## What this does not protect against (read before relying on it)
+**This does not make a shared account safe.** An administrator cannot call `Sign` directly, but anyone who can
+edit IAM or the key policy in the same account can re-open the role: `iam:UpdateAssumeRolePolicy` on the
+role and then assume it; delete the role and create one with the same name (the key policy matches the role's
+ARN string); or `kms:PutKeyPolicy`. The staging account (944937319445) holds roles that can do this (the
+CDK deploy role, the publish role's admin). That is why:
 
-Anyone who can push a `v*` tag to the repository can start `release.yml` at that tag, and the
-workflow file at that tag is the one that runs. A tag pointing at a commit that edits `release.yml`
-(or the scripts it calls) would still get the role. The role limits signing to the release workflow;
-it does not make the workflow itself trustworthy. Before the key is used:
+- the signing account is a required setting, and `944937319445` is refused at synth unless
+  `agentxBundleSigningAllowSharedAccount=true` is given (the synth then prints a warning);
+- the recommended setup is a **dedicated AWS account** for the signing key, protected by the organisation
+  service control policy below.
 
-1. Add a tag ruleset on the repository: only the release owners can create `v*` tags, nobody can
-   update or delete them.
-2. Keep branch protection on `mainline`. The `images` job already refuses a tag whose commit is not on
-   mainline, and the `bundle` job needs it; if a later change makes the bundle job independent of it,
-   re-check this.
-3. Optional hardening: put the bundle job in a GitHub environment with required reviewers. The
-   token's `sub` then becomes `repo:<owner>/<repo>:environment:<name>`, so the trust patterns in
-   `bundleSigningTrustPatterns` must be changed together with the workflow and their tests.
-
-## Which repository
-
-The release workflow's `bundle` job runs only where `github.repository == 'PrepLabsAI/Rovara'`
-(the public repository; the Cloud copy never publishes). The role must name **the repository that
-actually runs the job**. This is a required setting, with no default, so a wrong guess fails at synth
-instead of creating a role no job can use. If the bundle job is moved to `PrepLabsAI/Rovara-cloud`,
-change the job's repository guard, its test and this setting together.
-
-If the repository's OIDC subject uses immutable ids (docs/releases.md describes this for the publish
-role), also pass `agentxBundleSigningRepositoryIds=<ownerId>/<repoId>`; `sub` is then matched as
-`repo:*@<ownerId>/*@<repoId>:ref:refs/tags/v*`. `job_workflow_ref` always uses names.
+Residual risks, even with everything below done: anyone who controls the tagged commit controls the workflow
+file and the signer built from it, so the environment's required reviewers and the tag ruleset are what
+stop a malicious tag; the tag pattern can only be approximated (`v?*.?*.?*`, the workflow triggers on
+`v[0-9]+.[0-9]+.[0-9]+`; IAM `StringLike` has no character classes), so it also matches names like
+`vx.y.z`, which the ruleset and the reviewers must refuse.
 
 ## One-time steps for the owner
 
-Nothing below has been run. Use the release account (944937319445, `us-east-1`) with the
-`staging-aws.sh`-style guard for the account you are in; check the account and region first.
+Nothing below has been run. Region `us-east-1`. Use the dedicated signing account; check
+`aws sts get-caller-identity` and the region before every command. (This stack is not run through
+`staging-aws.sh`: that script forces the staging account in `us-west-2`, which is the wrong place for
+this key.)
 
-1. **Check the GitHub OIDC provider exists** in the account (the publish role already uses one):
+### 1. A dedicated signing account and its OIDC provider
 
-   ```sh
-   aws iam list-open-id-connect-providers
-   ```
-
-   Note the ARN ending `oidc-provider/token.actions.githubusercontent.com`. An account can hold one
-   provider per URL, which is why the stack takes the ARN instead of creating it.
-
-2. **Synthesize and review** (no AWS call):
+1. Create an AWS account for signing (an Organizations member account), with no workloads, and note its 12-digit id.
+2. In it, create the GitHub OIDC provider if none exists:
 
    ```sh
-   npx cdk synth AgentXBundleSigning \
-     -c agentxBundleSigning=enabled \
-     -c agentxBundleSigningRepository=PrepLabsAI/Rovara \
-     -c agentxBundleSigningOidcProviderArn=arn:aws:iam::944937319445:oidc-provider/token.actions.githubusercontent.com
+   aws iam create-open-id-connect-provider \
+     --url https://token.actions.githubusercontent.com \
+     --client-id-list sts.amazonaws.com
    ```
 
-   Read the key policy and the role's trust policy in the output. They must match the list above.
+   Its `ClientIDList` must contain `sts.amazonaws.com` (check with
+   `aws iam get-open-id-connect-provider --open-id-connect-provider-arn <arn>`). No thumbprint is needed:
+   AWS validates GitHub's token with its own trusted CA list. An account holds one provider per URL, so
+   the stack takes its ARN rather than creating it.
 
-3. **Deploy** the same command with `cdk deploy AgentXBundleSigning`. The key has deletion policy
-   Retain and termination protection is on: every installer pins the public half, so a deleted key
-   cannot be replaced without shipping a new CLI.
+### 2. GitHub: ids, environment, tags
 
-4. **Verify the OIDC claim keys.** `job_workflow_ref` as an IAM condition key for the GitHub provider
-   is supported according to secondary sources only; confirm it in the AWS IAM documentation
-   ("OIDC federation: condition keys") before relying on it. If it were not supported, the condition
-   would never match and the role could not be assumed (a failed release, not a weaker policy); the
-   `sub` condition still pins the repository and tag.
+1. Get the immutable ids: `gh api repos/PrepLabsAI/Rovara --jq '"\(.owner.id)/\(.id)"'` (for PrepLabsAI/Rovara
+   this is `272978771/1307121896`, see docs/releases.md).
+2. Create the **environment** `release-signing` (Settings, Environments) on the repository that runs the
+   workflow:
+   - required reviewers: at least two release owners, and "prevent self-review" on;
+   - deployment branches and tags: selected tags only, pattern `v*.*.*`;
+   - no secrets, and no variables other than what the workflow already reads.
+3. Add a **tag ruleset** for `v*`: only the release owners can create matching tags; block updates,
+   non-fast-forward changes and deletion; no bypass for anyone else. A ruleset cannot require that a tagged
+   commit is on `mainline`; the check for that lives in the `images` job of the tagged commit itself, which a
+   tag pusher controls, so keep it a second line of defence and rely on who may push tags and on the reviewers.
+4. Keep branch protection on `mainline`.
 
-5. **Set the repository variables** from the stack outputs: `AGENTX_BUNDLE_KMS_KEY` =
-   `BundleSigningKeyArn`, `AGENTX_BUNDLE_SIGNING_ROLE_ARN` = `BundleSigningRoleArn`, then
-   `AGENTX_BUNDLE_ENABLED=true`. The `bundle` job is off until all three are set.
+### 3. Synthesize, review and deploy the stack (in the signing account)
 
-6. **Prove the limit works** before the first real release:
-   - from a branch or a workflow_dispatch run on a branch, the `bundle` job must fail at
-     `configure-aws-credentials` (not assumable);
-   - from your own credentials, `aws kms sign --key-id <arn> --message fileb://x --message-type RAW --signing-algorithm ECDSA_SHA_256`
-     must be denied, even as an administrator.
+```sh
+npx cdk synth AgentXBundleSigning \
+  -c agentxBundleSigning=enabled \
+  -c agentxBundleSigningAccountId=<signing account id> \
+  -c agentxBundleSigningRepository=PrepLabsAI/Rovara \
+  -c agentxBundleSigningRepositoryIds=272978771/1307121896 \
+  -c agentxBundleSigningOidcProviderArn=arn:aws:iam::<signing account id>:oidc-provider/token.actions.githubusercontent.com
+```
 
-7. **Publish the public key.** Fetch it with `aws kms get-public-key` (the release job does this at
-   run time), add it to `packages/cli/src/upgrade/bundle/trusted-keys.ts`
-   (`PINNED_BUNDLE_SIGNING_KEYS`) in a CLI release made before the first signed bundle, and publish it
-   on the release channel for `--bundle-public-key`.
+Read the key policy and the role's trust policy in the output; they must match the list above. Then
+`cdk deploy AgentXBundleSigning` with the same context. The key has deletion policy Retain and termination
+protection is on: every installer pins the public half, so a deleted key cannot be replaced without a new CLI.
+The repository must be the one whose `release.yml` runs the `sign` job (the job is guarded to
+`PrepLabsAI/Rovara`); if you move the job, change the guard, its test and this setting together. Use
+`-c agentxBundleSigningEnvironment=<name>` only if the GitHub environment has another name.
+
+### 4. Protect the role and the key (organisation management account)
+
+Attach this service control policy to the signing account, after the stack is deployed (the stack's own
+deploy creates the role, so later changes go through the break-glass principal). Replace the placeholders.
+Resource names for KMS are key ARNs, so use the key ARN from the stack output.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ProtectTheSigningRole",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+        "iam:PutRolePermissionsBoundary", "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::<signing account id>:role/rovara-release-bundle-signing",
+      "Condition": { "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::<signing account id>:role/<break-glass role>" } }
+    },
+    {
+      "Sid": "ProtectTheSigningKey",
+      "Effect": "Deny",
+      "Action": ["kms:PutKeyPolicy", "kms:CreateGrant", "kms:ScheduleKeyDeletion", "kms:DisableKey"],
+      "Resource": "<key ARN>",
+      "Condition": { "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::<signing account id>:role/<break-glass role>" } }
+    }
+  ]
+}
+```
+
+Keep one break-glass role (MFA, used only for this, its credentials not in CI), and make the
+organisation's own administrators unable to detach the SCP without a second person.
+
+### 5. An alarm on those calls
+
+In the signing account, an EventBridge rule on CloudTrail management events, to an SNS topic that pages the
+owners:
+
+- IAM: `CreateRole`, `DeleteRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `AttachRolePolicy` where
+  the role name is `rovara-release-bundle-signing`;
+- KMS: `PutKeyPolicy`, `CreateGrant`, `ScheduleKeyDeletion`, `DisableKey` on the key;
+- KMS: any `Sign` on the key whose caller is not an assumed-role session of the signing role (this should
+  never fire; the key policy denies it, and the denied attempt is itself the signal).
+
+Check the rule fires (call one of them with the break-glass role in a test, or send a test event) before
+the first release.
+
+### 6. Repository variables
+
+From the stack outputs: `AGENTX_BUNDLE_KMS_KEY` = `BundleSigningKeyArn`, `AGENTX_BUNDLE_SIGNING_ROLE_ARN` =
+`BundleSigningRoleArn`, then `AGENTX_BUNDLE_ENABLED=true`. The `bundle` and `sign` jobs are off until all
+three are set.
+
+### 7. Prove the limit before the first real release
+
+- From a branch or a `workflow_dispatch` run on a branch, the `sign` job must fail at
+  `configure-aws-credentials` (not assumable) or be refused by the environment.
+- From a tag, a job outside the environment (for example a throwaway workflow step in the `images` job
+  in a test fork) must fail to assume the role.
+- From your own credentials, `aws kms sign --key-id <arn> --message fileb://x --message-type RAW --signing-algorithm ECDSA_SHA_256`
+  must be denied, even as an administrator of the signing account.
+- AWS documents `job_workflow_ref`, `repository_id`, `repository_owner_id`, `ref` and `environment` as
+  condition keys for the GitHub provider (IAM user guide, "Available keys for AWS OIDC federation").
+  The first real assume is still the proof: if any claim failed to match, the role cannot be assumed
+  (a failed release, never a weaker policy).
+
+### 8. Publish the public key
+
+Fetch it with `aws kms get-public-key` (the sign job does this at run time), add it to
+`packages/cli/src/upgrade/bundle/trusted-keys.ts` (`PINNED_BUNDLE_SIGNING_KEYS`) in a CLI release made
+before the first signed bundle, and publish it on the release channel for `--bundle-public-key`.
 
 ## Changing who may sign later
 
-Replace the key policy (`PutKeyPolicy`) through the stack. It is logged in CloudTrail. Do not add
-`kms:Sign` to any IAM user or role policy: the key policy's Deny overrides it, by design.
+Through the break-glass role only: replace the stack's key policy or role (a CloudTrail alarm fires, by
+design). Do not add `kms:Sign` to any IAM user or role policy: the key policy's Deny overrides it.
