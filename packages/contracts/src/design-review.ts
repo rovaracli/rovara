@@ -21,7 +21,7 @@ export const DESIGN_REASONS_MAX = 4;
 export const DESIGN_NOTE_MAX = 200;
 
 /** A design touching any of these needs the project's high-risk approver (3.8). Code decides this; model text can only add reasons, never remove them. */
-export const DESIGN_REVIEW_HIGH_RISK_REASONS: readonly DesignReason[] = ["data_model", "auth", "money", "pii", "cross_repo_or_service"];
+export const DESIGN_REVIEW_HIGH_RISK_REASONS: readonly DesignReason[] = ["data_model", "auth", "money", "pii", "cross_repo_or_service", "infrastructure"];
 export function isHighRiskDesign(reasons: readonly DesignReason[]): boolean {
   return reasons.some((reason) => DESIGN_REVIEW_HIGH_RISK_REASONS.includes(reason));
 }

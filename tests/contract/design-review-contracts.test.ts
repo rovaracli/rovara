@@ -64,7 +64,7 @@ describe("design review contracts", () => {
   });
 
   it("names the high-risk reasons once, and only those make a design high risk", () => {
-    expect([...DESIGN_REVIEW_HIGH_RISK_REASONS].sort()).toEqual(["auth", "cross_repo_or_service", "data_model", "money", "pii"]);
+    expect([...DESIGN_REVIEW_HIGH_RISK_REASONS].sort()).toEqual(["auth", "cross_repo_or_service", "data_model", "infrastructure", "money", "pii"]);
     expect(isHighRiskDesign(["new_api", "small_change"])).toBe(false);
     expect(isHighRiskDesign(["new_api", "pii"])).toBe(true);
   });

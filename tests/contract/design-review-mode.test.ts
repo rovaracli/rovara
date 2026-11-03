@@ -123,7 +123,9 @@ describe("the skip rules", () => {
   });
 
   it("a design with no high-risk reason is skipped by whoever may start the task", () => {
-    expect(skipVerdict(setting(), ["new_api", "api_change", "new_dependency", "infrastructure"], false)).toEqual({ allowed: true });
+    expect(skipVerdict(setting(), ["new_api", "api_change", "new_dependency"], false)).toEqual({ allowed: true });
+    // 3.8 lists infrastructure for the high tier, so only a high-risk approver may skip it.
+    expect(skipVerdict(setting(), ["new_api", "infrastructure"], false)).not.toEqual({ allowed: true });
     expect(decide({ setting: setting(), assessment: needed, skip: true })).toMatchObject({ on: false, decidedBy: "person_skip" });
   });
 

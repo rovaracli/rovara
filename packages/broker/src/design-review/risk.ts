@@ -1,12 +1,11 @@
 // Design review stage (DR9, design-review-stage.md 3.8): which design areas set the tier of an `approve_design` card, and the facts a card shows. PURE and fixed-word: a tier is worked out from codes and
 // counts the broker holds, never from a model's sentences, and every rule only RAISES (a design that says "small change" but names the data model in `touches` is still high; leaving an area out lowers nothing).
 //
-// The codes that make a design HIGH are the DR1 contract's (`DESIGN_REVIEW_HIGH_RISK_REASONS`: data_model, auth, money, pii, cross_repo_or_service) PLUS `infrastructure`, which 3.8 lists for the high tier.
-// Controller note for DR2: the contract's list lacks `infrastructure`, so `isHighRiskDesign` alone under-reports; the skip rule (Q10) and the tier here both use this wider list.
+// The codes that make a design HIGH are the DR1 contract's one list (`DESIGN_REVIEW_HIGH_RISK_REASONS`, which includes `infrastructure` per 3.8), shared with DR2's skip rule.
 import { DESIGN_REVIEW_HIGH_RISK_REASONS, type DesignReason } from "@agentx/contracts";
 
 /** Areas that make a design high risk: it needs the configured high-risk approver, a fresh sign-in, and the requester may not approve it (unless the sole owner). */
-export const DESIGN_TIER_HIGH_CODES: readonly DesignReason[] = [...DESIGN_REVIEW_HIGH_RISK_REASONS, "infrastructure"];
+export const DESIGN_TIER_HIGH_CODES: readonly DesignReason[] = DESIGN_REVIEW_HIGH_RISK_REASONS;
 /** Areas that make a design at least medium: the approver opens the evidence first. */
 export const DESIGN_TIER_MEDIUM_CODES: readonly DesignReason[] = ["new_api", "api_change", "new_dependency"];
 
