@@ -153,7 +153,7 @@ describe("the sweep's own cost", () => {
     const h = await createDeveloperTaskBroker();
     // the pass reads only the table, the audit and the clock from the broker's dependencies; building the task actions would reach for much more
     const touched = new Set<string>();
-    const spy = new Proxy({ documentClient: h.db, tableName: "state" } as Record<string | symbol, unknown>, { get: (target, key) => { touched.add(String(key)); return target[key]; } });
+    const spy = new Proxy({ documentClient: h.db, tableName: "state" }, { get: (target, key) => { touched.add(String(key)); return target[key]; } });
     expect(await sweepAutomaticRunsOf(spy as never)).toEqual({ ended: 0, audited: 0, watching: 0, dropped: 0 });
     expect([...touched].sort()).toEqual(["audit", "documentClient", "tableName"]);
   });
