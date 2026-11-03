@@ -1,11 +1,12 @@
 // TS16: the sealed check sandbox builds on the task sandbox's arguments (task-sandbox.ts `taskSandboxRunArgs`) and checks its own result. If a later change to the task sandbox's arguments would give the sealed
 // sandbox a second network, a published port, a DNS option, an added capability or another shape, the builder must refuse. These tests replace `taskSandboxRunArgs` with such drifted versions.
 import { describe, expect, it, vi } from "vitest";
+import type * as TaskSandboxModule from "../../packages/worker/src/task-sandbox.js";
 
 const drift = vi.hoisted(() => ({ extra: [] as string[], swapNetwork: undefined as string | undefined, dropFlag: undefined as string | undefined, tail: undefined as string[] | undefined }));
 
 vi.mock("../../packages/worker/src/task-sandbox.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/worker/src/task-sandbox.js")>();
+  const original = await importOriginal<typeof TaskSandboxModule>();
   return {
     ...original,
     taskSandboxRunArgs: (input: Parameters<typeof original.taskSandboxRunArgs>[0]) => {

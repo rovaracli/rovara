@@ -35,7 +35,7 @@ function input(overrides: Partial<CheckSandboxInput> = {}): CheckSandboxInput {
 }
 const FILES = { resolvConfPath: "/run/rovara/check-1/resolv.conf", hostsPath: "/run/rovara/check-1/hosts" };
 const valuesOf = (args: readonly string[], flag: string) => args.flatMap((arg, index) => (args[index - 1] === flag ? [arg] : []));
-const config = (code: string) => expect.objectContaining({ code, message: expect.any(String) });
+const config = (code: string): unknown => expect.objectContaining({ code, message: expect.any(String) as unknown }) as unknown;
 
 describe("the sealed check sandbox's run arguments", () => {
   const args = checkSandboxRunArgs(input(), FILES);
