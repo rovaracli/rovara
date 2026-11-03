@@ -167,7 +167,7 @@ describe("an automatic run is model-free", () => {
   it("refuses to make a workflow of it, and an agent that runs steps with a model", async () => {
     const t = await setup();
     const starter = t.starter();
-    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Rebuild.", workflow: true, workflowPath: "QUICK" };
+    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Rebuild.", agent: { agentId: "rovara-code" }, workflow: true, workflowPath: "QUICK" };
     const system = systemOwnerCaller(TEST_ORG, PROJECT);
     expect(await refusal(starter.startTask(system, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "CONFIG_INVALID" });
     const agentSteps = await refusal(startAgentRun(starter, t.automatic({ agent: { agentId: "ticket-triage" } })));
@@ -178,7 +178,7 @@ describe("an automatic run is model-free", () => {
   it("every system start declares a purpose that matches what it runs: the nightly purpose goes with the night's facts, and only with them", async () => {
     const t = await setup();
     const starter = t.starter();
-    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Run." };
+    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Run.", agent: { agentId: "rovara-code" } };
     const system = systemOwnerCaller(TEST_ORG, PROJECT);
     expect(await refusal(starter.startTask(system, body, { origin: "nightly", autonomous: true, automatic: { job: "nightly", purpose: "nightly_run" } }))).toMatchObject({ code: "CONFIG_INVALID" });
     const nightly = { slotId: "a".repeat(64), envRevision: 1, branch: "main", headSha: "b".repeat(40) };
@@ -193,7 +193,9 @@ describe("an automatic run is model-free", () => {
     const t = await setup();
     const person = { owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member" as const, developerId: MAYA.developerId } };
     const { automatic: _automatic, ...unmarked } = t.automatic(); // eslint-disable-line @typescript-eslint/no-unused-vars -- the mark is what is left out
-    for (const request of [{ ...unmarked }, { ...t.automatic(), ...person, origin: "automatic" as const, automatic: undefined }, { ...t.automatic(), origin: "app" as const }]) {
+    // (the one that isolates the rule: a person's run that says it is the project's own work, with the project as payer, would otherwise simply start)
+    const personsNightly = { ...unmarked, ...person, origin: "nightly" as const, payer: { kind: "project" as const, project: PROJECT }, startedBy: undefined };
+    for (const request of [{ ...unmarked }, personsNightly, { ...t.automatic(), ...person, origin: "automatic" as const, automatic: undefined }, { ...t.automatic(), origin: "app" as const }]) {
       expect((await refusal(startAgentRun(t.starter(), request as AgentRunRequest)))?.code).toBe("CONFIG_INVALID");
     }
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
