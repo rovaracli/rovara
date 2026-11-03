@@ -4,7 +4,7 @@
 //
 // An ANSWER or a DECISION on a parked review needs no resume: `answerDesignQuestions` and the design card's approval accept a parked wait directly (the wait record is simply gone or ignored afterwards), after the same
 // eligibility checks their handlers make. This handler is for the "Resume" button, and for the person who wants it open again without deciding yet.
-import { WorkflowTransitionError, agentXError, designWaitOf, resumeParkedDesignReview, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, designWaitOf, resumeParkedDesignReview, type DesignReason, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey } from "../developer/task-records.js";
 import type { DesignApproverDirectory } from "./approval.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
@@ -20,6 +20,8 @@ export interface DesignResumeContext {
   setting: EffectiveDesignReviewSetting;
   directory: DesignApproverDirectory;
   edition: EditionPolicy | undefined;
+  /** Every design version's own §6 `touches`: a wait about a design that touches a high-risk area is also the high-risk approver's, whatever Understand's reasons said (the union only raises). */
+  touches?: readonly DesignReason[] | undefined;
 }
 
 /** Whether this person may resume this parked wait. Members only (never an Auditor or a viewer), and only one of the people the wait is on or the maintainers who can act for it. Fails closed. */
@@ -31,7 +33,7 @@ export function mayResumeDesignReview(input: { callerId: string; context: Design
   const { directory } = context;
   const member = has(directory.people.eligibleIds, callerId) || has(directory.projectMemberIds, callerId);
   if (!member || has(directory.notApproverIds, callerId)) return false;
-  const audience = waitAudienceOf({ kind: wait.kind, requesterId: context.requesterId, reasons: review.reasons, setting: context.setting, directory, edition: context.edition });
+  const audience = waitAudienceOf({ kind: wait.kind, requesterId: context.requesterId, reasons: [...review.reasons, ...(context.touches ?? [])], setting: context.setting, directory, edition: context.edition });
   return has([...audience.asked, ...audience.maintainers, ...audience.escalate], callerId);
 }
 

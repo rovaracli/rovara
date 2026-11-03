@@ -5,6 +5,7 @@
 //   POST /v1/app/tasks/{id}/design-review/spend/{choice}   {requestId, shownDigest}          one choice on the cost card (lower-tier | raise-cap | run-unpriced | skip), `designSpendChoiceHandler`
 //   POST /v1/app/tasks/{id}/design-review/answers          {requestId, answers}              the question card's answers, `designAnswersHandler`
 //   POST /v1/app/tasks/{id}/design-review/retry            {requestId}                       the one-tap Retry of a review that did not run, `retryDesignReviewNotRun`
+//   POST /v1/app/tasks/{id}/design-review/resume           {requestId}                       picks up a PARKED review from its card, `designResumeHandler`
 //   POST /v1/app/tasks/{id}/design-review/approve          {requestId, shownDigest, reason?} the confirmation page of a HIGH-risk design: a browser session, the same `designApproveHandler` as the card
 // A task with no `designReview` answers as a missing task answers, so with the feature off none of these exists.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -19,6 +20,8 @@ import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { DECISION_REFUSALS, type DecisionCaller } from "../../decisions/routes.js";
 import { projectDecisionCards, type DecisionItem } from "../../decisions/project.js";
 import { dynamoDecisionStore } from "../../decisions/store.js";
+import { designResumeCommitItems, designResumeHandler, type DesignResumePorts } from "../../design-review/wait-resume.js";
+import { secondPersonMembershipCondition } from "../../org/second-person-approval.js";
 import { designAnswersCommitItems, designAnswersHandler, type DesignAnswersPorts } from "../../design-review/answers.js";
 import { highRiskApprovers, maySkipDesignReview, type SkipRefusal } from "../../design-review/approval.js";
 import { designApproveHandler, type DesignApprovePorts } from "../../design-review/approve-handler.js";
@@ -43,7 +46,7 @@ import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import { projectMembersDepsOf } from "./project-list.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-export const DESIGN_REVIEW_ROUTE = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/design-review\/(first|skip|answers|retry|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/u;
+export const DESIGN_REVIEW_ROUTE = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/design-review\/(first|skip|answers|retry|resume|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/u;
 export const isDesignReviewPath = (pathname: string): boolean => DESIGN_REVIEW_ROUTE.test(pathname);
 
 const SPEND_CHOICES: Readonly<Record<string, DesignSpendChoiceName>> = { "lower-tier": "lower_tier", "raise-cap": "raise_cap", "run-unpriced": "run_unpriced", skip: "skip" };
@@ -200,6 +203,36 @@ function spendPortsOf(env: Env): DesignSpendPorts<DeveloperCaller> {
         if (!isConditional(error) && (error as { name?: string }).name !== "TransactionCanceledException") throw error;
         const earlier = await get<{ choice?: string }>(env.task, marker);
         return earlier?.choice === write.applied.choice ? "done" : "stale";
+      }
+      return "done";
+    },
+  };
+}
+
+// ---- the parked wait's Resume
+
+function resumePortsOf(env: Env): DesignResumePorts<DeveloperCaller> {
+  let membershipVersion = 0;
+  return {
+    async context(_caller, taskId) {
+      const loaded = await loadDesignTask(env, taskId);
+      if (loaded === undefined) return undefined;
+      const facts = await factsOf(env, loaded);
+      membershipVersion = facts.directory.people.membershipVersion;
+      return { taskId, requesterId: loaded.task.developerId, workflow: loaded.workflow, setting: facts.setting, directory: facts.directory, edition: facts.edition, touches: facts.touches };
+    },
+    now: () => env.deps.now(),
+    async commit(caller, write) {
+      const now = nowIso(env);
+      const commit = (() => { try { return designResumeCommitItems({ tableName: env.deps.tableName, taskId: write.taskId, workflow: write.workflow, actorId: write.actorId, now }); } catch { return undefined; } })();
+      if (commit === undefined) return "stale";
+      const marker = { pk: `DEVTASK#${write.taskId}`, sk: `DESIGN_RESUME#${write.requestId}` };
+      try {
+        await env.task.actions.transact([...commit.items, membershipFenceItem(env.deps.tableName, caller.orgId, secondPersonMembershipCondition(membershipVersion)),
+          { Put: { TableName: env.deps.tableName, Item: { ...marker, entityType: "DESIGN_RESUME", actorId: write.actorId, at: now }, ConditionExpression: "attribute_not_exists(pk)" } }] as never);
+      } catch (error) {
+        if (!isConditional(error) && (error as { name?: string }).name !== "TransactionCanceledException") throw error;
+        return (await get(env.task, marker)) !== undefined ? "done" : "stale";
       }
       return "done";
     },
@@ -436,6 +469,7 @@ export async function routeDesignReview(deps: DeveloperRouteDependencies, caller
   if (action === "first") { bodyOf(plain, request); return designFirst(env, taskId); }
   if (action === "skip") return skip(env, taskId, bodyOf(plain, request).requestId);
   if (action === "retry") { bodyOf(plain, request); return retryNotRun(env, taskId); }
+  if (action === "resume") return designResumeHandler(resumePortsOf(env))(caller, { taskId, requestId: bodyOf(plain, request).requestId });
   if (action === "approve") return approveOnPage(env, taskId, bodyOf(z.object({ requestId: Request, shownDigest: z.string().min(1).max(200), reason: z.string().max(500).optional() }).strict(), request));
   if (action === "answers") {
     const body = bodyOf(z.object({ requestId: Request, answers: z.array(z.unknown()).min(1).max(3) }).strict(), request);

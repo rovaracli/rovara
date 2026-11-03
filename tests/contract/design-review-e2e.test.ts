@@ -17,6 +17,7 @@ import { designReviewKeyIds } from "../../packages/broker/src/design-review/slot
 import { readSlotPacket } from "../../packages/broker/src/design-review/packet-store.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
+import { parkDesignReview } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { browserRequests } from "../support/browser-session.js";
 import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
@@ -1011,25 +1012,21 @@ describe("slice C: the design review's routes", () => {
     expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
   });
 
+  const ask = async (touches: string[]) => {
+    const design = designWith(touches);
+    const w = await world({ design });
+    await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
+    const findingId = review(w).rounds[0]!.findings[0]!.id;
+    const questions = [{ id: "q1", unclear: "How many retries are allowed?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most timeouts clear." }, { id: "b", label: "Five", consequence: "Customers wait." }], recommended: "a", why: "Three is enough." }];
+    const plannerId = String(w.plannerOps()[0]!.id);
+    await w.artifact(w.workspaceId, plannerId, "plan.md", `${design}${resolveBlock({ resolutions: [{ findingId, action: "asked", note: "Depends on a team rule.", questionId: "q1" }], questions })}`);
+    await w.finish(w.workspaceId, plannerId, "SUCCEEDED");
+    expect(w.task().workflow).toMatchObject({ designReview: { status: "waiting_answers" } });
+    seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+    return w;
+  };
+
   it("who may answer the question card follows the design's own areas: a design that touches auth is also the design approver's to answer, though Understand named only a new API", async () => {
-    const answerCard = async (touches: string[]) => {
-      const w = await openBlockerCard({ touches });
-      return w;
-    };
-    void answerCard;
-    const ask = async (touches: string[]) => {
-      const design = designWith(touches);
-      const w = await world({ design });
-      await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
-      const findingId = review(w).rounds[0]!.findings[0]!.id;
-      const questions = [{ id: "q1", unclear: "How many retries are allowed?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most timeouts clear." }, { id: "b", label: "Five", consequence: "Customers wait." }], recommended: "a", why: "Three is enough." }];
-      const plannerId = String(w.plannerOps()[0]!.id);
-      await w.artifact(w.workspaceId, plannerId, "plan.md", `${design}${resolveBlock({ resolutions: [{ findingId, action: "asked", note: "Depends on a team rule.", questionId: "q1" }], questions })}`);
-      await w.finish(w.workspaceId, plannerId, "SUCCEEDED");
-      expect(w.task().workflow).toMatchObject({ designReview: { status: "waiting_answers" } });
-      seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
-      return w;
-    };
     const answers = [{ questionId: "q1", optionId: "a" }];
     const high = await ask(["auth"]);
     expect((await high.dev(OMAR, "POST", `/v1/app/tasks/${high.taskId}/design-review/answers`, { requestId: randomUUID(), answers })).status, "the design approver answers a question about auth").toBe(200);
@@ -1038,6 +1035,21 @@ describe("slice C: the design review's routes", () => {
     const plain = await ask(["new_api"]);
     expect((await plain.dev(OMAR, "POST", `/v1/app/tasks/${plain.taskId}/design-review/answers`, { requestId: randomUUID(), answers })).status, "a maintainer is not asked about a design that is not high risk").toBe(403);
     expect((await plain.dev(MAYA, "POST", `/v1/app/tasks/${plain.taskId}/design-review/answers`, { requestId: randomUUID(), answers })).status, "the requester always is").toBe(200);
+  });
+
+  it("a parked wait is picked up from its card by the people it is on; a viewer is told it is not waiting for them", async () => {
+    const w = await ask(["auth"]);
+    expect(w.task().workflow.designReview!.waiting).toBeDefined();
+    w.db.set({ ...w.task(), workflow: parkDesignReview(w.task().workflow, { expectedRevision: w.task().workflow.revision, now: "2026-10-28T12:00:00.000Z" }) });
+    expect(w.task().workflow.designReview!.waiting!.parkedAt).toBeDefined();
+    const resume = (who: Developer) => w.dev(who, "POST", `/v1/app/tasks/${w.taskId}/design-review/resume`, { requestId: randomUUID() });
+    seedPeople(w, [[OMAR, "member", "viewer"]]);
+    expect((await resume(OMAR)).status, "a viewer is no one this wait is on").toBe(404);
+    expect(w.task().workflow.designReview!.waiting!.parkedAt).toBeDefined();
+    const done = await resume(MAYA);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(w.task().workflow.designReview!.waiting).toMatchObject({ resumedBy: { actorId: MAYA.developerId } });
+    expect(w.task().workflow.designReview!.waiting!.parkedAt).toBeUndefined();
   });
 
   it("Skip: the requester is refused on a high-risk design, the design approver skips and it is recorded as a person's skip; Design first needs the project to run design review", async () => {
