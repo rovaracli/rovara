@@ -107,7 +107,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
@@ -130,7 +130,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "wall_between_run_networks", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });
@@ -190,14 +190,22 @@ esac
   sha256sum: `#!/bin/bash
 exec shasum -a 256 "$@"
 `,
+  // A Docker restart that FLUSH_ON_RESTART=1 makes flush DOCKER-USER, to see what stage 2 does about it.
   systemctl: `#!/bin/bash
 echo "systemctl $*" >>"$LOG"
+if [ "$*" = "restart docker.service" ] && [ -n "\${FLUSH_ON_RESTART:-}" ]; then : >"$IPT_STATE"; fi
 `,
-  // The wall (stage 2) asks iptables whether its rule is there (no) and then inserts it.
+  // A small stateful iptables for the DOCKER-USER chain: -C checks, -I puts a rule on top, -A at the bottom, -S prints.
   iptables: `#!/bin/bash
 echo "iptables $*" >>"$LOG"
-[ "$1" = "-C" ] && exit 1
-exit 0
+op=$1; shift
+case "$op" in
+  -C) grep -qxF -- "$*" "$IPT_STATE" ;;
+  -I) { printf '%s\\n' "$*"; cat "$IPT_STATE"; } >"$IPT_STATE.new"; mv "$IPT_STATE.new" "$IPT_STATE" ;;
+  -A) printf '%s\\n' "$*" >>"$IPT_STATE" ;;
+  -S) [ "$1" = DOCKER-USER ] && sed 's/^/-A /' "$IPT_STATE"; exit 0 ;;
+  *) exit 0 ;;
+esac
 `,
   // Runs the transient unit's command in the background, as systemd would, so the failure responder can be asked for /ping.
   "systemd-run": `#!/bin/bash
@@ -268,7 +276,7 @@ interface Run {
  * Runs boot.sh, as cloud-init would run the rendered user data, with the worker image holding `served(directory)` as its boot-stage2.sh.
  * `expected` is the hash the control plane launched the worker with; by default, that of what the image holds.
  */
-async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean; cpLinks?: boolean }): Promise<Run> {
+async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean; cpLinks?: boolean; flushOnRestart?: boolean; firewallRestores?: boolean; firewallRule?: string }): Promise<Run> {
   const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
   directories.push(directory);
   const bin = join(directory, "bin");
@@ -287,7 +295,7 @@ async function boot(options: { served: (directory: string) => string; expected?:
   mkdirSync(join(directory, "etc", "systemd"), { recursive: true });
   // Stage 1 stands in for the container firewall unit in this harness, so the script stage 2 runs again after a Docker restart is a stub that says so.
   mkdirSync(join(directory, "libexec"), { recursive: true });
-  writeFileSync(join(directory, "libexec", "rovara-container-firewall"), `echo "rovara-container-firewall" >>"$LOG"\n`);
+  writeFileSync(join(directory, "libexec", "rovara-container-firewall"), `echo "rovara-container-firewall" >>"$LOG"\nrule="\${FW_RULE:-DOCKER-USER -d 169.254.169.254/32 -j DROP}"\n[ "\${FW_RESTORES:-1}" = 0 ] || grep -qxF "$rule" "$IPT_STATE" || echo "$rule" >>"$IPT_STATE"\n`);
   const served = options.served(directory);
   const image = join(directory, "image-stage2.sh");
   writeFileSync(image, served);
@@ -298,7 +306,7 @@ wait_for_device() { echo /dev/fake; }
 prepare_filesystem() { :; }
 mount_workspace() { echo "mount_workspace" >>"$LOG"; }
 prepare_contained_runtime_directories() { CONTAINED_RUNTIME_AVAILABLE_BOOT=true; }
-wall_off_containers() { echo "wall_off_containers" >>"$LOG"; }
+wall_off_containers() { echo "wall_off_containers" >>"$LOG"; echo "DOCKER-USER -d 169.254.169.254/32 -j DROP" >>"$IPT_STATE"; }
 `;
   expect(stage1.endsWith('\nmain "$@"\n')).toBe(true);
   const rendered = ec2WorkerBootScript(options.noHash ? { ...bootConfig(""), environmentKind: undefined, bootStage2Sha256: undefined } : bootConfig(options.expected ?? sha256(served)), place(stage1).replace(/\nmain "\$@"\n$/, `${stoodIn}\nmain "$@"\n`));
@@ -306,12 +314,14 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; }
   writeFileSync(script, rendered);
   const log = join(directory, "calls.log");
   writeFileSync(log, "");
+  writeFileSync(join(directory, "iptables.state"), "");
   const pid = join(directory, "responder.pid");
   responders.push(pid);
   const ran = spawnSync("bash", [script], {
     encoding: "utf8",
     env: {
-      PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
+      PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IPT_STATE: join(directory, "iptables.state"),
+      ...(options.flushOnRestart ? { FLUSH_ON_RESTART: "1" } : {}), ...(options.firewallRestores === false ? { FW_RESTORES: "0" } : {}), ...(options.firewallRule ? { FW_RULE: options.firewallRule } : {}), IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
       ...(options.cpFails ? { CP_FAILS: "1" } : {}),
       ...(options.cpLinks ? { CP_LINKS: "1" } : {}),
     },
@@ -375,6 +385,39 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(existsSync(join(run.directory, "etc", "systemd", "agentx-worker.service"))).toBe(true);
     expect(run.stderr).toContain("agentx-boot: worker started");
     expect(run.calls.some((call) => call.startsWith("systemd-run --unit=agentx-boot-failure"))).toBe(false);
+  });
+
+  const METADATA_RULE = "-A DOCKER-USER -d 169.254.169.254/32 -j DROP";
+  const rulesAfter = (run: Run) => readFileSync(join(run.directory, "iptables.state"), "utf8").split("\n").filter(Boolean);
+
+  it("a Docker restart that flushes DOCKER-USER does not leave the metadata address open: the container firewall script put its block back before the worker unit is written, and the boot goes on", async () => {
+    const run = await boot({ served: placedStage2, flushOnRestart: true });
+    expect(run.failure, run.stderr).toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    expect(rulesAfter(run).map((rule) => `-A ${rule}`)).toContain(METADATA_RULE);
+    // The flush really happened (the wall rule from before the restart is gone only if it was flushed; the wall is inserted after, so it is there too) and the block was checked before the unit was written.
+    const at = (needle: string) => run.calls.findIndex((call) => call.includes(needle));
+    expect(at("iptables -S DOCKER-USER")).toBeGreaterThan(at("rovara-container-firewall"));
+    expect(at("iptables -S DOCKER-USER")).toBeLessThan(at("systemctl daemon-reload"));
+  });
+
+  it("a rule that names the metadata address but lets it through is not a block: the boot stops", async () => {
+    const run = await boot({ served: placedStage2, flushOnRestart: true, firewallRule: "DOCKER-USER -d 169.254.169.254/32 -j ACCEPT" });
+    expect(run.failure).toBe("the metadata block is missing after the Docker restart");
+    const other = await boot({ served: placedStage2, flushOnRestart: true, firewallRule: "DOCKER-USER -d 169.254.169.253/32 -j DROP" });
+    expect(other.failure).toBe("the metadata block is missing after the Docker restart");
+  });
+
+  it("stops the boot with the exact message, and starts no worker unit, when the metadata block is missing after the Docker restart (the restart flushed DOCKER-USER and the firewall script did not restore it)", async () => {
+    const run = await boot({ served: placedStage2, flushOnRestart: true, firewallRestores: false });
+    expect(run.status).not.toBe(0);
+    expect(run.failure).toBe("the metadata block is missing after the Docker restart");
+    expect(run.stderr).toContain("agentx-boot: FAILED: the metadata block is missing after the Docker restart");
+    expect(rulesAfter(run)).not.toContain("DOCKER-USER -d 169.254.169.254/32 -j DROP");
+    expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
+    expect(run.calls.some((call) => call.startsWith("systemctl daemon-reload"))).toBe(false);
+    // And the rvi wall step after it did not run either: nothing after the failed check ran.
+    expect(run.calls.some((call) => call.startsWith("iptables -I DOCKER-USER -i rvi+"))).toBe(false);
   });
 
   it("fails with the exact message, reports it on /ping and enables no worker unit when the image's stage 2 is not the one the launch setting names", async () => {

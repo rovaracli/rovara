@@ -23,6 +23,11 @@ set_docker_address_pools() {
 }
 # 2. Two different rvi bridges never talk (a run network and an end-to-end network, or two runs): routed between bridges is "not bridged", traffic inside one bridge is bridged and flows. Inserted at the top of DOCKER-USER, so no earlier
 #    RETURN or ACCEPT can skip it. IPv6 only where Docker has that chain.
+# 3. The metadata address must still be blocked after the Docker restart (a restart rebuilds Docker's chains; the container firewall script that was just run again puts its DROP back). block_imds, with the metadata REJECT, is
+#    in the worker launcher and runs when the worker unit starts, which is after this; this checks what stands now, so a lost block stops the boot before any container can start.
+metadata_blocked() {
+  iptables -S DOCKER-USER 2>/dev/null | grep -Eq -- '^-A DOCKER-USER -d 169\.254\.169\.254/32 -j (DROP|REJECT)$'
+}
 wall_between_run_networks() {
   local rule="DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP"
   iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
@@ -310,6 +315,7 @@ stage2_main() {
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
     set_docker_address_pools || fail "could not set Docker's address pools"
+    metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
   fi
   write_worker_unit "$region" "$instance_id"

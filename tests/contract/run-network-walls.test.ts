@@ -115,11 +115,12 @@ esac
     const at = (text: string) => main.indexOf(text);
     expect(at("write_worker_environment")).toBeGreaterThan(-1);
     expect(at("write_worker_environment")).toBeLessThan(at("set_docker_address_pools"));
-    expect(at("set_docker_address_pools")).toBeLessThan(at("wall_between_run_networks"));
+    expect(at("set_docker_address_pools")).toBeLessThan(at("metadata_blocked"));
+    expect(at("metadata_blocked")).toBeLessThan(at("wall_between_run_networks"));
     expect(at("wall_between_run_networks")).toBeLessThan(at("write_worker_unit"));
     expect(at("write_worker_unit")).toBeLessThan(at("systemctl enable --now"));
     expect(at("systemctl enable --now")).toBeLessThan(at("start_e2e_qualification"));
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+fi/u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+fi/u);
   });
 
   it("the isolation DROP keeps traffic inside one bridge flowing: it matches only routed (not bridged) rvi-to-rvi packets, and a run network and an end-to-end network are each ONE bridge", () => {
