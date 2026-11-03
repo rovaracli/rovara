@@ -360,7 +360,7 @@ describe("broker side: assembleRoundFindings", () => {
     const { ports } = fakePorts({ answers: { "slot-critic": [block([finding("1", { citations: [{ kind: "source", ref: "design.md", digest: "e".repeat(64) }] })])] } }, deliveries);
     const result = await runDesignReview(binding, ports);
     const tampered = { ...result, findings: [{ id: "m1", severity: "blocker", section: "§1", text: "Invented by the worker", citations: [{ kind: "design", section: "§1" }], fromReviewers: ["critic"], rawIds: ["critic-9"], fingerprint: "a".repeat(64) }] };
-    const round = assembleRoundFindings({ result: tampered, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "digest_and_usage" as const }]]), packets: new Map([["critic" as const, packets.get("critic")!.items]]), pins: {} });
+    const round = assembleRoundFindings({ result: tampered, verification: new Map([["critic" as const, { verified: true as const, sessionId: "s", filesRead: [], inputProof: "proxy_first_call" as const }]]), packets: new Map([["critic" as const, packets.get("critic")!.items]]), pins: {} });
     expect(round.findings).toEqual([]);
     expect(round.droppedFindings).toHaveLength(1);
   });
