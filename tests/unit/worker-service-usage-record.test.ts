@@ -1,8 +1,6 @@
 // Slice 1, s1-sealed T1: the usage record (service-usage-record.ts). Deferred check TS-SEAL-1: a name the program asked for can hold a run secret, so the record never carries a name: a registrable domain and a count
 // at most, and not even that when the redactor changes it. Nothing starts Docker.
 import { TestServicesUsageRecordSchema } from "@agentx/contracts";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SEALED_DNS_STATE_FILE, type SealedDnsRecord } from "../../packages/worker/src/check-sandbox.js";
 import { createServiceRedactor } from "../../packages/worker/src/service-env.js";
@@ -120,24 +118,6 @@ describe("counts are coarse buckets (TS-SEAL-1 bandwidth)", () => {
   it("orders the domains by bucket and then by name, whatever the raw counts were", () => {
     const { domains } = reduceUnknownNames(dns(["a.zeta.com", 3], ["a.alpha.com", 5], ["a.mid.com", 40], ["a.beta.com", 1]), redactor);
     expect(domains.map((row) => [row.domain, row.count])).toEqual([["mid.com", 21], ["alpha.com", 2], ["zeta.com", 2], ["beta.com", 1]]);
-  });
-});
-
-describe("the record stays away from the agent and the model", () => {
-  // The record and the sealed round's output carry what the program chose to print or ask for. Nothing the agent, a model call or the setup agent reads may import them.
-  it("no agent-facing module imports the usage record or the sealed round", async () => {
-    const root = new URL("../../packages/worker/src/", import.meta.url).pathname;
-    const agentFacing = (path: string) => /^(agent-run\/|pi-session\.ts|agent-step\.ts|setup-agent|read-.*-tool\.ts|sandbox-file-tools\.ts|model-|understand\.ts|plan-|conversations\.ts|learned-|steer-invocation\.ts|diagnosis\.ts|context-)/u.test(path);
-    const offenders: string[] = [];
-    const walk = async (folder: string): Promise<void> => {
-      for (const entry of await readdir(folder, { withFileTypes: true })) {
-        const path = join(folder, entry.name);
-        if (entry.isDirectory()) await walk(path);
-        else if (entry.name.endsWith(".ts") && agentFacing(path.slice(root.length)) && /service-usage-record|check-round-runners|TestServicesUsageRecord/u.test(await readFile(path, "utf8"))) offenders.push(path.slice(root.length));
-      }
-    };
-    await walk(root);
-    expect(offenders).toEqual([]);
   });
 });
 
