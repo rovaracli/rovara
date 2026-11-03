@@ -148,7 +148,7 @@ describe("the network arguments (snapshot)", () => {
 });
 
 describe("no repository-controlled string reaches a docker argument", () => {
-  const FIXED = new Set(["network", "create", "ls", "rm", "ps", "--all", "--quiet", "--force", "--driver", "bridge", "--internal", "--subnet", "--gateway", "--ip-range", "inspect", "--opt", "--label", "--filter", "--format"]);
+  const FIXED = new Set(["network", "create", "ls", "rm", "ps", "--all", "--quiet", "--force", "--volumes", "--driver", "bridge", "--internal", "--subnet", "--gateway", "--ip-range", "inspect", "--opt", "--label", "--filter", "--format"]);
   const SHAPES = [
     /^rovara-svc-[0-9a-f]{12}$/u, /^172\.30\.\d{1,3}\.(?:0\/24|1|128\/25)$/u, /^com\.docker\.network\.bridge\.name=rvi[0-9a-f]{8}$/u,
     /^rovara\.run-network=rovara-svc-[0-9a-f]{12}$/u, /^rovara\.run-network\.(?:created|expires)=\d{1,16}$/u, /^rovara\.run-network\.workspace=[0-9a-f]{16}$/u,
@@ -185,7 +185,7 @@ describe("no repository-controlled string reaches a docker argument", () => {
     evil.id = "--privileged";
     const ok = d.addContainer("ok", d.familyLabels(RUN, NOW - 10_000_000, WS, NOW - 1));
     await sweepServicesNetworks(d.docker, { workspace: WS, now: () => NOW });
-    expect(d.calls.filter((call) => call[0] === "rm")).toEqual([["rm", "--force", ok.id]]);
+    expect(d.calls.filter((call) => call[0] === "rm")).toEqual([["rm", "--force", "--volumes", ok.id]]);
   });
 });
 
@@ -320,7 +320,7 @@ describe("stopping a run's network", () => {
       d.calls.length = 0;
       await net.stop();
       expect(d.calls[0]!.filter((arg, index) => d.calls[0]![index - 1] === "--filter")).toEqual([`label=rovara.run-network=${net.name}`, `label=rovara.run-network.workspace=${WS}`]);
-      expect(d.calls.find((call) => call[0] === "rm")).toEqual(["rm", "--force", mine.id]);
+      expect(d.calls.find((call) => call[0] === "rm")).toEqual(["rm", "--force", "--volumes", mine.id]);
       expect(d.containers.map((c) => c.id)).toEqual([otherWorkspace.id, otherRun.id]);
     }
   });

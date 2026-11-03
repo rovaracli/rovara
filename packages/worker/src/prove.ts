@@ -35,6 +35,8 @@ export interface ProvePorts {
   buildCoverageMap(signal: AbortSignal): Promise<string | undefined>;
   /** After the suite: how many tests it ran, read from the check's report (the caller parses it with `parseTestReport`). Undefined when there was no readable report. */
   suiteTestCount?(): Promise<number | undefined>;
+  /** When the run ends, whatever it did: removes what the ports started (the test services' helpers and network, service-runner.ts). Absent for a run that started nothing; a failure here is not the run's. */
+  release?(): Promise<void>;
   now(): number;
 }
 
@@ -151,6 +153,7 @@ export async function proveEnvironment(ports: ProvePorts, input: ProveInput): Pr
   } finally {
     clearTimeout(timer);
     input.signal.removeEventListener("abort", stop);
+    await Promise.resolve().then(() => ports.release?.()).catch(() => undefined);
   }
 
   const steps = TEST_ENV_PROVE_STEPS.map((step) => {

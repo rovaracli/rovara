@@ -46,6 +46,16 @@ export interface CheckRunners {
    * with a CheckNotRunError when AgentX refuses to replay it.
    */
   runAgentCommand(replay: string, timeoutMs: number, signal: AbortSignal): Promise<{ exitCode: number | null; timedOut: boolean; output: string }>;
+  /**
+   * Test services (TS18): puts the round's helpers back as they were seeded, before the round's first check. Every round that runs checks asks for it, so the TESTPROOF rerun on the original code never sees the
+   * candidate round's state. Absent when the task has no test services: then nothing here changes. When it rejects (and the round was not stopped), no check is run: each is `not_run`.
+   */
+  freshServices?(signal: AbortSignal): Promise<void>;
+  /**
+   * Test services (L3): puts the `between_checks` helpers back between two checks of one round (not before the first: `freshServices` did that). When it rejects (and the round was not stopped), the check that
+   * was about to run and every one after it is `not_run`. Absent: nothing changes. (Seeding a Prove run, `seedRun`, is a TS30 wiring item, not this port.)
+   */
+  resetBetweenChecks?(signal: AbortSignal): Promise<void>;
 }
 
 export interface CheckPlan {
@@ -152,6 +162,15 @@ export async function runChecks(
   const { signal } = options;
   const startedAt = now();
   const entries: CheckEntry[] = [];
+  if (runners.freshServices !== undefined && !signal.aborted) {
+    const fresh = await untilAborted(Promise.resolve().then(() => runners.freshServices?.(signal)), signal).then(() => true, () => false);
+    if (!fresh) {
+      const note = signal.aborted ? "AgentX stopped before this check ran." : "AgentX did not run this check: the test services could not be put back as they were seeded.";
+      return { entries: plannedChecks(plan, runners).map((check) => ({ id: check.id, label: check.label, source: check.source, before: check.before, after: "not_run", class: classifyCheck(check.before, "not_run"), output: note, durationMs: 0 })), stopped: signal.aborted };
+    }
+  }
+  let resetFailed = false;
+  let first = true;
   for (const check of plannedChecks(plan, runners)) {
     const entry = (after: CheckOutcome, output: string, durationMs = 0, exitCode?: number | null): CheckEntry => ({
       id: check.id,
@@ -168,6 +187,19 @@ export async function runChecks(
       entries.push(entry("not_run", "AgentX stopped before this check ran."));
       continue;
     }
+    if (resetFailed) {
+      entries.push(entry("not_run", "AgentX did not run this check: the test services could not be put back between the checks."));
+      continue;
+    }
+    if (!first && runners.resetBetweenChecks !== undefined) {
+      const reset = await untilAborted(Promise.resolve().then(() => runners.resetBetweenChecks?.(signal)), signal).then(() => true, () => false);
+      if (!reset) {
+        resetFailed = true;
+        entries.push(entry("not_run", signal.aborted ? "AgentX stopped before this check ran." : "AgentX did not run this check: the test services could not be put back between the checks."));
+        continue;
+      }
+    }
+    first = false;
     const remaining = options.budgetMs - (now() - startedAt);
     if (remaining < MIN_CHECK_START_MS) {
       entries.push(entry("not_run", "AgentX did not run this check: the time budget for checks ran out."));
