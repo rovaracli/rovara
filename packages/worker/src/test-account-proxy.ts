@@ -117,7 +117,7 @@ function ipv6Bytes(address: string): number[] | undefined {
 
 /**
  * Whether an address is one a test account must never be reached at: loopback, private, link-local (the metadata address included), shared, multicast, reserved, unspecified. For IPv6, by prefix on the 16 bytes:
- * ::/96 (unspecified, loopback and IPv4-compatible), ::ffff:0:0/96 (every IPv4-mapped address, whatever its IPv4), 64:ff9b::/96 (translation), 100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4: it carries an
+ * ::/96 (unspecified, loopback and IPv4-compatible), ::ffff:0:0/96 (every IPv4-mapped address, whatever its IPv4), 64:ff9b::/96 and 64:ff9b:1::/48 (translation), 100::/64, 2001::/32 (Teredo), 2001:db8::/32, 2002::/16 (6to4: it carries an
  * IPv4 address that could be anything), fc00::/7, fe80::/10, fec0::/10 (deprecated site-local) and ff00::/8. Anything that is not an address at all is forbidden.
  */
 export function isForbiddenAddress(address: string): boolean {
@@ -136,6 +136,7 @@ export function isForbiddenAddress(address: string): boolean {
   return zeros(0, 12) // ::/96
     || (zeros(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff) // ::ffff:0:0/96
     || (first === 0x0064 && second === 0xff9b && zeros(4, 12)) // 64:ff9b::/96
+    || (first === 0x0064 && second === 0xff9b && bytes[4] === 0x00 && bytes[5] === 0x01) // 64:ff9b:1::/48 (RFC 8215 local-use translation)
     || (first === 0x0100 && zeros(2, 8)) // 100::/64
     || (first === 0x2001 && second === 0x0000) // 2001::/32
     || (first === 0x2001 && second === 0x0db8) // 2001:db8::/32

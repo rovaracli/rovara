@@ -89,7 +89,7 @@ describe("names and addresses", () => {
       ["::/96 compatible public", "::8.8.8.8"], ["::/96 hex", "0:0:0:0:0:0:808:808"],
       ["::ffff:0:0/96 public dotted", "::ffff:8.8.8.8"], ["::ffff:0:0/96 public hex", "::ffff:808:808"], ["::ffff:0:0/96 private", "::ffff:10.0.0.1"], ["::ffff:0:0/96 metadata", "::ffff:169.254.169.254"],
       ["::ffff:0:0/96 spelled out", "0:0:0:0:0:ffff:808:808"], ["::ffff:0:0/96 upper case", "::FFFF:8.8.8.8"],
-      ["64:ff9b::/96", "64:ff9b::808:808"], ["64:ff9b::/96 dotted", "64:ff9b::8.8.8.8"], ["100::/64", "100::1"],
+      ["64:ff9b::/96", "64:ff9b::808:808"], ["64:ff9b:1::/48 local-use NAT64", "64:ff9b:1::1"], ["64:ff9b:1::/48 upper end", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"], ["64:ff9b:1::/48 dotted tail", "64:ff9b:1::8.8.8.8"], ["64:ff9b:1::/48 inside", "64:ff9b:1:abcd::1"], ["64:ff9b::/96 dotted", "64:ff9b::8.8.8.8"], ["100::/64", "100::1"],
       ["fec0::/10 site-local", "fec0::1"], ["fec0::/10 upper end", "feff:ffff::1"], ["fe80::/10 link-local", "fe80::1"], ["fe80::/10 with a zone", "fe80::1%eth0"], ["fe80::/10 upper end", "febf::1"],
       ["2002::/16 6to4 public", "2002:808:808::1"], ["2002::/16 6to4 private", "2002:a00:1::1"], ["2002::/16 6to4 metadata", "2002:a9fe:a9fe::"], ["2002::/16 first", "2002::"], ["2002::/16 last", "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff"],
       ["2001::/32 Teredo", "2001:0:4136:e378:8000:63bf:3fff:fdd2"], ["2001::/32 first", "2001::"], ["2001::/32 compressed", "2001::1"], ["2001:db8::/32 documentation", "2001:db8::1"],
@@ -97,7 +97,7 @@ describe("names and addresses", () => {
     ];
     for (const [label, address] of probes) expect(isForbiddenAddress(address), `${label}: ${address}`).toBe(true);
     // The neighbours of those ranges are public addresses and stay reachable.
-    for (const address of ["2001:1::1", "2001:4860:4860::8888", "2003::1", "2001:db9::1", "fe00::1", "ec00::1", "fbff::1", "64:ff9a::1", "101::1", "100:0:0:1::1", "1::1", "::ff00:808:808", "::fffe:808:808", "::ff:808:808"]) {
+    for (const address of ["2001:1::1", "2001:4860:4860::8888", "2003::1", "2001:db9::1", "fe00::1", "ec00::1", "fbff::1", "64:ff9a::1", "64:ff9b:2::1", "64:ff9b:101::1", "64:ff9b:ffff::1", "64:ff9c:1::1", "101::1", "100:0:0:1::1", "1::1", "::ff00:808:808", "::fffe:808:808", "::ff:808:808"]) {
       expect(isForbiddenAddress(address), address).toBe(false);
     }
     for (const notAnAddress of ["", "not-an-address", "1.2.3", "::g", ":::", "1:2:3:4:5:6:7:8:9", "::ffff:999.1.1.1"]) expect(isForbiddenAddress(notAnAddress), notAnAddress).toBe(true);

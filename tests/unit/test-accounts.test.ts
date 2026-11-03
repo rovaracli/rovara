@@ -45,6 +45,7 @@ describe("while the ta switch is off", () => {
       () => h.secretsClass.put(ORG, "ta-x", "value", "x"),
       () => h.secretsClass.putPending(ORG, "ta-x", "value", "x"),
       () => h.secretsClass.promote(ORG, "ta-x", "v"),
+      () => h.secretsClass.currentVersionId(ORG, "ta-x"),
       () => h.secretsClass.discardPending(ORG, "ta-x", "v"),
       () => h.secretsClass.scheduleDelete(ORG, "ta-x"),
       () => h.secretsClass.mintResolveGrant(ORG, "ta-x"),
@@ -591,10 +592,10 @@ describe("the secrets class refuses a session it did not ask for", () => {
 // ---- the review fixes (Opus review of bc5719055)
 
 /** The harness's secrets port with some methods replaced, to fail one step. */
-function secretsWith(h: Harness, over: Partial<Record<"put" | "putPending" | "promote" | "discardPending" | "scheduleDelete" | "mintResolveGrant", (...args: never[]) => Promise<unknown>>>): void {
+function secretsWith(h: Harness, over: Partial<Record<"put" | "putPending" | "promote" | "currentVersionId" | "discardPending" | "scheduleDelete" | "mintResolveGrant", (...args: never[]) => Promise<unknown>>>): void {
   const real = h.deps.secrets;
   h.deps.secrets = {
-    put: real.put.bind(real), putPending: real.putPending.bind(real), promote: real.promote.bind(real), discardPending: real.discardPending.bind(real),
+    put: real.put.bind(real), putPending: real.putPending.bind(real), promote: real.promote.bind(real), currentVersionId: real.currentVersionId.bind(real), discardPending: real.discardPending.bind(real),
     scheduleDelete: real.scheduleDelete.bind(real), mintResolveGrant: real.mintResolveGrant.bind(real), ...over,
   } as never;
 }
@@ -709,6 +710,73 @@ describe("M1: a rotation serves the new value only after its row is committed", 
     expect(JSON.stringify(h.store.audits)).not.toContain("Qk7mP2xR9v");
   });
 
+  it("double fault, lost answer: when the promotion's call fails but AWSCURRENT already points at the new version, the rotation is done and nothing is reverted", async () => {
+    const h = harness();
+    const before = await active(h);
+    const real = h.deps.secrets;
+    secretsWith(h, { promote: async (orgId: string, accountId: string, versionId: string) => { await real.promote(orgId, accountId, versionId); throw agentXFailure(); } });
+    const next = stripeTest().replace(/.$/u, "L");
+    const after = await rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: next });
+    expect(valueOf(h, before)).toBe(next);
+    expect(stageOf(h, before, "AWSCURRENT")).toBe(after.secretVersionId);
+    expect(stageOf(h, before, "AWSPENDING")).toBeUndefined();
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    expect(row.version).toBe(after.version);
+    expect(row.secretVersionId).toBe(after.secretVersionId);
+    expect(row.account.status).toBe("active");
+    expect(h.store.audits.map((audit) => audit.action)).not.toContain("test_account.rotation_failed");
+    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.rotated" });
+  });
+
+  it("double fault, no answer about the stages: treated as a failed promotion and put back", async () => {
+    const h = harness();
+    const before = await active(h);
+    const oldValue = valueOf(h, before);
+    secretsWith(h, { promote: () => Promise.reject(agentXFailure()), currentVersionId: () => Promise.reject(agentXFailure()) });
+    expect((await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }))).code).toBe("RUNTIME_UNAVAILABLE");
+    expect(valueOf(h, before)).toBe(oldValue);
+    const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+    expect(row.account.status).toBe("active");
+    expect(row.secretVersionId).toBe(before.secretVersionId);
+    expect(h.store.audits.at(-1)).toMatchObject({ action: "test_account.rotation_failed", facts: { cause: "promote" } });
+  });
+
+  it("double fault, the row cannot be put back: the account is suspended and the failure audited with a fixed reason", async () => {
+    for (const how of ["lost", "throws"] as const) {
+      const h = harness();
+      const before = await active(h);
+      const oldValue = valueOf(h, before);
+      secretsWith(h, { promote: () => Promise.reject(agentXFailure()) });
+      const commit = h.store.commit.bind(h.store);
+      let calls = 0;
+      h.store.commit = (next, expected, audit, conditions) => {
+        calls += 1;
+        if (calls === 2) return how === "lost" ? Promise.resolve(false) : Promise.reject(new Error("store down"));
+        return commit(next, expected, audit, conditions);
+      };
+      const failed = await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }));
+      expect(failed.code, how).toBe("RUNTIME_UNAVAILABLE");
+      expect(valueOf(h, before), how).toBe(oldValue);
+      const row = h.store.rows.get(`${ORG}#${before.account.id}`)!;
+      expect(row.account.status, how).toBe("suspended");
+      expect(row.account.expiresAt, how).toBeUndefined();
+      expect(isTestAccountUsableAt(row.account, T0 + 1), how).toBe(false);
+      expect(h.store.audits.at(-1), how).toMatchObject({ action: "test_account.rotation_failed", facts: { cause: "revert_failed" } });
+      expect((await resolveAccountsForRound(h.deps, { orgId: ORG, projectId: "orders", place: "sealed_round", accountIds: [before.account.id] }))[0], how).toMatchObject({ ok: false });
+    }
+  });
+
+  it("double fault, nothing can be written: the original failure is still the answer", async () => {
+    const h = harness();
+    const before = await active(h);
+    secretsWith(h, { promote: () => Promise.reject(agentXFailure()) });
+    const commit = h.store.commit.bind(h.store);
+    let calls = 0;
+    h.store.commit = (next, expected, audit, conditions) => { calls += 1; return calls === 1 ? commit(next, expected, audit, conditions) : Promise.reject(new Error("store down")); };
+    expect((await rejects(rotateTestAccountSecret(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version, secretValue: stripeTest() }))).code).toBe("RUNTIME_UNAVAILABLE");
+    expect(calls).toBe(3);
+  });
+
   it("refuses to promote a version that is not the pending one", async () => {
     const h = harness();
     const before = await active(h);
@@ -767,7 +835,7 @@ describe("L4: deleting is committed before the secret is scheduled", () => {
     const before = await active(h);
     const timeline: string[] = [];
     const real = h.deps.secrets;
-    secretsWith(h, { scheduleDelete: async (...args: never[]) => { timeline.push(`schedule:${h.store.rows.get(`${ORG}#${before.account.id}`)!.account.status}`); await (real.scheduleDelete)(...args); } });
+    secretsWith(h, { scheduleDelete: async (orgId: string, accountId: string) => { timeline.push(`schedule:${h.store.rows.get(`${ORG}#${before.account.id}`)!.account.status}`); await real.scheduleDelete(orgId, accountId); } });
     await deleteTestAccount(h.deps, h.caller(ADMIN_C), { id: before.account.id, expectedVersion: before.version });
     expect(timeline).toEqual(["schedule:deleting"]);
     expect(h.store.audits.slice(-2).map((audit) => audit.action)).toEqual(["test_account.deleting", "test_account.deleted"]);

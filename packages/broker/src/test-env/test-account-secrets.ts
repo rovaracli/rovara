@@ -164,6 +164,18 @@ export class TestAccountSecrets {
     await this.discardPending(orgId, accountId, versionId).catch(() => undefined);
   }
 
+  /** The version id that carries `AWSCURRENT` now, read fresh from the secret's stages (no value is read). Undefined when no version carries it. */
+  async currentVersionId(orgId: string, accountId: string): Promise<string | undefined> {
+    this.gate();
+    const { org, name } = this.admit(orgId, accountId);
+    try {
+      const described = await this.run(org, (client) => client.send(new DescribeSecretCommand({ SecretId: name })));
+      return Object.entries(described.VersionIdsToStages ?? {}).find(([, labels]) => labels.includes(TEST_ACCOUNT_SECRET_VERSION_STAGE))?.[0];
+    } catch (error) {
+      throw this.refusal(error);
+    }
+  }
+
   /** Takes `AWSPENDING` off a version that will not be promoted (the row was not committed). Best effort for the caller; `AWSCURRENT` is not touched. */
   async discardPending(orgId: string, accountId: string, versionId: string): Promise<void> {
     this.gate();

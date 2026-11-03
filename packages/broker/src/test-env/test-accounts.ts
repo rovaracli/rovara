@@ -86,6 +86,8 @@ export interface TestAccountSecretsPort {
   /** Rotation: the new value as a version staged AWSPENDING (AWSCURRENT does not move), then `promote` after the row naming it is committed, or `discardPending` when it will not be. */
   putPending(orgId: string, accountId: string, key: string, value: string): Promise<string>;
   promote(orgId: string, accountId: string, versionId: string): Promise<void>;
+  /** The version id AWSCURRENT points at now (read fresh), or undefined when it cannot be told. */
+  currentVersionId(orgId: string, accountId: string): Promise<string | undefined>;
   discardPending(orgId: string, accountId: string, versionId: string): Promise<void>;
   scheduleDelete(orgId: string, accountId: string): Promise<void>;
   mintResolveGrant(orgId: string, accountId: string): Promise<ResolveGrant>;
@@ -463,14 +465,34 @@ export async function rotateTestAccountSecret(deps: TestAccountDeps, caller: Tes
   try {
     await deps.secrets.promote(caller.orgId, account.id, pendingId);
   } catch (error) {
+    // The promotion may have taken effect even though the call failed (a lost answer): look at the stages before undoing anything.
+    const serving = await deps.secrets.currentVersionId(caller.orgId, account.id).catch(() => undefined);
     await deps.secrets.discardPending(caller.orgId, account.id, pendingId).catch(() => undefined);
-    // The row goes back to the version that still serves, and the failed rotation is audited (best effort: the failure itself is the answer).
+    // AWSCURRENT already points at the new version: the rotation is done, and the row that names it is already committed.
+    if (serving === pendingId) return stored;
+    // Otherwise the row goes back to the version that still serves, and the failed rotation is audited (best effort: the failure itself is the answer).
     const reverted: StoredTestAccount = { ...stored, account, version: stored.version + 1, ...(current.secretVersionId === undefined ? {} : { secretVersionId: current.secretVersionId }) };
     if (current.secretVersionId === undefined) delete reverted.secretVersionId;
-    await deps.store.commit(reverted, stored.version, auditOf(deps, who, "test_account.rotation_failed", reverted, { cause: "promote" }), []).catch(() => false);
+    const putBack = await deps.store.commit(reverted, stored.version, auditOf(deps, who, "test_account.rotation_failed", reverted, { cause: "promote" }), []).catch(() => false);
+    // Neither the secret nor the row could be settled: the row names a version that does not serve. The account is suspended (unusable) and the failure audited with a fixed reason.
+    if (!putBack) await suspendAfterFailedRotation(deps, caller.orgId, account.id, who);
     throw error;
   }
   return stored;
+}
+
+/** Last resort of a rotation whose promotion failed and whose row could not be put back: suspend the account from its latest row and audit `rotation_failed` with the fixed reason `revert_failed`. Best effort; never throws. */
+async function suspendAfterFailedRotation(deps: TestAccountDeps, orgId: OrgId, accountId: string, who: Who): Promise<void> {
+  try {
+    const latest = await deps.store.get(orgId, accountId);
+    if (latest === undefined || latest.account.status === "suspended") return;
+    const { expiresAt: _expiresAt, ...rest } = latest.account;
+    void _expiresAt;
+    const suspended: StoredTestAccount = { ...latest, account: { ...rest, status: "suspended" }, version: latest.version + 1 };
+    await deps.store.commit(suspended, latest.version, auditOf(deps, who, "test_account.rotation_failed", suspended, { cause: "revert_failed" }), []);
+  } catch {
+    // Nothing more can be done from here; the original failure is the answer.
+  }
 }
 
 /** Suspends an account at once (a live admin, no second person). Anything not already suspended can be suspended; the account is unusable from this commit. */
