@@ -13,6 +13,8 @@ export interface FakeServicesDockerOptions {
   failConnect?: boolean;
   /** Rows the listing commands (`ps`, `network ls`) answer, tab separated: id, family, created, workspace, expires. */
   listing?: readonly string[];
+  /** The exit code of a `docker exec` (default 0): lets a test fail the command that runs in one container. */
+  execExit?: (args: readonly string[]) => number;
 }
 
 export interface RecordedExec {
@@ -87,7 +89,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
           try { recorded.envFile = readFileSync(args[file + 1]!, "utf8"); } catch { /* the file is already gone */ }
         }
         execs.push(recorded);
-        return answer();
+        return answer(options.execExit?.(args) ?? 0);
       }
       return answer();
     },

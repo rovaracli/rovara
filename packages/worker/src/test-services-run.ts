@@ -32,6 +32,7 @@ import {
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import type { ArtifactSink } from "./artifacts.js";
+import type { CommandResult } from "./readiness.js";
 import {
   checkSandboxPlan, writeCheckSandboxFiles,
   type CheckSandboxNetwork, type CheckSandboxPlan,
@@ -172,16 +173,20 @@ export const TEST_SERVICES_RUN_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_RUN_DIR";
 export const TEST_SERVICES_CATALOG_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_CATALOG_DIR";
 export const TEST_SERVICES_EDITION_ENVIRONMENT = "AGENTX_TEST_SERVICES_EDITION";
 export const TEST_SERVICES_MAX_MEM_ENVIRONMENT = "AGENTX_TEST_SERVICES_MAX_MEM_MIB";
-/** The trusted catalog-signing public keys (PEM, one or more) in the catalog directory. */
-export const TEST_SERVICES_TRUSTED_KEYS_FILE = "trusted-keys.pem";
+/**
+ * The catalog-signing public keys this build trusts. OWNER RULE: they are compiled into the release and are NEVER read from a file, the environment or SSM at runtime. s1-infra-catalog adds the contract constants
+ * `CATALOG_TRUSTED_SIGNING_KEYS` (empty for now) and `CATALOG_STAGING_ONLY_SIGNING_KEYS` (honoured only when the running AWS account, read from the runtime identity, is 944937319445 AND this is a staging build).
+ * NOT PUSHED YET: until that lane is merged this returns no key, so the signature never verifies and a plan with dependencies is refused ("The test services catalog could not be used"): fail closed.
+ * SWITCH OVER: when s1-infra-catalog is merged, this one function returns its keys and nothing else changes.
+ */
+export function catalogTrustedKeys(): readonly string[] {
+  return [];
+}
 
-/** The signed catalog from a directory holding `catalog.json`, `catalog.sig.json` and `trusted-keys.pem`. Throws a fixed error when any of the three is missing or the signature does not hold. */
-export async function loadCatalogFromDirectory(directory: string): Promise<ServiceCatalog> {
+/** The signed catalog from a directory holding `catalog.json` and `catalog.sig.json`, checked against the compiled-in keys. Throws a fixed error when a file is missing or the signature does not hold. */
+export async function loadCatalogFromDirectory(directory: string, trustedKeys: readonly string[] = catalogTrustedKeys()): Promise<ServiceCatalog> {
   try {
-    const [catalogBytes, signatureBytes, keys] = await Promise.all([
-      readFile(join(directory, CATALOG_FILE)), readFile(join(directory, CATALOG_SIGNATURE_FILE)), readFile(join(directory, TEST_SERVICES_TRUSTED_KEYS_FILE), "utf8"),
-    ]);
-    const trustedKeys = keys.split(/(?<=-----END [A-Z ]+-----)/u).map((block) => block.trim()).filter((block) => block.startsWith("-----BEGIN"));
+    const [catalogBytes, signatureBytes] = await Promise.all([readFile(join(directory, CATALOG_FILE)), readFile(join(directory, CATALOG_SIGNATURE_FILE))]);
     const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys });
     if (!loaded.ok) throw new Error("catalog");
     return loaded.catalog;
@@ -681,4 +686,86 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
     const failure = failureOf(error);
     throw agentXError("RUNTIME_UNAVAILABLE", failure.message);
   }
+}
+
+// ---- the candidate check (Prove, worker side): prepare.ts
+
+/** What a candidate check's preparation is given besides the project: the plan's dependencies (pinned, from the broker), which readiness commands are test checks, and where the usage record goes. */
+export interface PrepareTestServices {
+  dependencies: readonly TaskDependencyPlan[];
+  /** The indexes of the readiness commands that are test checks and run SEALED (each in a round of its own, on fresh helpers). Absent: every readiness command. The others run in the working sandbox, with the run's variables. */
+  testChecks?: readonly number[];
+  config?: TestServicesConfig;
+  /** Receives the usage record once, after the readiness commands and before the services stop (also when the start failed: then every dependency is `started: false` with its fixed failure). */
+  onUsageRecord?(record: TestServicesUsageRecord): void | Promise<void>;
+}
+
+type ReadinessRunner = (command: Parameters<SeedPorts["runCommand"]>[0], index: number, rootPath: string) => Promise<CommandResult>;
+
+export interface PrepareServices {
+  /** The readiness runner for the preparation: a test check runs sealed, anything else as `inner` runs it. */
+  sealedReadiness(inner: ReadinessRunner): ReadinessRunner;
+  /** Hands the usage record on (once). Never throws. The services stop when the preparation's sandbox is disposed. */
+  finish(): Promise<void>;
+}
+
+function failedStartRecord(ids: readonly string[], failures: ReadonlyMap<string, TestServicesStartFailure>): TestServicesUsageRecord {
+  return { schemaVersion: 1, dependencies: ids.map((id) => ({ id, started: false, healthy: false, startMs: 0, resetCount: 0, failure: failures.get(id) ?? "start_failed" })), unknownCalls: { domains: [], otherCount: 0 } };
+}
+
+/**
+ * Called by `prepareWorkspace` after the repositories are in place and before the setup commands. Does nothing (undefined) for a preparation with no `testServices`. Otherwise starts the dependencies for the preparation's
+ * sandbox (setup and readiness commands then run with the run's variables, and a test check runs sealed); a dev container is refused first, a start that fails reports a failed-start record and throws a fixed sentence
+ * (the preparation then fails and removes everything). The sandbox's `dispose()` (prepare's `finally`) tears the run down on every exit path.
+ */
+export async function startPrepareTestServices(input: { options: PrepareTestServices | undefined; sandbox: TaskSandbox | undefined; devcontainer: boolean; operationId: string; rootPath: string }): Promise<PrepareServices | undefined> {
+  const options = input.options;
+  if (options === undefined) return undefined;
+  refuseTestServicesWithDevcontainer({ dependencies: options.dependencies, devcontainer: input.devcontainer });
+  const ids = options.dependencies.map((dependency) => dependency.id);
+  const report = async (failures: ReadonlyMap<string, TestServicesStartFailure>): Promise<void> => { await Promise.resolve(options.onUsageRecord?.(failedStartRecord(ids, failures))).catch(() => undefined); };
+  const refuse = async (reason: TestServicesFailureReason): Promise<never> => { await report(new Map()); throw agentXError("RUNTIME_UNAVAILABLE", SENTENCES[reason]); };
+  if (input.sandbox === undefined) return refuse("unsupported");
+  const config = options.config ?? testServicesConfigFromEnvironment();
+  if (config === undefined) return refuse("not_configured");
+  let run: TestServicesRun;
+  try {
+    await input.sandbox.start();
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false });
+  } catch (error) {
+    const failure = failureOf(error);
+    await report(failure.failures);
+    throw agentXError("RUNTIME_UNAVAILABLE", failure.message);
+  }
+  let finished = false;
+  const unusedBase: CheckRunners = {
+    runProjectCommand: () => Promise.reject(new Error("the working sandbox's runners run no check")),
+    runAgentCommand: () => Promise.reject(new Error("the working sandbox's runners run no check")),
+  };
+  return {
+    sealedReadiness(inner) {
+      return async (command, index, rootPath) => {
+        if (options.testChecks !== undefined && !options.testChecks.includes(index)) return inner(command, index, rootPath);
+        const runners = run.checkRunners(unusedBase);
+        const signal = new AbortController().signal;
+        try {
+          try {
+            await runners.freshServices?.(signal);
+          } catch {
+            return { exitCode: -1, stdout: "", stderr: "AgentX did not run this check: the test services could not be put back as they were seeded." };
+          }
+          const result = await runners.runProjectCommand(command, signal);
+          return { exitCode: result.exitCode ?? -1, timedOut: result.timedOut, stdout: result.stdout, stderr: result.stderr };
+        } finally {
+          await runners.endRound?.().catch(() => undefined);
+        }
+      };
+    },
+    async finish() {
+      if (finished) return;
+      finished = true;
+      const record = await run.usageRecord().catch(() => undefined);
+      if (record !== undefined) await Promise.resolve(options.onUsageRecord?.(record)).catch(() => undefined);
+    },
+  };
 }
