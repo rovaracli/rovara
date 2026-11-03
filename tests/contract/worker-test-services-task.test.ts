@@ -276,7 +276,7 @@ function implementAdapter(): PiSessionAdapter {
   };
 }
 
-describe("an IMPLEMENT run (the default mode) with no dependencies in the plan is today's, call for call", () => {
+describe("a coding run (the default mode; the contract allows a test environment plan only in CHECKS mode) is today's, call for call", () => {
   it("docker calls and events are the golden ones", async () => {
     vi.stubEnv("AGENTX_RUNTIME", "ec2");
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
@@ -287,15 +287,192 @@ describe("an IMPLEMENT run (the default mode) with no dependencies in the plan i
     const events: unknown[] = [];
     const invocation = {
       protocolVersion: 1, kind: "task", operationId: OPERATION, workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
-      payload: { conversationId: randomUUID(), prompt: "run the tests", testEnvironment: checksInvocation(false).payload.testEnvironment },
+      payload: { conversationId: randomUUID(), prompt: "run the tests" },
     } as never;
     const result = await runTaskInvocation(invocation, {
       rootPath: root, model: { provider: "fixture", modelId: "m" }, piAdapter: implementAdapter(), eventSink: (event: unknown) => { events.push(event); return Promise.resolve(); }, artifactSink: () => Promise.resolve(),
       taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE },
     } as never).then((value) => ({ value }), (error: unknown) => ({ error }));
     expect("value" in result, String("error" in result ? (result.error as Error).message : "")).toBe(true);
-    expect(normalised(fake.calls, root)).toMatchInlineSnapshot();
-    expect(normalised(events, root)).toMatchInlineSnapshot();
+    expect(normalised(fake.calls, root)).toMatchInlineSnapshot(`
+      [
+        [
+          "network",
+          "inspect",
+          "--format",
+          "{{.Driver}} {{json .Options}} {{.Internal}}",
+          "agentx-task",
+        ],
+        [
+          "run",
+          "--detach",
+          "--name",
+          "<sandbox>",
+          "--label",
+          "agentx.task=<uuid>",
+          "--label",
+          "agentx.workspace=<ws>",
+          "--network",
+          "agentx-task",
+          "--user",
+          "1000:1000",
+          "--cpus",
+          "17",
+          "--memory",
+          "39321m",
+          "--memory-swap",
+          "39321m",
+          "--pids-limit",
+          "4096",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--volume",
+          "<root>:<root>",
+          "--tmpfs",
+          "<root>/.agentx:ro,noexec,nosuid,size=4k",
+          "--tmpfs",
+          "<root>/agent-sessions:ro,noexec,nosuid,size=4k",
+          "--workdir",
+          "<root>",
+          "--entrypoint",
+          "/usr/bin/tini",
+          "registry.example.test/agentx/worker@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "--",
+          "sleep",
+          "infinity",
+        ],
+        [
+          "rm",
+          "--force",
+          "<sandbox>",
+        ],
+      ]
+    `);
+    expect(normalised(events, root)).toMatchInlineSnapshot(`
+      [
+        [
+          {
+            "payload": {
+              "loadedKnowledge": {
+                "budget": {
+                  "additionsBytes": 0,
+                  "additionsLimitBytes": 131072,
+                  "alwaysOnBytes": 0,
+                  "alwaysOnLimitBytes": 131072,
+                  "skipped": 0,
+                },
+                "items": [],
+                "omitted": {
+                  "available": 0,
+                  "skipped": 0,
+                },
+                "repos": [
+                  {
+                    "name": "sample",
+                    "readAt": "working",
+                  },
+                ],
+                "schemaVersion": 1,
+                "skills": [],
+                "skippedSkills": [],
+                "sources": [],
+                "stage": "build",
+              },
+            },
+            "timestamp": "<time>",
+            "type": "progress",
+          },
+        ],
+        [
+          {
+            "payload": {
+              "conversation": {
+                "reopened": false,
+                "started": true,
+              },
+              "conversationId": "<uuid>",
+              "status": "RUNNING",
+            },
+            "timestamp": "<time>",
+            "type": "lifecycle",
+          },
+        ],
+        [
+          {
+            "payload": {
+              "checks": {
+                "agentClaim": "none",
+                "checks": [],
+                "extraTry": "not_needed",
+                "notVerifiedReason": "stopped",
+                "preambleSha256": "13700ee837b3fa8f1928cc23b88ce6c94d9bef179bb134758f95b4e6d69a47f3",
+                "preambleVersion": "4",
+                "source": "none",
+                "status": "not_verified",
+              },
+              "conversationId": "<uuid>",
+              "sessionFile": "agent-sessions/[server-generated]",
+              "status": "SUCCEEDED",
+            },
+            "timestamp": "<time>",
+            "type": "result",
+          },
+          {
+            "payload": {
+              "cacheReadRatio": 0,
+              "cacheRetention": "short",
+              "costUsd": 0,
+              "modelId": "m",
+              "outcome": "SUCCEEDED",
+              "provider": "fixture",
+              "schemaVersion": 1,
+              "tokens": {
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "input": 1,
+                "output": 1,
+                "total": 2,
+              },
+            },
+            "timestamp": "<time>",
+            "type": "usage",
+          },
+          {
+            "payload": {
+              "loadedKnowledge": {
+                "budget": {
+                  "additionsBytes": 0,
+                  "additionsLimitBytes": 131072,
+                  "alwaysOnBytes": 0,
+                  "alwaysOnLimitBytes": 131072,
+                  "skipped": 0,
+                },
+                "items": [],
+                "omitted": {
+                  "available": 0,
+                  "skipped": 0,
+                },
+                "repos": [
+                  {
+                    "name": "sample",
+                    "readAt": "working",
+                  },
+                ],
+                "schemaVersion": 1,
+                "skills": [],
+                "skippedSkills": [],
+                "sources": [],
+                "stage": "build",
+              },
+            },
+            "timestamp": "<time>",
+            "type": "progress",
+          },
+        ],
+      ]
+    `);
   });
 });
 

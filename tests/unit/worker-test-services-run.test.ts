@@ -10,7 +10,7 @@ import { withDetachedWorking } from "../../packages/worker/src/check-sandbox.js"
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 import {
-  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, catalogTrustedKeys, loadCatalogFromDirectory, testServicesAdvertisedFeatures, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
+  SEALED_ROUND_PORTS, TEST_SERVICES_USAGE_ARTIFACT, TestServicesError, loadCatalogFromDirectory, testServicesAdvertisedFeatures, neverValuesFor, startTaskTestServices, startTestServicesRun, testServicesAtWorkerBoot, testServicesConfigFromEnvironment, withTestServices,
   type SealedRoundPorts, type SealedRoundSetup, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
@@ -700,14 +700,16 @@ describe("cancel, a pending start, teardown warnings", () => {
   it("a cancel while the images are pulled stops the start, removes everything and ends the cancel registration", async () => {
     const h = await harness();
     const original = h.fake.docker.run.bind(h.fake.docker);
+    let pulling = false;
     h.fake.docker.run = (args, options) => (args[0] === "pull"
-      ? new Promise((_resolve, reject) => { options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
+      ? new Promise((_resolve, reject) => { pulling = true; if (options?.signal?.aborted === true) reject(new Error("aborted")); options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
       : original(args, options));
     let abort: (() => Promise<void>) | undefined;
     let unregistered = false;
     const cancellation = { register: (_id: string, session?: { abort(): Promise<void> }) => { abort = session?.abort.bind(session); return () => { unregistered = true; }; } };
     const starting = startTaskTestServices({ plan: planWith([dependency()]), mode: "CHECKS", sandbox: h.sandbox, devcontainer: false, nightly: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [], config: h.config, artifactSink: () => Promise.resolve(), cancellation });
     await vi.waitFor(() => expect(abort).toBeDefined());
+    await vi.waitFor(() => expect(pulling).toBe(true));
     await abort!();
     await expect(starting).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(unregistered).toBe(true);
@@ -774,8 +776,10 @@ describe("trusted catalog keys are compiled in, never read from a file or the en
     vi.stubEnv("AGENTX_TEST_SERVICES_TRUSTED_KEYS", pem);
     vi.stubEnv("AGENTX_CATALOG_PUBLIC_KEYS", pem);
     try {
-      expect(catalogTrustedKeys()).toEqual([]);
-      await expect(loadCatalogFromDirectory(dir)).rejects.toMatchObject({ reason: "catalog" });
+      await expect(loadCatalogFromDirectory(dir, { runningAccountId: "944937319445" })).rejects.toMatchObject({ reason: "catalog" });
+      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
+      // The same files verify only for a key the caller hands the test seam: the directory is never a source of keys.
+      await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined }, [pem])).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
     } finally {
       vi.unstubAllEnvs();
     }

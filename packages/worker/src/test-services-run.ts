@@ -27,7 +27,7 @@ import { open, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import {
   CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
-  type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
+  type CatalogEdition, type CatalogEntry, type CatalogTrustContext, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
@@ -175,21 +175,17 @@ export const TEST_SERVICES_RUN_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_RUN_DIR";
 export const TEST_SERVICES_CATALOG_DIR_ENVIRONMENT = "AGENTX_TEST_SERVICES_CATALOG_DIR";
 export const TEST_SERVICES_EDITION_ENVIRONMENT = "AGENTX_TEST_SERVICES_EDITION";
 export const TEST_SERVICES_MAX_MEM_ENVIRONMENT = "AGENTX_TEST_SERVICES_MAX_MEM_MIB";
+/** The AWS account the instance runs in: root writes it at boot from the instance identity (IMDSv2; the worker container cannot reach the metadata service). */
+export const TEST_SERVICES_ACCOUNT_ENVIRONMENT = "AGENTX_TEST_SERVICES_ACCOUNT_ID";
 /**
- * The catalog-signing public keys this build trusts. OWNER RULE: they are compiled into the release and are NEVER read from a file, the environment or SSM at runtime. s1-infra-catalog adds the contract constants
- * `CATALOG_TRUSTED_SIGNING_KEYS` (empty for now) and `CATALOG_STAGING_ONLY_SIGNING_KEYS` (honoured only when the running AWS account, read from the runtime identity, is 944937319445 AND this is a staging build).
- * NOT PUSHED YET: until that lane is merged this returns no key, so the signature never verifies and a plan with dependencies is refused ("The test services catalog could not be used"): fail closed.
- * SWITCH OVER: when s1-infra-catalog is merged, this one function returns its keys and nothing else changes.
+ * The signed catalog from a directory holding `catalog.json` and `catalog.sig.json`. OWNER RULE: the trusted keys are compiled into the release (contracts `catalog-trust.ts`: `CATALOG_TRUSTED_SIGNING_KEYS`, and the
+ * staging-only list honoured only in the staging account AND a staging build) and are NEVER read from a file, the environment or SSM here. The only thing passed in is the account id the worker runs in (written at boot
+ * from the instance identity, never from configuration a customer sets); a catalog that no trusted key signed is refused with one fixed error. `testKeys` is a test seam (the contract's own `trustedKeys` override).
  */
-export function catalogTrustedKeys(): readonly string[] {
-  return [];
-}
-
-/** The signed catalog from a directory holding `catalog.json` and `catalog.sig.json`, checked against the compiled-in keys. Throws a fixed error when a file is missing or the signature does not hold. */
-export async function loadCatalogFromDirectory(directory: string, trustedKeys: readonly string[] = catalogTrustedKeys()): Promise<ServiceCatalog> {
+export async function loadCatalogFromDirectory(directory: string, trust: CatalogTrustContext, testKeys?: readonly string[]): Promise<ServiceCatalog> {
   try {
     const [catalogBytes, signatureBytes] = await Promise.all([readFile(join(directory, CATALOG_FILE)), readFile(join(directory, CATALOG_SIGNATURE_FILE))]);
-    const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trustedKeys });
+    const loaded = loadSignedCatalog({ catalogBytes, signatureBytes, trust, ...(testKeys === undefined ? {} : { trustedKeys: testKeys }) });
     if (!loaded.ok) throw new Error("catalog");
     return loaded.catalog;
   } catch {
@@ -214,7 +210,7 @@ export function testServicesConfigFromEnvironment(
   const mem = Number(environment[TEST_SERVICES_MAX_MEM_ENVIRONMENT] ?? DEFAULT_MAX_MEM_MIB);
   return {
     docker, registry, catalogEnv, edition, probeImage, runDirectoryParent, maxMemMiB: Number.isSafeInteger(mem) && mem > 0 ? mem : DEFAULT_MAX_MEM_MIB,
-    catalog: () => loadCatalogFromDirectory(catalogDirectory), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
+    catalog: () => loadCatalogFromDirectory(catalogDirectory, { runningAccountId: environment[TEST_SERVICES_ACCOUNT_ENVIRONMENT] }), ...(roundPorts === undefined ? {} : { sealedRound: roundPorts }),
   };
 }
 
@@ -605,6 +601,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
     // The images, by digest, before anything starts (the launcher runs with `--pull=never`).
     for (const item of working) {
+      if (input.signal?.aborted === true) throw new TestServicesError("start_failed");
       const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, item.plan.repository)}@sha256:${item.plan.digest}`;
       const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(input.signal === undefined ? {} : { signal: input.signal }) }).catch(() => undefined);
       if (present?.exitCode === 0) continue;

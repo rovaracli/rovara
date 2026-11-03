@@ -11,7 +11,7 @@ import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TaskDependencyPla
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
-import { SEALED_ROUND_PORTS, catalogTrustedKeys, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
+import { SEALED_ROUND_PORTS, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
 import { fakeServicesDocker, type FakeServicesDockerOptions } from "../support/fake-services-docker.js";
 
 const run = promisify(execFile);
@@ -163,30 +163,21 @@ describe("a candidate check that carries a dependency plan", () => {
 });
 
 describe("the catalog's trusted keys are compiled in, never read at runtime", () => {
-  it("catalogTrustedKeys() has no key until s1-infra-catalog's constants are merged, so a signed catalog does not verify and the run is refused", async () => {
-    expect(catalogTrustedKeys()).toEqual([]);
-    const dir = await temp("rsv-catalog-");
-    await writeFile(join(dir, "catalog.json"), readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url)));
-    await writeFile(join(dir, "catalog.sig.json"), "{}");
-    await writeFile(join(dir, "trusted-keys.pem"), "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n");
-    await expect(loadCatalogFromDirectory(dir)).rejects.toMatchObject({ reason: "catalog" });
-  });
-
-  it("loadCatalogFromDirectory accepts a catalog signed by a key it is given and refuses one signed by another", async () => {
+  it("loadCatalogFromDirectory accepts a catalog signed by a key the test seam is given and refuses one signed by another or by none", async () => {
     const bytes = readFileSync(new URL("../../environments/service-catalog/catalog.json", import.meta.url));
-    const signedBy = (privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"], publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => {
-      const der = publicKey.export({ type: "spki", format: "der" });
-      return { keyId: createHash("sha256").update(der).digest("hex"), signature: sign("sha256", catalogSigningMessage(bytes), { key: privateKey, dsaEncoding: "der" }).toString("base64") };
-    };
     const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     const other = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     const dir = await temp("rsv-catalog-signed-");
-    const { keyId, signature } = signedBy(pair.privateKey, pair.publicKey);
+    const keyId = createHash("sha256").update(pair.publicKey.export({ type: "spki", format: "der" })).digest("hex");
+    const signature = sign("sha256", catalogSigningMessage(bytes), { key: pair.privateKey, dsaEncoding: "der" }).toString("base64");
     await writeFile(join(dir, "catalog.json"), bytes);
     await writeFile(join(dir, "catalog.sig.json"), JSON.stringify({ schemaVersion: 1, algorithm: CATALOG_SIGNATURE_ALGORITHM, keyId, catalogSha256: createHash("sha256").update(bytes).digest("hex"), signature }));
     const pem = (key: typeof pair.publicKey) => key.export({ type: "spki", format: "pem" }).toString();
-    await expect(loadCatalogFromDirectory(dir, [pem(pair.publicKey)])).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
-    await expect(loadCatalogFromDirectory(dir, [pem(other.publicKey)])).rejects.toMatchObject({ reason: "catalog" });
-    await expect(loadCatalogFromDirectory(dir, [])).rejects.toMatchObject({ reason: "catalog" });
+    const trust = { runningAccountId: "944937319445" };
+    await expect(loadCatalogFromDirectory(dir, trust, [pem(pair.publicKey)])).resolves.toMatchObject({ entries: expect.any(Array) as unknown[] });
+    await expect(loadCatalogFromDirectory(dir, trust, [pem(other.publicKey)])).rejects.toMatchObject({ reason: "catalog" });
+    // No key compiled in yet: nothing verifies in any account.
+    await expect(loadCatalogFromDirectory(dir, trust)).rejects.toMatchObject({ reason: "catalog" });
+    await expect(loadCatalogFromDirectory(dir, { runningAccountId: undefined })).rejects.toMatchObject({ reason: "catalog" });
   });
 });
