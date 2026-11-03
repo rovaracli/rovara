@@ -222,6 +222,7 @@ export async function startFakeServer(options: FakeServerOptions): Promise<Runni
     const text = (response: ServerResponse, status: number, body: string): void => { response.writeHead(status, { "content-type": "text/plain; charset=utf-8", "content-length": Buffer.byteLength(body) }); response.end(body); };
     const control: NonNullable<CoreStrategy["control"]> = {
       prefix: FAKE_CONTROL_PREFIX,
+      authorised,
       async handle(request, response, path) {
         if (!authorised(request)) return text(response, 403, "control token required");
         if (request.method === "GET" && path === `${FAKE_CONTROL_PREFIX}usage`) {

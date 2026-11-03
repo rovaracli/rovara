@@ -26,6 +26,11 @@ export interface FixtureFetchInput {
   expectedDigest: string;
   /** Test seam. */
   fetchImpl?: typeof fetch;
+  /**
+   * Test only: also accept `http://` to a loopback address (a local server in a test). Production leaves this off and the delivery URL must be https; the option is never read from a task, a plan or the
+   * environment, and a caller that sets it is a test.
+   */
+  testOnlyAllowLoopbackHttp?: boolean;
   timeoutMs?: number;
 }
 
@@ -36,7 +41,7 @@ export async function fetchFixtureSet(input: FixtureFetchInput): Promise<Fixture
   if (!DIGEST.test(input.expectedDigest)) throw new FixtureFetchRefused("bad_digest");
   let url: URL;
   try { url = new URL(input.url); } catch { throw new FixtureFetchRefused("bad_url"); }
-  if (!(url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname))) || url.username !== "" || url.password !== "") throw new FixtureFetchRefused("bad_url");
+  if (!(url.protocol === "https:" || (input.testOnlyAllowLoopbackHttp === true && url.protocol === "http:" && isLoopbackHost(url.hostname))) || url.username !== "" || url.password !== "") throw new FixtureFetchRefused("bad_url");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? FIXTURE_FETCH_TIMEOUT_MS);
   try {

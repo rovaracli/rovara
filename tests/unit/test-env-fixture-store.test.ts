@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
 import { projectDecisionCards } from "../../packages/broker/src/decisions/project.js";
 import {
-  FIXTURE_READ_URL_SECONDS, createFixtureStore, createMemoryFixturePorts, fixtureObjectKey, fixtureSetCardItem, fixtureStoreId, parseFixtureStoreId,
-  type FixtureStore, type FixtureStoreDependencies,
+  FIXTURE_READ_URL_SECONDS, createFixtureStore, fixtureSetFindings, fixtureTexts, verifiedFixtureDecision, createMemoryFixturePorts, fixtureObjectKey, fixtureSetCardItem, fixtureStoreId, parseFixtureStoreId,
+  type FixtureRecord, type FixtureStore, type FixtureStoreDependencies,
 } from "../../packages/broker/src/test-env/fixture-store.js";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa";
@@ -27,11 +27,18 @@ function makeSet(over: Record<string, unknown> = {}): FixtureSet {
   });
 }
 
+/** A maintainer's decision for the org of the session; `fresh` is a fresh sign-in, `synth` the environment's schema_synth backing. */
+const by = (orgId: string, actor: string, over: { fresh?: boolean; synth?: boolean; role?: string } = {}) => {
+  const decision = verifiedFixtureDecision({ orgId, actor, role: over.role ?? "maintainer", freshSignIn: over.fresh ?? false, schemaSynth: over.synth ?? false });
+  if (decision === undefined) throw new Error("not a maintainer");
+  return decision;
+};
 function setup(over: Partial<FixtureStoreDependencies> = {}, enabled = true) {
   const ports = createMemoryFixturePorts();
   const touched: string[] = [];
   const objects: FixtureStoreDependencies["objects"] = {
     putIfAbsent: (...args) => { touched.push("put"); return ports.objects.putIfAbsent(...args); },
+    replaceIfUnchanged: (...args) => { touched.push("replace"); return ports.objects.replaceIfUnchanged(...args); },
     get: (...args) => { touched.push("get"); return ports.objects.get(...args); },
     presignGet: (...args) => { touched.push("presign"); return ports.objects.presignGet(...args); },
   };
@@ -59,8 +66,8 @@ describe("behind the tx switch", () => {
     expect(await store.submit(ORG_A, set, { actor: "maya", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "disabled" });
     expect(await store.record(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
     expect(await store.review(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
-    expect(await store.approve(ORG_A, digest, "maya")).toEqual({ ok: false, reason: "disabled" });
-    expect(await store.reject(ORG_A, digest, "maya")).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.approve(ORG_A, digest, by(ORG_A, "maya"))).toEqual({ ok: false, reason: "disabled" });
+    expect(await store.reject(ORG_A, digest, by(ORG_A, "maya"))).toEqual({ ok: false, reason: "disabled" });
     expect(await store.deliver(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
     expect(await store.deliverById(ORG_A, fixtureStoreId(ORG_A, digest))).toEqual({ ok: false, reason: "disabled" });
     expect(await store.readApproved(ORG_A, digest)).toEqual({ ok: false, reason: "disabled" });
@@ -69,7 +76,7 @@ describe("behind the tx switch", () => {
   it("reads the switch on every call: turning it off again stops delivery of a set that was approved", async () => {
     const { store, setEnabled } = setup();
     const record = await submitOk(store);
-    await store.approve(ORG_A, record.digest, "lead");
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
     setEnabled(false);
     expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "disabled" });
@@ -110,10 +117,10 @@ describe("cross-org reads are refused", () => {
   it("answers another org's digest, another org's store id and a digest nobody holds with the same `not_found`", async () => {
     const { store, touched } = setup();
     const record = await submitOk(store, makeSet(), ORG_A);
-    await store.approve(ORG_A, record.digest, "lead");
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     const nobody = "f".repeat(64);
     const calls: Array<[string, () => Promise<unknown>]> = [
-      ["record", () => store.record(ORG_B, record.digest)], ["review", () => store.review(ORG_B, record.digest)], ["approve", () => store.approve(ORG_B, record.digest, "x")], ["reject", () => store.reject(ORG_B, record.digest, "x")],
+      ["record", () => store.record(ORG_B, record.digest)], ["review", () => store.review(ORG_B, record.digest)], ["approve", () => store.approve(ORG_B, record.digest, by(ORG_B, "x"))], ["reject", () => store.reject(ORG_B, record.digest, by(ORG_B, "x"))],
       ["deliver", () => store.deliver(ORG_B, record.digest)], ["readApproved", () => store.readApproved(ORG_B, record.digest)],
       ["deliverById", () => store.deliverById(ORG_B, fixtureStoreId(ORG_A, record.digest))],
     ];
@@ -130,8 +137,8 @@ describe("cross-org reads are refused", () => {
     const { store, touched } = setup();
     const a = await submitOk(store, makeSet(), ORG_A);
     const b = await submitOk(store, makeSet(), ORG_B);
-    await store.approve(ORG_A, a.digest, "lead");
-    await store.approve(ORG_B, b.digest, "lead");
+    await store.approve(ORG_A, a.digest, by(ORG_A, "lead"));
+    await store.approve(ORG_B, b.digest, by(ORG_B, "lead"));
     touched.length = 0;
     expect(await store.deliverById(ORG_B, fixtureStoreId(ORG_A, a.digest))).toEqual({ ok: false, reason: "not_found" });
     expect(touched).not.toContain("presign");
@@ -143,7 +150,7 @@ describe("cross-org reads are refused", () => {
     const ports = createMemoryFixturePorts({ signUrl: (key) => { seen.push(key); return `https://fixtures.invalid/${key}`; } });
     const own = createFixtureStore({ enabled: () => true, objects: ports.objects, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
     const record = await submitOk(own, makeSet(), ORG_A);
-    await own.approve(ORG_A, record.digest, "lead");
+    await own.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     await own.deliver(ORG_A, record.digest);
     expect(seen).toEqual([`private/${ORG_A}/fixtures/${record.digest}`]);
     void store;
@@ -251,7 +258,7 @@ describe("approving and delivering", () => {
     const record = await submitOk(store);
     expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
     expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
-    const approved = await store.approve(ORG_A, record.digest, "lead");
+    const approved = await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     expect(approved).toMatchObject({ ok: true, record: { status: "approved", decidedBy: "lead", decidedAt: NOW.toISOString(), version: 2 } });
     const delivery = await store.deliver(ORG_A, record.digest);
     if (!delivery.ok) throw new Error(delivery.reason);
@@ -265,22 +272,22 @@ describe("approving and delivering", () => {
   it("does not deliver a rejected set, and a decision is made once", async () => {
     const { store } = setup();
     const record = await submitOk(store);
-    expect(await store.reject(ORG_A, record.digest, "lead")).toMatchObject({ ok: true, record: { status: "rejected" } });
+    expect(await store.reject(ORG_A, record.digest, by(ORG_A, "lead"))).toMatchObject({ ok: true, record: { status: "rejected" } });
     expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
-    expect(await store.approve(ORG_A, record.digest, "lead")).toEqual({ ok: false, reason: "already_decided" });
-    expect(await store.reject(ORG_A, record.digest, "lead")).toEqual({ ok: false, reason: "already_decided" });
+    expect(await store.approve(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "already_decided" });
+    expect(await store.reject(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "already_decided" });
   });
   it("loses a race cleanly: two approvals at once, one wins", async () => {
     const { store } = setup();
     const record = await submitOk(store);
-    const [first, second] = await Promise.all([store.approve(ORG_A, record.digest, "a"), store.approve(ORG_A, record.digest, "b")]);
+    const [first, second] = await Promise.all([store.approve(ORG_A, record.digest, by(ORG_A, "a")), store.approve(ORG_A, record.digest, by(ORG_A, "b"))]);
     expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
   });
   it("hands out nothing for an object that no longer hashes to its digest, and does not approve it either", async () => {
     const { store, ports, touched } = setup();
     const pending = await submitOk(store, makeSet({ revision: 3 }));
     const record = await submitOk(store);
-    await store.approve(ORG_A, record.digest, "lead");
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     const key = fixtureObjectKey(ORG_A, record.digest);
     ports.objects.dump().set(key, new TextEncoder().encode(canonicalJson(makeSet({ revision: 9 }))));
     touched.length = 0;
@@ -288,7 +295,7 @@ describe("approving and delivering", () => {
     expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
     expect(touched).not.toContain("presign");
     ports.objects.dump().set(fixtureObjectKey(ORG_A, pending.digest), new TextEncoder().encode("not even json"));
-    expect(await store.approve(ORG_A, pending.digest, "lead")).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(await store.approve(ORG_A, pending.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "digest_mismatch" });
     // Truncated bytes that still parse as JSON are no better.
     ports.objects.dump().set(key, new TextEncoder().encode(canonicalJson(makeSet()) + " "));
     expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "digest_mismatch" });
@@ -336,9 +343,11 @@ describe("the review card (approve_fixture_set)", () => {
     expect((await cardFor(store, first)).projection.cards[0]).toMatchObject({ risk: "high" });
     // Another org's approved test-account recording does not count; this org's own does.
     const other = await submitOk(store, makeSet({ revision: 5 }), ORG_B, "test_account");
-    await store.approve(ORG_B, other.digest, "lead");
+    await store.approve(ORG_B, other.digest, by(ORG_B, "lead", { fresh: true }));
     expect((await submitOk(store, makeSet({ revision: 6 }), ORG_A, "test_account")).firstFromTestAccount).toBe(true);
-    await store.approve(ORG_A, first.digest, "lead");
+    // The first one is high: it is approved only with a fresh sign-in.
+    expect(await store.approve(ORG_A, first.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "fresh_sign_in_required" });
+    expect((await store.approve(ORG_A, first.digest, by(ORG_A, "lead", { fresh: true }))).ok).toBe(true);
     const second = await submitOk(store, makeSet({ revision: 7 }), ORG_A, "test_account");
     expect(second.firstFromTestAccount).toBe(false);
     expect((await cardFor(store, second)).projection.cards[0]).toMatchObject({ risk: "medium" });
@@ -346,12 +355,163 @@ describe("the review card (approve_fixture_set)", () => {
   it("shows an approved set as answered, with no actions", async () => {
     const { store } = setup();
     const record = await submitOk(store);
-    await store.approve(ORG_A, record.digest, "lead");
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
     const decided = (await store.record(ORG_A, record.digest));
     if (!decided.ok) throw new Error("missing");
     const reviewed = await store.review(ORG_A, record.digest);
     if (!reviewed.ok) throw new Error("missing");
     const item = fixtureSetCardItem({ record: decided.record, review: reviewed.review, project: "Orders", openPath: "/v1/app/environment/fixtures/x1", schemaSynth: false });
     expect(projectDecisionCards([item]).cards[0]).toMatchObject({ status: "approved", actions: [] });
+  });
+});
+
+describe("the scan sees keys and numbers, not only strings (M1)", () => {
+  const shell = { dependency, match };
+  const card = ["4111", "1111", "1111", "1111"].join("");
+  const akia = `${"AK"}${"IA"}${"ABCDEFGHIJKLMNOP"}`;
+  const schemaWith = (properties: Record<string, unknown>) => ({ type: "object", properties });
+  const dirtyCases: Array<[string, () => FixtureSet]> = [
+    ["an email address as a property name", () => makeSet({ responseSchema: schemaWith({ "jane.roe@acme-corp.com": { type: "string" } }) })],
+    ["an AKIA-shaped key as a property name", () => makeSet({ responseSchema: schemaWith({ [akia]: { type: "string" } }) })],
+    ["a production host as a property name", () => makeSet({ responseSchema: schemaWith({ "a.prod.example.com": { type: "string" } }) })],
+    ["a card number as a numeric enum value", () => makeSet({ responseSchema: schemaWith({ pan: { type: "number", enum: [Number(card)] } }) })],
+    ["a card number as a minimum", () => makeSet({ responseSchema: schemaWith({ pan: { type: "number", minimum: Number(card) } }) })],
+    ["a card number as a maximum", () => makeSet({ requestSchema: schemaWith({ pan: { type: "number", maximum: Number(card) } }) })],
+    ["an email address in an answer", () => makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ contact: "jane.roe@acme-corp.com" }))] })],
+    ["an AKIA-shaped key in an answer", () => makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ debug: akia }))] })],
+    ["a production host in an answer", () => makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ callback: "https://a.prod.example.com/x" }))] })],
+  ];
+  it.each(dirtyCases)("refuses at submit, and stores nothing: %s", async (_label, make) => {
+    const { store, ports } = setup();
+    expect(await store.submit(ORG_A, make(), { actor: "maya", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "data_guard" });
+    expect(ports.objects.dump().size).toBe(0);
+  });
+  it("lists the findings in a bare walker: keys and numbers are texts, a digest and a timestamp are not", () => {
+    expect(fixtureTexts({ [akia]: 5, nested: [{ "x@y.com": 4_111_111_111_111_111 }], hash: "a".repeat(64), at: "2026-11-02T00:00:00Z" })).toEqual([akia, "5", "nested", "x@y.com", "4111111111111111", "hash", "at"]);
+    expect(fixtureSetFindings({ minimum: Number(card) }, DENY)).not.toEqual([]);
+    expect(fixtureSetFindings({ minimum: 200 }, DENY)).toEqual([]);
+  });
+});
+
+describe("the scan runs again, with today's deny list, at approve and at deliver (L2)", () => {
+  const listed = (hosts: string[]) => ({ accountIds: [], hosts, arnPrefixes: [] });
+  it("refuses to approve a set that names a host added to the deny list after it was stored", async () => {
+    let deny: TestEnvProdDeny = listed([]);
+    const { store } = setup({ denyFor: () => Promise.resolve(deny) });
+    const shell = { dependency, match };
+    const record = await submitOk(store, makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ link: "https://api.example-pay.com/receipt" }))] }));
+    deny = listed(["api.example-pay.com"]);
+    expect(await store.approve(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "data_guard" });
+    expect((await store.record(ORG_A, record.digest) as { record: FixtureRecord }).record.status).toBe("pending");
+  });
+  it("stops delivering (and reading) an approved set once the list names something in it", async () => {
+    let deny: TestEnvProdDeny = listed([]);
+    const { store, touched } = setup({ denyFor: () => Promise.resolve(deny) });
+    const shell = { dependency, match };
+    const record = await submitOk(store, makeSet({ entries: [fixtureEntry(shell, charge(1), answer({ link: "https://api.example-pay.com/receipt" }))] }));
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
+    deny = listed(["api.example-pay.com"]);
+    touched.length = 0;
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "data_guard" });
+    expect(await store.deliverById(ORG_A, record.storeId)).toEqual({ ok: false, reason: "data_guard" });
+    expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "data_guard" });
+    expect(touched).not.toContain("presign");
+  });
+  it("withdraws an approved set: it is no longer delivered or read, and stays withdrawn", async () => {
+    const { store, touched } = setup();
+    const record = await submitOk(store);
+    expect(await store.withdraw(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "not_approved" });
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
+    const withdrawn = await store.withdraw(ORG_A, record.digest, by(ORG_A, "boss"));
+    expect(withdrawn).toMatchObject({ ok: true, record: { status: "withdrawn", withdrawnBy: "boss", withdrawnAt: NOW.toISOString() } });
+    touched.length = 0;
+    expect(await store.deliver(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
+    expect(await store.readApproved(ORG_A, record.digest)).toEqual({ ok: false, reason: "not_approved" });
+    expect(touched).not.toContain("presign");
+    expect(await store.approve(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "already_decided" });
+    expect(await store.withdraw(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "not_approved" });
+    // Submitting the same bytes again does not bring it back.
+    expect(await store.submit(ORG_A, makeSet(), { actor: "m", recordedFrom: "synthetic" })).toMatchObject({ ok: true, created: false, record: { status: "withdrawn" } });
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(false);
+  });
+  it("does not withdraw another org's set", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    await store.approve(ORG_A, record.digest, by(ORG_A, "lead"));
+    expect(await store.withdraw(ORG_B, record.digest, by(ORG_B, "lead"))).toEqual({ ok: false, reason: "not_found" });
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
+  });
+});
+
+describe("a decision is a verified object, not a name (L1)", () => {
+  it("refuses a bare string, a hand-written object, a copy of a real one and a decision for another org", async () => {
+    const { store } = setup();
+    const record = await submitOk(store);
+    const real = by(ORG_A, "lead");
+    const handWritten = { orgId: ORG_A, actor: "lead", freshSignIn: true, schemaSynth: false };
+    for (const decision of ["lead", handWritten, { ...real }, null, undefined]) {
+      expect(await store.approve(ORG_A, record.digest, decision as never)).toEqual({ ok: false, reason: "unauthorised" });
+      expect(await store.reject(ORG_A, record.digest, decision as never)).toEqual({ ok: false, reason: "unauthorised" });
+      expect(await store.withdraw(ORG_A, record.digest, decision as never)).toEqual({ ok: false, reason: "unauthorised" });
+    }
+    expect(await store.approve(ORG_A, record.digest, by(ORG_B, "lead"))).toEqual({ ok: false, reason: "unauthorised" });
+    expect((await store.record(ORG_A, record.digest) as { record: FixtureRecord }).record.status).toBe("pending");
+  });
+  it("mints a decision only for a maintainer of a real org with a named actor", () => {
+    const base = { orgId: ORG_A, actor: "lead", freshSignIn: false, schemaSynth: false };
+    expect(verifiedFixtureDecision({ ...base, role: "maintainer" })).toBeDefined();
+    for (const role of ["member", "viewer", "owner", "", "Maintainer"]) expect(verifiedFixtureDecision({ ...base, role })).toBeUndefined();
+    expect(verifiedFixtureDecision({ ...base, role: "maintainer", orgId: "org_x" })).toBeUndefined();
+    expect(verifiedFixtureDecision({ ...base, role: "maintainer", actor: "  " })).toBeUndefined();
+  });
+  it("needs a fresh sign-in for a high set: the first from a test account, or one the environment backs with schema_synth", async () => {
+    const { store } = setup();
+    const synth = await submitOk(store, makeSet({ revision: 3 }));
+    expect(await store.approve(ORG_A, synth.digest, by(ORG_A, "lead", { synth: true }))).toEqual({ ok: false, reason: "fresh_sign_in_required" });
+    expect((await store.approve(ORG_A, synth.digest, by(ORG_A, "lead", { synth: true, fresh: true }))).ok).toBe(true);
+    // An ordinary set needs none.
+    const plain = await submitOk(store, makeSet({ revision: 4 }));
+    expect((await store.approve(ORG_A, plain.digest, by(ORG_A, "lead"))).ok).toBe(true);
+  });
+});
+
+describe("a bad object at the key is repaired by the next submit (L5)", () => {
+  it("replaces the object with the submitted bytes when they match the digest, then approves and delivers", async () => {
+    const { store, ports } = setup();
+    const set = makeSet();
+    const record = await submitOk(store, set);
+    const key = fixtureObjectKey(ORG_A, record.digest);
+    ports.objects.dump().set(key, new TextEncoder().encode("corrupt"));
+    expect(await store.approve(ORG_A, record.digest, by(ORG_A, "lead"))).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(await store.submit(ORG_A, set, { actor: "m", recordedFrom: "synthetic" })).toMatchObject({ ok: true, created: false });
+    expect(new TextDecoder().decode(ports.objects.dump().get(key))).toBe(canonicalJson(set));
+    expect((await store.approve(ORG_A, record.digest, by(ORG_A, "lead"))).ok).toBe(true);
+    expect((await store.deliver(ORG_A, record.digest)).ok).toBe(true);
+  });
+  it("repairs a corrupt object before the row exists, too, and leaves a good object alone", async () => {
+    const { store, ports, touched } = setup();
+    const set = makeSet();
+    const key = fixtureObjectKey(ORG_A, fixtureSetDigest(set));
+    ports.objects.dump().set(key, new TextEncoder().encode("planted"));
+    expect((await store.submit(ORG_A, set, { actor: "m", recordedFrom: "synthetic" })).ok).toBe(true);
+    expect(new TextDecoder().decode(ports.objects.dump().get(key))).toBe(canonicalJson(set));
+    touched.length = 0;
+    await store.submit(ORG_A, set, { actor: "m", recordedFrom: "synthetic" });
+    expect(touched).not.toContain("replace");
+  });
+  it("does not overwrite an object that changed after it was read (a conditional write)", async () => {
+    const ports = createMemoryFixturePorts();
+    const set = makeSet();
+    const key = fixtureObjectKey(ORG_A, fixtureSetDigest(set));
+    ports.objects.dump().set(key, new TextEncoder().encode("first"));
+    const racing: FixtureStoreDependencies["objects"] = {
+      ...ports.objects,
+      // Someone else writes between the read and the replace.
+      replaceIfUnchanged: (k, _observed, bytes, type) => { ports.objects.dump().set(k, new TextEncoder().encode("second")); return ports.objects.replaceIfUnchanged(k, new TextEncoder().encode("first"), bytes, type); },
+    };
+    const store = createFixtureStore({ enabled: () => true, objects: racing, index: ports.index, denyFor: () => Promise.resolve(DENY), now: () => NOW });
+    expect(await store.submit(ORG_A, set, { actor: "m", recordedFrom: "synthetic" })).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(new TextDecoder().decode(ports.objects.dump().get(key))).toBe("second");
   });
 });

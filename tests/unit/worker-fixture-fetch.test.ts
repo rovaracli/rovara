@@ -80,9 +80,18 @@ describe("the worker's fixture download", () => {
       await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
       return `http://127.0.0.1:${String((server.address() as { port: number }).port)}/fixtures/x`;
     };
+    it("refuses http to loopback unless the test-only option is on, and asks nothing", async () => {
+      let reached = 0;
+      const address = await serve((_request, response) => { reached += 1; response.end(Buffer.from(bytesOf(set))); });
+      expect(await refused(fetchFixtureSet({ url: address, expectedDigest: digest }))).toBe("bad_url");
+      expect(await refused(fetchFixtureSet({ url: address, expectedDigest: digest, testOnlyAllowLoopbackHttp: false }))).toBe("bad_url");
+      expect(reached).toBe(0);
+      // Even with the option on, only loopback is allowed over http.
+      expect(await refused(fetchFixtureSet({ url: "http://10.0.0.1/x", expectedDigest: digest, testOnlyAllowLoopbackHttp: true }))).toBe("bad_url");
+    });
     it("downloads and checks a set", async () => {
       const address = await serve((_request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(Buffer.from(bytesOf(set))); });
-      expect(await fetchFixtureSet({ url: address, expectedDigest: digest })).toEqual(set);
+      expect(await fetchFixtureSet({ url: address, expectedDigest: digest, testOnlyAllowLoopbackHttp: true })).toEqual(set);
     });
     it("does not follow the server's redirect to another address", async () => {
       let reached = 0;
@@ -90,7 +99,7 @@ describe("the worker's fixture download", () => {
       const second = createServer((_request, response) => { response.writeHead(302, { location: target }); response.end(); });
       await new Promise<void>((resolve) => second.listen(0, "127.0.0.1", () => resolve()));
       try {
-        expect(await refused(fetchFixtureSet({ url: `http://127.0.0.1:${String((second.address() as { port: number }).port)}/x`, expectedDigest: digest }))).toBe("redirect");
+        expect(await refused(fetchFixtureSet({ url: `http://127.0.0.1:${String((second.address() as { port: number }).port)}/x`, expectedDigest: digest, testOnlyAllowLoopbackHttp: true }))).toBe("redirect");
         expect(reached).toBe(0);
       } finally { await new Promise<void>((resolve) => { second.close(() => resolve()); second.closeAllConnections(); }); }
     });

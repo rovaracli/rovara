@@ -68,8 +68,11 @@ export type CoreStrategy = Readonly<{
   decide(request: CoreRequest, context: Readonly<{ full: boolean }>): CoreAnswer | Promise<CoreAnswer>;
   /** The answer, and ledger fields, for anything that never became a servable request. */
   refuse(call: CoreRefusal): CoreAnswer;
-  /** Paths under `prefix` are not requests of the fake: `handle` answers them and nothing is recorded. */
-  control?: Readonly<{ prefix: string; handle(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> }>;
+  /**
+   * Paths under `prefix` are not requests of the fake: `handle` answers them and nothing is recorded, EXCEPT a request `authorised` turns away: that one is written to the ledger as a refused call (status 403)
+   * before the 403 is sent, so someone probing the control paths without the run's token leaves a trace.
+   */
+  control?: Readonly<{ prefix: string; authorised?(request: IncomingMessage): boolean; handle(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> }>;
 }>;
 
 export type CoreOptions = Readonly<{
@@ -182,6 +185,14 @@ export async function startCore(options: CoreOptions): Promise<RunningCore> {
     const target = splitRequestTarget(String(request.url ?? ""));
     if (strategy.control !== undefined && target.originForm && target.rawPath.startsWith(strategy.control.prefix)) {
       if (failed) { response.destroy(); return; }
+      if (strategy.control.authorised !== undefined && !strategy.control.authorised(request)) {
+        const call: CoreRefusal = { kind: "refused", method: String(request.method ?? ""), rawPath: target.rawPath, rawQuery: "", remote };
+        const refused = { ...strategy.refuse(call), status: 403, contentType: "text/plain; charset=utf-8", text: "control token required" };
+        request.resume();
+        if (!write(call, refused, isFull())) { response.destroy(); return; }
+        send(response, refused, socket);
+        return;
+      }
       await strategy.control.handle(request, response, target.rawPath);
       return;
     }

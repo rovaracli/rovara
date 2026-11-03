@@ -158,6 +158,18 @@ describe("faults and the control token", () => {
     expect((await control(fake, "usage")).status).toBe(200);
     expect((await control(fake, "nothing")).status).toBe(404);
   });
+  it("writes a refused ledger line, before the 403, for every control request without the token, and none for one with it", async () => {
+    const dir = await tempDir();
+    const ledgerPath = join(dir, "fake.jsonl");
+    const fake = await replay(makeSet(), { ledgerPath });
+    expect((await control(fake, "usage", {}, "wrong")).status).toBe(403);
+    expect((await fetch(`${fake.url}/__rovara/fault`, { method: "POST", body: "{}" })).status).toBe(403);
+    expect((await control(fake, "usage")).status).toBe(200);
+    const lines = await ledgerOf(ledgerPath);
+    expect(lines).toMatchObject([{ outcome: "refused", status: 403, path: "/__rovara/usage", method: "GET" }, { outcome: "refused", status: 403, path: "/__rovara/fault", method: "POST" }]);
+    // The ledger holds the refusals, and the fake still serves recordings.
+    expect((await post(fake, 5)).status).toBe(200);
+  });
   it("arms a named fault for the next requests, then goes back to recordings, and counts it", async () => {
     const fake = await replay();
     expect((await control(fake, "fault", { method: "POST", body: JSON.stringify({ name: "busy", count: 2 }) })).status).toBe(204);
