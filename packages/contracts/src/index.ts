@@ -247,6 +247,7 @@ export * from "./test-environment.js";
 export * from "./service-mocks.js";
 export * from "./test-services-shared.js";
 export * from "./test-env-dependency.js";
+export * from "./test-services-usage.js";
 export * from "./service-catalog.js";
 export * from "./service-catalog-images.js";
 export * from "./service-catalog-verify.js";
