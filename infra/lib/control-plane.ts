@@ -45,7 +45,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -1297,8 +1297,6 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("liveAsk", signInParameters.liveAskEnabled.valueAsString);
       // Live interaction F2 to F4: the Fix with agent switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("liveFix", signInParameters.liveFixEnabled.valueAsString);
-      // DG-3: the install-wide daily ceiling on Rovara-paid light diagnoses (cents), a packed setting like the switch above; the alarm that watches it is below.
-      brokerSettings.add("liveFixRovaraPaidCents", signInParameters.liveFixRovaraPaidDailyCents.valueAsString);
       // Proof and evidence, and decision cards (wire-proof): two switches, packed settings. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("proofEvidence", signInParameters.proofEvidenceEnabled.valueAsString);
       brokerSettings.add("decisionCards", signInParameters.decisionCardsEnabled.valueAsString);
@@ -1720,27 +1718,6 @@ export class ControlPlaneStack extends Stack {
         alarmDescription: "The selector that chooses who approves an autonomous chain run's write failed, so the write fell back to the default approvers (the run's owner and the project's maintainers). Check the broker logs for write_approver_selector.failed lines and the task they name.",
         metric: agentxSum("ChainWriteApproverSelectorFailures", Duration.minutes(5)),
         threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      }).addAlarmAction(notifyOperator);
-    }
-
-    // DG-3 (named environments only, where Fix with agent can exist): the broker logs `diagnosis.rovara_paid` for every light diagnosis Rovara pays for, with `globalDayPercent`, the day's Rovara-paid spend across
-    // all companies as a share of the install-wide ceiling (the stack parameter LiveFixRovaraPaidDailyCents). This metric keeps the highest share seen and the alarm fires at 80 percent, before the ceiling
-    // refuses diagnoses. (A day with no diagnoses reports nothing and is not breaching.)
-    if (naming.env !== undefined) {
-      broker.logGroup.addMetricFilter("DiagnosisRovaraPaidGlobalPercentMetric", {
-        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "diagnosis.rovara_paid"),
-        metricNamespace: naming.metricsNamespace,
-        metricName: "DiagnosisRovaraPaidGlobalPercent",
-        metricValue: "$.globalDayPercent",
-      });
-      new cloudwatch.Alarm(this, "DiagnosisRovaraPaidGlobalAlarm", {
-        alarmName: naming.alarmName("DiagnosisRovaraPaidGlobal80"),
-        alarmDescription: "Rovara-paid Fix with agent diagnoses have reached 80 percent of today's install-wide ceiling (LiveFixRovaraPaidDailyCents). At 100 percent every company is told it is paused for the day. Check the broker logs for diagnosis.rovara_paid lines to see which company is spending; raise the stack parameter only after looking.",
-        metric: new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName: "DiagnosisRovaraPaidGlobalPercent", statistic: "Maximum", period: Duration.minutes(5) }),
-        threshold: DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT,
         evaluationPeriods: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

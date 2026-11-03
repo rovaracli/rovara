@@ -19,6 +19,8 @@ export interface DiagnosisWorldOptions {
   failureMessage?: string;
   events?: Array<{ kind: "status" | "progress" | "tool" | "message" | "error"; text: string }>;
   queueFails?: boolean;
+  /** 2026-11-03: whether the company has a usable AI provider of its own for the project (default yes). `unreadable`: the company's sources can't be read. */
+  provider?: boolean | "unreadable";
 }
 
 export function diagnosisWorld(options: DiagnosisWorldOptions = {}) {
@@ -37,6 +39,7 @@ export function diagnosisWorld(options: DiagnosisWorldOptions = {}) {
   const diagnosis: DiagnosisDependencies = {
     ...table, now: () => w.clock.now, enabled: options.enabled ?? true, edition: options.edition ?? "enterprise",
     queue: { send: async (message: SentMessage) => { if (options.queueFails === true) throw new Error("queue down"); sent.push(message); } },
+    providerUsable: async () => { if (options.provider === "unreadable") throw new Error("sources unreadable"); return options.provider !== false; },
     authority: { ...table, access },
     audit: { ...table, ...audit.deps },
     context: {

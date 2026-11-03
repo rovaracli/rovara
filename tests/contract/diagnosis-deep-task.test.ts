@@ -15,6 +15,14 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
+// 2026-11-03: a diagnosis (the deep tier included) is offered only where the company has a usable AI provider of its own. Which provider is tests/contract/diagnosis-customer-provider.test.ts's; this file plays the
+// answer, so the real broker's wiring (the route, the refusal, nothing started) is what is under test here.
+const provider = vi.hoisted(() => ({ usable: true }));
+vi.mock("../../packages/broker/src/model-sources/diagnosis-provider.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  chooseDiagnosisRoute: async () => (provider.usable ? { model: { provider: "anthropic", modelId: "claude-sonnet-4-6" }, route: { sourceId: "src_aaaaaaaaaaaaaaaaaaaa", alias: "an-alias", api: "anthropic-messages", catalog: "claude-sonnet-4-6" } } : undefined),
+}));
+
 const NAME = "web";
 const BINDING = {
   deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
@@ -23,7 +31,7 @@ const BINDING = {
 const PREPARED = { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: "e".repeat(40) }] } };
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
 const ENV = process.env["LIVE_FIX_ENABLED"];
-beforeEach(() => { process.env["LIVE_FIX_ENABLED"] = "1"; });
+beforeEach(() => { process.env["LIVE_FIX_ENABLED"] = "1"; provider.usable = true; });
 afterEach(() => { if (ENV === undefined) delete process.env["LIVE_FIX_ENABLED"]; else process.env["LIVE_FIX_ENABLED"] = ENV; });
 
 function seedInstallation(db: FakeDynamoDb): void {
@@ -41,7 +49,7 @@ async function setup() {
   const h = await createDeveloperTaskBroker({
     register: false,
     brokerExtra: {
-      cloud: true, agents: {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
+      cloud: true, agents: { modelRouting: {} }, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(), getFileAtCommit: vi.fn(), getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" },
@@ -95,6 +103,17 @@ async function setup() {
 }
 
 describe("the deep tier on the real broker", () => {
+  it("2026-11-03: with no usable AI provider of the company's own the real route refuses the deep tier in the fixed words (403), and no task, workspace or diagnosis is made", async () => {
+    const t = await setup();
+    const light = await t.lightDiagnosis();
+    provider.usable = false;
+    const before = t.db.items.size;
+    const reply = await t.dev(OMAR, "POST", `/v1/app/diagnoses/${light}/deep`, { requestId: randomUUID() });
+    expect(reply.status).toBe(403);
+    expect(JSON.stringify(reply.body)).toContain("Diagnosis uses your company's AI provider. Connect one in Settings to turn it on.");
+    expect(t.db.items.size).toBe(before);
+  });
+
   it("shows the app the outdated setup check as an error it can diagnose, and starts the deep task as the person: a diagnosis purpose, no workflow, no setup draft pointer, the planning limit, the person as payer", async () => {
     const t = await setup();
     const light = await t.lightDiagnosis();

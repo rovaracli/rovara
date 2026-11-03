@@ -119,13 +119,14 @@ export const DIAGNOSIS_APPLY_BUTTON_LABEL = "Apply this change" as const;
 /** DG-4: what to say when "Apply this change" was held instead of applied (an API key's change to the dev container waits for its check; nothing is written until it passes). */
 export const DIAGNOSIS_HELD_WORDS = "Held: this change is waiting for its check to pass. Nothing has been applied yet." as const;
 export const DIAGNOSIS_ANSWER_LABEL = "AI diagnosis from this error's data; it can be wrong, and it has changed nothing." as const;
+export const DIAGNOSIS_NO_PROVIDER_MESSAGE = "Diagnosis uses your company's AI provider. Connect one in Settings to turn it on." as const;
 export const DIAGNOSIS_REFUSALS = {
   notAvailable: "Fix with agent isn't available for this error.",
   notCurrent: "This error has changed since it was shown. Look at where it is now and try again.",
   notAllowed: "You can't ask for a diagnosis of this error.",
   rateLimited: "You've asked for a lot of diagnoses lately. Try again a little later.",
-  orgRateLimited: "Fix with agent has reached today's limit for your company. Try again tomorrow, or ask for help from Rovara support.",
-  globalRateLimited: "Fix with agent is paused for today. Try again tomorrow, or ask for help from Rovara support.",
+  /** 2026-11-03: a diagnosis runs on the company's own AI provider and is paid by the company; with no usable provider it is not offered. One fixed sentence, shown on the task page and in Slack. */
+  noProvider: DIAGNOSIS_NO_PROVIDER_MESSAGE,
   deepRateLimited: "You've used today's deep diagnoses. Try again tomorrow.",
   notReady: "That diagnosis isn't ready.",
   noDeepNeeded: "That diagnosis didn't ask for the code to be read.",
@@ -216,7 +217,7 @@ export function parseDiagnosisCitation(value: string): DiagnosisCitation | undef
 // The turn's rules
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/** What a Rovara-paid light diagnosis (Public) may cost: one answer turn, never more. */
+/** What one light diagnosis may cost the company that pays for it: one answer turn, never more. The key of the turn is capped at this (or at what the company's budgets have left, if that is less). */
 export const DIAGNOSIS_LIGHT_BUDGET_USD = 0.25;
 
 const PROPOSAL_FORMS = [

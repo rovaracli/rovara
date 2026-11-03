@@ -340,39 +340,6 @@ export type DiagnosisTier = z.infer<typeof DiagnosisTierSchema>;
 
 /** Light: 10 per person per hour, 50 per project per day. Deep: 3 per person per day. */
 export const DIAGNOSIS_RATE = { lightPerPersonPerHour: 10, lightPerProjectPerDay: 50, deepPerPersonPerDay: 3 } as const;
-/**
- * DG-1 S1: the most light diagnoses ROVARA pays for (Public) for one organization in a day, whoever asks and whichever project. `turns` is the count; `cents` is the worst case Rovara can owe for them (each
- * turn's key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, so a turn is counted at that cap). Either one full refuses the next request with the ordinary "asked a lot lately" words. Per person and per project
- * limits still apply. Raising these is a reviewed code change.
- *
- * DG-3 (which one binds): the CENTS figure binds. A turn is counted at its key's full cap (25 cents), so $15 ends the day after 60 turns and the 100-turn figure is only a backstop that would bind
- * if the dollar figure were raised above $25 a day; tests/contract/diagnosis-spend.test.ts pins the arithmetic, so changing one number without the other fails there. Each diagnosis mints exactly one
- * key (`claimDiagnosisKey`), so this count is a hard ceiling on what an organization can cost Rovara in a UTC day.
- */
-export const DIAGNOSIS_ROVARA_PAID_ORG_LIMITS = { turnsPerDay: 100, centsPerDay: 1_500 } as const;
-/**
- * DG-3: the most Rovara pays for light diagnoses across EVERY organization of one install (cell) in a UTC day, in cents (each turn counted at its key's cap). The default ($100, 400 turns) is a safe
- * ceiling for an early cloud; an operator changes it with the stack parameter LiveFixRovaraPaidDailyCents (packed broker setting `fg`; `0` pauses Rovara-paid diagnoses). An unreadable value is the default.
- */
-export const DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS = 10_000;
-/** DG-3: the largest ceiling the stack parameter accepts (cents). */
-export const DIAGNOSIS_ROVARA_PAID_GLOBAL_MAX_CENTS = 1_000_000;
-/** DG-3: the alarm fires when the day's global spend reaches this share (percent) of the ceiling. */
-export const DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT = 80;
-/** DG-3: the global ceiling in cents from the packed setting's value: a whole number from 0 to the maximum, else the default (fail safe, never unlimited). */
-export function diagnosisRovaraPaidGlobalCents(value: string | undefined): number {
-  if (value === undefined || !/^\d{1,7}$/u.test(value)) return DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS;
-  const cents = Number(value);
-  return cents <= DIAGNOSIS_ROVARA_PAID_GLOBAL_MAX_CENTS ? cents : DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS;
-}
-/**
- * DG-3: the item that counts one UTC day's Rovara-paid diagnoses across all organizations (`count` and `cents`, added atomically). The day is part of the key, so a new day is a new item and no clock
- * can reset a counter: `day` is `YYYY-MM-DD` from the broker's own clock in UTC. Not org-scoped on purpose: it is the sum over organizations and holds no organization, person or text.
- */
-export function diagnosisGlobalDayKey(day: string): { pk: string; sk: string } {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("a diagnosis day is YYYY-MM-DD");
-  return { pk: "DIAGNOSISGLOBAL", sk: `light_paid#${day}` };
-}
 /** `DIAGNOSIS#<id>` is kept this long (days). */
 export const DIAGNOSIS_RETENTION_DAYS = 30;
 /** The same ErrorRef answers the existing diagnosis for this long (seconds). */

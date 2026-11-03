@@ -5,13 +5,12 @@
 //   DIAGNOSIS#<id> / RECORD    the result: the proposals (already read again by `sanitizeDiagnosis`), the model and the cost. No error text, no requester. 30 days.
 //   DIAGNOSIS#<id> / PERSON    who asked. Kept apart, with an index (`DIAGNOSISBY#<developerId>`), so erasing the person removes the link and keeps the diagnosis.
 //   DIAGNOSISOPEN              "one open diagnosis per ErrorRef": the same error answers the existing diagnosis for an hour, and spends nothing.
-//   DIAGNOSISRATE              the counters: light 10 an hour per person and 50 a day per project; deep 3 a day per person; and, where Rovara pays, the organization's day of turns and cents.
-//   DIAGNOSISGLOBAL            DG-3: the one UTC day's Rovara-paid turns and cents across every organization of the install (the day is part of the key, so no clock can reset it).
+//   DIAGNOSISRATE              the counters: light 10 an hour per person and 50 a day per project; deep 3 a day per person. (The company pays for its diagnoses, 2026-11-03; Rovara keeps no money counter for them.)
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
-  agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisGlobalDayKey, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
+  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
+  agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
   type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type OrgId,
 } from "@agentx/contracts";
 
@@ -133,65 +132,6 @@ async function rateStep(deps: DiagnosisStoreDependencies, key: { pk: string; sk:
   };
 }
 
-/**
- * DG-1 S1: the whole organization's day of Rovara-paid light diagnoses, as one more counter in the request's own transaction. `count` is the turns and `cents` the worst case Rovara can owe for them (every
- * turn's key is capped at DIAGNOSIS_LIGHT_BUDGET_USD and is counted at that cap, because the chat service does not report what a turn cost). The two are Rovara's own record of this spend: the proxy's
- * team figures for the org are the customer's, and the record's `costCents` is 0. A day is full when either would pass its limit.
- */
-async function orgCapStep(deps: DiagnosisStoreDependencies, orgId: OrgId, limits: DiagnosisOrgCap): Promise<RateStep & { cents: number }> {
-  const key = diagnosisRateKey(orgId, "light_org", "all");
-  const turnCents = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
-  const stored = await getItem(deps, key);
-  const seenWindow = stored?.["windowStart"], seenCount = stored?.["count"], seenCents = stored?.["cents"];
-  if (stored !== undefined && (typeof seenWindow !== "number" || typeof seenCount !== "number" || typeof seenCents !== "number")) throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
-  const { window, inWindow } = windowOf(deps.now(), DAY_MS, seenWindow);
-  const count = inWindow && typeof seenCount === "number" ? seenCount : 0;
-  const cents = inWindow && typeof seenCents === "number" ? seenCents : 0;
-  return {
-    room: count + 1 <= limits.turnsPerDay && cents + turnCents <= limits.centsPerDay, cents: cents + turnCents,
-    item: { Update: {
-      TableName: deps.tableName, Key: key,
-      UpdateExpression: "SET entityType = :type, orgId = :org, windowStart = :window, #count = :next, cents = :nextCents, #expires = :expires",
-      ConditionExpression: stored === undefined ? "attribute_not_exists(pk)" : "windowStart = :seenWindow AND #count = :seenCount AND cents = :seenCents",
-      ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
-      ExpressionAttributeValues: {
-        ":type": "DIAGNOSIS_RATE", ":org": orgId, ":window": window, ":next": count + 1, ":nextCents": cents + turnCents, ":expires": Math.floor((window + 2 * DAY_MS) / 1000),
-        ...(stored === undefined ? {} : { ":seenWindow": seenWindow, ":seenCount": seenCount, ":seenCents": seenCents }),
-      },
-    } },
-  };
-}
-
-/**
- * DG-3: the whole install's day of Rovara-paid light diagnoses, across every organization, as one more step of the request's own transaction. The day is the UTC day of the broker's own clock and is part of
- * the item's key, so a new day is a new item (no clock can reset a counter, and a clock a few seconds ahead only starts tomorrow's count early). The count is ADDED, never set from what was read: the
- * condition `cents <= most` is checked by DynamoDB against the stored figure, so two requests that read the same figure cannot both take the last place. `percent` is the day's spend as a share of the
- * ceiling, logged for the CloudWatch alarm.
- */
-async function globalCapStep(deps: DiagnosisStoreDependencies, centsPerDay: number): Promise<RateStep & { cents: number; percent: number }> {
-  const turnCents = Math.round(DIAGNOSIS_LIGHT_BUDGET_USD * 100);
-  const day = new Date(deps.now()).toISOString().slice(0, 10);
-  const key = diagnosisGlobalDayKey(day);
-  const stored = await getItem(deps, key);
-  const seenCents = stored?.["cents"];
-  if (stored !== undefined && typeof seenCents !== "number") throw agentXError("RUNTIME_UNAVAILABLE", "diagnosis counters can't be read");
-  const cents = typeof seenCents === "number" ? seenCents : 0;
-  const next = cents + turnCents;
-  return {
-    room: next <= centsPerDay, cents: next, percent: centsPerDay > 0 ? Math.round(100 * next / centsPerDay) : 100,
-    item: { Update: {
-      TableName: deps.tableName, Key: key,
-      UpdateExpression: "SET entityType = :type, #expires = :expires ADD #count :one, cents :turn",
-      ConditionExpression: "attribute_not_exists(pk) OR cents <= :most",
-      ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
-      ExpressionAttributeValues: { ":type": "DIAGNOSIS_RATE_GLOBAL", ":expires": Math.floor(Date.parse(`${day}T00:00:00.000Z`) / 1000) + 3 * 86_400, ":one": 1, ":turn": turnCents, ":most": centsPerDay - turnCents },
-    } },
-  };
-}
-
-/** The most Rovara-paid light diagnoses one organization may have in a day (see `DIAGNOSIS_ROVARA_PAID_ORG_LIMITS`). */
-export interface DiagnosisOrgCap { turnsPerDay: number; centsPerDay: number }
-
 // ---- admitting
 
 export interface DiagnosisAdmission {
@@ -205,10 +145,6 @@ export interface DiagnosisAdmission {
   context?: string | undefined;
   /** Deep: the light diagnosis it follows. */
   basedOn?: string | undefined;
-  /** Light, where Rovara pays for the turn (Public): the organization's daily ceiling on those turns. Absent: the customer pays, and only the person and project limits apply. */
-  rovaraPaid?: DiagnosisOrgCap | undefined;
-  /** DG-3: with `rovaraPaid`, the install-wide daily ceiling on those turns across all organizations, in cents. Absent: `DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS`. */
-  rovaraPaidGlobalCentsPerDay?: number | undefined;
 }
 
 const isCancelled = (error: unknown): boolean => (error as { name?: string }).name === "TransactionCanceledException";
@@ -232,24 +168,13 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
     const existing = await openNow();
     if (existing !== undefined) return { diagnosisId: existing, created: false };
     const nowMs = deps.now();
-    const org = input.tier === "light" && input.rovaraPaid !== undefined ? await orgCapStep(deps, orgId, input.rovaraPaid) : undefined;
-    const global = org === undefined ? undefined : await globalCapStep(deps, input.rovaraPaidGlobalCentsPerDay ?? DIAGNOSIS_ROVARA_PAID_GLOBAL_DEFAULT_CENTS);
     const steps = input.tier === "light"
       ? [
         await rateStep(deps, diagnosisRateKey(orgId, "light_person", input.developerId), orgId, DIAGNOSIS_RATE.lightPerPersonPerHour, HOUR_MS),
         await rateStep(deps, diagnosisRateKey(orgId, "light_project", input.project), orgId, DIAGNOSIS_RATE.lightPerProjectPerDay, DAY_MS),
-        ...(org === undefined ? [] : [org]),
-        ...(global === undefined ? [] : [global]),
       ]
       : [await rateStep(deps, diagnosisRateKey(orgId, "deep_person", input.developerId), orgId, DIAGNOSIS_RATE.deepPerPersonPerDay, DAY_MS)];
-    // The person's and the project's limits are answered first (in their own words), then the organization's ceiling, and the install-wide one is the last thing that can refuse.
-    if (steps.some((step) => !step.room)) {
-      if (input.tier !== "light") throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.deepRateLimited);
-      if (!steps.slice(0, 2).every((step) => step.room)) throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.rateLimited);
-      if (org !== undefined && !org.room) throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.orgRateLimited);
-      deps.log?.({ event: "diagnosis.rovara_paid_global_full", globalDayCents: global?.cents });
-      throw agentXError("TOO_MANY_REQUESTS", DIAGNOSIS_REFUSALS.globalRateLimited);
-    }
+    if (steps.some((step) => !step.room)) throw agentXError("TOO_MANY_REQUESTS", input.tier === "light" ? DIAGNOSIS_REFUSALS.rateLimited : DIAGNOSIS_REFUSALS.deepRateLimited);
     const waitingUntil = Math.floor(nowMs / 1000) + REQUEST_WAITING_SECONDS;
     const keep = Math.floor(nowMs / 1000) + DIAGNOSIS_RETENTION_DAYS * 86_400;
     try {
@@ -263,8 +188,6 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
         { Put: { TableName: deps.tableName, Item: { ...diagnosisKey(orgId, diagnosisId, "PERSON"), entityType: "DIAGNOSIS_PERSON", orgId, diagnosisId, requestedBy: input.developerId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
         { Put: { TableName: deps.tableName, Item: { ...diagnosisByPersonKey(orgId, input.developerId, diagnosisId), entityType: "DIAGNOSIS_BY", orgId, diagnosisId, [INDEX_EXPIRY_ATTRIBUTE]: keep } } },
       ] as never }));
-      // `globalDayPercent` is what the CloudWatch alarm watches (80 % of the install-wide ceiling).
-      if (org !== undefined) deps.log?.({ event: "diagnosis.rovara_paid", orgId, orgDayCents: org.cents, ...(global === undefined ? {} : { globalDayCents: global.cents, globalDayPercent: global.percent }) });
       return { diagnosisId, created: true };
     } catch (error) {
       // Another call won the place at the same moment: if it was this very request or the same error, that is the answer.
@@ -281,9 +204,9 @@ export async function admitDiagnosis(deps: DiagnosisStoreDependencies, input: Di
 // ---- one key per diagnosis
 
 /**
- * DG-3: the one place a Rovara-paid diagnosis takes its model key. Records, on the waiting request and in one conditional write, that its key is being minted; the first call wins and every later one
- * (a repeat of the model-access call, an SQS redelivery, a retry of the chat service) answers false, so each diagnosis costs Rovara at most ONE key (DIAGNOSIS_LIGHT_BUDGET_USD) and the per-company and
- * install-wide ceilings, which count one turn per admitted diagnosis, are hard limits. The key is never stored (a retry cannot be given the same one back), so a mint that fails after this claim ends the
+ * DG-3: the one place a diagnosis takes its model key. Records, on the waiting request and in one conditional write, that its key is being minted; the first call wins and every later one
+ * (a repeat of the model-access call, an SQS redelivery, a retry of the chat service) answers false, so each diagnosis costs the company at most ONE key (DIAGNOSIS_LIGHT_BUDGET_USD) and the person and project
+ * limits, which count one turn per admitted diagnosis, are hard limits. The key is never stored (a retry cannot be given the same one back), so a mint that fails after this claim ends the
  * diagnosis as failed and the person asks again (a new diagnosis, counted again). Only a request that is still waiting can be claimed.
  */
 export async function claimDiagnosisKey(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<boolean> {
