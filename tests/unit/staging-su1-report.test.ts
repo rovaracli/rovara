@@ -288,7 +288,7 @@ sleep 1
 ( take_lock "${lock}" && echo second-took || echo second-refused )
 wait
 ( take_lock "${lock}" && echo third-took || echo third-refused )
-stat -f %Lp "${lock}" 2>/dev/null || stat -c %a "${lock}"`);
+stat -c %a "${lock}" 2>/dev/null || stat -f %Lp "${lock}"`);
     expect(out.split("\n")).toEqual(["first-holds", "second-refused", "third-took", "600"]);
   }, 20_000);
   it("the lock is taken before anything is swept or started, and a refused copy ends with eleven FAIL lines", () => {
