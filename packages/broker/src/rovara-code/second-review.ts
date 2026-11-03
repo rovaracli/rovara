@@ -13,7 +13,7 @@ import {
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { createHash } from "node:crypto";
-import { ROUTE_PROVIDER } from "@agentx/model-runtime";
+import { ROUTE_PROVIDER } from "@agentx/model-runtime/catalog";
 import { inertLine } from "./inert-text.js";
 import { type CriticModelLimits } from "./critic.js";
 import { estimateSecondReviewUsd, secondReviewPicker, type PickerInput, type SecondReviewPrice } from "./second-review-picker.js";

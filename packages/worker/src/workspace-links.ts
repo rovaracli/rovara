@@ -11,10 +11,13 @@ import { posix } from "node:path";
  * (feat/saved-env-build's saved-env/links.ts `isVenvInterpreterLink` is to switch to this module.)
  */
 
-/** python, pythonw, python3 and python3.N (N one or two digits, `t` for a free-threaded build). */
-const LINK_NAME = /^python(?:w|3(?:\.\d{1,2}t?)?)?$/;
-/** A target is python, python3 or python3.N only. */
-const TARGET_NAME = /^python(?:3(?:\.\d{1,2}t?)?)?$/;
+/**
+ * python, pythonw, python3 and python3.N (N one or two digits, `t` for a free-threaded build), and `\u{1D70B}thon` (a mathematical italic pi before "thon"): Python 3.14's `python -m venv` makes that alias beside
+ * `python`, and Ubuntu 26.04 ships 3.14, so a real venv holds it (CI run 41544375128 failed on exactly that link).
+ */
+const LINK_NAME = /^(?:python(?:w|3(?:\.\d{1,2}t?)?)?|\u{1D70B}thon)$/u;
+/** A target is python, python3, python3.N or the pi alias only. */
+const TARGET_NAME = /^(?:python(?:3(?:\.\d{1,2}t?)?)?|\u{1D70B}thon)$/u;
 /** One folder of uv's managed Pythons, for example cpython-3.12.3-linux-aarch64-gnu. */
 const MANAGED_FOLDER = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const MAX_CHAIN = 8;
