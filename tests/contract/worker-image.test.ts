@@ -186,8 +186,11 @@ describe("the worker image ships the detector thread", () => {
   it("takes packages/worker, with its compiled dist, from the build stage into the final stage, never from the host", () => {
     const copies = finalStage.split("\n").filter((line) => /^COPY\b/u.test(line) && line.includes("packages/worker"));
     expect(copies).toContain("COPY --from=build /opt/agentx/packages/worker ./packages/worker");
-    // The only other copy of a worker file from the host is the read-only boot script; nothing copies a host dist over the compiled one.
-    expect(copies.filter((line) => !line.includes("--from=build"))).toEqual(["COPY --chown=root:root --chmod=0444 packages/worker/ec2/boot-stage2.sh /opt/agentx/boot/stage2.sh"]);
+    // The only other copies into the worker from the host are the read-only boot script and the release's signed service catalog (data beside the pre-pull list); nothing copies a host dist over the compiled one.
+    expect(copies.filter((line) => !line.includes("--from=build"))).toEqual([
+      "COPY environments/service-catalog/catalog*.json ./packages/worker/service-catalog/",
+      "COPY --chown=root:root --chmod=0444 packages/worker/ec2/boot-stage2.sh /opt/agentx/boot/stage2.sh",
+    ]);
     expect(finalStage.indexOf("COPY --from=build /opt/agentx/packages/worker ./packages/worker")).toBeGreaterThan(finalStage.indexOf("COPY --from=build /opt/agentx/node_modules ./node_modules"));
     // Dev dependencies are pruned in the build stage, so the image has no tsx: the thread must start from the compiled file.
     expect(buildStage).toContain("npm prune --omit=dev --workspaces");
