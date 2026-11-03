@@ -92,6 +92,8 @@ write_test_services_environment() {
 # The worker container has no registry login and no AWS credentials (only root on the host has the instance role), so ROOT pulls, before the worker starts, every digest in the pre-pull list baked into the worker image
 # (catalog repositories `svc/*` only, by digest, never a tag). The worker never pulls: it runs a dependency only if its digest is pinned in the image AND already here. Nothing to pull (no catalog, an empty list) is fine and
 # silent; a login or a pull that fails is logged loudly and returns 1, and the caller then does not offer test services on this worker (the broker refuses a plan to it) while the worker still takes everything else.
+# What the last pull_catalog_images did, for the boot facts the worker reports (CloudWatch): none | ok | failed, how many digests, and whether the registry login was removed.
+PREPULL_RESULT=none; PREPULL_COUNT=0; PREPULL_LOGGED_OUT=false
 pull_catalog_images() {
   local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() reference
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
@@ -108,16 +110,34 @@ pull_catalog_images() {
   ((${#pairs[@]} > 0)) || return 0
   { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" \
       | timeout --foreground --kill-after=10s 120s docker login --username AWS --password-stdin "$registry" >/dev/null 2>&1; } \
-    || { docker logout "$registry" >/dev/null 2>&1 || true; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
+    || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: the registry login failed"; return 1; }
   for reference in "${pairs[@]}"; do
     reference="$registry/rovara-catalog/$environment/$reference"
     docker image inspect "$reference" >/dev/null 2>&1 || timeout --foreground --kill-after=10s 600s docker pull "$reference" >/dev/null 2>&1 || { failed=$reference; break; }
     count=$((count + 1))
   done
   # No ECR token stays on disk after the pulls (the worker has no login of its own and needs none).
-  docker logout "$registry" >/dev/null 2>&1 || true
-  [[ -z "$failed" ]] || { log "CATALOG PRE-PULL FAILED: $failed"; return 1; }
+  docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true
+  PREPULL_COUNT=$count
+  [[ -z "$failed" ]] || { PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: $failed"; return 1; }
+  PREPULL_RESULT=ok
   log "pulled $count catalog image(s) by digest"
+}
+# The facts only root can see, handed to the worker as ONE environment value that it logs at its start (staging workers are not SSM-managed, so nothing reads them from the host). Booleans, a count and a version number:
+# no name, path or secret. Written after the walls are in place; the worker validates the shape (packages/worker/src/test-services-report.ts parseBootFacts).
+write_test_services_boot_facts() {
+  local imds=false walls=false ip6=false docker_version
+  metadata_blocked && imds=true
+  iptables -C DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP 2>/dev/null && walls=true
+  if command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; then
+    ip6tables -C INPUT -i rvb+ -j DROP 2>/dev/null && ip6tables -C INPUT -i rvi+ -j DROP 2>/dev/null && ip6=true
+  else
+    ipv6_active || ip6=true
+  fi
+  docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -n1)
+  [[ "$docker_version" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,3}(-[a-z0-9.]{1,12})?$ ]] || docker_version=0
+  printf 'AGENTX_TEST_SERVICES_BOOT_FACTS={"metadataBlocked":%s,"runWalls":%s,"ipv6Drops":%s,"prepull":"%s","prepulled":%s,"loggedOut":%s,"dockerVersion":"%s"}\n' \
+    "$imds" "$walls" "$ip6" "$PREPULL_RESULT" "$PREPULL_COUNT" "$PREPULL_LOGGED_OUT" "$docker_version" >>"$WORKER_ENV_FILE"
 }
 # This optional preload is bounded; failure leaves the worker available.
 pull_contained_image() {
@@ -475,6 +495,7 @@ stage2_main() {
     wall_between_run_networks || fail "could not wall run networks off from each other"
     wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"
     install_run_walls_unit || fail "could not install the unit that restores the run network walls"
+    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"
   fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload

@@ -20,6 +20,7 @@ export default tseslint.config(
       ".release-synth/**",
       "coverage/**",
       "tests/fixtures/e2e-web-api-app/**",
+      "tests/fixtures/test-services-escape-project/**",
       "tests/support/stdio-mcp-fixture.mjs",
       "tests/support/stdio-runner-fixture.mjs",
       "tests/linux/mcp-runner/adversary-mcp.mjs",

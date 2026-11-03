@@ -55,6 +55,7 @@ import {
 import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./check-round-runners.js";
 import { buildServiceUsageRecord, countResets } from "./service-usage-record.js";
 import { setupWorkspaceKey } from "./setup-network.js";
+import { TEST_SERVICES_BOOT_FACTS_ENVIRONMENT, emitReport, type ReportOutcome } from "./test-services-report.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import type { CheckRunners } from "./verification/checks.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
@@ -228,8 +229,11 @@ export async function testServicesAtWorkerBoot(input: { rootPath: string; config
   try {
     const config = input.config ?? testServicesConfigFromEnvironment(input.environment ?? process.env, input.docker ?? createDockerCli());
     if (config === undefined) return;
-    const swept = await sweepServicesNetworksAtWorkerStart(config.docker, await setupWorkspaceKey(input.rootPath));
+    const workspace = await setupWorkspaceKey(input.rootPath);
+    const swept = await sweepServicesNetworksAtWorkerStart(config.docker, workspace);
     if (swept.containers + swept.networks > 0) log({ event: "test-services.leftovers.removed", ...swept });
+    // The worker's self-report at start, after the sweep: what is left (should be nothing), the run directory, and the facts root wrote at boot.
+    await emitReport({ docker: config.docker, workspace, runDirectoryParent: config.runDirectoryParent, phase: "worker_start", outcome: "booted", swept, bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT] }, log);
     // No pre-pull here: the worker container has no registry login and no AWS credentials, so it never pulls. Root pulls the pinned digests before the worker starts (packages/worker/ec2/boot-stage2.sh).
   } catch {
     log({ event: "test-services.boot.failed" });
@@ -532,6 +536,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   let workStartMs = 0;
   let active = true;
   let torndown: Promise<void> | undefined;
+  let runOutcome: ReportOutcome = "completed";
   let round: RoundState | undefined;
   let opening: Promise<unknown> | undefined;
   let rounds = 0;
@@ -602,6 +607,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       for (const pending of [...pendingStarts]) await step("pending-start", async () => { await (await pending.catch(() => undefined))?.stop(); });
       await step("helpers", async () => { await workSession?.stop(); });
       await step("directory", () => removeRunDirectory(files.directory));
+      // The worker's self-report (staging workers cannot be reached by SSM): what is left, in fixed fields, after every run ends.
+      if (input.signal?.aborted === true && runOutcome === "completed") runOutcome = "cancelled";
+      await step("report", () => emitReport({ docker, workspace, runDirectoryParent: config.runDirectoryParent, sandboxName: input.sandbox.name, phase: "run_end", outcome: runOutcome }, log));
     })();
     return torndown;
   };
@@ -645,6 +653,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       }
     }
   } catch (error) {
+    runOutcome = "failed";
     await teardown();
     const failure = failureOf(error);
     log({ event: "test-services.start.failed", reason: failure.reason });

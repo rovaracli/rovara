@@ -1,0 +1,11 @@
+{
+  "name": "test-services-escape-project",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A test project whose tests try to ESCAPE the sealed check round of Rovara test services (slice 1) and assert that each attempt fails. Run as a task's checks on staging; the results come back through normal evidence.",
+  "scripts": {
+    "setup": "node tools/start-heartbeat.js",
+    "seed": "node tools/seed.js",
+    "test": "node --test tests/"
+  }
+}

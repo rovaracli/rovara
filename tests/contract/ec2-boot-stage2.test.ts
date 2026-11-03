@@ -126,7 +126,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || fail "could not drop IPv6 from run networks into the host"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
   });
@@ -149,7 +149,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "pull_catalog_images", "write_test_services_environment", "stage2_main"].sort());
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "install_run_walls_unit", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "stage2_main"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
   });
 });
