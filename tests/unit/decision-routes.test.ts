@@ -293,3 +293,21 @@ describe("measures", () => {
     expect(JSON.stringify(t.measures)).not.toContain("dev1");
   });
 });
+
+
+describe("money fix round 2: a reason is taken only on a design card (N11)", () => {
+  it("refuses a reason on every other kind before the performer is called, and hands it to the performer on a design card", async () => {
+    const t = setup([low(), medium(), design()]);
+    for (const [cardId, n] of [["approve_plan:plan1", 1], ["approve_dependency:dep1", 2]] as const) {
+      await expect(t.approve(cardId, n, { reason: "because" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("this card takes no reason") });
+    }
+    expect(t.performer.approve).not.toHaveBeenCalled();
+    expect(t.store.decisions).toHaveLength(0);
+    // control: the same cards without a reason are approved as before, and a design card passes its reason on
+    expect((await t.approve("approve_plan:plan1", 3))?.statusCode).toBe(200);
+    await t.open("approve_design:des1");
+    expect((await t.approve("approve_design:des1", 4, { reason: "Tracked in the follow-up." }))?.statusCode).toBe(200);
+    const calls = t.performer.approve.mock.calls as unknown as Array<[DecisionCaller, { item: { kind: string }; reason?: string }]>;
+    expect(calls.map(([, input]) => [input.item.kind, input.reason])).toEqual([["approve_plan", undefined], ["approve_design", "Tracked in the follow-up."]]);
+  });
+});

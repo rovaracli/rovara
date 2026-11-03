@@ -21,6 +21,8 @@ function playbookDeps(w: MergeWorld, extra: Partial<ProjectPlaybookDependencies>
       if (role === undefined || caller.orgId !== ORG_A) throw agentXError("PROJECT_NOT_FOUND", "project not found");
       return { name: rawName, role };
     },
+    // The people a setting may name (L4): without a list, naming anyone is refused, so the tests that save a named approver say who can approve.
+    namedApproverCandidates: async () => [MAX, PRIYA, MIA, OLA, "secret-person-1", "secret-person-2", "me"],
     ...extra,
   };
 }
@@ -358,5 +360,33 @@ describe("fix round: named people must be able to approve (L4)", () => {
     expect((await put(w, MAX, { designReview: people([MAX, PRIYA]) }, { namedApproverCandidates: candidates([MAX, PRIYA]) })).statusCode).toBe(200);
     // Maintainers and a group are not "named people": the check does not apply.
     expect((await put(w, MAX, { expectedRevision: 1, designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING } }, { namedApproverCandidates: candidates([]) })).statusCode).toBe(200);
+  });
+});
+
+describe("money fix round 2: L4 fails closed, N7 one view", () => {
+  const people = (memberIds: string[]): DesignReviewSetting => ({ ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "people", memberIds } });
+
+  it("L4: naming people with no candidate list is refused (not accepted unchecked); maintainers need no list; ids are compared folded", async () => {
+    const w = mergeWorld();
+    const unchecked = await failure(put(w, MAX, { designReview: people([MAX]) }, { namedApproverCandidates: undefined }));
+    expect(unchecked).toMatchObject({ code: "CONFIG_INVALID", message: "designReview: who can approve can't be checked right now, so people can't be named" });
+    expect(stored(w)).toBeUndefined();
+    expect((await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING } }, { namedApproverCandidates: undefined })).statusCode).toBe(200);
+    const folded = mergeWorld();
+    expect((await put(folded, MAX, { designReview: people([` ${PRIYA.toUpperCase()} `]) }, { namedApproverCandidates: async () => [PRIYA] })).statusCode).toBe(200);
+    expect(await failure(put(mergeWorld(), MAX, { designReview: people(["someone-else"]) }, { namedApproverCandidates: async () => [PRIYA] }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("N7: the answer to a PUT is the same clamped view as a GET, with the locked fields named; the stored value is still the project's own", async () => {
+    const w = mergeWorld();
+    await put(w, MAX, { designReview: { ...DESIGN_REVIEW_DEFAULT_SETTING, mode: "never", allowSkip: true, capUsdPerTask: 30 } });
+    setLock(w, { mode: "always", allowSkip: false, capCeilingUsd: 8 });
+    const reply = await put(w, MAX, { expectedRevision: 1 });
+    const read = await getProjectPlaybook(playbookDeps(w), w.caller(PRIYA), "web");
+    expect(reply.statusCode).toBe(200);
+    expect(reply.body).toEqual(read);
+    expect(read.designReviewLocked).toEqual(["designReview.mode", "designReview.allowSkip", "designReview.capUsdPerTask"]);
+    expect(read.playbook.designReview).toMatchObject({ mode: "always", allowSkip: false, capUsdPerTask: 8 });
+    expect(stored(w)).toMatchObject({ revision: 2, designReview: { mode: "never", allowSkip: true, capUsdPerTask: 30 } });
   });
 });

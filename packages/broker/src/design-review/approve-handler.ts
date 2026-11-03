@@ -16,6 +16,7 @@ import { projectDecisionCards, type DecisionItem } from "../decisions/project.js
 import { riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";
 import type { DecisionStore } from "../decisions/store.js";
 import { secondPersonMembershipCondition } from "../org/second-person-approval.js";
+import { openBlockerWords } from "./proof-line.js";
 import { decideDesignApproval, type DesignApprovalRefusal, type DesignApprovalTier, type DesignApproverDirectory } from "./approval.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 
@@ -74,10 +75,13 @@ export interface DesignApprovePorts<C extends DecisionCaller> {
 
 const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
 
-/** The words on the PR's Proof line when a design was approved with open blockers. Empty (undefined) when there were none. */
+/**
+ * The words on the PR's Proof line when a design was approved with open blockers. Empty (undefined) when there were none. The approver's reason is a person's words on a line the repository's readers see, so it is
+ * made inert here (`inertLine`: no @ mention, link, issue reference or markup survives) by the same function the Proof section uses (money N11).
+ */
 export function designApprovalProofLine(openBlockers: number, reason: string | undefined): string | undefined {
   if (openBlockers <= 0 || reason === undefined) return undefined;
-  return `Design approved with ${String(openBlockers)} open ${openBlockers === 1 ? "blocker" : "blockers"}: ${reason}`;
+  return openBlockerWords(openBlockers, reason);
 }
 
 const REFUSAL_OUTCOME: Record<Exclude<DesignApprovalRefusal, "reason_required" | "fresh_sign_in_required">, PerformOutcome> = {

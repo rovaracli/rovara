@@ -8,7 +8,7 @@
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
 import {
-  DECISION_CARDS_MAX, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, agentXError,
+  DECISION_CARDS_MAX, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, agentXError, approveReasonProblem,
   type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
 } from "@agentx/contracts";
 import { StatusReply } from "../aws/status-reply.js";
@@ -33,7 +33,7 @@ export type PerformOutcome =
   | { kind: "refused"; reason: DecisionRefusalReason };
 
 /** The thing to act on: the card's own subject, or for a tab the document's own card and item (`kind` is the document's kind, never the pair's). */
-export interface PerformInput { card: DecisionCard; item: DecisionItem; requestId: string; tab?: DecisionTabId | undefined }
+export interface PerformInput { card: DecisionCard; item: DecisionItem; requestId: string; tab?: DecisionTabId | undefined; /** The approve body's one-line reason: present only on an `approve_design` card (the route refuses it elsewhere). */ reason?: string | undefined }
 
 /** An approve or a reject goes through the existing endpoint's own function, which re-checks the caller's live authority. */
 export interface DecisionPerformer<C extends DecisionCaller = DecisionCaller> {
@@ -199,7 +199,10 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
     const acting = actingSubject(pending, body.data.tab);
-    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab });
+    // A reason belongs to a design approved with an open blocker and nowhere else: refused before anything is performed, never dropped.
+    const reasonProblem = approveReasonProblem(acting.item.kind, body.data.reason);
+    if (reasonProblem !== undefined) throw agentXError("CONFIG_INVALID", reasonProblem);
+    const outcome = await deps.performer.approve(caller, { card: acting.card, item: acting.item, requestId: body.data.requestId, tab: body.data.tab, ...(body.data.reason === undefined ? {} : { reason: body.data.reason }) });
     const notDecided = outcomeReply(cardId, outcome, asksForMerging(request));
     if (notDecided !== undefined) return notDecided;
     const decidedAt = nowIso();

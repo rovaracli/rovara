@@ -9,6 +9,7 @@ import {
   type EditionPolicy,
   type HowWeWorkView,
   type OrgId,
+  type ProjectPlaybook,
   type ProjectPlaybookResponse,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -61,15 +62,21 @@ export interface ProjectPlaybookDependencies {
 
 const MAINTAINERS_ONLY = "only a project maintainer can change how the project works";
 
-/** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
-export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
-  const { name } = await deps.projectFor(caller, rawProject);
-  const playbook = await readProjectPlaybook(deps, caller.orgId, name, { lenient: true });
-  // The setting shown is the one the project RUNS with: held to the company's lock, with the locked fields named (M3). A lock that cannot be read (or a read that fails) is never "no lock".
-  const lock: DesignReviewLockRead = await readDesignReviewLock(deps, caller.orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
+/**
+ * The playbook as a person is shown it, for GET and for the answer to PUT alike (money N7): the design review setting the project RUNS with, held to the company's lock, with the locked fields named. A lock that
+ * cannot be read (or a read that fails) is never "no lock". The stored document is untouched by this; a client that saves again sends only the fields it changed.
+ */
+async function playbookView(deps: ProjectPlaybookDependencies, orgId: OrgId, playbook: ProjectPlaybook): Promise<ProjectPlaybookResponse> {
+  const lock: DesignReviewLockRead = await readDesignReviewLock(deps, orgId).catch((): DesignReviewLockRead => ({ kind: "unreadable" }));
   if (lock.kind === "none") return { playbook };
   const held = effectiveDesignReviewSetting(playbook, lock);
   return { playbook: { ...playbook, designReview: { ...held, highRiskApprover: { ...held.highRiskApprover } } }, designReviewLocked: lock.kind === "lock" ? lockedFields(lock.lock) : [...DESIGN_REVIEW_LOCKED_FIELDS] };
+}
+
+/** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
+export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
+  const { name } = await deps.projectFor(caller, rawProject);
+  return playbookView(deps, caller.orgId, await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }));
 }
 
 /**
@@ -115,7 +122,7 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
     ifLayer = decision.ifLayer;
   }
   const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(designReview === undefined ? {} : { designReview }), ...(ifLayer === undefined ? {} : { ifLayer }), ...(guards === undefined ? {} : { guards }) });
-  return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
+  return new StatusReply(200, await playbookView(deps, caller.orgId, playbook) satisfies ProjectPlaybookResponse);
 }
 
 /** `POST /v1/app/projects/{p}/playbook/process`: 200 with the project's process layer (made now, or the one it already had). */

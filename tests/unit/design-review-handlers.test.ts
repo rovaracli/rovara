@@ -8,6 +8,7 @@ import {
 import { cardOfItem, projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import type { PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
+import { openBlockerWords } from "../../packages/broker/src/design-review/proof-line.js";
 import { DESIGN_REASON_NOT_ALLOWED_MESSAGE, DESIGN_REASON_REQUIRED_MESSAGE, designApprovalProofLine, designApproveHandler, type DesignApprovalContext, type DesignApprovalWrite, type DesignApproveInput } from "../../packages/broker/src/design-review/approve-handler.js";
 import type { DesignApproverDirectory } from "../../packages/broker/src/design-review/approval.js";
 import { designApproveItem, designContentVersion } from "../../packages/broker/src/design-review/card-source.js";
@@ -335,5 +336,22 @@ describe("a no-skip setting and the spend card", () => {
     const forApprover = designSpendGateFor(base, "own").gate;
     expect(forRequester.kind === "ask" && forRequester.choices.map((c) => c.choice)).toEqual(["raise_cap"]);
     expect(forApprover.kind === "ask" && forApprover.choices.map((c) => c.choice)).toEqual(["raise_cap", "skip"]);
+  });
+});
+
+
+describe("money fix round 2: the reason on the Proof line is inert", () => {
+  it("N11: @mentions, links, issue references and markup in an approver's reason do not survive on the Proof line", () => {
+    const hostile = "@everyone fixes #123, see [here](http://evil.example/x) and ![i](http://evil.example/i.png) <!-- hide --> https://evil.example/y &#x40;admin";
+    const line = designApprovalProofLine(1, hostile)!;
+    expect(line).toBe(openBlockerWords(1, hostile));
+    expect(line).toContain("Design approved with 1 open blocker: ");
+    expect(line).not.toMatch(/@(?!\u200d)/u);
+    expect(line).not.toContain("](");
+    expect(line).not.toContain("<!--");
+    expect(line).not.toContain("://evil");
+    expect(line).not.toMatch(/#(?=\d)/u);
+    // control: an ordinary reason reads as it was written
+    expect(designApprovalProofLine(2, "The rollback is tracked in the follow-up.")).toBe("Design approved with 2 open blockers: The rollback is tracked in the follow-up.");
   });
 });

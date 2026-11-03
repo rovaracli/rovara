@@ -31,6 +31,8 @@ export const DESIGN_REVIEW_LOCKED = "your company has set a stricter rule for de
 export const DESIGN_REVIEW_GROUP_EDITION = "a group can be the high-risk approver only in the Enterprise edition";
 export const DESIGN_REVIEW_LOCK_UNREADABLE = "your company's design review rules can't be read right now, so this can't be saved";
 export const DESIGN_REVIEW_NAMED_PEOPLE = "name only project maintainers or members who can approve";
+/** Naming people is refused when who may approve cannot be worked out right now (the candidates were not given): fail closed, never "anyone". */
+export const DESIGN_REVIEW_NAMED_PEOPLE_UNCHECKED = "who can approve can't be checked right now, so people can't be named";
 
 export interface ProjectPlaybookReader {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -159,9 +161,12 @@ export async function writeProjectPlaybook(
     lockCheck = lockRevisionCheck(deps, orgId, lock);
     // Named people must be people who can approve in this project (L4): maintainers and members whose role can approve, never an Auditor or a viewer. Only counted, never echoed.
     const approver = input.designReview.highRiskApprover;
-    if (approver.kind === "people" && deps.namedApproverCandidates !== undefined) {
-      const allowed = await deps.namedApproverCandidates(orgId, project);
-      if (approver.memberIds.some((id) => !allowed.includes(id))) throw agentXError("CONFIG_INVALID", `designReview: ${DESIGN_REVIEW_NAMED_PEOPLE}`);
+    // Fail closed (L4): with no way to list the candidates, naming people is refused. Ids are compared as the approval rules compare them (NFC, trimmed, case-folded).
+    if (approver.kind === "people") {
+      if (deps.namedApproverCandidates === undefined) throw agentXError("CONFIG_INVALID", `designReview: ${DESIGN_REVIEW_NAMED_PEOPLE_UNCHECKED}`);
+      const fold = (id: string): string => id.normalize("NFC").trim().toLowerCase();
+      const allowed = new Set((await deps.namedApproverCandidates(orgId, project)).map(fold));
+      if (approver.memberIds.some((id) => !allowed.has(fold(id)))) throw agentXError("CONFIG_INVALID", `designReview: ${DESIGN_REVIEW_NAMED_PEOPLE}`);
     }
   }
   const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess, ...(designReview === undefined ? {} : { designReview }) };
