@@ -107,11 +107,15 @@ export interface CatalogBuildPorts {
   mirror: (input: { id: string; source: string; repositoryName: string; expectedDigest: string }) => Promise<MirrorResult>;
   sbom: (input: PlatformTarget) => Promise<Uint8Array>;
   scan: (input: PlatformTarget) => Promise<ScanResult>;
+  /** Whether the environment's registry serves this digest of the repository now (an ECR describe-images by digest). A throw counts as "no". Asked only about pins an `--entries` build carries over. */
+  registryServes: (input: { id: string; repositoryName: string; digest: string }) => Promise<boolean>;
   /** Signs bytes. `publicKeyPem` is the public half installers pin; the private half never leaves the signer (KMS). */
   readonly signer: BundleSigner;
 }
 
-export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source"] as const;
+/** A carried-over pin's recorded scan may be this old at most. */
+export const CARRIED_PIN_MAX_SCAN_AGE_DAYS = 30;
+export const BUILD_REFUSAL_CODES = ["no_source", "unknown_source", "digest_mismatch", "platforms_mismatch", "sbom_invalid", "scan_not_for_image", "scan_incomplete", "scan_critical", "port_failed", "unsigned", "unknown_entry", "retired_entry", "unselected_source", "carried_pin_missing", "carried_pin_stale"] as const;
 export type BuildRefusalCode = (typeof BUILD_REFUSAL_CODES)[number];
 export class CatalogBuildError extends Error {
   constructor(readonly refusals: ReadonlyArray<{ id: string; code: BuildRefusalCode; message: string }>) {
@@ -172,8 +176,11 @@ function isSbom(bytes: Uint8Array): boolean {
  * `entries` (slice 1, `--entries <ids>`): pins ONLY those entries, so one image can be pinned at a time. Every other entry is carried over exactly as the current file has it (an entry that was never pinned stays without
  * a digest, an SBOM and a scan, and nothing starts it; one that an earlier build pinned keeps that pin). The sources file must hold exactly the selected ids: a source for an entry that was not selected is a refusal, never
  * silently ignored. An id the catalog does not have, a retired id, and an empty or repeated list are refused. Left out, every non-retired entry is built, as before.
+ *
+ * A pin that is CARRIED OVER is part of a file this build signs again, so it is not signed blindly: the environment's registry must still serve its digest (`ports.registryServes`), and its recorded scan must be no
+ * more than CARRIED_PIN_MAX_SCAN_AGE_DAYS old. Otherwise the build is refused, naming the entry: "re-run with --entries <id>".
  */
-export async function buildPinnedCatalog(input: { catalog: unknown; sources: unknown; env: string; ports: CatalogBuildPorts; entries?: readonly string[] }): Promise<CatalogBuildOutput> {
+export async function buildPinnedCatalog(input: { catalog: unknown; sources: unknown; env: string; ports: CatalogBuildPorts; entries?: readonly string[]; now?: () => Date }): Promise<CatalogBuildOutput> {
   const current = ServiceCatalogSchema.parse(input.catalog);
   const sources = SourcesFileSchema.parse(input.sources);
   const { ports } = input;
@@ -207,8 +214,18 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
       continue;
     }
     if (selected !== undefined && !selected.has(entry.id)) {
-      // Not selected: carried over as it is (pinned stays pinned, unpinned stays unpinned).
+      // Not selected: carried over as it is (pinned stays pinned, unpinned stays unpinned). A carried pin is checked first (see above).
       entries.push(entry);
+      if (entry.image.digest !== undefined) {
+        const again = ` (re-run with --entries ${entry.id})`;
+        const scannedAt = entry.scan === undefined ? Number.NaN : Date.parse(entry.scan.scannedAt);
+        const age = (input.now ?? (() => new Date()))().getTime() - scannedAt;
+        if (!(age <= CARRIED_PIN_MAX_SCAN_AGE_DAYS * 86_400_000)) {
+          refuse(entry.id, "carried_pin_stale", `the recorded scan of the carried-over pin is more than ${String(CARRIED_PIN_MAX_SCAN_AGE_DAYS)} days old or has no date${again}`);
+        } else if (!(await ports.registryServes({ id: entry.id, repositoryName: catalogRepositoryName(input.env, entry.image.repository), digest: entry.image.digest }).catch(() => false))) {
+          refuse(entry.id, "carried_pin_missing", `the ${input.env} registry no longer serves the carried-over pin's digest${again}`);
+        }
+      }
       continue;
     }
     const source = sources.sources[entry.id];
@@ -405,9 +422,23 @@ export interface EcrLike {
 export interface EcrCommands {
   DescribeImageScanFindingsCommand: new (input: { repositoryName: string; imageId: { imageDigest: string } }) => unknown;
   StartImageScanCommand: new (input: { repositoryName: string; imageId: { imageDigest: string } }) => unknown;
+  DescribeImagesCommand: new (input: { repositoryName: string; imageIds: Array<{ imageDigest: string }> }) => unknown;
 }
 /** ECR's own scan of one pushed CHILD digest (ECR scans image manifests, not indexes; scan on push is on for the repository): started if there is none, then read until it finishes. */
-export function ecrScanPort(input: { client: EcrLike; commands: EcrCommands; sleep?: (ms: number) => Promise<void>; maxPolls?: number; pollMs?: number; now?: () => Date }): CatalogBuildPorts["scan"] {
+/** `registryServes` over ECR: a describe-images by digest. The image not being there is "no"; any other failure throws (and the caller counts a throw as "no"). */
+export function ecrServesPort(input: { client: EcrLike; commands: Pick<EcrCommands, "DescribeImagesCommand"> }): CatalogBuildPorts["registryServes"] {
+  return async ({ repositoryName, digest }) => {
+    try {
+      const response = (await input.client.send(new input.commands.DescribeImagesCommand({ repositoryName, imageIds: [{ imageDigest: `sha256:${digest}` }] }))) as { imageDetails?: Array<{ imageDigest?: string }> };
+      return (response.imageDetails ?? []).some((detail) => detail.imageDigest === `sha256:${digest}`);
+    } catch (error) {
+      if (error instanceof Error && (error.name === "ImageNotFoundException" || error.name === "RepositoryNotFoundException")) return false;
+      throw error;
+    }
+  };
+}
+
+export function ecrScanPort(input: { client: EcrLike; commands: Pick<EcrCommands, "DescribeImageScanFindingsCommand" | "StartImageScanCommand">; sleep?: (ms: number) => Promise<void>; maxPolls?: number; pollMs?: number; now?: () => Date }): CatalogBuildPorts["scan"] {
   const sleep = input.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
   return async ({ repositoryName, digest }) => {
     const imageId = { imageDigest: `sha256:${digest}` };
@@ -487,7 +518,7 @@ async function main(argv: string[]): Promise<void> {
   const copyTimeoutMs = timeoutFlag(values("--copy-timeout-seconds")[0], DEFAULT_COPY_TIMEOUT_MS, "--copy-timeout-seconds");
   CatalogRegistryHostSchema.parse(registry);
   catalogRepositoryName(env, "svc/check");
-  const [{ ECRClient, GetAuthorizationTokenCommand, DescribeImageScanFindingsCommand, StartImageScanCommand }, { KMSClient, GetPublicKeyCommand, SignCommand }] = await Promise.all([import("@aws-sdk/client-ecr"), import("@aws-sdk/client-kms")]);
+  const [{ ECRClient, GetAuthorizationTokenCommand, DescribeImageScanFindingsCommand, StartImageScanCommand, DescribeImagesCommand }, { KMSClient, GetPublicKeyCommand, SignCommand }] = await Promise.all([import("@aws-sdk/client-ecr"), import("@aws-sdk/client-kms")]);
   const ecr = new ECRClient({});
   const token = ((await ecr.send(new GetAuthorizationTokenCommand({}))) as { authorizationData?: Array<{ authorizationToken?: string; proxyEndpoint?: string }> }).authorizationData?.[0];
   if (token?.authorizationToken === undefined || token.proxyEndpoint === undefined || token.proxyEndpoint.replace(/^https:\/\//u, "") !== registry) throw new Error("ECR gave no credential for the registry named by --registry");
@@ -506,7 +537,8 @@ async function main(argv: string[]): Promise<void> {
       ports: {
         mirror: skopeoMirrorPort({ commands, registry, authFile, copyTimeoutMs }),
         sbom: syftSbomPort({ commands, registry, authDir, timeoutMs: copyTimeoutMs }),
-        scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand } }),
+        scan: ecrScanPort({ client: ecr, commands: { DescribeImageScanFindingsCommand, StartImageScanCommand, DescribeImagesCommand } }),
+        registryServes: ecrServesPort({ client: ecr, commands: { DescribeImagesCommand } }),
         signer,
       },
     });

@@ -25,6 +25,7 @@ import {
   type ExecFileFn,
   buildPinnedCatalog,
   ecrScanPort,
+  ecrServesPort,
   childrenProblem,
   evidenceFolderOf,
   parseEntryIds,
@@ -52,14 +53,15 @@ const platformCount = live.reduce((total, entry) => total + entry.image.platform
 const childDigest = (id: string, platform: string): string => sha(`child:${id}:${platform}`);
 const sbomDocument = (id: string, platform: string): Buffer => Buffer.from(JSON.stringify({ spdxVersion: "SPDX-2.3", name: `${id} ${platform}`, packages: [] }));
 
-interface Calls { mirror: string[]; sbom: string[]; scan: string[]; sign: number }
+interface Calls { mirror: string[]; sbom: string[]; scan: string[]; serves: string[]; sign: number }
 interface FakeChanges {
   mirror?: (id: string) => Partial<MirrorResult>;
   sbom?: (id: string, platform: string) => Buffer | undefined;
   scan?: (id: string, platform: string, digest: string) => Partial<ScanResult>;
+  serves?: (id: string) => boolean;
 }
 function fakePorts(change: FakeChanges = {}) {
-  const calls: Calls = { mirror: [], sbom: [], scan: [], sign: 0 };
+  const calls: Calls = { mirror: [], sbom: [], scan: [], serves: [], sign: 0 };
   const signer = testSigner();
   const ports: CatalogBuildPorts = {
     async mirror({ id, source, expectedDigest, repositoryName }) {
@@ -73,6 +75,10 @@ function fakePorts(change: FakeChanges = {}) {
     async scan({ id, platform, digest }) {
       calls.scan.push(`${id} ${platform} ${digest}`);
       return { digest, status: "complete", criticalOpen: 0, highOpen: 2, scannedAt: "2026-11-02T10:00:00.000Z", ...change.scan?.(id, platform, digest) };
+    },
+    async registryServes(input) {
+      calls.serves.push(`${input.id} ${input.repositoryName} ${input.digest}`);
+      return change.serves?.(input.id) ?? true;
     },
     signer: { publicKeyPem: signer.publicKeyPem, sign: async (message) => { calls.sign += 1; return signer.sign(message); } },
   };
@@ -351,6 +357,53 @@ describe("pinning chosen entries only (--entries)", () => {
   });
   it("still refuses the chosen entry on a critical finding, and writes no catalog", async () => {
     expect(await refusalsOf(buildOnly(fakePorts({ scan: () => ({ criticalOpen: 1 }) }).ports, ["postgres@16"]))).toEqual([{ id: "postgres@16", code: "scan_critical" }, { id: "postgres@16", code: "scan_critical" }]);
+  });
+  describe("carried-over pins are not signed again blindly", () => {
+    const NOW = new Date("2026-11-10T00:00:00.000Z");
+    const firstPinned = async () => JSON.parse((await buildOnly(fakePorts().ports, ["postgres@16"])).catalogBytes.toString("utf8")) as unknown;
+    const second = async (ports: CatalogBuildPorts, now: Date = NOW) => buildPinnedCatalog({ catalog: await firstPinned(), sources: one("mysql@8"), env: "staging", ports, entries: ["mysql@8"], now: () => now });
+
+    it("asks the registry of the environment whether it still serves each carried digest, and signs when it does and the scan is recent", async () => {
+      const { ports, calls } = fakePorts();
+      const output = await second(ports);
+      expect(calls.serves).toEqual([`postgres@16 rovara-catalog/staging/svc/postgres ${sourceDigest("postgres@16")}`]);
+      expect(output.catalog.entries.find((entry) => entry.id === "postgres@16")?.image.digest).toBe(sourceDigest("postgres@16"));
+    });
+    it("refuses when the registry no longer serves a carried digest, and says which entry to re-run", async () => {
+      const refused = await refusalsOf(second(fakePorts({ serves: (id) => id !== "postgres@16" }).ports));
+      expect(refused).toEqual([{ id: "postgres@16", code: "carried_pin_missing" }]);
+      await expect(second(fakePorts({ serves: () => false }).ports)).rejects.toThrow(/re-run with --entries postgres@16/u);
+    });
+    it("refuses a carried pin whose recorded scan is older than 30 days (and accepts one of exactly 30)", async () => {
+      // the pins were scanned at 2026-11-02T10:00Z
+      expect(await refusalsOf(second(fakePorts().ports, new Date("2026-12-03T00:00:00.000Z")))).toEqual([{ id: "postgres@16", code: "carried_pin_stale" }]);
+      await expect(second(fakePorts().ports, new Date("2026-12-02T10:00:00.000Z"))).resolves.toBeDefined();
+      await expect(second(fakePorts().ports, new Date("2026-12-02T10:00:01.000Z"))).rejects.toThrow(/re-run with --entries postgres@16/u);
+    });
+    it("a registry that cannot be asked is a refusal, never a pass; unpinned and retired entries are not asked about", async () => {
+      const { ports, calls } = fakePorts();
+      const refused = await refusalsOf(second({ ...ports, registryServes: async () => { throw new Error("denied"); } }));
+      expect(refused).toEqual([{ id: "postgres@16", code: "carried_pin_missing" }]);
+      await second(ports);
+      expect(calls.serves.every((call) => call.startsWith("postgres@16 "))).toBe(true);
+    });
+    it("is not asked in a full build: every entry is built again", async () => {
+      const { ports, calls } = fakePorts();
+      await build(ports);
+      expect(calls.serves).toEqual([]);
+    });
+  });
+  it("asks ECR by digest, and treats a missing image as no and any other failure as a throw", async () => {
+    class Describe { constructor(readonly input: { repositoryName: string; imageIds: Array<{ imageDigest: string }> }) {} }
+    const sent: unknown[] = [];
+    const port = (respond: () => unknown) => ecrServesPort({ client: { send: async (command) => { sent.push(command); return respond(); } }, commands: { DescribeImagesCommand: Describe as never } });
+    const digest = sha("x");
+    expect(await port(() => ({ imageDetails: [{ imageDigest: `sha256:${digest}` }] }))({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", digest })).toBe(true);
+    expect((sent[0] as Describe).input).toEqual({ repositoryName: "rovara-catalog/staging/svc/postgres", imageIds: [{ imageDigest: `sha256:${digest}` }] });
+    expect(await port(() => ({ imageDetails: [{ imageDigest: `sha256:${sha("y")}` }] }))({ id: "a", repositoryName: "r", digest })).toBe(false);
+    expect(await port(() => ({}))({ id: "a", repositoryName: "r", digest })).toBe(false);
+    expect(await port(() => { throw Object.assign(new Error("none"), { name: "ImageNotFoundException" }); })({ id: "a", repositoryName: "r", digest })).toBe(false);
+    await expect(port(() => { throw new Error("AccessDenied"); })({ id: "a", repositoryName: "r", digest })).rejects.toThrow();
   });
   it("reads --entries as checked, comma-separated catalog ids", () => {
     expect(parseEntryIds(undefined)).toBeUndefined();
