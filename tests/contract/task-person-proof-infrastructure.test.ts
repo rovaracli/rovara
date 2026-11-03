@@ -353,18 +353,20 @@ describe("the named TEST proof-only installation gate", () => {
     // conditions) and CreationRoleDescribeForEcr (DescribeKey, ViaService ecr only). DenyOtherGrants did not change. The named-templates snapshot shows the same single change.
     // 2026-11-03, merge of feat/saved-env-wire onto the integration head (which has the root-path creation role and the system-owner/diagnosis-spend additions): the four named and foreign digests below were retaken once for the merged
     // template, from the values the digest test itself reports (nothing hand-computed). The legacy digests did not move.
+    // 2026-11-03, merge of the test-services chain (ts-fakes to ts-repack, with ts-images' service catalog image repositories and their key) onto saved-env-wire and ts-run-network: the four named and foreign digests were
+    // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "8f912a6726c0e542186b4b12578e29c11ad041f993d0995b78466848ee3a8e54",
-        withoutRoute: "b6f593046658f4b482560ad94e8dfda2c2022b4ce3ab296c33efe355d09b5c91",
+        withRoute: "96bc2587d0666cf58ee6faf48ef03a1532f4b88793de80c13b853872bd625331",
+        withoutRoute: "51e7db6606bc27f201af03792ec0cfc0bb5f333f57237b4855fb679b435dd89e",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "1b6a23ebba42693d3f811cc5fddb052ee76de414a90e0738a3e86823b310301f",
-        withoutRoute: "5c6821ebed4bfdcbbae8dce75a5b0e91f192a8f39c40753e680f8ab1abb860e0",
+        withRoute: "46f3a3d8d7aff0bde2d2047632a4ffdbea3cd7fcee9ba275470bff01a65c8e43",
+        withoutRoute: "ffb453a599a199cd2c663c2e2dff3f8946a7337b83e360863fe29d759fd92c74",
       },
       {
         label: "legacy",
