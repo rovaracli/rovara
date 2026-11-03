@@ -1,6 +1,8 @@
 // The project's monthly cap on automatic runs and the one function every automatic job starts a run with (owner decision 2026-11-02).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, systemOwnerIdOf, type OrgId } from "@agentx/contracts";
+import { aiToolTurn } from "../../packages/broker/src/developer/task-records.js";
+import { runRequestKey } from "@agentx/contracts";
 import { claimAutomaticRun, readAutomaticRunsCap, readAutomaticRunsUse, releaseAutomaticRun, setAutomaticRunsCap } from "../../packages/broker/src/automatic-runs/cap.js";
 import { startAutomaticRun } from "../../packages/broker/src/automatic-runs/start.js";
 import type { AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
@@ -26,7 +28,7 @@ function bench() {
 }
 const claim = (b: ReturnType<typeof bench>, n: number) => claimAutomaticRun(b.deps, { orgId: ORG, project: PROJECT, requestId: id(n), job: "nightly" });
 const maintainer = (b: ReturnType<typeof bench>, cap: number, requestId = "request-cap-0001") => setAutomaticRunsCap(b.deps, { orgId: ORG, project: PROJECT, role: "maintainer", changedBy: "dev_m", cap, requestId });
-const job = (n: number, extra: Record<string, unknown> = {}) => ({ orgId: ORG, project: PROJECT, job: "nightly" as const, requestId: id(n), agent: { agentId: "rovara-code" as const }, input: { text: "Nightly test run." }, origin: "nightly" as const, ...extra });
+const job = (n: number, extra: Record<string, unknown> = {}) => ({ orgId: ORG, project: PROJECT, job: "nightly" as const, requestId: id(n), agent: { agentId: "rovara-code" as const }, input: { text: "Nightly test run." }, origin: "automatic" as const, purpose: "saved_env_rebuild" as const, ...extra });
 
 describe("the monthly cap on a project's automatic runs", () => {
   it("is a sensible default until a maintainer sets one", async () => {
@@ -97,6 +99,34 @@ describe("the monthly cap on a project's automatic runs", () => {
   });
 });
 
+describe("a conflict is not the cap", () => {
+  const conflict = (b: ReturnType<typeof bench>, times: number) => b.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUTOMATIC_RUN_CLAIM"), times,
+    error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }] } });
+
+  it("a conflicting write at count 0 is tried again, and the run takes its place", async () => {
+    const b = bench();
+    conflict(b, 1);
+    expect(await claim(b, 1)).toMatchObject({ claimed: true, used: 1, replay: false });
+    expect(b.audit.recordedBy("automatic_runs.paused")).toHaveLength(0);
+  });
+
+  it("a conflict that does not pass is a fault that may pass (WORKSPACE_BUSY), never the cap: no pause marker, no pause audit, nothing counted", async () => {
+    const b = bench();
+    conflict(b, 10);
+    expect(await codeOf(claim(b, 1))).toBe("WORKSPACE_BUSY");
+    expect(b.db.find((item) => item.entityType === "AUTOMATIC_RUNS_PAUSED")).toHaveLength(0);
+    expect(b.audit.recordedBy("automatic_runs.paused")).toHaveLength(0);
+    expect((await readAutomaticRunsUse(b.deps, ORG, PROJECT)).used).toBe(0);
+  });
+
+  it("the cap is told only when the counter's own condition failed", async () => {
+    const b = bench();
+    b.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUTOMATIC_RUN_CLAIM"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }] } });
+    expect(await claim(b, 1)).toMatchObject({ claimed: false });
+    expect(b.audit.recordedBy("automatic_runs.paused")).toHaveLength(1);
+  });
+});
+
 describe("a maintainer edits the cap", () => {
   it("is audited with the cap before and after, by the maintainer", async () => {
     const b = bench();
@@ -150,8 +180,8 @@ describe("startAutomaticRun, the one start every automatic job uses", () => {
     expect(await startAutomaticRun(b.run, job(1, { setupApprovedBy: "dev_a" }))).toEqual({ started: { taskId: "t", runLimitUsd: 1, stopAtUsd: 1, paused: false } });
     expect(b.started).toHaveLength(1);
     expect(b.started[0]).toMatchObject({
-      requestId: id(1), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: systemOwnerIdOf(ORG, PROJECT) },
-      automatic: { job: "nightly", approvedBy: "dev_a" }, payer: { kind: "project", project: PROJECT }, payerFromRules: true,
+      requestId: id(1), orgId: ORG, project: PROJECT, origin: "automatic", owner: { developerId: systemOwnerIdOf(ORG, PROJECT) },
+      automatic: { job: "nightly", purpose: "saved_env_rebuild", approvedBy: "dev_a" }, payer: { kind: "project", project: PROJECT }, payerFromRules: true,
     });
     expect(b.started[0]!.startedBy).toBeUndefined();
   });
@@ -175,6 +205,39 @@ describe("startAutomaticRun, the one start every automatic job uses", () => {
     expect((await readAutomaticRunsUse(b.deps, ORG, PROJECT)).used).toBe(1);
   });
 
+  it("keeps the place when the start failed AFTER the run was made (the answer was lost): the run is the month's, and the retry counts it once", async () => {
+    const b = bench();
+    const lost = { ...b.run, startAgentRun: (request: AgentRunRequest) => {
+      b.db.set({ ...runRequestKey(ORG, request.requestId), entityType: "RUN_REQUEST", orgId: ORG, taskId: "t-lost", fingerprint: "f", runLimitUsd: 1, stopAtUsd: 1, paused: false });
+      return Promise.reject(agentXError("RUNTIME_UNAVAILABLE", "the answer was lost"));
+    } };
+    expect(await codeOf(startAutomaticRun(lost, job(1)))).toBe("RUNTIME_UNAVAILABLE");
+    expect((await readAutomaticRunsUse(b.deps, ORG, PROJECT)).used).toBe(1);
+    // the retry of the same request finds the claim and starts (answers) once
+    await startAutomaticRun(b.run, job(1));
+    expect((await readAutomaticRunsUse(b.deps, ORG, PROJECT)).used).toBe(1);
+  });
+
+  it("records the start for the project page even where no audit ledger is configured, and says so when the record cannot be written", async () => {
+    const b = bench();
+    const noAudit = { documentClient: b.db, tableName: AUDIT_CAPTURE_TABLE, now: () => b.clock.now, startAgentRun: b.run.startAgentRun };
+    await startAutomaticRun(noAudit, job(1));
+    expect(b.db.find((item) => item.entityType === "AUTOMATIC_RUN_STARTED")).toHaveLength(1);
+    expect(b.db.find((item) => item.entityType === "AUTOMATIC_RUN_WATCH")).toHaveLength(1);
+    const log = vi.fn();
+    b.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUTOMATIC_RUN_STARTED"), error: { name: "InternalServerError" } });
+    expect("started" in await startAutomaticRun(b.run, job(2, { log }))).toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "automatic_run.start_not_recorded" }));
+  });
+
+  it("refuses a purpose that does not match what it runs, before anything is taken: the nightly purpose needs the night's facts, a rebuild has none", async () => {
+    const b = bench();
+    expect(await codeOf(startAutomaticRun(b.run, job(1, { purpose: "nightly_run" })))).toBe("CONFIG_INVALID");
+    expect(await codeOf(startAutomaticRun(b.run, job(2, { nightlyRun: { slotId: "a".repeat(64), envRevision: 1, branch: "main", headSha: "b".repeat(40) } })))).toBe("CONFIG_INVALID");
+    expect((await readAutomaticRunsUse(b.deps, ORG, PROJECT)).used).toBe(0);
+    expect(b.started).toHaveLength(0);
+  });
+
   it("audits the start once as 'automatic: <job>' with the person who approved the setup, and 'none' when it names nobody", async () => {
     const b = bench();
     await startAutomaticRun(b.run, job(1, { setupApprovedBy: "dev_a" }));
@@ -191,5 +254,17 @@ describe("startAutomaticRun, the one start every automatic job uses", () => {
     const b = bench();
     b.audit.queueDown();
     expect(await startAutomaticRun(b.run, job(1, { setupApprovedBy: "dev_a" }))).toMatchObject({ started: { taskId: "t" } });
+  });
+});
+
+describe("a turn record's owner", () => {
+  const party = (developerId: string, provider: string) => ({ taskId: id(1), developerId, provider, developerName: "x", client: "api" }) as never;
+  const record = (developerId: string, provider: string) => aiToolTurn({ party: party(developerId, provider), turnId: id(2), action: "close", phase: "completed", outcome: "succeeded", receivedAt: "2026-11-05T06:00:00.000Z", finishedAt: "2026-11-05T06:00:01.000Z", request: "close", response: "done" });
+
+  it("a system owner's id goes with the system provider, and only with it", () => {
+    expect(() => record(systemOwnerIdOf(ORG, PROJECT), "system")).not.toThrow();
+    expect(() => record("a".repeat(64), "oidc")).not.toThrow();
+    expect(() => record(systemOwnerIdOf(ORG, PROJECT), "oidc")).toThrow();
+    expect(() => record("a".repeat(64), "system")).toThrow();
   });
 });

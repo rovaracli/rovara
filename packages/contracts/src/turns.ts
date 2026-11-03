@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { redactSecrets, redactText } from "./redaction.js";
 import { SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
-import { SystemOwnerIdSchema } from "./system-owner.js";
+import { SYSTEM_OWNER_ID_PREFIX, SystemOwnerIdSchema } from "./system-owner.js";
 import { TaskUsageTelemetrySchema } from "./usage.js";
 
 export const TURN_TEXT_LIMIT = 40_000;
@@ -193,7 +193,7 @@ export const AiToolTurnRecordSchema = z.object({
     provider: z.enum(["slack", "oidc", "cloud", "github", "saml", "system"]),
     displayName: z.string().min(1).max(200),
     slackUserId: SlackUserIdSchema.optional(),
-  }).strict(),
+  }).strict().refine((developer) => developer.developerId.startsWith(SYSTEM_OWNER_ID_PREFIX) === (developer.provider === "system"), { path: ["provider"], message: "a system owner's id goes with the system provider, and only with it" }),
   client: z.string().min(1).max(40),
   /** Spec 025 C25: the AgentX admin who made this change on the developer's task, when one did. */
   admin: z.object({ issuer: z.string().min(1).max(512), subject: z.string().min(1).max(256), displayName: z.string().min(1).max(200).optional() }).strict().optional(),

@@ -764,6 +764,11 @@ export function auditAutomaticRunsPaused(input: AuditBuilderBase & { projectName
   return build("automatic_runs.paused", input, { kind: "project", name: input.projectName }, { month: input.month, cap: input.cap });
 }
 
+/** `occurrence`: the task id. The actor is the system. Rovara ended an automatic run itself, gave back its slot, and says why (a fixed word). */
+export function auditAutomaticRunEnded(input: AuditBuilderBase & { projectName: string; job: string; reason: string }): AuditEventInput {
+  return build("automatic_run.ended", input, { kind: "project", name: input.projectName }, { job: input.job, reason: input.reason });
+}
+
 /** One system bootstrap/upgrade occurrence, preserving numeric policies already set by an admin. */
 export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "bootstrap" | "upgrade"; mode: "rovara_estimate"; revision: number; ceilingMicrousd: number }): AuditEventInput {
   return build("spending.policy_seeded", input, { kind: "spend_policy", id: "task_stop" }, {

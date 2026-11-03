@@ -35,7 +35,7 @@ async function bench(options: { approver?: string; member?: boolean } = {}) {
   if (options.approver !== undefined && options.member === true) db.set({ ...orgMemberKey(ORG, options.approver), entityType: "ORG_MEMBER", developerId: options.approver, role: "member" });
   const started: AgentRunRequest[] = [];
   const run = { ...deps, startAgentRun: (request: AgentRunRequest) => { started.push(request); return Promise.resolve({ taskId: `task-${String(started.length)}`, runLimitUsd: 1, stopAtUsd: 1, paused: false }); } };
-  const job = (n: number, extra: Record<string, unknown> = {}) => ({ orgId: ORG, project: PROJECT, job: "nightly" as const, requestId: id(n), agent: { agentId: "rovara-code" as const }, input: { text: "Nightly test run." }, origin: "nightly" as const, ...extra });
+  const job = (n: number, extra: Record<string, unknown> = {}) => ({ orgId: ORG, project: PROJECT, job: "nightly" as const, requestId: id(n), agent: { agentId: "rovara-code" as const }, input: { text: "Nightly test run." }, origin: "automatic" as const, purpose: "saved_env_rebuild" as const, ...extra });
   return { db, clock, deps, audit, run, started, job, approve };
 }
 
@@ -51,6 +51,16 @@ describe("the approver-left reminder", () => {
   it("is not shown while the approver is still a member", async () => {
     const b = await bench({ approver: "dev_here", member: true });
     expect(await reviewReminderOf(b.deps, ORG, PROJECT)).toBeUndefined();
+  });
+
+  it("an approver whose account was merged into a member's is not someone who left", async () => {
+    const b = await bench({ approver: "dev_old", member: false });
+    b.db.set({ ...orgMemberKey(ORG, "dev_survivor"), entityType: "ORG_MEMBER", developerId: "dev_survivor", role: "member" });
+    const resolve = (developerId: string) => Promise.resolve(developerId === "dev_old" ? "dev_survivor" : developerId);
+    expect(await reviewReminderOf(b.deps, ORG, PROJECT)).toBeDefined();
+    expect(await reviewReminderOf(b.deps, ORG, PROJECT, { resolveSurvivor: resolve })).toBeUndefined();
+    // a merge that cannot be read says nothing
+    expect(await reviewReminderOf(b.deps, ORG, PROJECT, { resolveSurvivor: () => Promise.reject(new Error("boom")) })).toBeUndefined();
   });
 
   it("is cleared by a new approval: the new approver is the one asked about", async () => {

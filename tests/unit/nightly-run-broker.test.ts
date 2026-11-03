@@ -97,7 +97,7 @@ describe("a fire starts the run", () => {
     expect(h.admitted).toEqual([{ orgId: ORG, project: PROJECT }]);
     expect(h.started).toHaveLength(1);
     expect(h.started[0]).toMatchObject({
-      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: systemOwnerIdOf(ORG, PROJECT) }, automatic: { job: "nightly", approvedBy: "dev_a" },
+      requestId: nightlyRequestId(slotOf()), orgId: ORG, project: PROJECT, origin: "nightly", owner: { developerId: systemOwnerIdOf(ORG, PROJECT) }, automatic: { job: "nightly", purpose: "nightly_run", approvedBy: "dev_a" },
       payer: { kind: "project", project: PROJECT }, nightlyRun: { slotId: slotOf(), envRevision: 1, branch: "main", headSha: HEAD },
     });
     expect((h.started[0]!["input"] as { text: string }).text).toContain(PROJECT);
@@ -108,7 +108,7 @@ describe("a fire starts the run", () => {
     const h = await harness();
     await h.fireNow();
     expect(h.started[0]!["owner"]).toEqual({ developerId: systemOwnerIdOf(ORG, PROJECT) });
-    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly", approvedBy: "dev_a" });
+    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly", purpose: "nightly_run", approvedBy: "dev_a" });
     expect(h.started[0]!["startedBy"]).toBeUndefined();
     expect((h.started[0]!["input"] as { text: string }).text).toMatch(/^Nightly test run for the project/u);
   });
@@ -215,7 +215,7 @@ describe("a fire starts the run", () => {
       .startRun({ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD, envRevision: 9, slotId: slotOf(), payer: { kind: "project", project: PROJECT }, source: "nightly_baseline" });
     expect(skipped).toBeUndefined();
     expect(h.started).toHaveLength(1);
-    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly" });
+    expect(h.started[0]!["automatic"]).toEqual({ job: "nightly", purpose: "nightly_run" });
   });
 
   it("the worker is sent the approved environment of the revision the run was started for, and nothing else is accepted", async () => {

@@ -32,8 +32,8 @@ async function setup() {
     return found;
   };
   const automatic = (extra: Partial<AgentRunRequest> = {}): AgentRunRequest => ({
-    requestId: randomUUID(), orgId: TEST_ORG, project: PROJECT, agent: { agentId: "rovara-code" }, input: { text: "Nightly test run." }, origin: "nightly",
-    owner: { developerId: SYSTEM }, automatic: { job: "nightly", approvedBy: MAYA.developerId }, payer: { kind: "project", project: PROJECT }, ...extra,
+    requestId: randomUUID(), orgId: TEST_ORG, project: PROJECT, agent: { agentId: "rovara-code" }, input: { text: "Nightly test run." }, origin: "automatic",
+    owner: { developerId: SYSTEM }, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild", approvedBy: MAYA.developerId }, payer: { kind: "project", project: PROJECT }, ...extra,
   });
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- a stored row is asserted field by field
   return { ...h, starter, automatic, meta };
@@ -44,7 +44,7 @@ describe("a system-owned start", () => {
     const t = await setup();
     const started = await startAgentRun(t.starter(), t.automatic());
     const task = t.meta(started.taskId);
-    expect(task).toMatchObject({ developerId: SYSTEM, provider: "system", developerName: systemOwnerName(PROJECT), automatic: { job: "nightly", approvedBy: MAYA.developerId }, origin: "nightly", payer: { kind: "project", project: PROJECT } });
+    expect(task).toMatchObject({ developerId: SYSTEM, provider: "system", developerName: systemOwnerName(PROJECT), automatic: { job: "image_rebuild", purpose: "saved_env_rebuild", approvedBy: MAYA.developerId }, origin: "automatic", payer: { kind: "project", project: PROJECT } });
     expect(task.startedBy).toBeUndefined();
     expect(task.slackUserId).toBeUndefined();
     expect(task.sessionId).toBeUndefined();
@@ -121,14 +121,14 @@ describe("a system owner owns exactly its own project's automatic runs, which no
     const starter = t.starter();
     const body = { requestId: randomUUID(), project: PROJECT, instructions: "Nightly test run." };
     const system = systemOwnerCaller(TEST_ORG, PROJECT);
-    expect(await refusal(starter.startTask(system, body, { origin: "nightly", autonomous: true }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(await refusal(starter.startTask(system, body, { origin: "automatic", autonomous: true }))).toMatchObject({ code: "FORBIDDEN" });
     const person = { developerId: MAYA.developerId, sessionId: "s", amr: "oidc" as const, name: "Maya", orgId: TEST_ORG, orgRole: "member" as const };
-    expect(await refusal(starter.startTask(person, body, { origin: "nightly", autonomous: true, automatic: { job: "nightly" } }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(await refusal(starter.startTask(person, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "FORBIDDEN" });
     // a system owner's caller for ANOTHER project than the one it starts in
-    expect(await refusal(starter.startTask(systemOwnerCaller(TEST_ORG, "other-project"), body, { origin: "nightly", autonomous: true, automatic: { job: "nightly" } }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(await refusal(starter.startTask(systemOwnerCaller(TEST_ORG, "other-project"), body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "FORBIDDEN" });
     // a person's id with the system owner's session id, and the reverse
-    expect(await refusal(starter.startTask({ ...person, sessionId: "system-owner" }, body, { origin: "nightly", autonomous: true, automatic: { job: "nightly" } }))).toMatchObject({ code: "FORBIDDEN" });
-    expect(await refusal(starter.startTask({ ...system, sessionId: "s-forged" }, body, { origin: "nightly", autonomous: true, automatic: { job: "nightly" } }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(await refusal(starter.startTask({ ...person, sessionId: "system-owner" }, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(await refusal(starter.startTask({ ...system, sessionId: "s-forged" }, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "FORBIDDEN" });
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   });
 
@@ -148,17 +148,71 @@ describe("a system owner owns exactly its own project's automatic runs, which no
   });
 });
 
+describe("an automatic run is model-free", () => {
+  const workflowFor = (t: Awaited<ReturnType<typeof setup>>, taskId: string) => t.meta(taskId);
+
+  it("a rebuild queues no prompt: its preparation ends and no model operation follows, and the task is no workflow", async () => {
+    const t = await setup();
+    const started = await startAgentRun(t.starter(), t.automatic());
+    const task = workflowFor(t, started.taskId);
+    expect(task.workflow).toBeUndefined();
+    const pointer = t.db.find((item) => item.pk === `WORKSPACE#${task.workspaceId as string}` && item.entityType === "DEVELOPER_TASK_POINTER")[0] as Record<string, unknown>;
+    expect(pointer.pendingPrompt).toBeUndefined();
+    expect(pointer.pendingWorkflowMode).toBeUndefined();
+    const prepare = String((t.db.get(`WORKSPACE#${task.workspaceId as string}`, "META") as { activeOperationId: string }).activeOperationId);
+    await t.finish(task.workspaceId as string, prepare, "SUCCEEDED");
+    expect(t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === task.workspaceId && item.kind === "task")).toHaveLength(0);
+  });
+
+  it("refuses to make a workflow of it, and an agent that runs steps with a model", async () => {
+    const t = await setup();
+    const starter = t.starter();
+    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Rebuild.", workflow: true, workflowPath: "QUICK" };
+    const system = systemOwnerCaller(TEST_ORG, PROJECT);
+    expect(await refusal(starter.startTask(system, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" } }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const agentSteps = await refusal(startAgentRun(starter, t.automatic({ agent: { agentId: "ticket-triage" } })));
+    expect(agentSteps?.code).toBeDefined();
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  });
+
+  it("every system start declares a purpose that matches what it runs: the nightly purpose goes with the night's facts, and only with them", async () => {
+    const t = await setup();
+    const starter = t.starter();
+    const body = { requestId: randomUUID(), project: PROJECT, instructions: "Run." };
+    const system = systemOwnerCaller(TEST_ORG, PROJECT);
+    expect(await refusal(starter.startTask(system, body, { origin: "nightly", autonomous: true, automatic: { job: "nightly", purpose: "nightly_run" } }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const nightly = { slotId: "a".repeat(64), envRevision: 1, branch: "main", headSha: "b".repeat(40) };
+    expect(await refusal(starter.startTask(system, body, { origin: "automatic", autonomous: true, automatic: { job: "image_rebuild", purpose: "saved_env_rebuild" }, nightlyRun: nightly }))).toMatchObject({ code: "CONFIG_INVALID" });
+    for (const extra of [{ automatic: { job: "nightly" as const, purpose: "nightly_run" as const } }, { automatic: { job: "image_rebuild" as const, purpose: "saved_env_rebuild" as const }, nightlyRun: nightly }]) {
+      expect((await refusal(startAgentRun(starter, t.automatic(extra))))?.code, JSON.stringify(extra)).toBe("CONFIG_INVALID");
+    }
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  });
+
+  it("the automatic origins and the automatic mark go together, both ways", async () => {
+    const t = await setup();
+    const person = { owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member" as const, developerId: MAYA.developerId } };
+    const { automatic: _automatic, ...unmarked } = t.automatic(); // eslint-disable-line @typescript-eslint/no-unused-vars -- the mark is what is left out
+    for (const request of [{ ...unmarked }, { ...t.automatic(), ...person, origin: "automatic" as const, automatic: undefined }, { ...t.automatic(), origin: "app" as const }]) {
+      expect((await refusal(startAgentRun(t.starter(), request as AgentRunRequest)))?.code).toBe("CONFIG_INVALID");
+    }
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  });
+});
+
 describe("a system owner is given no model key, ever", () => {
-  it("an operation of a system-owned task that asks the model proxy for a key is refused, and nothing is minted (whatever the job)", async () => {
+  it("an operation of a system-owned task that asks the model proxy for a key is refused, and nothing is minted (a regression that queued a prompt must not mint one either)", async () => {
     const access = fakeModelAccess();
     const t = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     const starter = createAgentRunStarter(t.brokerInput as never)!;
-    // A job with no nightly payload is an ordinary coding operation, which does ask for a model key: the system owner must not get one.
-    const started = await startAgentRun(starter, { requestId: randomUUID(), orgId: TEST_ORG, project: PROJECT, agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "nightly",
-      owner: { developerId: SYSTEM }, automatic: { job: "scheduled_check" }, payer: { kind: "project", project: PROJECT } });
+    const started = await startAgentRun(starter, { requestId: randomUUID(), orgId: TEST_ORG, project: PROJECT, agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "automatic",
+      owner: { developerId: SYSTEM }, automatic: { job: "scheduled_check", purpose: "saved_env_rebuild" }, payer: { kind: "project", project: PROJECT } });
     const task = t.db.get(`DEVTASK#${started.taskId}`, "META") as { workspaceId: string };
+    // Make the regression: a prompt queued for the task (as an ordinary coding start queues one), so its first operation is one that asks a model.
+    const pointerKey = { pk: `WORKSPACE#${task.workspaceId}`, sk: "DEVELOPER_TASK" };
+    t.db.set({ ...(t.db.get(pointerKey.pk, pointerKey.sk) as Record<string, unknown>), pendingPrompt: "Check." });
     const prepare = String((t.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
     await t.finish(task.workspaceId, prepare, "SUCCEEDED");
     const active = String((t.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);

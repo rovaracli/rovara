@@ -5,7 +5,8 @@
 //   isSystemOwned         whether a task belongs to a system owner (by its stored owner, never by a field a client can send)
 //   personOwnerOf         the owner as a person, or TASK_ACCESS_DENIED for a system owner
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SYSTEM_OWNER_SESSION_ID, agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, systemOwnerIdOf, systemOwnerName, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
+import { readProjectMeta } from "./project-roles.js";
+import { SYSTEM_OWNER_SESSION_ID, agentXError, isSystemOwnerId, orgMetaKey, systemOwnerIdOf, systemOwnerName, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes/types.js";
 import { tryEffectiveTaskOwner, type TaskOwner, type TaskOwnerSource } from "./task-records.js";
 
@@ -38,19 +39,20 @@ export function systemOwnerCaller(orgId: OrgId, project: string): DeveloperCalle
 }
 
 /** Whether a caller is a system owner's (only `systemOwnerCaller` makes one). */
-export const isSystemOwnerCaller = (caller: Pick<DeveloperCaller, "developerId" | "sessionId">): boolean => isSystemOwnerId(caller.developerId) && caller.sessionId === SYSTEM_OWNER_SESSION_ID;
+export const isSystemOwnerCaller = (caller: Pick<DeveloperCaller, "developerId"> & { sessionId?: string | undefined }): boolean => isSystemOwnerId(caller.developerId) && caller.sessionId === SYSTEM_OWNER_SESSION_ID;
 
 // ---- the standing of a system owner
 
 type Reader = { send(command: unknown): Promise<unknown> };
 
 /**
- * Whether a project's system owner still has standing to run: the company is open and the project is there and not archived. A system owner has no member record to lose, so THIS is what the person-membership
- * checks (the removed-creator rule, the dispatch fence) are replaced by for a system-owned task. A read that fails is "does not stand" for the caller (nothing is dispatched on doubt).
+ * Whether a project's system owner still has standing to run: the company is open and the project is not archived. This is the same rule new work meets (`requireNewWorkAllowed`: the project's PROJECT_META row, read by
+ * `readProjectMeta`, refuses only when it says archived), so a project with no meta row of its own (a project from before the row existed) stands, as it does for a person. A system owner has no member record to lose, so
+ * THIS replaces the person-membership checks (the removed-creator rule, the dispatch fence) for a system-owned task. A read that fails is thrown to the caller (nothing is dispatched on doubt).
  */
 export async function systemOwnerStands(deps: { documentClient: Reader; tableName: string }, orgId: OrgId, project: string): Promise<boolean> {
   const get = async (key: { pk: string; sk: string }) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
-  const [org, meta] = await Promise.all([get(orgMetaKey(orgId)), get(projectMetaKey(orgId, project))]);
+  const [org, meta] = await Promise.all([get(orgMetaKey(orgId)), readProjectMeta(deps as Parameters<typeof readProjectMeta>[0], orgId, project)]);
   if (org?.closedAt !== undefined || org?.closingAt !== undefined) return false;
-  return meta !== undefined && meta.status === "active" && meta.archivedAt === undefined;
+  return meta?.status !== "archived" && (meta as { archivedAt?: unknown } | undefined)?.archivedAt === undefined;
 }

@@ -237,7 +237,11 @@ const AgentRunRequestShape = z.object({
   nightlyRun: NightlyRunWireSchema.optional(),
   automatic: AutomaticRunMarkSchema.optional(),
   payerFromRules: z.literal(true).optional(),
-}).passthrough().refine((request) => (request.automatic !== undefined) === isSystemOwnerId(request.owner.developerId) && (request.automatic === undefined || (request.owner.developerId === systemOwnerIdOf(request.orgId, request.project) && request.startedBy === undefined && request.caller === undefined)), { path: ["owner"], message: "a project's system owner owns exactly its own project's automatic runs, which no person started" }).refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
+}).passthrough().refine((request) => (request.automatic !== undefined) === isSystemOwnerId(request.owner.developerId) && (request.automatic === undefined || (request.owner.developerId === systemOwnerIdOf(request.orgId, request.project) && request.startedBy === undefined && request.caller === undefined)), { path: ["owner"], message: "a project's system owner owns exactly its own project's automatic runs, which no person started" })
+  // The automatic origins and the automatic mark go together, both ways: a person's run is never marked automatic, and a run that says it is the project's own work has the system owner. The nightly purpose goes with the night's facts.
+  .refine((request) => (request.origin === "nightly" || request.origin === "automatic") === (request.automatic !== undefined), { path: ["origin"], message: "the nightly and automatic origins are for a project's automatic runs, and only for them" })
+  .refine((request) => request.automatic === undefined || (request.automatic.purpose === "nightly_run") === (request.nightlyRun !== undefined), { path: ["automatic"], message: "the nightly purpose goes with what the night was started to run, and only with it" })
+  .refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
@@ -597,7 +601,7 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     // Likewise: only a nightly run carries this (what it was started to run).
     ...(request.nightlyRun === undefined ? {} : { purpose: "nightly_run", nightlyRun: request.nightlyRun }),
     // Likewise: only a system-owned run carries this (the job; who approved the setup is not part of what the request IS).
-    ...(request.automatic === undefined ? {} : { automatic: request.automatic.job }),
+    ...(request.automatic === undefined ? {} : { automatic: request.automatic.job, automaticPurpose: request.automatic.purpose }),
   });
 }
 

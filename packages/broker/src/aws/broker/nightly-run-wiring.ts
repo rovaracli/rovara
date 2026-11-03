@@ -12,6 +12,10 @@ import type { TestEnvDeps } from "../../org/test-environment.js";
 import { healthWiringOn } from "../../test-env/health-wiring.js";
 import type { MapStore, NightlyRunPort } from "../../test-env/nightly.js";
 import { nightlyMapKey } from "../../test-env/map-keys.js";
+import { sweepAutomaticRuns, type AutomaticRunSweepReport } from "../../automatic-runs/end.js";
+import { developerTaskIdentity } from "../../developer/task-records.js";
+import { requireOrgId } from "../../org/resolve.js";
+import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { startAutomaticRun, type AutomaticRunDependencies, type AutomaticRunInput, type AutomaticRunOutcome } from "../../automatic-runs/start.js";
 import { nightlyRunPort } from "../../test-env/nightly-run.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
@@ -62,6 +66,28 @@ export function automaticRunStarterOf(dependencies: AwsBrokerDependencies, tasks
     startAgentRun: (request) => startAgentRun(starter, request),
   };
   return (input) => startAutomaticRun(deps, input);
+}
+
+/**
+ * The session sweep's job for automatic runs: a run past its time is cancelled on its worker (as the task's own system identity, best effort), ended, its slot given back and the end audited. Never throws: a failure is
+ * logged and the sweep's other jobs go on.
+ */
+export async function sweepAutomaticRunsOf(dependencies: AwsBrokerDependencies, now: () => number = Date.now): Promise<AutomaticRunSweepReport | "failed"> {
+  const actions = developerTaskActions(dependencies);
+  const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }));
+  try {
+    return await sweepAutomaticRuns({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), log,
+      cancelLive: async (task) => {
+        const workspace = await actions.workspace(task.workspaceId);
+        if (workspace.status !== "CLOSED" && workspace.activeOperationId != null) await actions.cancelRunning(developerTaskIdentity(task, requireOrgId(task.orgId)), workspace, () => []);
+      },
+      release: (taskId) => releaseIfFinished(dependencies, taskId),
+    });
+  } catch (error) {
+    log({ event: "automatic_run.sweep_failed", error: error instanceof Error ? error.name : "unknown" });
+    return "failed";
+  }
 }
 
 /** `automaticRunStarterOf` from the broker's input, as the other broker factories (`createAgentRunStarter`) are: what a test, or the saved-environments lane's rebuild job, builds its starter from. */

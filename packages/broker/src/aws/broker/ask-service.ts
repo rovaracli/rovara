@@ -156,9 +156,9 @@ export async function handleAskServiceRoute(
     if (level !== "use" && level !== "edit") throw agentXError("FORBIDDEN", "this question can't be answered now");
   }
   // At most ASK_KEYS_PER_ASK keys for one Ask (the service asks once per turn, and again only when a turn is delivered again): counted in the request item, conditional on the count read, before the key is made.
-  await takeKeyPlace(ask, named, item);
   // A system owner (automatic runs) has no model key to ask with: the task's provider is the system's only for such a task, and the Ask is refused.
   if (task.provider === "system" || (askedBy !== undefined && isSystemOwnerId(askedBy))) throw agentXError("FORBIDDEN", "automatic runs can't be asked questions");
+  await takeKeyPlace(ask, named, item);
   const requester = askedBy === undefined ? undefined : { kind: "developer" as const, developerId: askedBy, provider: task.provider };
   // SY-7: the asker's standing is read after the level check and asserted again in the write that records the key, so a removal or ban in between refuses the key.
   const guard = askedBy === undefined ? undefined : requesterStandingGuard(dependencies.tableName, await developerStanding(dependencies, named.orgId, askedBy));

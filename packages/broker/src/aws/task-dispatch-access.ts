@@ -5,6 +5,8 @@ import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
 import { systemOwnerStands } from "../developer/system-owner.js";
+import { markAutomaticTaskEnded } from "../automatic-runs/end.js";
+import { failOutboxOperation } from "./outbox-failure.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
 import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
@@ -295,7 +297,16 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
       if (stands === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the standing of the project's automatic runs could not be verified");
       if (!stands) {
         if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
-        await park(guardDeps, record, pointer, task, undefined, "OWNERLESS");
+        // Nobody can resume an automatic run's operation (it has no owner to press Retry), and a parked one would hold the project's one automatic slot for ever. So the operation is failed for good (it was never
+        // delivered), the task is ended, and its workspace and slot go back through the release mark (`automatic-runs/end.ts`).
+        try {
+          await failOutboxOperation(guardDeps.documentClient as Parameters<typeof failOutboxOperation>[0], deps.tableName, record, "TASK_ACCESS_DENIED: this project's automatic runs can't go on: the project is archived or the company is closed");
+        } catch (error) {
+          // The operation moved on while it was judged (it was delivered, or ended): judge it again from the start.
+          if (conditional(error)) continue;
+          throw error;
+        }
+        await markAutomaticTaskEnded(guardDeps.documentClient, deps.tableName, task, "project_stopped", new Date().toISOString());
         return "PARKED";
       }
       if (await allowedStillCurrent(guardDeps, record, pointer, task, undefined, undefined)) {

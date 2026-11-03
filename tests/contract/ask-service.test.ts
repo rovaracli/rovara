@@ -61,6 +61,18 @@ describe("model access for an Ask", () => {
     expect(args[4]).toMatchObject({ turnId: "Ev1234567890" });
   });
 
+  it("an Ask on a system-owned task (automatic runs) is refused before a key place is taken: nothing is minted and the Ask's key count does not move", async () => {
+    mint.mockClear();
+    const t = world();
+    const ref = await queuedAsk(t);
+    const task = t.w.db.get({ pk: `DEVTASK#${t.made.taskId}`, sk: "META" })! as unknown as DeveloperTaskRecord;
+    t.w.db.set({ ...task, provider: "system" } as never);
+    const before = t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId))!.keysTaken;
+    await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1234567890" }), "/v1/asks/model-access")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mint).not.toHaveBeenCalled();
+    expect(t.w.db.get(askRequestKey(ORG_A, ref.sessionId, ref.askId))!.keysTaken).toEqual(before);
+  });
+
   it("hands the mint the asker's standing to assert again in the key's write: it holds while nothing changes, and fails once the asker is removed, banned or changed (SY-7)", async () => {
     const t = world();
     const ref = await queuedAsk(t);

@@ -18,6 +18,7 @@ import {
   type OrgId,
 } from "@agentx/contracts";
 import { accessDeniedMessage } from "../../developer/access.js";
+import { isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { effectiveProjectRole } from "../../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../../developer/task-project-access.js";
 import type { DeveloperCaller, DeveloperRouteDependencies, ProjectAccessCaller } from "./types.js";
@@ -32,7 +33,7 @@ import { bindingsOf, channelNames, grantRowsOf, listProjects, projectsWithPolicy
  */
 export async function checkProjectAccess(
   deps: DeveloperRouteDependencies,
-  caller: ProjectAccessCaller,
+  caller: ProjectAccessCaller & { sessionId?: string },
   project: string,
   membership?: { freshMemberOf: readonly string[] },
   options: { ignoreTasksOff?: boolean } = {},
@@ -44,7 +45,8 @@ export async function checkProjectAccess(
   // A project's system owner (automatic runs) is no member: it holds no grant and is bound to no channel. Its access to ITS OWN project is the project's existence, as the project's own revision says, with the
   // role that starts work; the tasks-off switch is for people's tasks from AI tools and does not stop an automatic run. Any other id with the system owner's session is refused (it is built for one project only).
   if (isSystemOwnerId(caller.developerId)) {
-    if (caller.developerId !== systemOwnerIdOf(caller.orgId, project)) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
+    // Its id AND its own session id (`isSystemOwnerCaller`), for its own project only: the id alone is not enough, so nothing that merely carries the id passes for it.
+    if (!isSystemOwnerCaller(caller) || caller.developerId !== systemOwnerIdOf(caller.orgId, project)) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
     return { revision: known.revision, policy: known.policy, access: "granted", channelIds: [], role: "contributor" };
   }
   const grant = (await grantRowsOf(deps, caller)).find((row) => row.projectName === project)?.grant;

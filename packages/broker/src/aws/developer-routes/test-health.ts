@@ -6,6 +6,7 @@
 // Every answer is fixed words, a count, test ids and a day: no output and no message text.
 import { z } from "zod";
 import { MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, type OrgId } from "@agentx/contracts";
+import { resolveSurvivor } from "../../agents/access.js";
 import { setAutomaticRunsCap } from "../../automatic-runs/cap.js";
 import { automaticRunsView } from "../../automatic-runs/view.js";
 import { logDeveloperEvent } from "../../developer/log.js";
@@ -39,7 +40,7 @@ async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
     ...await readLatestNight(store, orgId, name).then((night) => (night === undefined ? {} : { lastNight: { status: night.status, reason: night.reason, at: night.at, words: night.words } }), () => ({})),
     // The project's automatic runs (owner decision 2026-11-02): the runs Rovara started by itself ("Started by Rovara (nightly)"), its own "Automatic runs" line against the monthly cap, whether the cap has paused them, and
     // the reminder to review the setup when the person who approved it has left. Read failure leaves the block out; it never reads as "nothing is paused".
-    ...await automaticRunsView(store, orgId, name).then((automaticRuns) => ({ automaticRuns }), () => ({})),
+    ...await automaticRunsView(store, orgId, name, deps.agents === undefined ? {} : { resolveSurvivor: (developerId) => resolveSurvivor({ signInStore: deps.agents!.signInStore, ...(deps.agents!.resolveDeveloper === undefined ? {} : { resolveDeveloper: deps.agents!.resolveDeveloper }) }, orgId, developerId) }).then((automaticRuns) => ({ automaticRuns }), () => ({})),
     proposeFixTask: await readProposeFixTask(store, orgId, name),
     proposedTasks: await listProposedFixTasks(store, orgId, name).catch(() => []),
   };

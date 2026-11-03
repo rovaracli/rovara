@@ -67,7 +67,7 @@ export function nightlyRunPort(deps: NightlyRunDependencies): NightlyRunPort {
       try {
         const outcome = await startAutomaticRun(deps, {
           orgId: input.orgId, project: input.project, job: "nightly", requestId: nightlyRequestId(input.slotId), agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: nightlyRunText(input.project) },
-          origin: NIGHTLY_RUN_ORIGIN, setupApprovedBy: approver, nightlyRun,
+          origin: NIGHTLY_RUN_ORIGIN, purpose: "nightly_run", setupApprovedBy: approver, nightlyRun,
         });
         if ("skipped" in outcome) return { skipped: outcome.skipped };
       } catch (error) {

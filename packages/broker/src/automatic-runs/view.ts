@@ -58,19 +58,21 @@ export async function recentAutomaticRuns(deps: TestEnvDeps, orgId: OrgId, proje
  * The approver-left reminder: the person who approved the project's current test setup is no longer a member of the company. The runs go on regardless; this only asks a maintainer to look again. A new approval names a new
  * approver and clears it. Undefined when the approver is still there, or when nothing names one.
  */
-export async function reviewReminderOf(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<ReviewReminder | undefined> {
+export async function reviewReminderOf(deps: TestEnvDeps, orgId: OrgId, project: string, options: { /** Reads an account as whoever it was merged into: an approver whose account was merged into another is that member, not someone who left. */ resolveSurvivor?: (developerId: string) => Promise<string> } = {}): Promise<ReviewReminder | undefined> {
   const approved = await readApprovedTestEnvironment(deps, orgId, project).catch(() => undefined);
   if (approved === undefined) return undefined;
   const approver = await readApprovedBy(deps, orgId, project, approved.revision).catch(() => undefined);
   if (approver === undefined) return undefined;
   // A member row that cannot be read says nothing (it counts as "still here"): no reminder on a doubt, since the reminder is advice, not a gate.
-  const member = await get(deps, orgMemberKey(orgId, approver)).catch(() => ({}));
+  const survivor = options.resolveSurvivor === undefined ? approver : await options.resolveSurvivor(approver).catch(() => undefined);
+  if (survivor === undefined) return undefined;
+  const member = await get(deps, orgMemberKey(orgId, survivor)).catch(() => ({}));
   if (member !== undefined) return undefined;
   return { kind: "approver_left", revision: approved.revision, words: APPROVER_LEFT_WORDS };
 }
 
-export async function automaticRunsView(deps: TestEnvDeps, orgId: OrgId, project: string): Promise<AutomaticRunsView> {
-  const [use, recent, reviewReminder] = await Promise.all([readAutomaticRunsUse(deps, orgId, project), recentAutomaticRuns(deps, orgId, project).catch(() => []), reviewReminderOf(deps, orgId, project).catch(() => undefined)]);
+export async function automaticRunsView(deps: TestEnvDeps, orgId: OrgId, project: string, options: Parameters<typeof reviewReminderOf>[3] = {}): Promise<AutomaticRunsView> {
+  const [use, recent, reviewReminder] = await Promise.all([readAutomaticRunsUse(deps, orgId, project), recentAutomaticRuns(deps, orgId, project).catch(() => []), reviewReminderOf(deps, orgId, project, options).catch(() => undefined)]);
   return {
     line: { ...use, label: "Automatic runs", words: `Automatic runs: ${String(use.used)} of ${String(use.cap)} this month` },
     ...(use.paused ? { pausedWords: AUTOMATIC_RUNS_PAUSED_WORDS(use.cap) } : {}),

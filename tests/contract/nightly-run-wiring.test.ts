@@ -78,7 +78,7 @@ describe("with nh and the test environment on", () => {
     const { task, own, slot } = await started(t);
     expect(t.db.find((item) => item.entityType === "TEST_ENV_NIGHTLY_SLOT")).toHaveLength(1);
     expect(task).toMatchObject({
-      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: systemOwnerIdOf(TEST_ORG, NAME), provider: "system", automatic: { job: "nightly", approvedBy: OMAR.developerId },
+      purpose: "nightly_run", origin: "nightly", payer: { kind: "project", project: NAME }, developerId: systemOwnerIdOf(TEST_ORG, NAME), provider: "system", automatic: { job: "nightly", purpose: "nightly_run", approvedBy: OMAR.developerId },
       nightlyRun: { slotId: slot, envRevision: 1, branch: "main", headSha: HEAD },
     });
     // The system owner owns it and nobody started it: no starter is named, and the title says it is the nightly run.
@@ -160,7 +160,7 @@ describe("with nh and the test environment on", () => {
     // The night is over: its slot is free for the next automatic run of the project, which the one-at-a-time limit would otherwise refuse.
     const { createAutomaticRunStarter } = await import("../../packages/broker/src/aws/broker.js");
     const start = createAutomaticRunStarter(t.brokerInput as never)!;
-    const next = () => start({ orgId: TEST_ORG, project: NAME, job: "scheduled_check", requestId: randomUUID(), agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "automatic" });
+    const next = () => start({ orgId: TEST_ORG, project: NAME, job: "scheduled_check", purpose: "saved_env_rebuild", requestId: randomUUID(), agent: { agentId: "rovara-code" }, input: { text: "Check." }, origin: "automatic" });
     const second = await next();
     expect("started" in second, JSON.stringify(second)).toBe(true);
     // ...and that one holds the slot in its turn

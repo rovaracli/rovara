@@ -35,8 +35,17 @@ export const startedByAutomaticWords = (job: AutomaticJob): string => `Started b
 /** The audit actor text of an automatic job: "automatic: nightly". */
 export const automaticAuditActor = (job: AutomaticJob): string => `automatic: ${job}`;
 
-/** What a system-owned task keeps of why it exists: the job, and the person who approved the setup it runs (a setup approval is a person's; the run is not). */
-export const AutomaticRunMarkSchema = z.object({ job: AutomaticJobSchema, approvedBy: z.string().min(1).max(200).optional() }).strict();
+/**
+ * What an automatic run is FOR. Every system start declares one, and it is a model-free purpose: an automatic run is given no model key, so a start that could become a model-using workflow is refused.
+ * `nightly_run`: the nightly test run (a verification-mode operation with its own payload; needs `nightlyRun`). `saved_env_rebuild`: a saved image's rebuild, which prepares the workspace and queues no model prompt (the
+ * saved-environments lane adds what runs after the preparation, on its own operation).
+ */
+export const AUTOMATIC_RUN_PURPOSES = ["nightly_run", "saved_env_rebuild"] as const;
+export const AutomaticRunPurposeSchema = z.enum(AUTOMATIC_RUN_PURPOSES);
+export type AutomaticRunPurpose = z.infer<typeof AutomaticRunPurposeSchema>;
+
+/** What a system-owned task keeps of why it exists: the job, its model-free purpose, and the person who approved the setup it runs (a setup approval is a person's; the run is not). */
+export const AutomaticRunMarkSchema = z.object({ job: AutomaticJobSchema, purpose: AutomaticRunPurposeSchema, approvedBy: z.string().min(1).max(200).optional() }).strict();
 export type AutomaticRunMark = z.infer<typeof AutomaticRunMarkSchema>;
 
 /** How many automatic runs of one project may hold a workspace at once (the project's own limit; no personal slot is used). */
@@ -44,3 +53,8 @@ export const AUTOMATIC_RUNS_AT_ONCE = 1;
 /** The default monthly cap on automatic runs of a project: a night a day, each with its one same-day retry, and room for image rebuilds and checks. A maintainer can change it. */
 export const DEFAULT_AUTOMATIC_RUNS_PER_MONTH = 100;
 export const MAX_AUTOMATIC_RUNS_PER_MONTH = 2000;
+/** How long an automatic run may hold the project's one automatic slot: past it, the session sweep ends the run, gives the slot back and audits it (the nightly's own limit is 90 minutes, with room). */
+export const AUTOMATIC_RUN_MAX_MS = 2 * 60 * 60_000;
+/** Why Rovara ended an automatic run itself: its project or company stopped standing, or it ran past `AUTOMATIC_RUN_MAX_MS`. */
+export const AUTOMATIC_RUN_END_REASONS = ["project_stopped", "too_old"] as const;
+export type AutomaticRunEndReason = (typeof AUTOMATIC_RUN_END_REASONS)[number];

@@ -237,6 +237,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (isSystemOwnerId(caller.developerId) !== systemStart || systemStart !== (run?.automatic !== undefined) || (systemStart && (run?.autonomous !== true || run?.startedBy !== undefined || caller.developerId !== systemOwnerIdOf(deps.orgId, request.project)))) {
     throw agentXError("FORBIDDEN", SYSTEM_OWNER_REFUSAL);
   }
+  // An automatic run is MODEL-FREE: it declares a purpose that is, and nothing here may turn it into a workflow that asks a model (which it would never be given a key for, and so could never finish).
+  if (systemStart && (run?.automatic?.purpose === "nightly_run") !== (run?.nightlyRun !== undefined)) throw agentXError("CONFIG_INVALID", "an automatic run's purpose must be a model-free one that matches what it was started to run");
+  if (systemStart && request.workflow === true) throw agentXError("CONFIG_INVALID", "an automatic run is not a workflow: it asks no model");
   const turns = turnTable(deps);
   // Only the Slack workflow's own caller can say "slack": an AI tool that sends that name is still an AI tool.
   const client = caller.sessionId === SLACK_WORKFLOW_SESSION_ID && request.client?.trim().toLowerCase() === "slack" ? SLACK_CLIENT_NAME : cleanClientName(request.client);
@@ -360,6 +363,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // Plan 6 Task 10: Rovara drafting the project's dev setup. A read-only look at the repositories with no workflow; paid, admitted and limited like a Quick plan.
   // Live interaction F3: a deep diagnosis is the same read-only look (the boundary, the start rules and the planning limit are a setup draft's); only its purpose, its result and its pointer differ.
   const settingUpDraft = run?.setupDraft !== undefined || run?.diagnosis !== undefined || run?.setupAgent !== undefined || run?.nightlyRun !== undefined;
+  // An automatic run never takes an agent that runs steps with a model.
+  if (systemStart && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "an automatic run is not an agent-step run: it asks no model"));
   if (settingUpDraft && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "a setup draft is a coding run of Rovara Code"));
   // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
@@ -378,7 +383,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ? await deps.agentRuns?.signInStore.getDeveloper(sessionStartedBy.developerId).then((developer) => developer?.displayName, () => undefined) : undefined;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   // (A setup draft names Rovara Code but is no workflow: it is a read-only look, answered with a draft.)
-  const asWorkflow = !settingUpDraft && (request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding"));
+  const asWorkflow = !systemStart && !settingUpDraft && (request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding"));
   // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) makes a 1.1.0 workflow, which starts by understanding the intent. Every other task stays 1.0.0.
   const hasPlanCheck = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
   // It starts by understanding the intent only once Understand runs (Task 4); until then (`rovaraCodeV2Live`, off) a 1.1.0 task starts on the plan step as before, and needs an explicit path.
@@ -554,7 +559,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // FR-019: the instructions exactly as the tool sent them; only the audit record is redacted.
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
     // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
-    conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
+    conversationId, firstRequestId: randomUUID(), // An automatic run queues a prompt only when it is the nightly (a verification operation with its own payload and no model); a rebuild queues none.
+    ...(prepared?.runner === "agent_steps" || understandsFirst || (systemStart && run?.nightlyRun === undefined) ? {} : { pendingPrompt: requestText }),
     ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: run?.nightlyRun !== undefined ? "CHECKS" as const : run?.setupAgent !== undefined ? "SETUP_AGENT" as const : "SETUP_DRAFT" as const } : {}),
   };
   // A system owner's start is no AI tool's request, and has no turn record.

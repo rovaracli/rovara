@@ -2,9 +2,10 @@
 // the liveness check of its task) are judged by the system owner's own standing: the company is open and the project is active.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, systemOwnerIdOf, systemOwnerName } from "../../packages/contracts/src/index.js";
+import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, projectRevisionKey, systemOwnerIdOf, systemOwnerName } from "../../packages/contracts/src/index.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
+import { checkProjectAccess } from "../../packages/broker/src/aws/developer-routes/project-access.js";
 import { requestForPausedTask } from "../../packages/broker/src/spend/requests.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { isSystemOwned, personOwnerOf, requirePerson, systemOwnerCaller, systemOwnerStands } from "../../packages/broker/src/developer/system-owner.js";
@@ -25,7 +26,7 @@ const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 function systemTask(): DeveloperTaskRecord {
   return {
     pk: `DEVTASK#${TASK_ID}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK_ID, orgId: ORG,
-    developerId: SYSTEM, provider: "system", developerName: systemOwnerName(PROJECT), automatic: { job: "nightly", approvedBy: PERSON },
+    developerId: SYSTEM, provider: "system", developerName: systemOwnerName(PROJECT), automatic: { job: "nightly", purpose: "nightly_run", approvedBy: PERSON },
     client: "api", project: PROJECT, title: "Nightly", workspaceId: WORKSPACE_ID, ownerKey: "f".repeat(64), conversationId: randomUUID(), startingRevision: 1,
     charge: { member: { pk: "member", sk: "counter" }, organization: { pk: "organization", sk: "counter" } }, shared: false,
     createdAt: "2026-11-02T10:00:00.000Z", updatedAt: "2026-11-02T10:00:00.000Z", purpose: "nightly_run",
@@ -108,9 +109,19 @@ describe("the standing of a system owner replaces a person's membership", () => 
     expect(await systemOwnerStands(w.deps, ORG, PROJECT)).toBe(true);
   });
 
-  it.each([["archived project", { project: "archived" as const }], ["missing project", { project: "missing" as const }], ["closed company", { orgClosed: true }]])("does not stand for an %s", async (_label, options) => {
+  it.each([["archived project", { project: "archived" as const }], ["closed company", { orgClosed: true }]])("does not stand for an %s", async (_label, options) => {
     const w = world(options);
     expect(await systemOwnerStands(w.deps, ORG, PROJECT)).toBe(false);
+  });
+
+  it("stands the way new work does: a project with no meta row of its own is not archived, and one marked archived by archivedAt alone is", async () => {
+    expect(await systemOwnerStands(world({ project: "missing" }).deps, ORG, PROJECT)).toBe(true);
+    const w = world();
+    w.db.set({ ...projectMetaKey(ORG, PROJECT), entityType: "PROJECT_META", orgId: ORG, name: PROJECT, archivedAt: "2026-11-01T00:00:00.000Z" });
+    expect(await systemOwnerStands(w.deps, ORG, PROJECT)).toBe(false);
+    // a row that is not a project's meta row says nothing
+    w.db.set({ ...projectMetaKey(ORG, PROJECT), entityType: "SOMETHING_ELSE", status: "archived" });
+    expect(await systemOwnerStands(w.deps, ORG, PROJECT)).toBe(true);
   });
 
   it("the removed-creator check passes for a standing system owner and records nothing on the task", async () => {
@@ -130,10 +141,20 @@ describe("the standing of a system owner replaces a person's membership", () => 
     expect(await guardTaskDispatch(w.deps, w.record)).toBe("ALLOWED");
   });
 
-  it.each([["archived project", { project: "archived" as const }], ["closed company", { orgClosed: true }]])("parks the operation (as an ownerless task) for an %s, and dispatches nothing", async (_label, options) => {
+  it.each([["archived project", { project: "archived" as const }], ["closed company", { orgClosed: true }]])("ends the run instead of parking it for an %s: the operation fails for good, the task is ended and queued for release, and nothing is dispatched", async (_label, options) => {
     const w = world(options);
     expect(await guardTaskDispatch(w.deps, w.record)).toBe("PARKED");
-    expect((w.db.get(`OUTBOX#${w.record.id}`, "OUTBOX") as { status?: string }).status).toBe("WAITING_FOR_TASK_ACCESS");
+    // not parked waiting for a person who can never come: failed
+    expect((w.db.get(`OUTBOX#${w.record.id}`, "OUTBOX") as { status?: string }).status).toBe("FAILED");
+    expect((w.db.get(`WORKSPACE#${WORKSPACE_ID}`, `OPERATION#${w.record.operationId}`) as { status?: string }).status).toBe("FAILED");
+    expect((w.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META") as { activeOperationId?: string; status?: string })).toMatchObject({ status: "READY" });
+    expect((w.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META") as { activeOperationId?: string }).activeOperationId).toBeUndefined();
+    const task = w.db.get(`DEVTASK#${TASK_ID}`, "META") as { agentRunEnd?: { state: string }; automaticEnd?: { reason: string }; outcome?: string };
+    expect(task.agentRunEnd).toMatchObject({ state: "CANCELLED" });
+    expect(task.automaticEnd).toMatchObject({ reason: "project_stopped" });
+    expect(task.outcome).toBeUndefined();
+    // the slot goes back through the release mark the recovery sweep reads
+    expect(w.db.get("FINISHED_RELEASE", `TASK#${TASK_ID}`)).toMatchObject({ taskId: TASK_ID });
   });
 
   it("refuses a system-owned task that somehow has a People sidecar (no person is ever added to it): nothing dispatches", async () => {
@@ -156,5 +177,25 @@ describe("an automatic run asks nobody for more money", () => {
     w.db.set({ ...systemTask(), budgetPause: { scope: { kind: "task", taskId: TASK_ID }, at: "2026-11-02T10:30:00.000Z" } });
     expect(await requestForPausedTask({ documentClient: w.db, tableName: "state", now: Date.now } as never, TASK_ID)).toBeUndefined();
     expect(w.db.find((item) => String(item.entityType).includes("SPEND_REQUEST"))).toHaveLength(0);
+  });
+});
+
+describe("a system owner's access to its project", () => {
+  const seed = () => {
+    const db = new FakeDynamoDb();
+    db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", definition: { name: PROJECT, revision: 1, developerTasks: { enabled: false, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: false } } });
+    return { documentClient: db, tableName: "state", developer: {}, now: () => Date.now() } as never;
+  };
+  const caller = (developerId: string, sessionId: string) => ({ orgId: ORG, orgRole: "member" as const, developerId, sessionId, amr: "cloud" as const, name: "x" });
+
+  it("is its own project's, as a contributor, whatever the tasks-off switch says (that switch is for people's tasks)", async () => {
+    expect(await checkProjectAccess(seed(), systemOwnerCaller(ORG, PROJECT), PROJECT)).toMatchObject({ role: "contributor", access: "granted" });
+    // a person meets the switch
+    expect(await codeOf(checkProjectAccess(seed(), caller(PERSON, "s-1"), PROJECT))).toBeDefined();
+  });
+
+  it("needs the system owner's own session as well as its id: the id alone, with a person's session, is refused", async () => {
+    expect(await codeOf(checkProjectAccess(seed(), caller(SYSTEM, "s-1"), PROJECT))).toBe("PROJECT_ACCESS_DENIED");
+    expect(await codeOf(checkProjectAccess(seed(), caller(systemOwnerIdOf(ORG, "other"), "system-owner"), PROJECT))).toBe("PROJECT_ACCESS_DENIED");
   });
 });

@@ -22,6 +22,8 @@ const SETTINGS_SK = "AUTOMATIC_RUNS#SETTINGS";
 export const AUTOMATIC_RUNS_STARTED_PREFIX = "AUTOMATIC_RUNS#STARTED#";
 const SETTING_REQUESTS_KEPT = 20;
 const WRITE_ATTEMPTS = 3;
+const CLAIM_ATTEMPTS = 3;
+const CLAIM_BACKOFF_MS = 20;
 const monthSk = (month: string) => `AUTOMATIC_RUNS#MONTH#${month}`;
 const key = (orgId: OrgId, project: string, sk: string) => ({ pk: projectPk(orgId, project), sk });
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -63,23 +65,34 @@ export async function claimAutomaticRun(deps: TestEnvDeps, input: { orgId: OrgId
   const expires = Math.floor((now + 62 * DAY_MS) / 1000);
   const counter = key(input.orgId, input.project, monthSk(month));
   const claim = key(input.orgId, input.project, `AUTOMATIC_RUNS#RUN#${input.requestId}`);
-  try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-      { Put: { TableName: deps.tableName, Item: { ...claim, entityType: "AUTOMATIC_RUN_CLAIM", orgId: input.orgId, project: input.project, requestId: input.requestId, job: input.job, month, claimedAt: iso(now), [INDEX_EXPIRY_ATTRIBUTE]: expires }, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Update: { TableName: deps.tableName, Key: counter, UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), orgId = :org, #project = :project, #month = :month, #expiry = :expires ADD #count :one",
-        ConditionExpression: "attribute_not_exists(#count) OR #count < :cap",
-        ExpressionAttributeNames: { "#count": "count", "#project": "project", "#month": "month", "#expiry": INDEX_EXPIRY_ATTRIBUTE },
-        ExpressionAttributeValues: { ":entity": "AUTOMATIC_RUNS_MONTH", ":org": input.orgId, ":project": input.project, ":month": month, ":expires": expires, ":one": 1, ":cap": cap } } },
-    ] }));
-  } catch (error) {
-    if (errorName(error) !== "TransactionCanceledException") throw error;
-    // Either this request's claim is already there (a retry: counted once), or the cap is reached.
-    const used = await countOf(deps, input.orgId, input.project, month);
-    if (await get(deps, claim) !== undefined) return { claimed: true, used, cap, replay: true };
-    await recordPause(deps, input.orgId, input.project, month, cap);
-    return { claimed: false, used, cap };
+  const items = [
+    { Put: { TableName: deps.tableName, Item: { ...claim, entityType: "AUTOMATIC_RUN_CLAIM", orgId: input.orgId, project: input.project, requestId: input.requestId, job: input.job, month, claimedAt: iso(now), [INDEX_EXPIRY_ATTRIBUTE]: expires }, ConditionExpression: "attribute_not_exists(pk)" } },
+    { Update: { TableName: deps.tableName, Key: counter, UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), orgId = :org, #project = :project, #month = :month, #expiry = :expires ADD #count :one",
+      ConditionExpression: "attribute_not_exists(#count) OR #count < :cap",
+      ExpressionAttributeNames: { "#count": "count", "#project": "project", "#month": "month", "#expiry": INDEX_EXPIRY_ATTRIBUTE },
+      ExpressionAttributeValues: { ":entity": "AUTOMATIC_RUNS_MONTH", ":org": input.orgId, ":project": input.project, ":month": month, ":expires": expires, ":one": 1, ":cap": cap } } },
+  ];
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return { claimed: true, used: await countOf(deps, input.orgId, input.project, month), cap, replay: false };
+    } catch (error) {
+      if (errorName(error) !== "TransactionCanceledException") throw error;
+      // What cancelled it, item by item (the order of `items`): only the COUNTER's own failed condition is the cap. Another reason (a conflict with a concurrent write, a throttle) is not the cap, so it
+      // never pauses anything and never writes the pause: it is tried again, and then told as a fault that may pass.
+      const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
+      const claimFailed = reasons?.[0]?.Code === "ConditionalCheckFailed";
+      const counterFailed = reasons?.[1]?.Code === "ConditionalCheckFailed";
+      // This request's claim is already there (a retried start): counted once, whatever the count is now.
+      if (claimFailed && await get(deps, claim) !== undefined) return { claimed: true, used: await countOf(deps, input.orgId, input.project, month), cap, replay: true };
+      if (counterFailed && !claimFailed) {
+        await recordPause(deps, input.orgId, input.project, month, cap);
+        return { claimed: false, used: await countOf(deps, input.orgId, input.project, month), cap };
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_BACKOFF_MS * 2 ** attempt));
+    }
   }
-  return { claimed: true, used: await countOf(deps, input.orgId, input.project, month), cap, replay: false };
+  throw agentXError("WORKSPACE_BUSY", "the project's automatic-run count was busy; the run was not started, try again with the same request_id");
 }
 
 async function countOf(deps: TestEnvDeps, orgId: OrgId, project: string, month: string): Promise<number> {
