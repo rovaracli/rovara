@@ -53,7 +53,7 @@ const hex = (n: number): string => n.toString(16).padStart(64, "0");
 const artifact = (type: "requirements" | "design") => ({ id: `a-${type}`, type, version: 1, sha256: hex(type === "design" ? 2 : 1), producer: "agentx-worker-untrusted" as const, objectKey: `k/${type}.md`, createdAt: NOW, format: "markdown" as const });
 
 function runningReview(): WorkflowSnapshot {
-  let workflow = { ...createWorkflowSnapshot({ taskId: "11111111-1111-4111-8111-111111111111", ownerId: OWNER, now: NOW, path: "QUICK", definitionVersion: "1.1.0", program: PROGRAM }), state: "READY" as const };
+  let workflow: WorkflowSnapshot = { ...createWorkflowSnapshot({ taskId: "11111111-1111-4111-8111-111111111111", ownerId: OWNER, now: NOW, path: "QUICK", definitionVersion: "1.1.0", program: PROGRAM }), state: "READY" };
   workflow = enableDesignReview(workflow, { expectedRevision: workflow.revision, start: { decidedBy: "auto", reasons: ["new_api"], tier: "standard", capUsd: 10 }, now: NOW });
   const running = (value: WorkflowSnapshot): WorkflowSnapshot => ({ ...value, revision: value.revision + 1, state: "RUNNING" });
   workflow = submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: artifact("requirements"), now: NOW });

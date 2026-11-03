@@ -102,7 +102,7 @@ interface Reviewer {
 }
 
 /** The worker of one operation: fetches each reviewer's packet, asks for each slot's key, and uploads `design-review.json`. Returns what it did, for the assertions. */
-async function runWorker(w: World, operationId: string, reviewers: Partial<Record<ReviewerRole, Reviewer>> = {}, options: { mergeSpentUsd?: number; skipMerge?: boolean; failure?: Record<string, string> } = {}) {
+async function runWorker(w: World, operationId: string, reviewers: Partial<Record<ReviewerRole, Reviewer>> = {}, options: { mergeSpentUsd?: number; skipMerge?: boolean; failure?: { error: string } } = {}) {
   const outbox = w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!;
   const invocation = outbox.invocation as { callbackCapability: string; payload: { designReview: DesignReviewBinding; workflowMode: string } };
   const capability = invocation.callbackCapability;
