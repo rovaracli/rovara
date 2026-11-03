@@ -210,6 +210,92 @@ export const EvidenceFindingSchema = z
   .strict();
 export type EvidenceFinding = z.infer<typeof EvidenceFindingSchema>;
 
+// ---- test services (TS5, design test-services.md 2.4): how each dependency of a run was backed, in fixed words.
+// Self-contained on purpose: this file is in the browser entry's exact import graph, so it imports nothing new. A contract test keeps `EVIDENCE_BACKING_KINDS` equal to `TEST_ENV_BACKING_KINDS`.
+// Replaces: nothing. `environment.services` keeps its old meaning and old packs still parse; a run with test services carries `environment.dependencies` beside it. Readers of the pack are strict, so a reader built before this field REJECTS a pack that carries it: roll out forward only (every reader upgraded before any writer sets the field; the switch `tx` stays off until then).
+
+export const EVIDENCE_BACKING_KINDS = ["local", "project_image", "emulated", "test_account", "fake", "none"] as const;
+export type EvidenceBackingKind = (typeof EVIDENCE_BACKING_KINDS)[number];
+/** The honesty labels of 2.4, by id. The BROKER computes the label from the pinned plan (`evidenceDependencyLabelFor`); a worker's own words never set it. */
+export const EVIDENCE_DEPENDENCY_LABELS = ["real", "real_project_image", "company_approved", "rovara_local_aws", "test_account", "recorded_fake", "hand_written_fake", "faked_by_tests", "not_available"] as const;
+export type EvidenceDependencyLabel = (typeof EVIDENCE_DEPENDENCY_LABELS)[number];
+/** The backing each label can belong to: a label that does not fit its backing is refused. */
+export const EVIDENCE_DEPENDENCY_LABEL_BACKING: Record<EvidenceDependencyLabel, EvidenceBackingKind> = {
+  real: "local", real_project_image: "project_image", company_approved: "local", rovara_local_aws: "emulated", test_account: "test_account",
+  recorded_fake: "fake", hand_written_fake: "fake", faked_by_tests: "none", not_available: "none",
+};
+/** The fixed words of each label. `company_approved` is completed with the service by `evidenceDependencyLabelWords`; a fake that made up answers adds "(+N made-up answers)" there too. */
+export const EVIDENCE_DEPENDENCY_LABEL_WORDS: Record<EvidenceDependencyLabel, string> = {
+  real: "real", real_project_image: "real (your image)", company_approved: "company-approved image", rovara_local_aws: "Rovara local AWS", test_account: "test account",
+  recorded_fake: "recorded fake", hand_written_fake: "hand-written fake", faked_by_tests: "faked by your tests", not_available: "not available",
+};
+/** Why a run used the fallback (a fake, or nothing) in place of the dependency's backing. Fixed words, never an error text. */
+export const EVIDENCE_FALLBACK_REASONS = ["test_account_unreachable", "test_account_expired", "test_account_busy", "did_not_start"] as const;
+export type EvidenceFallbackReason = (typeof EVIDENCE_FALLBACK_REASONS)[number];
+export const EVIDENCE_FALLBACK_REASON_WORDS: Record<EvidenceFallbackReason, string> = {
+  test_account_unreachable: "test account unreachable", test_account_expired: "test account expired", test_account_busy: "test account busy", did_not_start: "did not start",
+};
+export const EVIDENCE_DEPENDENCIES_MAX = 24;
+const FAKE_LABELS: readonly EvidenceDependencyLabel[] = ["recorded_fake", "hand_written_fake"];
+
+/** The label a pinned backing earns. A fake of unknown origin is "hand-written", the less trusted of the two words. */
+export function evidenceDependencyLabelFor(input: { backing: "local"; substituteImage?: boolean } | { backing: "project_image" } | { backing: "emulated" } | { backing: "test_account" } | { backing: "fake"; recorded: boolean } | { backing: "none"; fakedByTests: boolean }): EvidenceDependencyLabel {
+  switch (input.backing) {
+    case "local": return input.substituteImage === true ? "company_approved" : "real";
+    case "project_image": return "real_project_image";
+    case "emulated": return "rovara_local_aws";
+    case "test_account": return "test_account";
+    case "fake": return input.recorded ? "recorded_fake" : "hand_written_fake";
+    case "none": return input.fakedByTests ? "faked_by_tests" : "not_available";
+  }
+}
+
+/** The words of a label: "company-approved <service> image" names its service (owner Q9), and a fake that made up answers says how many. */
+export function evidenceDependencyLabelWords(label: EvidenceDependencyLabel, service: string, madeUpAnswers = 0): string {
+  if (label === "company_approved") return `company-approved ${service} image`;
+  const words = EVIDENCE_DEPENDENCY_LABEL_WORDS[label];
+  return madeUpAnswers > 0 && FAKE_LABELS.includes(label) ? `${words} (+${madeUpAnswers} made-up answers)` : words;
+}
+
+export const EvidenceDependencySchema = z
+  .object({
+    name: line(80),
+    backing: z.enum(EVIDENCE_BACKING_KINDS),
+    label: z.enum(EVIDENCE_DEPENDENCY_LABELS),
+    /** The image that ran (a company-approved image states it). */
+    imageDigest: Sha256Schema.optional(),
+    /** The fixture set's revision, for a fake. */
+    fixtureRevision: z.number().int().min(0).optional(),
+    /** When a recorded fake's answers were recorded. */
+    recordedAt: z.string().datetime().optional(),
+    /** Requests a fake answered without a recording: counted, never hidden. */
+    madeUpAnswers: CountSchema.optional(),
+    /** Tests that did not run because nothing backed this dependency. */
+    testsNotRun: CountSchema.optional(),
+    /** The backing this run used instead of the pinned one: the label and the other facts above describe what actually ran. */
+    fellBack: z.object({ from: z.enum(["local", "project_image", "emulated", "test_account"]), reason: z.enum(EVIDENCE_FALLBACK_REASONS) }).strict().optional(),
+    startedMs: z.number().int().min(0).max(86_400_000).optional(),
+    usage: z.object({ requests: CountSchema, unmatched: CountSchema, faults: CountSchema }).strict().optional(),
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    const problem = (path: string, message: string) => context.addIssue({ code: "custom", path: [path], message });
+    const fake = FAKE_LABELS.includes(entry.label);
+    if (EVIDENCE_DEPENDENCY_LABEL_BACKING[entry.label] !== entry.backing) problem("label", "the label belongs to the backing that ran");
+    if (entry.label === "company_approved" && entry.imageDigest === undefined) problem("imageDigest", "a company-approved image states the digest it ran");
+    if (entry.label === "recorded_fake" && entry.recordedAt === undefined) problem("recordedAt", "a recorded fake states when it was recorded");
+    if (entry.label !== "recorded_fake" && entry.recordedAt !== undefined) problem("recordedAt", "only a recorded fake was recorded");
+    if (!fake && entry.fixtureRevision !== undefined) problem("fixtureRevision", "only a fake has a fixture revision");
+    if (!fake && entry.madeUpAnswers !== undefined) problem("madeUpAnswers", "only a fake makes up answers");
+    if (entry.label !== "not_available" && entry.testsNotRun !== undefined) problem("testsNotRun", "only a dependency that was not available has tests that did not run");
+    if (entry.fellBack !== undefined && entry.backing !== "fake" && entry.backing !== "none") problem("fellBack", "a fallback is a fake or nothing");
+    // A fallback is a fake, or nothing: the tests' own fake (`faked_by_tests`) is not something a run falls back to.
+    if (entry.fellBack !== undefined && entry.label !== "recorded_fake" && entry.label !== "hand_written_fake" && entry.label !== "not_available") problem("fellBack", "a fallback is a recorded fake, a hand-written fake or not available");
+    if (entry.fellBack !== undefined && entry.fellBack.reason.startsWith("test_account_") && entry.fellBack.from !== "test_account") problem("fellBack", "a test account reason belongs to a fallback from a test account");
+    if (entry.usage !== undefined && entry.usage.unmatched > entry.usage.requests) problem("usage", "unmatched requests are some of the requests");
+  });
+export type EvidenceDependency = z.infer<typeof EvidenceDependencySchema>;
+
 export const EvidenceEnvironmentSchema = z
   .object({
     tier: z.enum(EVIDENCE_TIERS),
@@ -232,6 +318,8 @@ export const EvidenceEnvironmentSchema = z
           .strict(),
       )
       .max(32),
+    /** Test services (TS5): what backed each dependency of the run. Absent on every pack built before test services, and while they are off. */
+    dependencies: z.array(EvidenceDependencySchema).max(EVIDENCE_DEPENDENCIES_MAX).optional(),
     data: z.literal("synthetic"),
     accounts: z.array(z.object({ profileId: line(120), kind: z.enum(EVIDENCE_ACCOUNT_KINDS) }).strict()).max(16),
   })
@@ -352,6 +440,7 @@ export function evidencePackShape<A extends z.ZodType>(artifact: A) {
     .strict()
     .superRefine((pack, context) => {
       const duplicate = (values: readonly string[]) => new Set(values).size !== values.length;
+      if (duplicate((pack.environment.dependencies ?? []).map((entry) => entry.name))) context.addIssue({ code: "custom", path: ["environment", "dependencies"], message: "dependency names are unique" });
       if (duplicate(pack.checks.map((entry) => entry.checkId))) context.addIssue({ code: "custom", path: ["checks"], message: "check ids are unique" });
       if (duplicate(pack.environment.services.map((service) => service.name))) context.addIssue({ code: "custom", path: ["environment", "services"], message: "service names are unique" });
       if (duplicate(pack.api.map((entry) => entry.scenarioId))) context.addIssue({ code: "custom", path: ["api"], message: "API scenarios are unique" });
