@@ -209,7 +209,7 @@ describe("verifyRound: a whole round", () => {
 describe("end to end with a real packet", () => {
   const readers: PacketReaders = { readRepoFile: async () => "code", readMetaFile: async () => "meta", fetchMcpItem: async () => ({ ok: false }) };
   const build = () => buildReviewerPacket({
-    role: "critic", rolePrompt: { id: "design-critic", version: 1, text: "rules" }, design: { ref: "design.md", revision: "r1", text: "design" }, requirements: { ref: "requirements.md", revision: "r1", text: "reqs" },
+    role: "critic", design: { ref: "design.md", revision: "r1", text: "design" }, requirements: { ref: "requirements.md", revision: "r1", text: "reqs" },
     baseCommits: { api: "a".repeat(40) }, sources: [{ kind: "repo_file", repo: "api", path: "src/a.ts" }],
   }, readers);
 
