@@ -193,6 +193,38 @@ describe("the staging build path", () => {
     await setCatalogFlavor(root, "release");
     expect(await readFile(join(root, STAGING_KEYS_FILE), "utf8")).not.toContain("a".repeat(64));
   });
+  it("an interrupted staging build leaves a tree that no release can be made from, until the release flavor is put back", async () => {
+    const root = await temporary("interrupted-");
+    for (const file of [FLAVOR_FILE, STAGING_KEYS_FILE]) {
+      await mkdir(join(root, file, ".."), { recursive: true });
+      await cp(new URL(`../../${file}`, import.meta.url), join(root, file));
+    }
+    await mkdir(join(root, "packages/contracts/dist"), { recursive: true });
+    await writeFile(join(root, "packages/contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
+    await writeFile(join(root, "packages/contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
+    await mkdir(join(root, "environments/service-catalog"), { recursive: true });
+    await writeFile(join(root, STAGING_KEY_DATA_FILE), JSON.stringify([{ keyId: "c".repeat(64), algorithm: "ECDSA_SHA_256", publicKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n" }]));
+    // a runner that does what the commands do to this tree: the switch rewrites the files, and the build is killed half way
+    const pending: Array<Promise<void>> = [];
+    const runner = {
+      run: (command: string, args: readonly string[]) => {
+        if (args.includes(CATALOG_FLAVOR_TOOL)) return void pending.push(setCatalogFlavor(root, args.at(-1) as "release" | "staging"));
+        throw new Error(`killed during ${command} ${args.join(" ")}`);
+      },
+    };
+    try { buildStagingArtifacts(runner); } catch { /* the build was killed */ }
+    await Promise.all(pending);
+    expect(await readFile(join(root, FLAVOR_FILE), "utf8")).toContain('= "staging";');
+    // no restore ran (the process died), so a later release from this tree is refused, and so is buildRelease, before it touches the output folder
+    await expect(assertReleaseCatalogTree(root)).rejects.toThrow(/release refused/u);
+    const out = join(await temporary("release-out-"), "r");
+    await expect(buildRelease({ version: "1.2.3", out, gitCommit: "b".repeat(40), catalogTreeRoot: root })).rejects.toThrow(/release refused|release flavor/u);
+    await expect(readdir(out)).rejects.toMatchObject({ code: "ENOENT" });
+    // restoring the release flavor (what the deploy's finally does when it can run) makes the source clean again; the stale compiled output still needs a build
+    restoreReleaseFlavor(runner);
+    await Promise.all(pending);
+    await expect(assertReleaseCatalogTree(root)).resolves.toBeUndefined();
+  });
   it("is the only path that runs the switch: no production release, bundle, installer, upgrade or workflow file runs it or builds a staging image", async () => {
     const read = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
     const releaseScripts = (await readdir(new URL("../../scripts/release/", import.meta.url))).filter((name) => name.endsWith(".ts") && name !== "catalog-flavor.ts").map((name) => `scripts/release/${name}`);
