@@ -25,7 +25,7 @@ export function sagemakerEndpointOfPath(path: string): string | undefined {
 }
 
 export class FixtureSetRefused extends Error {
-  constructor(readonly reason: "unreadable" | "digest_mismatch" | "additions_unpinned" | "additions_forged" | "additions_unsafe") {
+  constructor(readonly reason: "unreadable" | "digest_mismatch" | "additions_unpinned" | "additions_forged" | "additions_unsafe" | "request_lines_unknown") {
     super(`fixture set refused: ${reason}`);
     this.name = "FixtureSetRefused";
   }
