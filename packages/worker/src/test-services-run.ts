@@ -22,8 +22,9 @@
 // WHAT IS NOT HERE (listed in the lane report): fixture seeds (`seeds[].fixturePath`: refused, "not available yet"), a sinkhole container (slice 3: the sealed name server still counts every unknown name, which is what the
 // usage record reads), Prove's use of this module (T2, prepare.ts), and any backing but `local` (the plan schema allows only that).
 import { createHash, randomBytes } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { open, readFile, realpath } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import {
   CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
@@ -79,10 +80,11 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 // ---- errors
 
 export type TestServicesFailureReason =
-  | "not_configured" | "unsupported" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
+  | "not_configured" | "unsupported" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed";
 
 const SENTENCES: Record<TestServicesFailureReason, string> = {
   not_configured: "This worker is not set up to run test services",
+  init_file: "A test service's init file is not a plain SQL file inside the workspace",
   unsupported: "Test services need the task sandbox, and this task does not run in one",
   catalog: "The test services catalog could not be used",
   mismatch: "A test service in the plan is not the one this worker's catalog pins",
@@ -248,6 +250,41 @@ interface Resolved {
   image: string;
 }
 
+/** The most an init file may hold (the launcher's own limit for a helper's file). */
+const INIT_FILE_MAX_BYTES = 1_048_576;
+const INIT_FILE_FAMILIES: ReadonlySet<string> = new Set(["postgres", "mysql"]);
+
+/**
+ * A dependency's `config.initFiles` (init SQL from the repository), as files for ITS helper alone. The broker only checks that each is a relative path without `..`; a symlink inside the repository can still point anywhere,
+ * so here each path is resolved to its real path, which must be a regular file INSIDE the workspace root (the root is already canonical), ending in `.sql` (the image runs a `.sh` it finds there), and small. It is opened
+ * without following a link and read through that handle. The content goes into the launcher's `HelperRequest.files`: the launcher writes it to the run's directory and mounts it read-only into that one helper. Anything else
+ * is one fixed error (`init_file`) and nothing has been started yet.
+ */
+async function initFilesOf(plan: TaskDependencyPlan, root: string): Promise<NonNullable<HelperRequest["files"]>> {
+  const paths = plan.config.initFiles ?? [];
+  if (paths.length === 0) return [];
+  if (!INIT_FILE_FAMILIES.has(plan.family)) throw new TestServicesError("init_file");
+  const files: Array<{ name: string; content: string; to: string }> = [];
+  for (const [index, path] of paths.entries()) {
+    try {
+      const real = await realpath(resolve(root, path));
+      if (!real.startsWith(`${root}${sep}`) || !real.endsWith(".sql")) throw new Error("outside");
+      const handle = await open(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > INIT_FILE_MAX_BYTES) throw new Error("not a plain file");
+        const number = String(index + 1).padStart(2, "0");
+        files.push({ name: `init-${number}.sql`, content: await handle.readFile("utf8"), to: `/docker-entrypoint-initdb.d/init-${number}.sql` });
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      throw new TestServicesError("init_file");
+    }
+  }
+  return files;
+}
+
 const randomAlphanumeric = (length: number): string => randomBytes(length).toString("hex").slice(0, length);
 
 /**
@@ -393,6 +430,11 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const catalog = await config.catalog().catch(() => { throw new TestServicesError("catalog"); });
   const resolved = resolveDependencies(catalog, input.dependencies, config);
   const root = await realpath(resolve(input.rootPath));
+  // Before anything is made: the init files of each dependency, checked against the real workspace root.
+  for (const item of resolved) {
+    const files = await initFilesOf(item.plan, root);
+    if (files.length > 0) item.request = { ...item.request, files };
+  }
   const runId = `${input.operationId.replace(/[^A-Za-z0-9-]/gu, "-").slice(0, 48)}-${randomAlphanumeric(8)}`;
   const workspace = await setupWorkspaceKey(root);
   const files = await createRunDirectoryFiles(config.runDirectoryParent, `rsv-${sha(runId).slice(0, 16)}`).catch(() => { throw new TestServicesError("start_failed"); });

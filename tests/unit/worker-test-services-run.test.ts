@@ -1,7 +1,7 @@
 // Test services, slice 1, s1-worker-round T1 (worker/src/test-services-run.ts): the orchestrator that starts a task's pinned dependencies, joins the working sandbox, runs the seeds, seals every check round and tears the
 // run down on every exit path (TS-RUN-4). No Docker: a fake daemon (tests/support/fake-services-docker.ts) and a stub of s1-sealed's two exports that uses the REAL `withDetachedWorking` of check-sandbox.ts.
 import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -215,6 +215,54 @@ describe("a project with a dev container", () => {
       .rejects.toThrow("Test services are not available yet for a project that uses a dev container.");
     expect(h.fake.calls.length).toBe(before);
     expect(await readdir(h.runParent)).toEqual([]);
+  });
+});
+
+describe("a dependency's init files (config.initFiles)", () => {
+  const withInit = (path: string) => dependency({ config: { database: "app", user: "app", initFiles: [path] } });
+  const refusedWithNothingMade = async (h: Awaited<ReturnType<typeof harness>>, plan: TaskDependencyPlan): Promise<void> => {
+    const before = h.fake.calls.length;
+    await expect(h.start([plan])).rejects.toMatchObject({ reason: "init_file", message: "A test service's init file is not a plain SQL file inside the workspace" });
+    expect(h.fake.calls.length).toBe(before);
+    await nothingLeft(h);
+  };
+
+  it("a normal file inside the workspace goes read-only into the Postgres helper alone", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, "db"));
+    await writeFile(join(h.root, "db", "init.sql"), "CREATE TABLE t (id int);\n");
+    const run = await h.start([withInit("db/init.sql")]);
+    const mounts = h.fake.calls.filter((call) => call[0] === "run" && call.some((arg) => arg.endsWith(":/docker-entrypoint-initdb.d/init-01.sql:ro")));
+    expect(mounts).toHaveLength(1);
+    expect(mounts[0]![mounts[0]!.indexOf("--name") + 1]).toMatch(/-h[0-9a-f]{10}$/u);
+    // No other container (the name server, the check sandbox, the working sandbox) mounts it.
+    expect(h.fake.calls.filter((call) => call[0] === "run" && call.join(" ").includes("initdb.d"))).toHaveLength(1);
+    await run.dispose();
+  });
+
+  it("a symlink to /etc/passwd is refused before anything starts", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, "db"));
+    await symlink("/etc/passwd", join(h.root, "db", "init.sql"));
+    await refusedWithNothingMade(h, withInit("db/init.sql"));
+  });
+
+  it("a symlink to a file outside the workspace, and a folder symlink that leads out, are refused", async () => {
+    const h = await harness();
+    const outside = await temp("rsv-outside-");
+    await writeFile(join(outside, "secret.sql"), "SELECT 1;\n");
+    await mkdir(join(h.root, "db"));
+    await symlink(join(outside, "secret.sql"), join(h.root, "db", "init.sql"));
+    await symlink(outside, join(h.root, "linked"));
+    await refusedWithNothingMade(h, withInit("db/init.sql"));
+    await refusedWithNothingMade(h, withInit("linked/secret.sql"));
+  });
+
+  it("a file that is not .sql, a directory and a missing file are refused", async () => {
+    const h = await harness();
+    await mkdir(join(h.root, "db", "dir.sql"), { recursive: true });
+    await writeFile(join(h.root, "db", "init.sh"), "echo hi\n");
+    for (const path of ["db/init.sh", "db/dir.sql", "db/missing.sql"]) await refusedWithNothingMade(h, withInit(path));
   });
 });
 
