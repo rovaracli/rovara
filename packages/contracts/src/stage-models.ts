@@ -46,6 +46,8 @@ export const EffectiveStageModelSchema = z.object({
   reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL", "DEFAULT_DIFFERENT_COMPANY"]),
   /** A checking step whose default is "a different company than the step it checks" found no other company's model to use, so it runs on the same company's model. Set by the server only. */
   noOtherCompany: z.literal(true).optional(),
+  /** The same, but another company's model was usable and failed (for example its account refused it), so the same company's model runs the step. Set by the server only. */
+  otherCompanyFailed: z.literal(true).optional(),
 }).strict();
 const StageRowBase = z.object({
   stage: StageIdSchema, projectChoice: StageModelChoiceSchema.nullable(), companyDefault: StageModelChoiceSchema.nullable(),
@@ -69,7 +71,7 @@ export const StageModelsResponseSchema = z.object({
 export type StageModelsResponse = z.infer<typeof StageModelsResponseSchema>;
 export const StageModelsResponseReaderSchema = forwardReader(StageModelsResponseSchema);
 export const StageModelsQuerySchema = z.object({ draft: Revision.optional() }).strict();
-export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema, candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)).optional() }).strict();
+export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema, candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)).optional(), /** Owner decision 2026-11-02: the checking steps whose default, while nothing is set for them, is a different company's model. Said by the server on the company page's read only. */ reviewDefaults: z.partialRecord(StageIdSchema, z.literal("different_company")).optional() }).strict();
 export const ModelSelectionPolicyPutSchema = z.object({ version: z.literal(1), requestId: z.uuid(), expectedRevision: Revision, stepOverrides: StageModelOverridesSchema }).strict();
 export type ModelSelectionPolicyResponse = z.infer<typeof ModelSelectionPolicyResponseSchema>;
 export type ModelSelectionPolicyPut = z.infer<typeof ModelSelectionPolicyPutSchema>;

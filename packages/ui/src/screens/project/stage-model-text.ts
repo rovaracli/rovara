@@ -39,8 +39,8 @@ const CHECKING_STAGES: readonly StageId[] = ["plan_check", "code_review", "secur
 export const isCheckingStage = (stage: StageId): boolean => CHECKING_STAGES.includes(stage);
 export const CHECKING_REASON = { DEFAULT: "default: different company", CHOICE: "your choice", LOCK: "company lock" } as const;
 /** Why a checking step runs on its model: "default: different company", "your choice" (a person or the company chose it) or "company lock"; any other reason keeps its ordinary words. */
-export function checkingReasonLine(reason: string, noOtherCompany: boolean): string {
- if (noOtherCompany || reason === "DEFAULT_DIFFERENT_COMPANY") return CHECKING_REASON.DEFAULT;
+export function checkingReasonLine(reason: string, defaultNotMet: boolean): string {
+ if (defaultNotMet || reason === "DEFAULT_DIFFERENT_COMPANY") return CHECKING_REASON.DEFAULT;
  if (reason === "COMPANY_LOCK") return CHECKING_REASON.LOCK;
  if (reason === "PROJECT_CHOICE" || reason === "COMPANY_DEFAULT" || reason === "PROJECT_SELECTION") return CHECKING_REASON.CHOICE;
  return reasonLine(reason);
@@ -78,3 +78,7 @@ export const REVIEW_DEFAULT_NOTICE = {
  FAILED: "Couldn't dismiss the notice. Try again.",
  NOT_ALLOWED: "Only a company owner or admin can dismiss this notice.",
 } as const;
+/** The same, when another company's model was usable and failed. */
+export function otherCompanyFailedText(stage: StageId, model: string): string {
+ return (stage === "plan_check" ? "Plan check uses " : "Review uses ") + model + " (same company as the " + (stage === "plan_check" ? "planner" : "builder") + ": the other company's model could not be used)";
+}

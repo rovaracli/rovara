@@ -13,7 +13,7 @@ const gemini = { provider: "google", modelId: "gemini-2.5-pro" };
 const REVIEWS = ["code_review", "security_review", "plan_check"] as const;
 const row = (model: { provider: string; modelId: string }, sourceId = "rovara") => ({ model, sourceId, enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "rovara_catalog" as const } });
 const input = (stage: (typeof REVIEWS)[number], models = [sonnet, opus, gpt, gemini], more: Partial<StageModelInput> = {}): StageModelInput => ({
-  orgId: "org_a", stage, sourcesRevision: 2, candidates: models.map((model) => row(model)), forbidden: [], builtinDefault: sonnet, referenceModel: sonnet, allowLegacyDefaultFallback: true, ...more,
+  orgId: "org_a", stage, sourcesRevision: 2, candidates: models.map((model) => row(model)), forbidden: [], builtinDefault: sonnet, referenceModel: sonnet, allowLegacyDefaultFallback: true, reviewDefaultDifferentCompany: true, ...more,
 });
 
 describe("rule 1: a review nobody has set defaults to the strongest usable model of a different company", () => {
@@ -28,7 +28,7 @@ describe("rule 1: a review nobody has set defaults to the strongest usable model
     expect(resolveStageModel(input("code_review", undefined, { deniedModels: [gpt] }))).toMatchObject({ kind: "resolved", model: gemini, reason: "DEFAULT_DIFFERENT_COMPANY" });
   });
   it("keeps the last-attempt rule: after the allowed tries the builder's own model still reviews, with its visible fallback", () => {
-    expect(resolveStageModel(input("code_review", undefined, { defaultLastAttempt: true }))).toMatchObject({ kind: "resolved", model: sonnet, fallback: { reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }, noOtherCompany: true });
+    expect(resolveStageModel(input("code_review", undefined, { defaultLastAttempt: true }))).toMatchObject({ kind: "resolved", model: sonnet, fallback: { reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }, otherCompanyFailed: true });
   });
   it("a build step is untouched (the default is for steps that check another step)", () => {
     expect(resolveStageModel({ ...input("code_review"), stage: "build", referenceModel: undefined })).toMatchObject({ kind: "resolved", reason: "BUILTIN_DEFAULT" });
@@ -45,16 +45,13 @@ describe("rule 2: no other company's model is usable, so today's behaviour stand
   it("only the builder's own model is usable: the old same-model fallback, marked and with its fallback record", () => {
     expect(resolveStageModel(input("code_review", [sonnet]))).toMatchObject({ kind: "resolved", model: sonnet, noOtherCompany: true, fallback: { reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } });
   });
-  it("an unrecognised company is never claimed to be the same company", () => {
+  it("a model of an unrecognised company is below the floor, so it never wins by default; the builder's own model stands, marked", () => {
     const strange = { provider: "acme", modelId: "mystery-1" };
-    expect(resolveStageModel(input("code_review", [sonnet, strange]))).toMatchObject({ kind: "resolved", model: strange });
-    expect(resolveStageModel(input("code_review", [sonnet, strange]))).not.toHaveProperty("noOtherCompany");
+    expect(resolveStageModel(input("code_review", [sonnet, strange]))).toMatchObject({ kind: "resolved", model: sonnet, noOtherCompany: true, fallback: { reasonCode: "DEFAULT_MODEL_UNAVAILABLE" } });
   });
-  it("two unrecognised companies are never claimed to be the same company either", () => {
-    const first = { provider: "acme", modelId: "mystery-0" }, second = { provider: "acme", modelId: "mystery-1" };
-    const result = resolveStageModel(input("code_review", [first, second], { referenceModel: first }));
-    expect(result).toMatchObject({ kind: "resolved", model: second });
-    expect(result).not.toHaveProperty("noOtherCompany");
+  it("without the legacy fallback (publish-time validation) a weak other-company model is still accepted, so the default never refuses what was accepted before", () => {
+    const strange = { provider: "acme", modelId: "mystery-1" };
+    expect(resolveStageModel(input("code_review", [sonnet, strange], { allowLegacyDefaultFallback: false }))).toMatchObject({ kind: "resolved", model: strange });
   });
   it("the sentence is the fixed one, and the contract carries the flag to the page", () => {
     expect(reviewNoOtherCompanyLine(opus)).toBe("Review uses anthropic/claude-opus-4 (same company as the builder: no other company's model is available)");
@@ -76,8 +73,18 @@ describe("rule 4: explicit choices, forbidden models and approved lists", () => 
   });
   it("an explicit different-model rule (the way back to today's behaviour) keeps picking by model, not by company", () => {
     const explicitModelLevel = { differentFrom: { stage: "build" as const, level: "model" as const } };
-    expect(resolveStageModel(input("code_review", undefined, { projectChoice: explicitModelLevel }))).toMatchObject({ kind: "resolved", model: opus, reason: "BUILTIN_DEFAULT" });
-    expect(resolveStageModel(input("code_review", undefined, { companyDefault: explicitModelLevel }))).toMatchObject({ kind: "resolved", model: opus });
+    // With only Claude models, the default would say "no other company" and mark it; the explicit model-level rule picks the same model without the default's reason or note.
+    for (const rule of [{ projectChoice: explicitModelLevel }, { companyDefault: explicitModelLevel }]) {
+      const result = resolveStageModel(input("code_review", [sonnet, opus], rule));
+      expect(result).toMatchObject({ kind: "resolved", model: opus, reason: "BUILTIN_DEFAULT" });
+      expect(result).not.toHaveProperty("noOtherCompany");
+    }
+  });
+  it("among frontier models the step prefers a different company from the one it checks, even over a cheaper model of its own (the explicit model-level rule picks the same way)", () => {
+    const bedrockSonnet = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-5" }, bedrockOpus = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5-5" }, gpt55 = { provider: "openai", modelId: "gpt-5.5" };
+    const rule = { projectChoice: { differentFrom: { stage: "build" as const, level: "model" as const } }, referenceModel: bedrockSonnet };
+    expect(resolveStageModel(input("code_review", [bedrockSonnet, bedrockOpus, gpt55], rule))).toMatchObject({ kind: "resolved", model: gpt55 });
+    expect(resolveStageModel(input("code_review", [bedrockSonnet, bedrockOpus], rule))).toMatchObject({ kind: "resolved", model: bedrockOpus });
   });
   it("an explicit vendor rule or the company guardrail still refuses instead of falling back", () => {
     const vendor = { differentFrom: { stage: "build" as const, level: "vendor" as const } };
@@ -106,24 +113,24 @@ describe("rule 5: the models the company can use reach the stage pool, within it
   const ids = (list: ReadonlyArray<{ provider: string; modelId: string }>) => list.map((model) => `${model.provider}/${model.modelId}`);
   it("adds the strongest few of each company, strongest first, and nothing forbidden or unapproved", () => {
     const servable = [sonnet, opus, gpt, gemini, { provider: "openai", modelId: "gpt-5-mini" }];
-    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set() }))).toEqual(["anthropic/claude-opus-4", "openai/gpt-5", "google/gemini-2.5-pro", "anthropic/claude-sonnet-4", "openai/gpt-5-mini"]);
-    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [gpt], have: new Set() }))).not.toContain("openai/gpt-5");
-    expect(ids(reviewDefaultExtras({ servable, approved: [sonnet, gemini], forbidden: [], have: new Set() }))).toEqual(["google/gemini-2.5-pro", "anthropic/claude-sonnet-4"]);
+    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set(), size: 0 }))).toEqual(["openai/gpt-5", "anthropic/claude-opus-4", "google/gemini-2.5-pro", "anthropic/claude-sonnet-4"]);
+    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [gpt], have: new Set(), size: 0 }))).not.toContain("openai/gpt-5");
+    expect(ids(reviewDefaultExtras({ servable, approved: [sonnet, gemini], forbidden: [], have: new Set(), size: 0 }))).toEqual(["google/gemini-2.5-pro", "anthropic/claude-sonnet-4"]);
   });
   it("never grows the pool past its limit, and keeps every company's strongest when room is short", () => {
     const servable = [opus, sonnet, gpt, gemini];
-    const have = new Set(Array.from({ length: STAGE_POOL_MAX - 2 }, (_, index) => `p\0m${String(index)}`));
-    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have }))).toEqual(["anthropic/claude-opus-4", "openai/gpt-5"]);
-    expect(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set(Array.from({ length: STAGE_POOL_MAX }, (_, index) => `p\0m${String(index)}`)) })).toEqual([]);
+    const have = new Set(Array.from({ length: STAGE_POOL_MAX - 2 }, (_, index) => `m${String(index)}`));
+    expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have, size: STAGE_POOL_MAX - 2 }))).toEqual(["openai/gpt-5", "anthropic/claude-opus-4"]);
+    expect(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set(Array.from({ length: STAGE_POOL_MAX }, (_, index) => `m${String(index)}`)), size: STAGE_POOL_MAX })).toEqual([]);
   });
   it("takes at most three of one company, so one company's long list cannot crowd the others out", () => {
     const many = ["gpt-5", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-4"].map((modelId) => ({ provider: "openai", modelId }));
-    const added = reviewDefaultExtras({ servable: [...many, gemini], approved: undefined, forbidden: [], have: new Set() });
+    const added = reviewDefaultExtras({ servable: [...many, gemini], approved: undefined, forbidden: [], have: new Set(), size: 0 });
     expect(added.filter((model) => model.provider === "openai")).toHaveLength(3);
     expect(added).toContainEqual(gemini);
   });
   it("does not re-add a model the pool already holds", () => {
-    expect(ids(reviewDefaultExtras({ servable: [gpt], approved: undefined, forbidden: [], have: new Set([`${gpt.provider}\0${gpt.modelId}`]) }))).toEqual([]);
+    expect(ids(reviewDefaultExtras({ servable: [gpt], approved: undefined, forbidden: [], have: new Set(["gpt-5"]), size: 1 }))).toEqual([]);
   });
 });
 
@@ -204,5 +211,115 @@ describe("rule 3: What How we work reads: each review step's model with its reas
     const review = claudeOnly.stages.find((stage) => stage.stage === "code_review");
     expect(review).toMatchObject({ effective: { noOtherCompany: true } });
     expect(claudeOnly.stages.find((stage) => stage.stage === "build")).not.toMatchObject({ effective: { noOtherCompany: true } });
+  });
+});
+
+describe("H2: the capability floor", () => {
+  const deepseek = { provider: "amazon-bedrock", modelId: "us.deepseek.r1-v1:0" }, nova = { provider: "amazon-bedrock", modelId: "us.amazon.nova-micro-v1:0" }, mini = { provider: "openai", modelId: "gpt-5-mini" };
+  it("never picks DeepSeek or Nova by default: Bedrock offering Sonnet, Opus, DeepSeek R1 and Nova Micro reviews on Opus, marked", () => {
+    expect(resolveStageModel(input("code_review", [sonnet, opus, deepseek, nova]))).toMatchObject({ kind: "resolved", model: opus, noOtherCompany: true });
+  });
+  it("not even when they are all that is left besides the builder (legacy fallback on), nor a mini model of another company", () => {
+    expect(resolveStageModel(input("code_review", [sonnet, deepseek, nova, mini]))).toMatchObject({ kind: "resolved", model: sonnet, noOtherCompany: true });
+  });
+  it("a Sonnet-tier-or-better model of another company is chosen over weak ones", () => {
+    expect(resolveStageModel(input("code_review", [sonnet, deepseek, gemini]))).toMatchObject({ model: gemini, reason: "DEFAULT_DIFFERENT_COMPANY" });
+  });
+});
+
+describe("H1: a person's ChatGPT plan is never the review default", () => {
+  const plan = (model: { provider: string; modelId: string }) => ({ model, sourceId: "personal-chatgpt", enabled: true, inEffectiveOrder: true, evidence: { orgId: "org_a", sourcesRevision: 2, kind: "chatgpt_connection" as const, payerDeveloperId: "dev_1", connectionRevision: "rev" } });
+  const KEY = "src_bbbbbbbbbbbbbbbbbbbb";
+  it("resolver: a plan-served model of another company is skipped; the company's own source of it is taken", () => {
+    const base = input("code_review", [sonnet, opus]);
+    const viaPlan = { ...base, payerDeveloperId: "dev_1", connectionRevision: "rev", candidates: [...base.candidates, plan(gpt)] };
+    expect(resolveStageModel(viaPlan)).toMatchObject({ kind: "resolved", model: opus, noOtherCompany: true });
+    const keyed = { ...row(gpt, KEY), evidence: { orgId: "org_a", sourcesRevision: 2, kind: "stored_key" as const } };
+    expect(resolveStageModel({ ...viaPlan, candidates: [...viaPlan.candidates, keyed] })).toMatchObject({ kind: "resolved", model: gpt, sourceId: KEY, reason: "DEFAULT_DIFFERENT_COMPANY" });
+  });
+  it("live: with the order personal-chatgpt, rovara, a company key, the default is served by the company key", async () => {
+    const { deps, input: live } = await liveFixture();
+    const chatgpt = { settings: async () => ({ enabled: true, preferredModel: "gpt-5" }), view: async () => ({ connected: true, status: "connected" as const, connectedAt: "2026-11-01T00:00:00Z", models: ["gpt-5"] }) };
+    const routing = { ...openaiRouting(), sources: { read: async () => ({ sources: [{ sourceId: OPENAI, kind: "openai" as const, label: "Fixture OpenAI", models: [{ catalog: { provider: "openai", modelId: "gpt-5" } }] }], order: ["personal-chatgpt", "rovara", OPENAI], credentials: [OPENAI], removing: [], revision: 1 }) } };
+    const result = await loadPinnedTaskStage({ ...deps, routing, chatgpt }, { ...live, payerDeveloperId: "a".repeat(64) });
+    expect(result).toMatchObject({ kind: "resolved", model: { provider: "openai", modelId: "gpt-5" }, sourceId: OPENAI, reason: "DEFAULT_DIFFERENT_COMPANY" });
+  });
+  it("live: the company key that serves it can fund the task (the funding check passes for the chosen source)", async () => {
+    const { actualCompanyFunding } = await import("../../packages/broker/src/org/task-stop-funding.js");
+    const { deps } = await liveFixture();
+    const proof = { version: 1 as const, orgId: TEST_ORG, project: "payments", sourcesRevision: 1, sources: [{ sourceId: OPENAI, kind: "stored_key" as const }] };
+    const funded = await actualCompanyFunding({ routing: openaiRouting(), now: () => Date.now(), documentClient: deps.documentClient, tableName: "state" }, proof, { sourceId: OPENAI, model: { provider: "openai", modelId: "gpt-5" } });
+    expect(funded?.sources).toEqual([{ sourceId: OPENAI, kind: "stored_key" }]);
+  });
+});
+
+describe("M2: a task keeps the review rule it was started with", () => {
+  it("resolver: without the flag (an older pin) nothing changes from before", () => {
+    const result = resolveStageModel(input("code_review", [sonnet, opus], { reviewDefaultDifferentCompany: undefined }));
+    expect(result).toMatchObject({ kind: "resolved", model: opus, reason: "BUILTIN_DEFAULT" });
+    expect(result).not.toHaveProperty("noOtherCompany");
+  });
+  it("live: a new pin carries the default; an old pin (no field) resolves and reads the pool as it did", async () => {
+    const { deps, input: live } = await liveFixture();
+    expect(live.pin.frozenInputs?.reviewDefault).toBe("different_company");
+    const frozenInputs = { ...live.pin.frozenInputs! };
+    delete (frozenInputs as { reviewDefault?: unknown }).reviewDefault;
+    const old = await loadPinnedTaskStage({ ...deps, routing: openaiRouting() }, { ...live, pin: { ...live.pin, frozenInputs } });
+    expect(old).toMatchObject({ kind: "resolved" });
+    expect(old).not.toMatchObject({ reason: "DEFAULT_DIFFERENT_COMPANY" });
+    // The pool was not widened either: another company's model the company could use is not even a candidate for an older task.
+    expect(old.kind === "resolved" && old.model.provider).not.toBe("openai");
+    expect(old).not.toHaveProperty("noOtherCompany");
+  });
+});
+
+describe("M3 and L5: the pool matches the approved list exactly and compares models by canonical name", () => {
+  const bedrockGpt = { provider: "amazon-bedrock", modelId: "openai.gpt-5" };
+  it("approved amazon-bedrock/openai.gpt-5 does not admit openai/gpt-5", () => {
+    expect(reviewDefaultExtras({ servable: [gpt], approved: [bedrockGpt], forbidden: [], have: new Set(), size: 0 })).toEqual([]);
+    expect(reviewDefaultExtras({ servable: [gpt], approved: [gpt], forbidden: [], have: new Set(), size: 0 })).toEqual([gpt]);
+  });
+  it("one model over two routes is one model: a pool already holding it by its canonical name is not given it again", async () => {
+    const { canonicalModelName } = await import("../../packages/contracts/src/index.js");
+    expect(reviewDefaultExtras({ servable: [gpt], approved: undefined, forbidden: [], have: new Set([canonicalModelName(bedrockGpt)]), size: 1 })).toEqual([]);
+  });
+});
+
+describe("L1: another company's model that was usable and failed is not 'none available'", () => {
+  it("the only other-company model was refused by an earlier try: marked as failed, not as unavailable", () => {
+    const result = resolveStageModel(input("code_review", [sonnet, opus, gpt], { deniedModels: [gpt] }));
+    expect(result).toMatchObject({ kind: "resolved", model: opus, otherCompanyFailed: true });
+    expect(result).not.toHaveProperty("noOtherCompany");
+  });
+  it("none existed at all: unavailable, and not failed", () => {
+    const result = resolveStageModel(input("code_review", [sonnet, opus]));
+    expect(result).toMatchObject({ noOtherCompany: true });
+    expect(result).not.toHaveProperty("otherCompanyFailed");
+  });
+});
+
+describe("L2 and L3: what the broker says", () => {
+  it("the added models are offered to the checking stages only, never to Build or Plan", async () => {
+    const { loadStageModelSnapshot } = await import("../../packages/broker/src/model-selection/snapshot.js");
+    const { mergeWorld } = await import("../support/rovara-code-merge-world.js");
+    const { ORG_A, MAX } = await import("../support/agent-session-world.js");
+    const w = mergeWorld();
+    const snapshot = await loadStageModelSnapshot({ documentClient: w.db, tableName: "state", store: w.store, now: () => w.clock.now, routing: openaiRouting() }, { orgId: ORG_A, developerId: MAX }, "web");
+    const has = (stage: string) => snapshot.stages.find((row) => row.stage === stage)!.candidates.some((candidate) => candidate.model.modelId === "gpt-5");
+    expect([has("code_review"), has("security_review"), has("plan_check")]).toEqual([true, true, true]);
+    expect([has("build"), has("plan"), has("understand"), has("pull_request")]).toEqual([false, false, false, false]);
+    expect(snapshot.stages.every((row) => row.reviewDefaultDifferentCompany === true)).toBe(true);
+  });
+  it("the company page's read says which checking steps default to a different company, from the saved policy", async () => {
+    const { getCompanyModelSelectionPolicy } = await import("../../packages/broker/src/model-selection/company-read.js");
+    const { orgMemberKey, developerOrgKey, orgMetaKey } = await import("../../packages/contracts/src/index.js");
+    const h = await createDeveloperTaskBroker();
+    const dev = "a".repeat(64);
+    h.db.set({ ...orgMemberKey(TEST_ORG, dev), orgId: TEST_ORG, developerId: dev, role: "admin" });
+    h.db.set({ ...developerOrgKey(dev), orgId: TEST_ORG, role: "admin" });
+    h.db.set({ ...orgMetaKey(TEST_ORG), orgId: TEST_ORG });
+    h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "MODEL_SELECTION_POLICY", orgId: TEST_ORG, entityType: "MODEL_SELECTION_POLICY", version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides: { code_review: { model: opus, thinkingLevel: null, locked: false }, plan_check: { thinkingLevel: "low", locked: false } } });
+    const read = await getCompanyModelSelectionPolicy({ documentClient: h.db, tableName: "state", routing: {}, now: () => Date.now() }, { orgId: TEST_ORG, developerId: dev });
+    expect(read.reviewDefaults).toEqual({ plan_check: "different_company", security_review: "different_company" });
   });
 });

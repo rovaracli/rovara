@@ -421,6 +421,8 @@ export async function taskOperationParts(
   if (applied?.reviewSameModel === true) operation.reviewSameModel = true;
   // Owner decision 2026-11-02: the review's default is another company's model; this review ran on the builder's company because none was usable (the task page says so).
   if (input.workflowMode === "REVIEW" && applied?.modelDecision?.noOtherCompany === true) operation.reviewNoOtherCompany = true;
+  // The plan check likewise (recorded on its operation; the review's note is the one the task page says).
+  if (input.workflowMode === "PLAN_CRITIQUE" && applied?.modelDecision?.noOtherCompany === true) operation.criticNoOtherCompany = true;
   if (secondReview.record !== undefined) operation.secondReviewPlan = secondReview.record;
   // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
   if (input.planRevision === true) operation.planRevision = true;

@@ -37,7 +37,7 @@ const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => ca
 export function reviewerModelFor(input: ReviewerModelInput): ReviewerModel {
   const settings = (input.step?.settings ?? {}) as { model?: ModelIdentifier | null; fallbackModel?: ModelIdentifier | null };
   if ((settings.model ?? undefined) !== undefined || (settings.fallbackModel ?? undefined) !== undefined) return { chosenBy: "company" };
-  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels, unusable: input.unusable };
+  const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels, unusable: input.unusable, reference: input.builderModel };
   const another = input.differentCompanyFrom ?? [];
   const candidates = candidatesOf(limits, input.sources).filter((model) => another.every((other) => differentCompany(model, other)));
   const builder = input.builderModel;

@@ -7,7 +7,7 @@ import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {defaultWorkerModel} from "../agents/dispatch.js";
 import {servableModels} from "../model-sources/routing.js";
-import {reviewDefaultExtras} from "./review-default-pool.js";
+import {poolKey,reviewDefaultExtras} from "./review-default-pool.js";
 import {parseTaskModelPolicyPin} from "./task-pin.js";
 import {readStageModelEvidence,type StageEvidenceDependencies} from "./evidence.js";
 import {resolvePinnedTaskStage,type PinnedTaskStageInput} from "./task-runtime.js";
@@ -39,12 +39,13 @@ async function readPinnedTaskStage(deps:TaskStageLiveDependencies,input:TaskStag
  const builtinDefault=defaultWorkerModel(deps.routing.rovaraGeography);add(builtinDefault);
  if(models.size>23)throw unavailable();
  const guardrailsRead=readGuardrailsWithRevision(deps,input.orgId);
- // A checking step's default is another company's model the company can use (owner decision 2026-11-02): only those stages read the company's servable models, and only within the pool's limit. A source that cannot be listed adds nothing.
- if(input.stage==="plan_check"||input.stage==="code_review"||input.stage==="security_review") {
+ // A checking step's default is another company's model the company can use (owner decision 2026-11-02): only those stages of a task pinned with that default read the company's servable models, and only within the pool's limit. A source that cannot be listed adds nothing. A task pinned before the default existed keeps the pool it always had.
+ const extraKeys=new Set<string>();
+ if(frozen.reviewDefault==="different_company"&&(input.stage==="plan_check"||input.stage==="code_review"||input.stage==="security_review")) {
   const forbidden=(await guardrailsRead).guardrails.forbiddenModels;
-  for(const extra of reviewDefaultExtras({servable:await servableModels(deps.routing,input.orgId,input.project).catch(()=>[]),approved:frozen.projectModels?.approved,forbidden,have:new Set(models.keys())}))add(extra);
+  for(const extra of reviewDefaultExtras({servable:await servableModels(deps.routing,input.orgId,input.project).catch(()=>[]),approved:frozen.projectModels?.approved,forbidden,have:new Set([...models.values()].map(poolKey)),size:models.size})){add(extra);extraKeys.add(`${extra.provider}\0${extra.modelId}`);}
  }
- const [guardrailSnapshot,evidence]=await Promise.all([guardrailsRead,readStageModelEvidence(deps,{orgId:input.orgId,project:input.project,models:[...models.values()],payerDeveloperId:input.payerDeveloperId,excludePersonalPlan:input.excludePersonalPlan})]);
+ const [guardrailSnapshot,evidence]=await Promise.all([guardrailsRead,readStageModelEvidence(deps,{orgId:input.orgId,project:input.project,models:[...models.values()],payerDeveloperId:input.payerDeveloperId,excludePersonalPlan:input.excludePersonalPlan,noPersonalPlan:extraKeys})]);
  const guardrails=guardrailSnapshot.guardrails;
  const decision=resolvePinnedTaskStage({...input,registeredAt:pin.registeredAt,builtinDefault,live:{...evidence,forbidden:guardrails.forbiddenModels,deniedModels:input.deniedModels,requireDifferentVendor:guardrails.requireCrossCompanyReview&&(input.stage==="code_review"||input.stage==="security_review")}});
  const checks:TransactItem[]=[];

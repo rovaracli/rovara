@@ -55,7 +55,8 @@ export interface PickerInput {
   replayRuns?: readonly SecondReviewReplayRun[] | undefined;
 }
 
-const STRENGTH_WORDS = ["top-tier strength", "high strength", "high strength", "high strength", "good strength", "lighter and faster"] as const;
+// By capability tier (critic.ts): frontier, Sonnet, small; a model no tier names reads as the last.
+const STRENGTH_WORDS = ["high strength", "good strength", "lighter and faster"] as const;
 /** A free variant of an OpenRouter model: the provider may train on what it is sent. */
 export const isFreeVariant = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "openrouter" && /:free$/iu.test(model.modelId);
 

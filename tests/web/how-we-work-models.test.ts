@@ -89,8 +89,9 @@ describe("editable model rows", () => {
   expect("model" in body.overlay.steps!.build!).toBe(false);
  });
 
- it("writes the different-vendor toggle as differentCompanyFrom: Build on the review, Plan on the plan check", async () => {
-  const f = await open();
+ it("writes the different-vendor toggle as differentCompanyFrom: Build on the review, Plan on the plan check (where a company model means the rule must be written)", async () => {
+  const companyModel = { companyDefault: { model: mid(OPUS), thinkingLevel: null } };
+  const f = await open({ stages: { code_review: stageEntry("code_review", companyModel), security_review: stageEntry("security_review", companyModel), plan_check: stageEntry("plan_check", companyModel) } });
   await waitFor(() => expect(within(card("Review")).getByRole("switch", { name: "Different vendor than Build" })).toBeTruthy());
   expect(within(card("Plan check")).queryByRole("switch", { name: "Different vendor than Build" })).toBeNull();
   expect(within(card("Build")).queryByRole("switch")).toBeNull();
@@ -396,6 +397,19 @@ describe("review defaults (owner decision 2026-11-02)", () => {
   expect(within(card("Plan check")).getByText("Plan check uses Sonnet 4.6 (same company as the planner: no other company's model is available)")).toBeTruthy();
   expect(within(card("Build")).queryByText(/same company as the/)).toBeNull();
  });
+ it("turning the switch on where a project saved the different-model rule removes that rule: back to the default, so a Claude-only company still reviews", async () => {
+  const optedOut = { projectChoice: { differentFrom: { stage: "build", level: "model" } } };
+  const f = await open({ overlay: { steps: { review: { differentCompanyFrom: null } } }, stages: { code_review: stageEntry("code_review", { ...optedOut, effective: effective(OPUS) }), security_review: stageEntry("security_review", { ...optedOut, effective: effective(OPUS) }) } });
+  const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
+  await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
+  fireEvent.click(toggle());
+  const body = await saved(f);
+  expect(body.overlay.steps?.review ?? {}).not.toHaveProperty("differentCompanyFrom");
+ });
+ it("says in fixed words when another company's model could not be used", async () => {
+  await open({ stages: review("BUILTIN_DEFAULT", { otherCompanyFailed: true }) });
+  await waitFor(() => expect(within(card("Review")).getAllByText("Review uses GPT-5 Codex (same company as the builder: the other company's model could not be used)")).toHaveLength(2));
+ });
  it("shows the different-vendor switch on while the default applies, and turning it off writes the explicit different-model rule", async () => {
   const f = await open({ stages: review("DEFAULT_DIFFERENT_COMPANY") });
   const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
@@ -405,7 +419,8 @@ describe("review defaults (owner decision 2026-11-02)", () => {
   expect(body.overlay.steps!.review).toEqual({ differentCompanyFrom: null });
  });
  it("keeps the switch off for a step with a project choice and no rule, and turning it on writes the vendor rule", async () => {
-  const f = await open({ stages: review("PROJECT_CHOICE", { decidedBy: "project" }) });
+  const chosen = { projectChoice: { model: mid(GPT_REVIEW) } };
+  const f = await open({ stages: { code_review: stageEntry("code_review", { ...chosen, effective: effective(GPT_REVIEW, { reason: "PROJECT_CHOICE", decidedBy: "project" }) }), security_review: stageEntry("security_review", { ...chosen, effective: effective(GPT_REVIEW, { reason: "PROJECT_CHOICE", decidedBy: "project" }) }) } });
   const toggle = () => within(card("Review")).getByRole("switch", { name: "Different vendor than Build" });
   await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
   fireEvent.click(toggle());
@@ -417,7 +432,7 @@ describe("the one-time review-default notice (owner decision 2026-11-02)", () =>
  const NOTICE = "/v1/app/org/review-default-notice", GPT_REVIEW = "openai/gpt-5-codex";
  const onDefault = (reason = "DEFAULT_DIFFERENT_COMPANY") => ({ code_review: stageEntry("code_review", { effective: effective(GPT_REVIEW, { reason }) }), security_review: stageEntry("security_review", { effective: effective(GPT_REVIEW, { reason }) }) });
  const region = () => screen.getByRole("region", { name: "Reviews now use a different company's model" });
- const answering = (state: { dismissed: boolean; canDismiss: boolean }, onPost?: (request: { body: unknown }) => { status: number; body: unknown } | undefined): Handler => (request, url) => {
+ const answering = (state: { dismissed: boolean; canDismiss: boolean }, onPost?: (request: { body?: unknown }) => { status: number; body: unknown } | undefined): Handler => (request, url) => {
   if (url.pathname !== NOTICE) return undefined;
   if (request.method === "POST") return onPost?.(request) ?? { status: 200, body: { dismissed: true, canDismiss: state.canDismiss } };
   return { status: 200, body: state };

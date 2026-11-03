@@ -145,8 +145,7 @@ describe("locks need a complete tuple", () => {
 describe("review defaults (owner decision 2026-11-02)", () => {
  const vendor = (name: string, reference: string) => within(card(name)).getByRole("switch", { name: "Different vendor than " + reference });
  it("shows the different-vendor switch on, with the default's words, for a checking step nobody has set a model or rule for", async () => {
-  const policy = companyPolicyRaw();delete (policy.stepOverrides as Record<string, unknown>).code_review;delete (policy.stepOverrides as Record<string, unknown>).security_review;
-  await open({ policy });
+  await open({ policy: companyPolicyRaw({ code_review: { thinkingLevel: null, locked: false }, security_review: { thinkingLevel: null, locked: false } }) });
   expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("true");
   expect(within(card("Plan check")).getByText("Not set: this step uses the strongest model from a different company than the step it checks, when your company has one available.")).toBeTruthy();
   expect(vendor("Review (code and security)", "Build").getAttribute("aria-checked")).toBe("true");
@@ -156,17 +155,31 @@ describe("review defaults (owner decision 2026-11-02)", () => {
   expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("false");
   expect(within(card("Plan check")).queryByText(/Not set: this step uses/)).toBeNull();
  });
- it("turning the default off saves the explicit different-model rule; turning it on again saves the vendor rule", async () => {
+ it("turning the default off saves the explicit different-model rule; turning it on again removes it and returns to the default (nothing left to save)", async () => {
   const f = await open();
   expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("true");
   fireEvent.click(vendor("Plan check", "Plan"));
+  expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("false");
   await review();
   await screen.findByText("This list may be incomplete.");
   expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan_check).toEqual({ thinkingLevel: "low", differentFrom: { stage: "plan", level: "model" }, locked: false });
   fireEvent.click(vendor("Plan check", "Plan"));
+  expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("button", { name: "Review changes" }).hasAttribute("disabled")).toBe(true);
+ });
+ it("writes the vendor rule when it is turned on only where the default cannot hold: the row has a model", async () => {
+  const f = await open({ policy: companyPolicyRaw({ plan_check: { model: mid(COMPANY_BUILD), thinkingLevel: "low", locked: false } }) });
+  expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("false");
+  fireEvent.click(vendor("Plan check", "Plan"));
   await review();
-  await waitFor(() => expect(f.previews()).toHaveLength(2));
-  expect((f.previews()[1]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan_check).toEqual({ thinkingLevel: "low", differentFrom: { stage: "plan", level: "vendor" }, locked: false });
+  await screen.findByText("This list may be incomplete.");
+  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan_check).toEqual({ model: mid(COMPANY_BUILD), thinkingLevel: "low", differentFrom: { stage: "plan", level: "vendor" }, locked: false });
+ });
+ it("takes the switch's default from the server's answer, not from the row: with no server answer a bare row is off", async () => {
+  const policy = companyPolicyRaw() as Record<string, unknown>;delete policy.reviewDefaults;
+  await open({ policy });
+  expect(vendor("Plan check", "Plan").getAttribute("aria-checked")).toBe("false");
+  expect(within(card("Plan check")).queryByText(/Not set: this step uses/)).toBeNull();
  });
  it("leaves a row alone when the default is turned on while it already applies", async () => {
   await open();

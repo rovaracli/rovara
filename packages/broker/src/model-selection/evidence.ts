@@ -12,7 +12,7 @@ export interface StageEvidenceDependencies {
  chatgpt?:Pick<ChatGptConnections,"settings"|"view">|undefined;
  now():number;
 }
-export async function readStageModelEvidence(deps:StageEvidenceDependencies&Partial<ModelPolicyReader>,input:{orgId:OrgId;project:string;models:readonly ModelIdentifier[];payerDeveloperId?:string|undefined;excludePersonalPlan?:boolean|undefined}) {
+export async function readStageModelEvidence(deps:StageEvidenceDependencies&Partial<ModelPolicyReader>,input:{orgId:OrgId;project:string;models:readonly ModelIdentifier[];payerDeveloperId?:string|undefined;excludePersonalPlan?:boolean|undefined;/** Models (`provider\0modelId`) never read through a person's ChatGPT plan: the review default's added models are the company's to serve (owner decision 2026-11-02). */noPersonalPlan?:ReadonlySet<string>|undefined}) {
  if(input.models.length>23) throw agentXError("RUNTIME_UNAVAILABLE","The model scope exceeds this request's limit.");
  let sources:Awaited<ReturnType<typeof effectiveSources>>;
  try {sources=await effectiveSources(deps.routing,input.orgId,input.project);} catch {throw agentXError("RUNTIME_UNAVAILABLE","The model sources could not be read.");}
@@ -42,7 +42,7 @@ export async function readStageModelEvidence(deps:StageEvidenceDependencies&Part
    if(sourceId==="rovara" && model.provider==="amazon-bedrock" && rovara.has(model.modelId)) {
     candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:"rovara_catalog"}});break;
    }
-   if(sourceId==="personal-chatgpt" && modelCompany(model)==="openai" && connectionRevision!==undefined && chatgptModels.some(modelId=>canonicalModelName({provider:"openai",modelId})===canonicalModelName(model))) {
+   if(sourceId==="personal-chatgpt" && input.noPersonalPlan?.has(`${model.provider}\0${model.modelId}`)!==true && modelCompany(model)==="openai" && connectionRevision!==undefined && chatgptModels.some(modelId=>canonicalModelName({provider:"openai",modelId})===canonicalModelName(model))) {
     candidates.push({model,sourceId,enabled:true,inEffectiveOrder:true,evidence:{orgId:input.orgId,sourcesRevision,kind:"chatgpt_connection",payerDeveloperId:input.payerDeveloperId!,connectionRevision}});break;
    }
    const source=sources?.stored.sources.find(source=>source.sourceId===sourceId);

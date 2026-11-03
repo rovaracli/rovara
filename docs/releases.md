@@ -247,3 +247,9 @@ Some steps need a person, so do these by hand before tagging, in a throwaway acc
 4. Once, SC-001: a person who has never seen Rovara installs it from docs/install.md, on a clean
    computer and a new AWS account, with no help, and gets a Slack reply. Record every place they
    get stuck, and fix it.
+
+## Release notes
+
+Changes a person using Rovara will notice, newest first. One line each; the full story is in the commit.
+
+- **Reviews use a different company's model by default.** The review steps (plan check, code review, security review) that nobody has configured now use the strongest model from a different AI company than the step they check, when the company has one it can use and that model is at least Sonnet's capability tier; otherwise they behave as before and How we work says so. A running task keeps the review model it was started with. A company owner or admin sees a one-time notice on How we work and can dismiss it for the company; any step can be changed there (turning the "Different vendor" switch off restores the old behaviour for that step).
