@@ -4,7 +4,7 @@
 # PENDING for the part that needs a throwaway run network, helper or probe container, which the full version adds once the run layer (TS14 helper launcher, TS16 sealed sandbox) exists. A PENDING line is
 # never a pass: `tx` stays off until every line is PASS.
 #
-# WHAT IT DOES. READ-ONLY: it reads iptables, interfaces, routes, Docker's inventory (ps, network ls, network inspect, info) and /proc/meminfo, and changes none of them. It starts no container, makes no network,
+# WHAT IT DOES. READ-ONLY: it reads iptables, interfaces, routes, /etc/docker/daemon.json, Docker's inventory (ps, network ls, network inspect, inspect, version) and /proc/meminfo, and changes none of them. It starts no container, makes no network,
 # writes no file, uses no AWS access and reads no secret. It never prints an environment variable.
 #
 # OUTPUT. One line per check part, then a summary:
@@ -55,6 +55,14 @@ rvi_opened_before() { printf '%s\n' "$2" | awk -v chain="$1" -v upto="$3" 'index
 
 DOCKER_USER=$(iptables -S DOCKER-USER 2>/dev/null || true)
 INPUT_RULES=$(iptables -S INPUT 2>/dev/null || true)
+ALL_RULES=$(iptables -S 2>/dev/null || true)
+DAEMON_JSON=/etc/docker/daemon.json
+
+# bash CIDR helpers: cidr_overlaps A B is true when the two ranges share an address
+to_int() { local IFS=.; set -- $1; echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 )); }
+cidr_overlaps() { local ai ap bi bp p mask; ai=$(to_int "${1%/*}"); ap=${1#*/}; bi=$(to_int "${2%/*}"); bp=${2#*/}; p=$(( ap < bp ? ap : bp )); mask=$(( (0xffffffff << (32 - p)) & 0xffffffff )); [[ $(( ai & mask )) -eq $(( bi & mask )) ]]; }
+# version_at_least A B: dotted version A >= B (numeric parts only)
+version_at_least() { local IFS=.; local -a a=($1) b=($2); local i; for i in 0 1 2; do local x=${a[i]:-0} y=${b[i]:-0}; x=${x//[!0-9]/}; y=${y//[!0-9]/}; if (( ${x:-0} > ${y:-0} )); then return 0; fi; if (( ${x:-0} < ${y:-0} )); then return 1; fi; done; return 0; }
 
 # ---- TS-L1: sandbox-to-helper traffic on an rvi* internal network passes, and helper-to-internet fails.
 # Read-only part: the boot firewall walls every rvi* bridge (and no rule opens one), which is the whole reason the run network needs no rule of its own.
@@ -66,7 +74,51 @@ at_input=$(rule_at INPUT "$INPUT_RULES" "-i rvi+|-j DROP")
 if [[ -n "$at_forward" ]]; then opened=$(rvi_opened_before DOCKER-USER "$DOCKER_USER" "$at_forward"); [[ -z "$opened" ]] || fails="$fails rvi-opened-above-the-drop(lines:${opened% })"; fi
 if [[ -n "$at_input" ]]; then opened=$(rvi_opened_before INPUT "$INPUT_RULES" "$at_input"); [[ -z "$opened" ]] || fails="$fails rvi-opened-above-the-input-drop(lines:${opened% })"; fi
 verdict L1.walls rvi-walls-present-and-not-opened "${fails# }" "DOCKER-USER drop at line ${at_forward:-?}, INPUT drop at line ${at_input:-?}"
+
+# ---- TS-L1 (two rvi bridges never talk): the boot firewall also drops routed (not bridged) traffic between two different rvi bridges, so one run's helpers cannot reach another run's or an end-to-end network's.
+fails=""
+at_isolation=$(rule_at DOCKER-USER "$DOCKER_USER" "-i rvi+|-o rvi+|physdev|--physdev-is-bridged|-j DROP")
+if [[ -z "$at_isolation" ]]; then fails="no-rvi-to-rvi-isolation-drop"
+else opened=$(rvi_opened_before DOCKER-USER "$DOCKER_USER" "$at_isolation"); [[ -z "$opened" ]] || fails="rvi-opened-above-the-isolation-drop(lines:${opened% })"; fi
+verdict L1.isolation rvi-to-rvi-isolation-drop-present "$fails" "DOCKER-USER drops -i rvi+ -o rvi+ that is not bridged, at line ${at_isolation:-?}"
+
+# ---- TS-L1 (Docker is new enough): CVE-2024-29018, an internal network's containers could have DNS queries forwarded out by the daemon; fixed in Moby 26.0.0, 25.0.4 and 23.0.11 (reported by the NVD mirrors and distro trackers; the upstream advisory itself was not reachable when this was written, so confirm it). 24.x has no fix.
+fails=""
+version=""
+if have_docker; then version=$(dk version --format '{{.Server.Version}}' 2>/dev/null || true); fi
+if [[ -z "$version" ]]; then fails="docker-version-unreadable"
+else
+  major=${version%%.*}
+  if [[ "$major" == 24 ]]; then fails="docker-$version-has-no-fix-for-CVE-2024-29018"
+  elif ! { version_at_least "$version" 26.0.0 || { [[ "$major" == 25 ]] && version_at_least "$version" 25.0.4; } || { [[ "$major" == 23 ]] && version_at_least "$version" 23.0.11; }; }; then fails="docker-$version-older-than-the-CVE-2024-29018-fix"; fi
+fi
+verdict L1.docker-version docker-has-the-CVE-2024-29018-fix "$fails" "Docker Engine ${version:-?}"
+
+# ---- TS-L1 (the firewall tool): the rules above are iptables rules, with the physdev match; the nftables backend (iptables-nft) is not what they were written and checked for.
+backend=$(iptables --version 2>/dev/null || true)
+case "$backend" in
+  *nf_tables*) emit L1.iptables-backend FAIL iptables-backend-is-not-nftables "$backend" ;;
+  *legacy*) emit L1.iptables-backend PASS iptables-backend-is-not-nftables "$backend" ;;
+  *) emit L1.iptables-backend FAIL iptables-backend-is-not-nftables "backend unreadable: ${backend:-no iptables}" ;;
+esac
+
+# ---- TS-L1 (Docker's own drops for an internal network): for a run network that exists now, Docker's isolation chains hold DROP rules that name its bridge. Needs a live run network, so an idle worker reports PENDING.
+fails=""
+checked=0
+if have_docker; then
+  for id in $(dk network ls -q --filter "label=$FAMILY_LABEL" 2>/dev/null); do
+    bridge=$(dk network inspect --format '{{index .Options "com.docker.network.bridge.name"}}' "$id" 2>/dev/null || true)
+    [[ "$bridge" =~ ^rvi[0-9a-f]{8}$ ]] || { fails="$fails network-$id-has-no-rvi-bridge"; continue; }
+    checked=$((checked + 1))
+    drops=$(printf '%s\n' "$ALL_RULES" | grep -v -e '^-A DOCKER-USER ' -e '^-A INPUT ' | grep -c -e "-[io] $bridge .*-j DROP" -e "-j DROP.*-[io] $bridge" || true)
+    (( drops >= 1 )) || fails="$fails no-docker-internal-drop-for-$bridge"
+  done
+else fails="no-docker"; fi
+if [[ -n "$fails" ]]; then emit L1.internal-drops FAIL docker-internal-network-drops-present "${fails# }"
+elif (( checked == 0 )); then pending L1.internal-drops docker-internal-network-drops-present "no run network exists now; start one and check that Docker's isolation chains drop traffic into and out of its bridge"
+else emit L1.internal-drops PASS docker-internal-network-drops-present "$checked run network(s) with Docker drop rules naming their bridge"; fi
 pending L1.live helper-reachable-internet-not "start a throwaway run network (rvi<hex>, --internal) with a helper and a sandbox; the sandbox reaches the helper on its port, the helper reaches no public address, no private range and not the gateway"
+pending L1.live-other-run another-runs-helper-unreachable "start two throwaway run networks with a helper each: a sandbox on the first cannot reach the second's helper (by address or through the gateway), in either direction, while it still reaches its own"
 
 # ---- TS-L1/L2 precondition: the run network's range (172.30.0.0/16) is free on this host, apart from rvi* run networks themselves.
 fails=""
@@ -83,6 +135,22 @@ if have_docker; then
   done
 else fails="$fails no-docker"; fi
 verdict L1.range range-172.30-free "${fails# }" "no route and no Docker network outside the run family uses ${RANGE_PREFIX}0.0/16"
+
+# ---- TS-L1 (Docker cannot take the reserved ranges itself): daemon.json sets default-address-pools, and none of them overlaps 172.29/16 (setup runs), 172.30/16 (run networks), 172.17/16 (docker0) or the VPC's 10.42/16.
+fails=""
+daemon=$(tr -d ' \n\t' < "$DAEMON_JSON" 2>/dev/null || true)
+case "$daemon" in
+  *'"default-address-pools":['*)
+    count=0
+    for base in $(printf '%s' "$daemon" | grep -o '"base":"[0-9./]*"' | sed 's/"base":"\(.*\)"/\1/'); do
+      count=$((count + 1))
+      [[ "$base" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || { fails="$fails bad-pool($base)"; continue; }
+      for reserved in 172.29.0.0/16 172.30.0.0/16 172.17.0.0/16 10.42.0.0/16; do cidr_overlaps "$base" "$reserved" && fails="$fails pool($base)-overlaps-$reserved"; done
+    done
+    (( count > 0 )) || fails="$fails no-pool-bases" ;;
+  *) fails="no-default-address-pools-in-$DAEMON_JSON" ;;
+esac
+verdict L1.pools docker-address-pools-leave-reserved-ranges-alone "${fails# }" "default-address-pools in $DAEMON_JSON overlap none of 172.29/16, 172.30/16, 172.17/16, 10.42/16"
 
 # ---- TS-L2: the dual-homed working sandbox resolves run aliases and allowed public names; the helpers cannot use the sandbox as a route.
 fails=""

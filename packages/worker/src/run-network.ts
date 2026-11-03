@@ -12,6 +12,17 @@
 //
 // Addresses in a slot: gateway .1, DNS helper .2, working sandbox .3, check sandbox .4, test-account proxy .8, service helpers .16 to .47 (32 of them).
 //
+// Sweeping: a run's objects carry `rovara.run-network.expires` (its own creation time + its own round budget + 15 minutes), stamped when the network is made. The sweep of an allocation removes an object only when
+// now >= its own expires, so a short run's allocation can never remove a longer run's live helpers. Only the worker-start sweep (`workerStart: true`) removes every family object of its own workspace, because a
+// restarted worker's own earlier runs are all dead.
+//
+// RULES FOR THE HELPER LAUNCHER (TS14, deferred check TS-RN-3), which must hold or the sweep and the walls do not work:
+//   1. Always pass ALL the labels of `net.labelArgs()` (family, created, expires, workspace) to `docker run`. A label given on the command line overrides one baked into the image, so the launcher's labels win, but a
+//      container started without them is invisible to the sweep and to `stop()`.
+//   2. Validate every dependency alias with a strict regex before `--network-alias` (for example /^[a-z][a-z0-9-]{0,30}[a-z0-9]$/, and never one of the reserved names: the DNS helper, the proxy, the sinkhole).
+//      An alias comes from the repository, so it is the one repository-controlled string that could reach a docker argument.
+//   3. Run the worker-start sweep: `sweepServicesNetworks(docker, { workspace, workerStart: true })` once when the worker starts (like `removeLeftoverSetupRuns`).
+//
 // No repository-controlled string reaches a docker argument: the run id must be plain (letters, digits, hyphens; it is only ever hashed), the workspace must be a 16-hex key, every name and the bridge are hashes, the addresses come from a
 // number, and the ids the sweep passes on must pass a plain-id check. A dependency's alias (`postgres`) is not part of this module; the helper launcher (TS14) must validate it before it uses `--network-alias`.
 import { createHash } from "node:crypto";
@@ -21,8 +32,10 @@ import { DOCKER_CALL_TIMEOUT_MS, SETUP_NETWORK_SLOTS, isSlotCollision, setupNetw
 
 /** The family label; its value is the network's name (a hash of the run id). Every container and the network of a run carry it. */
 export const RUN_NETWORK_LABEL = "rovara.run-network";
-/** When the run's network was made, in milliseconds since the epoch; the sweep ages objects by it. */
+/** When the run's network was made, in milliseconds since the epoch (informational). */
 export const RUN_NETWORK_CREATED_LABEL = "rovara.run-network.created";
+/** When the run's objects count as left behind: its own creation time + its own round budget + 15 minutes, in milliseconds since the epoch. The sweep of an allocation removes an object only from this time on. */
+export const RUN_NETWORK_EXPIRES_LABEL = "rovara.run-network.expires";
 /** The key of the worker's workspace, so a worker never removes another worker's objects on a shared Docker daemon. */
 export const RUN_NETWORK_WORKSPACE_LABEL = "rovara.run-network.workspace";
 export const RUN_NETWORK_FIRST_OCTETS = "172.30";
@@ -69,6 +82,8 @@ function assertSlot(slot: number): void {
 export interface RunNetworkAddresses {
   subnet: string;
   gateway: string;
+  /** The range Docker hands out dynamic addresses from: the upper half, so a dynamic address never lands on the reserved .1 to .47. */
+  ipRange: string;
   dnsHelperIp: string;
   workingSandboxIp: string;
   checkSandboxIp: string;
@@ -79,7 +94,7 @@ export interface RunNetworkAddresses {
 export function runNetworkAddresses(slot: number): RunNetworkAddresses {
   assertSlot(slot);
   const base = `${RUN_NETWORK_FIRST_OCTETS}.${String(slot)}`;
-  return { subnet: `${base}.0/24`, gateway: `${base}.1`, dnsHelperIp: `${base}.2`, workingSandboxIp: `${base}.3`, checkSandboxIp: `${base}.4`, proxyIp: `${base}.8` };
+  return { subnet: `${base}.0/24`, gateway: `${base}.1`, ipRange: `${base}.128/25`, dnsHelperIp: `${base}.2`, workingSandboxIp: `${base}.3`, checkSandboxIp: `${base}.4`, proxyIp: `${base}.8` };
 }
 
 /** The address of the service helper with this index (0 to 31): .16 to .47 of the slot. */
@@ -95,20 +110,23 @@ export interface RunNetworkLabelInput {
   workspace: string;
   /** Milliseconds since the epoch, when the network was made. */
   createdAt: number;
+  /** Milliseconds since the epoch, from when the run's objects count as left behind: `createdAt + servicesNetworkStaleAfterMs(own budget)`. */
+  expiresAt: number;
 }
 
-/** The three labels every object of a run carries. A helper started by the launcher (TS14) must pass them to `docker run`, or the sweep cannot find it. */
+/** The four labels every object of a run carries. A helper started by the launcher (TS14) must pass them to `docker run`, or the sweep cannot find it. */
 export function runNetworkLabelArgs(input: RunNetworkLabelInput): string[] {
   assertWorkspace(input.workspace);
   if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) throw agentXError("CONFIG_INVALID", "not a creation time");
-  return ["--label", `${RUN_NETWORK_LABEL}=${runNetworkName(input.runId)}`, "--label", `${RUN_NETWORK_CREATED_LABEL}=${String(input.createdAt)}`, "--label", `${RUN_NETWORK_WORKSPACE_LABEL}=${input.workspace}`];
+  if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt < input.createdAt) throw agentXError("CONFIG_INVALID", "not an expiry time");
+  return ["--label", `${RUN_NETWORK_LABEL}=${runNetworkName(input.runId)}`, "--label", `${RUN_NETWORK_CREATED_LABEL}=${String(input.createdAt)}`, "--label", `${RUN_NETWORK_EXPIRES_LABEL}=${String(input.expiresAt)}`, "--label", `${RUN_NETWORK_WORKSPACE_LABEL}=${input.workspace}`];
 }
 
 /** The `docker network create` arguments: an internal bridge on the slot's /24, with the `rvi` host interface the boot firewall walls, and the family labels. */
 export function runNetworkCreateArgs(input: RunNetworkLabelInput & { slot: number }): string[] {
   const addresses = runNetworkAddresses(input.slot);
   return [
-    "network", "create", "--driver", "bridge", "--internal", "--subnet", addresses.subnet, "--gateway", addresses.gateway,
+    "network", "create", "--driver", "bridge", "--internal", "--subnet", addresses.subnet, "--gateway", addresses.gateway, "--ip-range", addresses.ipRange,
     "--opt", `com.docker.network.bridge.name=${runNetworkBridge(input.runId, input.slot)}`,
     ...runNetworkLabelArgs(input), runNetworkName(input.runId),
   ];
@@ -122,44 +140,64 @@ export function servicesNetworkStaleAfterMs(roundBudgetMs: number): number {
 
 const dockerCall = (docker: DockerCli) => (args: string[]) => docker.run(args, { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
 
-const LIST_FORMAT = `{{.ID}}\t{{.Label "${RUN_NETWORK_LABEL}"}}\t{{.Label "${RUN_NETWORK_CREATED_LABEL}"}}\t{{.Label "${RUN_NETWORK_WORKSPACE_LABEL}"}}`;
+const LIST_FORMAT = `{{.ID}}\t{{.Label "${RUN_NETWORK_LABEL}"}}\t{{.Label "${RUN_NETWORK_CREATED_LABEL}"}}\t{{.Label "${RUN_NETWORK_WORKSPACE_LABEL}"}}\t{{.Label "${RUN_NETWORK_EXPIRES_LABEL}"}}`;
+
+type Call = ReturnType<typeof dockerCall>;
+interface FamilyRow { id: string; family: string; created: string; workspace: string; expires: string }
+
+/** The rows of a `LIST_FORMAT` listing that really are this workspace's family objects (plain id, family value shaped like a network name, workspace equal, and `only` when given): the filter went to Docker, but a daemon that ignores it must not widen what is touched. */
+function familyRows(stdout: string, workspace: string, only?: string): FamilyRow[] {
+  const rows: FamilyRow[] = [];
+  for (const line of stdout.split("\n")) {
+    const [id, family, created, ws, expires] = line.split("\t");
+    if (id === undefined || family === undefined || created === undefined || ws === undefined || expires === undefined) continue;
+    if (!SAFE_DOCKER_ID.test(id) || !NETWORK_NAME.test(family) || ws !== workspace || (only !== undefined && family !== only)) continue;
+    rows.push({ id, family, created, workspace: ws, expires });
+  }
+  return rows;
+}
+
+async function listFamily(call: Call, list: string[], workspace: string): Promise<FamilyRow[]> {
+  const listed = await call([...list, "--filter", `label=${RUN_NETWORK_LABEL}`, "--filter", `label=${RUN_NETWORK_WORKSPACE_LABEL}=${workspace}`, "--format", LIST_FORMAT]);
+  return listed.exitCode === 0 ? familyRows(listed.stdout, workspace) : [];
+}
 
 export interface SweepInput {
   /** `setupWorkspaceKey(rootPath)`. */
   workspace: string;
-  /** Only objects at least this old are removed: `servicesNetworkStaleAfterMs(budget)` at an allocation, 0 at a worker's start (a restarted worker's own runs are all dead). */
-  olderThanMs: number;
+  /** True only for the sweep at a worker's start: every family object of this workspace goes, whatever its expiry (a restarted worker's own earlier runs are all dead). Otherwise only objects whose own expiry has come. */
+  workerStart?: boolean;
   now?: () => number;
 }
 
 /**
- * Removes the containers and then the networks of this workspace's runs that carry the run-network family label and are old enough. The filter goes to Docker, and every row is checked again here (family label value shaped like a
- * network name, workspace equal, readable creation time, plain id), so a daemon or a fake that ignores the filter still cannot make it remove an object of another family: the setup run's, the end-to-end checker's or any other.
+ * Removes the containers and then the networks of this workspace's runs that carry the run-network family label and are due: at an allocation, those whose OWN expiry (their creation + their own round budget + 15 minutes,
+ * stamped at creation) has come, so a short run's sweep leaves a longer run's live helpers alone; at a worker's start, all of them. An object with no readable expiry is left alone by an allocation's sweep.
  * Containers go first because a network with an endpoint cannot be removed. Answers how many Docker accepted; never throws on a Docker failure.
  */
 export async function sweepServicesNetworks(docker: DockerCli, input: SweepInput): Promise<{ containers: number; networks: number }> {
   assertWorkspace(input.workspace);
   const call = dockerCall(docker);
   const now = (input.now ?? Date.now)();
-  const filters = ["--filter", `label=${RUN_NETWORK_LABEL}`, "--filter", `label=${RUN_NETWORK_WORKSPACE_LABEL}=${input.workspace}`];
-  const stale = async (list: string[]): Promise<string[]> => {
-    const listed = await call([...list, ...filters, "--format", LIST_FORMAT]);
-    if (listed.exitCode !== 0) return [];
-    const found: string[] = [];
-    for (const line of listed.stdout.split("\n")) {
-      const [id, family, created, workspace] = line.split("\t");
-      if (id === undefined || family === undefined || created === undefined || workspace === undefined) continue;
-      if (!SAFE_DOCKER_ID.test(id) || !NETWORK_NAME.test(family) || workspace !== input.workspace || !/^\d{1,16}$/u.test(created)) continue;
-      if (now - Number(created) >= input.olderThanMs) found.push(id);
-    }
-    return found;
-  };
-  const containers = await stale(["ps", "--all"]);
+  const due = async (list: string[]): Promise<string[]> => (await listFamily(call, list, input.workspace))
+    .filter((row) => input.workerStart === true || (/^\d{1,16}$/u.test(row.expires) && now >= Number(row.expires)))
+    .map((row) => row.id);
+  const containers = await due(["ps", "--all"]);
   let removedContainers = 0;
   if (containers.length > 0 && (await call(["rm", "--force", ...containers])).exitCode === 0) removedContainers = containers.length;
   let removedNetworks = 0;
-  for (const id of await stale(["network", "ls"])) if ((await call(["network", "rm", id])).exitCode === 0) removedNetworks += 1;
+  for (const id of await due(["network", "ls"])) if ((await call(["network", "rm", id])).exitCode === 0) removedNetworks += 1;
   return { containers: removedContainers, networks: removedNetworks };
+}
+
+/** Removes one run's containers and then its network. True when it is done (the network is gone, or Docker says it never existed), false when a Docker call failed and a retry may help. */
+async function removeRun(call: Call, name: string, workspace: string): Promise<boolean> {
+  const listed = await call(["ps", "--all", "--filter", `label=${RUN_NETWORK_LABEL}=${name}`, "--filter", `label=${RUN_NETWORK_WORKSPACE_LABEL}=${workspace}`, "--format", LIST_FORMAT]);
+  if (listed.exitCode !== 0) return false;
+  const ids = familyRows(listed.stdout, workspace, name).map((row) => row.id);
+  if (ids.length > 0 && (await call(["rm", "--force", ...ids])).exitCode !== 0) return false;
+  const removed = await call(["network", "rm", name]);
+  return removed.exitCode === 0 || /no such network/iu.test(`${removed.stderr}${removed.stdout}`);
 }
 
 export interface StartServicesNetworkInput {
@@ -167,7 +205,7 @@ export interface StartServicesNetworkInput {
   runId: string;
   /** `setupWorkspaceKey(rootPath)`. */
   workspace: string;
-  /** The round's budget in milliseconds: runs older than this plus 15 minutes are swept at this allocation. */
+  /** This run's own round budget in milliseconds: its objects count as left behind from creation + this + 15 minutes, and not before. */
   roundBudgetMs: number;
   now?: () => number;
 }
@@ -178,45 +216,54 @@ export interface ServicesNetwork extends RunNetworkAddresses {
   slot: number;
   /** The address of service helper `index` (0 to 31). */
   helperIp(index: number): string;
-  /** The labels a container of this run must be started with. */
+  /** The labels every container of this run must be started with (all of them: see the rules for the helper launcher at the top of this file). */
   labelArgs(): string[];
-  /** Removes the run's containers and then the network. Idempotent; never throws. */
+  /** Removes the run's containers and then the network, retrying its Docker calls a few times. Idempotent once it has succeeded; never throws. */
   stop(): Promise<void>;
 }
 
-/** Sweeps stale runs, then makes the run's network on the first free slot. Any failure is one fixed sentence (the docker error is not repeated to the person). */
+const STOP_ATTEMPTS = 3;
+
+/**
+ * Sweeps due runs, then makes the run's network on the first free slot. Any failure is one fixed sentence (the docker error is not repeated to the person). If a network of this run's own name is already there and carries
+ * this workspace's and this run's labels (a stop that failed earlier, or a killed worker), it is removed and the start tried once more; a network of that name that is not this run's is never touched.
+ */
 export async function startServicesNetwork(docker: DockerCli, input: StartServicesNetworkInput): Promise<ServicesNetwork> {
   assertRunId(input.runId);
   assertWorkspace(input.workspace);
-  const olderThanMs = servicesNetworkStaleAfterMs(input.roundBudgetMs);
+  const staleAfterMs = servicesNetworkStaleAfterMs(input.roundBudgetMs);
   const now = input.now ?? Date.now;
   const call = dockerCall(docker);
-  // The sweep of every allocation: what a killed worker left behind frees its slot here. A failed sweep is not a failed start.
-  await sweepServicesNetworks(docker, { workspace: input.workspace, olderThanMs, now }).catch(() => undefined);
+  // The sweep of every allocation: what a killed worker left behind frees its slot once it is due. A failed sweep is not a failed start.
+  await sweepServicesNetworks(docker, { workspace: input.workspace, now }).catch(() => undefined);
   const createdAt = now();
+  const labels = { runId: input.runId, workspace: input.workspace, createdAt, expiresAt: createdAt + staleAfterMs };
   const name = runNetworkName(input.runId);
-  let slot: number | undefined;
-  for (let attempt = 0; attempt < SLOT_ATTEMPTS && slot === undefined; attempt += 1) {
-    const candidate = setupNetworkSlot(input.runId, attempt);
-    const created = await call(runNetworkCreateArgs({ runId: input.runId, slot: candidate, workspace: input.workspace, createdAt }));
-    if (created.exitCode === 0) slot = candidate;
-    // A subnet another network has, or a host interface name that is taken, is cured by the next slot. A network of this name (the same run twice) names no bridge and no pool, so it ends the start, and so does any other failure.
-    else if (!isSlotCollision(`${created.stderr}${created.stdout}`)) break;
+  const allocate = async (): Promise<{ slot?: number; clash: boolean }> => {
+    for (let attempt = 0; attempt < SLOT_ATTEMPTS; attempt += 1) {
+      const candidate = setupNetworkSlot(input.runId, attempt);
+      const created = await call(runNetworkCreateArgs({ ...labels, slot: candidate }));
+      if (created.exitCode === 0) return { slot: candidate, clash: false };
+      const output = `${created.stderr}${created.stdout}`;
+      // A subnet another network has, or a host interface name that is taken, is cured by the next slot. A network of this name (the same run twice) names no bridge and no pool, so it ends this pass, and so does any other failure.
+      if (!isSlotCollision(output)) return { clash: /network with name .* already exists/iu.test(output) };
+    }
+    return { clash: false };
+  };
+  let result = await allocate();
+  if (result.slot === undefined && result.clash) {
+    const owner = await call(["network", "inspect", "--format", `{{index .Labels "${RUN_NETWORK_LABEL}"}}\t{{index .Labels "${RUN_NETWORK_WORKSPACE_LABEL}"}}`, name]);
+    if (owner.exitCode === 0 && owner.stdout.trim() === `${name}\t${input.workspace}` && await removeRun(call, name, input.workspace)) result = await allocate();
   }
+  const slot = result.slot;
   if (slot === undefined) throw agentXError("RUNTIME_UNAVAILABLE", FAILURE_SENTENCE);
-  const labels = { runId: input.runId, workspace: input.workspace, createdAt };
   let stopped = false;
   return {
     name, bridge: runNetworkBridge(input.runId, slot), slot, ...runNetworkAddresses(slot),
     helperIp: (index: number) => runNetworkHelperIp(slot, index),
     labelArgs: () => runNetworkLabelArgs(labels),
     async stop() {
-      if (stopped) return;
-      stopped = true;
-      const listed = await call(["ps", "--all", "--quiet", "--filter", `label=${RUN_NETWORK_LABEL}=${name}`]);
-      const ids = listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter((line) => SAFE_DOCKER_ID.test(line)) : [];
-      if (ids.length > 0) await call(["rm", "--force", ...ids]);
-      await call(["network", "rm", name]);
+      for (let attempt = 0; attempt < STOP_ATTEMPTS && !stopped; attempt += 1) stopped = await removeRun(call, name, input.workspace);
     },
   };
 }

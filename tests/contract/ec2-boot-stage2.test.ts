@@ -67,6 +67,18 @@ describe("boot-legacy.sh", () => {
   });
 });
 
+/**
+ * Test services (TS13/TS37 review, 2026-11-02): TWO named-only exceptions in stage 1, which a legacy worker's boot-legacy.sh never has (the switches exist only in named environments, and boot-legacy.sh stays pinned above):
+ *  1. daemon.json also sets `default-address-pools` (/24s from 172.18-172.28 and 192.168/16), so Docker's own auto-allocated networks never take 172.29/16 (setup runs), 172.30/16 (run networks) or the VPC's 10.42/16;
+ *  2. the container firewall also drops traffic between two different rvi bridges (`-i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged`), IPv4 and IPv6 where Docker has the chain.
+ * This puts stage 1 back to the legacy text so the verbatim-prefix check below still holds for everything else.
+ */
+function stage1WithoutNamedOnlyHunks(): string {
+  return stage1
+    .replace(/ {2}# default-address-pools:[\s\S]*?\n {2}printf '\{"data-root": "%s", "default-address-pools": \[[^\n]*\]\}\\n' "\$DOCKER_DATA_ROOT"/u, `  printf '{"data-root": "%s"}\\n' "$DOCKER_DATA_ROOT"`)
+    .replace(/# Two different rvi bridges[^\n]*\nf iptables DOCKER-USER -i rvi\+ -o rvi\+ -m physdev ! --physdev-is-bridged -j DROP\n! command -v ip6tables[^\n]*\n/u, "");
+}
+
 describe("boot.sh (stage 1) and boot-stage2.sh", () => {
   it("are valid bash", () => {
     for (const script of [stage1, stage2]) expect(spawnSync("bash", ["-n"], { input: script, encoding: "utf8" }).status).toBe(0);
@@ -79,7 +91,12 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     // The legacy script up to the first moved function, less the four declarations that moved with them, is the start of boot.sh unchanged.
     const prefix = MOVED_DECLARATIONS.reduce((text, declaration) => text.replace(declaration, ""), legacy.slice(0, legacy.indexOf(firstMoved)));
     expect(prefix.length).toBeLessThan(legacy.indexOf(firstMoved));
-    expect(stage1.startsWith(prefix)).toBe(true);
+    // The two named-only hunks are really there, and taking them out leaves the legacy text.
+    expect(stage1).toContain("default-address-pools");
+    expect(stage1).toContain("--physdev-is-bridged");
+    expect(stage1WithoutNamedOnlyHunks()).not.toContain("default-address-pools");
+    expect(stage1WithoutNamedOnlyHunks()).not.toContain("--physdev-is-bridged");
+    expect(stage1WithoutNamedOnlyHunks().startsWith(prefix)).toBe(true);
     for (const declaration of MOVED_DECLARATIONS) {
       expect(stage1, declaration).not.toContain(declaration);
       expect(stage2, declaration).toContain(declaration);

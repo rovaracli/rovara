@@ -233,7 +233,9 @@ ensure_docker() {
   [ -f /etc/dnf/dnf.conf ] && { grep -q ^exclude= /etc/dnf/dnf.conf || echo 'exclude=kernel*' >>/etc/dnf/dnf.conf; }
   command -v docker >/dev/null || retry "could not install Docker: package download failed" install_docker_package
   install -d -m 0755 /etc/docker
-  printf '{"data-root": "%s"}\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json
+  # default-address-pools: Docker's own auto-allocated networks (the E2E checker's, whole /16s by default) must never take 172.29/16 (setup runs) or 172.30/16 (run networks), nor the VPC's 10.42/16. /24s from 172.18-172.28 and 192.168/16;
+  # 172.17 is docker0, 172.29-172.31 and 10/8 are left out. 3,072 networks, far more than any worker runs at once.
+  printf '{"data-root": "%s", "default-address-pools": [{"base": "172.18.0.0/15", "size": 24}, {"base": "172.20.0.0/14", "size": 24}, {"base": "172.24.0.0/14", "size": 24}, {"base": "172.28.0.0/16", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json
   systemctl enable docker.service
   systemctl restart docker.service
   wall_off_containers
@@ -249,6 +251,9 @@ set -e
 f() { local c=$1; shift; $c -C "$@" 2>/dev/null || $c -I "$@"; }
 for d in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do f iptables DOCKER-USER -i rvb+ -d $d -j DROP; done
 f iptables DOCKER-USER -i rvi+ ! -o rvi+ -j DROP
+# Two different rvi bridges never talk (a run network and an E2E network, or two runs): routed between bridges is "not bridged", traffic inside one bridge is bridged and flows. IPv6 only where Docker has that chain.
+f iptables DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP
+! command -v ip6tables >/dev/null || ! ip6tables -S DOCKER-USER >/dev/null 2>&1 || f ip6tables DOCKER-USER -i rvi+ -o rvi+ -m physdev ! --physdev-is-bridged -j DROP || echo "ip6tables rvi isolation rule failed" >&2
 for r in $(awk '$1=="nameserver"&&$2~/^[0-9.]+$/{print $2}' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null); do
   for p in udp tcp; do f iptables DOCKER-USER -i rvb+ -d $r -p $p --dport 53 -j RETURN; done
 done
