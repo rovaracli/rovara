@@ -24,7 +24,7 @@ function deps(serviceCatalog?: () => Promise<ReturnType<typeof verifiedCatalog>>
   const audit = capturingAuditDeps({ db });
   db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
   db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: {}, definition: { name: PROJECT, revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [cmd("pytest", ["-q"])], orchestratorInstructions: "Delegate work." } });
-  return { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.UTC(2026, 10, 3, 10, 0, 0), audit: audit.audit, env: ON, ...(serviceCatalog === undefined ? {} : { serviceCatalog }) } as TestEnvDeps;
+  return { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.UTC(2026, 10, 3, 10, 0, 0), audit: audit.audit, env: ON, ...(serviceCatalog === undefined ? {} : { serviceCatalog }) };
 }
 const propose = (d: TestEnvDeps) => proposeTestEnvironment(d, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body() });
 
