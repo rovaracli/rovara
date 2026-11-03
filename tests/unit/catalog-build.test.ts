@@ -396,7 +396,7 @@ describe("pinning chosen entries only (--entries)", () => {
   it("asks ECR by digest, and treats a missing image as no and any other failure as a throw", async () => {
     class Describe { constructor(readonly input: { repositoryName: string; imageIds: Array<{ imageDigest: string }> }) {} }
     const sent: unknown[] = [];
-    const port = (respond: () => unknown) => ecrServesPort({ client: { send: async (command) => { sent.push(command); return respond(); } }, commands: { DescribeImagesCommand: Describe as never } });
+    const port = (respond: () => unknown) => ecrServesPort({ client: { send: async (command) => { sent.push(command); return respond(); } }, commands: { DescribeImagesCommand: Describe } });
     const digest = sha("x");
     expect(await port(() => ({ imageDetails: [{ imageDigest: `sha256:${digest}` }] }))({ id: "postgres@16", repositoryName: "rovara-catalog/staging/svc/postgres", digest })).toBe(true);
     expect((sent[0] as Describe).input).toEqual({ repositoryName: "rovara-catalog/staging/svc/postgres", imageIds: [{ imageDigest: `sha256:${digest}` }] });
