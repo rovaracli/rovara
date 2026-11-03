@@ -9,7 +9,7 @@ if [ ! -d "$TMPDIR" ] || [ -L "$TMPDIR" ] || [ -n "$(find "$TMPDIR" -mindepth 1 
   echo "UNAVAILABLE: TMPDIR must be an existing, empty, owned directory" >&2
   exit 2
 fi
-TMP_OWNER=$(stat -f '%u' "$TMPDIR" 2>/dev/null || stat -c '%u' "$TMPDIR")
+TMP_OWNER=$(stat -c '%u' "$TMPDIR" 2>/dev/null || stat -f '%u' "$TMPDIR")
 if [ "$TMP_OWNER" != "$(id -u)" ]; then
   echo "UNAVAILABLE: TMPDIR is not owned by the current user" >&2
   exit 2

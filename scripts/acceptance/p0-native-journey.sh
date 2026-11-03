@@ -17,7 +17,7 @@ tmp=${TMPDIR:-}
 [ -n "$tmp" ] && [ -d "$tmp" ] || unavailable 'provide a fresh, pre-created TMPDIR'
 [ ! -L "$tmp" ] || unavailable 'TMPDIR cannot be a symbolic link'
 [ -z "$(find "$tmp" -mindepth 1 -print -quit)" ] || unavailable 'TMPDIR must be empty before Vitest starts'
-tmp_owner=$(stat -f '%u' "$tmp" 2>/dev/null || stat -c '%u' "$tmp") || unavailable 'could not verify TMPDIR ownership'
+tmp_owner=$(stat -c '%u' "$tmp" 2>/dev/null || stat -f '%u' "$tmp") || unavailable 'could not verify TMPDIR ownership'
 [ "$tmp_owner" = "$(id -u)" ] || unavailable 'TMPDIR must be owned by the current user'
 tmp_real=$(cd "$tmp" && pwd -P)
 
@@ -27,9 +27,9 @@ validate_evidence_root() {
   [ ! -L "$root" ] || unavailable 'evidence root cannot be a symbolic link'
   root_real=$(cd "$root" && pwd -P)
   [ "$root" = "$root_real" ] || unavailable 'evidence root must be supplied by its canonical path'
-  root_owner=$(stat -f '%u' "$root" 2>/dev/null || stat -c '%u' "$root") || unavailable 'could not verify evidence-root ownership'
+  root_owner=$(stat -c '%u' "$root" 2>/dev/null || stat -f '%u' "$root") || unavailable 'could not verify evidence-root ownership'
   [ "$root_owner" = "$(id -u)" ] || unavailable 'evidence root must be owned by the current user'
-  root_mode=$(stat -f '%Lp' "$root" 2>/dev/null || stat -c '%a' "$root") || unavailable 'could not verify evidence-root permissions'
+  root_mode=$(stat -c '%a' "$root" 2>/dev/null || stat -f '%Lp' "$root") || unavailable 'could not verify evidence-root permissions'
   [ $((0$root_mode & 077)) -eq 0 ] || unavailable 'evidence root must be private to the current user'
   [ -z "$(find "$root" -mindepth 1 -print -quit)" ] || unavailable 'evidence root must be empty before Vitest starts'
   [ "$(basename "$(dirname "$root_real")")" = 'AgentX-e2e-p0-20261012-evidence' ] || unavailable 'evidence root must be a direct child of the owned evidence collection'
