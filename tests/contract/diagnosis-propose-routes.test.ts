@@ -116,12 +116,16 @@ describe("Apply this change, on the real broker", () => {
     expect(await t.codeSettings()).toMatchObject({ mergeMethod: "merge", revision: 1 });
   });
 
-  it("the dev container's path: the project settings save makes the next revision with the new path, and a citation that does not hold changes nothing", async () => {
+  it("the dev container's path: the project settings save holds the new path until its check passes (a token is held, TE-4), and a citation that does not hold changes nothing", async () => {
     const t = await setup();
     const id = await t.diagnosis([deviceChange()]);
     const reply = await t.propose(OMAR, id);
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    expect(t.definition()).toMatchObject({ revision: 2, devcontainer: { repository: "web", configPath: ".devcontainer/web/devcontainer.json" } });
+    // Pressed with a token (the route a browser does not use), the settings save does what it does for any key: the change is held and its own check started; nothing is written until the check passes
+    // (tests/contract/settings-command-proof.test.ts pins the write). So the stored project still has the old path, and the project shows the new one held.
+    expect(t.definition()).toMatchObject({ revision: 1, devcontainer: { repository: "web", configPath: ".devcontainer/devcontainer.json" } });
+    const shown = (await t.dev(OMAR, "GET", `/v1/app/projects/${NAME}`)).body.settingsProof as { held?: { status: string; fields: string[] } };
+    expect(shown.held).toMatchObject({ status: "checking", fields: ["devcontainer"] });
     expect(t.getFileAtCommit).toHaveBeenCalledWith("https://github.com/acme/web.git", ".devcontainer/web/devcontainer.json", COMMIT, expect.anything(), expect.anything());
 
     const wrong = await setup({ ".devcontainer/web/devcontainer.json": "{ }" });
