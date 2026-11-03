@@ -15,7 +15,7 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
-import { TestEnvDependenciesSchema } from "./test-env-dependency.js";
+import { TestEnvDependenciesSchema, testEnvDependencyApprovalRisk, testEnvDependencyLessSafeChanges } from "./test-env-dependency.js";
 import { TestEnvValueSourceSchema } from "./test-env-value-source.js";
 import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
@@ -261,8 +261,11 @@ export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
 
 // ---- less-safe fields and the approval card's risk
 
-/** The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed"] as const;
+/**
+ * The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). The last five are the dependency fields (`TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS`, test-env-dependency.ts;
+ * `schema_synth` is shared with the v1 mocks): a test account, a project image, a company-approved substitute image, a dependency run with excluded tests, and a raised run cap.
+ */
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised", "selection_narrowed", "test_account", "project_image", "substitute_image", "none_excluded_tests", "run_cap_raised"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
@@ -347,13 +350,20 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
     if (selectionNarrowed(previous, next)) changed.push("selection_narrowed");
     if (missing(previous.prodDeny.accountIds, next.prodDeny.accountIds) || missing(previous.prodDeny.hosts, next.prodDeny.hosts) || missing(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) changed.push("prod_deny_reduced");
   }
+  // Test services: the less-safe uses a dependency list turns on (a test account, a project image, a substitute image, excluded tests), by value, so a moved or added use is a change and a removed one is not.
+  // Nothing is added for a body without dependencies, so every result for one is what it was.
+  if (next.dependencies !== undefined && next.dependencies.length > 0) {
+    for (const field of testEnvDependencyLessSafeChanges(previous?.dependencies, next.dependencies)) if (!changed.includes(field)) changed.push(field);
+  }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));
 }
 
 /** The risk of the `approve_test_env` card: medium; high when the environment adds pre-prod access, a shared environment, tier 2, or video or traces. Deterministic: no model output sets it. */
 export function testEnvApprovalRisk(env: TestEnvironmentBody): DecisionRisk {
   const set = lessSafeSet(env);
-  return set.has("preprod") || set.has("shared") || set.has("preview") || set.has("video") || set.has("traces") || env.tier !== "sandbox" ? "high" : "medium";
+  // A dependency backed by a test account, a project image, a company-approved image, or run with excluded tests is high too (`testEnvDependencyApprovalRisk`); real software from the catalog is medium.
+  const dependencyRisk = env.dependencies === undefined || env.dependencies.length === 0 ? "medium" : testEnvDependencyApprovalRisk(env.dependencies);
+  return set.has("preprod") || set.has("shared") || set.has("preview") || set.has("video") || set.has("traces") || env.tier !== "sandbox" || dependencyRisk === "high" ? "high" : "medium";
 }
 
 // ---- the proposal and the Prove run

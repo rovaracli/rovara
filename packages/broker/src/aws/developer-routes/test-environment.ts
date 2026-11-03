@@ -25,6 +25,7 @@ import {
   TestEnvProveBodySchema,
   TestEnvRequestApprovalBodySchema,
   TestEnvironmentBodySchema,
+  EDITION_ENV_VAR,
   agentXError,
   testEnvApprovalRisk,
   testEnvDigest,
@@ -54,6 +55,7 @@ import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js"
 import { commandsMissingFromSettings } from "../../test-env/candidate-commands.js";
 import { TEST_ENV_REFUSAL_WORDS, commandsNotRun } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { projectRoleForRoute } from "./project-members.js";
@@ -91,6 +93,9 @@ const refuse = (refusal: TestEnvRefusal): AgentXError => agentXError(refusal ===
 export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined): TestEnvironmentBody | undefined {
   if (approved === undefined) return draft;
   const ids = new Set(draft.repos.flatMap((repo) => repo.checks.map((check) => check.id)));
+  // Test services: a dependency the approved environment already has stays as a person set it (the same id); one the detectors found and it does not have is added. Nothing the approved environment holds is dropped.
+  const known = new Set((approved.dependencies ?? []).map((dependency) => dependency.id));
+  const dependencies = [...(approved.dependencies ?? []), ...(draft.dependencies ?? []).filter((dependency) => !known.has(dependency.id))];
   const merged = {
     ...approved,
     repos: draft.repos,
@@ -99,6 +104,7 @@ export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: Tes
       alwaysRun: draft.selection.alwaysRun.filter((id) => ids.has(id)),
       fullSuiteOn: [...new Set([...approved.selection.fullSuiteOn, ...draft.selection.fullSuiteOn])].slice(0, 100),
     },
+    ...(dependencies.length === 0 ? {} : { dependencies }),
   };
   const parsed = TestEnvironmentBodySchema.safeParse(merged);
   return parsed.success ? parsed.data : undefined;
@@ -116,7 +122,9 @@ async function latestOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: st
 async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft } | { status: "none" | "stale"; note?: string }> {
   const state = await setupDraftState({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, revision);
   if (state.status !== "ready" || state.pointer === undefined) return { status: "none" };
-  const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
+  // Test services: the dependencies the detectors found become proposed ones here, from the signed catalog (none without it, or with the switch off).
+  const catalog = testServicesEnabled() ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
+  const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: name } });
   if (stored === undefined) {
     const note = await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
     return note === undefined ? { status: "none" } : { status: "none", note };

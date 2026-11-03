@@ -12,7 +12,7 @@ import { CheckKindSchema } from "./evidence.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import {
   CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
-  TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, catalogIdName,
+  TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
@@ -104,7 +104,11 @@ export const TestEnvDraftSchema = z
     notes: z.array(line(400)).max(60),
     questions: z.array(line(400)).max(60),
   })
-  .strict();
+  .strict()
+  // A worker never proposes a backing: what it reports is candidates, and the environment of its draft carries no dependencies. The broker proposes dependencies itself (`sanitizeTestEnvDraft`), after this parse.
+  .superRefine((draft, context) => {
+    if ((draft.environment.dependencies?.length ?? 0) > 0) context.addIssue({ code: "custom", path: ["environment", "dependencies"], message: "a draft reports dependency candidates; its environment holds no dependencies" });
+  });
 export type TestEnvDraft = z.infer<typeof TestEnvDraftSchema>;
 
 /** The most a draft may weigh once serialized (worker and broker both hold to it): well under DynamoDB's 400 KB item limit, which would cancel the setup draft's own result write. */
@@ -212,6 +216,8 @@ export const TestEnvSummarySchema = z
     roundBudgetMin: z.number().int(),
     nightly: z.object({ enabled: z.boolean(), cronUtc: line(64), branch: line(255) }).strict(),
     services: z.number().int().min(0),
+    /** Test services: how many dependencies the environment lists, and how many of them run something Rovara starts. Absent when there are none, so a summary without test services is today's summary. */
+    dependencies: z.object({ count: z.number().int().min(1).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies), started: z.number().int().min(0).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies) }).strict().optional(),
   })
   .strict();
 export type TestEnvSummary = z.infer<typeof TestEnvSummarySchema>;
@@ -224,6 +230,7 @@ export function testEnvSummaryOf(body: TestEnvironmentBody): TestEnvSummary {
     roundBudgetMin: body.roundBudgetMin,
     nightly: { enabled: body.nightly.enabled, cronUtc: body.nightly.cronUtc, branch: body.nightly.branch },
     services: body.services.length,
+    ...(body.dependencies === undefined || body.dependencies.length === 0 ? {} : { dependencies: { count: body.dependencies.length, started: testEnvStartedCount(body.dependencies) } }),
   };
 }
 

@@ -88,6 +88,18 @@ describe("the draft carries detector candidates", () => {
     expect(TestEnvDraftSchema.parse(draft({ dependencies: [candidate()] })).dependencies).toEqual([candidate()]);
   });
 
+  it("refuses a draft whose environment lists dependencies: a worker reports candidates, never a backing", () => {
+    const listed = [postgres()];
+    const refused = TestEnvDraftSchema.safeParse(draft({ environment: baseBody({ dependencies: listed }) }));
+    expect(refused.success).toBe(false);
+    expect(refused.success ? [] : refused.error.issues.map((issue) => issue.path.join("."))).toContain("environment.dependencies");
+    // Even beside valid candidates, and even a backing a person could approve.
+    expect(TestEnvDraftSchema.safeParse(draft({ environment: baseBody({ dependencies: listed }), dependencies: [candidate()] })).success).toBe(false);
+    // An empty list is nothing; the candidates are what a draft carries.
+    expect(TestEnvDraftSchema.safeParse(draft({ environment: baseBody({ dependencies: [] }) })).success).toBe(true);
+    expect(TestEnvDraftSchema.safeParse(draft({ dependencies: [candidate()] })).success).toBe(true);
+  });
+
   it("is bounded and strict", () => {
     const ok = (dependencies: unknown) => TestEnvDraftSchema.safeParse(draft({ dependencies })).success;
     expect(ok(Array.from({ length: 64 }, () => candidate()))).toBe(true);

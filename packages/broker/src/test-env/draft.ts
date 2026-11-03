@@ -33,6 +33,8 @@ import type { TransactItem } from "../audit/outbox.js";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "../org/test-environment.js";
 import { checkSelectionIsSafe, SAFE_SELECTION_METHODS } from "./prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
+import { testServicesEnabled } from "./test-services-switch.js";
+import { proposeDependencies, type DependencyProposalContext } from "./dependency-proposal.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
 
@@ -49,9 +51,12 @@ export function refusedCommand(command: ProjectCommand): boolean {
   return remoteCodeReason(text) !== undefined || redactText(text) !== text;
 }
 
-/** The safest environment, and nothing beyond: the draft is refused (undefined) when it asks for more. */
+/**
+ * The safest environment, and nothing beyond: the draft is refused (undefined) when it asks for more. A worker never proposes a backing: the draft's own `environment.dependencies` must be empty (the broker adds
+ * the dependencies it proposes itself, from the candidates, after this check).
+ */
 function isSafestEnvironment(body: TestEnvironmentBody): boolean {
-  return body.tier === "sandbox" && body.services.length === 0 && body.accounts.length === 0 && body.data.seeds.length === 0
+  return body.tier === "sandbox" && (body.dependencies === undefined || body.dependencies.length === 0) && body.services.length === 0 && body.accounts.length === 0 && body.data.seeds.length === 0
     && body.preview === undefined && body.shared === undefined && !body.capture.video && !body.capture.traces && body.capture.screenshots === "failed"
     && SAFE_SELECTION_METHODS.includes(body.selection.method) && body.selection.declared === undefined
     && !body.nightly.enabled && body.roundBudgetMin === TEST_ENV_ROUND_BUDGET_MIN.min
@@ -61,11 +66,28 @@ function isSafestEnvironment(body: TestEnvironmentBody): boolean {
 
 const plain = (text: string): string => redactText(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 400);
 
-/** The draft as the broker keeps it, or undefined when the worker's report is not a safe draft. Never throws. */
-export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
+/**
+ * What `sanitizeTestEnvDraft` needs for test services. `env` reads the install switch (default: the process environment). `propose` is given only by a reader that has the signed catalog and wants the
+ * dependencies the broker proposes from the candidates; the write at the end of a setup draft gives none and keeps the validated candidates only.
+ */
+export interface DraftDependencyOptions { env?: NodeJS.ProcessEnv; propose?: { catalog: DependencyProposalContext["catalog"]; edition: DependencyProposalContext["edition"]; projectId: string } }
+
+/**
+ * The draft as the broker keeps it, or undefined when the worker's report is not a safe draft. Never throws.
+ * Test services: with the switch `tx` off the candidates are dropped and the draft is exactly what it was. With it on they are carried through, validated (bounded, strict: `TestEnvDraftSchema`), and when
+ * `options.propose` is given the broker turns them into the draft environment's `dependencies` (`proposeDependencies`). A draft whose own environment lists dependencies is refused whole by the schema: a worker
+ * never proposes a backing.
+ */
+export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOptions): TestEnvDraft | undefined {
   const parsed = TestEnvDraftSchema.safeParse(raw);
-  if (!parsed.success || !isSafestEnvironment(parsed.data.environment)) return undefined;
-  const draft = parsed.data;
+  if (!parsed.success) return undefined;
+  const servicesOn = testServicesEnabled(options?.env);
+  // An empty list is the same as none; no key is kept.
+  const { dependencies: _empty, ...withoutDependencies } = parsed.data.environment;
+  void _empty;
+  if (!isSafestEnvironment(withoutDependencies)) return undefined;
+  const { dependencies: candidates, ...rest } = parsed.data;
+  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}) };
   if (Buffer.byteLength(JSON.stringify(draft), "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return undefined;
   let leftOut = false;
   let narrowingDropped = false;
@@ -83,12 +105,21 @@ export function sanitizeTestEnvDraft(raw: unknown): TestEnvDraft | undefined {
     repos,
     selection: { ...draft.environment.selection, alwaysRun: draft.environment.selection.alwaysRun.filter((id) => kept.has(id)) },
   };
+  // Test services: the BROKER proposes dependencies from the candidates (through `chooseBacking`, real catalog software only). Only when it has the catalog to do it with; a draft kept without one (the write at the end of
+  // a setup draft) holds just the candidates, and the proposal is made when the draft is read.
+  let dependencyNotes: string[] = [];
+  if (servicesOn && options?.propose !== undefined && draft.dependencies !== undefined && draft.dependencies.length > 0) {
+    const proposed = proposeDependencies(draft.dependencies, { catalog: options.propose.catalog, edition: options.propose.edition, projectId: options.propose.projectId, prodDeny: environment.prodDeny });
+    if (proposed.dependencies.length > 0) environment.dependencies = proposed.dependencies;
+    dependencyNotes = proposed.notes;
+  }
   // A value source names a field by position: those of a dropped command would now point at another value, so the sources of a draft that lost something are kept only where they still line up (none).
   const valueSources = leftOut || narrowingDropped ? [] : draft.valueSources;
   return {
     environment, valueSources,
     pendingServices: draft.pendingServices.map((service) => ({ kind: service.kind, target: plain(service.target) })).filter((service) => service.target !== ""),
-    notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : [])].filter((line) => line !== "").slice(0, 60),
+    ...(servicesOn && draft.dependencies !== undefined ? { dependencies: draft.dependencies } : {}),
+    notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : []), ...dependencyNotes].filter((line) => line !== "").slice(0, 60),
     questions: draft.questions.map(plain).filter((line) => line !== "").slice(0, 60),
   };
 }
@@ -121,7 +152,8 @@ export function testEnvDraftEndItems(
   if (operation.kind !== "task" || operation.workflowMode !== "SETUP_DRAFT" || outcome.status !== "SUCCEEDED") return [];
   const reported = typeof outcome.result === "object" && outcome.result !== null ? (outcome.result as Record<string, unknown>)[TEST_ENV_DRAFT_RESULT_KEY] : undefined;
   if (reported === undefined) return [];
-  const sanitized = sanitizeTestEnvDraft(reported);
+  // Test services: the validated candidates are kept with the draft (the dependencies are proposed when the draft is read, with the catalog).
+  const sanitized = sanitizeTestEnvDraft(reported, { env });
   const draft = sanitized === undefined ? undefined : { ...sanitized, valueSources: onlyOfferedRecipeSources(sanitized.valueSources, operation.setupRecipeOffers) };
   if (draft === undefined) {
     // Too large to keep: a small marker says so (the setup draft's own write is never put at risk by a big item), and the state shows the fixed note. Any other refusal leaves nothing.
@@ -136,14 +168,14 @@ export function testEnvDraftEndItems(
 }
 
 /** The stored draft of a setup draft task, read again through the sanitizer (a damaged or unsafe item is "none"), or undefined. */
-export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number): Promise<{ draft: TestEnvDraft; at: string; /** The recipes the broker offered the run that made this draft (id and revision); empty when none. */ recipeOffers: Array<{ recipeId: string; revision: number }> } | undefined> {
+export async function readTestEnvDraft(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number, options?: DraftDependencyOptions): Promise<{ draft: TestEnvDraft; at: string; /** The recipes the broker offered the run that made this draft (id and revision); empty when none. */ recipeOffers: Array<{ recipeId: string; revision: number }> } | undefined> {
   const item = (await client.send(new GetCommand({ TableName: tableName, Key: draftKey(orgId, project, taskId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
   const stored = item.Item;
   if (stored === undefined || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId || typeof stored["at"] !== "string") return undefined;
   const expires = stored[INDEX_EXPIRY_ATTRIBUTE];
   if (typeof expires === "number" && expires * 1000 <= nowMs) return undefined;
   if (stored["entityType"] !== "TEST_ENV_DRAFT") return undefined;
-  const draft = sanitizeTestEnvDraft(stored["draft"]);
+  const draft = sanitizeTestEnvDraft(stored["draft"], options);
   if (draft === undefined) return undefined;
   const offers = RecordedOffersSchema.safeParse(stored["recipeOffers"]);
   return { draft, at: stored["at"], recipeOffers: offers.success ? offers.data : [] };

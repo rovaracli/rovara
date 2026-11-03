@@ -1,8 +1,9 @@
 // Test services, slice 1 T2: which dependencies a task's plan starts (pinned from the signed catalog), when an approved environment with dependencies may be used by a task, and what happens when it cannot be planned.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, serviceCatalogSourceOf, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS } from "../../packages/broker/src/test-env/devcontainer-check.js";
 import { testEnvPlanFor } from "../../packages/broker/src/test-env/task-plan.js";
 import { UNUSED_WORDS, environmentUnusedReason, testEnvironmentForStart } from "../../packages/broker/src/test-env/usable.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
@@ -135,18 +136,25 @@ describe("when a task may use an environment with dependencies", () => {
   });
 });
 
+/** The project's newest revision as the store holds it, with or without a dev container. */
+const projectRow = (devcontainer: boolean) => ({
+  ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: {},
+  definition: { name: PROJECT, revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [cmd("pytest", ["-q"])], orchestratorInstructions: "Delegate work.", ...(devcontainer ? { devcontainer: { repository: "web" } } : {}) },
+});
+
 describe("the plan of a run with dependencies", () => {
-  function harness() {
+  function harness(devcontainer = false) {
     const db = new FakeDynamoDb();
     const audit = capturingAuditDeps({ db });
     db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
+    db.set(projectRow(devcontainer));
     const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
-    const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit };
+    const deps: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON };
     return { db, deps, clock };
   }
   /** The store holds the revision and the task's pin, as an approval and a task start would have left them (the approval route for dependencies is T3). */
-  async function pinned(environment = body(), env: NodeJS.ProcessEnv = ON) {
-    const h = harness();
+  async function pinned(environment = body(), env: NodeJS.ProcessEnv = ON, devcontainer = false) {
+    const h = harness(devcontainer);
     const proposal = await proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
     await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
     await approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 });
@@ -186,5 +194,72 @@ describe("the plan of a run with dependencies", () => {
     h.deps.serviceCatalog = async () => { reads += 1; return catalog(); };
     expect(await planOf(h, { TEST_ENVIRONMENT_ENABLED: "1" })).toBeUndefined();
     expect(reads).toBe(0);
+  });
+});
+
+describe("dependencies and a dev container (not available yet)", () => {
+  const deps = (devcontainer: boolean | "unreadable") => {
+    const db = new FakeDynamoDb();
+    const audit = capturingAuditDeps({ db });
+    db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
+    if (devcontainer !== "unreadable") db.set(projectRow(devcontainer));
+    const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
+    const value: TestEnvDeps & { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> } = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON };
+    return { db, deps: value, clock };
+  };
+  const propose = (h: ReturnType<typeof deps>, environment: TestEnvironmentBody) => proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: environment });
+
+  it("refuses to propose dependencies for a project with a dev container, in fixed words", async () => {
+    await expect(propose(deps(true), body())).rejects.toThrow(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
+    // A project whose settings cannot be read counts as using one.
+    await expect(propose(deps("unreadable"), body())).rejects.toThrow(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
+    expect((await propose(deps(false), body())).digest).toBe(testEnvDigest(body()));
+  });
+
+  it("does not change today's behaviour for a project with a dev container and no dependencies", async () => {
+    const plain = body({ dependencies: undefined });
+    expect((await propose(deps(true), plain)).digest).toBe(testEnvDigest(plain));
+    expect((await propose(deps("unreadable"), plain)).digest).toBe(testEnvDigest(plain));
+  });
+
+  it("refuses at approval too (a dev container added after the proposal)", async () => {
+    const h = deps(false);
+    const proposal = await propose(h, body());
+    await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
+    h.db.set(projectRow(true));
+    await expect(approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 })).rejects.toThrow(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
+  });
+
+  it("also refuses tx off, and a backing that is not real catalog software, at approval", async () => {
+    const off = deps(false);
+    off.deps.env = { TEST_ENVIRONMENT_ENABLED: "1" };
+    await expect(propose(off, body())).rejects.toThrow(/not switched on/u);
+    const fake = postgres({ backing: { kind: "fake", fixtureSetRef: "a".repeat(64), unmatched: "fail" }, connect: { env: [], hostAliases: [] } });
+    await expect(propose(deps(false), body({ dependencies: [fake] }))).rejects.toThrow(/not available yet/u);
+  });
+
+  it("starts no task on it: the pin says why", async () => {
+    const h = deps(false);
+    const proposal = await propose(h, body());
+    await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
+    await approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 });
+    h.db.set(projectRow(true));
+    const started = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t2" }, ON);
+    expect(started.used).toBeUndefined();
+    expect((started.pin as { Put: { Item: { unused?: string } } }).Put.Item.unused).toBe("dependencies_with_devcontainer");
+    expect(UNUSED_WORDS.dependencies_with_devcontainer).toBe(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
+  });
+
+  it("refuses the plan at dispatch when the project got a dev container after the task started", async () => {
+    const h = deps(false);
+    const proposal = await propose(h, body());
+    await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
+    await approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 });
+    const start = await testEnvironmentForStart(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1" }, ON);
+    expect(start.used).toBeDefined();
+    h.db.set((start.pin as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    h.deps.serviceCatalog = async () => catalog();
+    h.db.set(projectRow(true));
+    await expect(testEnvPlanFor(h.deps, { orgId: ORG, project: PROJECT, taskId: "t1", readiness: [cmd("pytest", ["-q"])] }, ON)).rejects.toThrow(DEPENDENCIES_WITH_DEVCONTAINER_WORDS);
   });
 });
