@@ -469,7 +469,8 @@ describe("writeExportBundle", () => {
     const serviceRole = await readJson("policies/service-role.json");
     expect(serviceRole.Version).toBe("2012-10-17");
     const serviceIamRoles = serviceRole.Statement.find((s) => s.Sid === "IamRoles")!;
-    expect([serviceIamRoles.Resource].flat()).toEqual([`arn:aws:iam::${ACCOUNT}:role/agentx/${ENV}/*`]);
+    // 0.5.0-r1: plus the one root-path role, the saved-environment create role (rootPathRoles in access-policies).
+    expect([serviceIamRoles.Resource].flat()).toEqual([`arn:aws:iam::${ACCOUNT}:role/agentx/${ENV}/*`, `arn:aws:iam::${ACCOUNT}:role/agentx-${ENV}-img-create`]);
 
     const operatorRole = await readJson("policies/operator-role.json");
     const stacks = operatorRole.Statement.find((s) => s.Sid === "Stacks")!;
