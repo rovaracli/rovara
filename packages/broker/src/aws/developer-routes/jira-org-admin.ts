@@ -44,6 +44,7 @@ export async function routeJiraOrgAdmin(deps: DeveloperRouteDependencies, caller
   });
   if (outcome === "not_found" || outcome === "not_jira") throw agentXError("NOT_FOUND", "no Jira connection has that ID");
   if (outcome === "not_ready") throw agentXError("CONFIG_INVALID", "connectionId: save this Jira connection's email and API token first");
+  if (outcome === "request_reused") throw agentXError("IDEMPOTENCY_CONFLICT", "That request was used for a different change. Start again.");
   if (outcome === "audit_unavailable") throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");
   logDeveloperEvent({ event: "developer.jira_org_admin_changed", orgId: caller.orgId, change: body.action });
   return new StatusReply(200, { status: body.action === "clear" ? "cleared" : "saved" });
