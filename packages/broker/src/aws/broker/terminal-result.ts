@@ -417,8 +417,6 @@ export async function recordTerminalResult(
         : undefined;
       taskPointer = pointer;
       // P1 (su): a setup run's preparation report of where each repository stands is kept before the run's first operation is built from it (rovara-code/setup-agent.ts).
-      // Test services: a candidate check's usage record (a result carrying `testServicesUsage`; nothing otherwise), kept on the check that holds this workspace, scoped by the org.
-      if (operation.kind === "prepare") await keepCandidateUsage({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId: workspace.orgId, workspaceId: operation.workspaceId, result });
       if (operation.kind === "prepare" && terminalStatus === "SUCCEEDED" && pointer?.pendingWorkflowMode === "SETUP_AGENT") await keepSetupPreparedBase(dependencies, pointer.taskId, result, now, operation.preparePins);
       const completed = await completedTurnItems(dependencies, operation, pointer, terminalStatus, { result, error }, now);
       inlineEvidence.length = 0;
@@ -466,6 +464,9 @@ export async function recordTerminalResult(
         console.log(JSON.stringify({ component: "broker", event: "workflow.cancel_step_dropped", operationId: operation.id, targetOperationId: operation.targetOperationId }));
       }
     }
+    // Test services: a candidate check's usage record (a result carrying `testServicesUsage`; nothing otherwise), kept on the check that holds this workspace, scoped by the org. It is written only AFTER the terminal
+    // transaction committed (its fence and status checks held), so a stale or repeated callback, which is refused above or returns before this point, can never pre-empt the real report.
+    if (operation.kind === "prepare") await keepCandidateUsage({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { orgId: workspace.orgId, workspaceId: operation.workspaceId, result });
   } catch (transactionError) {
     if (!isConditional(transactionError)) throw transactionError;
     const existing = await requireOperation(dependencies, operation.workspaceId, operation.id);

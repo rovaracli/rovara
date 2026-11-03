@@ -149,7 +149,12 @@ export function realSavedEnvDeps(input: Pick<AwsBrokerDependencies, "documentCli
       config: { enabled: true, env: config.env, scope: config.scope, kmsKeyArn: config.kmsKeyArn },
       ports: savedEnvSessionPorts(aws, {
         readApproved: approved,
-        proveHolds: async (orgId, project, digest) => testEnvIsProved(await readTestEnvProveReport(testEnvDepsOf(dependencies()), orgId, project, digest), digest),
+        // The report proves the APPROVED environment of exactly this digest, judged with its own dependencies (a report without the dependency steps does not prove an environment that has some); no such environment, no proof.
+        proveHolds: async (orgId, project, digest) => {
+          const found = await readApprovedTestEnvironment(testEnvDepsOf(dependencies()), orgId, project);
+          if (found === undefined || testEnvDigest(found.environment) !== digest) return false;
+          return testEnvIsProved(await readTestEnvProveReport(testEnvDepsOf(dependencies()), orgId, project, digest), digest, found.environment);
+        },
         now,
       }),
     },

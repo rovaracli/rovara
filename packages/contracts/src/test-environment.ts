@@ -418,13 +418,13 @@ export const TestEnvProveReportSchema = z
   });
 export type TestEnvProveReport = z.infer<typeof TestEnvProveReportSchema>;
 
-/** Whether a Prove run passed for this proposal: every step passed or was skipped, and the report is for exactly this digest (and, given the environment, its dependencies started and called nothing unknown). A missing or unreadable report is never "proved". */
-export function testEnvIsProved(report: TestEnvProveReport | undefined, proposalDigest: string, environment?: Pick<TestEnvironmentBody, "dependencies">): boolean {
+/** Whether a Prove run passed for this proposal: every step passed or was skipped, and the report is for exactly this digest (and, because the environment is a required argument, its dependencies started and called nothing unknown: a caller cannot forget them). A missing or unreadable report is never "proved". */
+export function testEnvIsProved(report: TestEnvProveReport | undefined, proposalDigest: string, environment: Pick<TestEnvironmentBody, "dependencies">): boolean {
   if (report === undefined || report.proposalDigest !== proposalDigest || report.steps.length === 0 || report.steps.some((step) => step.status === "failed")) return false;
   // Skipped is not proved: something must have actually passed that exercises the code (the smoke check or the full suite), and an app that is a service must have booted.
   const passed = (name: (typeof TEST_ENV_PROVE_STEPS)[number]) => report.steps.some((step) => step.step === name && step.status === "passed");
   // Test services: an environment with dependencies is proved only when they started and the sealed test checks called nothing Rovara did not start. A report without those two steps proves nothing about them.
-  if (environment?.dependencies !== undefined && environment.dependencies.length > 0 && !(passed("dependencies") && passed("dependency_usage"))) return false;
+  if (environment.dependencies !== undefined && environment.dependencies.length > 0 && !(passed("dependencies") && passed("dependency_usage"))) return false;
   return (passed("smoke") || passed("full_suite")) && (report.services.length === 0 || passed("boot"));
 }
 

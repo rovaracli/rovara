@@ -136,6 +136,34 @@ describe("the record that comes back", () => {
     });
   });
 
+  it("is written only after the terminal transaction committed: a repeated report cannot add the record to a result that already ended without one", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const t = await bench();
+    await on(async () => {
+      await proposeAndCheck(t, withDependency());
+      const [candidate] = candidates(t);
+      const operation = prepareOf(t, candidate!.workspaceId);
+      await t.finish(candidate!.workspaceId, operation, "SUCCEEDED", {});
+      // The operation has ended. A second report of the same status, now carrying the record, is the repeat the terminal path answers with the stored operation: it never reaches the hook.
+      await t.finish(candidate!.workspaceId, operation, "SUCCEEDED", { result: { testServicesUsage: usage() } });
+      expect(candidates(t)[0]!.usage).toBeUndefined();
+    });
+  });
+
+  it("a callback for a workspace whose fence moved on keeps nothing (the record is written only after the terminal transaction's fence check held)", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const t = await bench();
+    await on(async () => {
+      await proposeAndCheck(t, withDependency());
+      const [candidate] = candidates(t);
+      const operation = prepareOf(t, candidate!.workspaceId);
+      const meta = t.db.get(`WORKSPACE#${candidate!.workspaceId}`, "META") as Record<string, unknown>;
+      t.db.set({ ...meta, fence: Number(meta["fence"]) + 1 });
+      await expect(t.finish(candidate!.workspaceId, operation, "SUCCEEDED", { result: { testServicesUsage: usage() } })).rejects.toThrow();
+      expect(candidates(t)[0]!.usage).toBeUndefined();
+    });
+  });
+
   it("is scoped by org: another org's report, and a workspace that is no candidate check, keep nothing", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const t = await bench();

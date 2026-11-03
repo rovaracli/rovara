@@ -275,7 +275,7 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
     try { await fresh.start(); } catch { return fail("fresh_sandbox_failed", "start"); }
     let report;
     try { report = await proveEnvironment(fresh.ports, { proposalDigest: digest, environment: parsedEnvironment.data, signal: input.signal, deadlineMs: input.proveDeadlineMs }); } catch { return fail("prove_failed"); }
-    if (!testEnvIsProved(report, digest)) return fail("not_proved");
+    if (!testEnvIsProved(report, digest, parsedEnvironment.data)) return fail("not_proved");
     const proveReportDigest = createHash("sha256").update(canonicalJson(report)).digest("hex");
 
     // 5. Nothing of the sandbox runs from here on: what is checked next cannot change while it is checked.

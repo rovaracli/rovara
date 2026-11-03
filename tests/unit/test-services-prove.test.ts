@@ -100,7 +100,7 @@ describe("proved means the dependency steps passed", () => {
   it("is what it was for an environment without dependencies", () => {
     const environment = body();
     expect(testEnvIsProved(report([{ step: "full_suite", status: "passed" }], environment), testEnvDigest(environment), environment)).toBe(true);
-    expect(testEnvIsProved(report([{ step: "full_suite", status: "passed" }], environment), testEnvDigest(environment))).toBe(true);
+    expect(testEnvIsProved(report([{ step: "full_suite", status: "passed" }], environment), testEnvDigest(environment), {})).toBe(true);
   });
 });
 
