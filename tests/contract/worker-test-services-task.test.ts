@@ -500,6 +500,14 @@ describe("a CHECKS run with a plan that has dependencies", () => {
     // The readiness command ran in the check sandbox (sealed), with the env file; the usage record went out.
     expect(fake.execs.some((exec) => exec.args.some((arg) => arg.endsWith("-check")) && exec.envFile?.includes("DATABASE_URL=") === true)).toBe(true);
     expect(h.artifacts.map((artifact) => artifact.name)).toContain(TEST_SERVICES_USAGE_ARTIFACT);
+    // The working sandbox never stays on a round's network: every join of a round network (the reattach at the round's end) is followed at once by a forced leave.
+    const roundNetworks = calls.filter((call) => call[0] === "run" && call.includes("--detach") && call[call.indexOf("--name") + 1]!.endsWith("-check")).map((call) => call[call.indexOf("--network") + 1]!);
+    expect(roundNetworks.length).toBeGreaterThan(0);
+    for (const network of roundNetworks) {
+      const joins = calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "network" && call[1] === "connect" && call.includes(network));
+      const leaves = calls.map((call, index) => ({ call, index })).filter(({ call }) => call[0] === "network" && call[1] === "disconnect" && call.includes("--force") && call.includes(network));
+      for (const join of joins) expect(leaves.some((leave) => leave.index > join.index)).toBe(true);
+    }
     expect(fake.left().containers).toEqual([]);
     expect(fake.left().networks).toEqual([]);
     expect(await readdir(base.runDirectoryParent)).toEqual([]);
@@ -520,5 +528,56 @@ describe("a CHECKS run with a plan that has dependencies", () => {
     const h = await checksRun({ withDependencies: true, fake });
     expect("error" in h.result && (h.result.error as Error).message).toMatch(/not set up to run test services/u);
     expect(fake.calls.filter((call) => call[0] === "network" && call[1] === "create")).toEqual([]);
+  });
+
+  it("a coding (IMPLEMENT) run WITH a plan: the working sandbox gets Postgres while the agent codes (the sealed rounds, and the working sandbox never staying on a round's network, are proved by the CHECKS run above and the unit tests)", async () => {
+    const fake = fakeServicesDocker({ imagePresent: true });
+    const base = await config();
+    vi.stubEnv("AGENTX_RUNTIME", "ec2");
+    vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    vi.stubEnv("AGENTX_SANDBOX_IMAGE", IMAGE);
+    const root = await workspace();
+    const agentSaw: Array<{ servicesNetworks: number; envFile: string | undefined }> = [];
+    const adapter: PiSessionAdapter = {
+      async create(input) {
+        const sessionFile = join(input.sessionDirectory, "session.jsonl");
+        await writeFile(sessionFile, "");
+        return {
+          conversationId: "c", sessionFile,
+          // The agent codes: it runs a command in its shell, which reaches the working sandbox through `docker exec`.
+          prompt: async () => {
+            await writeFile(join(root, "repo", "sample", "change.txt"), "the agent's change\n");
+            await input.bashOperations!.exec("psql \"$DATABASE_URL\" -c 'select 1'", join(root, "repo", "sample"), { onData: () => undefined });
+            const work = [...fake.containers.entries()].find(([name]) => name.startsWith("agentx-task-"));
+            const last = fake.execs.at(-1);
+            agentSaw.push({ servicesNetworks: [...(work?.[1].networks ?? [])].filter((name) => name.startsWith("rovara-svc-")).length, envFile: last?.envFile });
+          },
+          abort: async () => undefined, getModel: () => ({ provider: "fixture", modelId: "m" }),
+          getSessionStats: () => ({ sessionFile, sessionId: "c", userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 }),
+          subscribe: () => () => undefined, dispose: () => undefined,
+        };
+      },
+    };
+    const invocation = {
+      protocolVersion: 1, kind: "task", operationId: OPERATION, workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
+      payload: { conversationId: randomUUID(), prompt: "code it", workflowMode: "IMPLEMENT", readiness: READINESS, testEnvironment: checksInvocation(true).payload.testEnvironment },
+    } as never;
+    const result = await runTaskInvocation(invocation, {
+      rootPath: root, model: { provider: "fixture", modelId: "m" }, piAdapter: adapter, eventSink: () => Promise.resolve(), artifactSink: () => Promise.resolve(),
+      taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, testServices: withDocker(base, fake),
+      stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve(), sweepWorkspaceContainers: () => Promise.resolve({ removed: 0 }), log: () => undefined },
+    } as never).then((value) => ({ value }), (error: unknown) => ({ error }));
+    expect("value" in result, String("error" in result ? (result.error as Error).message : "")).toBe(true);
+    // While the agent coded, the working sandbox was on exactly one services network (the working phase's) and its command got the run's variables.
+    expect(agentSaw).toEqual([{ servicesNetworks: 1, envFile: expect.stringContaining("DATABASE_URL=postgres://app:") as string }]);
+    // It joined the working phase's network at .3 before the agent ran, and joined no other network.
+    const connects = fake.calls.filter((call) => call[0] === "network" && call[1] === "connect");
+    expect(connects).toHaveLength(1);
+    expect(connects[0]![connects[0]!.indexOf("--ip") + 1]).toMatch(/^172\.30\.\d+\.3$/u);
+    expect(fake.calls.findIndex((call) => call[0] === "network" && call[1] === "connect")).toBeLessThan(fake.calls.findIndex((call) => call[0] === "exec" && call.includes("--env-file") && call.some((arg) => arg.startsWith("agentx-task-"))));
+    expect(fake.left().containers).toEqual([]);
+    expect(fake.left().networks).toEqual([]);
+    expect(await readdir(base.runDirectoryParent)).toEqual([]);
   });
 });
