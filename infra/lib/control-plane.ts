@@ -6,6 +6,7 @@ import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachTeamRecord } from "./team-record-wiring.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
+import { attachServiceCatalogImages } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
@@ -44,7 +45,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, DIAGNOSIS_ROVARA_PAID_GLOBAL_ALARM_PERCENT, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -1116,6 +1117,8 @@ export class ControlPlaneStack extends Stack {
     if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole });
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
     if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
+    // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
+    if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
     if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets

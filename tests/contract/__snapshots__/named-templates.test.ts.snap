@@ -11326,6 +11326,454 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::IAM::Policy",
     },
+    "ServiceCatalogImagesImagesKeyB3CDB130": {
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "agentx:retain-on-create-rollback": true,
+      },
+      "Properties": {
+        "Description": "Rovara test service catalog images: encrypts the catalog repositories",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": [
+                "kms:CreateAlias",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Get*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:CancelKeyDeletion",
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "AdminWithoutUse",
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true",
+                },
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "ecr.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "GrantOnlyThroughEcr",
+            },
+            {
+              "Action": "kms:DescribeKey",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "ecr.",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ".amazonaws.com",
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+              "Sid": "DescribeOnlyThroughEcr",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::KMS::Key",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcdnshelperC9171D5A": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/dns-helper",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcfakeserver586E9CF1": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/fake-server",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvclocalaws8574296E": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/local-aws",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcmysql4E1327F7": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/mysql",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcpostgres666E7B7D": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/postgres",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcrabbitmqF32C4285": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/rabbitmq",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcredisA6A8D52D": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/redis",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvctestaccountproxyF225D3BF": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/test-account-proxy",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcvalkey134F3992": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/valkey",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
     "SessionsDeleterB48741EA": {
       "DeletionPolicy": "Delete",
       "DependsOn": [

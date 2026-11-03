@@ -248,6 +248,8 @@ export * from "./service-mocks.js";
 export * from "./test-services-shared.js";
 export * from "./test-env-dependency.js";
 export * from "./service-catalog.js";
+export * from "./service-catalog-images.js";
+export * from "./service-catalog-verify.js";
 export * from "./test-account.js";
 export * from "./team-record-storage.js";
 export * from "./context-sources.js";

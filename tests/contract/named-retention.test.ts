@@ -39,7 +39,13 @@ describe("retained resources in a named environment", () => {
         // The Audit Ledger (Task 5 of its plan): the queues and buckets. Its tables, vault key and alias are in the plain Retain list below.
         "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
         "AuditLedgerAuditLedgerBucket AWS::S3::Bucket",
-        "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
+        "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret",
+        // Test services (TS19): one repository per catalog repository, unconditional (they do not depend on TestServicesEnabled). Empty on the first create, so a rolled-back first create may delete them. (Their key is in the plain Retain list below.)
+        "ServiceCatalogImagesRepositorysvcdnshelper AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcfakeserver AWS::ECR::Repository",
+        "ServiceCatalogImagesRepositorysvclocalaws AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcmysql AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcpostgres AWS::ECR::Repository",
+        "ServiceCatalogImagesRepositorysvcrabbitmq AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcredis AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvctestaccountproxy AWS::ECR::Repository",
+        "ServiceCatalogImagesRepositorysvcvalkey AWS::ECR::Repository",
+        "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
         "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table", "WebAppAssets AWS::S3::Bucket",
       ],
       "agentx-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
@@ -69,6 +75,9 @@ describe("retained resources in a named environment", () => {
       // The saved environment images key (SH22) follows the same precedent: its key policy lets nobody but the deploy role schedule a deletion, so a rolled-back first create could not delete it.
       // (infra/lib/saved-env-images.ts marks it with the keep-on-rollback metadata; no alias is made for it.)
       "agentx-staging-control-plane SavedEnvImagesImagesKey AWS::KMS::Key",
+      // The service catalog images key (TS19) too: its policy lets nobody schedule a deletion either, so a rolled-back first create could not delete it (infra/lib/service-catalog-images.ts marks it). Its repositories
+      // are empty on a first create and are RetainExceptOnCreate above.
+      "agentx-staging-control-plane ServiceCatalogImagesImagesKey AWS::KMS::Key",
       "agentx-staging-identity UserPool AWS::Cognito::UserPool",
       "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
       "agentx-staging-slack ActionLogsKey AWS::KMS::Key",
