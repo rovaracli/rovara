@@ -103,11 +103,62 @@ worker_network_args() {
 # The firewall unit's "VPC DNS stays open" RETURN rules match -i rvb+ and so also rvbs+: a sandbox (172.29.<slot>.3) could ask the VPC resolver directly and skip the helper that watches its names. So its port 53
 # traffic that leaves its bridge is dropped, inserted after those and so above them (this launcher runs after the firewall unit: the worker unit is ordered after it, and the unit's own rules are only added when absent).
 # The helper (.2) keeps its own upstream path.
+# Two kinds of rule, two kinds of failure. The two metadata rejections are fatal (return 1: the worker does not start), exactly as before. The five rvbs+ rules serve setup runs only and need the kernel modules br_netfilter,
+# xt_conntrack and xt_physdev (the worker's AMI floats, so they may be missing): when ANY of them cannot be inserted, the ones that went in are deleted again (each by its exact rule text, never by position or flush, so the
+# metadata rules are neither removed nor moved), the worker still starts, and the state file says "unavailable" so the worker refuses setup runs and runs everything else. The state file is made here and nowhere else: root-owned,
+# 0644, inside /etc/agentx (root only, 0700), which neither the worker container nor any sandbox mounts; the launcher hands its content to the worker as AGENTX_SETUP_ISOLATION, and anything but the exact word "ready" (a missing,
+# unreadable, foreign or odd file) reads as unavailable. This function is idempotent and safe to call again (for example after a Docker restart re-applies the firewall): rules already present are not added twice, the state file
+# is written again by every call, and a later call that finds the rvbs+ rules incomplete beside metadata rules that already exist does not insert them (they would land above the metadata rejection) but deletes the rest and writes
+# "unavailable". Return codes: 0 the metadata rules are in place (read the state file for the setup rules); 1 a metadata rule failed.
 block_imds() {
-  local rule
-  for rule in "DOCKER-USER -i rvbs+ -o rvbs+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p tcp --dport 53 ! -o rvbs+ -j DROP" "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
+  local rule module present=0 imds_present=false setup_ok=true state_file=${SETUP_ISOLATION_FILE:-/etc/agentx/setup-isolation}
+  local -a setup_rules=("DOCKER-USER -i rvbs+ -o rvbs+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p udp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP" "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p tcp --dport 53 ! -o rvbs+ -j DROP")
+  local -a imds_rules=("DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT")
+  for module in br_netfilter xt_conntrack xt_physdev; do
+    modprobe "$module" 2>/dev/null || printf 'agentx-worker-start: setup isolation: module %s could not be loaded (not fatal)\n' "$module" >&2
+  done
+  # SC2086: the rule text is split into words on purpose.
+  # shellcheck disable=SC2086
+  iptables -C ${imds_rules[0]} 2>/dev/null && imds_present=true
+  for rule in "${setup_rules[@]}"; do
+    # shellcheck disable=SC2086
+    iptables -C $rule 2>/dev/null && present=$((present + 1))
+  done
+  if ((present == ${#setup_rules[@]})); then
+    :
+  elif [[ $imds_present == true ]]; then
+    setup_ok=false
+    printf 'agentx-worker-start: setup isolation: the rvbs+ rules are incomplete beside existing metadata rules; not inserting them\n' >&2
+  else
+    for rule in "${setup_rules[@]}"; do
+      # shellcheck disable=SC2086
+      iptables -C $rule 2>/dev/null || iptables -I $rule || { setup_ok=false; printf 'agentx-worker-start: setup isolation: an rvbs+ rule could not be inserted\n' >&2; break; }
+    done
+  fi
+  if [[ $setup_ok != true ]]; then
+    for rule in "${setup_rules[@]}"; do
+      # shellcheck disable=SC2086
+      if iptables -C $rule 2>/dev/null; then iptables -D $rule || printf 'agentx-worker-start: setup isolation: an rvbs+ rule could not be removed\n' >&2; fi
+    done
+  fi
+  for rule in "${imds_rules[@]}"; do
+    # shellcheck disable=SC2086
     iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
   done
+  rm -f "$state_file" "$state_file.tmp"
+  if [[ $setup_ok == true ]]; then
+    printf 'ready\n' >"$state_file.tmp" && chmod 0644 "$state_file.tmp" && mv -f "$state_file.tmp" "$state_file" || { rm -f "$state_file.tmp" "$state_file"; printf 'agentx-worker-start: setup isolation: the state file could not be written, so setup runs are refused\n' >&2; }
+  else
+    printf 'unavailable\n' >"$state_file.tmp" && chmod 0644 "$state_file.tmp" && mv -f "$state_file.tmp" "$state_file" || rm -f "$state_file.tmp" "$state_file"
+    printf 'agentx-worker-start: setup isolation UNAVAILABLE on this worker: setup runs will be refused; other tasks are not affected\n' >&2
+  fi
+  return 0
+}
+# What the worker is told: "ready" only for a regular, non-link file owned by root and not writable by group or others whose content is exactly "ready"; everything else (missing, unreadable, odd) is "unavailable".
+setup_isolation_state() {
+  local file=${SETUP_ISOLATION_FILE:-/etc/agentx/setup-isolation} mode
+  mode=$(stat -c %u:%a "$file" 2>/dev/null) || { printf 'unavailable'; return 0; }
+  if [[ -f "$file" && ! -L "$file" && "$mode" == 0:644 && "$(head -c 16 "$file" 2>/dev/null)" == ready ]]; then printf 'ready'; else printf 'unavailable'; fi
 }
 docker=$(cat /etc/agentx/docker-path 2>/dev/null || true)
 worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
@@ -149,6 +200,8 @@ else
   log 'verifier unavailable; worker continues with /tmp'
   args+=(--env TMPDIR=/tmp)
 fi
+# Setup runs need the rvbs+ rules that the firewall step above may have had to withdraw: the worker is told "ready" or "unavailable" (any other value, or none, it treats as unavailable). Only a named environment has setup runs.
+if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -312,23 +312,43 @@ describe("EC2 worker user data", () => {
       expect(workerLauncher.match(/--network host/gu)).toHaveLength(1);
     });
 
-    /** Runs block_imds with an iptables shim that records every call and says which rules already exist. */
-    const blockImds = (lines: string[], existing: string[] = []) => {
-      const { directory, envFile } = withEnvironment(lines);
+    /**
+     * Runs block_imds (once or more) against a stateful iptables shim: `rules` is the chain contents, top first (-I puts a rule on top, -D removes the first exact match, -C answers by exact match), and every call is logged.
+     * `failInsert` is a regular expression: an -I whose rule text matches it fails (a kernel without the module). modprobe is a shim too (never the real one), and the state file is a temporary one.
+     */
+    const runBlock = (lines: string[], options: { existing?: string[]; failInsert?: RegExp; failModprobe?: boolean; times?: number; directory?: string } = {}) => {
+      const made = withEnvironment(lines);
+      const directory = options.directory ?? made.directory;
+      const envFile = join(directory, "worker.env");
       const log = join(directory, "iptables.log");
+      const rulesFile = join(directory, "rules");
+      const stateFile = join(directory, "setup-isolation");
+      if (options.existing !== undefined) writeFileSync(rulesFile, options.existing.map((rule) => `${rule}\n`).join(""));
+      if (options.failInsert !== undefined) writeFileSync(join(directory, "fail-insert"), options.failInsert.source);
       writeFileSync(join(directory, "iptables"), `#!/bin/bash
 echo "$*" >> ${log}
-if [[ "$1" == -C ]]; then
-  shift
-  case "$*" in ${existing.map((rule) => `"${rule}") exit 0;;`).join(" ")} *) exit 1;; esac
-fi
-exit 0
+touch ${rulesFile}
+op=$1; shift
+case "$op" in
+  -C) grep -qxF -- "$*" ${rulesFile}; exit $?;;
+  -I) ${options.failInsert === undefined ? "" : `re=$(cat ${directory}/fail-insert); if [[ "$*" =~ $re ]]; then exit 1; fi`}
+      { printf '%s\\n' "$*"; cat ${rulesFile}; } > ${rulesFile}.new && mv ${rulesFile}.new ${rulesFile}; exit 0;;
+  -D) line=$(grep -nxF -- "$*" ${rulesFile} | head -n1 | cut -d: -f1); [[ -n "$line" ]] || exit 1; sed "$line"d ${rulesFile} > ${rulesFile}.new && mv ${rulesFile}.new ${rulesFile}; exit 0;;
+  *) exit 1;;
+esac
 `, { mode: 0o755 });
-      const functions = ["named_environment", "block_imds"].map(launcherFunction).join("\n");
+      writeFileSync(join(directory, "modprobe"), `#!/bin/bash\necho "$*" >> ${join(directory, "modprobe.log")}\n${options.failModprobe === true ? "exit 1" : "exit 0"}\n`, { mode: 0o755 });
+      const functions = ["named_environment", "block_imds", "setup_isolation_state"].map(launcherFunction).join("\n");
       expect(functions).toContain("block_imds()");
-      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${envFile}\nPATH=${directory}:$PATH\n${functions}\nblock_imds`], { encoding: "utf8" });
-      expect(run.status, run.stderr).toBe(0);
-      return readFileSync(log, "utf8").split("\n").filter(Boolean);
+      const calls = Array.from({ length: options.times ?? 1 }, () => "block_imds; echo \"status=$?\"").join("\n");
+      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${envFile}\nPATH=${directory}:$PATH\nexport SETUP_ISOLATION_FILE=${stateFile}\n${functions}\n${calls}`], { encoding: "utf8" });
+      const read = (path: string) => { try { return readFileSync(path, "utf8").split("\n").filter(Boolean); } catch { return []; } };
+      return { run, statuses: [...run.stdout.matchAll(/status=(\d+)/gu)].map((match) => Number(match[1])), calls: read(log), rules: read(rulesFile), state: read(stateFile), modprobe: read(join(directory, "modprobe.log")), directory, stateFile };
+    };
+    const blockImds = (lines: string[], existing: string[] = []) => {
+      const result = runBlock(lines, { existing });
+      expect(result.run.status, result.run.stderr).toBe(0);
+      return result.calls;
     };
     const DOCKER_USER = "DOCKER-USER -d 169.254.169.254/32 -j REJECT";
     const OUTPUT = "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT";
@@ -341,9 +361,11 @@ exit 0
     const NO_RESOLVER_UDP = "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p udp --dport 53 ! -o rvbs+ -j DROP";
     const NO_RESOLVER_TCP = "DOCKER-USER -i rvbs+ -s 172.29.0.3/255.255.0.255 -p tcp --dport 53 ! -o rvbs+ -j DROP";
     const HELPER_TCP = "DOCKER-USER -i rvbs+ -o rvbs+ -m physdev --physdev-is-bridged -d 172.29.0.0/16 -p tcp --dport 53 -j RETURN";
+    const SETUP_RULES_LIST = [ESTABLISHED, HELPER_UDP, HELPER_TCP, NO_RESOLVER_UDP, NO_RESOLVER_TCP];
 
     it("rejects 169.254.169.254 for bridged containers and for every non-root process on the host, in a named environment", () => {
-      expect(blockImds(NAMED)).toEqual([`-C ${ESTABLISHED}`, `-I ${ESTABLISHED}`, `-C ${HELPER_UDP}`, `-I ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-I ${HELPER_TCP}`, `-C ${NO_RESOLVER_UDP}`, `-I ${NO_RESOLVER_UDP}`, `-C ${NO_RESOLVER_TCP}`, `-I ${NO_RESOLVER_TCP}`, `-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+      // First it looks (metadata rule, then the five), then inserts each missing rule in this order, the metadata rejections last so they are on top.
+      expect(blockImds(NAMED)).toEqual([`-C ${DOCKER_USER}`, ...[ESTABLISHED, HELPER_UDP, HELPER_TCP, NO_RESOLVER_UDP, NO_RESOLVER_TCP].map((rule) => `-C ${rule}`), `-C ${ESTABLISHED}`, `-I ${ESTABLISHED}`, `-C ${HELPER_UDP}`, `-I ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-I ${HELPER_TCP}`, `-C ${NO_RESOLVER_UDP}`, `-I ${NO_RESOLVER_UDP}`, `-C ${NO_RESOLVER_TCP}`, `-I ${NO_RESOLVER_TCP}`, `-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
       // Port 53 of the helper's range only, between setup bridges only, after nothing that could open more: the helper rules are the only RETURN rules and the metadata rejection is inserted after them (so it is above them).
       const rules = blockImds(NAMED).filter((line) => line.startsWith("-I "));
       expect(rules.filter((line) => line.includes("RETURN")).every((line) => line.includes("-i rvbs+ -o rvbs+ ") && (line.includes("--ctstate ESTABLISHED,RELATED") || (line.includes("--physdev-is-bridged") && line.includes("-d 172.29.0.0/16") && line.includes("--dport 53"))))).toBe(true);
@@ -355,8 +377,130 @@ exit 0
     });
 
     it("adds each rule once: nothing is inserted when it is already there (the launcher runs on every restart)", () => {
-      expect(blockImds(NAMED, [ESTABLISHED, HELPER_UDP, HELPER_TCP, NO_RESOLVER_UDP, NO_RESOLVER_TCP, DOCKER_USER, OUTPUT])).toEqual([`-C ${ESTABLISHED}`, `-C ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-C ${NO_RESOLVER_UDP}`, `-C ${NO_RESOLVER_TCP}`, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`]);
-      expect(blockImds(NAMED, [ESTABLISHED, HELPER_UDP, HELPER_TCP, NO_RESOLVER_UDP, NO_RESOLVER_TCP, DOCKER_USER])).toEqual([`-C ${ESTABLISHED}`, `-C ${HELPER_UDP}`, `-C ${HELPER_TCP}`, `-C ${NO_RESOLVER_UDP}`, `-C ${NO_RESOLVER_TCP}`, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+      const looks = [`-C ${DOCKER_USER}`, ...SETUP_RULES_LIST.map((rule) => `-C ${rule}`)];
+      expect(blockImds(NAMED, [...SETUP_RULES_LIST, DOCKER_USER, OUTPUT])).toEqual([...looks, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`]);
+      expect(blockImds(NAMED, [...SETUP_RULES_LIST, DOCKER_USER])).toEqual([...looks, `-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+    });
+
+    const SETUP_RULES = [ESTABLISHED, HELPER_UDP, HELPER_TCP, NO_RESOLVER_UDP, NO_RESOLVER_TCP];
+
+    it("in the fully successful case leaves the chain in the order the post-check expects, and tells the worker the setup rules are ready", () => {
+      const result = runBlock(NAMED);
+      expect(result.statuses).toEqual([0]);
+      // Top of DOCKER-USER first: the metadata rejection, the two port-53 drops, the two port-53 returns, the conntrack return.
+      expect(result.rules.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual([DOCKER_USER, NO_RESOLVER_TCP, NO_RESOLVER_UDP, HELPER_TCP, HELPER_UDP, ESTABLISHED]);
+      expect(result.rules).toContain(OUTPUT);
+      expect(result.calls.some((call) => call.startsWith("-D "))).toBe(false);
+      expect(result.state).toEqual(["ready"]);
+    });
+
+    it("loads br_netfilter, xt_conntrack and xt_physdev first, and a module that will not load is not fatal", () => {
+      const result = runBlock(NAMED, { failModprobe: true });
+      expect(result.modprobe).toEqual(["br_netfilter", "xt_conntrack", "xt_physdev"]);
+      expect(result.statuses).toEqual([0]);
+      expect(result.run.stderr).toContain("module xt_physdev could not be loaded (not fatal)");
+      // The modules are tried before the first rule is.
+      expect(workerLauncher.indexOf("modprobe")).toBeLessThan(workerLauncher.indexOf("iptables -C"));
+    });
+
+    it("xt_physdev missing: the physdev rules fail, the rvbs+ rules that went in are deleted by their exact text, both metadata rules stay in place on top, and the worker still starts (setup refused)", () => {
+      const result = runBlock(NAMED, { failInsert: /physdev/ });
+      expect(result.statuses).toEqual([0]);
+      expect(result.run.status, result.run.stderr).toBe(0);
+      // Nothing of the five is left: no half-applied set.
+      expect(result.rules.filter((rule) => rule.includes("rvbs+"))).toEqual([]);
+      expect(result.rules.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual([DOCKER_USER]);
+      expect(result.rules).toContain(OUTPUT);
+      // Deleted by exact rule text only (never by position, never a flush): the one rule that went in before the failure, and not a metadata rule.
+      expect(result.calls.filter((call) => /^-(?:D|F|X|Z|R)\b/u.test(call))).toEqual([`-D ${ESTABLISHED}`]);
+      expect(result.calls.some((call) => /^-D DOCKER-USER \d/u.test(call) || call.startsWith("-F"))).toBe(false);
+      expect(result.calls.filter((call) => call.startsWith("-I ") && call.includes("169.254.169.254"))).toEqual([`-I ${DOCKER_USER}`, `-I ${OUTPUT}`]);
+      expect(result.state).toEqual(["unavailable"]);
+      expect(result.run.stderr).toContain("setup isolation UNAVAILABLE on this worker");
+    });
+
+    it("any one of the five failing withdraws all of them, whichever it is, and never touches the metadata rules", () => {
+      for (const failing of SETUP_RULES) {
+        const spec = failing.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+        const result = runBlock(NAMED, { failInsert: new RegExp(`^${spec}$`, "u") });
+        expect(result.statuses, failing).toEqual([0]);
+        expect(result.rules.filter((rule) => rule.includes("rvbs+")), failing).toEqual([]);
+        expect(result.rules.filter((rule) => rule.startsWith("DOCKER-USER ")), failing).toEqual([DOCKER_USER]);
+        expect(result.calls.filter((call) => call.startsWith("-D ")).every((call) => call.includes("rvbs+")), failing).toBe(true);
+        expect(result.state, failing).toEqual(["unavailable"]);
+      }
+    });
+
+    it("a metadata rule that cannot be inserted still stops the worker (status 1), exactly as before, and no state says ready", () => {
+      for (const [failing, failInsert] of [[DOCKER_USER, /^DOCKER-USER -d 169/u], [OUTPUT, /^OUTPUT -d 169/u]] as const) {
+        const result = runBlock(NAMED, { failInsert });
+        expect(result.statuses, failing).toEqual([1]);
+        expect(result.state, failing).toEqual([]);
+      }
+    });
+
+    it("is safe to call twice: the second call adds nothing and writes the state again", () => {
+      const result = runBlock(NAMED, { times: 2 });
+      expect(result.statuses).toEqual([0, 0]);
+      expect(result.rules.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual([DOCKER_USER, NO_RESOLVER_TCP, NO_RESOLVER_UDP, HELPER_TCP, HELPER_UDP, ESTABLISHED]);
+      expect(new Set(result.rules).size).toBe(result.rules.length);
+      expect(result.calls.filter((call) => call.startsWith("-I ")).length).toBe(7);
+      expect(result.state).toEqual(["ready"]);
+    });
+
+    it("a second call after a failed first one stays unavailable, adds no duplicate and puts nothing above the metadata rule", () => {
+      const first = runBlock(NAMED, { failInsert: /physdev/ });
+      const second = runBlock(NAMED, { directory: first.directory, times: 1 });
+      expect(second.statuses).toEqual([0]);
+      expect(second.rules.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual([DOCKER_USER]);
+      expect(second.state).toEqual(["unavailable"]);
+    });
+
+    it("if the rvbs+ rules are gone or incomplete on the second call (Docker restarted), the state is written then", () => {
+      const first = runBlock(NAMED);
+      expect(first.state).toEqual(["ready"]);
+      // Simulate the second call finding one of the five missing, beside the metadata rules.
+      const rulesFile = join(first.directory, "rules");
+      writeFileSync(rulesFile, first.rules.filter((rule) => rule !== HELPER_UDP).map((rule) => `${rule}\n`).join(""));
+      const second = runBlock(NAMED, { directory: first.directory });
+      expect(second.statuses).toEqual([0]);
+      expect(second.rules.filter((rule) => rule.includes("rvbs+"))).toEqual([]);
+      expect(second.rules.filter((rule) => rule.startsWith("DOCKER-USER "))).toEqual([DOCKER_USER]);
+      expect(second.state).toEqual(["unavailable"]);
+    });
+
+    it("the state file is root-only to change: a content that is not exactly 'ready' (or a missing, linked or group-writable file) reads as unavailable", () => {
+      const directory = mkdtempSync(join(tmpdir(), "launcher-state-"));
+      const stateFile = join(directory, "setup-isolation");
+      // stat here is GNU's (the launcher runs on Linux): the shim answers owner:mode as asked.
+      writeFileSync(join(directory, "stat"), `#!/bin/bash\n[[ -e "$3" || -L "$3" ]] || exit 1\necho "\${FAKE_STAT:-0:644}"\n`, { mode: 0o755 });
+      const read = (setup: (() => void) | undefined, stat = "0:644") => {
+        rmSync(stateFile, { force: true });
+        setup?.();
+        const run = spawnSync("bash", ["-c", `PATH=${directory}:$PATH\nexport SETUP_ISOLATION_FILE=${stateFile} FAKE_STAT=${stat}\n${launcherFunction("setup_isolation_state")}\nsetup_isolation_state`], { encoding: "utf8" });
+        expect(run.status, run.stderr).toBe(0);
+        return run.stdout;
+      };
+      expect(read(() => writeFileSync(stateFile, "ready\n"))).toBe("ready");
+      expect(read(undefined)).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, "unavailable\n"))).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, "Ready\n"))).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, "ready junk\n"))).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, ""))).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, "ready\n"), "0:666")).toBe("unavailable");
+      expect(read(() => writeFileSync(stateFile, "ready\n"), "1000:644")).toBe("unavailable");
+      expect(read(() => { writeFileSync(join(directory, "target"), "ready\n"); symlinkSync("target", stateFile); })).toBe("unavailable");
+      if (process.getuid?.() !== 0) expect(read(() => { writeFileSync(stateFile, "ready\n"); chmodSync(stateFile, 0o000); })).toBe("unavailable");
+    });
+
+    it("hands the worker the state at container start, for a named environment only, and writes the file with mode 0644 in /etc/agentx (0700, root)", () => {
+      expect(workerLauncher).toContain('if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi');
+      expect(workerLauncher.indexOf("AGENTX_SETUP_ISOLATION=")).toBeLessThan(workerLauncher.indexOf('"$worker_image")'));
+      expect(workerLauncher).toContain("${SETUP_ISOLATION_FILE:-/etc/agentx/setup-isolation}");
+      expect(workerLauncher).toContain("chmod 0644");
+      expect(stage2Script).toContain("install -d -m 0700 /etc/agentx");
+      // The fact is not in the root env file the container reads at start: only the launcher's own --env carries it.
+      expect(/^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(stage2Script)?.[0] ?? "").not.toContain("AGENTX_SETUP_ISOLATION");
     });
 
     it("leaves the legacy deployment's boot exactly as it was: no firewall rule and the host network (ruling R58)", () => {
