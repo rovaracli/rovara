@@ -131,6 +131,15 @@ export function inputProofSentence(proof: InputProof): string {
 /** The label for `ReviewerRun.filesRead` on the card: the worker's own list, not something Rovara checked (never use it as citation proof). */
 export const FILES_READ_LABEL = "reported by the worker";
 
+/**
+ * The Light tier runs one Critic "with the comprehension paraphrase in its prompt" (design-review-stage.md 3.4). That Critic has its own registered prompt, with this id, which asks for the paraphrase.
+ * The prompt id is bound into the packet digest, so it is the one signal that cannot be forged by the worker: whoever reads that Critic's answer reads it with the paraphrase, and no other reviewer does.
+ */
+export const LIGHT_CRITIC_PROMPT_ID = "design-review-critic-light";
+export function lightCriticWritesParaphrase(role: ReviewerRole, promptId: string): boolean {
+  return role === "critic" && promptId === LIGHT_CRITIC_PROMPT_ID;
+}
+
 /** One reviewer's run: what it was given and what it cost. This record is the fresh-context evidence on the decision card. */
 export const ReviewerRunSchema = z.object({
   role: ReviewerRoleSchema,
@@ -154,10 +163,10 @@ export const ReviewerRunSchema = z.object({
   costUsd: Usd,
   startedAt: Instant,
   endedAt: Instant,
-  /** Comprehension only: "what this proposes", shown to the approver next to the request. */
+  /** Comprehension only (and the Light tier's Critic, whose prompt asks for it): "what this proposes", shown to the approver next to the request. */
   paraphrase: z.string().min(1).max(1500).optional(),
 }).strict().superRefine((run, context) => {
-  if (run.paraphrase !== undefined && run.role !== "comprehension") context.addIssue({ code: "custom", path: ["paraphrase"], message: "only the comprehension reviewer writes a paraphrase" });
+  if (run.paraphrase !== undefined && run.role !== "comprehension" && !lightCriticWritesParaphrase(run.role, run.promptId)) context.addIssue({ code: "custom", path: ["paraphrase"], message: "only the comprehension reviewer (or the Light tier's Critic) writes a paraphrase" });
   if (!run.verified && run.verifyFailure === undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "an unverified run says why" });
   if (run.verified && run.verifyFailure !== undefined) context.addIssue({ code: "custom", path: ["verifyFailure"], message: "a verified run has no failure" });
   if (run.verified && run.inputProof === undefined) context.addIssue({ code: "custom", path: ["inputProof"], message: "a verified run says what proved its input" });

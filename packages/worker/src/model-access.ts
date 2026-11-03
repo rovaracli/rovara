@@ -20,6 +20,8 @@ export interface ModelAccessSourceInput {
   capability: string;
   fetch?: typeof fetch;
   now?: () => number;
+  /** DR5: the key slot of one design reviewer. The broker mints a key for that slot alone; without it the request is the operation's own key, as always. */
+  slot?: string;
 }
 
 const KEY_PATTERN = /^[^\s]{1,16384}$/u;
@@ -81,7 +83,7 @@ export function lazyModelProxy(input: { baseUrl: string; source: () => Promise<M
 export function modelAccessSource(input: ModelAccessSourceInput): () => Promise<ModelAccess> {
   const transport = input.fetch ?? fetch;
   const now = input.now ?? Date.now;
-  const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/internal/model-access`;
+  const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/internal/model-access${input.slot === undefined ? "" : `?slot=${encodeURIComponent(input.slot)}`}`;
   let current: ModelAccess | undefined;
   let pending: Promise<ModelAccess> | undefined;
   return async () => {
