@@ -950,7 +950,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
  * Collects the usage record a candidate check's preparation reports, and answers the fields to add to the prepare result: the record under the contract's key `testServicesUsage` (the broker reads it and validates it with
  * `TestServicesUsageRecordSchema`), or nothing when no record was reported (no plan, or the preparation failed, which has no result). main.ts holds one per prepare invocation.
  */
-export function collectTestServicesUsage(): { collect(record: TestServicesUsageRecord): void; result(): Record<string, TestServicesUsageRecord> } {
+export function collectTestServicesUsage(): { collect: (record: TestServicesUsageRecord) => void; result: () => Record<string, TestServicesUsageRecord> } {
   let collected: TestServicesUsageRecord | undefined;
   return {
     collect: (record) => { collected = record; },
