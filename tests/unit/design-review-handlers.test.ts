@@ -3,7 +3,7 @@
 // on medium, who may raise the cap, run unpriced or skip, the digest the person saw).
 import { describe, expect, it } from "vitest";
 import {
-  DESIGN_REVIEW_DEFAULT_SETTING, DecisionApproveBodySchema, DecisionCardSchema, editionPolicy, type DecisionCard, type DesignReviewSetting,
+  DESIGN_REVIEW_DEFAULT_SETTING, DecisionApproveBodySchema, DecisionCardSchema, editionPolicy, type DecisionCard,
 } from "@agentx/contracts";
 import { cardOfItem, projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
@@ -46,8 +46,8 @@ describe("the design approval handler (H1)", () => {
       const digest = projection.digests[card.id]!;
       if (extra.open === true) await store.recordEvidenceOpened({ ...caller(who), cardId: card.id }, digest, new Date(NOW).toISOString());
       if (extra.open === "other") await store.recordEvidenceOpened({ ...caller(who), cardId: card.id }, "f".repeat(64), new Date(NOW).toISOString());
-      const { open: _open, ...rest } = extra;
-      return handler.approve(caller(who), { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: { cardId: card.id, digest }, ...rest });
+      const { reason, shown, tab } = extra;
+      return handler.approve(caller(who), { card, item, requestId: "22222222-2222-4222-8222-222222222222", shown: shown ?? { cardId: card.id, digest }, reason, tab });
     }
     return { press, writes, state, store };
   }
@@ -329,7 +329,7 @@ describe("the spend choice handler (M7)", () => {
 
 describe("a no-skip setting and the spend card", () => {
   it("gives no skip choice to a caller the rules refuse, so the card they are shown never offers it", () => {
-    const base = { taskId: TASK, requesterId: "priya", tier: "standard" as const, setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING } as DesignReviewSetting), taskCapUsd: 10, estimate: { kind: "priced", usd: 40, breakdown: { reviewersUsd: 40, mergeUsd: 0, plannerUsd: 0 }, tier: "standard", reviewers: 3, rounds: 2 } as DesignReviewEstimate, reasons: ["money" as const], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "r", card: { subjectId: "s1", project: "p", title: "t", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" } };
+    const base = { taskId: TASK, requesterId: "priya", tier: "standard" as const, setting: markEffective({ ...DESIGN_REVIEW_DEFAULT_SETTING }), taskCapUsd: 10, estimate: { kind: "priced", usd: 40, breakdown: { reviewersUsd: 40, mergeUsd: 0, plannerUsd: 0 }, tier: "standard", reviewers: 3, rounds: 2 } as DesignReviewEstimate, reasons: ["money" as const], touches: [], directory: directory(), edition: editionPolicy("enterprise"), freshSignIn: true, revision: "r", card: { subjectId: "s1", project: "p", title: "t", createdAt: "2026-11-03T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, contentVersion: "v1" } };
     const forRequester = designSpendGateFor(base, "priya").gate;
     const forApprover = designSpendGateFor(base, "own").gate;
     expect(forRequester.kind === "ask" && forRequester.choices.map((c) => c.choice)).toEqual(["raise_cap"]);

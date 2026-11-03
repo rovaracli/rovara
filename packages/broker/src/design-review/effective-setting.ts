@@ -10,7 +10,7 @@ export type EffectiveDesignReviewSetting = DesignReviewSetting & { readonly [EFF
 
 /** Brands a setting as effective. Only the code that has applied the lock calls this. The brand is not enumerable, so it never reaches a record, a log or a comparison. */
 export function markEffective(setting: DesignReviewSetting): EffectiveDesignReviewSetting {
-  const copy = { ...setting, highRiskApprover: { ...setting.highRiskApprover } } as DesignReviewSetting;
+  const copy: DesignReviewSetting = { ...setting, highRiskApprover: { ...setting.highRiskApprover } };
   Object.defineProperty(copy, EFFECTIVE, { value: true, enumerable: false });
   return copy as EffectiveDesignReviewSetting;
 }
