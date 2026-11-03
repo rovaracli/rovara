@@ -14,6 +14,7 @@ import {
   type SealedRoundPorts, type SealedRoundSetup, type TestServicesConfig,
 } from "../../packages/worker/src/test-services-run.js";
 import { runChecks, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
+import { TEST_SERVICES_REPORT_EVENT, checkReport } from "../../packages/worker/src/test-services-report.js";
 import { fakeServicesDocker, type FakeServicesDockerOptions } from "../support/fake-services-docker.js";
 
 const DIGEST = "a".repeat(64);
@@ -736,7 +737,8 @@ describe("the worker-start sweep removes only labelled objects of this workspace
     const fake = fakeServicesDocker({ listing: [mine, otherWorkspace, notFamily, unlabelled] });
     const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-runs-"), catalog: () => Promise.resolve(catalog) };
     await testServicesAtWorkerBoot({ rootPath: root, config, log: () => undefined });
-    const listings = fake.calls.filter((call) => call[0] === "ps" || (call[0] === "network" && call[1] === "ls"));
+    // The sweep's two listings (tab-separated rows) and, after it, the worker's own self-report counts (ids only).
+    const listings = fake.calls.filter((call) => (call[0] === "ps" || (call[0] === "network" && call[1] === "ls")) && !call.includes("{{.ID}}"));
     expect(listings).toHaveLength(2);
     for (const call of listings) {
       expect(call).toContain("label=rovara.run-network");
@@ -859,5 +861,53 @@ describe("the worker trusts the catalog baked into its own image and verifies no
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
     expect(code).not.toMatch(/\.pem|trusted-keys|TRUSTED_KEYS|PUBLIC_KEYS|ssm|SSM|loadSignedCatalog|CATALOG_SIGNATURE|ACCOUNT_ID|runningAccountId/u);
     expect(code).not.toMatch(/\["pull"|"pull",|docker\.run\(\["pull/u);
+  });
+});
+
+describe("the worker's self-report (staging workers are not SSM-managed: CloudWatch is how an operator sees these)", () => {
+  const reports = (logs: Array<Record<string, unknown>>) => logs.filter((event) => event["event"] === TEST_SERVICES_REPORT_EVENT);
+
+  it("one report line after a completed run: nothing left, the run directory empty, the working sandbox not paused", async () => {
+    const h = await harness({ realSealed: true });
+    const run = await h.start();
+    await runChecks(h.checkPlan, withTestServices(run, h.base), { budgetMs: 60_000, signal: new AbortController().signal });
+    await run.dispose();
+    const lines = reports(h.logs);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ phase: "run_end", outcome: "completed", leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: true });
+    expect(checkReport({ ...lines[0], event: undefined })).toBe(false);
+    const { event: _event, ...report } = lines[0]!;
+    void _event;
+    expect(checkReport(report)).toBe(true);
+    await h.sandbox.dispose();
+  });
+
+  it("a failed start reports outcome failed; a cancelled run reports cancelled; each exactly once", async () => {
+    const failing = await harness({ docker: { failRun: "helper" } });
+    await failing.start().catch(() => undefined);
+    expect(reports(failing.logs).map((line) => line["outcome"])).toEqual(["failed"]);
+    const h = await harness();
+    const controller = new AbortController();
+    const run = await startTestServicesRun(h.config, { dependencies: [dependency()], hasDevcontainer: false, operationId: OPERATION, rootPath: h.root, repositoryPaths: [join(h.root, "app")], sandbox: h.sandbox, signal: controller.signal });
+    controller.abort();
+    await run.dispose();
+    await run.dispose();
+    expect(reports(h.logs).map((line) => line["outcome"])).toEqual(["cancelled"]);
+  });
+
+  it("the worker's start reports what is left after the sweep, with root's boot facts", async () => {
+    const root = await temp("rsv-report-");
+    const logs: Array<Record<string, unknown>> = [];
+    const fake = fakeServicesDocker();
+    const config: TestServicesConfig = { docker: fake.docker, registry: REGISTRY, catalogEnv: "staging", edition: "public", probeImage: IMAGE, maxMemMiB: 3072, runDirectoryParent: await temp("rsv-report-runs-"), catalog: () => Promise.resolve(catalog), log: (event) => logs.push(event) };
+    const facts = JSON.stringify({ metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "ok", prepulled: 1, loggedOut: true, dockerVersion: "25.0.5" });
+    await testServicesAtWorkerBoot({ rootPath: root, config, environment: { AGENTX_TEST_SERVICES_BOOT_FACTS: facts }, log: (event) => logs.push(event) });
+    const [line] = reports(logs);
+    expect(line).toMatchObject({ phase: "worker_start", outcome: "booted", leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: true, bootFacts: JSON.parse(facts) as unknown });
+    // Facts that are not in the expected form are reported as such, never copied through.
+    const bad: Array<Record<string, unknown>> = [];
+    await testServicesAtWorkerBoot({ rootPath: root, config: { ...config, log: (event) => bad.push(event) }, environment: { AGENTX_TEST_SERVICES_BOOT_FACTS: '{"metadataBlocked":"yes","token":"x"}' }, log: (event) => bad.push(event) });
+    expect(reports(bad)[0]).toMatchObject({ bootFacts: "unreadable" });
+    expect(JSON.stringify(reports(bad))).not.toContain("token");
   });
 });

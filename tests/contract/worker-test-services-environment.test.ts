@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { parseBootFacts } from "../../packages/worker/src/test-services-report.js";
 
 const stage2 = readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
 const dockerfile = readFileSync(new URL("../../environments/base/Dockerfile", import.meta.url), "utf8");
@@ -160,5 +161,48 @@ describe("the run directory and the catalog in the image", () => {
     expect(dockerfile).toContain("COPY --from=build /opt/agentx/environments/service-catalog/catalog*.json ./packages/worker/service-catalog/");
     expect(dockerfile.indexOf("COPY --from=build /opt/agentx/packages/worker ./packages/worker")).toBeLessThan(dockerfile.indexOf("COPY --from=build /opt/agentx/environments/service-catalog/catalog*.json"));
     expect(dockerfile).not.toMatch(/service-catalog[^\n]*\.pem|trusted[-_]keys/iu);
+  });
+});
+
+describe("the facts root hands to the worker for its CloudWatch self-report (staging workers are not SSM-managed)", () => {
+  const facts = (world: { metadata?: boolean; walls?: boolean; ip6?: boolean; ip6tables?: boolean; version?: string; prepull?: string; count?: number; loggedOut?: boolean } = {}) => {
+    const directory = mkdtempSync(join(tmpdir(), "tsl-facts-"));
+    const envFile = join(directory, "worker.env");
+    writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
+    const path = tools(directory, {
+      iptables: world.walls === false ? "exit 1" : "exit 0",
+      ip6tables: world.ip6tables === false ? "exit 1" : world.ip6 === false ? 'case "$*" in "-S INPUT") exit 0 ;; *) exit 1 ;; esac' : "exit 0",
+      docker: `echo "${world.version ?? "25.0.5"}"`,
+    });
+    const program = [
+      `readonly WORKER_ENV_FILE=${envFile}`, `metadata_blocked() { return ${world.metadata === false ? "1" : "0"}; }`, "ipv6_active() { return 0; }",
+      `PREPULL_RESULT=${world.prepull ?? "ok"}; PREPULL_COUNT=${String(world.count ?? 1)}; PREPULL_LOGGED_OUT=${world.loggedOut === false ? "false" : "true"}`,
+      fn("write_test_services_boot_facts"), "write_test_services_boot_facts",
+    ].join("\n");
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path } });
+    const written = readFileSync(envFile, "utf8");
+    return { status: ran.status, written, value: /^AGENTX_TEST_SERVICES_BOOT_FACTS=(.*)$/mu.exec(written)?.[1] };
+  };
+
+  it("writes one environment line whose value the worker reads: booleans, a count and a version, nothing else", () => {
+    const r = facts();
+    expect(r.status).toBe(0);
+    expect(parseBootFacts(r.value)).toEqual({ metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "ok", prepulled: 1, loggedOut: true, dockerVersion: "25.0.5" });
+    expect(r.written.split("\n").filter((line) => line.startsWith("AGENTX_TEST_SERVICES_BOOT_FACTS="))).toHaveLength(1);
+    expect(r.written).not.toMatch(/KEY|SECRET|TOKEN|PASSWORD|arn:|\.amazonaws\.com/u);
+  });
+  it("says false for a missing metadata block or wall, and carries a failed pre-pull and a login that was not removed", () => {
+    expect(parseBootFacts(facts({ metadata: false }).value)).toMatchObject({ metadataBlocked: false });
+    expect(parseBootFacts(facts({ walls: false }).value)).toMatchObject({ runWalls: false });
+    expect(parseBootFacts(facts({ prepull: "failed", count: 0, loggedOut: false }).value)).toMatchObject({ prepull: "failed", prepulled: 0, loggedOut: false });
+  });
+  it("never writes a version it did not read as a version", () => {
+    expect(parseBootFacts(facts({ version: "25.0.5; echo hi" }).value)).toMatchObject({ dockerVersion: "0" });
+  });
+  it("is written after the walls, for a named environment, and the pull records what it did", () => {
+    const main = fn("stage2_main");
+    expect(main.indexOf("install_run_walls_unit")).toBeLessThan(main.indexOf("write_test_services_boot_facts"));
+    const pull = fn("pull_catalog_images");
+    for (const needle of ["PREPULL_RESULT=ok", "PREPULL_RESULT=failed", "PREPULL_LOGGED_OUT=true", "PREPULL_COUNT=$count"]) expect(pull, needle).toContain(needle);
   });
 });
