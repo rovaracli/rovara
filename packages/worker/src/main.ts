@@ -1,5 +1,5 @@
 import {taskFallbackAuthorizer} from "./model-fallback-authority.js";
-import { TEST_SERVICES_USAGE_RESULT_KEY, type TestServicesUsageRecord, type WorkerInvocation } from "@agentx/contracts";
+import type { WorkerInvocation } from "@agentx/contracts";
 import { CONTAINED_RUNTIME_PROFILE, inspectContainedRuntimeReadiness, type ContainedRuntimeReadiness } from "@agentx/verifier";
 import { OperationJournal } from "./journal.js";
 import { prepareWorkspace, preparedBaseResult } from "./prepare.js";
@@ -34,7 +34,7 @@ import { createSavedEnvFallbackReporter, createSavedEnvLoginProvider } from "./s
 import { rememberCredentials, runSavedEnvRebuild } from "./saved-env/rebuild.js";
 import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
-import { testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
+import { collectTestServicesUsage, testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
@@ -102,8 +102,8 @@ const state = createWorkerServerState(
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
         // The clone credential is fetched by the preparation alone; its values are remembered for a rebuild's secret scan.
         const cloneCredentials = rememberCredentials(createRepositoryCredentialProvider({ controlPlaneUrl, invocation }));
-        // Test services (Prove): a candidate check that carries a dependency plan reports its usage record in the result, under TEST_SERVICES_USAGE_RESULT_KEY.
-        let testServicesUsage: TestServicesUsageRecord | undefined;
+        // Test services (Prove): a candidate check that carries a dependency plan reports its usage record in the result, under the contract's key `testServicesUsage`.
+        const testServicesUsage = collectTestServicesUsage();
         const manifest = await prepareWorkspace({
           rootPath,
           project: invocation.payload.project,
@@ -122,7 +122,7 @@ const state = createWorkerServerState(
           // Saved environments (SH25): start from the project's saved image; any problem sets up fresh.
           ...(invocation.payload.savedEnv === undefined ? {} : { savedEnv: savedEnvOptionsOf(invocation.payload.savedEnv, createSavedEnvLoginProvider({ controlPlaneUrl, invocation }), undefined, createSavedEnvFallbackReporter({ controlPlaneUrl, invocation })) }),
           ...(invocation.payload.registries === undefined ? {} : { registries: invocation.payload.registries, registryCredentialProvider: createRegistryCredentialProvider({ controlPlaneUrl, invocation }) }),
-          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, onUsageRecord: (record) => { testServicesUsage = record; } } }),
+          ...(invocation.payload.testServices === undefined ? {} : { testServices: { dependencies: invocation.payload.testServices.dependencies, onUsageRecord: testServicesUsage.collect } }),
         });
         // Saved project images: a rebuild job builds the project's image from this read-only, pinned preparation (saved-env/rebuild.ts) and posts the result to the broker's lease route.
         if (invocation.payload.savedEnvBuild !== undefined) {
@@ -138,7 +138,7 @@ const state = createWorkerServerState(
           projectName: manifest.projectName,
           projectRevision: manifest.projectRevision,
           ...preparedBaseResult(manifest),
-          ...(testServicesUsage === undefined ? {} : { [TEST_SERVICES_USAGE_RESULT_KEY]: testServicesUsage }),
+          ...testServicesUsage.result(),
         };
       }
       if (invocation.kind === "task") {

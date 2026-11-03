@@ -11,7 +11,7 @@ import { CATALOG_SIGNATURE_ALGORITHM, ProjectDefinitionSchema, TEST_SERVICES_USA
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
-import { SEALED_ROUND_PORTS, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
+import { SEALED_ROUND_PORTS, collectTestServicesUsage, loadCatalogFromDirectory, startPrepareTestServices, type PrepareTestServices, type TestServicesConfig } from "../../packages/worker/src/test-services-run.js";
 import { fakeServicesDocker, type FakeServicesDockerOptions } from "../support/fake-services-docker.js";
 
 const run = promisify(execFile);
@@ -186,8 +186,15 @@ describe("the prepare invocation's wiring (main.ts)", () => {
   it("passes the payload's testServices plan to the preparation and puts the usage record in the result under the contract's key", () => {
     const source = readFileSync(new URL("../../packages/worker/src/main.ts", import.meta.url), "utf8");
     expect(source).toContain("invocation.payload.testServices.dependencies");
-    expect(source).toContain("onUsageRecord: (record) => { testServicesUsage = record; }");
-    expect(source).toContain("[TEST_SERVICES_USAGE_RESULT_KEY]: testServicesUsage");
+    expect(source).toContain("onUsageRecord: testServicesUsage.collect");
+    expect(source).toContain("...testServicesUsage.result()");
+  });
+  it("the collector answers the record under testServicesUsage, and nothing before one is reported", () => {
+    const usage = collectTestServicesUsage();
+    expect(usage.result()).toEqual({});
+    const record: TestServicesUsageRecord = { schemaVersion: 1, dependencies: [], unknownCalls: { domains: [], otherCount: 0 } };
+    usage.collect(record);
+    expect(usage.result()).toEqual({ [TEST_SERVICES_USAGE_RESULT_KEY]: record });
     expect(TEST_SERVICES_USAGE_RESULT_KEY).toBe("testServicesUsage");
   });
 });

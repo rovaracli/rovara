@@ -26,7 +26,7 @@ import { constants as fsConstants } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import {
-  CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
+  CATALOG_FILE, CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_FILE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, loadSignedCatalog,
   type CatalogEdition, type CatalogEntry, type CatalogTrustContext, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
@@ -582,7 +582,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       await step("opening", async () => { await opening?.catch(() => undefined); });
       await closeRound(false);
       // A start that was still pending when the run was disposed: its session is stopped as soon as it exists.
-      for (const pending of [...pendingStarts]) await step("pending-start", async () => { (await pending.catch(() => undefined))?.stop(); });
+      for (const pending of [...pendingStarts]) await step("pending-start", async () => { await (await pending.catch(() => undefined))?.stop(); });
       await step("helpers", async () => { await workSession?.stop(); });
       await step("directory", () => removeRunDirectory(files.directory));
     })();
@@ -943,5 +943,17 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
       const record = await run.usageRecord().catch(() => undefined);
       if (record !== undefined) await Promise.resolve(options.onUsageRecord?.(record)).catch(() => undefined);
     },
+  };
+}
+
+/**
+ * Collects the usage record a candidate check's preparation reports, and answers the fields to add to the prepare result: the record under the contract's key `testServicesUsage` (the broker reads it and validates it with
+ * `TestServicesUsageRecordSchema`), or nothing when no record was reported (no plan, or the preparation failed, which has no result). main.ts holds one per prepare invocation.
+ */
+export function collectTestServicesUsage(): { collect(record: TestServicesUsageRecord): void; result(): Record<string, TestServicesUsageRecord> } {
+  let collected: TestServicesUsageRecord | undefined;
+  return {
+    collect: (record) => { collected = record; },
+    result: () => (collected === undefined ? {} : { [TEST_SERVICES_USAGE_RESULT_KEY]: collected }),
   };
 }
