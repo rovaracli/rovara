@@ -16,7 +16,7 @@
 # LIVE PARTS (needs the owner's OK to run, on an IDLE staging worker; the catalog must pin postgres@16 first). The shell script then, as root on the worker: logs in to the worker's own registry with the instance role (aws ecr get-login-password,
 # the way the boot does), pulls the pinned Postgres image BY DIGEST (the worker role's catalog grant, TS-IMG-1), starts the driver in a throwaway container of the worker image (no network, no capability, read-only, the Docker socket and one
 # work directory), prints the driver's lines in place of the PENDING ones, and removes everything the checks made (containers and networks carrying the throwaway workspace label, the work directory). One plain environment variable may be
-# set: TSL_ENV (default staging). The driver reads no secret and makes no AWS call; its only credential is a random Postgres password that never leaves the helper's 0600 env file. Deliver it with the driver's own command:
+# set: TSL_ENV (default staging). The driver makes no AWS call (this script fetches the registry's manifest of each pinned digest with the worker role) and reads no secret; its only credential is a random Postgres password that never leaves the helper's 0600 env file. Deliver it with the driver's own command:
 #   npx tsx scripts/linux-check-test-services-live.ts --ssm-params > "$TMPDIR/tsl-params.json"
 #   $STAGING aws ssm send-command --instance-ids <instance-id> --document-name AWS-RunShellScript --comment ts-linux-checks-live --timeout-seconds 3000 --parameters file://"$TMPDIR/tsl-params.json" --query Command.CommandId --output text
 # (the same get-command-invocation as step 3 below reads the answer; SSM returns at most 24,000 characters, and the whole output is about 5,000.)
@@ -54,6 +54,7 @@ pending() { emit "$1" PENDING "$2" "$3"; } # pending <id> <name> <what the live 
 # The live driver's lines (scripts/linux-check-test-services-live.ts), by id. LIVE_RAN=1 once the driver was started: an item it gave no line for is then a FAIL, not a PENDING.
 LIVE_OUT=""
 LIVE_RAN=0
+LIVE_BLOCKED=""
 live_line() { # live_line <id> <name> <what the live part will do> [a failure found by a host check made here]
   local row status name detail
   row=$(printf '%s\n' "$LIVE_OUT" | grep -m1 -F -- "TSL $1 ")
@@ -63,6 +64,7 @@ live_line() { # live_line <id> <name> <what the live part will do> [a failure fo
     if [[ -n "${4:-}" ]]; then status=FAIL; detail="$4; driver: $detail"; fi
     emit "$1" "$status" "$name" "$detail"
   elif [[ -n "${4:-}" ]]; then emit "$1" FAIL "$2" "$4"
+  elif [[ -n "$LIVE_BLOCKED" ]]; then emit "$1" FAIL "$2" "$LIVE_BLOCKED"
   elif (( LIVE_RAN == 1 )); then emit "$1" FAIL "$2" "the live driver gave no result for this item"
   else pending "$1" "$2" "$3"; fi
 }
@@ -80,6 +82,7 @@ RANGE_PREFIX=172.30.
 # The throwaway workspace key of the live driver (TSL_WORKSPACE in scripts/linux-check-test-services-live.ts): every object it makes carries it, and this script removes whatever carries it when it ends.
 TSL_WORKSPACE_KEY=7e57c4ec7e57c4ec
 TSL_WORK=""
+TSL_DOCKER_CONFIG=""
 tsl_cleanup() {
   [[ -n "$DOCKER" && -x "$DOCKER" ]] || return 0
   local ids
@@ -88,12 +91,14 @@ tsl_cleanup() {
   ids=$("$DOCKER" network ls -q --filter "label=$FAMILY_LABEL.workspace=$TSL_WORKSPACE_KEY" 2>/dev/null) || ids=""
   [[ -z "$ids" ]] || "$DOCKER" network rm $ids >/dev/null 2>&1
   [[ -z "$TSL_WORK" ]] || rm -rf "$TSL_WORK"
+  [[ -z "$TSL_DOCKER_CONFIG" ]] || rm -rf "$TSL_DOCKER_CONFIG"
   return 0
 }
-# run_live_driver: pull the pinned images, start the driver in a throwaway container of the worker image, keep its lines in LIVE_OUT. Never reads or prints a credential.
+# run_live_driver: pull the pinned images, start the driver in a throwaway container of the worker image, keep its lines in LIVE_OUT. Never reads or prints a credential. The registry login goes to a Docker config directory of its own
+# (DOCKER_CONFIG), so the worker's own login on this host is never touched, and the directory is removed with the rest.
 run_live_driver() {
-  local image reg region gid ref refs out
   LIVE_RAN=1
+  local image reg region gid ref refs out token doc account digest manifest
   [[ -s "$TSL_DIR/live.mjs" && -s "$TSL_DIR/catalog.json" ]] || { LIVE_OUT="TSL ERROR the driver or the catalog was not delivered"; return 1; }
   have_docker || { LIVE_OUT="TSL ERROR no docker"; return 1; }
   image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
@@ -105,17 +110,36 @@ run_live_driver() {
   [[ "$gid" =~ ^[0-9]+$ ]] || { LIVE_OUT="TSL ERROR the Docker socket is not readable"; return 1; }
   TSL_WORK=$(mktemp -d /var/tmp/tsl-work.XXXXXX) || { LIVE_OUT="TSL ERROR no work directory"; return 1; }
   chmod 0755 "$TSL_WORK"
-  local base=(--rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m -v "$TSL_DIR/live.mjs:/opt/agentx/tsl-live.mjs:ro" -v "$TSL_DIR/catalog.json:/opt/agentx/tsl-catalog.json:ro"
-    -e "TSL_REGISTRY=$reg" -e "TSL_ENV=$TSL_ENV" -e TSL_CATALOG=/opt/agentx/tsl-catalog.json -e "TSL_WORKER_IMAGE=$image" -e "TSL_WORK=$TSL_WORK")
-  refs=$("$DOCKER" run "${base[@]}" --user 1000:1000 --entrypoint /usr/local/bin/node "$image" /opt/agentx/tsl-live.mjs pull-list 2>&1) || { LIVE_OUT="TSL ERROR pull-list: $(printf '%s' "$refs" | tr '\r\n\t' '   ' | cut -c1-200)"; return 1; }
-  # The worker's own registry login, with the instance role, as the boot does it; the pulls are by digest and bounded.
-  { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" | timeout --foreground --kill-after=10s 60s "$DOCKER" login --username AWS --password-stdin "$reg" >/dev/null 2>&1; } || { LIVE_OUT="TSL ERROR the registry login failed"; return 1; }
+  mkdir "$TSL_WORK/manifests" && chmod 0755 "$TSL_WORK/manifests"
+  TSL_DOCKER_CONFIG=$(mktemp -d /var/tmp/tsl-docker.XXXXXX) || { LIVE_OUT="TSL ERROR no Docker config directory"; return 1; }
+  # The account this host runs in, from its own instance identity document (IMDSv2), never from a setting; unknown when the lookup fails, and the driver then does not trust the staging-only key.
+  account=""
+  token=$(curl -fsS --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)
+  if [[ -n "$token" ]]; then
+    doc=$(curl -fsS --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null || true)
+    account=$(printf '%s' "$doc" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -1)
+  fi
+  local sig_mount=()
+  [[ -s "$TSL_DIR/catalog.sig.json" ]] && sig_mount=(-v "$TSL_DIR/catalog.sig.json:/opt/agentx/tsl-catalog.sig.json:ro")
+  local base=(--rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m -v "$TSL_DIR/live.mjs:/opt/agentx/tsl-live.mjs:ro" -v "$TSL_DIR/catalog.json:/opt/agentx/tsl-catalog.json:ro" ${sig_mount[@]+"${sig_mount[@]}"}
+    -v "$TSL_WORK/manifests:/opt/agentx/tsl-manifests:ro" -e "TSL_REGISTRY=$reg" -e "TSL_ENV=$TSL_ENV" -e TSL_CATALOG=/opt/agentx/tsl-catalog.json -e TSL_MANIFESTS=/opt/agentx/tsl-manifests
+    -e "TSL_WORKER_IMAGE=$image" -e "TSL_WORK=$TSL_WORK" -e "TSL_ACCOUNT_ID=$account")
+  # The driver checks the signature first: with no trusted catalog key it says BLOCKED here and nothing is pulled.
+  refs=$(DOCKER_CONFIG="$TSL_DOCKER_CONFIG" "$DOCKER" run "${base[@]}" --user 1000:1000 --entrypoint /usr/local/bin/node "$image" /opt/agentx/tsl-live.mjs pull-list 2>&1) || {
+    case "$refs" in "BLOCKED:"*) LIVE_OUT=""; LIVE_BLOCKED=$(printf '%s' "$refs" | head -1 | cut -c1-120) ;; *) LIVE_OUT="TSL ERROR pull-list: $(printf '%s' "$refs" | tr '\r\n\t' '   ' | cut -c1-200)" ;; esac
+    return 1
+  }
+  # The worker's own registry login, with the instance role, as the boot does it, into the check's own Docker config; the pulls are by digest and bounded.
+  { timeout --foreground --kill-after=10s 120s aws ecr get-login-password --region "$region" | DOCKER_CONFIG="$TSL_DOCKER_CONFIG" timeout --foreground --kill-after=10s 60s "$DOCKER" login --username AWS --password-stdin "$reg" >/dev/null 2>&1; } || { LIVE_OUT="TSL ERROR the registry login failed"; return 1; }
   for ref in $refs; do
-    [[ "$ref" =~ ^$reg/rovara-catalog/$TSL_ENV/svc/[a-z0-9._-]+@sha256:[a-f0-9]{64}$ ]] || { "$DOCKER" logout "$reg" >/dev/null 2>&1; LIVE_OUT="TSL ERROR the driver named an image outside the environment's catalog"; return 1; }
-    timeout --foreground --kill-after=10s 600s "$DOCKER" pull --quiet "$ref" >/dev/null 2>&1 || { "$DOCKER" logout "$reg" >/dev/null 2>&1; LIVE_OUT="TSL ERROR the pull of $ref failed"; return 1; }
+    [[ "$ref" =~ ^$reg/rovara-catalog/$TSL_ENV/svc/([a-z0-9._-]+)@sha256:([a-f0-9]{64})$ ]] || { LIVE_OUT="TSL ERROR the driver named an image outside the environment's catalog"; return 1; }
+    digest=${BASH_REMATCH[2]}
+    # The manifest the registry serves for the digest, byte for byte (the driver hashes it), with the worker role's catalog grant.
+    manifest=$(timeout --foreground --kill-after=10s 60s aws ecr batch-get-image --region "$region" --repository-name "rovara-catalog/$TSL_ENV/svc/${BASH_REMATCH[1]}" --image-ids "imageDigest=sha256:$digest" --query 'images[0].imageManifest' --output text 2>/dev/null) || { LIVE_OUT="TSL ERROR the manifest of $ref could not be read"; return 1; }
+    printf '%s' "$manifest" > "$TSL_WORK/manifests/$digest"
+    DOCKER_CONFIG="$TSL_DOCKER_CONFIG" timeout --foreground --kill-after=10s 600s "$DOCKER" pull --quiet "$ref" >/dev/null 2>&1 || { LIVE_OUT="TSL ERROR the pull of $ref failed"; return 1; }
   done
-  "$DOCKER" logout "$reg" >/dev/null 2>&1
-  out=$(timeout --foreground --kill-after=30s 2400s "$DOCKER" run "${base[@]}" --user 0:0 --group-add "$gid" -v /var/run/docker.sock:/var/run/docker.sock -v "$TSL_WORK:$TSL_WORK" --entrypoint /usr/local/bin/node "$image" /opt/agentx/tsl-live.mjs run 2>&1) || true
+  out=$(DOCKER_CONFIG="$TSL_DOCKER_CONFIG" timeout --foreground --kill-after=30s 2400s "$DOCKER" run "${base[@]}" --user 0:0 --group-add "$gid" -v /var/run/docker.sock:/var/run/docker.sock -v "$TSL_WORK:$TSL_WORK" --entrypoint /usr/local/bin/node "$image" /opt/agentx/tsl-live.mjs run 2>&1) || true
   LIVE_OUT=$out
   return 0
 }
@@ -145,6 +169,7 @@ if [[ -n "$TSL_DIR" ]]; then
   run_live_driver || true
   tsl_cleanup
   case "$LIVE_OUT" in "TSL ERROR"*) printf '%s\n' "$LIVE_OUT" | head -3 ;; esac
+  [[ -z "$LIVE_BLOCKED" ]] || printf 'TSL BLOCKED %s\n' "$LIVE_BLOCKED"
 fi
 # END LIVE CALL
 

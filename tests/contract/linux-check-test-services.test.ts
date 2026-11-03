@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ const GOOD_CHAINS = ["-P FORWARD DROP", "-N DOCKER", "-N DOCKER-ISOLATION-STAGE-
 const GOOD_DAEMON = JSON.stringify({ "data-root": "/data", "default-address-pools": [{ base: "172.18.0.0/15", size: 24 }, { base: "172.20.0.0/14", size: 24 }, { base: "172.28.0.0/16", size: 24 }, { base: "192.168.0.0/16", size: 24 }] }, null, 2);
 
 interface World {
-  nat?: string; ip6input?: string | null; ipv6Active?: boolean; liveLines?: string; pullList?: string; pullFails?: boolean; liveDir?: boolean; daemonJson?: string; iptablesVersion?: string; chains?: string; dockerVersion?: string; familyBridges?: Record<string, string>; dockerChainRules?: string[]; dockerUser?: string; input?: string; routes?: string; docker?: boolean; agentxTaskInternal?: string; networks?: Record<string, string>; familyNetworks?: string[]; familyContainers?: string[]; mounts?: Record<string, string> }
+  nat?: string; ip6input?: string | null; ipv6Active?: boolean; liveLines?: string; pullList?: string; pullFails?: boolean; liveDir?: boolean; pullBlocked?: boolean; imds?: string | null; daemonJson?: string; iptablesVersion?: string; chains?: string; dockerVersion?: string; familyBridges?: Record<string, string>; dockerChainRules?: string[]; dockerUser?: string; input?: string; routes?: string; docker?: boolean; agentxTaskInternal?: string; networks?: Record<string, string>; familyNetworks?: string[]; familyContainers?: string[]; mounts?: Record<string, string> }
 
 function run(world: World = {}, args: string[] = [], extraEnv: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ts-linux-check-"));
@@ -51,7 +51,8 @@ function run(world: World = {}, args: string[] = [], extraEnv: Record<string, st
   writeFileSync(join(dir, "if_inet6"), "");
   writeFileSync(join(dir, "disable_ipv6"), "0\n");
   // for the live parts: the tools the delivered driver's launcher uses
-  tool("aws", `echo "aws $@" >> "${dir}/aws.calls"; echo fake-token`);
+  tool("aws", `echo "aws $@" >> "${dir}/aws.calls"; if [ "$2" = batch-get-image ]; then printf '{"schemaVersion":2}'; else echo fake-token; fi`);
+  tool("curl", world.imds === null ? "exit 22" : `case "$*" in *"-X PUT"*) echo imds-token ;; *) echo '${world.imds ?? '{"accountId" : "944937319445", "region" : "us-west-2"}'}' ;; esac`);
   tool("timeout", `while [ "\${1#--}" != "$1" ]; do shift; done; shift; exec "$@"`);
   tool("stat", `echo 100`);
   writeFileSync(join(dir, "live-lines"), world.liveLines ?? "");
@@ -70,7 +71,8 @@ function run(world: World = {}, args: string[] = [], extraEnv: Record<string, st
   // The fake docker answers only what the script is meant to ask, and logs every call.
   tool("docker", [
     `echo "$@" >> "${dir}/docker.calls"`,
-    `if [ "$1" = run ]; then last="\${!#}"; if [ "$last" = pull-list ]; then ${world.pullFails === true ? "echo boom; exit 1" : `cat "${dir}/pull-list"`}; exit 0; fi; cat "${dir}/live-lines"; exit 0; fi`,
+    `if [ -n "\${DOCKER_CONFIG:-}" ]; then echo "$1 $DOCKER_CONFIG" >> "${dir}/docker.config"; fi`,
+    `if [ "$1" = run ]; then last="\${!#}"; if [ "$last" = pull-list ]; then ${world.pullFails === true ? "echo boom; exit 1" : world.pullBlocked === true ? "echo 'BLOCKED: no trusted catalog key'; exit 3" : `cat "${dir}/pull-list"`}; exit 0; fi; cat "${dir}/live-lines"; exit 0; fi`,
     `case "$1" in login|logout|pull) exit 0 ;; esac`,
     `case "$1 $2" in`,
     `  "rm -f") exit 0 ;;`,
@@ -90,7 +92,7 @@ function run(world: World = {}, args: string[] = [], extraEnv: Record<string, st
   const read = (name: string) => { try { return readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean); } catch { return []; } };
   const lines2 = result.stdout.split("\n").filter((line) => line.startsWith("TSL "));
   const byId = (id: string) => lines2.find((line) => line.startsWith(`TSL ${id} `));
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr, lines: lines2, byId, dockerCalls: read("docker.calls"), iptablesCalls: read("iptables.calls"), ip6tablesCalls: read("ip6tables.calls"), awsCalls: read("aws.calls"), dir };
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, lines: lines2, byId, dockerCalls: read("docker.calls"), iptablesCalls: read("iptables.calls"), ip6tablesCalls: read("ip6tables.calls"), awsCalls: read("aws.calls"), dockerConfigs: read("docker.config"), dir };
 }
 
 describe("scripts/linux-check-test-services.sh", () => {
@@ -222,6 +224,7 @@ describe("scripts/linux-check-test-services.sh, live parts", () => {
     delivered.push(dir);
     writeFileSync(join(dir, "live.mjs"), "// the driver\n");
     writeFileSync(join(dir, "catalog.json"), "{}\n");
+    writeFileSync(join(dir, "catalog.sig.json"), "{}\n");
     return dir;
   };
   const live = (world: World = {}, env: Record<string, string> = {}) => run({ ipv6Active: true, ...world }, [], { TSL_DIR: deliver(), ...env });
@@ -247,11 +250,32 @@ describe("scripts/linux-check-test-services.sh, live parts", () => {
     }
     expect(r.dockerCalls).toContain(`pull --quiet 944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:${"b".repeat(64)}`);
     expect(r.dockerCalls.findIndex((call) => call.startsWith("login "))).toBeLessThan(r.dockerCalls.findIndex((call) => call.startsWith("pull ")));
-    expect(r.dockerCalls.some((call) => call.startsWith("logout "))).toBe(true);
+    // no logout: the worker's own registry login on the host is never touched; the check logs in to a Docker config directory of its own, which is gone when the script ends
+    expect(r.dockerCalls.some((call) => call.startsWith("logout "))).toBe(false);
+    const configs = [...new Set(r.dockerConfigs.map((row) => row.split(" ")[1]))];
+    expect(configs).toHaveLength(1);
+    expect(configs[0]).toMatch(/^\/var\/tmp\/tsl-docker\.[A-Za-z0-9]{6}$/u);
+    expect(existsSync(configs[0]!)).toBe(false);
+    expect(r.dockerConfigs.some((row) => row.startsWith("login "))).toBe(true);
     expect(r.dockerCalls).toContain("ps -a -q --filter label=rovara.run-network.workspace=7e57c4ec7e57c4ec");
     expect(r.dockerCalls).toContain("network ls -q --filter label=rovara.run-network.workspace=7e57c4ec7e57c4ec");
-    expect(r.awsCalls).toEqual(["aws ecr get-login-password --region us-west-2"]);
+    expect(r.awsCalls).toEqual([
+      "aws ecr get-login-password --region us-west-2",
+      `aws ecr batch-get-image --region us-west-2 --repository-name rovara-catalog/staging/svc/postgres --image-ids imageDigest=sha256:${"b".repeat(64)} --query images[0].imageManifest --output text`,
+    ]);
+    // the account comes from the instance identity document and goes to the driver, which trusts the staging-only key only for it
+    expect(runCalls[0]).toContain("-e TSL_ACCOUNT_ID=944937319445");
+    expect(runCalls[0]).toContain("-e TSL_MANIFESTS=/opt/agentx/tsl-manifests");
     expect(r.stdout).not.toContain("fake-token");
+  });
+  it("an unreadable identity document gives the driver no account (so the staging-only key is not trusted), and a missing trusted key is reported as BLOCKED, never a pass", () => {
+    expect(live({ imds: null, liveLines: driverLines() }).dockerCalls.find((call) => call.startsWith("run "))).toContain("-e TSL_ACCOUNT_ID= ");
+    const r = live({ pullBlocked: true });
+    expect(r.stdout).toContain("TSL BLOCKED BLOCKED: no trusted catalog key");
+    for (const id of LIVE_IDS) expect(r.byId(id), id).toMatch(/ FAIL .*BLOCKED: no trusted catalog key/u);
+    expect(r.dockerCalls.some((call) => call.startsWith("pull "))).toBe(false);
+    expect(r.awsCalls).toEqual([]);
+    expect(r.status).toBe(1);
   });
   it("a live item the driver gave no line for is a FAIL, never a PENDING", () => {
     const r = live({ liveLines: driverLines(() => "PASS", LIVE_IDS.filter((id) => id !== "L6.live")) });

@@ -22,7 +22,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { ServiceCatalogSchema, type CatalogEntry } from "@agentx/contracts";
+import {
+  checkMirrorServesDigest, loadSignedCatalog, resolveCatalogImage, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog,
+} from "@agentx/contracts";
 import type * as RunNetworkModule from "../packages/worker/src/run-network.js";
 import type * as ServiceHelpersModule from "../packages/worker/src/service-helpers.js";
 import type * as ServiceRunnerModule from "../packages/worker/src/service-runner.js";
@@ -148,11 +150,15 @@ export const POSTGRES_ID = "postgres@16";
 export const TSL_WORKSPACE = "7e57c4ec7e57c4ec";
 const NODE = "/usr/local/bin/node";
 const PROBE_PORT = 5432;
+/** The port the L1 sandbox listens on so the helper has something open to reach (the positive control). */
+const CONTROL_PORT = 7778;
 const ROUND_BUDGET_MS = 10 * 60_000;
 
 export interface LiveInput {
-  /** The catalog file (environments/service-catalog/catalog.json) as parsed JSON. */
-  catalog: unknown;
+  /** The signed catalog, from `loadVerifiedCatalog` (loadSignedCatalog): nothing else is accepted. */
+  catalog: VerifiedCatalog;
+  /** The manifest bytes the environment's registry serves, by digest (the shell script fetched them with the worker role); `resolveCatalogImage` hashes them. */
+  manifests: RegistryManifestPort;
   /** `<account>.dkr.ecr.<region>.amazonaws.com`. */
   registry: string;
   /** The named environment (`staging`). */
@@ -166,19 +172,54 @@ export interface LiveInput {
   layer?: RunLayer;
 }
 
-/** The Postgres entry, when the catalog pins it. Throws a sentence (never the catalog) when it does not. */
-export function postgresEntry(catalog: unknown): CatalogEntry & { image: { digest: string } } {
-  const parsed = ServiceCatalogSchema.parse(catalog);
-  const entry = parsed.entries.find((candidate) => candidate.id === POSTGRES_ID);
+/** The catalog cannot be trusted yet because no catalog key is compiled in (or none counts here). Reported as BLOCKED, never as a pass. */
+export class BlockedError extends Error {
+  constructor() {
+    super("BLOCKED: no trusted catalog key");
+    this.name = "BlockedError";
+  }
+}
+
+/**
+ * The signed catalog through `loadSignedCatalog` (the compiled-in keys, `catalog-trust.ts`; the account decides whether the staging-only key counts). No trusted key at all is BLOCKED; any other failure is a sentence.
+ * `trustedKeys` is a test seam: the command line never sets it.
+ */
+export function loadVerifiedCatalog(input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array; runningAccountId: string | undefined; trustedKeys?: readonly string[] }): VerifiedCatalog {
+  if (input.signatureBytes.byteLength === 0) throw new Error("the catalog has no signature file yet: run the catalog build for it first");
+  const loaded = loadSignedCatalog({
+    catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trust: { runningAccountId: input.runningAccountId }, ...(input.trustedKeys === undefined ? {} : { trustedKeys: input.trustedKeys }),
+  });
+  if (loaded.ok) return loaded.catalog;
+  if (loaded.reason === "no trusted catalog key") throw new BlockedError();
+  throw new Error(`the catalog is not trusted: ${loaded.reason}`);
+}
+
+/** The Postgres entry, when the verified catalog pins it. Throws a sentence (never the catalog) when it does not. */
+export function postgresEntry(catalog: VerifiedCatalog): CatalogEntry & { image: { digest: string } } {
+  const entry = catalog.entries.find((candidate) => candidate.id === POSTGRES_ID);
   if (entry === undefined) throw new Error(`the catalog has no ${POSTGRES_ID}`);
-  if (!parsed.pinned || entry.image.digest === undefined || entry.status === "retired") throw new Error(`${POSTGRES_ID} is not pinned in this catalog: run the catalog repack and build for it first`);
+  if (!catalog.pinned || entry.image.digest === undefined || entry.status === "retired") throw new Error(`${POSTGRES_ID} is not pinned in this catalog: run the catalog repack and build for it first`);
   return entry as CatalogEntry & { image: { digest: string } };
 }
 
 /** The references the shell script pulls before the run: only what this slice uses, always by digest. */
-export function pullList(input: { catalog: unknown; registry: string; env: string }): string[] {
+export function pullList(input: { catalog: VerifiedCatalog; registry: string; env: string }): string[] {
   const entry = postgresEntry(input.catalog);
   return [`${input.registry}/rovara-catalog/${input.env}/${entry.image.repository}@sha256:${entry.image.digest}`];
+}
+
+/** A manifest port over a directory of files named by digest (the shell script wrote them from the registry, byte for byte). */
+export function manifestFilesPort(read: (digest: string) => Promise<Uint8Array | undefined>): RegistryManifestPort {
+  return { manifestBytes: async (_repositoryName, digest) => (/^[a-f0-9]{64}$/u.test(digest) ? read(digest) : undefined) };
+}
+
+/** `resolveCatalogImage` for the one image: the registry must serve the catalog's digest, by the manifest bytes hashed here. Throws the registry's refusal sentence otherwise. */
+export async function resolvePostgres(input: Pick<LiveInput, "catalog" | "manifests" | "env">): Promise<void> {
+  const entry = postgresEntry(input.catalog);
+  const check = await checkMirrorServesDigest(input.manifests, { id: POSTGRES_ID, repositoryName: `rovara-catalog/${input.env}/${entry.image.repository}`, digest: entry.image.digest });
+  const noApprovals: SubstituteApprovalPort = { find: async () => undefined };
+  const resolved = await resolveCatalogImage({ catalog: input.catalog, catalogId: POSTGRES_ID, edition: "public", served: { source: "rovara_registry", check }, approvals: noApprovals });
+  if (!resolved.ok) throw new Error(resolved.message);
 }
 
 const randomAlnum = (length: number): string => randomBytes(length * 2).toString("base64").replace(/[^A-Za-z0-9]/gu, "").slice(0, length).padEnd(length, "x");
@@ -268,12 +309,18 @@ export function labelArgsFrom(json: string): string[] {
     .flatMap(([key, value]) => ["--label", `${key}=${String(value)}`]);
 }
 
+/** The four ids of a `Uid:` line of /proc/<pid>/status (real, effective, saved, filesystem), or nothing when it is not that line. Root is any of them being 0. */
+export function parseUids(text: string): number[] | undefined {
+  const match = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/mu.exec(text);
+  return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])];
+}
+
 /** A throwaway node container on the run's network at a fixed address, with the run's labels, hardened like a task sandbox. */
-async function startNode(context: Context, lab: Lab, name: string, ip: string, networkName: string = lab.net.name, mounts: readonly string[] = []): Promise<string> {
+async function startNode(context: Context, lab: Lab, name: string, ip: string, networkName: string = lab.net.name, mounts: readonly string[] = [], listen?: number): Promise<string> {
   const args = [
     "run", "-d", "--name", name, "--network", networkName, ...(networkName === lab.net.name ? ["--ip", ip] : []), ...lab.labels,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m", "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5",
-    "--user", "1000:1000", "--pull=never", ...mounts, "--entrypoint", NODE, context.input.workerImage, "-e", "setInterval(()=>{},1e6)",
+    "--user", "1000:1000", "--pull=never", ...mounts, "--entrypoint", NODE, context.input.workerImage, "-e", `${listen === undefined ? "" : `require('net').createServer((s)=>s.end()).listen(${String(listen)},'0.0.0.0');`}setInterval(()=>{},1e6)`,
   ];
   const started = await sh(context, args);
   if (started.exitCode !== 0) throw new Error(`could not start ${name}: ${clean(started.stderr).slice(0, 160)}`);
@@ -303,16 +350,19 @@ async function checkL1(context: Context): Promise<LiveLine[]> {
   const lines: LiveLine[] = [];
   const first = await startLab(context, "l1a");
   const second = await startLab(context, "l1b");
-  const sandboxA = await startNode(context, first, `${first.net.name}-sbx`, first.net.workingSandboxIp);
+  const sandboxA = await startNode(context, first, `${first.net.name}-sbx`, first.net.workingSandboxIp, first.net.name, [], CONTROL_PORT);
   const sandboxB = await startNode(context, second, `${second.net.name}-sbx`, second.net.workingSandboxIp);
   // sandbox -> helper passes; the sandbox and the helper reach nothing outside the run; the helper reaches no public address, no private range, nothing at the gateway
   const fromSandbox = await probe(context, sandboxA, [conn("helper-addr", first.helper.address, PROBE_PORT, 5000), { label: "helper-name", kind: "lookup", name: "postgres" }, ...wallTests(first)]);
   const helperProblems = unexpected(fromSandbox, ["helper-addr"], ["open"]);
   const sandboxWalls = unexpected(fromSandbox, WALL_LABELS, NOT_THROUGH);
-  const helperExec = await sh(context, ["exec", first.helper.container, "bash", "-c", `for t in 8.8.8.8:443 8.8.8.8:53 1.1.1.1:443 169.254.169.254:80 10.0.0.1:443 ${first.net.gateway}:80; do if timeout 3 bash -c "exec 3<>/dev/tcp/\${t%:*}/\${t#*:}" 2>/dev/null; then echo "open $t"; else echo "closed $t"; fi; done`], 60_000);
-  const helperOut = helperExec.stdout.split("\n").filter((row) => row.startsWith("open ")).map((row) => row.slice(5));
+  const helperExec = await sh(context, ["exec", first.helper.container, "bash", "-c", `for t in ${first.net.workingSandboxIp}:${String(CONTROL_PORT)} 8.8.8.8:443 8.8.8.8:53 1.1.1.1:443 169.254.169.254:80 10.0.0.1:443 ${first.net.gateway}:80; do if timeout 3 bash -c "exec 3<>/dev/tcp/\${t%:*}/\${t#*:}" 2>/dev/null; then echo "open $t"; else echo "closed $t"; fi; done`], 60_000);
+  const opened = helperExec.stdout.split("\n").filter((row) => row.startsWith("open ")).map((row) => row.slice(5));
+  // The positive control: the helper's probe method must see an open connection where there is one (its own run's sandbox). If it does not, "nothing got through" would prove nothing.
+  const control = `${first.net.workingSandboxIp}:${String(CONTROL_PORT)}`;
+  const helperOut = opened.filter((target) => target !== control);
   lines.push(verdict("L1.live", "helper-reachable-internet-not",
-    [...helperProblems.map((p) => `sandbox-to-helper:${p}`), ...sandboxWalls.map((p) => `sandbox:${p}`), ...(helperExec.exitCode === 0 ? [] : ["helper-exec-failed"]), ...helperOut.map((t) => `helper-reached:${t}`)],
+    [...helperProblems.map((p) => `sandbox-to-helper:${p}`), ...sandboxWalls.map((p) => `sandbox:${p}`), ...(helperExec.exitCode === 0 ? [] : ["helper-exec-failed"]), ...(opened.includes(control) ? [] : ["control-failed:the-helper-could-not-reach-its-own-sandbox"]), ...helperOut.map((t) => `helper-reached:${t}`)],
     `sandbox reaches the helper at ${first.helper.address}:${String(PROBE_PORT)}; neither it nor the helper reaches a public address, the metadata address, a private range or the gateway`));
   // TS-RN-2: a sandbox of one run cannot reach another run's helper (by address, or through the gateway), in either direction, and still reaches its own
   const cross = await probe(context, sandboxA, [conn("other-helper", second.helper.address, PROBE_PORT), conn("other-sandbox", second.net.workingSandboxIp, PROBE_PORT), conn("own-helper", first.helper.address, PROBE_PORT, 5000)]);
@@ -500,8 +550,9 @@ async function checkL4(context: Context): Promise<LiveLine[]> {
   if (privileged !== "false") problems.push(`privileged:${privileged}`);
   if (/^(?:0|root)(?::|$)/u.test(user) || user === "") problems.push(`user:${user || "unset"}`);
   if (tmpfs === "null" || !tmpfs.includes("/")) problems.push("no-tmpfs");
-  const ident = await sh(context, ["exec", container, "id", "-u"]);
-  if (ident.stdout.trim() === "0") problems.push("process-runs-as-root");
+  const uids = parseUids((await sh(context, ["exec", container, "grep", "^Uid:", "/proc/1/status"])).stdout);
+  if (uids === undefined) problems.push("uid-unreadable");
+  else if (uids.includes(0)) problems.push(`process-runs-as-root:uids=${uids.join(",")}`);
   const caps = await sh(context, ["exec", container, "grep", "CapEff", "/proc/1/status"]);
   if (!/CapEff:\s*0+\s*$/u.test(caps.stdout.trim())) problems.push(`effective-capabilities:${clean(caps.stdout).slice(0, 40)}`);
   if (!(await lab.session.probe("postgres", 30_000))) problems.push("not-healthy");
@@ -565,6 +616,11 @@ const PENDING_IDS: Readonly<Record<(typeof ITEMS)[number], ReadonlyArray<readonl
   L6: [["L6.live", "killed-worker-sweep"]],
 };
 
+/** Every live item as a FAIL with the same reason (the catalog cannot be trusted yet): reported, never passed. */
+export function blockedLines(reason: string): LiveLine[] {
+  return ITEMS.flatMap((item) => PENDING_IDS[item].map(([id, name]) => fail(id, name, reason)));
+}
+
 /** Runs every item, one after the other (each in a lab of its own), removes everything it started, and answers the lines. A check that cannot run gives FAIL lines for its items, never a silent skip and never a PASS. */
 export async function runLiveChecks(input: LiveInput): Promise<{ lines: LiveLine[]; redact: (text: string) => string }> {
   const layer = input.layer ?? (await loadRunLayer());
@@ -572,6 +628,7 @@ export async function runLiveChecks(input: LiveInput): Promise<{ lines: LiveLine
   const secrets: string[] = [];
   const redact = (text: string): string => secrets.reduce((value, secret) => value.split(secret).join("[removed]"), text);
   const entry = postgresEntry(input.catalog);
+  await resolvePostgres(input);
   const context: Context = { input, layer, docker, entry, secrets, redact, counter: { n: 0 }, cleanups: [] };
   const lines: LiveLine[] = [];
   // the worker-start sweep of the throwaway workspace: what an earlier, killed check left behind goes first
@@ -604,7 +661,7 @@ export async function driverJavaScript(file: string): Promise<string> {
 }
 
 /** The `commands` of an AWS-RunShellScript call: write the three files (gzip, then base64) into a root-only directory made with mktemp, run the shell script with TSL_DIR set, remove the directory. Pure: nothing is sent. */
-export function ssmCommands(files: { script: string; driver: string; catalog: string }): string[] {
+export function ssmCommands(files: { script: string; driver: string; catalog: string; signature: string }): string[] {
   const pieces = (name: string, text: string): string[] => {
     const encoded = gzipSync(Buffer.from(text, "utf8"), { level: 9 }).toString("base64");
     const out = [`: > "$d/${name}.b64"`];
@@ -614,7 +671,7 @@ export function ssmCommands(files: { script: string; driver: string; catalog: st
   };
   return [
     `umask 077; d=$(mktemp -d /var/tmp/tsl.XXXXXX) || exit 1`,
-    ...pieces("s.sh", files.script), ...pieces("live.mjs", files.driver), ...pieces("catalog.json", files.catalog),
+    ...pieces("s.sh", files.script), ...pieces("live.mjs", files.driver), ...pieces("catalog.json", files.catalog), ...pieces("catalog.sig.json", files.signature),
     `TSL_DIR="$d" bash "$d/s.sh"; rc=$?; rm -rf "$d"; exit $rc`,
   ];
 }
@@ -630,6 +687,8 @@ async function main(argv: readonly string[]): Promise<number> {
       script: await readFile(join(here, "linux-check-test-services.sh"), "utf8"),
       driver: await driverJavaScript(join(here, "linux-check-test-services-live.ts")),
       catalog: await readFile(join(repo, "environments/service-catalog/catalog.json"), "utf8"),
+      // Not there until the catalog is built and signed: delivered empty, and the live run then says so (BLOCKED or "no signature yet"), never passes.
+      signature: await readFile(join(repo, "environments/service-catalog/catalog.sig.json"), "utf8").catch(() => ""),
     });
     process.stdout.write(`${JSON.stringify({ commands })}\n`);
     return 0;
@@ -646,14 +705,28 @@ async function main(argv: readonly string[]): Promise<number> {
   };
   const registry = need("TSL_REGISTRY", /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$/u);
   const env = need("TSL_ENV", /^[a-z][a-z0-9-]{0,19}$/u);
-  const catalog = JSON.parse(await readFile(need("TSL_CATALOG", /^\/[A-Za-z0-9._/-]{1,200}$/u), "utf8")) as unknown;
+  const catalogFile = need("TSL_CATALOG", /^\/[A-Za-z0-9._/-]{1,200}$/u);
+  // The account this process runs in: the shell script read it from the instance identity document (not a setting); absent or malformed means unknown, and the staging-only key is then not trusted.
+  const account = /^[0-9]{12}$/u.test(environment["TSL_ACCOUNT_ID"] ?? "") ? environment["TSL_ACCOUNT_ID"] : undefined;
+  let catalog: VerifiedCatalog;
+  try {
+    catalog = loadVerifiedCatalog({ catalogBytes: await readFile(catalogFile), signatureBytes: await readFile(catalogFile.replace(/catalog\.json$/u, "catalog.sig.json")).catch(() => Buffer.alloc(0)), runningAccountId: account });
+  } catch (error) {
+    if (!(error instanceof BlockedError)) throw error;
+    // Every live item is reported, none passes.
+    if (mode === "pull-list") { process.stdout.write(`${error.message}\n`); return 3; }
+    process.stdout.write(`${blockedLines(error.message).map((line) => formatLine(line)).join("\n")}\n`);
+    return 0;
+  }
   if (mode === "pull-list") {
     process.stdout.write(`${pullList({ catalog, registry, env }).join("\n")}\n`);
     return 0;
   }
   const workDir = need("TSL_WORK", /^\/[A-Za-z0-9._/-]{1,200}$/u);
   const workerImage = need("TSL_WORKER_IMAGE", /^[a-z0-9][a-z0-9._/:-]{0,199}@sha256:[a-f0-9]{64}$/u);
-  const { lines, redact } = await runLiveChecks({ catalog, registry, env, workerImage, workDir });
+  const manifestDir = need("TSL_MANIFESTS", /^\/[A-Za-z0-9._/-]{1,200}$/u);
+  const manifests = manifestFilesPort((digest) => readFile(join(manifestDir, digest)).catch(() => undefined));
+  const { lines, redact } = await runLiveChecks({ catalog, manifests, registry, env, workerImage, workDir });
   process.stdout.write(`${lines.map((line) => formatLine(line, redact)).join("\n")}\n`);
   return 0;
 }
