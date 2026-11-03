@@ -7,7 +7,8 @@
 //   - the broker adds its own findings (`withOwnFindings`), after dropping a reviewer finding that has the fingerprint of one of them (N6);
 //   - each `ReviewerRun` is built from the verified facts and the proxy-MEASURED spend (`recordedReviewerCost`): a slot that was asked again, or whose spend could not be measured, is charged its key's budget, so the cap is
 //     never under-counted;
-//   - `submitDesignReview` moves the workflow; then the stored packets are removed and every slot key is blocked and finalized, and only then is the round recorded (the caller commits the returned workflow).
+//   - every slot key is blocked and finalized FIRST, then the spend is measured (B-m1); `submitDesignReview` moves the workflow; the stored packets are removed by Delete items in the caller's commit (B-M2), so a result that is computed
+//     again finds them and records the same round.
 //
 // The worker's own `findings`, `droppedCitations`, `mergeSource` and `omitted` are display-only early feedback. They are read by the schema and never stored or believed.
 import {
@@ -19,7 +20,7 @@ import { recordedReviewerCost } from "./estimate.js";
 import { bindingMergeProblem } from "./merge-binding.js";
 import { ownDesignFindings, withOwnFindings } from "./own-findings.js";
 import { estimateInputTokens } from "./packet.js";
-import { readSlotPacket, removeSlotPackets } from "./packet-store.js";
+import { packetDeleteItems, readSlotPacket, removeSlotPackets } from "./packet-store.js";
 import { reviewerPromptFor, promptRecord } from "./prompts/index.js";
 import { assembleRoundFindings, type RoundReviewerState } from "./round-findings.js";
 import { requirementIdsOf } from "./round-inputs.js";
@@ -47,6 +48,11 @@ export interface RoundRecordInput {
   design: { text: string; sha256: string };
   /** The approved requirements' text, for their ids. */
   requirementsText: string;
+  /**
+   * B-M2: collects the Delete items that remove the round's stored packets. The caller puts them in the SAME transaction that commits the returned workflow, so the packets are still there if the result is computed again (a
+   * refused transaction, a resent upload). Absent: the packets are left to expire (they are unreachable once the round is recorded).
+   */
+  release?: unknown[];
   now: string;
 }
 
@@ -102,15 +108,15 @@ export async function releaseDesignReviewRound(ports: Pick<RoundRecordPorts, "ta
   const orgId = operation.orgId;
   if (orgId === undefined) return { spentUsd: 0 };
   let spentUsd = 0;
-  let keyIds: string[] = [];
+  // B-m1: the keys are blocked FIRST and the spend measured after, so a request admitted in between cannot go uncounted.
   try {
     const keys = await designReviewKeyIds(ports.table, operation);
+    const keyIds = [...new Set([...keys.bySlot.values(), ...keys.askedAgain.values()])];
+    try { await ports.closeKeys(orgId, keyIds); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.keys_not_closed", operationId: operation.id })); }
     const costs = await slotCosts(ports, keys);
-    keyIds = [...new Set([...keys.bySlot.values(), ...keys.askedAgain.values()])];
     for (const cost of costs.values()) spentUsd += cost.costUsd;
   } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.spend_not_read", operationId: operation.id })); }
   try { await removeSlotPackets(ports.table, orgId, operation.id); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.packets_not_removed", operationId: operation.id })); }
-  try { await ports.closeKeys(orgId, keyIds); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.keys_not_closed", operationId: operation.id })); }
   return { spentUsd: Math.round(spentUsd * 1e6) / 1e6 };
 }
 
@@ -126,17 +132,20 @@ export async function recordDesignReviewRound(ports: RoundRecordPorts, input: Ro
   if (review === undefined || orgId === undefined || !parsedBinding.success) return closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: "worker_failed", now: input.now });
   const binding = parsedBinding.data;
   const keys = await designReviewKeyIds(ports.table, operation);
-  const costs = await slotCosts(ports, keys);
   const allKeyIds = [...new Set([...keys.bySlot.values(), ...keys.askedAgain.values()])];
+  // B-m1: block and finalize every slot key BEFORE the spend is measured (a request admitted in between would go uncounted). Closing is idempotent, so a result that is computed again finds the keys closed and measures the same spend.
+  try { await ports.closeKeys(orgId, allKeyIds); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.keys_not_closed", operationId: operation.id })); }
+  const costs = await slotCosts(ports, keys);
   const sourceId = operation.modelRoute?.sourceId ?? "rovara";
   const costOf = (slot: string): number => costs.get(slot)?.costUsd ?? 0;
   const totalSpend = (): number => binding.reviewers.reduce((sum, entry) => sum + costOf(entry.keySlot), binding.merge === undefined ? 0 : costOf(binding.merge.keySlot));
 
   const finish = async (next: () => WorkflowSnapshot): Promise<WorkflowSnapshot> => {
-    // The move is made first and only then the clean-up, so a move the workflow refuses leaves the packets and keys as they were; the clean-up never throws.
+    // B-M2: the packets are NOT removed here. Their Delete items go to the caller's transaction (`input.release`), so they go with the commit and not before it; the keys were closed above.
     const moved = next();
-    try { await removeSlotPackets(ports.table, orgId, operation.id); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.packets_not_removed", operationId: operation.id })); }
-    try { await ports.closeKeys(orgId, allKeyIds); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.keys_not_closed", operationId: operation.id })); }
+    if (input.release !== undefined) {
+      try { input.release.push(...await packetDeleteItems(ports.table, orgId, operation.id)); } catch { console.log(JSON.stringify({ component: "broker", event: "design_review.packets_not_released", operationId: operation.id })); }
+    }
     return moved;
   };
   const closeNotRun = (reason: "worker_failed" | "inputs_unverified") => finish(() => closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: reason, addedSpendUsd: totalSpend(), now: input.now }));
@@ -189,7 +198,7 @@ export async function recordDesignReviewRound(ports: RoundRecordPorts, input: Ro
     return ReviewerRunSchema.parse({
       role: entry.role, promptId: packet?.promptId ?? registered.promptId, promptVersion: packet?.promptVersion ?? registered.promptVersion, promptDigest: packet?.promptDigest ?? registered.promptDigest,
       model: { provider: entry.model.provider, modelId: entry.model.modelId }, sourceId,
-      sessionId: counted && verdict?.verified === true ? verdict.sessionId : outcome?.report?.sessionId ?? NO_SESSION, modelKeyId: keyId, packetDigest: entry.packetDigest, packet: packet?.items ?? [],
+      sessionId: counted && verdict?.verified === true ? verdict.sessionId : NO_SESSION, modelKeyId: keyId, packetDigest: entry.packetDigest, packet: packet?.items ?? [],
       filesRead: counted && verdict?.verified === true ? verdict.filesRead : [], verified: counted,
       ...(counted ? { inputProof: state?.inputProof ?? "digest_only" } : { verifyFailure: state?.verifyFailure ?? "unreadable_output" }),
       tokensIn: outcome?.tokensIn ?? 0, tokensOut: outcome?.tokensOut ?? 0, costUsd: costOf(entry.keySlot),

@@ -129,3 +129,13 @@ export async function removeSlotPackets(deps: StateTable, orgId: OrgId, operatio
   }
   return items.length;
 }
+
+/**
+ * The Delete items that remove an operation's stored packets, heads first, for the SAME transaction that records the round (B-M2): the packets stay readable until the recording commits, so a result that is recomputed
+ * (a refused transaction, a resent upload) finds them again. At most `max` items (a transaction holds 100 and carries the workflow too); whatever is left expires with its TTL and is unreachable without a head.
+ */
+export async function packetDeleteItems(deps: StateTable, orgId: OrgId, operationId: string, max = 40): Promise<Array<{ Delete: { TableName: string; Key: { pk: string; sk: string } } }>> {
+  const items = await queryAllItems(deps, designReviewPartition(orgId, operationId), "PACKET#");
+  const keys = items.map((item) => ({ pk: String(item.pk), sk: String(item.sk) })).sort((left, right) => Number(right.sk.endsWith("#HEAD")) - Number(left.sk.endsWith("#HEAD")));
+  return keys.slice(0, max).map((Key) => ({ Delete: { TableName: deps.tableName, Key } }));
+}

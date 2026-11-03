@@ -13,8 +13,10 @@ const PROXY_URL = "http://internal-proxy.example.test:4000";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown> }) {
+/** `projects`: the allowlist `dp` (default: this project, "payments"; null: none is set). `dropOrgId`: the task record has no orgId when Understand ends (the type allows it). */
+async function understoodAs(assessment: IntentAssessment, options: { switchOn: boolean; playbook?: Record<string, unknown>; projects?: string | null; dropOrgId?: boolean }) {
   if (options.switchOn) vi.stubEnv("DESIGN_REVIEW_ENABLED", "1");
+  if (options.projects !== null) vi.stubEnv("DESIGN_REVIEW_PROJECTS", options.projects ?? "payments");
   const access = fakeModelAccess();
   const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -31,6 +33,11 @@ async function understoodAs(assessment: IntentAssessment, options: { switchOn: b
   const understand = operations().find((item) => item.workflowMode === "UNDERSTAND")!;
   await h.artifact(workspaceId, String(understand.id), UNDERSTAND_ARTIFACT_NAME, JSON.stringify(assessment));
   reads.mockClear();
+  if (options.dropOrgId === true) {
+    const { orgId: _orgId, ...orgless } = h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
+    void _orgId;
+    h.db.set(orgless);
+  }
   await h.finish(workspaceId, String(understand.id), "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
   const playbookRead = reads.mock.calls.some(([command]) => JSON.stringify((command as { input?: unknown }).input ?? {}).includes("PLAYBOOK"));
   return { workflow: (h.db.get(`DEVTASK#${taskId}`, "META") as { workflow: Record<string, unknown> }).workflow, playbookRead };
@@ -46,6 +53,31 @@ describe("the design review at the Understand step's ready answer", () => {
     expect(result.workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
     expect(result.workflow).not.toHaveProperty("designReview");
     expect(result.playbookRead).toBe(false);
+  });
+
+  it("OFF, a task with no orgId: Understand's ready answer moves it on to PLAN as it always did (B-M1: the org is not required before the switch is checked)", async () => {
+    const result = await understoodAs(needed(), { switchOn: false, dropOrgId: true });
+    expect(result.workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
+    expect(result.workflow).not.toHaveProperty("designReview");
+    expect(result.workflow.blockReason).toBeUndefined();
+    // ... and with the switch ON but no org to read a setting for, the same: no review, no block.
+    const on = await understoodAs(needed(), { switchOn: true, dropOrgId: true });
+    expect(on.workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
+    expect(on.workflow.blockReason).toBeUndefined();
+  });
+
+  it("the switch alone runs no project: `dr` on with no allowlist, or with another project's name, is OFF and the playbook is never read (fail closed)", async () => {
+    for (const projects of [null, "", "billing", "payments-api"] as const) {
+      const result = await understoodAs(needed(), { switchOn: true, projects });
+      expect(result.workflow, String(projects)).toMatchObject({ stage: "PLAN", state: "RUNNING", path: "QUICK" });
+      expect(result.workflow).not.toHaveProperty("designReview");
+      expect(result.playbookRead, String(projects)).toBe(false);
+    }
+  });
+
+  it("the allowlist names the project: `dr` on and the project among several runs the review", async () => {
+    const result = await understoodAs(needed(), { switchOn: true, projects: "billing:payments" });
+    expect(result.workflow).toMatchObject({ path: "FULL", designReview: { status: "estimating" } });
   });
 
   it("ON, a design that is needed: the effective setting decides, the task is forced onto the Full path at the requirements, and the review is switched on with the project's tier and cap", async () => {

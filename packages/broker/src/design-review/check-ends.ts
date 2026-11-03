@@ -13,9 +13,10 @@ export interface EndedCheckOperation { id: string; orgId?: string | undefined; d
  * The plan check cannot be started (its start was given up, or no model can serve it): for a plan check, `closePlanCritique` "done" (the plan goes to the person as not checked); for a design review the design goes to the
  * person with the review marked not run (`no_model_source`). Nothing was stored for a round that never started, so nothing is released.
  */
-export function closeUnstartedCheck(workflow: WorkflowSnapshot, now: string): WorkflowSnapshot {
+export function closeUnstartedCheck(workflow: WorkflowSnapshot, now: string, reason: "no_model_source" | "worker_failed" = "worker_failed"): WorkflowSnapshot {
   if (!workflowIsDesignReviewing(workflow)) return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
-  return closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: "no_model_source", now });
+  // B-m6: a start that was given up is a start that failed (the workspace stayed busy, the machine never came up); `no_model_source` is said only by a caller that knows no model can serve it.
+  return closeDesignReview(workflow, { expectedRevision: workflow.revision, outcome: "not_run", notRunReason: reason, now });
 }
 
 /**
@@ -40,7 +41,9 @@ export async function resumeBlockedCheck(table: StateTable, workspaceId: string,
     .filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.workflowMode === "PLAN_CRITIQUE" && item.designReview !== undefined)
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
   const binding = DesignReviewBindingSchema.safeParse(latest?.designReview);
-  const { spentUsd } = latest === undefined || !binding.success || typeof latest.orgId !== "string" ? { spentUsd: 0 }
-    : await releaseDesignReviewRound({ table, keySpend: async () => undefined, closeKeys: async () => undefined }, { id: String(latest.id), orgId: latest.orgId, designReview: binding.data });
-  return resumeBlockedDesignReview(workflow, { expectedRevision: workflow.revision, addedSpendUsd: spentUsd, now });
+  // B-m3: the blocked round's measured spend was added when it blocked (`designReviewOutcome`), so the Retry adds nothing; it only removes what the round left stored.
+  if (latest !== undefined && binding.success && typeof latest.orgId === "string") {
+    await releaseDesignReviewRound({ table, keySpend: async () => undefined, closeKeys: async () => undefined }, { id: String(latest.id), orgId: latest.orgId, designReview: binding.data });
+  }
+  return resumeBlockedDesignReview(workflow, { expectedRevision: workflow.revision, now });
 }

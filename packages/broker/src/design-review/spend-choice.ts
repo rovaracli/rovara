@@ -204,6 +204,7 @@ export function applyDesignSpendChoice(snapshot: unknown, write: Pick<DesignSpen
   switch (write.applied.choice) {
     case "raise_cap": return raiseDesignReviewCap(snapshot, { expectedRevision: input.expectedRevision, capUsd: write.applied.newCapUsd, by, ...estimate, now: input.now });
     case "lower_tier": return lowerDesignReviewTier(snapshot, { expectedRevision: input.expectedRevision, tier: write.applied.tier, by, ...estimate, now: input.now });
+    // The pure move, for the workflow's own tests. The commit port uses `designSpendCommitItems` (spend-follow.ts): an unpriced run starts with its round's operation (from the hold, with `costApproved`), never alone.
     case "run_unpriced": return startDesignReview(snapshot, { expectedRevision: input.expectedRevision, costApproved: { by }, now: input.now });
     case "skip": return skipDesignReview(snapshot, { expectedRevision: input.expectedRevision, by, now: input.now });
   }

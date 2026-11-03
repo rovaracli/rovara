@@ -3,12 +3,15 @@
 // `design-review.json`; the broker verifies, assembles, records the round with the proxy-measured spend and releases the keys; the planner's side is applied by `applyPlannerResolve`; round 2 runs on the revised design; the
 // design ends on the person's card. Also: a voided reviewer, a slot asked twice, a round that stops at the cap, a hold for cost, no proxy, and the OFF switch.
 import { createHash, randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DesignReviewBindingSchema, PacketDeliverySchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WorkflowSnapshotSchema, answerDesignQuestions, createWorkflowSnapshot, decideWorkflow, enableDesignReview, packetDigestOf, submitWorkflowArtifact,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DesignReviewBindingSchema, PacketDeliverySchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, packetDigestOf, submitWorkflowArtifact,
   type DesignReviewBinding, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
-import { applyPlannerResolve } from "../../packages/broker/src/design-review/resolve-answer.js";
+import { designSpendCommitItems } from "../../packages/broker/src/design-review/spend-follow.js";
+import { designAnswersCommitItems } from "../../packages/broker/src/design-review/answers.js";
+import { designDocumentKey } from "../../packages/broker/src/design-review/template-store.js";
 import { designReviewKeyIds } from "../../packages/broker/src/design-review/slot-keys.js";
 import { readSlotPacket } from "../../packages/broker/src/design-review/packet-store.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
@@ -29,12 +32,21 @@ afterEach(() => { vi.useRealTimers(); });
 
 const REQUIREMENTS = "# Requirements\n\nR1: A payment that times out is retried once.\nR2: A payment is never charged twice.\n";
 const DESIGN_V1 = "# Design\n\n## 1. Problem and goal\nR1 and R2.\n\n## 3. Proposed design\n### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.\n";
-const DESIGN_V2 = `${DESIGN_V1}\n### 3.2 Limit\nThe retry happens at most three times, with a growing wait.\n`;
+
+/** A design in the Rovara template: eight sections and the strict meta block. `three` is the body of §3. */
+const templateDesign = (three: string, meta: Record<string, unknown> = {}): string => [
+  "# Design", "## §1 Problem and goal", "R1 and R2.", "## §2 Current system, as it is today", "A timeout throws (src/charge.ts:10).", "## §3 Proposed design", three, "## §4 Alternatives considered", "None.",
+  "## §5 Risks, failure behaviour, rollback", "Retries are bounded.", "## §6 Areas touched", "See the block.", "## §7 Assumptions", "None.", "## §8 Sources", "See the block.",
+  "```rovara-design-meta", JSON.stringify({ touches: ["new_api"], repositories: ["demo"], services: [], sources: [{ kind: "repo_file", repo: "demo", ref: "src/charge.ts" }], ...meta }), "```",
+].join("\n");
+const DESIGN_T1 = templateDesign("### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.");
+const DESIGN_T2 = templateDesign("### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.\n### 3.2 Limit\nThe retry happens at most three times, with a growing wait.");
+const resolveBlock = (value: unknown): string => `\n\n\`\`\`rovara-design-resolve\n${JSON.stringify(value)}\n\`\`\`\n`;
 
 type World = Awaited<ReturnType<typeof world>>;
 
 /** A v2 task whose design was just submitted for review: PLAN_CRITIQUE/READY, review "estimating", the documents stored and digest-checked. */
-async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string } = {}) {
+async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string; draft?: string } = {}) {
   const access = fakeModelAccess();
   const harness = await createSingleAnswerPlanBroker({
     brokerExtra: { agents: {}, cloud: true, ...(options.modelAccess === false ? {} : { modelAccess: { access, proxyUrl: PROXY_URL } }) },
@@ -67,6 +79,14 @@ async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "
   workflow = submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: requirements, now: NOW });
   workflow = decideWorkflow(workflow, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: requirements.sha256 },
     { actorId: owner, role: "TASK_OWNER" }, { now: LATER, allowedSkipStages: [] });
+  // `draft`: the planner is still writing the DESIGN (PLAN/RUNNING); its answer is the template, uploaded below, and the broker stores it.
+  if (options.draft !== undefined) {
+    harness.db.set({ ...task(), workflow: WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, state: "RUNNING" }) });
+    await harness.artifact(workspaceId, planner, "plan.md", options.draft);
+    await harness.finish(workspaceId, planner, "SUCCEEDED");
+    const draftOperations = () => harness.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId && item.workflowMode === "PLAN_CRITIQUE").sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    return { ...harness, access, taskId, workspaceId, task, operations: draftOperations, plannerOps: () => planOps(harness, workspaceId), store, requirements, design, owner, running, active, sweep: () => harness.handler({ source: "agentx.workflow-dispatch-recovery" }) as Promise<unknown>, planner };
+  }
   workflow = WorkflowSnapshotSchema.parse(submitWorkflowArtifact(running(workflow), { expectedRevision: workflow.revision + 1, artifact: design, now: NOW }));
   harness.db.set({ ...task(), workflow });
   const hold = options.start === false;
@@ -74,7 +94,12 @@ async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "
   // The planner's own run ends (its result is late: the workflow is no longer planning), which frees the workspace and runs the task's due rows: the design review starts.
   await harness.finish(workspaceId, planner, "SUCCEEDED");
   const operations = () => harness.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId && item.workflowMode === "PLAN_CRITIQUE").sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-  return { ...harness, access, taskId, workspaceId, task, operations, store, requirements, design, owner, running, active, sweep: () => harness.handler({ source: "agentx.workflow-dispatch-recovery" }) as Promise<unknown> };
+  return { ...harness, access, taskId, workspaceId, task, operations, plannerOps: () => planOps(harness, workspaceId), store, requirements, design, owner, running, active, sweep: () => harness.handler({ source: "agentx.workflow-dispatch-recovery" }) as Promise<unknown>, planner };
+}
+
+/** The planning operations the design review started to answer its findings (`planRevision`), oldest first. */
+function planOps(harness: { db: { find(predicate: (item: Record<string, unknown>) => boolean): Array<Record<string, unknown>> } }, workspaceId: string) {
+  return harness.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId && item.workflowMode === "PLAN" && item.planRevision === true).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
 /** Raw reply of the broker, as the worker sees it. */
@@ -179,7 +204,8 @@ describe("a Full task's design review, from the dispatch to the person's card", 
     const run1 = await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
     // The round is recorded: three verified reviewers (by packet digest, honestly said), the measured spend, the finding, and the review waits for the planner.
     const afterOne = w.task().workflow;
-    expect(afterOne).toMatchObject({ stage: "PLAN", state: "READY", designReview: { status: "resolving" } });
+    // ... and the planner's resolve run starts at once (the CRITIC_REPLAN row is due), so the review stands at PLAN/RUNNING "resolving".
+    expect(afterOne).toMatchObject({ stage: "PLAN", state: "RUNNING", designReview: { status: "resolving" } });
     const round1 = review(w).rounds[0]!;
     expect(round1.reviewers.map((run) => [run.role, run.verified, run.inputProof])).toEqual([["comprehension", true, "digest_only"], ["critic", true, "digest_only"], ["codebase", true, "digest_only"]]);
     expect(round1.reviewers.map((run) => run.costUsd)).toEqual([0.3, 0.4, 0.2]);
@@ -195,24 +221,51 @@ describe("a Full task's design review, from the dispatch to the person's card", 
     for (const key of Object.values(run1.keys)) expect(w.db.get(modelKeyKey(TEST_ORG, keyIdOf(key)))).toMatchObject({ finalized: true });
     expect((await rawGet(w.handler, "/v1/internal/design-review/packet?slot=r1-critic", run1.capability)).status).toBeGreaterThanOrEqual(400);
 
-    // ---- the planner needs a person: one question card, then the answer.
-    const pins = { demo: "e".repeat(40) };
+    // ---- the planner's resolve run starts by itself (the CRITIC_REPLAN row is due for a design review), in the task's own conversation, with the registered resolve prompt and the findings as data.
     const findingId = round1.findings[0]!.id;
-    const questions = [{ id: "q1", unclear: "How many retries are allowed?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most timeouts clear." }, { id: "b", label: "Five", consequence: "Customers wait." }], recommended: "a", why: "Fewer waits." }];
-    const askAnswer = `Revised design is unchanged so far.\n\n\`\`\`rovara-design-resolve\n${JSON.stringify({ resolutions: [{ findingId, action: "asked", note: "Depends on a team rule.", questionId: "q1" }], questions })}\n\`\`\`\n`;
-    const asking = applyPlannerResolve({ workflow: w.running(w.task().workflow), answer: askAnswer, pins, now: LATER });
-    expect(asking).toMatchObject({ stage: "PLAN", state: "WAITING", designReview: { status: "waiting_answers" } });
-    const answered = answerDesignQuestions(asking, { expectedRevision: asking.revision, answers: [{ questionId: "q1", optionId: "a" }], by: { actorId: w.owner }, now: LATER });
-    const design2 = w.store("design-v2.md", DESIGN_V2);
-    const resolveAnswer = `${DESIGN_V2}\n\n\`\`\`rovara-design-resolve\n${JSON.stringify({ resolutions: [{ findingId, action: "asked", note: "Three, as the person said.", questionId: "q1" }], questions })}\n\`\`\`\n`;
-    const resolved = applyPlannerResolve({ workflow: w.running(answered), answer: resolveAnswer, revisedDesign: design2, pins, now: LATER });
-    // An answered question that changed the design earns a second read (3.2 as changed 2026-11-03): round 2, priced afresh.
-    expect(resolved).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating" } });
-    w.db.set({ ...w.task(), workflow: resolved });
-    w.db.set((workflowDispatchItem("state", w.taskId, resolved.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, new Date().toISOString()) as { Put: { Item: Record<string, unknown> } }).Put.Item);
+    expect(afterOne).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    const [resolveOne] = w.plannerOps();
+    expect(resolveOne, "the planner's resolve run was started").toBeDefined();
+    expect(resolveOne!.conversationId).toBe(String(w.task().conversationId));
+    const resolveInvocation = (w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === resolveOne!.id)[0]!.invocation as { payload: { prompt: string; workflowPhase?: string; planFormat?: string; designReview?: unknown } }).payload;
+    expect(resolveInvocation.workflowPhase).toBe("DESIGN");
+    // The design is written in the template as Markdown, not as structured claims, and the run is not a design-review round.
+    expect(resolveInvocation.planFormat).toBeUndefined();
+    expect(resolveInvocation.designReview).toBeUndefined();
+    expect(resolveInvocation.prompt).toContain("YOUR ROLE: the design's author, answering a review.");
+    expect(resolveInvocation.prompt).toContain(`[${findingId}] blocker`);
+    expect(resolveInvocation.prompt).toContain("Retries have no upper bound.");
+    expect(resolveInvocation.prompt).toContain('<source-file kind="findings"');
 
-    // ---- round 2: the dispatch starts it for the revised design; the reviewers find nothing.
+    // ---- the planner needs a person: it asks, and the broker (never the planner) stores one question card and waits.
+    const questions = [{ id: "q1", unclear: "How many retries are allowed?", evidence: [{ kind: "design", section: "§3" }], options: [{ id: "a", label: "Three", consequence: "Most timeouts clear." }, { id: "b", label: "Five", consequence: "Customers wait." }], recommended: "a", why: "Fewer waits." }];
+    await w.artifact(w.workspaceId, String(resolveOne!.id), "plan.md", `${DESIGN_T1}${resolveBlock({ resolutions: [{ findingId, action: "asked", note: "Depends on a team rule.", questionId: "q1" }], questions })}`);
+    await w.finish(w.workspaceId, String(resolveOne!.id), "SUCCEEDED");
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "WAITING", designReview: { status: "waiting_answers" } });
+    expect(review(w).rounds[0]!.questions).toHaveLength(1);
+    expect(w.plannerOps()).toHaveLength(1);
+
+    // ---- the person answers; the answer and the planner's next run are one transaction, and the planner runs again.
+    const commit = designAnswersCommitItems({ tableName: "state", taskId: w.taskId, workflow: w.task().workflow, answers: [{ questionId: "q1", optionId: "a" }], actorId: w.owner, now: new Date().toISOString() });
+    await w.db.send(new TransactWriteCommand({ TransactItems: commit.items as never }));
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "READY", designReview: { status: "resolving" } });
     await w.sweep();
+    const [, resolveTwo] = w.plannerOps();
+    expect(resolveTwo, "the answers resumed the planner").toBeDefined();
+    const secondPrompt = (w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === resolveTwo!.id)[0]!.invocation as { payload: { prompt: string } }).payload.prompt;
+    expect(secondPrompt).toContain("A person answered your question card");
+    expect(secondPrompt).toContain("chose a) Three");
+    // The planner fixes the design: the BROKER stores the revised document under its own digest, and the resolution is applied.
+    await w.artifact(w.workspaceId, String(resolveTwo!.id), "plan.md", `${DESIGN_T2}${resolveBlock({ resolutions: [{ findingId, action: "asked", note: "Three, as the person said.", questionId: "q1" }], questions })}`);
+    await w.finish(w.workspaceId, String(resolveTwo!.id), "SUCCEEDED");
+    const stored = w.task().workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)!;
+    expect(stored).toMatchObject({ format: "markdown", sha256: sha256(DESIGN_T2) });
+    expect(stored.objectKey).toBe(designDocumentKey(w.task().ownerKey, w.workspaceId, stored.id));
+    expect(w.s3.objects.get(stored.objectKey)).toBe(DESIGN_T2);
+    const design2 = stored;
+
+    // ---- round 2: an answered question that changed the design earns a second read (3.2 as changed 2026-11-03), priced afresh; the dispatch started it at once.
+    expect(review(w).rounds[0]!.resolutions).toEqual([expect.objectContaining({ findingId, action: "asked", settled: true })]);
     const [, second] = w.operations();
     expect(second, "round 2 has an operation of its own").toBeDefined();
     expect(DesignReviewBindingSchema.parse(second!.designReview).round).toBe(2);
@@ -367,7 +420,7 @@ describe("the other ends a round has", () => {
     expect(review(w).spentUsd).toBeCloseTo(0.3, 6);
   });
 
-  it("blocks, as the plan check does, when the base rule files could not be verified; the owner's retry resumes the review and starts it again with its spend kept", async () => {
+  it("blocks, as the plan check does, when the base rule files could not be verified; the owner's retry resumes the review and starts it again at once, with its spend kept", async () => {
     const w = await world();
     const operationId = String(w.operations()[0]!.id);
     await w.finish(w.workspaceId, operationId, "FAILED", { error: `RUNTIME_UNAVAILABLE: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
@@ -375,10 +428,8 @@ describe("the other ends a round has", () => {
     expect(w.db.find((item) => item.entityType === "DESIGN_REVIEW_PACKET")).toEqual([]);
     const reply = await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry the design review.", expectedRevision: w.task().workflow.revision });
     expect(reply.status, JSON.stringify(reply.body)).toBeLessThan(300);
-    // The owner's route has no design-review ports of its own (wiring pending), so its immediate start is deferred and the row stays for the sweep, which has them.
-    expect(w.operations()).toHaveLength(1);
-    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
-    await w.sweep();
+    // The owner's route now has the round's ports (B2 item 4), so the immediate start runs: the review starts again at once, with no row left for the sweep.
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(0);
     // The review is estimated and started again: a second operation of its own, round 1 again, nothing recorded for the blocked one.
     expect(w.operations()).toHaveLength(2);
     expect(DesignReviewBindingSchema.parse(w.operations()[1]!.designReview).round).toBe(1);
@@ -436,7 +487,195 @@ describe("the other ends a round has", () => {
     expect(findings.filter((finding) => finding.origin === "rovara").map((finding) => [finding.severity, finding.text])).toEqual([["blocker", text]]);
     expect(findings.filter((finding) => finding.text === text)).toHaveLength(1);
     expect(findings.map((finding) => finding.text)).toContain("Retries have no upper bound.");
-    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "READY", designReview: { status: "resolving" } });
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", designReview: { status: "resolving" } });
   });
 });
 
+
+// ---- B2: the planner's side, the template, the spend card and the retry
+
+/** A world stopped right after round 1 was recorded with one blocker, with the planner's resolve run started. */
+async function afterRoundOne() {
+  const w = await world();
+  const operationId = String(w.operations()[0]!.id);
+  await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
+  const findingId = review(w).rounds[0]!.findings[0]!.id;
+  const [resolve] = w.plannerOps();
+  expect(resolve, "the planner's resolve run was started").toBeDefined();
+  return { w, findingId, resolveId: String(resolve!.id) };
+}
+
+describe("the planner's answer to the findings", () => {
+  const answerWith = async (w: World, resolveId: string, text: string) => { await w.artifact(w.workspaceId, resolveId, "plan.md", text); await w.finish(w.workspaceId, resolveId, "SUCCEEDED"); };
+
+  it("fixes, contests with evidence a reviewer could read, and goes on to round 2 only for a fixed blocker; the design is stored by the broker", async () => {
+    const { w, findingId, resolveId } = await afterRoundOne();
+    await answerWith(w, resolveId, `${DESIGN_T2}${resolveBlock({ resolutions: [{ findingId, action: "fixed", note: "Added §3.2." }] })}`);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", designReview: { status: "running" } });
+    expect(review(w).rounds[0]!.resolutions).toEqual([expect.objectContaining({ findingId, action: "fixed", settled: false })]);
+    expect(w.task().workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)!.sha256).toBe(sha256(DESIGN_T2));
+    // The second round is the last: its planner run (if any findings) may only fix or contest, and the bounds are the contract's (2 rounds, 2 revisions).
+    expect(w.operations()).toHaveLength(2);
+  });
+
+  it("refuses evidence the reviewers could not have read: a contest that rests on a source item alone, or on a citation not in the round's packets, leaves the design as reviewed with the findings unresolved", async () => {
+    const { w, findingId, resolveId } = await afterRoundOne();
+    const sourceOnly = { findingId, action: "contested", note: "No, it is bounded.", evidence: [{ kind: "source", ref: "tracker:ABC-9", digest: "a".repeat(64) }] };
+    await answerWith(w, resolveId, `${DESIGN_T1}${resolveBlock({ resolutions: [sourceOnly] })}`);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+    expect(review(w).rounds[0]!.resolutions).toEqual([]);
+    expect(w.operations()).toHaveLength(1);
+  });
+
+  it("accepts a contest that cites the design itself (positive control for the evidence check): the finding is settled and no second round runs", async () => {
+    const { w, findingId, resolveId } = await afterRoundOne();
+    await answerWith(w, resolveId, `${DESIGN_T1}${resolveBlock({ resolutions: [{ findingId, action: "contested", note: "§3.1 bounds the retry to one.", evidence: [{ kind: "design", section: "§3" }] }] })}`);
+    expect(review(w).rounds[0]!.resolutions).toEqual([expect.objectContaining({ findingId, action: "contested", settled: true })]);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+  });
+
+  it("an answer that cannot be read leaves the design as reviewed, with the findings unresolved; it is never a plan check move", async () => {
+    const { w, resolveId } = await afterRoundOne();
+    await answerWith(w, resolveId, "I fixed everything, trust me.");
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+    expect(w.task().workflow.critique).toBeUndefined();
+    expect(review(w).rounds[0]!.resolutions).toEqual([]);
+  });
+
+  it("a resolve run that ran out of its budget goes to the person as reviewed (skipPlanRevision, which refuses a design, is never called); a blocked run keeps the round's spend and the owner's Retry resumes the review", async () => {
+    const budget = await afterRoundOne();
+    await budget.w.finish(budget.w.workspaceId, budget.resolveId, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(budget.w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+    expect(budget.w.task().workflow.critique).toBeUndefined();
+
+    const { w, resolveId } = await afterRoundOne();
+    const spent = review(w).spentUsd;
+    await w.finish(w.workspaceId, resolveId, "FAILED", { error: `RUNTIME_UNAVAILABLE: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, designReview: { status: "resolving", spentUsd: spent } });
+    const reply = await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry.", expectedRevision: w.task().workflow.revision });
+    expect(reply.status, JSON.stringify(reply.body)).toBeLessThan(300);
+    // Resumed where it stood (the review's own move), not restarted as a plain planning run: a second resolve run, with the same spend, and no plan-check state.
+    expect(w.plannerOps()).toHaveLength(2);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "RUNNING", designReview: { status: "resolving", spentUsd: spent } });
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
+  });
+});
+
+describe("B-M2: a result that is computed again", () => {
+  it("is recorded in full when its first commit failed: the packets were still there, the keys are charged once, and the packets go with the commit that records the round", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"status":"resolving"'), error: { name: "InternalServerError" } });
+    await expect(runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 })).rejects.toBeDefined();
+    expect(review(w).rounds).toEqual([]);
+    // The failed attempt must not have thrown the packets away: the worker's resend finds them.
+    expect(await readSlotPacket({ documentClient: w.db, tableName: "state" }, TEST_ORG, operationId, 1, "r1-critic")).toBeDefined();
+    await w.finish(w.workspaceId, operationId, "SUCCEEDED");
+    const round = review(w).rounds[0]!;
+    expect(round.reviewers.map((run) => [run.role, run.verified, run.costUsd])).toEqual([["comprehension", true, 0.3], ["critic", true, 0.4], ["codebase", true, 0.2]]);
+    expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
+    expect(await readSlotPacket({ documentClient: w.db, tableName: "state" }, TEST_ORG, operationId, 1, "r1-critic")).toBeUndefined();
+  });
+
+  it("B-m1 and B-m4: the keys are blocked BEFORE the spend is read (a request admitted at the block is counted), and an uncounted run stores no session id of the worker's", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    // The proxy counts a request it had already admitted when the key is blocked: reading the spend before the block would miss it.
+    const blocked = new Set<string>();
+    w.access.blockKey.mockImplementation(async (keyId: string) => { blocked.add(keyId); });
+    const base = w.access.keySpend.getMockImplementation()!;
+    w.access.keySpend.mockImplementation(async (keyIds: readonly string[]) => (await base(keyIds)) + keyIds.filter((id) => blocked.has(id)).length * 0.07);
+    await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, codebase: { reportedDigest: "f".repeat(64) } });
+    const runs = new Map(review(w).rounds[0]!.reviewers.map((run) => [run.role, run] as const));
+    expect(runs.get("critic")!.costUsd).toBeCloseTo(0.47, 6);
+    expect(runs.get("codebase")).toMatchObject({ verified: false, sessionId: "none" });
+  });
+
+  it("B-m3: a blocked round keeps what its keys cost, and the Retry adds nothing more", async () => {
+    const w = await world();
+    const operationId = String(w.operations()[0]!.id);
+    const capability = ((w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    const key = JSON.parse((await rawGet(w.handler, "/v1/internal/model-access?slot=r1-critic", capability)).body) as { apiKey: string };
+    w.access.setKeySpent(key.apiKey, 0.25);
+    await w.finish(w.workspaceId, operationId, "FAILED", { error: `RUNTIME_UNAVAILABLE: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
+    expect(review(w).spentUsd).toBeCloseTo(0.25, 6);
+    await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry.", expectedRevision: w.task().workflow.revision });
+    expect(review(w).spentUsd).toBeCloseTo(0.25, 6);
+  });
+
+  it("B-m8: a cancelled round is not run as `cancelled`, not as a worker failure", async () => {
+    const w = await world();
+    await w.finish(w.workspaceId, String(w.operations()[0]!.id), "CANCELLED");
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { status: "not_run", notRunReason: "cancelled" } });
+  });
+});
+
+describe("the design template", () => {
+  it("is read strictly, stored as a Markdown document under its own digest, and sent to its review; every requirement id must be in §3 or the review adds a blocker", async () => {
+    const w = await world({ draft: DESIGN_T1, requirements: `${REQUIREMENTS}R3: Every retry is logged.\n` });
+    const design = w.task().workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)!;
+    expect(design).toMatchObject({ format: "markdown", sha256: sha256(DESIGN_T1) });
+    expect(w.s3.objects.get(design.objectKey)).toBe(DESIGN_T1);
+    expect(w.task().workflow).toMatchObject({ designReview: { status: "running" } });
+    // §8's reading list reached the packets (names only): the reviewers' packet for the design holds the file the meta block named.
+    const binding = DesignReviewBindingSchema.parse(w.operations()[0]!.designReview);
+    const packet = await readSlotPacket({ documentClient: w.db, tableName: "state" }, TEST_ORG, String(w.operations()[0]!.id), 1, binding.reviewers[0]!.keySlot);
+    expect(packet).toBeDefined();
+    await runWorker(w, String(w.operations()[0]!.id), {});
+    expect(review(w).rounds[0]!.findings.filter((finding) => finding.origin === "rovara").map((finding) => finding.text)).toEqual([expect.stringContaining("Requirement R3 appears in no §3 subsection")]);
+  });
+
+  it("a design with a section missing, or a meta block that does not read, is not stored: the step stops with the problems (and asks the planner once more where the self-check is on)", async () => {
+    for (const draft of ["# Design\n## §1 Problem and goal\nR1 and R2.\n", DESIGN_T1.replace('"touches":["new_api"]', '"touches":["new_api"],"mystery":1')]) {
+      const w = await world({ draft });
+      expect(w.task().workflow.artifacts.filter((artifact) => artifact.type === "design")).toEqual([]);
+      expect(w.operations()).toHaveLength(0);
+      expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.planUnreadable });
+      const unreadable = (w.task() as unknown as { planUnreadable: { errors: string[] } }).planUnreadable;
+      expect(unreadable.errors.join(" "), draft.slice(0, 30)).toMatch(/design lacks a heading|rovara-design-meta/u);
+    }
+  });
+});
+
+describe("the spend card's follow-through", () => {
+  const commit = async (w: World, choice: Parameters<typeof designSpendCommitItems>[0]["write"]["applied"]) => {
+    const result = designSpendCommitItems({ tableName: "state", taskId: w.taskId, workflow: w.task().workflow, write: { actorId: w.owner, applied: choice }, now: new Date().toISOString() });
+    await w.db.send(new TransactWriteCommand({ TransactItems: result.items as never }));
+    return result;
+  };
+
+  it("after a hold, raising the cap makes the round due at the new revision and the sweep starts it; the hold keeps the person's cap raise on the record", async () => {
+    const w = await world({ capUsd: 0.5 });
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost" } });
+    const raised = await commit(w, { choice: "raise_cap", newCapUsd: 20 });
+    expect(raised.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY", designReview: { status: "estimating", capUsd: 20 } });
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE" && item.workflowRevision === raised.workflow.revision)).toHaveLength(1);
+    await w.sweep();
+    expect(w.operations()).toHaveLength(1);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING", designReview: { status: "running", capUsd: 20, approvals: [expect.objectContaining({ kind: "raise_cap" })] } });
+  });
+
+  it("a lower tier does the same; a skip closes to the person's card with no row due", async () => {
+    const lower = await world({ capUsd: 0.5 });
+    const done = await commit(lower, { choice: "lower_tier", tier: "light" });
+    expect(done.workflow).toMatchObject({ designReview: { status: "estimating", tier: "light" } });
+    expect(lower.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toHaveLength(1);
+    const skipped = await world({ capUsd: 0.5 });
+    const closed = await commit(skipped, { choice: "skip" });
+    expect(closed.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "skipped", decidedBy: "person_skip" } });
+    expect(skipped.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
+  });
+
+  it("an unpriced-run approval is bound to the hold's revision and never lifts the cap: the row carries who approved, the hold stays, and no round starts over the cap", async () => {
+    const w = await world({ capUsd: 0.5 });
+    const hold = w.task().workflow;
+    const approved = await commit(w, { choice: "run_unpriced", stopAtMeasuredUsd: 0.5 });
+    expect(approved.workflow).toBe(hold);
+    expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toEqual([expect.objectContaining({ workflowRevision: hold.revision, costApprovedBy: w.owner })]);
+    await w.sweep();
+    expect(w.operations()).toHaveLength(0);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", revision: hold.revision, designReview: { status: "waiting_cost" } });
+    // A row whose revision is not the hold's is stale, whoever it names.
+    expect(() => designSpendCommitItems({ tableName: "state", taskId: w.taskId, workflow: { ...hold, designReview: { ...hold.designReview!, status: "estimating" } }, write: { actorId: w.owner, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 1 } }, now: NOW })).toThrow();
+  });
+});

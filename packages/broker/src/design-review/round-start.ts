@@ -24,9 +24,9 @@ import { isConditional } from "../aws/broker-shared.js";
 import { creatorGuard, iso, partyOfTaskActor, putNew, taskBaseOption, turnTable } from "../aws/developer-tasks/common.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
-import { estimateDesignReviewUsd, gateDesignReviewCost, nextLowerTier, reviewersForRound, TIER_HAS_MERGE_MODEL, designReviewKeyBudgets, type DesignReviewEstimate } from "./estimate.js";
+import { estimateDesignReviewUsd, gateDesignReviewCost, nextLowerTier, reviewersForRound, TIER_HAS_MERGE_MODEL, designReviewKeyBudgets, type DesignReviewCapGate, type DesignReviewEstimate } from "./estimate.js";
 import { mergeBindingFor } from "./merge-binding.js";
-import { buildReviewerPacket, PacketBuildError, PACKET_BYTES_MAX, type BuiltPacket, type PacketReaders } from "./packet.js";
+import { buildReviewerPacket, estimateInputTokens, PacketBuildError, PACKET_BYTES_MAX, type BuiltPacket, type PacketReaders } from "./packet.js";
 import { putSlotPackets } from "./packet-store.js";
 import { designSourcesOf, pinsOf } from "./round-inputs.js";
 import type { DesignReviewDispatch, DesignReviewResolved, DesignReviewRoundPorts } from "./round-ports.js";
@@ -77,10 +77,12 @@ export interface RoundInputs {
   ports: DesignReviewRoundPorts;
   design: { ref: string; revision: string; text: string; sha256: string };
   requirements: { ref: string; revision: string; text: string };
+  /** A person approved an unpriced run at the cost hold (dispatch row). The round then starts from WAITING with `costApproved`; the cap still holds. */
+  costApprovedBy?: string;
 }
 
 /** What a round's preparation leaves for the start: the figure `startDesignReview` is told. */
-interface Prepared { estimateUsd: number; binding: DesignReviewBinding }
+interface Prepared { estimateUsd: number | undefined; binding: DesignReviewBinding }
 
 /**
  * The whole preparation of one round (steps 1 to 5 above), given the model the operation resolved. Throws `DesignReviewRoundStop` for every way the round must not run; any other failure is turned into one (`worker_failed`),
@@ -98,11 +100,32 @@ export async function prepareDesignReviewRound(input: RoundInputs, resolved: Des
     const model = resolved.model;
     if (model === undefined || resolved.sourceId === undefined || resolved.sourceId === "personal-chatgpt") throw notRun("no_model_source");
     if (review.capUsd === undefined) throw new DesignReviewRoundStop({ kind: "at_cap" });
+    const capUsd = review.capUsd;
     const round = (review.rounds.length + 1) as 1 | 2;
     if (round > DESIGN_REVIEW_ROUNDS_MAX) throw notRun("worker_failed");
     const roles = reviewersForRound(review.tier, round);
 
-    // 2. The packets, read by the broker. The base commits are the task's own pins (never a worker's); the request text goes to the comprehension reviewer only (the builder drops it for the others).
+    // 2. What the round would cost, worked out in two steps. FIRST from the sizes alone (B-m7): the design and the requirements are the least any packet holds, so a hold on their size is certain and nothing else is read for it
+    //    (no source is fetched, and no MCP fetch is logged under an operation that never exists). THEN, if that passes, from the packets the broker builds with its own readers.
+    const reviewerModel: ModelIdentifier = { provider: model.provider, modelId: model.modelId };
+    const plannerSelection = await ports.plannerModel?.(task);
+    const plannerModel: ModelIdentifier = plannerSelection === undefined ? reviewerModel : { provider: plannerSelection.provider, modelId: plannerSelection.modelId };
+    const roundsLeft = (DESIGN_REVIEW_ROUNDS_MAX - review.rounds.length) as 1 | 2;
+    const estimateFor = (tier: DesignReviewTier, packetTokens: number): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models: { reviewer: reviewerModel, merge: reviewerModel, planner: plannerModel }, price: ports.price, packetTokens, rounds: roundsLeft });
+    const capCeilingUsd = await ports.capCeilingUsd(task.orgId);
+    const lower = nextLowerTier(review.tier);
+    const gateFor = (packetTokens: number) => gateDesignReviewCost({
+      tier: review.tier, capUsd, spentUsd: review.spentUsd, capCeilingUsd, estimate: estimateFor(review.tier, packetTokens),
+      ...(lower === undefined ? {} : { lowerTier: { tier: lower, estimate: estimateFor(lower, packetTokens) } }),
+      // The skip rules are applied per person when the spend card is built for them; the gate here only decides go or ask.
+      canSkip: false,
+    });
+    const floorTokens = estimateInputTokens(Buffer.byteLength(input.design.text, "utf8") + Buffer.byteLength(input.requirements.text, "utf8"));
+    const floorGate = gateFor(floorTokens);
+    // An unpriced run a person approved goes on past "cost unavailable"; an estimate over the cap is never lifted by an approval (the cap is raised, or a lower tier chosen, on the card).
+    const approved = (gate: DesignReviewCapGate): boolean => gate.kind === "ask" && gate.why === "cost_unavailable" && input.costApprovedBy !== undefined;
+    if (floorGate.kind === "ask" && !approved(floorGate)) throw new DesignReviewRoundStop({ kind: "hold", estimateUsd: floorGate.estimateUsd });
+
     const { readers, repositoryNames, origin } = await ports.sourceReaders(task, resolved.operationId);
     const shared = sharedReaders(readers);
     const baseCommits = pinsOf(taskBaseOption(task, workflow).workflowBase);
@@ -119,28 +142,20 @@ export async function prepareDesignReviewRound(input: RoundInputs, resolved: Des
       throw error;
     }
 
-    // 3. The estimate with the real packet size, for the rounds still to run, and the cost gate over what is left under the cap.
+    // 3. The estimate with the real packet size, and the cost gate over what is left under the cap AND under the task's own run limit (B-m2): the review cap and the task's limit are two different limits, and a round that the
+    //    task's remaining room cannot pay for would only spend money to hit `budget_exhausted` half way. The task's limit is its own stop, said as such.
     const packetTokens = Math.max(...built.map((packet) => packet.estimatedInputTokens));
-    const reviewerModel: ModelIdentifier = { provider: model.provider, modelId: model.modelId };
-    const plannerSelection = await ports.plannerModel?.(task);
-    const plannerModel: ModelIdentifier = plannerSelection === undefined ? reviewerModel : { provider: plannerSelection.provider, modelId: plannerSelection.modelId };
-    const roundsLeft = (DESIGN_REVIEW_ROUNDS_MAX - review.rounds.length) as 1 | 2;
-    const estimateFor = (tier: DesignReviewTier): DesignReviewEstimate => estimateDesignReviewUsd({ tier, models: { reviewer: reviewerModel, merge: reviewerModel, planner: plannerModel }, price: ports.price, packetTokens, rounds: roundsLeft });
-    const estimate = estimateFor(review.tier);
-    const lower = nextLowerTier(review.tier);
-    const gate = gateDesignReviewCost({
-      tier: review.tier, capUsd: review.capUsd, spentUsd: review.spentUsd, capCeilingUsd: await ports.capCeilingUsd(task.orgId), estimate,
-      ...(lower === undefined ? {} : { lowerTier: { tier: lower, estimate: estimateFor(lower) } }),
-      // The skip rules are applied per person when the spend card is built for them; the gate here only decides go or ask.
-      canSkip: false,
-    });
-    if (gate.kind === "ask") throw new DesignReviewRoundStop({ kind: "hold", estimateUsd: gate.estimateUsd });
+    const gate = gateFor(packetTokens);
+    if (gate.kind === "ask" && !approved(gate)) throw new DesignReviewRoundStop({ kind: "hold", estimateUsd: gate.estimateUsd });
+    const estimate = estimateFor(review.tier, packetTokens);
+    const taskRoomUsd = await ports.taskRoomUsd(task);
+    const perRoundUsd = estimate.kind === "priced" ? (estimate.breakdown.reviewersUsd + estimate.breakdown.mergeUsd) / estimate.rounds : 0;
+    if (taskRoomUsd <= 0 || taskRoomUsd < perRoundUsd) throw notRun("task_limit");
 
     // 4. The round's money: the review's room (the planner's revision is held back, it is not on a reviewer key) and the task's remaining run limit, one ceiling per slot, in one conditional write.
     const reservedUsd = estimate.kind === "priced" ? estimate.breakdown.plannerUsd : 0;
     const hasMerge = TIER_HAS_MERGE_MODEL[review.tier];
     const reviewRoomUsd = designReviewKeyBudgets({ capUsd: review.capUsd, spentUsd: review.spentUsd, reviewers: roles.length, hasMergeModel: hasMerge, reservedUsd }).roomUsd;
-    const taskRoomUsd = await ports.taskRoomUsd(task);
     const selection: ModelSelection = model;
     const binding = DesignReviewBindingSchema.parse({
       version: 1, round,
@@ -157,7 +172,7 @@ export async function prepareDesignReviewRound(input: RoundInputs, resolved: Des
 
     // 5. The packets are stored before the operation exists, under its id. If this fails nothing is dispatched, and the same operation is never given other bytes (a conflict refuses).
     await putSlotPackets(ports.table, { orgId: task.orgId, operationId: resolved.operationId, round, packets: built.map((packet) => ({ keySlot: slotOf(round, packet.role), packet })), nowMs: ports.now() });
-    return { estimateUsd: gate.estimateUsd, binding };
+    return { estimateUsd: gate.kind === "go" ? gate.estimateUsd : undefined, binding };
   } catch (error) {
     if (error instanceof DesignReviewRoundStop) throw error;
     console.log(JSON.stringify({ component: "broker", event: "design_review.round_not_prepared", taskId: task.taskId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
@@ -173,6 +188,8 @@ const artifactOf = (workflow: WorkflowSnapshot, type: WorkflowArtifact["type"]):
 /** Applies the move a stop calls for, if the task is still where the start found it. */
 async function applyStop(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, stop: RoundStop, now: string): Promise<"STARTED" | "STALE"> {
   const expectedRevision = workflow.revision;
+  // A round started from the cost hold (an approved unpriced run) that is held again stays where it is: the card the person decided on is still the card.
+  if (stop.kind === "hold" && workflow.state === "WAITING") return "STARTED";
   const next = stop.kind === "hold" ? holdDesignReviewForCost(workflow, { expectedRevision, ...(stop.estimateUsd === undefined ? {} : { estimateUsd: stop.estimateUsd }), now })
     : stop.kind === "at_cap" ? closeDesignReview(workflow, { expectedRevision, outcome: "stopped_at_cap", now })
       : closeDesignReview(workflow, { expectedRevision, outcome: "not_run", notRunReason: stop.reason, now });
@@ -181,7 +198,7 @@ async function applyStop(deps: DeveloperTaskRouteDependencies, task: DeveloperTa
       TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :critique AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":ready": "READY" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":ready": workflow.state },
     }));
   } catch (error) {
     // A task that moved meanwhile is the newer writer's.
@@ -198,12 +215,13 @@ async function applyStop(deps: DeveloperTaskRouteDependencies, task: DeveloperTa
  */
 export async function startDesignReviewRound(
   deps: DeveloperTaskRouteDependencies,
-  input: { task: DeveloperTaskRecord; workflow: WorkflowSnapshot; stepId: string; conversationId: (taskId: string, revision: number) => string; actor?: DeveloperCaller },
+  input: { task: DeveloperTaskRecord; workflow: WorkflowSnapshot; stepId: string; conversationId: (taskId: string, revision: number) => string; actor?: DeveloperCaller; /** Who approved an unpriced run at the cost hold (from the dispatch row): the only way a round starts from WAITING. */ costApprovedBy?: string },
 ): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
   const { task, workflow } = input;
   const ports = deps.designReview;
   const review = workflow.designReview;
-  if (!workflowIsDesignReviewing(workflow) || review === undefined || review.status !== "estimating" || review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX) return "STALE";
+  const approvedHold = input.costApprovedBy !== undefined && review?.status === "waiting_cost" && workflow.state === "WAITING";
+  if (!workflowIsDesignReviewing(workflow) || review === undefined || (review.status !== "estimating" && !approvedHold) || review.rounds.length >= DESIGN_REVIEW_ROUNDS_MAX) return "STALE";
   // A deployment whose broker did not give this path the round's ports (the owner's immediate start after a retry) leaves the dispatch row to the sweep, which has them.
   if (ports === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the design review cannot be started from here");
   await creatorGuard(deps, task);
@@ -226,7 +244,7 @@ export async function startDesignReviewRound(
   })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
 
   const roundInputs: RoundInputs = {
-    task, workflow, ports,
+    task, workflow, ports, ...(input.costApprovedBy === undefined ? {} : { costApprovedBy: input.costApprovedBy }),
     design: { ref: `design-v${designArtifact.version}`, revision: designArtifact.sha256.slice(0, 12), text: design.markdown, sha256: designArtifact.sha256 },
     requirements: { ref: `requirements-v${requirementsArtifact.version}`, revision: requirementsArtifact.sha256.slice(0, 12), text: requirements.markdown },
   };
@@ -236,13 +254,13 @@ export async function startDesignReviewRound(
     const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId, prompt: designReviewOperationPrompt(round) }, (operation) => {
       if (prepared === undefined) throw agentXError("CONFIG_INVALID", "the design review round was not prepared");
       // The workflow moves READY -> RUNNING by the review's own move, which refuses a start the cap does not allow, whoever calls.
-      const next = startDesignReview(workflow, { expectedRevision: workflow.revision, estimateUsd: prepared.estimateUsd, now: receivedAt });
+      const next = startDesignReview(workflow, { expectedRevision: workflow.revision, ...(prepared.estimateUsd === undefined ? {} : { estimateUsd: prepared.estimateUsd }), ...(input.costApprovedBy === undefined ? {} : { costApproved: { by: { actorId: input.costApprovedBy } } }), now: receivedAt });
       return [
         { Update: {
           TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
           ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :critique AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
           ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":ready": "READY" },
+          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":ready": workflow.state },
         } },
         putNew(turnTable(deps), aiToolTurn({
           party: input.actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, input.actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
