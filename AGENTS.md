@@ -51,6 +51,9 @@ node scripts/lint-shards.ts --only <shard>          # one lint shard (`--list` n
   isn't. Write `--include='*.ts'`, or use `git grep -n foo -- '*.ts'` or the Grep tool.
 - macOS `sed -i` needs an argument: `sed -i '' 's/a/b/' file`.
 - There is no `timeout` command on macOS by default.
+- Don't wait with `sleep`: run long commands in the background and wait for the completion notice.
+- Run each command once. The shell keeps its working directory between calls; don't repeat a command with and
+  without a `cd <dir> &&` prefix.
 
 ## Conventions that save time
 
