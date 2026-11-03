@@ -1,7 +1,7 @@
 // Test services, slice 2 (broker side): Rovara local AWS (`emulated`) for exactly S3, SQS and DynamoDB. The approval, the plan (checks and coding), the proposal from detector candidates, the approve card, the evidence rows and the
 // pull request lines. Everything else AWS offers, and any emulated dependency without a pinned local-aws, is "not available yet"; with tx off or with no emulated dependency everything reads as it did in slice 1.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
+import { TestEnvRegionSchema, TestEnvironmentBodySchema, TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, EMULATED_TASK_SERVICES, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
@@ -158,6 +158,19 @@ describe("the plan of Rovara local AWS", () => {
     expect(TaskDependencyPlanSchema.safeParse({ ...s3, family: "postgres" }).success).toBe(false);
     expect(TaskDependencyPlanSchema.safeParse({ ...local, aws: { services: ["s3"], region: "us-east-1" } }).success).toBe(false);
     expect(TaskDependencyPlanSchema.safeParse({ ...local, catalogId: "local-aws@r1" }).success).toBe(false);
+  });
+
+  it("wire: aws.services is exactly S3, SQS and DynamoDB (at most 3), and a region is a short region name", () => {
+    const [, s3] = (plansOf([postgres(), aws("s3", { connect: AWS_CONNECT })]) as { ok: true; dependencies: Array<Record<string, unknown>> }).dependencies;
+    const withAws = (value: unknown) => TaskDependencyPlanSchema.safeParse({ ...s3, aws: value }).success;
+    expect(withAws({ services: ["s3", "sqs", "dynamodb"], region: "us-east-1" })).toBe(true);
+    expect(withAws({ services: ["s3", "sns"], region: "us-east-1" })).toBe(false);
+    expect(withAws({ services: ["s3", "s3", "sqs", "dynamodb"], region: "us-east-1" })).toBe(false);
+    expect(withAws({ services: ["s3", "lambda"], region: "us-east-1" })).toBe(false);
+    expect(withAws({ services: [], region: "us-east-1" })).toBe(false);
+    expect(TestEnvRegionSchema.safeParse("us-east-1").success).toBe(true);
+    expect(TestEnvRegionSchema.safeParse(`us-${"a".repeat(40)}-1`).success).toBe(false);
+    expect(withAws({ services: ["s3"], region: `us-${"a".repeat(40)}-1` })).toBe(false);
   });
 
   it("is a worker feature of its own", () => {
@@ -327,7 +340,17 @@ describe("the proposal from detector candidates", () => {
   it("proposes the same Postgres it did in slice 1 when there is nothing from AWS", () => {
     const proposal = proposeDependencies([candidate("postgres")], context());
     expect(proposal.dependencies).toHaveLength(1);
-    expect(proposal.dependencies[0]).toMatchObject({ id: "postgres", backing: { kind: "local", catalogId: "postgres@16", config: {} }, connect: { hostAliases: ["postgres"] } });
+    expect(proposal.dependencies[0]).toEqual({
+      id: "postgres", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "template.yaml", line: 40 }], usedBy: ["integration"], reset: "fresh_per_round", seeds: [],
+      backing: { kind: "local", catalogId: "postgres@16", config: {} },
+      connect: {
+        env: [
+          { name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }, { name: "PGHOST", template: "{host}" }, { name: "PGPORT", template: "{port}" },
+          { name: "PGUSER", template: "{user}" }, { name: "PGPASSWORD", template: "{password}" }, { name: "PGDATABASE", template: "{db}" },
+        ],
+        hostAliases: ["postgres"],
+      },
+    });
   });
 });
 

@@ -6,7 +6,7 @@
 //
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Every other backing, and every
 // other AWS service, is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { emulatorServiceTier, loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@agentx/contracts";
+import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@agentx/contracts";
 import { chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 
 /**
@@ -37,7 +37,7 @@ export type DependencyPlanResult = { ok: true; dependencies: TaskDependencyPlan[
  * The AWS services Rovara local AWS backs on a task (slice 2). The emulator has more, and the contract allows more; every other service is "not available yet" until its own slice (design 5.2 tiers, the compatibility suite).
  * The names are AWS service ids (`aws:s3` is the family of `s3`).
  */
-export const EMULATED_TASK_SERVICES: readonly string[] = ["s3", "sqs", "dynamodb"];
+export const EMULATED_TASK_SERVICES: readonly string[] = TEST_SERVICES_AWS_PLAN_SERVICES;
 
 type DependencyBacking = TestEnvDependency["backing"];
 type EmulatedBacking = Extract<DependencyBacking, { kind: "emulated" }>;

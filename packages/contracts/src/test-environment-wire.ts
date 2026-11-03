@@ -11,7 +11,7 @@ import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import {
-  AwsServiceIdSchema, CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
+  CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
@@ -31,6 +31,8 @@ export const TEST_SERVICES_PLAN_FEATURE = "task.testServices.v1";
  * not is never sent such a plan (its strict parse would refuse the field): the broker refuses the run to it at dispatch (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`; the worker lists it only when it can start the emulator.
  */
 export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
+/** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
+export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -147,7 +149,7 @@ export const TaskDependencyPlanSchema = z
     seeds: z.array(SeedRefSchema).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
-    aws: z.object({ services: z.array(AwsServiceIdSchema).min(1).max(TEST_ENV_DEPENDENCY_LIMITS.awsServices), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
+    aws: z.object({ services: z.array(z.enum(TEST_SERVICES_AWS_PLAN_SERVICES)).min(1).max(TEST_SERVICES_AWS_PLAN_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {
@@ -160,7 +162,7 @@ export const TaskDependencyPlanSchema = z
       if (plan.aws === undefined) problem(["aws"], "an emulated dependency names its AWS services");
       else {
         if (new Set(plan.aws.services).size !== plan.aws.services.length) problem(["aws", "services"], "a service is listed once");
-        if (plan.family.startsWith("aws:") && !plan.aws.services.includes(plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
+        if (plan.family.startsWith("aws:") && !(plan.aws.services as readonly string[]).includes(plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
       }
     }
     if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");
