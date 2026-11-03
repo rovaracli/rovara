@@ -1,36 +1,37 @@
 #!/bin/bash
-# The live done-check of test services slice 1 (ROUND-2026-11-03-test-services-hookup.md, "What it proves", items 1-9): ONE staging project, `tx` on, ONE dependency (Postgres 16 from the catalog), one task, end to end.
-# WRITTEN, NOT RUN. Nothing here has been run against staging. It runs only after the OWNER GO for `tx` on one project (DECISIONS: "Test services: thin slice first"), the catalog steps 1-5 and the Linux checks
-# TS-L1..L4, L6 and TS-RN-4 (scripts/linux-check-test-services.sh), and refuses to start without them (STAGING_E2E_OWNER_GO below).
+# The live done-check of test services slice 1 (ROUND-2026-11-03-test-services-hookup.md, "What it proves", items 1-9): ONE staging project, `tx` on, ONE dependency (Postgres 16 from the catalog), tasks run through
+# Rovara itself. WRITTEN, NOT RUN against staging. It runs only after the OWNER GO for `tx` on one project (DECISIONS: "Test services: thin slice first"), the catalog steps 1-5, and refuses to start without it
+# (STAGING_E2E_OWNER_GO below).
 #
-# ROOT COMMANDS ON THE WORKER. Steps P4, 4 and 7 run READ-ONLY commands as root on the staging worker through SSM (`AWS-RunShellScript`: `docker ps`, `docker network ls`, `docker images`, `ls` of the run directory). The owner's OK for
-# this script covers those commands; each is shown in full in the script. Nothing on the worker is changed.
-#
-# WHAT IT DOES
-#   - every AWS call goes through ~/.local/share/rovara-tools/staging-aws.sh (account 944937319445, us-west-2) and is READ-ONLY (sts, ecr describe-images, ssm describe/get-parameter, ssm send-command of a read-only
-#     `docker ps/network ls` on the worker). It creates nothing in AWS, deploys nothing, reads no secret (no secretsmanager call at all).
-#   - the Rovara API calls (propose / check / prove / approve of the project's test environment, task start and read) use ONE bearer token read from a FILE (ROVARA_STAGING_TOKEN_FILE, mode 600); the token is never
-#     printed, never put in an argument (curl reads the header from the file), and never written to the output.
-#   - the output is one line per check:  TSE <id> PASS|FAIL|OPERATOR <name> | <one line of evidence>   and a summary. Exit 0 only if every automated check passes and no OPERATOR step is left.
+# NO SSM, NO ROOT ON THE WORKER. Staging workers are not SSM-managed (their instance profile has no SSM permission, by design). Everything here is one of:
+#   - the Rovara API (propose, check, prove, a task on the escape project, the task's view), with ONE bearer token read from a file (mode 600; never printed, never in an argument: curl reads the header from a file);
+#   - the staging guard (~/.local/share/rovara-tools/staging-aws.sh, account 944937319445, us-west-2) for READ-ONLY AWS calls: sts, ecr describe-images, logs filter-log-events. It creates nothing, deploys nothing, reads no secret;
+#   - the WORKER'S OWN SELF-REPORT in CloudWatch Logs (log group /agentx/<env>/worker): after every test-services run and at every worker start the worker logs ONE `test-services.report` line with fixed fields (leftover
+#     labelled containers and networks, run directory empty and tmpfs, working sandbox paused or not) and, at start, the facts root wrote at boot (metadata block, run-network walls, IPv6 drops, pre-pull, registry
+#     logout). See packages/worker/src/test-services-report.ts. No name, path or secret is in them.
+#   - the ESCAPE PROJECT (tests/fixtures/test-services-escape-project): a project whose tests try to get out of a sealed round (internet, IPv6, the working sandbox's address, a planted table, a process left running in
+#     the working sandbox) and pass only if each attempt fails. Its results come back through the task's normal evidence.
 #
 # THE STEPS (the numbers are the done-definition's)
-#   P1-P4  preconditions (AWS, read-only): signed in to the staging account; the catalog repository holds postgres by digest; the catalog's pinned digest matches the repository; no leftover run-network objects on the worker.
-#   1      dependencies listed: the proposal for the project's latest setup draft lists Postgres with its source line (needs a setup draft: an OPERATOR step if none exists).
-#   2      Prove passes: the candidate check starts Postgres and the two Prove steps "dependencies" and "dependency_usage" are passed.
-#   3      a task passes a check round: an OPERATOR starts ONE task on the project (the app, or `POST /v1/app/tasks`), gives its id here; the script waits for it and reads its evidence.
-#   4      the worker pulled the pinned image BY DIGEST from rovara-catalog/staging/svc/postgres (ecr describe-images shows the pull time; the worker's log line is read through SSM).
-#   5      the PR (or the evidence summary file the operator saves from the task) says `Integration tests ran against: Postgres (real).`
-#   6      unknown calls fail loudly: the operator adds a test that calls an unlisted host; the evidence says `Blocked by environment: N call(s)` with a registrable domain and a count and NO full name.
-#   7      teardown is clean after success, failure, cancel and a killed worker: nothing with the label rovara.run-network is left on the worker (read through SSM) and the run directory is gone.
-#   8      switch off = today: with `tx` off for the project the same task runs as before (the operator flips the switch back; the script compares the dispatch payload fields the broker kept).
-#   L3     (live, not scriptable here) detached-process relay during a sealed round: the operator leaves a background process (a `nc`/`socat` relay) running in the WORKING sandbox, starts a sealed round, and checks that
-#          the process is frozen (`docker inspect -f '{{.State.Paused}}'` on the working sandbox is true for the whole round, false after) and that nothing it was given reaches outside. Recorded under TS-L3 in DEFERRED-CHECKS.
-#   9      any other backing is refused with "not available yet" at approval and at dispatch (the script proposes a draft with an S3 candidate and expects the refusal words).
+#   P1-P3  preconditions (read-only AWS): the staging account; the catalog repository holds postgres by digest; the committed catalog pin is one of them.
+#   P4     the worker's start report (CloudWatch): boot facts all true, pre-pull ok and logged out, nothing left over, the run directory empty and a tmpfs. (This replaces the read-only host checks of
+#          scripts/linux-check-test-services.sh L1/L5/L6 that needed a shell.)
+#   1      dependencies listed: the proposal for the project's latest setup draft lists Postgres with its source line.
+#   2      Prove passes: the candidate check starts Postgres; the Prove steps "dependencies" and "dependency_usage" are passed.
+#   3      a task passes a check round: the script starts ONE task on the escape project (--escape-project) through the API (or take --task <id> of one you started in the app) and waits for it.
+#   4      the escape project's tests all passed in the sealed round (its checks passed in the task's view or the evidence file), and the worker's run_end report is clean.
+#   5      the PR line: `Integration tests ran against: Postgres (real).` in the task's view or --evidence <file>.
+#   6      unknown calls fail loudly: the escape project's internet test makes name lookups; the evidence says `Blocked by environment: N call(s)` with a registrable domain and a count, no full name.
+#   7      teardown is clean after success, failure, cancel and a killed worker: the run_end reports since the script started (outcome by outcome: pass --expect-outcome completed|failed|cancelled) show nothing left, the run
+#          directory empty and the working sandbox not paused; after a worker restart the worker_start report shows what the sweep removed and nothing left (--expect-swept).
+#   8      switch off = today: the operator turns tx off for the project, starts the same task and compares with a task from before the release (a person's step).
+#   9      any other backing is refused with "not available yet" (the broker's unit tests cover the words; propose a draft with an S3 candidate in the app to see them).
+#   L3     detached-process relay during a sealed round: the escape project's relay test (it needs the project's setup command, `npm run setup`, to have run in the working sandbox: --require-heartbeat makes a skipped relay test a FAIL).
 #
-# USAGE  (from the repository root, on the Mac; zsh or bash)
-#   STAGING_E2E_OWNER_GO=yes ROVARA_STAGING_URL=https://<staging api> ROVARA_STAGING_TOKEN_FILE=$HOME/.rovara-staging-token ROVARA_STAGING_PROJECT=<project> \
-#     scripts/staging-test-services-e2e.sh [--task <task id>] [--evidence <file>] [--worker <instance id>] [--only <id>[,<id>...]]
-#   Re-run with --task / --evidence after the operator steps. Without them the script stops at the first OPERATOR step and says what to do.
+# USAGE  (from the repository root on the Mac)
+#   STAGING_E2E_OWNER_GO=yes ROVARA_STAGING_URL=https://<staging api> ROVARA_STAGING_TOKEN_FILE=$HOME/.rovara-staging-token ROVARA_STAGING_PROJECT=<project with the dependency> \
+#     scripts/staging-test-services-e2e.sh [--escape-project <name>] [--task <id>] [--evidence <file>] [--expect-outcome <o>] [--expect-swept] [--env <name>] [--since <epoch ms>] [--only <id>[,<id>...]]
+#   Re-run with --task / --evidence / --expect-outcome after the steps a person does. Without them it stops at the first step that needs one and says what to do.
 set -u
 export LC_ALL=C
 
@@ -39,17 +40,29 @@ EXPECTED_ACCOUNT=944937319445
 CATALOG_REPOSITORY_SUFFIX="svc/postgres"
 TASK_ID=""
 EVIDENCE_FILE=""
-WORKER=""
+ESCAPE_PROJECT=""
+EXPECT_OUTCOME=""
+EXPECT_SWEPT=""
+REQUIRE_HEARTBEAT=""
+ENV_NAME="staging"
+SINCE_MS=$(( $(date +%s) * 1000 ))
 ONLY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --task) TASK_ID="${2:-}"; shift 2 ;;
     --evidence) EVIDENCE_FILE="${2:-}"; shift 2 ;;
-    --worker) WORKER="${2:-}"; shift 2 ;;
+    --escape-project) ESCAPE_PROJECT="${2:-}"; shift 2 ;;
+    --expect-outcome) EXPECT_OUTCOME="${2:-}"; shift 2 ;;
+    --expect-swept) EXPECT_SWEPT=1; shift ;;
+    --require-heartbeat) REQUIRE_HEARTBEAT=1; shift ;;
+    --env) ENV_NAME="${2:-}"; shift 2 ;;
+    --since) SINCE_MS="${2:-}"; shift 2 ;;
     --only) ONLY="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+[[ "$ENV_NAME" =~ ^[a-z][a-z0-9-]{0,19}$ ]] || { echo "REFUSED: not an environment name." >&2; exit 3; }
+[[ "$SINCE_MS" =~ ^[0-9]{10,16}$ ]] || { echo "REFUSED: --since is epoch milliseconds." >&2; exit 3; }
 
 pass=0; fail=0; operator=0
 say() { printf 'TSE %s %s %s | %s\n' "$1" "$2" "$3" "$4"; case "$2" in PASS) pass=$((pass+1));; FAIL) fail=$((fail+1));; OPERATOR) operator=$((operator+1));; esac; }
@@ -72,24 +85,6 @@ api() { # api METHOD PATH [JSON-BODY]  -> prints the body, sets API_STATUS
   API_STATUS=$(curl "${args[@]}" 2>"$WORK/api.err") || API_STATUS=000
   cat "$WORK/api.out"
 }
-# ssm_run INSTANCE 'shell text' -> prints the command's output; sets SSM_STATUS (Success|Failed|Timeout...). Polls until the invocation ends or 120 s pass; an empty answer from a command that did not succeed is a FAIL for the caller.
-# The status of the last ssm_run is kept in a file (ssm_run runs in a command substitution, so a variable it sets would be lost): read it with ssm_status.
-ssm_status() { cat "$WORK/ssm-status" 2>/dev/null || echo Unsent; }
-ssm_run() {
-  local instance="$1" text="$2" id status i params="$WORK/ssm-params.json" SSM_STATUS=Unsent
-  trap 'printf "%s" "$SSM_STATUS" > "$WORK/ssm-status"' RETURN
-  # The parameters are JSON in a file, never the `commands=[...]` shorthand: a command with quotes or braces ("{{.Names}}") would break the shorthand's own parser.
-  python3 -c 'import json,sys; print(json.dumps({"commands": [sys.argv[1]]}))' "$text" > "$params" || return 1
-  id=$("$STAGING" aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "file://$params" --query Command.CommandId --output text 2>/dev/null) || return 1
-  [[ -n "$id" && "$id" != None ]] || return 1
-  for i in $(seq 1 60); do
-    sleep 2
-    status=$("$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query Status --output text 2>/dev/null) || status=Pending
-    case "$status" in Success|Failed|Cancelled|TimedOut) SSM_STATUS="$status"; break ;; esac
-  done
-  [[ "$SSM_STATUS" == Success || "$SSM_STATUS" == Failed ]] || { SSM_STATUS="${status:-Timeout}"; return 1; }
-  "$STAGING" aws ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text 2>/dev/null
-}
 ENV_PATH="/v1/app/projects/$ROVARA_STAGING_PROJECT/test-environment"
 json() { python3 -c 'import json,sys
 try:
@@ -100,29 +95,67 @@ try:
 except Exception:
     print("")' "$1"; }
 
-# ---- P1-P4 preconditions (read-only AWS)
+# ---- the worker's self-report, read from CloudWatch Logs through the staging guard (read-only)
+LOG_GROUP="/agentx/$ENV_NAME/worker"
+# reports PHASE -> prints each `test-services.report` line of that phase since $SINCE_MS as one compact JSON object per line (oldest first). A failed read prints nothing and returns 1.
+reports() {
+  local phase="$1" out
+  out=$("$STAGING" aws logs filter-log-events --log-group-name "$LOG_GROUP" --start-time "$SINCE_MS" --filter-pattern '"test-services.report"' --query 'events[].message' --output json 2>/dev/null) || return 1
+  printf '%s' "$out" | PHASE="$phase" python3 -c 'import json,os,sys
+phase=os.environ["PHASE"]
+try:
+    messages=json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for message in messages or []:
+    try:
+        line=json.loads(message)
+    except Exception:
+        continue
+    if line.get("event")=="test-services.report" and line.get("phase")==phase:
+        print(json.dumps(line,sort_keys=True))'
+}
+# field LINE NAME -> the field's value
+field() { printf '%s' "$1" | json "$2"; }
+
+# ---- P1-P3 preconditions (read-only AWS)
 if wanted P1; then
   account=$("$STAGING" aws sts get-caller-identity --query Account --output text 2>/dev/null)
   [[ "$account" == "$EXPECTED_ACCOUNT" ]] && say P1 PASS "staging account" "account $account, region us-west-2 (the guard refuses any other)" || say P1 FAIL "staging account" "got '${account:-nothing}'"
 fi
+digests=""
+if wanted P2 || wanted P3; then digests=$("$STAGING" aws ecr describe-images --repository-name "rovara-catalog/$ENV_NAME/$CATALOG_REPOSITORY_SUFFIX" --query 'imageDetails[].imageDigest' --output text 2>/dev/null); fi
 if wanted P2; then
-  digests=$("$STAGING" aws ecr describe-images --repository-name "rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX" --query 'imageDetails[].imageDigest' --output text 2>/dev/null)
-  [[ -n "$digests" ]] && say P2 PASS "catalog repository holds postgres" "$(echo "$digests" | wc -w | tr -d ' ') image digest(s) in rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX" || say P2 FAIL "catalog repository holds postgres" "no image: the repack (catalog step 3) has not been done"
+  [[ -n "$digests" ]] && say P2 PASS "catalog repository holds postgres" "$(echo "$digests" | wc -w | tr -d ' ') image digest(s) in rovara-catalog/$ENV_NAME/$CATALOG_REPOSITORY_SUFFIX" || say P2 FAIL "catalog repository holds postgres" "no image: the repack (catalog step 3) has not been done"
 fi
 if wanted P3; then
   pinned=$(python3 -c 'import json;d=json.load(open("environments/service-catalog/catalog.json"));print(" ".join(e["image"].get("digest","") for e in d["entries"] if e["id"]=="postgres@16"))' 2>/dev/null)
-  if [[ -z "${digests:-}" ]]; then digests=$("$STAGING" aws ecr describe-images --repository-name "rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX" --query 'imageDetails[].imageDigest' --output text 2>/dev/null); fi
   if [[ -n "$pinned" && "$digests" == *"sha256:${pinned#sha256:}"* ]]; then say P3 PASS "catalog pin matches the repository" "postgres@16 is pinned to a digest the repository holds"; else say P3 FAIL "catalog pin matches the repository" "the committed catalog pin '${pinned:-none}' is not among the repository's digests (catalog step 4/5)"; fi
 fi
-if wanted P4 && [[ -n "$WORKER" ]]; then
-  cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo END'
-  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *END* ]]; then
-    objects=$(echo "$out" | grep -v '^START$\|^END$' | tr -d '[:space:]')
-    [[ -z "$objects" ]] && say P4 PASS "no leftovers before the run" "no container or network with the run-network label on $WORKER" || say P4 FAIL "no leftovers before the run" "leftover objects: $(echo "$out" | grep -v '^START$\|^END$' | head -3 | tr '\n' ' ')"
-  else say P4 FAIL "no leftovers before the run" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
-elif wanted P4; then say P4 OPERATOR "no leftovers before the run" "pass --worker <instance id> (an SSM managed worker)"; fi
 
-# ---- 1 dependencies listed, 9 other backings refused (the broker's own words)
+# ---- P4 the worker's start report: root's facts and nothing left over
+if wanted P4; then
+  if lines=$(reports worker_start) && [[ -n "$lines" ]]; then
+    last=$(printf '%s\n' "$lines" | tail -n1)
+    bad=$(printf '%s' "$last" | python3 -c 'import json,sys
+r=json.load(sys.stdin); f=r.get("bootFacts"); bad=[]
+if not isinstance(f,dict): bad.append("boot facts "+str(f))
+else:
+    for k in ("metadataBlocked","runWalls","ipv6Drops","loggedOut"):
+        if f.get(k) is not True: bad.append(k)
+    if f.get("prepull")!="ok": bad.append("prepull "+str(f.get("prepull")))
+    if not isinstance(f.get("prepulled"),int) or f["prepulled"]<1: bad.append("nothing pre-pulled")
+if r.get("leftoverContainers")!=0 or r.get("leftoverNetworks")!=0: bad.append("leftover objects")
+if r.get("runDirEmpty") is not True: bad.append("run directory not empty")
+if r.get("runDirTmpfs") is not True: bad.append("run directory not a tmpfs")
+print(", ".join(bad))' 2>/dev/null)
+    [[ -z "$bad" ]] && say P4 PASS "worker start report" "boot facts all true, pre-pull ok and logged out, nothing left over, run directory empty and a tmpfs" || say P4 FAIL "worker start report" "${bad:-unreadable report}"
+  else
+    say P4 FAIL "worker start report" "no worker_start report in $LOG_GROUP since $SINCE_MS (restart a worker, or pass an earlier --since), or the log read failed"
+  fi
+fi
+
+# ---- 1 dependencies listed
 if wanted 1; then
   reply=$(api POST "$ENV_PATH/propose" '{}')
   if [[ "$API_STATUS" == "200" || "$API_STATUS" == "201" ]]; then
@@ -140,6 +173,7 @@ fi
 if wanted 2 && [[ -n "${digest:-}" ]]; then
   api POST "$ENV_PATH/check" "{\"digest\":\"$digest\",\"requestId\":\"$(uuidgen | tr 'A-Z' 'a-z')\"}" > /dev/null
   [[ "$API_STATUS" == "202" ]] || say 2 FAIL "candidate check started" "check answered $API_STATUS"
+  proved=""
   for _ in $(seq 1 60); do
     sleep 10
     proved=$(api POST "$ENV_PATH/prove" "{\"digest\":\"$digest\"}")
@@ -151,48 +185,84 @@ print(" ".join(s["step"]+"="+s["status"] for s in r.get("steps",[]) if s["step"]
   [[ "$steps" == *dependencies=passed* && "$steps" == *dependency_usage=passed* ]] && say 2 PASS "Prove passes" "$steps" || say 2 FAIL "Prove passes" "${steps:-no Prove report} (status $API_STATUS)"
 fi
 
-# ---- 3-7 need a real task: the operator starts it
+# ---- 3 a task on the escape project, through the API
 if wanted 3; then
-  if [[ -z "$TASK_ID" ]]; then
-    say 3 OPERATOR "a task passes a check round" "approve the proved proposal in the app, start ONE task on $ROVARA_STAGING_PROJECT, then re-run with --task <task id> --evidence <the task's evidence summary saved as a file>"
-  else
-    view=$(api GET "/v1/app/tasks/$TASK_ID")
-    state=$(echo "$view" | json status)
-    [[ "$API_STATUS" == "200" ]] && say 3 PASS "task found" "task $TASK_ID is $state" || say 3 FAIL "task found" "GET task answered $API_STATUS"
+  if [[ -z "$TASK_ID" && -n "$ESCAPE_PROJECT" ]]; then
+    reply=$(api POST "/v1/dev/tasks" "{\"requestId\":\"$(uuidgen | tr 'A-Z' 'a-z')\",\"project\":\"$ESCAPE_PROJECT\",\"instructions\":\"Add one line to README.md that says the escape project ran. Change nothing else.\",\"client\":\"staging-test-services-e2e\"}")
+    TASK_ID=$(echo "$reply" | json task.taskId)
+    [[ -n "$TASK_ID" ]] && say 3 PASS "task started" "task $TASK_ID on $ESCAPE_PROJECT (the API answered $API_STATUS)" || say 3 OPERATOR "task started" "the API answered $API_STATUS and gave no task id: start ONE task on $ESCAPE_PROJECT in the app, then re-run with --task <id>"
+  elif [[ -z "$TASK_ID" ]]; then
+    say 3 OPERATOR "a task passes a check round" "pass --escape-project <name> (the project whose tests are tests/fixtures/test-services-escape-project) to start one, or --task <id> of one you started"
+  fi
+  if [[ -n "$TASK_ID" ]]; then
+    : > "$WORK/view.json"
+    for _ in $(seq 1 180); do
+      sleep 10
+      view=$(api GET "/v1/dev/tasks/$TASK_ID"); printf '%s' "$view" > "$WORK/view.json"
+      [[ "$API_STATUS" == "200" ]] || continue
+      state=$(echo "$view" | python3 -c 'import json,sys
+d=json.load(sys.stdin); t=d.get("task") or d
+print(t.get("status") or t.get("state") or (t.get("workflow") or {}).get("state") or "")' 2>/dev/null)
+      case "$state" in SUCCEEDED|FAILED|CANCELLED|COMPLETED|MERGED|READY_FOR_REVIEW|BLOCKED) break ;; esac
+    done
+    [[ -s "$WORK/view.json" ]] && say 3 PASS "task reached an end state" "task $TASK_ID is ${state:-unknown}" || say 3 FAIL "task reached an end state" "no view of task $TASK_ID"
   fi
 fi
-if wanted 4 && [[ -n "$TASK_ID" ]]; then
-  # The worker logs one fixed line per pull; the image digest is read from the catalog pin, never from the log's free text.
-  if [[ -n "$WORKER" ]]; then
-    if out=$(ssm_run "$WORKER" 'echo START; docker images --digests --format "{{.Repository}}@{{.Digest}}" | grep rovara-catalog/; echo END') && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *END* ]]; then
-      [[ "$out" == *"rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:"* ]] && say 4 PASS "pre-pulled by digest" "$(echo "$out" | grep rovara-catalog | head -1)" || say 4 FAIL "pre-pulled by digest" "no rovara-catalog/staging/$CATALOG_REPOSITORY_SUFFIX@sha256:<digest> image on the worker (root pre-pulls at boot; the worker never pulls)"
-    else say 4 FAIL "pre-pulled by digest" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
-  else say 4 OPERATOR "pre-pulled by digest" "pass --worker <instance id>"; fi
-fi
-if wanted 5 && [[ -n "$EVIDENCE_FILE" ]]; then
-  grep -q 'Integration tests ran against: Postgres (real)\.' "$EVIDENCE_FILE" && say 5 PASS "the PR line" "'Integration tests ran against: Postgres (real).' is in $EVIDENCE_FILE" || say 5 FAIL "the PR line" "the line is not in $EVIDENCE_FILE"
-elif wanted 5; then say 5 OPERATOR "the PR line" "pass --evidence <file with the PR body or the Evidence tab text>"; fi
-if wanted 6 && [[ -n "$EVIDENCE_FILE" ]]; then
-  if grep -q 'Blocked by environment:' "$EVIDENCE_FILE"; then
-    line=$(grep -m1 'Blocked by environment:' "$EVIDENCE_FILE")
-    # Only registrable domains and counts: no label that looks like a key or a long random token.
-    if echo "$line" | grep -Eq '[A-Za-z0-9_-]{25,}'; then say 6 FAIL "unknown calls fail loudly" "the line holds a long token-like word: $line"; else say 6 PASS "unknown calls fail loudly" "$line"; fi
-  else say 6 OPERATOR "unknown calls fail loudly" "add a test that calls an unlisted host, run a task, save its evidence and re-run"; fi
-fi
-if wanted 7 && [[ -n "$WORKER" && -n "$TASK_ID" ]]; then
-  cmd='echo START; docker ps -a --filter label=rovara.run-network --format "{{.Names}}"; docker network ls --filter label=rovara.run-network --format "{{.Name}}"; echo RUNDIR; ls /run/agentx-test-services 2>/dev/null; echo END'
-  if out=$(ssm_run "$WORKER" "$cmd") && [[ "$(ssm_status)" == Success && "$out" == *START* && "$out" == *RUNDIR* && "$out" == *END* ]]; then
-    objects=$(echo "$out" | sed -n '/^START$/,/^RUNDIR$/p' | grep -v '^START$\|^RUNDIR$' | tr -d '[:space:]')
-    rundir=$(echo "$out" | sed -n '/^RUNDIR$/,/^END$/p' | grep -v '^RUNDIR$\|^END$' | tr -d '[:space:]')
-    [[ -z "$objects" && -z "$rundir" ]] && say 7 PASS "teardown is clean" "no run-network object and an empty /run/agentx-test-services after the task (repeat after a failing task, a cancel and a killed worker; each is its own run of this check)" || say 7 FAIL "teardown is clean" "left: ${objects:-nothing} / run dir: ${rundir:-empty}"
-  else say 7 FAIL "teardown is clean" "the SSM command did not complete (status $(ssm_status)) or answered nothing"; fi
-elif wanted 7; then say 7 OPERATOR "teardown is clean" "pass --worker and --task; repeat after success, failure, cancel and a killed worker (kill the worker's container mid-round, restart it, then run this check)"; fi
 
-# ---- 8 switch off = today, 9 other backings refused
-if wanted 8; then say 8 OPERATOR "switch off is today" "turn tx off for the project (owner), start the same task, and compare its dispatch payload and PR body with a task from before the release: no testServices, no dependency line"; fi
-if wanted 9; then
-  reply=$(api POST "$ENV_PATH/propose" '{"probe":"s3-candidate"}')
-  [[ "$API_STATUS" == "400" || "$API_STATUS" == "409" ]] && echo "$reply" | grep -qi 'not available yet' && say 9 PASS "other backings refused" "answered $API_STATUS with the 'not available yet' words" || say 9 OPERATOR "other backings refused" "propose a draft with an S3 candidate in the app and read the refusal words (this script cannot craft one through the public route; the unit tests cover the broker side)"
+# the text the verdicts of 4-6 read: the task's view and the evidence file the person saved
+TEXT="$WORK/text"; : > "$TEXT"; [[ -s "$WORK/view.json" ]] && cat "$WORK/view.json" >> "$TEXT"; [[ -n "$EVIDENCE_FILE" && -r "$EVIDENCE_FILE" ]] && cat "$EVIDENCE_FILE" >> "$TEXT"
+if wanted 4; then
+  if [[ ! -s "$TEXT" ]]; then say 4 OPERATOR "the escape project's tests passed" "pass --task and/or --evidence <file>"
+  elif grep -Eq '"after": ?"(failed|timed_out)"' "$TEXT"; then say 4 FAIL "the escape project's tests passed" "a check failed in the sealed round: an escape attempt SUCCEEDED, or the run is broken (read the evidence)"
+  elif grep -Eq '"after": ?"passed"|checks? passed' "$TEXT"; then say 4 PASS "the escape project's tests passed" "no check failed; every attempt to get out failed"
+  else say 4 OPERATOR "the escape project's tests passed" "no check result in the text I have; pass --evidence <file>"; fi
+fi
+if wanted 5; then
+  if grep -q 'Integration tests ran against: Postgres (real)\.' "$TEXT"; then say 5 PASS "the PR line" "'Integration tests ran against: Postgres (real).' is there"
+  elif [[ -s "$TEXT" ]]; then say 5 FAIL "the PR line" "the line is not in the task's view or the evidence file"
+  else say 5 OPERATOR "the PR line" "pass --task and/or --evidence <file>"; fi
+fi
+if wanted 6; then
+  if grep -q 'Blocked by environment:' "$TEXT"; then
+    line=$(grep -m1 -o 'Blocked by environment:[^"]*' "$TEXT")
+    # Only registrable domains and counts: no long token-like word.
+    if echo "$line" | grep -Eq '[A-Za-z0-9_-]{25,}'; then say 6 FAIL "unknown calls fail loudly" "the line holds a long token-like word: $line"; else say 6 PASS "unknown calls fail loudly" "$line"; fi
+  elif [[ -s "$TEXT" ]]; then say 6 FAIL "unknown calls fail loudly" "no 'Blocked by environment' line: the escape project's internet test makes name lookups that must be counted"
+  else say 6 OPERATOR "unknown calls fail loudly" "pass --task and/or --evidence <file>"; fi
+fi
+
+# ---- 7 teardown, from the worker's run_end reports since the script started
+if wanted 7; then
+  if lines=$(reports run_end) && [[ -n "$lines" ]]; then
+    verdict=$(printf '%s\n' "$lines" | EXPECT="$EXPECT_OUTCOME" python3 -c 'import json,os,sys
+expect=os.environ.get("EXPECT",""); bad=[]; seen=[]
+for raw in sys.stdin:
+    r=json.loads(raw); seen.append(r.get("outcome"))
+    if r.get("leftoverContainers")!=0 or r.get("leftoverNetworks")!=0: bad.append("leftover objects after a "+str(r.get("outcome"))+" run")
+    if r.get("runDirEmpty") is not True: bad.append("run directory not empty after a "+str(r.get("outcome"))+" run")
+    if r.get("workingSandboxPaused") is True: bad.append("working sandbox left paused after a "+str(r.get("outcome"))+" run")
+if expect and expect not in seen: bad.append("no "+expect+" run reported")
+print("|".join([", ".join(sorted(set(bad))), ",".join(seen)]))' 2>/dev/null)
+    problems="${verdict%%|*}"; seen="${verdict#*|}"
+    [[ -z "$problems" ]] && say 7 PASS "teardown is clean" "run_end reports since the start: ${seen:-none}; nothing left, run directory empty, working sandbox not paused" || say 7 FAIL "teardown is clean" "$problems"
+  else say 7 OPERATOR "teardown is clean" "no run_end report in $LOG_GROUP since $SINCE_MS yet (run a task, then re-run; repeat with --expect-outcome failed, then cancelled)"; fi
+  if [[ -n "$EXPECT_SWEPT" ]]; then
+    if lines=$(reports worker_start) && [[ -n "$lines" ]]; then
+      swept=$(printf '%s\n' "$lines" | tail -n1 | python3 -c 'import json,sys
+r=json.load(sys.stdin); print((r.get("sweptContainers") or 0)+(r.get("sweptNetworks") or 0), r.get("leftoverContainers"), r.get("leftoverNetworks"))' 2>/dev/null)
+      set -- $swept
+      [[ "${1:-0}" -gt 0 && "${2:-1}" == 0 && "${3:-1}" == 0 ]] && say 7 PASS "killed worker is swept" "the restarted worker removed $1 leftover object(s) and nothing is left" || say 7 FAIL "killed worker is swept" "swept ${1:-?}, left ${2:-?} containers and ${3:-?} networks"
+    else say 7 FAIL "killed worker is swept" "no worker_start report since $SINCE_MS"; fi
+  fi
+fi
+
+# ---- 8, 9 and the relay (a person's steps)
+if wanted 8; then say 8 OPERATOR "switch off is today" "turn tx off for the project (owner), start the same task and compare its dispatch payload and PR body with a task from before the release: no testServices, no dependency line"; fi
+if wanted 9; then say 9 OPERATOR "other backings refused" "propose a draft with an S3 candidate in the app and read the 'not available yet' words (the broker's unit tests cover the words)"; fi
+if wanted L3 && [[ -n "$REQUIRE_HEARTBEAT" ]]; then
+  if [[ ! -s "$TEXT" ]]; then say L3 OPERATOR "relay test ran" "pass --task and/or --evidence <file>"
+  elif grep -qi 'skipped' "$TEXT" && grep -qi 'relay' "$TEXT"; then say L3 FAIL "relay test ran" "the relay test was skipped: the project's setup command (npm run setup) did not start the heartbeat in the working sandbox"
+  else say L3 PASS "relay test ran" "the relay test is not reported as skipped"; fi
 fi
 
 printf 'TSE SUMMARY pass=%d fail=%d operator=%d\n' "$pass" "$fail" "$operator"

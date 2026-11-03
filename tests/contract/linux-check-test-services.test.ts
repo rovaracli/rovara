@@ -320,3 +320,14 @@ describe("scripts/linux-check-test-services.sh, live parts", () => {
   });
 });
 
+
+describe("no SSM on staging workers", () => {
+  const script = readFileSync(new URL("../../scripts/linux-check-test-services.sh", import.meta.url), "utf8");
+  const driver = readFileSync(new URL("../../scripts/linux-check-test-services-live.ts", import.meta.url), "utf8");
+  it("both say staging workers are not SSM-managed and name where each check is proven instead", () => {
+    for (const text of [script, driver]) expect(text).toMatch(/NO SSM ON STAGING WORKERS/u);
+    for (const id of ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]) expect(script, id).toMatch(new RegExp(`^#   ${id} `, "mu"));
+    for (const place of ["worker_start report", "escape project", "run_end reports", "linux-runtime CI", "bootFacts"]) expect(script, place).toContain(place);
+    expect(script).toContain("scripts/staging-test-services-e2e.sh");
+  });
+});

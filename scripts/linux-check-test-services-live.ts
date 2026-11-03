@@ -1,4 +1,6 @@
 // TS-L1, L2, L3, L4 (Postgres only) and L6: the LIVE parts of scripts/linux-check-test-services.sh, driven by the worker's real run-layer modules (run-network, service-helpers, service-runner, service-reset, service-env,
+// NO SSM ON STAGING WORKERS: staging workers are not SSM-managed (their instance profile has no SSM permission, by design). This driver is for a host you have a shell on (linux-runtime CI, a developer's Linux machine, a purpose-launched worker).
+// On a staging worker the live isolation facts come from the escape project (tests/fixtures/test-services-escape-project) run as a task, and the root facts from the worker's self-report in CloudWatch: see scripts/linux-check-test-services.sh.
 // check-sandbox). NOTHING HERE HAS BEEN RUN against Docker: it is written to be run once, on a staging worker, by the operator, with the owner's OK (slice 1 of test services; see the round file's Slice 1 section).
 //
 // WHERE IT RUNS. Not on the Mac and not on the host: inside a throwaway container of the worker's own image, with the host's Docker socket (the same way the worker itself reaches Docker). The shell script starts it:

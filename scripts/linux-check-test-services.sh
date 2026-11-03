@@ -5,6 +5,20 @@
 # own image), and only when the operator delivers that driver (TSL_DIR is set: see "LIVE PARTS" below). Without it those items print PENDING; L5, L7 and L8 stay PENDING in slice 1. A PENDING line is never a pass: `tx` stays off until
 # every line is PASS.
 #
+# NO SSM ON STAGING WORKERS (read this first). Staging EC2 workers are NOT SSM-managed: their instance profile has no SSM permission, by design, and none may be added. The "THROUGH SSM" recipes below are therefore for a host
+# you really have a shell on (the linux-runtime CI job, a developer's Linux machine, a worker launched for the purpose), NEVER for a staging worker. What each check needs, and where a staging worker gets it instead:
+#   id (design 12/13)                                  needs a root shell?   on a staging worker, it is proven by
+#   L1 walls, isolation, Docker version                 no (boot facts)       the worker_start report's bootFacts: metadataBlocked, runWalls, ipv6Drops, dockerVersion (TS-RN-4 is metadataBlocked)
+#   L1 iptables backend, address range, Docker pools    yes                   linux-runtime CI only (tests/linux); the run networks' allocation is exercised by every task
+#   L2 dual-homed working sandbox                       no                    the escape project's neighbours test (the working sandbox's address and the gateway do not answer; the run's own Postgres does)
+#   L3 sealed sandbox: internet, IPv6, other run, relay no                    the escape project: internet.test.js, ipv6.test.js, neighbours.test.js, planted-state.test.js, relay.test.js
+#   L3 embedded resolver, multicast, run files          yes                   linux-runtime CI only; spoofed source addresses (TS-SEAL-4) need CAP_NET_RAW: linux-runtime CI only
+#   L4 Postgres hardening, template_db reset            partly                the helper's run arguments are unit-tested; the reset is exercised by every round; the flags themselves: linux-runtime CI
+#   L5 test-account proxy                                -                     not in slice 1 (gates `ta`)
+#   L6 killed-worker sweep, no leftovers                no (self-report)      the run_end reports (nothing left, run directory empty, working sandbox not paused) and, after a restart, the worker_start report's swept counts
+#   L7, L8                                               -                     later slices
+# The staging done-check (scripts/staging-test-services-e2e.sh) reads the self-reports from CloudWatch Logs through the staging guard and runs the escape project as a task.
+#
 # WHAT IT DOES. READ-ONLY: it reads iptables, interfaces, routes, /etc/docker/daemon.json, Docker's inventory (ps, network ls, network inspect, inspect, version) and /proc/meminfo, and changes none of them. It starts no container, makes no network,
 # writes no file, uses no AWS access and reads no secret. It never prints an environment variable. (The live parts, when delivered, start containers and networks of their own and use the worker role's registry login: see LIVE PARTS.)
 #
