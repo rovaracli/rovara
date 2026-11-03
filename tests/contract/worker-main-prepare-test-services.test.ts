@@ -4,20 +4,24 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import type * as ServerModule from "../../packages/worker/src/server.js";
+import type * as PrepareModule from "../../packages/worker/src/prepare.js";
+import type * as InvokeAuthModule from "../../packages/worker/src/invoke-auth.js";
+import type * as ChecksRuntimeModule from "../../packages/worker/src/workflow-e2e-application-runtime.js";
 import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type TestServicesUsageRecord } from "@agentx/contracts";
 
-const captured = vi.hoisted(() => ({ executor: undefined as undefined | { execute(invocation: unknown): Promise<unknown>; invocationFeatures?: readonly string[] }, options: undefined as undefined | Record<string, unknown>, report: undefined as unknown, cancellationSeen: false }));
+const captured = vi.hoisted(() => ({ executor: undefined as undefined | { execute(invocation: unknown): Promise<unknown>; invocationFeatures?: readonly string[] }, options: undefined as undefined | Record<string, unknown>, report: undefined as TestServicesUsageRecord | undefined, cancellationSeen: false }));
 
 vi.mock("../../packages/worker/src/server.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/worker/src/server.js")>();
+  const original = await importOriginal<typeof ServerModule>();
   return {
     ...original,
-    createWorkerServerState: (...args: Parameters<typeof original.createWorkerServerState>) => { captured.executor = args[1] as never; return original.createWorkerServerState(...args); },
+    createWorkerServerState: (...args: Parameters<typeof original.createWorkerServerState>) => { captured.executor = args[1]; return original.createWorkerServerState(...args); },
     startWorkerServer: () => undefined,
   };
 });
 vi.mock("../../packages/worker/src/prepare.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/worker/src/prepare.js")>();
+  const original = await importOriginal<typeof PrepareModule>();
   return {
     ...original,
     prepareWorkspace: (options: Record<string, unknown>) => {
@@ -30,11 +34,11 @@ vi.mock("../../packages/worker/src/prepare.js", async (importOriginal) => {
   };
 });
 vi.mock("../../packages/worker/src/invoke-auth.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/worker/src/invoke-auth.js")>();
+  const original = await importOriginal<typeof InvokeAuthModule>();
   return { ...original, invokeAuthenticationFromEnvironment: () => undefined as never };
 });
 vi.mock("../../packages/worker/src/workflow-e2e-application-runtime.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/worker/src/workflow-e2e-application-runtime.js")>();
+  const original = await importOriginal<typeof ChecksRuntimeModule>();
   return { ...original, createApplicationChecksFeatureMonitor: () => ({ start: () => undefined, executor: {} }) };
 });
 
