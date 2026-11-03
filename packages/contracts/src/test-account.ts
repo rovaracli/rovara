@@ -29,12 +29,12 @@ function line(max: number, min = 1) {
 }
 
 export const TEST_ACCOUNT_KINDS = ["api_key", "oauth_client", "basic", "aws_role", "preprod_endpoint"] as const;
-export const TEST_ACCOUNT_STATUSES = ["pending", "active", "suspended", "expired"] as const;
+export const TEST_ACCOUNT_STATUSES = ["pending", "active", "suspended", "expired", "deleting"] as const;
 export const TEST_ACCOUNT_APPROVAL_KINDS = ["approver", "sole_owner_exception"] as const;
 export const TEST_ACCOUNT_LIMITS = { hosts: 8, envNames: 4, projects: 50, actions: 20, resources: 20, approvals: 10 } as const;
-/** Requests per run, per day and rounds at once (11.2): the defaults and the Rovara maximums. The per-day figure is set by the company, so its maximum is only a sanity bound. */
-export const TEST_ACCOUNT_LIMIT_DEFAULTS = { maxRequestsPerRun: 2_000, maxRequestsPerDay: 20_000, maxConcurrentRounds: 2 } as const;
-export const TEST_ACCOUNT_LIMIT_MAXIMUMS = { maxRequestsPerRun: 20_000, maxRequestsPerDay: 1_000_000, maxConcurrentRounds: 10 } as const;
+/** Connections (tunnels the proxy opened) per run, per day and rounds at once (11.2): the defaults and the Rovara maximums. The per-day figure is set by the company, so its maximum is only a sanity bound. */
+export const TEST_ACCOUNT_LIMIT_DEFAULTS = { maxConnectionsPerRun: 2_000, maxConnectionsPerDay: 20_000, maxConcurrentRounds: 2 } as const;
+export const TEST_ACCOUNT_LIMIT_MAXIMUMS = { maxConnectionsPerRun: 20_000, maxConnectionsPerDay: 1_000_000, maxConcurrentRounds: 10 } as const;
 /** An account expires at most 90 days after its last qualifying approval (owner decision Q7); a company setting may only make that shorter, never longer. A reminder goes out 14 days before. */
 export const TEST_ACCOUNT_EXPIRY_DAYS = { default: 90, max: 90, reminder: 14 } as const;
 
@@ -43,6 +43,10 @@ export const TEST_ACCOUNT_EXPIRY_DAYS = { default: 90, max: 90, reminder: 14 } a
 /** The tags every test-account secret carries; the role that reads them is allowed only its own org's path (`rovara:org`). */
 export const TEST_ACCOUNT_SECRET_TAG_KEYS = { org: "rovara:org", use: "rovara:use" } as const;
 export const TEST_ACCOUNT_SECRET_USE = "test-account";
+/** The only version of a test account's secret a worker reads: the one the broker promoted. The reader names it in the request (an omitted stage is not assumed to match the resolve session policy's condition). */
+export const TEST_ACCOUNT_SECRET_VERSION_STAGE = "AWSCURRENT";
+/** The version a new value waits under until the row that records it is committed (rotation); it never serves a read. */
+export const TEST_ACCOUNT_SECRET_PENDING_STAGE = "AWSPENDING";
 /** The path segment between the install's environment and the org: test-account secrets live apart from connector and hook secrets, so the connector role cannot reach them. */
 export const TEST_ACCOUNT_SECRET_SEGMENT = "org-test-accounts";
 
@@ -250,11 +254,17 @@ export function testAccountAwsEndpointHosts(aws: Pick<TestAccountAws, "actions" 
   return services.map((service) => `${AWS_ENDPOINT_PREFIX[service]}.${aws.region}.amazonaws.com`);
 }
 
+/**
+ * The external id of an AWS role account: `rovara-<orgId>-<accountId>`. Rovara builds it from the org the request is for and the account's own id; a customer never chooses it, so one company's account
+ * can never cause an AssumeRole that carries another company's id (cloudwatchExternalId's pattern, with the account). `org_...` makes it match the `rovara-org_*` condition the broker's grant carries.
+ */
+export const testAccountExternalId = (orgId: string, accountId: string): string => `rovara-${orgId}-${accountId}`;
+
 export const TestAccountAwsSchema = z
   .object({
     roleArn: RoleArn,
-    /** The external id of the trust policy (a confused-deputy guard, not a secret). */
-    externalId: z.string().regex(/^[A-Za-z0-9+=,.@:/-]{8,128}$/u, "an external id"),
+    /** The external id of the customer's trust policy (a confused-deputy guard, not a secret). Rovara derives it (`testAccountExternalId`), the customer puts it in the trust policy, and the account record must carry exactly that value. */
+    externalId: z.string().regex(/^[A-Za-z0-9_+=,.@:/-]{8,128}$/u, "an external id"),
     region: TestEnvRegionSchema,
     actions: z.array(IamAction).min(1).max(TEST_ACCOUNT_LIMITS.actions),
     resources: z.array(Arn).min(1).max(TEST_ACCOUNT_LIMITS.resources),
@@ -301,7 +311,7 @@ export interface TestAccountApprovable {
   aws?: { roleArn: string; externalId: string; region: string; actions: readonly string[]; resources: readonly string[] } | undefined;
   envNames: readonly string[];
   projectIds: "all" | readonly string[];
-  limits: { maxRequestsPerRun: number; maxRequestsPerDay: number; maxConcurrentRounds: number };
+  limits: { maxConnectionsPerRun: number; maxConnectionsPerDay: number; maxConcurrentRounds: number };
   secretRef?: string | undefined;
 }
 
@@ -323,6 +333,97 @@ export function testAccountApprovalDigest(record: TestAccountApprovable): string
       secretRef: record.secretRef ?? null,
     }),
   );
+}
+
+// ---- the run-time secret grant (6.2, 4.3): what the broker hands the worker for ONE sealed round
+
+/** How long a grant's session lasts: Secrets Manager's own minimum for an assumed session (15 minutes), enough for the start of one test command. */
+export const TEST_ACCOUNT_GRANT_SECONDS = 900;
+
+const GrantCredentialPart = z.string().min(1).max(4_096).regex(/^[\x21-\x7e]+$/u, "one token");
+
+/**
+ * What the broker sends the worker so the worker can read ONE test-account secret at run time: a session the broker minted for that one secret and the read of it (15 minutes), the secret's name and the
+ * JSON key inside it, and the variables the test reads it from. It holds session credentials, so it is never logged, journaled or put in a plan; it travels only in the invocation of a sealed round.
+ * The secret's value is not in it, and the broker never has the value.
+ */
+export const TestAccountSecretGrantSchema = z
+  .object({
+    orgId: OrgIdSchema,
+    accountId: TestAccountIdSchema,
+    family: FamilyIdSchema,
+    secretName: z.string().max(300),
+    key: z.string().regex(KEY_SEGMENT),
+    region: TestEnvRegionSchema,
+    envNames: z.array(EnvNameSchema).min(1).max(TEST_ACCOUNT_LIMITS.envNames),
+    credentials: z.object({ accessKeyId: GrantCredentialPart, secretAccessKey: GrantCredentialPart, sessionToken: GrantCredentialPart }).strict(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict()
+  .superRefine((grant, context) => {
+    const parts = parseTestAccountSecretRef(`{{resolve:secretsmanager:${grant.secretName}:SecretString:${grant.key}}}`);
+    if (parts === undefined || parts.orgId !== grant.orgId || parts.accountId !== grant.accountId) context.addIssue({ code: "custom", path: ["secretName"], message: "the grant names this account's own secret in its own org" });
+    if (new Set(grant.envNames).size !== grant.envNames.length) context.addIssue({ code: "custom", path: ["envNames"], message: "a variable is listed once" });
+    grant.envNames.forEach((name, index) => {
+      if (reservedDependencyEnvName(name)) context.addIssue({ code: "custom", path: ["envNames", index], message: "this variable is set by Rovara or the system" });
+    });
+  });
+export type TestAccountSecretGrant = z.infer<typeof TestAccountSecretGrantSchema>;
+
+/** The grant, or undefined. Never throws and never returns the reasons, so a credential in a malformed grant cannot reach a log through its parse error. */
+export function parseTestAccountSecretGrant(input: unknown): TestAccountSecretGrant | undefined {
+  const result = TestAccountSecretGrantSchema.safeParse(input);
+  return result.success ? result.data : undefined;
+}
+
+// ---- narrowing (DC-TS-2, design 6.4): which changes need fresh approvals
+
+const subsetOf = (smaller: readonly string[], larger: readonly string[]): boolean => smaller.every((value) => larger.includes(value));
+
+/**
+ * Whether `resource` is covered by `previous`: the same ARN, or an ARN under a named prefix that ends in `/*` (`bucket/*` covers `bucket/reports/*` and `bucket/a.csv`, but not `bucket` itself, another bucket
+ * with the same start, or a resource with a wildcard anywhere but a single trailing `/*`). Anything else is not provably smaller.
+ */
+function resourceCovered(previous: readonly string[], resource: string): boolean {
+  if (previous.includes(resource)) return true;
+  if (/[?]|\/\//u.test(resource)) return false;
+  const named = resource.endsWith("/*") ? resource.slice(0, -2) : resource;
+  if (named.includes("*")) return false;
+  return previous.some((each) => {
+    if (!each.endsWith("/*") || each.slice(0, -2).includes("*")) return false;
+    const prefix = each.slice(0, -1);
+    return resource.startsWith(prefix) && resource.length > prefix.length;
+  });
+}
+
+/**
+ * Whether going from `previous` to `next` is a widening. Only a change this function can PROVE is smaller is not one, and it must be smaller in every field at once: the same account, kind, family, secret
+ * reference and AWS role, no host, variable, action or resource that was not there, no project the account was not already open to, and no higher limit. Everything else (including a different credential
+ * and any change it cannot compare) is a widening. A pure narrowing applies at once and re-stamps the approvals with the new digest (`restampApprovals`); a widening needs fresh approvals. The label, status,
+ * approvals and dates are not part of an approval, so they are not compared.
+ */
+export function testAccountWidened(previous: TestAccountApprovable, next: TestAccountApprovable): boolean {
+  if (previous.id !== next.id || previous.orgId !== next.orgId || previous.kind !== next.kind || previous.family !== next.family) return true;
+  if ((previous.secretRef ?? null) !== (next.secretRef ?? null)) return true;
+  if (!subsetOf(next.hosts, previous.hosts) || !subsetOf(next.envNames, previous.envNames)) return true;
+  if (previous.projectIds !== "all" && (next.projectIds === "all" || !subsetOf(next.projectIds, previous.projectIds))) return true;
+  const was = previous.limits;
+  const now = next.limits;
+  if (now.maxConnectionsPerRun > was.maxConnectionsPerRun || now.maxConnectionsPerDay > was.maxConnectionsPerDay || now.maxConcurrentRounds > was.maxConcurrentRounds) return true;
+  if ((previous.aws === undefined) !== (next.aws === undefined)) return true;
+  if (previous.aws !== undefined && next.aws !== undefined) {
+    if (previous.aws.roleArn !== next.aws.roleArn || previous.aws.externalId !== next.aws.externalId || previous.aws.region !== next.aws.region) return true;
+    if (!subsetOf(next.aws.actions, previous.aws.actions)) return true;
+    if (!next.aws.resources.every((resource) => resourceCovered(previous.aws!.resources, resource))) return true;
+  }
+  return false;
+}
+
+/** Re-stamps the approvals that approved `previous` so they approve `next`, for a change `testAccountWidened` says is not a widening. Approvals of anything else are dropped. Throws on a widening. */
+export function restampApprovals(previous: TestAccountApprovable & { approvals: readonly TestAccountApproval[] }, next: TestAccountApprovable): TestAccountApproval[] {
+  if (testAccountWidened(previous, next)) throw new RangeError("only a narrowing is re-stamped");
+  const digest = testAccountApprovalDigest(next);
+  return testAccountQualifyingApprovals(previous).map((approval) => ({ ...approval, approvedDigest: digest }));
 }
 
 /**
@@ -360,8 +461,8 @@ const TestAccountObjectSchema = z
     envNames: z.array(EnvNameSchema).max(TEST_ACCOUNT_LIMITS.envNames),
     limits: z
       .object({
-        maxRequestsPerRun: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxRequestsPerRun),
-        maxRequestsPerDay: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxRequestsPerDay),
+        maxConnectionsPerRun: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConnectionsPerRun),
+        maxConnectionsPerDay: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConnectionsPerDay),
         maxConcurrentRounds: z.number().int().min(1).max(TEST_ACCOUNT_LIMIT_MAXIMUMS.maxConcurrentRounds),
       })
       .strict(),
@@ -395,6 +496,7 @@ export function testAccountSchemaFor(options: TestAccountSchemaOptions = {}) {
     const isAws = account.kind === "aws_role";
     if (isAws !== (account.aws !== undefined)) problem(["aws"], "an AWS role account has the AWS block, and no other account does");
     if (isAws && account.secretRef !== undefined) problem(["secretRef"], "an AWS role account stores no secret");
+    if (account.aws !== undefined && account.aws.externalId !== testAccountExternalId(account.orgId, account.id)) problem(["aws", "externalId"], "the external id is the one Rovara derives for this company and account");
     if (isAws && account.envNames.length > 0) problem(["envNames"], "an AWS role account is reached by a role, not a variable");
     if (!isAws && (account.kind === "api_key" || account.kind === "oauth_client" || account.kind === "basic") && account.secretRef === undefined) problem(["secretRef"], "this kind of account needs its secret reference");
     if (!account.family.startsWith("http:") && !account.family.startsWith("aws:")) problem(["family"], "a test account is for an outside API (http:<host>) or an AWS service (aws:<service>)");
@@ -420,7 +522,7 @@ export function testAccountSchemaFor(options: TestAccountSchemaOptions = {}) {
       if (reservedDependencyEnvName(name)) problem(["envNames", index], "this variable is set by Rovara or the system");
     });
     if (account.projectIds !== "all" && new Set(account.projectIds).size !== account.projectIds.length) problem(["projectIds"], "a project is listed once");
-    if (account.limits.maxRequestsPerRun > account.limits.maxRequestsPerDay) problem(["limits", "maxRequestsPerRun"], "a run's requests fit inside the day's");
+    if (account.limits.maxConnectionsPerRun > account.limits.maxConnectionsPerDay) problem(["limits", "maxConnectionsPerRun"], "a run's requests fit inside the day's");
     if (looksLikeSecretValue(account.label)) problem(["label"], "a label is not the place for a key");
     // Only approvals of exactly this record count; the expiry runs from the last of those.
     const qualifying = testAccountQualifyingApprovals(account);

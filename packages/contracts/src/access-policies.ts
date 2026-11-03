@@ -312,6 +312,15 @@ export function connectorSecretsRoleName(env: string): string {
 }
 
 /**
+ * The control plane's TestAccountSecretsRole (test services TS26): the broker assumes it, tagged with an org and a purpose (`store` or `resolve`), to keep and hand out a customer test account's secret
+ * (agentx/<env>/org-test-accounts/<org>/...). It starts with the ConnectorSecretsRole's name on purpose: the default boundary names the two with one `connector-secrets*` ARN, because the deployed
+ * boundary has no room for another ARN (its size test keeps 150 characters free). The boundary is only a ceiling; the role's own policies and the broker's exact grant are what allow anything.
+ */
+export function testAccountSecretsRoleName(env: string): string {
+  return `${connectorSecretsRoleName(env)}-test-accounts`;
+}
+
+/**
  * The role EventBridge Scheduler assumes to invoke the broker for a schedule trigger (Plan 4 Task 26), and the queue that keeps the invocations that failed. Fixed names, so the broker
  * builds the role's ARN and the queue's URL from the environment (like the connector secrets role) and its environment, held to 4 KB, carries neither. The role is created under the
  * environment's path like every other, so a fixed-name role needs its path-less ARN in the deploy role's lookup grant where that list exists.
@@ -363,7 +372,7 @@ export function taskPersonProofRoleName(env: string): string {
  */
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
-    connectorSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+    connectorSecretsRoleName(env), testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
     savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
   ];
@@ -386,13 +395,20 @@ const FIXED_NAME_ROLE_LOOKUP_ACTIONS = [
   "iam:DeleteRole",
 ];
 
-function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partition" | "account">): PolicyStatementJson {
+/**
+ * `forBoundary`: the boundary (a ceiling, 6,144 characters with no room left) names the ConnectorSecretsRole and the TestAccountSecretsRole, whose names share a prefix, with the one ARN
+ * `...connector-secrets*`. The service role's own statement, which is what actually allows the lookups, still names each role exactly.
+ */
+function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partition" | "account">, forBoundary = false): PolicyStatementJson {
+  const shared = connectorSecretsRoleName(scope.env);
+  const names = fixedNameEnvironmentRoleNames(scope.env);
+  const listed = forBoundary ? [...names.filter((name) => !name.startsWith(shared)), `${shared}*`] : names;
   return {
     Sid: "IamFixedNameRolesNotYetCreated",
     Effect: "Allow",
     Action: [...FIXED_NAME_ROLE_LOOKUP_ACTIONS],
     // Not the root-path roles: IamRoles names those in full (the same ARN), and the deployed boundary has little room.
-    Resource: fixedNameEnvironmentRoleNames(scope.env).map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`).filter((arn) => !rootPathRoles(scope).includes(arn)),
+    Resource: listed.map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`).filter((arn) => !rootPathRoles(scope).includes(arn)),
   };
 }
 
@@ -543,7 +559,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       // Setup and test health SH22: the same two actions, for the saved-environment push, pull and manage roles (the broker assumes them with a one-repository session policy). One wildcard
       // ARN rather than three names, since the deployed boundary has a 6,144 character limit and little room; the broker's own policy names the three exactly, and the boundary is only a ceiling.
       Resource: [
-        `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
+        // Test services TS26: and the TestAccountSecretsRole, which shares the ConnectorSecretsRole's name as a prefix (one ARN with a trailing wildcard; the boundary has no room for another).
+        `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}*`,
         `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${savedEnvRolePrefix(scope.env)}*`,
       ],
     },
@@ -569,7 +586,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
     // The service role carries this boundary, so the path-less lookups it is granted (see fixedNameRoleLookupStatement) are named here too.
-    fixedNameRoleLookupStatement(scope),
+    fixedNameRoleLookupStatement(scope, true),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     // The service role creates the broker's named managed policies (ruling M2); the boundary is a ceiling, so it names the same actions on the same ARNs.
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },

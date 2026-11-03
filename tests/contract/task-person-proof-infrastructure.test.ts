@@ -357,18 +357,27 @@ describe("the named TEST proof-only installation gate", () => {
     // variables and (cloud) DEVELOPER_GITHUB_CLIENT_ID moved into AGENTX_SETTINGS to win back its 400 bytes of room, and those parameters gained a plain-text AllowedPattern in a named environment. The legacy digests did not move.
     // 2026-11-03, usable models: the four named and foreign digests were retaken after ONE intended addition (the legacy digests did not move; named environments only): the broker's role gained
     // bedrock:GetFoundationModelAvailability on Resource "*" (merged into the statement that already allows xray:PutTraceSegments and xray:PutTelemetryRecords), which the named-templates snapshot shows too.
+    // 2026-11-02, TS26 (test accounts, lane ts-accounts): the named and foreign digests were retaken after ONE intended IAM addition to the named control plane (legacy did not move): the TestAccountSecretsRole (fixed name
+    // agentx-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
+    // lookups naming it (the boundary through the one `connector-secrets*` ARN, so it did not grow).
+    // 2026-11-03, ts-accounts review fixes (Opus review of bc5719055): the named and foreign digests were retaken after ONE intended IAM change to the named control plane (legacy did not move): the TestAccountSecretsRole's
+    // permissions gained `secretsmanager:UpdateSecretVersionStage` (the store purpose only, same org and use tags; denied to resolve) for rotation's pending-then-promote. No role was added, so the boundary did not change.
+    // 2026-11-03, merge of lane ts-accounts onto the test-services chain (ts-images-on-next-v2, b638814f5): the four named and foreign digests were retaken from the values the digest test itself reports for the merged template
+    // (nothing hand-computed); the only template additions are ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. The legacy digests did not move.
+    // 2026-11-03, merge of lane ts-accounts (df8703c51) onto cf34811c6: the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); the only template additions are
+    // ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. TEST_ACCOUNT_SECRETS_ROLE_ARN is derived in the process, so AGENTX_SETTINGS did not change. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "e131a9d6dfed325c39a4460dd2cdfe7db09d604f2442ba921145355466bd1830",
-        withoutRoute: "52531e70ec95de77751cc98e146459c687654931b91ef04760721cffbfd789cf",
+        withRoute: "323b4c96ab550689b0eb4f18ffde1557c7848ea1c5fe81ca861b0ee890e1b3ae",
+        withoutRoute: "96670571232bc6f0cff1b189897cef484edc465c9ced76b3c8e2a2ab9318cc53",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "bb84c5797c2f92cf15c1688b9573027cfe63b895c5774308bca4ae928a6e7134",
-        withoutRoute: "236ca02ab904a4b8dd3314a9cd2498cd03c2e34c8172ac00db0afb22fd2663c9",
+        withRoute: "a94ddec5dcada1f81beb0e2b0e559bd27349483ab61fe60bb2d23ef3e3781998",
+        withoutRoute: "affa08b6e6170e0f29e3862357219d01ea30306cbc436014f76b069b06cb642e",
       },
       {
         label: "legacy",
