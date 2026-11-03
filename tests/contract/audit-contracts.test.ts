@@ -175,7 +175,7 @@ describe("the event catalog", () => {
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
-      "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
+      "process.published", "process.rolled_back", "playbook.default_process_changed", "playbook.design_review_changed", "company.change_applied_to_project",
       // Proof and evidence
       "project.test_env_changed", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Team record and lessons (learning v2, R1)
@@ -239,6 +239,7 @@ describe("the event catalog", () => {
     "process.published": { target: { kind: "process", id: "agt_1" }, keys: ["version", "safety", "selfConfirmedSoleOwner"], sample: { version: 2, safety: "safe", selfConfirmedSoleOwner: false } },
     "process.rolled_back": { target: { kind: "process", id: "agt_1" }, keys: ["fromVersion", "toVersion", "safety"], sample: { fromVersion: 3, toVersion: 2, safety: "safe" } },
     "playbook.default_process_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "processKind"], sample: { revision: 4, processKind: "builtin" } },
+    "playbook.design_review_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"], sample: { revision: 4, mode: "auto", tier: "standard", allowSkip: true, capCents: 1000, approverKind: "maintainers", approverCount: 0 } },
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
     "project.known_failing_marked": { target: { kind: "project", name: "web" }, keys: ["cause", "testCount", "recordEpoch", "taskCount", "taskIdsSha256", "testSetSha256", "rowVersionAfter", "totalAfter", "approvalMode", "secondPersonWhy"], sample: { cause: "fails-on-original-code", testCount: 3, recordEpoch: 1, taskCount: 2, taskIdsSha256: "a".repeat(64), testSetSha256: "b".repeat(64), rowVersionAfter: 1, totalAfter: 3, approvalMode: "single", secondPersonWhy: "not_needed" } },

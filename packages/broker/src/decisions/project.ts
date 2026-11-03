@@ -63,7 +63,14 @@ export type DecisionItem =
   | (ItemBase & { kind: "review_feedback"; comments: number; touchesSensitivePaths: boolean })
   | (ItemBase & { kind: "autofix_ask"; reasonWords: string; attempts: number })
   | (ItemBase & { kind: "approve_setting"; settingLabel: string; secondPerson: boolean })
-  | (ItemBase & { kind: "approve_spend"; amountUsd: number; scopeLabel: string })
+  | (ItemBase & {
+    kind: "approve_spend"; amountUsd: number; scopeLabel: string;
+    /**
+     * A design review's cost gate (DR8, `design-review/spend-card.ts`): the card says why it asks and lists the choices as `choose` actions (each a POST of this server). Absent: the ordinary spend request.
+     * `estimateUsd` is absent for "cost unavailable" (no catalog price: never a guess). `choices` is what the cost gate allowed, already filtered by the skip rules for this person; an empty list opens the page.
+     */
+    design?: { why: "over_cap" | "cost_unavailable"; capUsd: number; estimateUsd?: number | undefined; choices: ReadonlyArray<{ label: string; href: string }> } | undefined;
+  })
   | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string; /** The revision of the approved environment the person looked at (0: none yet): the approval is bound to it. */ expectedRevision: number })
   | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
   /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
@@ -192,6 +199,19 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
     case "approve_setting":
       return { question: plainLine(`Change this setting: ${item.settingLabel}?`, 160), next: "Rovara works less safely until the setting is changed back.", evidence: [chip("risk", "Effect", "less safe", "bad")], why: "A less-safe setting needs a full look." };
     case "approve_spend":
+      if (item.design !== undefined) {
+        const unpriced = item.design.why === "cost_unavailable";
+        return {
+          question: unpriced ? "Run the design review without a price?" : "The design review costs more than the limit. What now?",
+          next: unpriced ? "The price of the chosen model is not known, so the cost cannot be shown. Nothing runs until you choose." : `The design review is estimated at ${usd(item.design.estimateUsd ?? item.amountUsd)}; the limit is ${usd(item.design.capUsd)}. Nothing runs until you choose.`,
+          ...(unpriced || item.design.estimateUsd === undefined ? {} : { costUsd: item.design.estimateUsd }),
+          evidence: [
+            chip("cost", "Estimate", unpriced ? "Cost unavailable" : usd(item.design.estimateUsd ?? item.amountUsd), unpriced ? "unknown" : "warning"),
+            chip("cost", "Limit for this task", usd(item.design.capUsd), "unknown"),
+          ],
+          why: unpriced ? "Without a price, Rovara asks before it spends." : "Rovara never steps the reviewers down to save money; you decide.",
+        };
+      }
       return { question: plainLine(`Raise the limit for ${item.scopeLabel}?`, 160), next: `The limit goes up by ${usd(item.amountUsd)}.`, costUsd: item.amountUsd, evidence: [chip("cost", "Amount", usd(item.amountUsd), item.amountUsd > DECISION_SPEND_LOW_MAX_USD ? "warning" : "good")], why: "The task is paused until the limit is raised." };
     case "approve_test_env":
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
@@ -278,6 +298,11 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
     const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };
     const mark: CardAction = { kind: "approve", label: "Mark as known failing", href: `${base}/approve`, method: "POST" };
     return { actions: item.knownFailingTests > 0 ? [{ ...open, label: "Open the setup" }, reject, mark] : [{ ...open, label: "Open the setup" }, reject], recommended: "open" };
+  }
+  // A design review's cost gate (DR8): the choices the gate allowed are the card's actions. None allowed: the card only opens the page.
+  if (item.kind === "approve_spend" && item.design !== undefined) {
+    const choices: CardAction[] = item.design.choices.slice(0, 3).map((choice) => ({ kind: "choose", label: plainLine(choice.label, 60), href: choice.href, method: "POST" }));
+    return choices.length === 0 ? { actions: [{ ...open, label: "Open the details" }], recommended: "open" } : { actions: [...choices, { ...open, label: "Open the details" }], recommended: "choose" };
   }
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
   const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };

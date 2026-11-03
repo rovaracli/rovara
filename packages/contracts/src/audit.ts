@@ -194,6 +194,8 @@ export const AUDIT_ACTIONS = [
   "process.published",
   "process.rolled_back",
   "playbook.default_process_changed",
+  // Design review stage (DR8): a maintainer changed the project's design review setting in How we work.
+  "playbook.design_review_changed",
   "company.change_applied_to_project",
   // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
   "project.test_env_changed",
@@ -490,6 +492,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "process.published": ["version", "safety", "selfConfirmedSoleOwner"],
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
+  // `mode` is auto, always or never; `tier` light, standard or thorough; `approverKind` maintainers, people or group (never the people or the group named); `capCents` the per-task cap in whole cents.
+  "playbook.design_review_changed": ["revision", "mode", "tier", "allowSkip", "capCents", "approverKind", "approverCount"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
   // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],

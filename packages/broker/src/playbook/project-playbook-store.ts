@@ -3,18 +3,23 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PROJECT_PLAYBOOK,
+  DesignReviewSettingSchema,
   PLAYBOOK_STALE_MESSAGE,
   PROCESS_UNAVAILABLE_MESSAGE,
   ProjectPlaybookSchema,
   agentKey,
   agentXError,
+  canonicalJson,
+  designReviewSettingOf,
   projectPlaybookKey,
   type AgentId,
   type DefaultProcess,
+  type DesignReviewSetting,
   type OrgId,
   type ProjectPlaybook,
 } from "@agentx/contracts";
-import { auditOccurrence, auditPlaybookDefaultProcessChanged } from "../audit/events.js";
+import { auditOccurrence, auditPlaybookDefaultProcessChanged, auditPlaybookDesignReviewChanged } from "../audit/events.js";
+import { DESIGN_REVIEW_FAIL_CLOSED_SETTING } from "../design-review/lock.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -37,8 +42,15 @@ async function readItem(deps: ProjectPlaybookReader, orgId: OrgId, project: stri
 
 function playbookOf(item: Record<string, unknown> | undefined): ProjectPlaybook | undefined {
   if (item === undefined) return DEFAULT_PROJECT_PLAYBOOK;
+  // A document written before the design review stage has no `designReview`: it reads as the owner's defaults (`designReviewSettingOf`), never as an error.
   const parsed = ProjectPlaybookSchema.safeParse({ revision: item["revision"], defaultProcess: item["defaultProcess"] });
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+  const stored = item["designReview"];
+  if (stored === undefined) return parsed.data;
+  // A setting that is there but cannot be read does not make the whole process unavailable (the process is unaffected), and it is never read as a LOOSER setting than the project chose: it reads as the
+  // strictest posture (always, no skipping) until a maintainer saves it again.
+  const setting = DesignReviewSettingSchema.safeParse(stored);
+  return { ...parsed.data, designReview: setting.success ? setting.data : { ...DESIGN_REVIEW_FAIL_CLOSED_SETTING } };
 }
 
 /**
@@ -79,6 +91,12 @@ export async function readProjectPlaybookWrittenAt(deps: ProjectPlaybookReader, 
   return { exists: true, updatedAt: typeof updatedAt === "string" ? updatedAt : undefined };
 }
 
+/** The facts of `playbook.design_review_changed`: fixed words and counts. The people or the group named as the approver are never in the event. */
+export function designReviewAuditFacts(setting: DesignReviewSetting): { mode: DesignReviewSetting["mode"]; tier: DesignReviewSetting["tier"]; allowSkip: boolean; capCents: number; approverKind: DesignReviewSetting["highRiskApprover"]["kind"]; approverCount: number } {
+  const approver = setting.highRiskApprover;
+  return { mode: setting.mode, tier: setting.tier, allowSkip: setting.allowSkip, capCents: Math.round(setting.capUsdPerTask * 100), approverKind: approver.kind, approverCount: approver.kind === "people" ? approver.memberIds.length : approver.kind === "group" ? 1 : 0 };
+}
+
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException"
   || (error.name === "TransactionCanceledException" && ((error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons ?? []).some((reason) => reason.Code === "ConditionalCheckFailed")));
 
@@ -91,19 +109,29 @@ const conditionFailed = (error: unknown): boolean => error instanceof Error && (
  * else `PLAYBOOK_STALE` (C53).
  */
 export async function writeProjectPlaybook(
-  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[] },
+  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; designReview?: DesignReviewSetting | undefined; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[] },
 ): Promise<ProjectPlaybook> {
   const { orgId, project } = input;
   const item = await readItem(deps, orgId, project);
   const current = await readProjectPlaybook(deps, orgId, project, { lenient: true });
   if (input.expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
-  const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess };
+  // The design review setting is kept across every write: a change of process (which has no setting in its body) must not drop it. A body that carries one replaces it.
+  const designReview = input.designReview ?? current.designReview;
+  const applied: ProjectPlaybook = { revision: current.revision + 1, defaultProcess: input.defaultProcess, ...(designReview === undefined ? {} : { designReview }) };
   const at = new Date(deps.now()).toISOString();
   const auditDeps: AuditDeps = deps.audit === undefined ? {} : { audit: deps.audit };
-  const events = await tryAuditEvents(auditDeps, () => [auditPlaybookDefaultProcessChanged({
-    orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),
-    projectName: project, revision: applied.revision, processKind: applied.defaultProcess.kind,
-  })]);
+  // `playbook.design_review_changed` only when the setting really changed (a missing setting is the owner's defaults, so saving the defaults over nothing is no change).
+  const designChanged = canonicalJson(designReviewSettingOf(current)) !== canonicalJson(designReviewSettingOf(applied));
+  const events = await tryAuditEvents(auditDeps, () => [
+    auditPlaybookDefaultProcessChanged({
+      orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, String(applied.revision)),
+      projectName: project, revision: applied.revision, processKind: applied.defaultProcess.kind,
+    }),
+    ...(!designChanged ? [] : [auditPlaybookDesignReviewChanged({
+      orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(project, "design_review", String(applied.revision)),
+      projectName: project, revision: applied.revision, ...designReviewAuditFacts(designReviewSettingOf(applied)),
+    })]),
+  ]);
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       {
