@@ -77,7 +77,7 @@ verdict L1.walls rvi-walls-present-and-not-opened "${fails# }" "DOCKER-USER drop
 
 # ---- TS-L1 (two rvi bridges never talk): the boot firewall also drops routed (not bridged) traffic between two different rvi bridges, so one run's helpers cannot reach another run's or an end-to-end network's.
 fails=""
-at_isolation=$(rule_at DOCKER-USER "$DOCKER_USER" "-i rvi+|-o rvi+|physdev|--physdev-is-bridged|-j DROP")
+at_isolation=$(rule_at DOCKER-USER "$DOCKER_USER" "-i rvi+|-o rvi+|-m physdev|! --physdev-is-bridged|-j DROP")
 if [[ -z "$at_isolation" ]]; then fails="no-rvi-to-rvi-isolation-drop"
 else opened=$(rvi_opened_before DOCKER-USER "$DOCKER_USER" "$at_isolation"); [[ -z "$opened" ]] || fails="rvi-opened-above-the-isolation-drop(lines:${opened% })"; fi
 verdict L1.isolation rvi-to-rvi-isolation-drop-present "$fails" "DOCKER-USER drops -i rvi+ -o rvi+ that is not bridged, at line ${at_isolation:-?}"
@@ -94,13 +94,15 @@ else
 fi
 verdict L1.docker-version docker-has-the-CVE-2024-29018-fix "$fails" "Docker Engine ${version:-?}"
 
-# ---- TS-L1 (the firewall tool): the rules above are iptables rules, with the physdev match; the nftables backend (iptables-nft) is not what they were written and checked for.
+# ---- TS-L1 (one firewall, Docker's and ours): our rules are only effective if Docker puts its chains into the SAME iptables the boot firewall writes to. On Amazon Linux 2023 that is the iptables-nft front end (iptables v1.8.x (nf_tables)), which Docker also uses and which
+# supports the physdev match, so the backend's name is no requirement; what matters is that this iptables lists Docker's chains and the FORWARD jump into DOCKER-USER (if Docker used the other backend they would not be listed here).
+fails=""
 backend=$(iptables --version 2>/dev/null || true)
-case "$backend" in
-  *nf_tables*) emit L1.iptables-backend FAIL iptables-backend-is-not-nftables "$backend" ;;
-  *legacy*) emit L1.iptables-backend PASS iptables-backend-is-not-nftables "$backend" ;;
-  *) emit L1.iptables-backend FAIL iptables-backend-is-not-nftables "backend unreadable: ${backend:-no iptables}" ;;
-esac
+[[ -n "$backend" ]] || fails="$fails no-iptables"
+printf '%s\n' "$ALL_RULES" | grep -qx -e '-N DOCKER-USER' || fails="$fails no-DOCKER-USER-chain-in-this-iptables"
+printf '%s\n' "$ALL_RULES" | grep -qx -e '-A FORWARD -j DOCKER-USER' || fails="$fails FORWARD-does-not-jump-to-DOCKER-USER"
+printf '%s\n' "$ALL_RULES" | grep -qx -e '-N DOCKER' -e '-N DOCKER-ISOLATION-STAGE-1' -e '-N DOCKER-FORWARD' || fails="$fails no-docker-chain-in-this-iptables"
+verdict L1.iptables-backend docker-and-boot-firewall-share-one-iptables "${fails# }" "${backend:-no iptables}: Docker's chains and the FORWARD jump to DOCKER-USER are listed by this iptables"
 
 # ---- TS-L1 (Docker's own drops for an internal network): for a run network that exists now, Docker's isolation chains hold DROP rules that name its bridge. Needs a live run network, so an idle worker reports PENDING.
 fails=""

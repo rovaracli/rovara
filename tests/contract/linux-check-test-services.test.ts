@@ -18,9 +18,12 @@ const GOOD_DOCKER_USER = [
 ].join("\n");
 const GOOD_INPUT = ["-P INPUT ACCEPT", "-A INPUT -i rvb+ -j DROP", "-A INPUT -i rvi+ -j DROP"].join("\n");
 
+// What Docker's own chains look like in `iptables -S` (the iptables-nft front end of Amazon Linux 2023 prints the same).
+const GOOD_CHAINS = ["-P FORWARD DROP", "-N DOCKER", "-N DOCKER-ISOLATION-STAGE-1", "-N DOCKER-USER", "-A FORWARD -j DOCKER-USER", "-A FORWARD -j DOCKER-ISOLATION-STAGE-1"].join("\n");
+
 const GOOD_DAEMON = JSON.stringify({ "data-root": "/data", "default-address-pools": [{ base: "172.18.0.0/15", size: 24 }, { base: "172.20.0.0/14", size: 24 }, { base: "172.28.0.0/16", size: 24 }, { base: "192.168.0.0/16", size: 24 }] }, null, 2);
 
-interface World { daemonJson?: string; iptablesVersion?: string; dockerVersion?: string; familyBridges?: Record<string, string>; dockerChainRules?: string[]; dockerUser?: string; input?: string; routes?: string; docker?: boolean; agentxTaskInternal?: string; networks?: Record<string, string>; familyNetworks?: string[]; familyContainers?: string[]; mounts?: Record<string, string> }
+interface World { daemonJson?: string; iptablesVersion?: string; chains?: string; dockerVersion?: string; familyBridges?: Record<string, string>; dockerChainRules?: string[]; dockerUser?: string; input?: string; routes?: string; docker?: boolean; agentxTaskInternal?: string; networks?: Record<string, string>; familyNetworks?: string[]; familyContainers?: string[]; mounts?: Record<string, string> }
 
 function run(world: World = {}, args: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "ts-linux-check-"));
@@ -29,13 +32,14 @@ function run(world: World = {}, args: string[] = []) {
   const tool = (name: string, body: string) => { writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   const files = { "docker-user": world.dockerUser ?? GOOD_DOCKER_USER, input: world.input ?? GOOD_INPUT, routes: world.routes ?? "default via 10.0.0.1 dev eth0\n10.0.0.0/24 dev eth0 proto kernel\n172.17.0.0/16 dev docker0 proto kernel\n" };
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  writeFileSync(join(dir, "chains"), `${world.chains ?? GOOD_CHAINS}\n`);
   writeFileSync(join(dir, "daemon.json"), world.daemonJson ?? GOOD_DAEMON);
   writeFileSync(join(dir, "docker-chain-rules"), (world.dockerChainRules ?? []).map((rule) => `${rule}\n`).join(""));
   tool("iptables", [
     `echo "$@" >> "${dir}/iptables.calls"`,
-    `if [ "$1" = "--version" ]; then echo "${world.iptablesVersion ?? "iptables v1.8.8 (legacy)"}"; exit 0; fi`,
+    `if [ "$1" = "--version" ]; then echo "${world.iptablesVersion ?? "iptables v1.8.8 (nf_tables)"}"; exit 0; fi`,
     `[ "$1" = "-S" ] || exit 2`,
-    `case "$2" in "") cat "${dir}/docker-user" "${dir}/input" "${dir}/docker-chain-rules" ;; DOCKER-USER) cat "${dir}/docker-user" ;; INPUT) cat "${dir}/input" ;; *) exit 1 ;; esac`,
+    `case "$2" in "") cat "${dir}/chains" "${dir}/docker-user" "${dir}/input" "${dir}/docker-chain-rules" ;; DOCKER-USER) cat "${dir}/docker-user" ;; INPUT) cat "${dir}/input" ;; *) exit 1 ;; esac`,
   ].join("\n"));
   tool("ip", `[ "$1 $2 $3" = "-4 route show" ] || exit 2\ncat "${dir}/routes"`);
   const listing = (items: string[]) => items.map((item) => `${item}\n`).join("");
@@ -104,6 +108,8 @@ describe("scripts/linux-check-test-services.sh", () => {
     expect(run({ dockerUser: GOOD_DOCKER_USER.replace(isolation, "") }).byId("L1.isolation")).toMatch(/ FAIL .*no-rvi-to-rvi-isolation-drop/u);
     // The plain "may not leave rvi" drop is not the isolation drop.
     expect(run({ dockerUser: GOOD_DOCKER_USER.replace(isolation, "-A DOCKER-USER -i rvi+ -o rvi+ -j DROP\n") }).byId("L1.isolation")).toMatch(/ FAIL /u);
+    // The same match without the inversion drops what stays inside one bridge: not the isolation drop.
+    expect(run({ dockerUser: GOOD_DOCKER_USER.replace(isolation, "-A DOCKER-USER -i rvi+ -o rvi+ -m physdev --physdev-is-bridged -j DROP\n") }).byId("L1.isolation")).toMatch(/ FAIL .*no-rvi-to-rvi-isolation-drop/u);
     expect(run({ dockerUser: GOOD_DOCKER_USER.replace(isolation, `-A DOCKER-USER -i rvi+ -o rvi+ -j RETURN\n${isolation}`) }).byId("L1.isolation")).toMatch(/ FAIL .*rvi-opened-above-the-isolation-drop/u);
   });
 
@@ -115,10 +121,15 @@ describe("scripts/linux-check-test-services.sh", () => {
     expect(run({ dockerVersion: "" }).byId("L1.docker-version")).toMatch(/ FAIL .*unreadable/u);
   });
 
-  it("L3: the iptables backend must not be nftables", () => {
-    expect(run({ iptablesVersion: "iptables v1.8.8 (nf_tables)" }).byId("L1.iptables-backend")).toMatch(/ FAIL .*nf_tables/u);
+  it("L3: the backend's name is no requirement (Amazon Linux 2023 is iptables-nft); Docker's chains and the FORWARD jump must be listed by the same iptables", () => {
+    expect(run({ iptablesVersion: "iptables v1.8.8 (nf_tables)" }).byId("L1.iptables-backend")).toMatch(/ PASS .*nf_tables/u);
     expect(run({ iptablesVersion: "iptables v1.8.8 (legacy)" }).byId("L1.iptables-backend")).toMatch(/ PASS /u);
-    expect(run({ iptablesVersion: "something else" }).byId("L1.iptables-backend")).toMatch(/ FAIL .*unreadable/u);
+    // Docker on the other backend: this iptables lists none of Docker's chains.
+    expect(run({ chains: "-P FORWARD ACCEPT" }).byId("L1.iptables-backend")).toMatch(/ FAIL .*no-DOCKER-USER-chain.*FORWARD-does-not-jump.*no-docker-chain/u);
+    expect(run({ chains: GOOD_CHAINS.replace("-A FORWARD -j DOCKER-USER\n", "") }).byId("L1.iptables-backend")).toMatch(/ FAIL .*FORWARD-does-not-jump-to-DOCKER-USER/u);
+    expect(run({ chains: GOOD_CHAINS.replace(/-N DOCKER\n|-N DOCKER-ISOLATION-STAGE-1\n/gu, "") }).byId("L1.iptables-backend")).toMatch(/ FAIL .*no-docker-chain/u);
+    // Docker 28 names its forwarding chain DOCKER-FORWARD.
+    expect(run({ chains: "-N DOCKER-FORWARD\n-N DOCKER-USER\n-A FORWARD -j DOCKER-USER" }).byId("L1.iptables-backend")).toMatch(/ PASS /u);
   });
 
   it("L3: for a run network that exists, Docker's own drops naming its bridge must be present; an idle worker is PENDING, not a pass", () => {
