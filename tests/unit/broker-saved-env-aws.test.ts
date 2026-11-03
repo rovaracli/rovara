@@ -1,6 +1,6 @@
 // Saved project images (SV wiring): the ECR and STS adapters. Every ECR call is made with a client built from the SESSION's credentials, never the broker's own; errors map to fixed outcomes.
 import { describe, expect, it } from "vitest";
-import { savedEnvRegistryPort, savedEnvSessionPorts, type AwsSender, type SavedEnvAwsClients } from "../../packages/broker/src/aws/broker/saved-env-aws.js";
+import { savedEnvRegistryPort, savedEnvSessionPorts, type SavedEnvAwsClients } from "../../packages/broker/src/aws/broker/saved-env-aws.js";
 import { mintManageSession, mintPullSession, type SavedEnvSessionConfig } from "../../packages/broker/src/test-env/saved-env-session.js";
 import { expectedRepositoryPolicy } from "../../packages/broker/src/test-env/saved-env-session.js";
 
@@ -14,7 +14,7 @@ function bench(handler: (call: Call) => unknown) {
   const calls: Call[] = [];
   const clients: SavedEnvAwsClients = {
     sts: { send: async (command) => { const call = { command: (command as object).constructor.name, input: (command as { input: Record<string, unknown> }).input }; calls.push(call); return handler(call); } },
-    ecr: (credentials) => ({ send: async (command) => { const call = { command: (command as object).constructor.name, input: (command as { input: Record<string, unknown> }).input, credentials }; calls.push(call); return handler(call); } }) as AwsSender,
+    ecr: (credentials) => ({ send: async (command) => { const call = { command: (command as object).constructor.name, input: (command as { input: Record<string, unknown> }).input, credentials }; calls.push(call); return handler(call); } }),
   };
   return { calls, clients };
 }

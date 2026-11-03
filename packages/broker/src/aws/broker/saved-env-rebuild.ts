@@ -8,7 +8,7 @@
 // Fails closed: no approver, a moved approved environment, a repository the job has no commit for, or no build inputs (the base image and secret names, from the install) start nothing, and the job's lease runs out.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type OrgId, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
+import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
 import { readApprovedBy, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
@@ -33,14 +33,14 @@ export async function startSavedEnvRebuild(
 ): Promise<StartRebuildResult> {
   const deps: SavedEnvDeps | undefined = dependencies.savedEnvDeps;
   if (deps === undefined || !savedEnvEnabled(env) || !deps.session.config.enabled) return { started: false, why: "disabled" };
-  const orgId = ids.orgId as OrgId;
+  const orgId = ids.orgId;
   const state = await deps.store.get(ids.orgId, ids.projectId);
   const job = state?.job;
   // Only a queued job that nobody has been given the lease of, and whose lease is live.
   if (state === undefined || job === undefined || job.dispatchedAt !== undefined || Date.parse(job.leaseUntil) <= deps.now() || state.deleted === true || state.archived === true || !state.enabled) return { started: false, why: "nothing_queued" };
   let project;
   try { project = await requireLatestProject(dependencies, orgId, ids.projectId); } catch { return { started: false, why: "no_project" }; }
-  const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: deps.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) };
+  const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => deps.now(), ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) };
   // The environment the job was queued for is still the newest approved one: the build proves THIS body.
   const approved = await readApprovedTestEnvironment(table, orgId, ids.projectId);
   if (approved === undefined || approved.revision !== job.approved.revision || testEnvDigest(approved.environment) !== job.approved.digest) return { started: false, why: "approved_moved" };

@@ -139,8 +139,8 @@ export function savedEnvSessionPorts(clients: SavedEnvAwsClients, bindings: Save
       return { encryptionType: found.encryptionConfiguration?.encryptionType, kmsKey: found.encryptionConfiguration?.kmsKey, imageTagMutability: found.imageTagMutability, policyText };
     },
 
-    readApproved: bindings.readApproved,
-    proveHolds: bindings.proveHolds,
-    now: bindings.now,
+    readApproved: (orgId, projectId) => bindings.readApproved(orgId, projectId),
+    proveHolds: (orgId, projectId, digest) => bindings.proveHolds(orgId, projectId, digest),
+    now: () => bindings.now(),
   };
 }

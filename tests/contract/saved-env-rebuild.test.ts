@@ -56,7 +56,7 @@ describe("starting the job", () => {
     const workspace = mine().workspace as Record<string, unknown>;
     expect(workspace).toMatchObject({ ownerKey: OMAR.developerId, orgId: TEST_ORG, projectName: NAME, status: "PREPARING" });
     // not the approver's default workspace, and no membership change
-    expect(t.db.find((item) => item.entityType === "DEFAULT_WORKSPACE" && item.workspaceId === workspace!.id)).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "DEFAULT_WORKSPACE" && item.workspaceId === workspace.id)).toEqual([]);
     const operation = mine().operation!;
     expect(operation).toMatchObject({ kind: "prepare", savedEnvJobId: job.jobId, preparePins: [{ repository: "web", commit: HEAD }] });
     const invocation = WorkerInvocationSchema.parse((mine().outbox as unknown as { invocation: unknown }).invocation);
@@ -197,7 +197,7 @@ describe("delivery", () => {
 
   it("does not take the lease for a preparation that carries no build", async () => {
     const { record } = await buildRecord();
-    const plain = structuredClone(record) as Ec2OutboxRecord;
+    const plain = structuredClone(record);
     if (plain.invocation.kind === "prepare") delete plain.invocation.payload.savedEnvBuild;
     const lease = vi.fn(async () => "L".repeat(40));
     const { deliver, post } = delivery({ savedEnvBuildLease: lease });
@@ -248,7 +248,7 @@ describe("the dispatcher's lease", () => {
       const item = (answer as { Item?: Record<string, unknown> }).Item;
       if (item?.entityType === "SAVED_ENV" && (reads += 1) === 1) {
         // another job takes over after the first read
-        db.set({ ...item, version: 2, job: { ...(item.job as object), jobId: "job-2", leaseToken: "N".repeat(40) } } as never);
+        db.set({ ...item, version: 2, job: { ...(item.job as object), jobId: "job-2", leaseToken: "N".repeat(40) } });
       }
       return answer;
     } };

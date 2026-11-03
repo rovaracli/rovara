@@ -79,7 +79,7 @@ import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { exchangeRegistryCredential } from "./registry-credentials.js";
 import { exchangeSavedEnvLogin } from "./saved-env-login.js";
 import { handleSavedEnvLease } from "./saved-env-lease.js";
-import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvOnQueued, savedEnvPushQueue } from "./saved-env-triggers.js";
+import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvPushQueue } from "./saved-env-triggers.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";

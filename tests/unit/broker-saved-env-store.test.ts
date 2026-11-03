@@ -120,7 +120,7 @@ describe("the row", () => {
     const { db, store } = bench();
     await store.commit(state({ job: undefined, lastFailure: undefined }), null, entry());
     expect(Object.keys(db.get(orgPk(ORG), "SAVED_ENV#web") ?? {})).not.toContain("job");
-    db.set({ ...(db.get(orgPk(ORG), "SAVED_ENV#web") as Record<string, unknown>), surprise: 1 } as never);
+    db.set({ ...(db.get(orgPk(ORG), "SAVED_ENV#web") as Record<string, unknown>), surprise: 1 });
     await expect(store.get(ORG, "web")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 });
@@ -151,7 +151,7 @@ describe("the poll", () => {
       db.set({ ...live, ...change });
       expect(await store.pollDue(10), JSON.stringify(change)).toEqual([]);
     }
-    db.set(live as never);
+    db.set(live);
     expect(await store.pollDue(10)).toEqual([{ orgId: ORG, projectId: "web" }]);
   });
 });

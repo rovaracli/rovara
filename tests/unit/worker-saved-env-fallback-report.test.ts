@@ -11,11 +11,11 @@ const payload = PrepareSavedEnvSchema.parse({ repository: savedEnvRepositoryName
 describe("the fallback report", () => {
   it("POSTs the step, and only the step, to the preparation's own operation with its grant", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    await createSavedEnvFallbackReporter({ controlPlaneUrl: "https://cp.example.test/", invocation, fetchImplementation: async (url, init) => { calls.push({ url: String(url), init: init! }); return new Response("{}", { status: 200 }); } })("extract");
+    await createSavedEnvFallbackReporter({ controlPlaneUrl: "https://cp.example.test/", invocation, fetchImplementation: async (url, init) => { calls.push({ url: typeof url === "string" ? url : "unexpected", init: init! }); return new Response("{}", { status: 200 }); } })("extract");
     expect(calls[0]!.url).toBe("https://cp.example.test/v1/internal/workspaces/ws-1/operations/op-1/saved-env-fallback");
     expect(calls[0]!.init.method).toBe("POST");
     expect((calls[0]!.init.headers as Record<string, string>)["x-agentx-repository-grant"]).toBe("grant-1");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ step: "extract" });
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ step: "extract" });
   });
 
   it("never throws: an unreachable or refusing broker changes nothing", async () => {

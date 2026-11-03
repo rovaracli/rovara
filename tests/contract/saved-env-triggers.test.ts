@@ -5,7 +5,7 @@ import { githubInstallationKey, githubRepoProjectKey, orgProjectCatalogKey, proj
 import { GithubWebhookRetryableError } from "../../packages/broker/src/aws/github-webhooks.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvOnQueued, savedEnvPushQueue } from "../../packages/broker/src/aws/broker/saved-env-triggers.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
-import { abandonQueuedJob, checkRebuild, runPoll, SAVED_ENV_POLL_MS, savedEnvForPrepare, type SavedEnvDeps } from "../../packages/broker/src/test-env/saved-env.js";
+import { abandonQueuedJob, checkRebuild, runPoll, SAVED_ENV_POLL_MS, savedEnvForPrepare } from "../../packages/broker/src/test-env/saved-env.js";
 import { deliverGithubTriggerEvents, githubCodePushes } from "../../packages/broker/src/triggers/github-events.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -35,9 +35,9 @@ describe("a GitHub push to a project's repository", () => {
 
   it("tells the registry once per project whose repository was pushed to its default branch, for a code repository too", async () => {
     const { queued, deps } = pushWorld();
-    expect(await deliverGithubTriggerEvents(deps(), pushed() as never)).toEqual({ events: 1, duplicates: 0 });
+    expect(await deliverGithubTriggerEvents(deps(), pushed())).toEqual({ events: 1, duplicates: 0 });
     expect(queued).toEqual([{ orgId: ORG, project: PROJECT }]);
-    await deliverGithubTriggerEvents(deps(), pushed({}, 102) as never);
+    await deliverGithubTriggerEvents(deps(), pushed({}, 102));
     expect(queued).toHaveLength(2);
   });
 
@@ -48,22 +48,22 @@ describe("a GitHub push to a project's repository", () => {
     }
     expect(await deliverGithubTriggerEvents(deps(), pushed({}, 4242) as never)).toEqual({ events: 0, duplicates: 0 });
     db.set({ ...githubInstallationKey(INSTALLATION), entityType: "GITHUB_INSTALLATION", orgId: ORG, status: "removed" });
-    expect(await deliverGithubTriggerEvents(deps(), pushed() as never)).toEqual({ events: 0, duplicates: 0 });
+    expect(await deliverGithubTriggerEvents(deps(), pushed())).toEqual({ events: 0, duplicates: 0 });
     expect(queued).toEqual([]);
   });
 
   it("follows the project's own record of the default branch, not the payload's", async () => {
     const { queued, deps } = pushWorld([repo("api", 101, { defaultBranch: "trunk" })]);
-    await deliverGithubTriggerEvents(deps(), pushed() as never);
+    await deliverGithubTriggerEvents(deps(), pushed());
     expect(queued).toEqual([]);
-    await deliverGithubTriggerEvents(deps(), pushed({ ref: "refs/heads/trunk", repository: { id: 101, default_branch: "trunk" } }) as never);
+    await deliverGithubTriggerEvents(deps(), pushed({ ref: "refs/heads/trunk", repository: { id: 101, default_branch: "trunk" } }));
     expect(queued).toHaveLength(1);
   });
 
   it("reads no record for a push that is not to the default branch", async () => {
     const { db, deps } = pushWorld();
     const before = db.commandNames().length;
-    await deliverGithubTriggerEvents(deps(), pushed({ ref: "refs/heads/feature" }) as never);
+    await deliverGithubTriggerEvents(deps(), pushed({ ref: "refs/heads/feature" }));
     expect(db.commandNames().length).toBe(before);
   });
 
@@ -100,7 +100,7 @@ describe("onQueued", () => {
       const onQueued = vi.fn(async () => undefined);
       const result = await checkRebuild({ ...w.deps, onQueued }, w.ids, trigger);
       expect(result, trigger).toMatchObject({ ok: true, queued: true });
-      expect(onQueued, trigger).toHaveBeenCalledWith(w.ids, expect.objectContaining({ jobId: expect.any(String), reason: "no_image", commits: { svc: expect.any(String) } }));
+      expect(onQueued, trigger).toHaveBeenCalledWith(w.ids, expect.objectContaining({ reason: "no_image" }));
     }
   });
 

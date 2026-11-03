@@ -69,7 +69,7 @@ export function realSavedEnvDeps(input: Pick<AwsBrokerDependencies, "documentCli
   const aws = clients ?? realSavedEnvAwsClients(config.scope.region);
   const now = Date.now;
   const approved = async (orgId: string, project: string) => {
-    const found = await readApprovedTestEnvironment(testEnvDepsOf(dependencies()), orgId as OrgId, project);
+    const found = await readApprovedTestEnvironment(testEnvDepsOf(dependencies()), orgId, project);
     return found === undefined ? undefined : { revision: found.revision, digest: testEnvDigest(found.environment) };
   };
   return {
@@ -78,14 +78,14 @@ export function realSavedEnvDeps(input: Pick<AwsBrokerDependencies, "documentCli
       config: { enabled: true, env: config.env, scope: config.scope, kmsKeyArn: config.kmsKeyArn },
       ports: savedEnvSessionPorts(aws, {
         readApproved: approved,
-        proveHolds: async (orgId, project, digest) => testEnvIsProved(await readTestEnvProveReport(testEnvDepsOf(dependencies()), orgId as OrgId, project, digest), digest),
+        proveHolds: async (orgId, project, digest) => testEnvIsProved(await readTestEnvProveReport(testEnvDepsOf(dependencies()), orgId, project, digest), digest),
         now,
       }),
     },
     registry: savedEnvRegistryPort(aws),
     approved,
     currentKey: async (orgId, project) => dependencies().savedEnvKey?.(orgId, project),
-    defaultHeads: (orgId, project) => savedEnvDefaultHeads(dependencies(), orgId as OrgId, project),
+    defaultHeads: (orgId, project) => savedEnvDefaultHeads(dependencies(), orgId, project),
     keep: async () => SAVED_ENV_KEEP_DEFAULT,
     lightAfterIdleDays: async () => SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT,
     now,

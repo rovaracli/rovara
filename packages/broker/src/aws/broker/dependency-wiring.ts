@@ -603,9 +603,9 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
   const contextSources = input.contextSources ?? contextSourcesInstallOf(input)?.runtime;
   // Saved project images: the registry's real bindings, only while the `sv` switch is on and the install can run it. A registry the caller supplied (a test) wins. The bindings read the finished
   // dependencies lazily, so the registry exists before they do.
-  let finished: AwsBrokerDependencies | undefined;
-  const savedEnvDeps = rest.savedEnvDeps ?? realSavedEnvDeps(rest, () => finished!);
-  finished = {
+  const holder: { finished?: AwsBrokerDependencies } = {};
+  const savedEnvDeps = rest.savedEnvDeps ?? realSavedEnvDeps(rest, () => holder.finished!);
+  const finished: AwsBrokerDependencies = {
     ...rest,
     ...(savedEnvDeps === undefined ? {} : { savedEnvDeps }),
     // Saved environments (SH25): the hooks exist only while the `sv` switch is on.
@@ -616,6 +616,7 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
     ...(turnRecords ? { turnRecords } : {}),
     ...(turnRecordsTableName ? { turnRecordsTableName } : {}),
   };
+  holder.finished = finished;
   return finished;
 }
 

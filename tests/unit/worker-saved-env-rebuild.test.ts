@@ -26,7 +26,7 @@ const invocation = (build: ReturnType<typeof job> | null = job()): Extract<Worke
   protocolVersion: 1, kind: "prepare", operationId: "22222222-2222-4222-8222-222222222222", workspaceId: "11111111-1111-4111-8111-111111111111", fence: 1, projectRevision: 1, callbackCapability: CAPABILITY,
   payload: { project: { name: "demo", revision: 1, repositories: [{ name: "svc", url: "https://github.com/acme/svc.git", path: "svc", defaultBranch: "main", credentialRef: "svc-read" }], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: GRANT, readOnly: true, pins: [{ repository: "svc", commit: COMMIT }], ...(build === null ? {} : { savedEnvBuild: build }) },
 } as never);
-const docker = (stdout = ""): DockerCli => ({ run: async () => ({ exitCode: 0, stdout, stderr: "" }) as never });
+const docker = (stdout = ""): DockerCli => ({ run: async () => ({ exitCode: 0, stdout, stderr: "" }) });
 
 interface Posted { url: string; headers: Record<string, string>; body: Record<string, unknown> }
 function bench(over: Partial<SavedEnvRebuildDependencies> & { build?: SavedEnvRebuildDependencies["build"]; answers?: Array<Response | Error>; during?: (ports: SavedEnvBuildPorts) => Promise<void> } = {}) {
@@ -36,7 +36,7 @@ function bench(over: Partial<SavedEnvRebuildDependencies> & { build?: SavedEnvRe
   const answers = over.answers ?? [];
   const calls: { input?: SavedEnvBuildInput; ports?: SavedEnvBuildPorts } = {};
   const fetchImplementation = (async (url: string, init: RequestInit) => {
-    posted.push({ url: String(url), headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+    posted.push({ url: String(url), headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) as Record<string, unknown> });
     const next = answers.shift();
     if (next instanceof Error) throw next;
     return next ?? new Response("{}", { status: 200 });
@@ -71,11 +71,11 @@ describe("the job", () => {
     const { deps, calls } = bench({ docker: docker("agentx-task-abc\nagentx-task-def\n") });
     await runSavedEnvRebuild(deps);
     expect(calls.input!.notFrom.map((other) => other.id)).toEqual(["agentx-task-abc", "agentx-task-def"]);
-    await expect(liveTaskSandboxes({ run: async () => ({ exitCode: 1, stdout: "", stderr: "" }) as never }, "/mnt/workspace", "")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(liveTaskSandboxes({ run: async () => ({ exitCode: 1, stdout: "", stderr: "" }) }, "/mnt/workspace", "")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
   it("builds nothing when the clone is not at the job's commits, and says so", async () => {
-    const build = vi.fn(async () => ({ ok: false, reason: "not_proved" }) as SavedEnvBuildResult);
+    const build = vi.fn(async (): Promise<SavedEnvBuildResult> => ({ ok: false, reason: "not_proved" }));
     const { deps, posted } = bench({ build, manifest: { repositories: [{ name: "svc", path: "svc", defaultBranch: "main", resolvedCommit: "e".repeat(40), resolvedAt: "x", completedAt: "x" }] } });
     expect(await runSavedEnvRebuild(deps)).toEqual({ ok: false, reason: "not_default_branch", step: "commits" });
     expect(build).not.toHaveBeenCalled();
@@ -114,7 +114,8 @@ describe("the broker calls", () => {
     const result = await runSavedEnvRebuild(deps);
     expect(posted).toHaveLength(3);
     for (const call of posted) {
-      expect(call).toMatchObject({ url: expect.stringMatching(/\/saved-env-result$/u), headers: { "x-agentx-repository-grant": GRANT } });
+      expect(call.url).toMatch(/\/saved-env-result$/u);
+      expect(call.headers).toMatchObject({ "x-agentx-repository-grant": GRANT });
       expect(call.body).toEqual({ jobId: "job-1", leaseToken: LEASE, result });
     }
   });
