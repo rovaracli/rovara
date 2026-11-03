@@ -2,7 +2,7 @@
 //
 //   POST /v1/service/diagnoses/turn           the waiting diagnosis's context, after its requester's right to the error was read again.
 //   POST /v1/service/diagnoses/model-access   the turn's model key. The company pays, on the company's own AI provider (2026-11-03: Rovara pays for no diagnosis): paid like any chat turn of the project,
-//                                             in the requester's name, a key capped at DIAGNOSIS_LIGHT_BUDGET_USD, routed among the company's own sources only. With no usable provider the call is refused in fixed words
+//                                             in the requester's name, a key capped at DIAGNOSIS_LIGHT_BUDGET_USD, routed among the sources billed to the company (its own, or Rovara's metered one). With no usable provider the call is refused in fixed words
 //                                             and nothing is minted. (A deep diagnosis is a task, started and paid like any task; it never comes through here.)
 //   POST /v1/service/diagnoses/answered       the answer (or that there is none): read again, stored and audited once.
 //

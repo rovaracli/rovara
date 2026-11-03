@@ -531,7 +531,7 @@ export async function mintChatTurnKey(
   options: {
     /**
      * Live interaction F2 (a light diagnosis): the turn runs on the company's own AI provider and is paid like any chat turn of the project, in the requester's name (2026-11-03: Rovara pays for no diagnosis).
-     * The route is chosen among the company's own sources only (`chooseDiagnosisRoute`), the key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, and with no usable provider the turn is refused in fixed words. DG-3: `claimKey` is called
+     * The route is chosen among the sources billed to the company (`chooseDiagnosisRoute`: its own, or Rovara's metered one), the key is capped at DIAGNOSIS_LIGHT_BUDGET_USD, and with no usable provider the turn is refused in fixed words. DG-3: `claimKey` is called
      * once, right before the key is minted, and answers false when this diagnosis already took its one key (a retry, an SQS redelivery: then none is minted, so one diagnosis is one turn of the company's money).
      */
     diagnosis?: { claimKey(): Promise<boolean> };
@@ -704,7 +704,7 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
 }
 
 /**
- * A diagnosis turn's model: chosen among the company's own sources (`chooseDiagnosisRoute`), never Rovara's own AI outside an Enterprise install. The route always travels on the wire, because the chat service
+ * A diagnosis turn's model: chosen among the sources billed to the company (`chooseDiagnosisRoute`: its own, or Rovara's metered source, never a person's plan). The route always travels on the wire, because the chat service
  * would otherwise answer with the model it is configured with, which the key may not call. A diagnosis has no tools, so it has no classifier (`classifierModel: null`). No usable provider: MODEL_NOT_ALLOWED in the fixed words.
  */
 async function routeDiagnosisTurn(
