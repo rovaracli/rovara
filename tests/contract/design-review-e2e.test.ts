@@ -10,6 +10,7 @@ import {
   type DesignReviewBinding, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
 import { designSpendCommitItems } from "../../packages/broker/src/design-review/spend-follow.js";
+import { applyDesignSpendChoice } from "../../packages/broker/src/design-review/spend-choice.js";
 import { designAnswersCommitItems } from "../../packages/broker/src/design-review/answers.js";
 import { designDocumentKey } from "../../packages/broker/src/design-review/template-store.js";
 import { designReviewKeyIds } from "../../packages/broker/src/design-review/slot-keys.js";
@@ -24,18 +25,27 @@ import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/a
 import { designProofLine } from "../../packages/broker/src/design-review/proof-line.js";
 import { orgMetaKey } from "../../packages/contracts/src/index.js";
 import { projectMemberKey, projectMetaKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type * as CatalogModule from "@agentx/model-runtime/catalog";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey, modelKeyKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
+
+// A test can take the catalog's price away from every model (a source whose models are not on the list): "cost unavailable", the unpriced path.
+const catalog = vi.hoisted(() => ({ unpriced: false }));
+vi.mock("@agentx/model-runtime/catalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof CatalogModule>();
+  return { ...actual, listPricesPerMillion: (model: Parameters<typeof actual.listPricesPerMillion>[0]) => (catalog.unpriced ? undefined : actual.listPricesPerMillion(model)) };
+});
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
 const NOW = "2026-11-03T12:00:00.000Z";
 const LATER = "2026-11-03T12:05:00.000Z";
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); });
-afterEach(() => { vi.useRealTimers(); });
+// The switch is read at every step (B2-m3): the world's project is on `dp` unless a test takes it off.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-19T12:00:00.000Z")); vi.stubEnv("DESIGN_REVIEW_ENABLED", "1"); vi.stubEnv("DESIGN_REVIEW_PROJECTS", "payments"); catalog.unpriced = false; });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); catalog.unpriced = false; });
 
 const REQUIREMENTS = "# Requirements\n\nR1: A payment that times out is retried once.\nR2: A payment is never charged twice.\n";
 const DESIGN_V1 = "# Design\n\n## 1. Problem and goal\nR1 and R2.\n\n## 3. Proposed design\n### 3.1 Retry\nR1: retry a timed-out payment once. R2: use the payment id as the idempotency key.\n";
@@ -53,7 +63,7 @@ const resolveBlock = (value: unknown): string => `\n\n\`\`\`rovara-design-resolv
 type World = Awaited<ReturnType<typeof world>>;
 
 /** A v2 task whose design was just submitted for review: PLAN_CRITIQUE/READY, review "estimating", the documents stored and digest-checked. */
-async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string; draft?: string } = {}) {
+async function world(options: { modelAccess?: boolean; budgetUsd?: number; capUsd?: number; tier?: "light" | "standard" | "thorough"; start?: boolean; requirements?: string; design?: string; draft?: string } = {}) {
   const access = fakeModelAccess();
   const harness = await createSingleAnswerPlanBroker({
     brokerExtra: { agents: {}, cloud: true, ...(options.modelAccess === false ? {} : { modelAccess: { access, proxyUrl: PROXY_URL } }) },
@@ -70,6 +80,8 @@ async function world(options: { modelAccess?: boolean; capUsd?: number; tier?: "
   const planner = active();
   const task = () => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; ownerKey: string; orgId: string };
   const base = task().workflow;
+  // The task's own run limit (the harness gives $2): a test about the review's cap, not the task's limit, gives the task more.
+  if (options.budgetUsd !== undefined) harness.db.set({ ...task(), budgetUsd: options.budgetUsd });
   const store = (name: string, text: string): WorkflowArtifact => {
     const objectKey = `private/${task().ownerKey}/${workspaceId}/${taskId}/${name}`;
     harness.s3.objects.set(objectKey, text);
@@ -673,7 +685,7 @@ describe("the spend card's follow-through", () => {
     expect(skipped.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
   });
 
-  it("an unpriced-run approval is bound to the hold's revision and never lifts the cap: the row carries who approved, the hold stays, and no round starts over the cap", async () => {
+  it("an unpriced-run approval is bound to the hold's revision and never lifts the cap: the row carries who approved, no round starts over the cap, and the hold is recorded again (B2-m6) instead of the approval being used up in silence", async () => {
     const w = await world({ capUsd: 0.5 });
     const hold = w.task().workflow;
     const approved = await commit(w, { choice: "run_unpriced", stopAtMeasuredUsd: 0.5 });
@@ -681,9 +693,207 @@ describe("the spend card's follow-through", () => {
     expect(w.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "CRITIQUE")).toEqual([expect.objectContaining({ workflowRevision: hold.revision, costApprovedBy: w.owner })]);
     await w.sweep();
     expect(w.operations()).toHaveLength(0);
-    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", revision: hold.revision, designReview: { status: "waiting_cost" } });
+    // Held again, so recorded again: a new revision (the approval named the old one), still waiting for a person, with no approval kept or counted as used.
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", revision: hold.revision + 1, designReview: { status: "waiting_cost" } });
+    expect(review(w).approvals).toBeUndefined();
+    // Another sweep changes nothing: the row of the old revision is stale, and nothing starts by itself.
+    await w.sweep();
+    expect(w.task().workflow.revision).toBe(hold.revision + 1);
+    expect(w.operations()).toHaveLength(0);
     // A row whose revision is not the hold's is stale, whoever it names.
     expect(() => designSpendCommitItems({ tableName: "state", taskId: w.taskId, workflow: { ...hold, designReview: { ...hold.designReview!, status: "estimating" } }, write: { actorId: w.owner, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 1 } }, now: NOW })).toThrow();
+  });
+
+  it("B2-m6: an unpriced approval whose estimate turns out priced and over the cap shows the new figure on the hold (it was undefined) and needs a new tap", async () => {
+    catalog.unpriced = true;
+    const w = await world({ capUsd: 0.5 });
+    const hold = w.task().workflow;
+    expect(hold).toMatchObject({ state: "WAITING", designReview: { status: "waiting_cost" } });
+    expect(hold.designReview!.estimateUsd).toBeUndefined();
+    await commit(w, { choice: "run_unpriced", stopAtMeasuredUsd: 0.5 });
+    catalog.unpriced = false;
+    await w.sweep();
+    expect(w.operations()).toHaveLength(0);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", revision: hold.revision + 1, designReview: { status: "waiting_cost" } });
+    expect(review(w).estimateUsd).toBeGreaterThan(0.5);
+    expect(review(w).approvals).toBeUndefined();
+  });
+
+  it("B2-m7 and M5: the unpriced path actually starts: a hold with no price, the requester's approval, the sweep, and a round with an operation, every slot's key ceiling inside the cap, and the approval on the record", async () => {
+    catalog.unpriced = true;
+    const w = await world();
+    const hold = w.task().workflow;
+    expect(hold).toMatchObject({ stage: "PLAN_CRITIQUE", state: "WAITING", designReview: { status: "waiting_cost", capUsd: 10 } });
+    expect(hold.designReview!.estimateUsd).toBeUndefined();
+    expect(w.operations()).toHaveLength(0);
+    await commit(w, { choice: "run_unpriced", stopAtMeasuredUsd: 10 });
+    await w.sweep();
+    expect(w.operations()).toHaveLength(1);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING", designReview: { status: "running", approvals: [expect.objectContaining({ kind: "spend", by: { actorId: w.owner } })] } });
+    // Bounded by MEASURED spend: the slots' key ceilings are allocated inside what is left under the cap, whatever the price.
+    const alloc = w.db.get(`ORG#${TEST_ORG}#DESIGN_REVIEW#${String(w.operations()[0]!.id)}`, "ALLOC") as { totalUsd: number; ceilings: Record<string, number> };
+    expect(Object.keys(alloc.ceilings).sort()).toEqual(["r1-codebase", "r1-comprehension", "r1-critic", "r1-merge"]);
+    expect(alloc.totalUsd).toBeGreaterThan(0);
+    expect(alloc.totalUsd).toBeLessThanOrEqual(10 + 1e-6);
+    // ... and it is a round like any other: the approval is used once, a second sweep starts nothing more.
+    await w.sweep();
+    expect(w.operations()).toHaveLength(1);
+  });
+
+  it("B2-m5: the pure `run_unpriced` move is refused on its own (it would strand a task at RUNNING with no operation); only `designSpendCommitItems` handles it", async () => {
+    catalog.unpriced = true;
+    const w = await world();
+    const hold = w.task().workflow;
+    expect(() => applyDesignSpendChoice(hold, { actorId: w.owner, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 10 } }, { expectedRevision: hold.revision, now: NOW })).toThrow(/designSpendCommitItems/);
+    expect(() => designSpendCommitItems({ tableName: "state", taskId: w.taskId, workflow: hold, write: { actorId: w.owner, applied: { choice: "run_unpriced", stopAtMeasuredUsd: 10 } }, now: NOW })).not.toThrow();
+  });
+});
+
+// ---- the B2 fix round (DR-REVIEW-dr7b2.md): the planner's money, the switch, the unpriced path and the held-again approval
+
+/** Round 1 recorded with one blocker, each reviewer spending what the test says (the merge step too), and the planner's resolve run started. */
+async function roundOneSpending(spends: { comprehension: number; critic: number; codebase: number; merge: number }, options: { capUsd?: number } = {}) {
+  const w = await world({ budgetUsd: 50, ...(options.capUsd === undefined ? {} : { capUsd: options.capUsd }) });
+  const operationId = String(w.operations()[0]!.id);
+  await runWorker(w, operationId, { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: spends.critic }, comprehension: { spentUsd: spends.comprehension }, codebase: { spentUsd: spends.codebase } }, { mergeSpentUsd: spends.merge });
+  const [resolve] = w.plannerOps();
+  expect(resolve, "the planner's resolve run was started").toBeDefined();
+  return { w, findingId: review(w).rounds[0]!.findings[0]!.id, resolveId: String(resolve!.id) };
+}
+const capabilityOf = (w: World, operationId: string): string => (w.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string }).callbackCapability;
+/** The planner asks for its model key, as the worker does, and the proxy has measured `spentUsd` for it. */
+async function plannerKey(w: World, operationId: string, spentUsd: number) {
+  const reply = await rawGet(w.handler, "/v1/internal/model-access", capabilityOf(w, operationId));
+  if (reply.status === 200) w.access.setKeySpent((JSON.parse(reply.body) as { apiKey: string }).apiKey, spentUsd);
+  return reply;
+}
+const answerResolve = async (w: World, operationId: string, text: string) => { await w.artifact(w.workspaceId, operationId, "plan.md", text); await w.finish(w.workspaceId, operationId, "SUCCEEDED"); };
+const contestDesign = (findingId: string) => resolveBlock({ resolutions: [{ findingId, action: "contested", note: "§3.1 bounds the retry to one.", evidence: [{ kind: "design", section: "§3" }] }] });
+const ONE = { comprehension: 0.3, critic: 0.4, codebase: 0.2, merge: 0.1 };
+
+describe("B2-M1: every planner run's measured spend counts against the review's cap", () => {
+  it("adds the resolve run's measured spend to the review on a finished answer, and the planner's key is held to what the cap has left", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
+    const reply = await plannerKey(w, resolveId, 1.0);
+    expect(reply.status, reply.body).toBe(200);
+    // The key's ceiling is inside the review's room (cap 10 less the 1.0 the reviewers cost).
+    const minted = w.access.mintKey.mock.calls.at(-1)![0];
+    expect(minted.maxBudgetUsd).toBeLessThanOrEqual(9 + 1e-6);
+    await answerResolve(w, resolveId, `${DESIGN_T1}${contestDesign(findingId)}`);
+    expect(review(w).spentUsd).toBeCloseTo(2.0, 6);
+    // ... and the planner's key was blocked before its spend was read.
+    expect(w.access.blockKey).toHaveBeenCalled();
+  });
+
+  it("holds the planner's key to the room that is LEFT: with the reviewers at 9.7 of a 10 cap its ceiling is 0.3, not the task's whole allowance", async () => {
+    const { w, resolveId } = await roundOneSpending({ comprehension: 3, critic: 4.5, codebase: 2, merge: 0.2 });
+    expect(review(w).spentUsd).toBeCloseTo(9.7, 6);
+    const reply = await plannerKey(w, resolveId, 0.1);
+    expect(reply.status, reply.body).toBe(200);
+    expect(w.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBeCloseTo(0.3, 6);
+  });
+
+  it("refuses the planner a key when the cap is spent, and the review goes to the person as reviewed with the spend unchanged (a planner run that would push past the cap is stopped)", async () => {
+    const { w, resolveId } = await roundOneSpending({ comprehension: 3, critic: 4, codebase: 2, merge: 1 });
+    expect(review(w).spentUsd).toBeCloseTo(10, 6);
+    const mints = w.access.mintKey.mock.calls.length;
+    const reply = await plannerKey(w, resolveId, 0);
+    expect(reply.status).toBe(402);
+    expect(w.access.mintKey.mock.calls).toHaveLength(mints);
+    await w.finish(w.workspaceId, resolveId, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done" } });
+    expect(review(w).spentUsd).toBeCloseTo(10, 6);
+  });
+
+  it("counts a run that stopped for its budget, and a run that blocked (each once, a Retry's run on its own key)", async () => {
+    const budget = await roundOneSpending(ONE);
+    await plannerKey(budget.w, budget.resolveId, 0.9);
+    await budget.w.finish(budget.w.workspaceId, budget.resolveId, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(budget.w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", designReview: { status: "done" } });
+    expect(review(budget.w).spentUsd).toBeCloseTo(1.9, 6);
+
+    const { w, resolveId } = await roundOneSpending(ONE);
+    await plannerKey(w, resolveId, 0.6);
+    await w.finish(w.workspaceId, resolveId, "FAILED", { error: `RUNTIME_UNAVAILABLE: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", designReview: { status: "resolving" } });
+    expect(review(w).spentUsd).toBeCloseTo(1.6, 6);
+    const reply = await w.dev(MAYA, "POST", `/v1/dev/tasks/${w.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry.", expectedRevision: w.task().workflow.revision });
+    expect(reply.status, JSON.stringify(reply.body)).toBeLessThan(300);
+    // The Retry added nothing by itself; its own run is charged when it ends.
+    expect(review(w).spentUsd).toBeCloseTo(1.6, 6);
+    const [, second] = w.plannerOps();
+    await plannerKey(w, String(second!.id), 0.2);
+    await answerResolve(w, String(second!.id), `${DESIGN_T1}${contestDesign(review(w).rounds[0]!.findings[0]!.id)}`);
+    expect(review(w).spentUsd).toBeCloseTo(1.8, 6);
+  });
+
+  it("charges a resolve run once when its first commit failed and the result is computed again (measured from the closed key, never accumulated)", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    await plannerKey(w, resolveId, 1.0);
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"status":"done"'), error: { name: "InternalServerError" } });
+    await w.artifact(w.workspaceId, resolveId, "plan.md", `${DESIGN_T1}${contestDesign(findingId)}`);
+    await expect(w.finish(w.workspaceId, resolveId, "SUCCEEDED")).rejects.toBeDefined();
+    expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
+    await w.finish(w.workspaceId, resolveId, "SUCCEEDED");
+    expect(review(w).spentUsd).toBeCloseTo(2.0, 6);
+    expect(w.task().workflow).toMatchObject({ designReview: { status: "done" } });
+  });
+
+  it("an unmeasurable planner run (the meter cannot say) is charged all it could have spent, the room under the cap: never uncounted", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    await plannerKey(w, resolveId, 0.5);
+    w.access.keySpend.mockRejectedValue(new Error("meter down"));
+    await answerResolve(w, resolveId, `${DESIGN_T1}${contestDesign(findingId)}`);
+    expect(review(w).spentUsd).toBeCloseTo(10, 6);
+  });
+
+  it("round 2 is given what the planner left: its reviewers' ceilings fit inside the cap less BOTH rounds' reviewers and the planner run, not the reviewers' spend alone", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    await plannerKey(w, resolveId, 1.0);
+    await answerResolve(w, resolveId, `${DESIGN_T2}${resolveBlock({ resolutions: [{ findingId, action: "fixed", note: "Added §3.2." }] })}`);
+    expect(review(w).spentUsd).toBeCloseTo(2.0, 6);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
+    const alloc = w.db.get(`ORG#${TEST_ORG}#DESIGN_REVIEW#${String(w.operations()[1]!.id)}`, "ALLOC") as { totalUsd: number };
+    expect(alloc.totalUsd).toBeLessThanOrEqual(10 - 2.0 + 1e-6);
+  });
+});
+
+describe("B2-m3: the switch is read at every step", () => {
+  it("`dr` set to 0 before a task's first round: the round does not start, the review is not run (switched_off) and the design goes to the person; nothing is approved", async () => {
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "0");
+    const w = await world();
+    expect(w.operations()).toHaveLength(0);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "not_run", notRunReason: "switched_off" } });
+    expect(review(w).approvals).toBeUndefined();
+    expect(w.task().workflow.outcome).toBeUndefined();
+  });
+
+  it("the project taken out of `dp` while round 1 ran: the planner's resolve run does not start, the findings stay unresolved for the person, and the spend is kept", async () => {
+    const w = await world();
+    vi.stubEnv("DESIGN_REVIEW_PROJECTS", "web:other");
+    await runWorker(w, String(w.operations()[0]!.id), { critic: { findings: [blocker("1", "Retries have no upper bound.")], spentUsd: 0.4 }, comprehension: { spentUsd: 0.3 }, codebase: { spentUsd: 0.2 } }, { mergeSpentUsd: 0.1 });
+    expect(w.plannerOps()).toHaveLength(0);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done", notRunReason: "switched_off" } });
+    expect(review(w).rounds[0]!.resolutions).toEqual([]);
+    expect(review(w).spentUsd).toBeCloseTo(1.0, 6);
+    expect(review(w).approvals).toBeUndefined();
+  });
+
+  it("`dr` set to 0 while the planner works: its answer is recorded, but round 2 does not start", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    vi.stubEnv("DESIGN_REVIEW_ENABLED", "0");
+    await answerResolve(w, resolveId, `${DESIGN_T2}${resolveBlock({ resolutions: [{ findingId, action: "fixed", note: "Added §3.2." }] })}`);
+    expect(w.operations()).toHaveLength(1);
+    expect(w.task().workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", designReview: { status: "done", notRunReason: "switched_off" } });
+    expect(review(w).rounds).toHaveLength(1);
+    expect(review(w).approvals).toBeUndefined();
+  });
+
+  it("positive control: with the switch on and the project listed the same steps run (round 2 starts)", async () => {
+    const { w, findingId, resolveId } = await roundOneSpending(ONE);
+    await answerResolve(w, resolveId, `${DESIGN_T2}${resolveBlock({ resolutions: [{ findingId, action: "fixed", note: "Added §3.2." }] })}`);
+    expect(w.operations()).toHaveLength(2);
   });
 });
 

@@ -4,7 +4,7 @@
 //
 //   estimate = tier reviewers x (packet tokens in + 4k out) x the reviewer model's catalog price
 //            + the merge step (a model, except in Light where the merge is code only)
-//            + one planner revision per round (about 40k in / 8k out)
+//            + the planner's runs (about 40k in / 8k out each): per round, one run that may ask and one that resolves after the answers, except in the last round, which does not ask (B2-M1)
 //   for 2 rounds (Q7).
 //
 // A reviewer review is priced by `estimateSecondReviewUsd`, the same function the second-review picker uses, so the two never disagree.
@@ -35,8 +35,13 @@ export const TIER_HAS_MERGE_MODEL: Readonly<Record<DesignReviewTier, boolean>> =
 
 /** What a reviewer writes (tokens out): the same 4k as a second review. */
 export const REVIEWER_OUTPUT_TOKENS = SECOND_REVIEW_TYPICAL_REVIEW_TOKENS.output;
-/** A planner revision (3.4): about 40k in and 8k out per round. */
+/** A planner revision (3.4): about 40k in and 8k out per run. */
 export const PLANNER_REVISION_TOKENS = { input: 40_000, output: 8_000 } as const;
+/**
+ * B2-M1: how many planner runs the rounds still to run can hold. A round that may still ask runs the planner twice (the run that asks, then the run that resolves with the answers); the LAST round does not ask, so it runs
+ * the planner once. So 2 rounds are 3 runs and a last round alone is 1. The estimate prices all of them and the round start holds their price back from the reviewers' room.
+ */
+export const plannerRunsFor = (roundsToRun: number): number => (Number.isInteger(roundsToRun) && roundsToRun >= 1 ? 2 * roundsToRun - 1 : 0);
 /** The merge step reads the raw findings (at most 15 per reviewer) and writes the merged list. A generous bound: the estimate may be high, never low. */
 export const MERGE_TOKENS = { perReviewerInput: 6_000, designInput: 8_000, output: 6_000 } as const;
 
@@ -98,7 +103,7 @@ export function estimateDesignReviewUsd(input: DesignReviewEstimateInput): Desig
   const perRound = TIER_REVIEWERS[input.tier].reduce((sum, role) => sum + estimateSecondReviewUsd(reviewerPrice, { input: packet * ROLE_INPUT_TURN_FACTOR[role], maxOutput: REVIEWER_OUTPUT_TOKENS }), 0);
   const reviewersUsd = micro(perRound * rounds);
   const mergeUsd = mergePrice === undefined ? 0 : micro(estimateSecondReviewUsd(mergePrice, { input: MERGE_TOKENS.designInput + MERGE_TOKENS.perReviewerInput * reviewers, maxOutput: MERGE_TOKENS.output }) * rounds);
-  const plannerUsd = micro(estimateSecondReviewUsd(plannerPrice, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * rounds);
+  const plannerUsd = micro(estimateSecondReviewUsd(plannerPrice, { input: PLANNER_REVISION_TOKENS.input, maxOutput: PLANNER_REVISION_TOKENS.output }) * plannerRunsFor(rounds));
   return { kind: "priced", usd: micro(reviewersUsd + mergeUsd + plannerUsd), breakdown: { reviewersUsd, mergeUsd, plannerUsd }, tier: input.tier, reviewers, rounds };
 }
 
@@ -117,7 +122,7 @@ export type DesignReviewCapGate =
 export type DesignSpendChoice =
   | { choice: "lower_tier"; tier: DesignReviewTier; estimateUsd: number }
   | { choice: "raise_cap"; newCapUsd: number }
-  /** Run design review for this task anyway, with the price unknown: only offered for "cost unavailable", and only the requester may choose it. MEASURED spend still stops the run at the cap (`designReviewSpendStop`). */
+  /** Run design review for this task anyway, with the price unknown: only offered for "cost unavailable", and only the requester may choose it. MEASURED spend still bounds the run: every reviewer's and the merge step's key has a fixed ceiling inside what is left under the cap (`allocateSlotBudgets`), and the planner's key is held to what is left too (`plannerRunRoomUsd`). */
   | { choice: "run_unpriced" }
   | { choice: "skip" };
 
@@ -168,21 +173,6 @@ export function gateDesignReviewCost(input: CapGateInput): DesignReviewCapGate {
   if (input.canSkip) choices.push({ choice: "skip" });
   return { kind: "ask", why: "over_cap", estimateUsd: estimate.usd, choices };
 }
-
-/**
- * Whether a running design review must stop NOW, from the spend the proxy has MEASURED for the task's design review keys (M5). It does not depend on an estimate or a catalog price:
- *   - measured spend at or above the cap stops it, in any run, priced or not, mid-round (3.6 "Running out"): nothing pauses to ask for money;
- *   - an unpriced run with NO measurement (the meter gave nothing) stops too: with no price and no reading nothing bounds the spend, so it never starts another reviewer on a guess.
- * A bad number (NaN, negative) is no reading. The caller (the DR7 dispatch) asks before it starts each reviewer and each merge or revision call.
- */
-export function designReviewSpendStop(input: { capUsd: number; measuredUsd: number | undefined; unpriced: boolean }): { stop: false } | { stop: true; why: "cap_reached" | "spend_unmeasured" } {
-  const reading = input.measuredUsd !== undefined && Number.isFinite(input.measuredUsd) && input.measuredUsd >= 0 ? input.measuredUsd : undefined;
-  if (!Number.isFinite(input.capUsd) || input.capUsd < 0) return { stop: true, why: "cap_reached" };
-  if (reading !== undefined && reading >= input.capUsd) return { stop: true, why: "cap_reached" };
-  if (reading === undefined && input.unpriced) return { stop: true, why: "spend_unmeasured" };
-  return { stop: false };
-}
-
 
 // ---- what each reviewer's key may spend, and what a run records as its cost (money N3). Pure: DR7 puts the budget on the key and the measured cost on the run.
 

@@ -7,9 +7,11 @@
 //   - friction by the card's tier: the digest must be what the server shows now (a changed estimate, cap or design makes an old look worthless); medium: the evidence of that digest must have been opened; high: a
 //     fresh sign-in;
 //   - the commit is conditional on the task record's revision, and the decision is recorded under the request id (a replay returns the earlier outcome; the same id for another choice is refused).
-// An unpriced run is bounded by MEASURED spend (M5): the applied choice carries `stopAtMeasuredUsd`, the cap, which the dispatch checks with `designReviewSpendStop` before every reviewer and call.
+// An unpriced run is bounded by MEASURED spend (M5), and the bound is the per-slot KEY CEILINGS, not a check the dispatch makes: every reviewer's and the merge step's key is minted with a fixed ceiling inside what is left under the cap
+// (`allocateSlotBudgets`), so the proxy refuses a call past it, and the planner's key is held to what is left too (`plannerRunRoomUsd`). There is no separate stop function (B2-m5: `designReviewSpendStop` was never called and is removed);
+// `stopAtMeasuredUsd` on the applied choice is the cap the person saw, kept on the record.
 import { createHash } from "node:crypto";
-import { agentXError, canonicalJson, lowerDesignReviewTier, raiseDesignReviewCap, skipDesignReview, startDesignReview, type WorkflowSnapshot, type DesignReason, type DesignReviewTier, type EditionPolicy } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, canonicalJson, lowerDesignReviewTier, raiseDesignReviewCap, skipDesignReview, type WorkflowSnapshot, type DesignReason, type DesignReviewTier, type EditionPolicy } from "@agentx/contracts";
 import { DECISION_CHANGED_MESSAGE, DECISION_OPEN_FIRST_MESSAGE, DECISION_FULL_PAGE_MESSAGE, type DecisionCaller } from "../decisions/routes.js";
 import { projectDecisionCards, type DecisionItem } from "../decisions/project.js";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";
@@ -52,7 +54,7 @@ export interface DesignSpendContext {
 export type DesignSpendApplied =
   | { choice: "lower_tier"; tier: DesignReviewTier }
   | { choice: "raise_cap"; newCapUsd: number }
-  /** `stopAtMeasuredUsd`: the run stops when the proxy's MEASURED spend reaches this, whatever the price (M5). */
+  /** `stopAtMeasuredUsd`: the cap the person agreed to run under. Measured spend is held to it by the keys' ceilings (see the header), whatever the price (M5). */
   | { choice: "run_unpriced"; stopAtMeasuredUsd: number }
   | { choice: "skip" };
 
@@ -194,7 +196,7 @@ export function designSpendChoiceHandler<C extends DecisionCaller>(ports: Design
 /**
  * What the commit port does with an applied choice: the contract move for each one, at the revision the gate was worked out from. DR7's commit port calls this inside its conditional write, so the choice
  * on the card and the move on the workflow can never differ:
- *   raise_cap -> raiseDesignReviewCap (records who), lower_tier -> lowerDesignReviewTier (records who), run_unpriced -> startDesignReview with the spend approved by this person,
+ *   raise_cap -> raiseDesignReviewCap (records who), lower_tier -> lowerDesignReviewTier (records who), run_unpriced -> REFUSED here (it starts with its round: `designSpendCommitItems`),
  *   skip -> skipDesignReview (`person_skip`, with who; the review is not retried or re-armed). `estimateUsd` is the estimate the gate used (the lower tier's, for lower_tier).
  * Each move throws a WorkflowTransitionError when the workflow is no longer where the card was drawn, which the commit port turns into "stale".
  */
@@ -204,8 +206,9 @@ export function applyDesignSpendChoice(snapshot: unknown, write: Pick<DesignSpen
   switch (write.applied.choice) {
     case "raise_cap": return raiseDesignReviewCap(snapshot, { expectedRevision: input.expectedRevision, capUsd: write.applied.newCapUsd, by, ...estimate, now: input.now });
     case "lower_tier": return lowerDesignReviewTier(snapshot, { expectedRevision: input.expectedRevision, tier: write.applied.tier, by, ...estimate, now: input.now });
-    // The pure move, for the workflow's own tests. The commit port uses `designSpendCommitItems` (spend-follow.ts): an unpriced run starts with its round's operation (from the hold, with `costApproved`), never alone.
-    case "run_unpriced": return startDesignReview(snapshot, { expectedRevision: input.expectedRevision, costApproved: { by }, now: input.now });
+    // B2-m5: an unpriced run starts with its round's operation (from the hold, with `costApproved`), never alone: moving the workflow to RUNNING here, with no operation, would strand the task. So this move is refused; the commit
+    // port uses `designSpendCommitItems` (spend-follow.ts), which leaves the hold as it is and makes the round due with the approval on its row.
+    case "run_unpriced": throw new WorkflowTransitionError("an unpriced run starts with its round: use designSpendCommitItems");
     case "skip": return skipDesignReview(snapshot, { expectedRevision: input.expectedRevision, by, now: input.now });
   }
 }
