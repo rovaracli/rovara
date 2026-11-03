@@ -1,14 +1,14 @@
 // The system owner of automatic runs (owner decision 2026-11-02): the start, through the real broker. A project's automatic run is OWNED by a non-person ("Rovara (project: X)"): its task record, its slot, its
 // task-list row and its payer are the project's, no person's; and nothing can act AS it.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAgentRun, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AUTOMATIC_RUNS_AT_ONCE, isSystemOwnerId, systemOwnerIdOf, systemOwnerName } from "@agentx/contracts";
 import { systemOwnerCaller } from "../../packages/broker/src/developer/system-owner.js";
 import { projectMetaKey } from "@agentx/contracts";
 import { taskIndexKey } from "../../packages/broker/src/developer/task-records.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -74,7 +74,14 @@ describe("a system-owned start", () => {
     const t = await setup();
     expect(AUTOMATIC_RUNS_AT_ONCE).toBe(1);
     await startAgentRun(t.starter(), t.automatic());
-    expect(await refusal(startAgentRun(t.starter(), t.automatic()))).toMatchObject({ code: "WORKSPACE_LIMIT" });
+    const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const refused = await refusal(startAgentRun(t.starter(), t.automatic()));
+    const lines = logged.mock.calls.map((call) => String(call[0]));
+    logged.mockRestore();
+    expect(refused).toMatchObject({ code: "WORKSPACE_LIMIT" });
+    // a refused automatic start is no AI tool's request: it keeps no turn record, and does not try to (a failed write of one raises the turn-record alarm)
+    expect(lines.some((line) => line.includes("turn_record_failed"))).toBe(false);
+    expect(t.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("TASK#") && item.phase === "refused")).toHaveLength(0);
   });
 
   it("the approver's own personal slots are untouched", async () => {
@@ -104,7 +111,7 @@ describe("a system owner owns exactly its own project's automatic runs, which no
 
   it("refuses a payer other than the project: no person is charged for work no person started", async () => {
     const t = await setup();
-    const refused = await refusal(startAgentRun(t.starter(), t.automatic({ origin: "app", payer: { kind: "member", developerId: MAYA.developerId } })));
+    const refused = await refusal(startAgentRun(t.starter(), t.automatic({ origin: "schedule", payer: { kind: "agent", agentId: "rovara-code" } })));
     expect(refused?.code).toBe("CONFIG_INVALID");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   });
@@ -125,8 +132,10 @@ describe("a system owner owns exactly its own project's automatic runs, which no
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   });
 
-  it("the run starter finds no person for a system owner's id (nothing signs in as it)", async () => {
+  it("the run starter finds no person for a system owner's id, even if a sign-in record and a membership were planted under it (nothing signs in as it)", async () => {
     const t = await setup();
+    seedMembership(t.db, SYSTEM, { orgId: TEST_ORG, role: "admin" });
+    t.db.set({ pk: `DEVELOPER#${SYSTEM}`, sk: "META", entityType: "DEVELOPER", developerId: SYSTEM, provider: "oidc", displayName: "Planted", revoked: false });
     expect(await t.starter().callerFor(TEST_ORG, SYSTEM)).toBeUndefined();
   });
 
